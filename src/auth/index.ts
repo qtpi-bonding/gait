@@ -1,6 +1,7 @@
 // Ported from OpenCode (MIT) — https://github.com/sst/opencode
 
 import path from "path"
+import fs from "fs"
 import { Global } from "../global"
 import z from "zod"
 
@@ -52,6 +53,7 @@ export namespace Auth {
   }
 
   export async function set(key: string, info: Info) {
+    fs.mkdirSync(path.dirname(filepath), { recursive: true })
     const file = Bun.file(filepath)
     const data = await all()
     await Bun.write(file, JSON.stringify({ ...data, [key]: info }, null, 2), { mode: 0o600 })
