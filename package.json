@@ -1,10 +1,10 @@
 {
-  "name": "ainix",
+  "name": "gait",
   "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "bun run src/cli/index.ts",
-    "build": "bun build --compile --minify --target=bun bin/ainix.ts --outfile dist/ainix",
+    "build": "bun build --compile --minify --target=bun bin/gait.ts --outfile dist/gait",
     "test": "bun test"
   },
   "dependencies": {

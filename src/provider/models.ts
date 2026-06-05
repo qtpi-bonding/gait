@@ -3,7 +3,7 @@ import path from "path"
 import os from "os"
 
 const MODELS_URL = "https://models.dev/api.json"
-const CACHE_DIR = path.join(os.homedir(), ".cache", "ainix")
+const CACHE_DIR = path.join(os.homedir(), ".cache", "gait")
 const CACHE_FILE = path.join(CACHE_DIR, "models.json")
 const CACHE_TTL_MS = 60 * 60 * 1000 // 1 hour
 
@@ -48,7 +48,7 @@ export async function getModels(): Promise<ModelInfo[]> {
       return JSON.parse(fs.readFileSync(CACHE_FILE, "utf-8")) as ModelInfo[]
     }
     throw new Error(
-      `Cannot fetch model list and no cache exists. Specify "model" directly in ainix.jsonc. (${err})`
+      `Cannot fetch model list and no cache exists. Specify "model" directly in gait.jsonc. (${err})`
     )
   }
 }

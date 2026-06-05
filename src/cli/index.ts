@@ -23,7 +23,7 @@ async function main() {
       break
     }
     default:
-      console.log("Usage: ainix <init|run|auth|models>")
+      console.log("Usage: gait <init|run|auth|models>")
       console.log("  init [<repo-url>]       Initialize workspace")
       console.log("  run [options] [files]   Run one agent turn")
       console.log("    --session <id>          Session ID (auto-generated if omitted)")

@@ -12,7 +12,7 @@ export async function authCommand(argv: string[]): Promise<void> {
   if (sub === "list" || sub === "ls" || !sub) {
     const credentials = await Auth.all()
     if (Object.keys(credentials).length === 0) {
-      console.log("No credentials configured. Run: ainix auth add <provider>")
+      console.log("No credentials configured. Run: gait auth add <provider>")
       return
     }
     for (const [key, cred] of Object.entries(credentials)) {
@@ -23,7 +23,7 @@ export async function authCommand(argv: string[]): Promise<void> {
   }
 
   if (sub === "add") {
-    if (!provider) { console.error("Usage: ainix auth add <provider>"); process.exit(1) }
+    if (!provider) { console.error("Usage: gait auth add <provider>"); process.exit(1) }
     const key = await prompt(`${provider} API key: `)
     await Auth.set(provider, { type: "api", key })
     console.log(`Saved ${provider} credentials`)
@@ -31,7 +31,7 @@ export async function authCommand(argv: string[]): Promise<void> {
   }
 
   if (sub === "remove" || sub === "rm") {
-    if (!provider) { console.error("Usage: ainix auth remove <provider>"); process.exit(1) }
+    if (!provider) { console.error("Usage: gait auth remove <provider>"); process.exit(1) }
     await Auth.remove(provider)
     console.log(`Removed ${provider} credentials`)
     return

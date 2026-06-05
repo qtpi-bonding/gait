@@ -9,7 +9,7 @@ export function checkGitInstalled(): void {
   try {
     run("git --version", process.cwd())
   } catch {
-    throw new Error("git is not installed or not in PATH. ainix requires git.")
+    throw new Error("git is not installed or not in PATH. gait requires git.")
   }
 }
 
@@ -38,7 +38,7 @@ export function commitSession(workspacePath: string, sessionId: string, message:
   }
 }
 
-// Used by ainix init
+// Used by gait init
 export function initWorkspace(workspacePath: string): void {
   try {
     run("git init", workspacePath)
@@ -53,5 +53,5 @@ export function addSubmodule(workspacePath: string, repoUrl: string): void {
 
 export function initialCommit(workspacePath: string): void {
   run("git add -A", workspacePath)
-  run('git commit -m "ainix: init workspace"', workspacePath)
+  run('git commit -m "gait: init workspace"', workspacePath)
 }

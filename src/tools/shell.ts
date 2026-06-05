@@ -1,11 +1,11 @@
-// ainix-specific: permission-gated shell command runner
+// gait: permission-gated shell command runner
 import { tool } from "ai"
 import { z } from "zod"
 import { execSync } from "child_process"
 
 export function createShellTool(codebasePath: string) {
   return tool({
-    description: "Run a shell command in the codebase directory. All shell commands require permission approval unless pre-allowed in ainix.jsonc.",
+    description: "Run a shell command in the codebase directory. All shell commands require permission approval unless pre-allowed in gait.jsonc.",
     parameters: z.object({
       cmd: z.string().describe("Shell command to execute"),
       reason: z.string().describe("Why this command is needed"),

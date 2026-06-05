@@ -182,7 +182,7 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
     const relevantEvents = breakpoint >= 0 ? events.slice(breakpoint) : events
     const contextWindow = (await getModelContextLength(config.model)) ?? 128_000
     if (needsCompaction(relevantEvents, contextWindow, config.compaction_threshold)) {
-      process.stderr.write("[ainix] compacting session...\n")
+      process.stderr.write("[gait] compacting session...\n")
       const { summary, usage } = await compact({ model, events: relevantEvents, contextWindow })
       const compactionEvent: CompactionEvent = {
         type: "compaction",
@@ -351,14 +351,14 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
     appendEvent(txPath, { type: "error", message: String(err), phase: "init", ts: Date.now() })
     try { commitSession(workspacePath, sessionId, `session(${sessionId}): error`) } catch {}
     if (isSubagent) return { status: "error", result: String(err) }
-    process.stderr.write(`[ainix] error: ${err}\n`)
+    process.stderr.write(`[gait] error: ${err}\n`)
     process.exit(1)
   } finally {
     releaseLock(sessionDir)
   }
 }
 
-// CLI entry for `ainix run`
+// CLI entry for `gait run`
 export async function runCommand(argv: string[]): Promise<void> {
   let sessionId: string | undefined
   let task: string | undefined
@@ -380,7 +380,7 @@ export async function runCommand(argv: string[]): Promise<void> {
 
   if (!sessionId) {
     sessionId = `s${crypto.randomUUID().slice(0, 8)}`
-    process.stderr.write(`[ainix] starting session ${sessionId}\n`)
+    process.stderr.write(`[gait] starting session ${sessionId}\n`)
   }
 
   await runTurn({ sessionId, task, auto, files, workspacePath })

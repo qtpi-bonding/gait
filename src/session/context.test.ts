@@ -9,7 +9,7 @@ let tmpDir: string
 let transcriptPath: string
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ainix-test-"))
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "gait-test-"))
   transcriptPath = path.join(tmpDir, "transcript.jsonl")
 })
 

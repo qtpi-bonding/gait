@@ -122,7 +122,7 @@ export function createWebfetchTool() {
         // Retry with honest UA if blocked by Cloudflare
         const response =
           initial.status === 403 && initial.headers.get("cf-mitigated") === "challenge"
-            ? await fetch(url, { signal: controller.signal, headers: { ...headers, "User-Agent": "ainix" } })
+            ? await fetch(url, { signal: controller.signal, headers: { ...headers, "User-Agent": "gait" } })
             : initial
 
         clearTimeout(timer)

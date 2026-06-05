@@ -1,7 +1,7 @@
 import path from "path"
 import os from "os"
 
-const app = "ainix"
+const app = "gait"
 const data = path.join(os.homedir(), ".local", "share", app)
 
 export namespace Global {

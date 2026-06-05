@@ -32,9 +32,9 @@ export function parseConfig(jsonc: string): Config {
 }
 
 export function loadConfig(workspacePath: string): Config {
-  const configPath = `${workspacePath}/ainix.jsonc`
+  const configPath = `${workspacePath}/gait.jsonc`
   if (!fs.existsSync(configPath)) {
-    throw new Error(`No ainix.jsonc found at ${configPath}. Run 'ainix init' first.`)
+    throw new Error(`No gait.jsonc found at ${configPath}. Run 'gait init' first.`)
   }
   return parseConfig(fs.readFileSync(configPath, "utf-8"))
 }
