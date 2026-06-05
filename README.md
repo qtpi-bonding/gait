@@ -62,6 +62,8 @@ gait run [files...] [--session <id>] [--task <text>] [--auto]
 |---|---|
 | `--session <id>` | Resume or continue a named session. Auto-generated if omitted. |
 | `--task <text>` | User message for this turn. If omitted, continues from where the last turn left off (e.g. after a permission prompt). |
+| `--workspace <path>` | Path to the gait workspace directory. Defaults to cwd. Useful when invoking gait from inside an external tool's worktree (e.g. archegraph). |
+| `--codebase <path>` | Path to the codebase directory. Defaults to `<workspace>/codebase`. Use with `--workspace` to point gait at an archegraph worktree while keeping sessions in the main workspace. |
 | `--auto` | Non-interactive mode — approves all permission requests automatically. |
 | `[files...]` | Paths relative to `codebase/` to inject as context at the start of the turn. |
 

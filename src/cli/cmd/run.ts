@@ -29,6 +29,7 @@ interface RunArgs {
   auto: boolean
   files: string[]
   workspacePath: string
+  codebasePath?: string  // overrides default <workspacePath>/codebase
   isSubagent?: boolean
 }
 
@@ -138,7 +139,7 @@ async function resolveQuestions(txPath: string, sessionId: string): Promise<void
 // Core turn execution — also used by spawn_subagent
 export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
   const { sessionId, task, auto, files, workspacePath, isSubagent = false } = args
-  const codebasePath = path.join(workspacePath, "codebase")
+  const codebasePath = args.codebasePath ?? path.join(workspacePath, "codebase")
   const sessionDir = ensureSessionDir(workspacePath, sessionId)
   const txPath = transcriptPath(workspacePath, sessionId)
 
@@ -377,13 +378,18 @@ export async function runCommand(argv: string[]): Promise<void> {
   let task: string | undefined
   let auto = false
   const files: string[] = []
-  const workspacePath = process.cwd()
+  let workspacePath = process.cwd()
+  let codebasePath: string | undefined
 
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--session" && argv[i + 1]) {
       sessionId = argv[++i]
     } else if (argv[i] === "--task" && argv[i + 1]) {
       task = argv[++i]
+    } else if (argv[i] === "--workspace" && argv[i + 1]) {
+      workspacePath = argv[++i]!
+    } else if (argv[i] === "--codebase" && argv[i + 1]) {
+      codebasePath = argv[++i]!
     } else if (argv[i] === "--auto") {
       auto = true
     } else if (argv[i] && !argv[i]!.startsWith("-")) {
@@ -396,5 +402,5 @@ export async function runCommand(argv: string[]): Promise<void> {
     process.stderr.write(`[gait] starting session ${sessionId}\n`)
   }
 
-  await runTurn({ sessionId, task, auto, files, workspacePath })
+  await runTurn({ sessionId, task, auto, files, workspacePath, codebasePath })
 }

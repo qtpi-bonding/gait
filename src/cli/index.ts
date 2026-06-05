@@ -28,6 +28,8 @@ async function main() {
       console.log("  run [options] [files]   Run one agent turn")
       console.log("    --session <id>          Session ID (auto-generated if omitted)")
       console.log("    --task \"...\"          Task instruction for this turn")
+      console.log("    --workspace <path>      Workspace dir (default: cwd)")
+      console.log("    --codebase <path>       Codebase dir (default: <workspace>/codebase)")
       console.log("    --auto                  Auto-approve all permissions")
       console.log("  auth <add|list|remove>  Manage API credentials")
       console.log("  models [provider]       List available models")
