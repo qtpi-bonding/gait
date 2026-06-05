@@ -1,107 +1,80 @@
 // Ported from OpenCode (MIT) — https://github.com/sst/opencode
 import { tool } from "ai"
 import { z } from "zod"
+import { execSync } from "child_process"
+import fs from "fs"
+import path from "path"
 
-const API_BASE_URL = "https://mcp.exa.ai"
-const API_ENDPOINT = "/mcp"
-const DEFAULT_TIMEOUT = 30_000
-
-interface McpCodeRequest {
-  jsonrpc: string
-  id: number
-  method: string
-  params: {
-    name: string
-    arguments: {
-      query: string
-      tokensNum: number
+function walkAndSearch(dir: string, pattern: RegExp, results: string[], cap: number): void {
+  if (results.length >= cap) return
+  let entries: fs.Dirent[]
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const entry of entries) {
+    if (results.length >= cap) break
+    if (entry.name.startsWith(".") || entry.name === "node_modules") continue
+    const full = path.join(dir, entry.name)
+    if (entry.isDirectory()) {
+      walkAndSearch(full, pattern, results, cap)
+    } else if (entry.isFile()) {
+      let content: string
+      try {
+        content = fs.readFileSync(full, "utf-8")
+      } catch {
+        continue
+      }
+      const lines = content.split("\n")
+      for (let i = 0; i < lines.length && results.length < cap; i++) {
+        if (pattern.test(lines[i]!)) {
+          results.push(`${full}:${i + 1}: ${lines[i]}`)
+        }
+      }
     }
   }
 }
 
-interface McpCodeResponse {
-  jsonrpc: string
-  result: {
-    content: Array<{
-      type: string
-      text: string
-    }>
-  }
-}
-
-export function createCodesearchTool(_codebasePath: string) {
+export function createCodesearchTool(codebasePath: string) {
   return tool({
     description:
-      "Search for code examples, API documentation, and SDK usage on the web via Exa. Use for finding how to use specific libraries or frameworks.",
+      "Search for symbols, function names, class definitions, or patterns in the codebase. Use for finding where something is defined or used. Returns file:line matches.",
     parameters: z.object({
-      query: z
-        .string()
-        .describe(
-          "Search query for APIs, libraries, and SDKs. E.g. 'React useState hook examples', 'Python pandas dataframe filtering', 'Express.js middleware'",
-        ),
-      tokensNum: z
-        .number()
-        .min(1000)
-        .max(50000)
-        .default(5000)
-        .describe(
-          "Number of tokens to return (1000-50000). Default is 5000. Use lower values for focused queries, higher for comprehensive docs.",
-        ),
+      query: z.string().describe("Symbol name, function name, or regex pattern to search for"),
+      path: z.string().optional().describe("Directory to search within (relative to codebase root). Defaults to entire codebase."),
+      case_sensitive: z.boolean().optional().default(false).describe("Case-sensitive search (default false)"),
     }),
-    execute: async ({ query, tokensNum = 5000 }) => {
-      const codeRequest: McpCodeRequest = {
-        jsonrpc: "2.0",
-        id: 1,
-        method: "tools/call",
-        params: {
-          name: "get_code_context_exa",
-          arguments: {
-            query,
-            tokensNum,
-          },
-        },
+    execute: async ({ query, path: searchPath, case_sensitive = false }) => {
+      const searchDir = searchPath ? path.join(codebasePath, searchPath) : codebasePath
+      const MAX_RESULTS = 50
+
+      // Try ripgrep first
+      try {
+        const flags = case_sensitive ? "" : "-i"
+        const output = execSync(
+          `rg ${flags} --line-number --no-heading --max-count=1 "${query.replace(/"/g, '\\"')}" "${searchDir}"`,
+          { encoding: "utf-8", timeout: 15_000 },
+        )
+        const lines = output.trim().split("\n").filter(Boolean).slice(0, MAX_RESULTS)
+        if (lines.length === 0) return "No matches found."
+        const header = lines.length === MAX_RESULTS ? `(first ${MAX_RESULTS} results)\n` : ""
+        return header + lines.join("\n")
+      } catch (err: any) {
+        // exit code 1 means no matches (not an error)
+        if (err?.status === 1) return "No matches found."
+        // rg not installed — fall back to JS walk
       }
 
-      const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT)
-
       try {
-        const response = await fetch(`${API_BASE_URL}${API_ENDPOINT}`, {
-          method: "POST",
-          headers: {
-            accept: "application/json, text/event-stream",
-            "content-type": "application/json",
-          },
-          body: JSON.stringify(codeRequest),
-          signal: controller.signal,
-        })
-
-        clearTimeout(timeout)
-
-        if (!response.ok) {
-          const errorText = await response.text()
-          throw new Error(`Code search error (${response.status}): ${errorText}`)
-        }
-
-        const responseText = await response.text()
-
-        // Parse SSE response
-        for (const line of responseText.split("\n")) {
-          if (line.startsWith("data: ")) {
-            const data: McpCodeResponse = JSON.parse(line.substring(6))
-            if (data.result?.content?.length > 0) {
-              return data.result.content[0]!.text
-            }
-          }
-        }
-
-        return "No code snippets or documentation found. Try a different query, be more specific about the library or programming concept, or check spelling."
-      } catch (error) {
-        clearTimeout(timeout)
-        if (error instanceof Error && error.name === "AbortError") {
-          throw new Error("Code search request timed out after 30 seconds")
-        }
-        throw error
+        const flags = case_sensitive ? "" : "i"
+        const pattern = new RegExp(query, flags)
+        const results: string[] = []
+        walkAndSearch(searchDir, pattern, results, MAX_RESULTS)
+        if (results.length === 0) return "No matches found."
+        return results.join("\n")
+      } catch {
+        return `Invalid search pattern: ${query}`
       }
     },
   })
