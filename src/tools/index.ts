@@ -9,6 +9,7 @@ import { createLsTool } from "./ls"
 import { createCodesearchTool } from "./codesearch"
 import { createWebfetchTool } from "./webfetch"
 import { createQuestionsTool } from "./questions"
+import { createShellTool } from "./shell"
 import type { CoreTool } from "ai"
 
 export function createBuiltinTools(codebasePath: string): Record<string, CoreTool> {
@@ -23,6 +24,7 @@ export function createBuiltinTools(codebasePath: string): Record<string, CoreToo
     ls: createLsTool(codebasePath),
     codesearch: createCodesearchTool(codebasePath),
     webfetch: createWebfetchTool(),
+    shell: createShellTool(codebasePath),
     questions: createQuestionsTool(),
   }
 }
