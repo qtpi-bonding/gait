@@ -73,9 +73,59 @@ describe("reconstructMessages", () => {
     appendEvent(transcriptPath, { type: "tool_result", id: "tc1", output: "r1", ts: 3 })
     appendEvent(transcriptPath, { type: "tool_result", id: "tc2", output: "r2", ts: 4 })
     const msgs = reconstructMessages(transcriptPath)
-    // One assistant message with two tool-calls, one tool message with two results
     expect(msgs).toHaveLength(2)
     expect(Array.isArray(msgs[0]!.content)).toBe(true)
     expect(Array.isArray(msgs[1]!.content)).toBe(true)
+  })
+
+  it("reconstructs a full two-turn conversation correctly", () => {
+    // Turn 1
+    appendEvent(transcriptPath, { type: "user_turn", content: "list files", ts: 1 })
+    appendEvent(transcriptPath, { type: "tool_call", id: "tc1", name: "ls", input: { path: "." }, ts: 2 })
+    appendEvent(transcriptPath, { type: "tool_result", id: "tc1", output: "foo.ts\nbar.ts", ts: 3 })
+    appendEvent(transcriptPath, { type: "assistant_text", content: "I see two files.", ts: 4 })
+    appendEvent(transcriptPath, { type: "turn_complete", usage: { input: 100, output: 20, cache_read: 0, cache_write: 0 }, codebase_hash: "h", codebase_dirty: false, ts: 5 })
+    // Turn 2
+    appendEvent(transcriptPath, { type: "user_turn", content: "read foo.ts", ts: 6 })
+    appendEvent(transcriptPath, { type: "assistant_text", content: "Here is foo.ts.", ts: 7 })
+
+    const msgs = reconstructMessages(transcriptPath)
+    // user_turn, assistant(tool-call), tool(result), assistant_text, user_turn, assistant_text
+    // turn_complete is skipped
+    expect(msgs).toHaveLength(6)
+    expect(msgs[0]).toEqual({ role: "user", content: "list files" })
+    expect(msgs[1]!.role).toBe("assistant") // tool-call step
+    expect(msgs[2]!.role).toBe("tool")
+    expect(msgs[3]).toEqual({ role: "assistant", content: "I see two files." })
+    expect(msgs[4]).toEqual({ role: "user", content: "read foo.ts" })
+    expect(msgs[5]).toEqual({ role: "assistant", content: "Here is foo.ts." })
+  })
+
+  it("reconstructs permissions → permissions_reply flow as message pair", () => {
+    appendEvent(transcriptPath, { type: "user_turn", content: "run tests", ts: 1 })
+    appendEvent(transcriptPath, { type: "permissions", items: [{ id: "p1", cmd: "shell(bun test)", reason: "run test suite" }], ts: 2 })
+    appendEvent(transcriptPath, { type: "permissions_reply", from: "user", items: [{ id: "p1", decision: "approve" }], ts: 3 })
+    appendEvent(transcriptPath, { type: "assistant_text", content: "Tests passed.", ts: 4 })
+
+    const msgs = reconstructMessages(transcriptPath)
+    expect(msgs).toHaveLength(4)
+    expect(msgs[1]!.role).toBe("assistant")
+    expect(typeof msgs[1]!.content === "string" && msgs[1]!.content).toContain("permission request")
+    expect(msgs[2]!.role).toBe("user")
+    expect(typeof msgs[2]!.content === "string" && msgs[2]!.content).toContain("approve")
+    expect(msgs[3]).toEqual({ role: "assistant", content: "Tests passed." })
+  })
+
+  it("reconstructs questions → questions_reply flow", () => {
+    appendEvent(transcriptPath, { type: "user_turn", content: "do the thing", ts: 1 })
+    appendEvent(transcriptPath, { type: "questions", items: [{ id: "q1", content: "Which env?" }], ts: 2 })
+    appendEvent(transcriptPath, { type: "questions_reply", from: "user", items: [{ id: "q1", content: "production" }], ts: 3 })
+    appendEvent(transcriptPath, { type: "user_turn", content: "continue", ts: 4 })
+
+    const msgs = reconstructMessages(transcriptPath)
+    expect(msgs).toHaveLength(4)
+    expect(msgs[1]!.role).toBe("assistant") // questions shown as assistant
+    expect(msgs[2]!.role).toBe("user")      // reply shown as user
+    expect(typeof msgs[2]!.content === "string" && msgs[2]!.content).toContain("production")
   })
 })
