@@ -76,8 +76,12 @@ function isExistingWorktree(workspacePath: string, sessionId: string): boolean {
   try {
     const list = run("git worktree list --porcelain", workspacePath)
     const sessionDir = path.resolve(path.join(workspacePath, "sessions", sessionId))
-    return list.includes(sessionDir)
+    return list.includes(sessionDir) && fs.existsSync(sessionDir)
   } catch { return false }
+}
+
+function branchExists(workspacePath: string, branch: string): boolean {
+  try { run(`git rev-parse --verify ${branch}`, workspacePath); return true } catch { return false }
 }
 
 export function createSessionWorktree(workspacePath: string, sessionId: string): void {
@@ -99,10 +103,17 @@ export function createSessionWorktree(workspacePath: string, sessionId: string):
     }
 
     fs.mkdirSync(path.join(workspacePath, "sessions"), { recursive: true })
-    run(`git worktree add --orphan -b ${branch} sessions/${sessionId}`, workspacePath)
-    fs.writeFileSync(path.join(sessionDir, ".gitignore"), "lock\n", "utf-8")
-    run("git add .gitignore", sessionDir)
-    run(`git commit -m "session(${sessionId}): init"`, sessionDir)
+
+    if (branchExists(workspacePath, branch)) {
+      // Stale worktree recovery: branch exists but dir was deleted — re-attach
+      run(`git worktree add sessions/${sessionId} ${branch}`, workspacePath)
+    } else {
+      // Fresh session: create orphan branch + initial commit
+      run(`git worktree add --orphan -b ${branch} sessions/${sessionId}`, workspacePath)
+      fs.writeFileSync(path.join(sessionDir, ".gitignore"), "lock\n", "utf-8")
+      run("git add .gitignore", sessionDir)
+      run(`git commit -m "session(${sessionId}): init"`, sessionDir)
+    }
   })
 }
 
