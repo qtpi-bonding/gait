@@ -6,7 +6,8 @@ import { loadConfig } from "../../config"
 import { getSDK } from "../../provider/provider"
 import { getModelContextLength } from "../../provider/models"
 import { acquireLock, releaseLock } from "../../lock"
-import { commitSession, getCodebaseHash, isCodebaseDirty } from "../../git"
+import { commitSession, getCodebaseHash, getCodebaseDirtyFiles, createSessionWorktree } from "../../git"
+import { buildSystemPrompt, buildTurnContext } from "../../system_prompt"
 import {
   readEvents, appendEvent, lastEvent, countTurnComplete, lastCompactionIndex, initSession,
   type AnyEvent, type PermissionsEvent, type PermissionsReplyEvent,
@@ -33,12 +34,6 @@ interface RunArgs {
   isSubagent?: boolean
 }
 
-function ensureSessionDir(workspacePath: string, sessionId: string): string {
-  const dir = path.join(workspacePath, "sessions", sessionId)
-  fs.mkdirSync(dir, { recursive: true })
-  return dir
-}
-
 function transcriptPath(workspacePath: string, sessionId: string): string {
   return path.join(workspacePath, "sessions", sessionId, "transcript.jsonl")
 }
@@ -47,11 +42,27 @@ function sessionJsonPath(workspacePath: string, sessionId: string): string {
   return path.join(workspacePath, "sessions", sessionId, "session.json")
 }
 
-function updateSessionJson(workspacePath: string, sessionId: string, model: string, usageDelta: { input: number; output: number; cache_read: number; cache_write: number }): void {
+function readCodebasePath(workspacePath: string, sessionId: string): string | undefined {
   const p = sessionJsonPath(workspacePath, sessionId)
-  let existing: any = { id: sessionId, model, created_at: Date.now(), token_totals: { input: 0, output: 0, cache_read: 0, cache_write: 0 } }
+  if (!fs.existsSync(p)) return undefined
+  try { return JSON.parse(fs.readFileSync(p, "utf-8")).codebase_path } catch { return undefined }
+}
+
+function updateSessionJson(
+  workspacePath: string, sessionId: string,
+  codebasePath: string,
+  usageDelta: { input: number; output: number; cache_read: number; cache_write: number }
+): void {
+  const p = sessionJsonPath(workspacePath, sessionId)
+  let existing: any = {
+    id: sessionId,
+    codebase_path: codebasePath,
+    created_at: Date.now(),
+    token_totals: { input: 0, output: 0, cache_read: 0, cache_write: 0 }
+  }
   if (fs.existsSync(p)) {
     try { existing = JSON.parse(fs.readFileSync(p, "utf-8")) } catch {}
+    // codebase_path is write-once — never overwritten on subsequent turns
   }
   existing.token_totals.input += usageDelta.input
   existing.token_totals.output += usageDelta.output
@@ -139,8 +150,12 @@ async function resolveQuestions(txPath: string, sessionId: string): Promise<void
 // Core turn execution — also used by spawn_subagent
 export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
   const { sessionId, task, auto, files, workspacePath, isSubagent = false } = args
-  const codebasePath = args.codebasePath ?? path.join(workspacePath, "codebase")
-  const sessionDir = ensureSessionDir(workspacePath, sessionId)
+  const codebasePath = args.codebasePath
+    ?? readCodebasePath(workspacePath, sessionId)
+    ?? path.join(workspacePath, "codebase")
+
+  createSessionWorktree(workspacePath, sessionId)
+  const sessionDir = path.join(workspacePath, "sessions", sessionId)
   const txPath = transcriptPath(workspacePath, sessionId)
 
   // 1. Acquire lock
@@ -154,13 +169,17 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
     const model = getSDK(config.model, apiKey)
 
     // 1b. Initialize session transcript on first run
+    const dirtyFiles = getCodebaseDirtyFiles(codebasePath)
+    const codebaseDirty = dirtyFiles.length > 0
+    const codebaseHash = getCodebaseHash(codebasePath)
+
     if (!fs.existsSync(txPath) || fs.readFileSync(txPath, "utf-8").trim() === "") {
       initSession({
         transcriptPath: txPath,
         id: sessionId,
         model: config.model,
-        codebaseHash: getCodebaseHash(path.join(workspacePath, "codebase")),
-        codebaseDirty: isCodebaseDirty(path.join(workspacePath, "codebase")),
+        codebaseHash,
+        codebaseDirty,
       })
     }
 
@@ -186,10 +205,6 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
       appendEvent(txPath, { type: "user_turn", content: task, ts: Date.now() })
     }
 
-    // 5. Git status
-    const codebaseHash = getCodebaseHash(codebasePath)
-    const codebaseDirty = isCodebaseDirty(codebasePath)
-
     // 5b. Token estimation + compaction
     const events = readEvents(txPath)
     const breakpoint = lastCompactionIndex(events)
@@ -213,6 +228,11 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
 
     // 6. Reconstruct messages
     const messages = reconstructMessages(txPath)
+
+    // Prepend turn context (volatile: timestamp + git state) as first user message
+    const turnContextMsg = buildTurnContext({ codebaseHash, dirtyFiles, timestamp: Date.now() })
+    ;(messages as any[]).unshift({ role: "user", content: turnContextMsg })
+
     if (files.length > 0) {
       const fileContents = files.map((f) => {
         const p = path.join(codebasePath, f)
@@ -282,9 +302,12 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
     let totalUsage = { input: 0, output: 0, cache_read: 0, cache_write: 0 }
 
     try {
+      const systemPrompt = buildSystemPrompt({ sessionId, workspacePath, codebasePath })
+
       // No await — streamText returns immediately; streaming happens in the for-await below
       const result = streamText({
         model,
+        system: systemPrompt,
         messages,
         tools: trackedTools,
         maxSteps: 50,
@@ -348,12 +371,12 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
     const turnCompleteEvt: TurnCompleteEvent = {
       type: "turn_complete",
       usage: totalUsage,
-      codebase_hash: getCodebaseHash(codebasePath),
-      codebase_dirty: isCodebaseDirty(codebasePath),
+      codebase_hash: codebaseHash,
+      codebase_dirty: codebaseDirty,
       ts: Date.now(),
     }
     appendEvent(txPath, turnCompleteEvt)
-    updateSessionJson(workspacePath, sessionId, config.model, totalUsage)
+    updateSessionJson(workspacePath, sessionId, codebasePath, totalUsage)
     commitSession(workspacePath, sessionId, `session(${sessionId}): turn ${turnN}`)
 
     if (isSubagent) {
