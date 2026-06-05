@@ -17,6 +17,7 @@ import { reconstructMessages } from "../../session/context"
 import { needsCompaction, compact } from "../../session/compaction"
 import { wrapTools, type PendingPermission } from "../../permissions"
 import { createBuiltinTools, createConfigTools } from "../../tools/index"
+import { Auth } from "../../auth/index"
 import { createSpawnSubagentTool, registerSubagentRunner, type SubagentResult } from "../../tools/spawn_subagent"
 import { getQuestionsSignal, resetQuestionsSignal } from "../../tools/questions"
 import { DualStream } from "../../stream"
@@ -133,7 +134,10 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
 
   try {
     const config = loadConfig(workspacePath)
-    const model = getSDK(config.model)
+    const providerId = config.model.split("/")[0] ?? ""
+    const authEntry = await Auth.get(providerId)
+    const apiKey = authEntry?.type === "api" ? authEntry.key : undefined
+    const model = getSDK(config.model, apiKey)
 
     // 1b. Initialize session transcript on first run
     if (!fs.existsSync(txPath) || fs.readFileSync(txPath, "utf-8").trim() === "") {

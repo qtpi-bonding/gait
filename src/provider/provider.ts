@@ -42,6 +42,7 @@ export const BUNDLED_PROVIDERS: Record<string, (options: any) => LanguageModel> 
 // Each factory takes (apiKey, model) and returns a LanguageModel
 const CUSTOM_LOADERS: Record<string, (apiKey: string, model: string) => LanguageModel> = {
   anthropic: (apiKey, model) => createAnthropic({ apiKey })(model),
+  minimax: (apiKey, model) => createAnthropic({ apiKey, baseURL: "https://api.minimax.io/anthropic/v1" })(model),
   openai: (apiKey, model) => createOpenAI({ apiKey })(model),
   google: (apiKey, model) => createGoogleGenerativeAI({ apiKey })(model),
   "google-vertex": (apiKey, model) => createVertex({ apiKey })(model),
