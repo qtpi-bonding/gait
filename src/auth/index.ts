@@ -7,33 +7,27 @@ import z from "zod"
 export const OAUTH_DUMMY_KEY = "opencode-oauth-dummy-key"
 
 export namespace Auth {
-  export const Oauth = z
-    .object({
-      type: z.literal("oauth"),
-      refresh: z.string(),
-      access: z.string(),
-      expires: z.number(),
-      accountId: z.string().optional(),
-      enterpriseUrl: z.string().optional(),
-    })
-    .meta({ ref: "OAuth" })
+  export const Oauth = z.object({
+    type: z.literal("oauth"),
+    refresh: z.string(),
+    access: z.string(),
+    expires: z.number(),
+    accountId: z.string().optional(),
+    enterpriseUrl: z.string().optional(),
+  })
 
-  export const Api = z
-    .object({
-      type: z.literal("api"),
-      key: z.string(),
-    })
-    .meta({ ref: "ApiAuth" })
+  export const Api = z.object({
+    type: z.literal("api"),
+    key: z.string(),
+  })
 
-  export const WellKnown = z
-    .object({
-      type: z.literal("wellknown"),
-      key: z.string(),
-      token: z.string(),
-    })
-    .meta({ ref: "WellKnownAuth" })
+  export const WellKnown = z.object({
+    type: z.literal("wellknown"),
+    key: z.string(),
+    token: z.string(),
+  })
 
-  export const Info = z.discriminatedUnion("type", [Oauth, Api, WellKnown]).meta({ ref: "Auth" })
+  export const Info = z.discriminatedUnion("type", [Oauth, Api, WellKnown])
   export type Info = z.infer<typeof Info>
 
   const filepath = path.join(Global.Path.data, "auth.json")
