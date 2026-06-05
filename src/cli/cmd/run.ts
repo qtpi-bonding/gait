@@ -8,7 +8,7 @@ import { getModelContextLength } from "../../provider/models"
 import { acquireLock, releaseLock } from "../../lock"
 import { commitSession, getCodebaseHash, isCodebaseDirty } from "../../git"
 import {
-  readEvents, appendEvent, lastEvent, countTurnComplete, lastCompactionIndex,
+  readEvents, appendEvent, lastEvent, countTurnComplete, lastCompactionIndex, initSession,
   type AnyEvent, type PermissionsEvent, type PermissionsReplyEvent,
   type QuestionsEvent, type TurnCompleteEvent, type CompactionEvent,
   type SubagentSpawnedEvent, type SubagentCompleteEvent,
@@ -134,6 +134,17 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
   try {
     const config = loadConfig(workspacePath)
     const model = getSDK(config.model)
+
+    // 1b. Initialize session transcript on first run
+    if (!fs.existsSync(txPath) || fs.readFileSync(txPath, "utf-8").trim() === "") {
+      initSession({
+        transcriptPath: txPath,
+        id: sessionId,
+        model: config.model,
+        codebaseHash: getCodebaseHash(path.join(workspacePath, "codebase")),
+        codebaseDirty: isCodebaseDirty(path.join(workspacePath, "codebase")),
+      })
+    }
 
     // 2. Handle pending events from last turn
     const lastEvt = lastEvent(txPath)
