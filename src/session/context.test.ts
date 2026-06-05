@@ -128,4 +128,67 @@ describe("reconstructMessages", () => {
     expect(msgs[2]!.role).toBe("user")      // reply shown as user
     expect(typeof msgs[2]!.content === "string" && msgs[2]!.content).toContain("production")
   })
+
+  it("reconstructs multiple questions with all answers in reply message", () => {
+    appendEvent(transcriptPath, { type: "user_turn", content: "do the thing", ts: 1 })
+    appendEvent(transcriptPath, {
+      type: "questions",
+      items: [
+        { id: "q1", content: "Which env?" },
+        { id: "q2", content: "Run tests first?" },
+        { id: "q3", content: "Branch name?" },
+      ],
+      ts: 2,
+    })
+    appendEvent(transcriptPath, {
+      type: "questions_reply",
+      from: "user",
+      items: [
+        { id: "q1", content: "production" },
+        { id: "q2", content: "yes" },
+        { id: "q3", content: "feat/new-api" },
+      ],
+      ts: 3,
+    })
+
+    const msgs = reconstructMessages(transcriptPath)
+    expect(msgs).toHaveLength(3) // user_turn, assistant(questions), user(replies)
+    const replyContent = msgs[2]!.content as string
+    expect(replyContent).toContain("production")
+    expect(replyContent).toContain("yes")
+    expect(replyContent).toContain("feat/new-api")
+  })
+
+  it("reconstructs multiple permissions with mixed decisions in reply", () => {
+    appendEvent(transcriptPath, { type: "user_turn", content: "run everything", ts: 1 })
+    appendEvent(transcriptPath, {
+      type: "permissions",
+      items: [
+        { id: "p1", cmd: "shell(bun test)", reason: "run tests" },
+        { id: "p2", cmd: "shell(rm -rf dist)", reason: "clean build" },
+        { id: "p3", cmd: "write(config.json)", reason: "update config" },
+      ],
+      ts: 2,
+    })
+    appendEvent(transcriptPath, {
+      type: "permissions_reply",
+      from: "user",
+      items: [
+        { id: "p1", decision: "approve" },
+        { id: "p2", decision: "deny" },
+        { id: "p3", decision: "approve" },
+      ],
+      ts: 3,
+    })
+
+    const msgs = reconstructMessages(transcriptPath)
+    expect(msgs).toHaveLength(3) // user_turn, assistant(permissions), user(reply)
+    const requestContent = msgs[1]!.content as string
+    expect(requestContent).toContain("bun test")
+    expect(requestContent).toContain("rm -rf dist")
+    expect(requestContent).toContain("write(config.json)")
+    const replyContent = msgs[2]!.content as string
+    expect(replyContent).toContain("approve")
+    expect(replyContent).toContain("deny")
+  })
 })

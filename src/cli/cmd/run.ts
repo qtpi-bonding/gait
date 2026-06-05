@@ -90,13 +90,19 @@ async function resolvePermissions(
     return
   }
 
-  // Interactive prompt
+  // Show all requests first
+  process.stdout.write("\nPermission requests:\n")
+  for (let i = 0; i < pending.length; i++) {
+    const p = pending[i]!
+    process.stdout.write(`  [${i + 1}] ${p.name}(${JSON.stringify(p.input)})  — ${p.reason}\n`)
+  }
   process.stdout.write("\n")
+
+  // Then collect answers
   const replyItems: PermissionsReplyEvent["items"] = []
   for (let i = 0; i < pending.length; i++) {
     const p = pending[i]!
-    process.stdout.write(`[${i + 1}] y/n  ${p.name}(${JSON.stringify(p.input)})  — ${p.reason}\n`)
-    const answer = await promptLine(`  > `)
+    const answer = await promptLine(`[${i + 1}] y/n > `)
     if (answer === "y" || answer === "yes") {
       replyItems.push({ id: p.id, decision: "approve" })
     } else if (answer === "n" || answer === "no" || answer === "") {
@@ -113,11 +119,18 @@ async function resolveQuestions(txPath: string, sessionId: string): Promise<void
   const last = events[events.length - 1]
   if (!last || last.type !== "questions") return
 
+  // Show all questions first
+  process.stdout.write("\nQuestions:\n")
+  for (let i = 0; i < last.items.length; i++) {
+    process.stdout.write(`  [${i + 1}] ${last.items[i]!.content}\n`)
+  }
   process.stdout.write("\n")
+
+  // Then collect answers
   const replyItems: Array<{ id: string; content: string }> = []
-  for (const q of last.items) {
-    const answer = await promptLine(`${q.content}\n> `)
-    replyItems.push({ id: q.id, content: answer })
+  for (let i = 0; i < last.items.length; i++) {
+    const answer = await promptLine(`[${i + 1}] > `)
+    replyItems.push({ id: last.items[i]!.id, content: answer })
   }
   appendEvent(txPath, { type: "questions_reply", from: "user", items: replyItems, ts: Date.now() })
 }
