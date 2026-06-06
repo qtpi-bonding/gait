@@ -315,7 +315,9 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
     })
 
     const spawnSubagentTool = createSpawnSubagentTool(sessionId, workspacePath)
-    const allToolsWithSubagent = { ...allTools, spawn_subagent: spawnSubagentTool }
+    const allToolsWithSubagent = isSubagent
+      ? allTools
+      : { ...allTools, spawn_subagent: spawnSubagentTool }
 
     // 8. Stream LLM
     const stream = new DualStream()
@@ -402,9 +404,8 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
     if (clarifySignal) {
       appendEvent(txPath, { type: "clarify", items: clarifySignal.items, ts: Date.now() })
       if (isSubagent) {
-        appendEvent(txPath, { type: "error", message: "subagents cannot ask clarifying questions in v1", phase: "tool", ts: Date.now() })
-        commitSession(workspacePath, sessionId, `session(${sessionId}): error`)
-        return { status: "error", result: "subagents cannot ask clarifying questions in v1" }
+        commitSession(workspacePath, sessionId, `session(${sessionId}): clarify`)
+        return { status: "needs_clarification", result: JSON.stringify(clarifySignal.items) }
       }
       commitSession(workspacePath, sessionId, `session(${sessionId}): questions`)
       process.exit(0)
@@ -413,15 +414,19 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
     if (informSignal) {
       appendEvent(txPath, { type: "inform", items: informSignal.items, ts: Date.now() })
       if (isSubagent) {
-        appendEvent(txPath, { type: "error", message: "subagents cannot share information in v1", phase: "tool", ts: Date.now() })
-        commitSession(workspacePath, sessionId, `session(${sessionId}): error`)
-        return { status: "error", result: "subagents cannot share information in v1" }
+        commitSession(workspacePath, sessionId, `session(${sessionId}): inform`)
+        return { status: "needs_inform", result: JSON.stringify(informSignal.items) }
       }
       commitSession(workspacePath, sessionId, `session(${sessionId}): inform`)
       process.exit(0)
     }
 
     if (clarifyConvergenceSignal) {
+      if (isSubagent) {
+        appendEvent(txPath, { type: "clarify_convergence", items: clarifyConvergenceSignal.items, ts: Date.now() })
+        commitSession(workspacePath, sessionId, `session(${sessionId}): clarify`)
+        return { status: "needs_clarification", result: JSON.stringify(clarifyConvergenceSignal.items) }
+      }
       const convItems: ClarifyConvergenceEvent["items"] = []
       for (const item of clarifyConvergenceSignal.items) {
         process.stdout.write(`\nUnderstanding [${item.id}]: ${item.proposal}\n`)
@@ -431,16 +436,17 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
         convItems.push({ id: item.id, proposal: item.proposal, response: trimmed, consistent })
       }
       appendEvent(txPath, { type: "clarify_convergence", items: convItems, ts: Date.now() })
-      if (isSubagent) {
-        appendEvent(txPath, { type: "error", message: "subagents cannot run convergence in v1", phase: "tool", ts: Date.now() })
-        commitSession(workspacePath, sessionId, `session(${sessionId}): error`)
-        return { status: "error", result: "subagents cannot run convergence in v1" }
-      }
       commitSession(workspacePath, sessionId, `session(${sessionId}): clarify_convergence`)
       process.exit(0)
     }
 
     if (informConvergenceSignal) {
+      if (isSubagent) {
+        appendEvent(txPath, { type: "inform_convergence", items: informConvergenceSignal.items, ts: Date.now() })
+        commitSession(workspacePath, sessionId, `session(${sessionId}): inform`)
+        return { status: "needs_inform", result: JSON.stringify(informConvergenceSignal.items) }
+      }
+
       // Look up most recent proposal per id from prior inform_convergence events
       // (needed when the LLM calls without a proposal — second call shape)
       const priorEvents = readEvents(txPath)
@@ -470,11 +476,6 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
         }
       }
       appendEvent(txPath, { type: "inform_convergence", items: convItems, ts: Date.now() })
-      if (isSubagent) {
-        appendEvent(txPath, { type: "error", message: "subagents cannot run convergence in v1", phase: "tool", ts: Date.now() })
-        commitSession(workspacePath, sessionId, `session(${sessionId}): error`)
-        return { status: "error", result: "subagents cannot run convergence in v1" }
-      }
       commitSession(workspacePath, sessionId, `session(${sessionId}): inform_convergence`)
       process.exit(0)
     }

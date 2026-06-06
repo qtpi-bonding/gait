@@ -13,7 +13,7 @@ export interface SubagentRunOpts {
 }
 
 export interface SubagentResult {
-  status: "done" | "error"
+  status: "done" | "error" | "needs_clarification" | "needs_inform"
   result: string
 }
 

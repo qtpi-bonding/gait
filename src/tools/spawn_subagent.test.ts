@@ -53,6 +53,26 @@ describe("createSpawnSubagentTool", () => {
     expect(parsed.result).toBe("something broke")
   })
 
+  it("propagates needs_clarification status from runner", async () => {
+    const items = [{ id: "c1", content: "Which db?", why: "schema", kind: "ought" }]
+    registerSubagentRunner(async () => ({ status: "needs_clarification", result: JSON.stringify(items) }))
+    const tool = createSpawnSubagentTool("parent-s1", "/workspace")
+    const raw = await tool.execute!({ task: "build schema", context_files: [] }, {} as any)
+    const parsed = JSON.parse(raw as string)
+    expect(parsed.status).toBe("needs_clarification")
+    expect(JSON.parse(parsed.result)[0].content).toBe("Which db?")
+  })
+
+  it("propagates needs_inform status from runner", async () => {
+    const items = [{ id: "i1", content: "HNSW is a graph-based ANN algorithm" }]
+    registerSubagentRunner(async () => ({ status: "needs_inform", result: JSON.stringify(items) }))
+    const tool = createSpawnSubagentTool("parent-s1", "/workspace")
+    const raw = await tool.execute!({ task: "explain search", context_files: [] }, {} as any)
+    const parsed = JSON.parse(raw as string)
+    expect(parsed.status).toBe("needs_inform")
+    expect(JSON.parse(parsed.result)[0].id).toBe("i1")
+  })
+
   it("generates a unique session_id per call", async () => {
     registerSubagentRunner(async () => ({ status: "done", result: "" }))
     const tool = createSpawnSubagentTool("parent-s1", "/workspace")
