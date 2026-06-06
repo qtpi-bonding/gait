@@ -1,6 +1,6 @@
 # gait
 
-Turn-based AI coding agent. Each session is a git commit trail. State lives in JSONL transcripts. No daemon, no server, no UI.
+Turn-based AI coding agent. No daemon, no server, no UI. State lives in append-only JSONL transcripts committed to git after every turn.
 
 The name is a backronym: **g**AI**t**. Also just a word for the way something moves.
 
@@ -20,20 +20,20 @@ cp dist/gait /usr/local/bin/gait
 ## Quickstart
 
 ```bash
-# 1. Initialize a workspace (adds gait.jsonc, sessions/, .gitignore)
-cd my-project
+# 1. Initialize a workspace
+mkdir my-workspace && cd my-workspace
 gait init
 
 # 2. Add an API key
 gait auth add anthropic
 
 # 3. Run a task
-gait run --task "add a health check endpoint to src/server.ts"
+gait run --codebase /path/to/your/repo --task "add a health check endpoint to src/server.ts"
 
 # 4. Continue the same session
 gait run --session s1a2b3c4
 
-# 5. Run non-interactively (auto-approve all permissions)
+# 5. Non-interactive (auto-approve all permissions)
 gait run --task "run the test suite and fix any failures" --auto
 ```
 
@@ -41,33 +41,54 @@ gait run --task "run the test suite and fix any failures" --auto
 
 ## Commands
 
-### `gait init`
+### `gait init [<repo-url>]`
 
 Sets up the current directory as a gait workspace:
 
-- `gait.jsonc` — config file
-- `sessions/` — per-session transcript and session.json
-- `.gitignore` — excludes lock files
-- Optionally adds a `codebase/` git submodule pointing at another repo
+- `gait.jsonc` — config
+- `sessions/` — per-session transcripts and metadata
+- `AGENTS.md` — system prompt for the agent (edit to add project conventions)
+- `.gitignore` — excludes lock files and sessions from workspace commits
+
+Optionally takes a repo URL to add as a `codebase/` git submodule. Without one, point at a codebase via `gait run --codebase`.
 
 ### `gait run`
 
 Runs one turn of the agent.
 
 ```
-gait run [files...] [--session <id>] [--task <text>] [--auto]
+gait run [--session <id>] [--task "..."] [--workspace <path>] [--codebase <path>]
+         [--agent <name>] [--system-prompt "..."] [--auto] [files...]
 ```
 
 | Flag | Description |
 |---|---|
-| `--session <id>` | Resume or continue a named session. Auto-generated if omitted. |
-| `--task <text>` | User message for this turn. If omitted, continues from where the last turn left off (e.g. after a permission prompt). |
-| `--workspace <path>` | Path to the gait workspace directory. Defaults to cwd. Useful when invoking gait from inside an external tool's worktree (e.g. archegraph). |
-| `--codebase <path>` | Path to the codebase directory. Defaults to `<workspace>/codebase`. Use with `--workspace` to point gait at an archegraph worktree while keeping sessions in the main workspace. |
-| `--auto` | Non-interactive mode — approves all permission requests automatically. |
-| `[files...]` | Paths relative to `codebase/` to inject as context at the start of the turn. |
+| `--session <id>` | Resume a session. Auto-generated if omitted. |
+| `--task "..."` | User message for this turn. Omit to continue a paused session (e.g. after a permission prompt or clarifying question). |
+| `--workspace <path>` | Workspace directory. Defaults to cwd. |
+| `--codebase <path>` | Codebase directory. Defaults to `<workspace>/codebase`. |
+| `--agent <name>` | Load system prompt from `agents/<name>.md`. Persisted to the session on first use. |
+| `--system-prompt "..."` | Inline system prompt. Overrides `--agent`. Persisted on first use. |
+| `--auto` | Auto-approve all permission requests (non-interactive). |
+| `[files...]` | Paths relative to `codebase/` injected as context at turn start. |
 
-Sessions persist across turns. Each completed turn is committed to git (`session(<id>): turn N`). Permissions and questions that interrupt a turn are also committed so state is never lost.
+Each completed turn is committed to the session's git branch. Interrupted turns (permissions, questions) are also committed — state is never lost.
+
+### `gait finish <session-id>`
+
+Merges a session branch into `main` and removes the worktree. Call this when a session is done and you want its history folded into the workspace's main branch.
+
+```bash
+gait finish s1a2b3c4 --workspace /path/to/workspace
+```
+
+### `gait sessions`
+
+Lists active (unmerged) sessions.
+
+```bash
+gait sessions --workspace /path/to/workspace
+```
 
 ### `gait auth`
 
@@ -77,7 +98,7 @@ gait auth add <provider>    # prompt for API key and save
 gait auth remove <provider> # delete stored key
 ```
 
-Keys are stored at `~/.local/share/gait/auth.json`.
+Keys are stored at `~/.local/share/gait/auth.json`. You can also set them via environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `MINIMAX_API_KEY`, etc.).
 
 ### `gait models`
 
@@ -94,24 +115,33 @@ JSONC (JSON with `//` and `/* */` comments).
 
 ```jsonc
 {
-  "model": "anthropic/claude-opus-4-5",
+  // Model to use. Format: "provider/model-id"
+  "model": "anthropic/claude-sonnet-4-6",
 
-  // Tools the agent can use without asking for permission.
-  // Any tool not listed here triggers a permission prompt.
-  "allow": ["read", "glob", "grep", "ls", "codesearch", "webfetch"],
+  // Tools the agent can use without a permission prompt.
+  // Empty = everything requires approval. Add tools you trust.
+  "allow": ["read", "glob", "grep", "ls"],
 
-  // Custom shell tools exposed to the agent.
+  // Custom shell tools exposed to the agent as callable functions.
   "tools": [
     {
       "name": "test",
       "description": "Run the test suite",
       "cmd": "bun test",
-      "cwd": "codebase"   // or "workspace"
+      "cwd": "codebase"   // "codebase" or "workspace"
     }
   ],
 
-  // Compact the session context when this fraction of the context window is used.
-  "compaction_threshold": 0.8
+  // Compact the session when this fraction of the context window is used (default 0.8).
+  "compaction_threshold": 0.8,
+
+  // MCP servers to connect to.
+  "mcpServers": {
+    "my-server": {
+      "command": "npx",
+      "args": ["-y", "@my-org/mcp-server"]
+    }
+  }
 }
 ```
 
@@ -122,20 +152,101 @@ JSONC (JSON with `//` and `/* */` comments).
 | Tool | Description |
 |---|---|
 | `read` | Read a file |
-| `write` | Write a file |
+| `write` | Write a file (creates or overwrites) |
 | `edit` | Replace a string in a file |
-| `multiedit` | Multiple edits in one call |
+| `multiedit` | Multiple find-replace edits in one call |
 | `apply_patch` | Apply a unified diff |
 | `glob` | Glob file paths |
-| `grep` | Grep for a pattern |
-| `ls` | List directory |
+| `grep` | Search file contents with a regex |
+| `ls` | List a directory |
 | `codesearch` | Semantic code search |
 | `webfetch` | Fetch a URL |
 | `shell` | Run a shell command |
-| `questions` | Ask the user clarifying questions (pauses the turn) |
-| `spawn_subagent` | Delegate a task to a child session |
+| `clarify` | Ask the user questions (pauses the turn — see below) |
+| `inform` | Teach the user something (pauses the turn — see below) |
+| `spawn_agent` | Delegate a subtask to a new child session |
+| `list_agents` | List active child sessions and their status |
 
-All tool calls go through the permission gate. Tools in `allow` run immediately; others prompt the user (or auto-approve with `--auto`).
+All tools go through the permission gate. Tools in `allow` run immediately; others prompt the user (or auto-approve with `--auto`).
+
+---
+
+## Clarify and Inform
+
+These are gait's two structured communication tools. Both pause the current turn and require a follow-up `gait run` to continue.
+
+### `clarify` — agent asks the user questions
+
+The agent calls `clarify` when it needs information only the user can provide before it can proceed. Questions are tagged by kind:
+
+- `is` — factual gap ("which database engine does this use?")
+- `ought` — value judgment ("should this be postgres or sqlite?")
+
+Each question includes a `why` field explaining the cost of skipping, and optional `links` to other questions that depend on or relate to it.
+
+After the user answers (next `gait run`), the agent proposes its understanding back via `clarify_convergence`. The user confirms or corrects. Only then does the agent proceed — this prevents silent misunderstandings from propagating into code.
+
+```
+Turn 1:  agent calls clarify(items)
+         → turn pauses, questions printed, committed to session branch
+
+Turn 2:  gait run (no --task needed)
+         → user answers each question
+         → agent proposes understanding via clarify_convergence
+
+Turn 3:  gait run
+         → user confirms or corrects the understanding
+         → agent proceeds with the task
+```
+
+### `inform` — agent teaches the user something
+
+The agent calls `inform` when it has context the user needs — an explanation, a decision rationale, or a summary of something it found. After conveying the information, it asks the user to paraphrase their understanding back via `inform_convergence`. If the paraphrase is wrong, the agent corrects and tries again.
+
+```
+Turn 1:  agent calls inform(items)
+         → turn pauses, information printed
+
+Turn 2:  gait run
+         → user paraphrases their understanding
+         → agent confirms or corrects via inform_convergence
+```
+
+Both tools record their full exchange in the transcript so future turns have complete context.
+
+---
+
+## Subagents
+
+The agent can spawn child sessions with `spawn_agent`:
+
+```
+spawn_agent(task="...", agent="optional-agent-name", context_files=[...])
+→ returns { session_id: "s..." }
+```
+
+The child session gets its own branch (`session/<id>`) and runs independently. The parent can check on children via `list_agents`, which returns each session's status (`running`, `clarify`, `inform`, `permissions`, `error`, `done`).
+
+When a child session needs to clarify or inform, it bubbles the request up to the parent session rather than pausing inline. The parent surfaces the question/information to the user on its next turn.
+
+---
+
+## Permissions
+
+Tools not in `allow` are blocked and queued as a permission request. gait prints each pending tool call and waits for approval before continuing:
+
+```
+Permission requests:
+  [1] write({"filePath":"src/server.ts",...})  — LLM requested write
+
+[1] y/n >
+```
+
+- `y` / `yes` — approve and run
+- `n` / `no` — deny
+- anything else — treated as an instruction appended to the tool result
+
+With `--auto`, all permission requests are approved without prompting. Useful in scripted or trusted environments. The approval is recorded in the transcript.
 
 ---
 
@@ -143,15 +254,15 @@ All tool calls go through the permission gate. Tools in `allow` run immediately;
 
 Format: `provider/model-id`
 
-| Provider | Example |
+| Provider | Example model |
 |---|---|
-| `anthropic` | `anthropic/claude-opus-4-5` |
+| `anthropic` | `anthropic/claude-sonnet-4-6` |
 | `openai` | `openai/gpt-4o` |
 | `google` | `google/gemini-2.0-flash` |
+| `minimax` | `minimax/MiniMax-M3` |
 | `groq` | `groq/llama-3.3-70b-versatile` |
 | `mistral` | `mistral/mistral-large-latest` |
 | `openrouter` | `openrouter/anthropic/claude-3-5-sonnet` |
-| `minimax` | `minimax/MiniMax-M3` |
 | `xai` | `xai/grok-3` |
 | `perplexity` | `perplexity/sonar-pro` |
 | `cerebras` | `cerebras/llama3.1-70b` |
@@ -161,21 +272,44 @@ Format: `provider/model-id`
 | `amazon-bedrock` | `amazon-bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0` |
 | `azure` | `azure/gpt-4o` |
 
-API keys can be set via `gait auth add <provider>` or environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.).
-
 ---
 
 ## How It Works
 
-Each session is a directory at `sessions/<id>/`:
+### Workspace vs codebase
 
-- `transcript.jsonl` — append-only event log (user turns, tool calls, results, permissions, compactions)
-- `session.json` — cumulative token usage
-- `lock` — PID file; prevents concurrent access to the same session
+The workspace (`gait.jsonc`, `sessions/`, `AGENTS.md`) is separate from the codebase (the repo the agent edits). This lets you keep session history in one place while pointing the agent at any repo. The workspace is itself a git repo.
 
-When a turn completes, gait commits everything to git. If the context window fills up, gait compacts the transcript using the LLM itself and continues.
+### Sessions are git branches
 
-Subagents spawned via `spawn_subagent` get their own session ID (`<parent>-sub-<8chars>`) and run the same turn loop recursively.
+Each session gets its own branch (`session/<id>`) off `main`, in a git worktree at `sessions/<id>/`. Every completed turn, permission prompt, and question is committed to that branch. When you're done, `gait finish` merges it back to `main`.
+
+### Transcripts
+
+`sessions/<id>/transcript.jsonl` is the source of truth — an append-only log of every event in a session:
+
+| Event type | When it's written |
+|---|---|
+| `session_start` | First turn |
+| `user_turn` | Each `--task` |
+| `assistant_text` | Agent text output |
+| `tool_call` / `tool_result` | Each allowed tool execution |
+| `permissions` / `permissions_reply` | Permission requests and responses |
+| `clarify` / `clarify_reply` / `clarify_convergence` | Full clarify exchange |
+| `inform` / `inform_reply` / `inform_convergence` | Full inform exchange |
+| `compaction` | When context is summarized |
+| `turn_complete` | End of each successful turn |
+| `error` | On failure |
+
+Transcripts are reconstructed into LLM messages at the start of each turn, so the agent has full history.
+
+### Compaction
+
+When the transcript approaches the model's context window (configurable via `compaction_threshold`, default 80%), gait compacts it: the LLM summarizes the session history into a single message, which replaces the raw events from that window. The agent continues without losing meaningful context.
+
+### MCP servers
+
+`mcpServers` in `gait.jsonc` connects to any MCP-compatible tool server. MCP tools are available to the agent alongside built-ins and config tools, subject to the same permission gate.
 
 ---
 
@@ -183,6 +317,6 @@ Subagents spawned via `spawn_subagent` get their own session ID (`<parent>-sub-<
 
 ```bash
 bun test          # run tests
-bun run dev       # run CLI without compiling
+bun run dev       # run CLI without building
 bun run build     # compile to dist/gait
 ```
