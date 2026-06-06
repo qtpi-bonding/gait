@@ -1,15 +1,92 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use crate::types::Tool;
+use schemars::JsonSchema;
+use serde::Deserialize;
+use serde_json::Value;
 
-pub struct WriteTool { codebase_path: Arc<PathBuf> }
-impl WriteTool {
-    pub fn new(codebase_path: PathBuf) -> Self { Self { codebase_path: Arc::new(codebase_path) } }
+#[derive(Deserialize, JsonSchema)]
+struct WriteParams {
+    /// Path to the file to write (relative to codebase root, or absolute)
+    file_path: String,
+    /// The content to write to the file
+    content: String,
 }
+
+pub struct WriteTool {
+    codebase_path: Arc<PathBuf>,
+    parameters: Value,
+}
+
+impl WriteTool {
+    pub fn new(codebase_path: PathBuf) -> Self {
+        let parameters = crate::tools::make_schema::<WriteParams>();
+        Self { codebase_path: Arc::new(codebase_path), parameters }
+    }
+}
+
 #[async_trait::async_trait]
 impl Tool for WriteTool {
     fn name(&self) -> &str { "write" }
-    fn description(&self) -> &str { "stub" }
-    fn parameters(&self) -> &serde_json::Value { todo!() }
-    async fn execute(&self, _args: serde_json::Value) -> anyhow::Result<serde_json::Value> { todo!() }
+    fn description(&self) -> &str {
+        "Write content to a file. Creates the file (and parent directories) if they don't exist. Paths are relative to the codebase root."
+    }
+    fn parameters(&self) -> &Value { &self.parameters }
+    async fn execute(&self, args: Value) -> anyhow::Result<Value> {
+        let params: WriteParams = serde_json::from_value(args)?;
+        let resolved = if std::path::Path::new(&params.file_path).is_absolute() {
+            PathBuf::from(&params.file_path)
+        } else {
+            self.codebase_path.join(&params.file_path)
+        };
+        if let Some(parent) = resolved.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&resolved, &params.content)?;
+        let bytes = params.content.len();
+        Ok(Value::String(format!("Wrote {} bytes to {}", bytes, resolved.display())))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn writes_file_content() {
+        let dir = TempDir::new().unwrap();
+        let tool = WriteTool::new(dir.path().to_path_buf());
+        tool.execute(serde_json::json!({
+            "file_path": "output.txt",
+            "content": "hello world"
+        })).await.unwrap();
+        let content = std::fs::read_to_string(dir.path().join("output.txt")).unwrap();
+        assert_eq!(content, "hello world");
+    }
+
+    #[tokio::test]
+    async fn creates_parent_directories() {
+        let dir = TempDir::new().unwrap();
+        let tool = WriteTool::new(dir.path().to_path_buf());
+        tool.execute(serde_json::json!({
+            "file_path": "sub/nested/file.txt",
+            "content": "deep"
+        })).await.unwrap();
+        let content = std::fs::read_to_string(dir.path().join("sub/nested/file.txt")).unwrap();
+        assert_eq!(content, "deep");
+    }
+
+    #[tokio::test]
+    async fn overwrites_existing_file() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("existing.txt"), "old").unwrap();
+        let tool = WriteTool::new(dir.path().to_path_buf());
+        tool.execute(serde_json::json!({
+            "file_path": "existing.txt",
+            "content": "new"
+        })).await.unwrap();
+        let content = std::fs::read_to_string(dir.path().join("existing.txt")).unwrap();
+        assert_eq!(content, "new");
+    }
 }
