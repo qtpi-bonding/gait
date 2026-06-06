@@ -8,16 +8,25 @@ const ConfigDefinedTool = z.object({
   cwd: z.enum(["codebase", "workspace"]).default("codebase"),
 })
 
+const McpServerConfig = z.object({
+  name: z.string(),
+  cmd: z.string(),
+  args: z.array(z.string()).default([]),
+  env: z.record(z.string()).default({}),
+})
+
 const ConfigSchema = z.object({
   model: z.string(),
   allow: z.array(z.string()).default([]),
   tools: z.array(ConfigDefinedTool).default([]),
+  mcpServers: z.array(McpServerConfig).default([]),
   provider: z.record(z.unknown()).default({}),
   compaction_threshold: z.number().min(0.1).max(1.0).default(0.8),
 })
 
 export type Config = z.infer<typeof ConfigSchema>
 export type ConfigDefinedTool = z.infer<typeof ConfigDefinedTool>
+export type McpServerConfig = z.infer<typeof McpServerConfig>
 
 // Strip // line comments and /* block comments */ from JSONC before parsing
 function stripComments(jsonc: string): string {
