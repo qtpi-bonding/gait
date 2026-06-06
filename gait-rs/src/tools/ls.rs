@@ -1,0 +1,15 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+use crate::types::Tool;
+
+pub struct LsTool { codebase_path: Arc<PathBuf> }
+impl LsTool {
+    pub fn new(codebase_path: PathBuf) -> Self { Self { codebase_path: Arc::new(codebase_path) } }
+}
+#[async_trait::async_trait]
+impl Tool for LsTool {
+    fn name(&self) -> &str { "ls" }
+    fn description(&self) -> &str { "stub" }
+    fn parameters(&self) -> &serde_json::Value { todo!() }
+    async fn execute(&self, _args: serde_json::Value) -> anyhow::Result<serde_json::Value> { todo!() }
+}
