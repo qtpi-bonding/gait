@@ -77,16 +77,65 @@ export function reconstructMessages(transcriptPath: string): CoreMessage[] {
       continue
     }
 
-    if (e.type === "questions") {
-      const questionText = e.items.map((q) => `${q.id}: ${q.content}`).join("\n")
-      messages.push({ role: "assistant", content: `questions:\n${questionText}` })
+    if (e.type === "clarify") {
+      const items = e.items.map((q) => {
+        const lines = [`clarify (${q.kind}): ${q.content}`, `why: ${q.why}`]
+        if (q.links && q.links.length > 0) {
+          const linkText = q.links.map((l) => `${l.relation} ${l.target}`).join(", ")
+          lines.push(`links: ${linkText}`)
+        }
+        return lines.join("\n")
+      })
+      messages.push({ role: "assistant", content: items.join("\n\n") })
       i++
       continue
     }
 
-    if (e.type === "questions_reply") {
+    if (e.type === "clarify_reply") {
+      const replyText = e.items.map((q) => {
+        const base = `${q.id}: ${q.content}`
+        return q.reasoning ? `${base}\nreason: ${q.reasoning}` : base
+      }).join("\n")
+      messages.push({ role: "user", content: replyText })
+      i++
+      continue
+    }
+
+    if (e.type === "clarify_convergence") {
+      for (const item of e.items) {
+        messages.push({ role: "assistant", content: `[proposal] ${item.proposal}` })
+        if (item.response !== undefined) {
+          messages.push({ role: "user", content: `[response] ${item.response}` })
+        }
+      }
+      i++
+      continue
+    }
+
+    if (e.type === "inform") {
+      const items = e.items.map((q) => {
+        const base = `inform: ${q.content}`
+        return q.context ? `${base}\ncontext: ${q.context}` : base
+      })
+      messages.push({ role: "assistant", content: items.join("\n\n") })
+      i++
+      continue
+    }
+
+    if (e.type === "inform_reply") {
       const replyText = e.items.map((q) => `${q.id}: ${q.content}`).join("\n")
-      messages.push({ role: "user", content: `[from: ${e.from}] replies:\n${replyText}` })
+      messages.push({ role: "assistant", content: replyText })
+      i++
+      continue
+    }
+
+    if (e.type === "inform_convergence") {
+      for (const item of e.items) {
+        messages.push({ role: "user", content: `[understanding] ${item.proposal}` })
+        if (item.response !== undefined) {
+          messages.push({ role: "assistant", content: `[correction] ${item.response}` })
+        }
+      }
       i++
       continue
     }

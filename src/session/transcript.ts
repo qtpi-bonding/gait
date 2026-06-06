@@ -51,16 +51,74 @@ export const ErrorEvent = base.extend({
   phase: z.enum(["llm", "tool", "git", "init"]),
 })
 
-export const QuestionItem = z.object({ id: z.string(), content: z.string() })
-export const QuestionsEvent = base.extend({
-  type: z.literal("questions"),
-  items: z.array(QuestionItem),
+export const LinkRef = z.object({
+  target: z.string(),
+  relation: z.enum(["depends_on", "related_to", "part_of"]),
+})
+export const LinkRefSchema = LinkRef
+
+export const ClarifyItem = z.object({
+  id: z.string(),
+  content: z.string(),
+  why: z.string(),
+  kind: z.enum(["is", "ought"]),
+  links: z.array(LinkRef).optional(),
+})
+export const ClarifyEvent = base.extend({
+  type: z.literal("clarify"),
+  items: z.array(ClarifyItem),
 })
 
-export const QuestionsReplyEvent = base.extend({
-  type: z.literal("questions_reply"),
-  from: z.string(), // "user" | "session:<id>" | "auto"
-  items: z.array(QuestionItem),
+export const ClarifyReplyItem = z.object({
+  id: z.string(),
+  content: z.string(),
+  reasoning: z.string().optional(),
+})
+export const ClarifyReplyEvent = base.extend({
+  type: z.literal("clarify_reply"),
+  items: z.array(ClarifyReplyItem),
+})
+
+export const ClarifyConvergenceItem = z.object({
+  id: z.string(),
+  proposal: z.string(),
+  response: z.string().optional(),
+  consistent: z.boolean(),
+})
+export const ClarifyConvergenceEvent = base.extend({
+  type: z.literal("clarify_convergence"),
+  items: z.array(ClarifyConvergenceItem),
+})
+
+export const InformItem = z.object({
+  id: z.string(),
+  content: z.string(),
+  context: z.string().optional(),
+  links: z.array(LinkRef).optional(),
+})
+export const InformEvent = base.extend({
+  type: z.literal("inform"),
+  items: z.array(InformItem),
+})
+
+export const InformReplyItem = z.object({
+  id: z.string(),
+  content: z.string(),
+})
+export const InformReplyEvent = base.extend({
+  type: z.literal("inform_reply"),
+  items: z.array(InformReplyItem),
+})
+
+export const InformConvergenceItem = z.object({
+  id: z.string(),
+  proposal: z.string(),
+  response: z.string().optional(),
+  consistent: z.boolean(),
+})
+export const InformConvergenceEvent = base.extend({
+  type: z.literal("inform_convergence"),
+  items: z.array(InformConvergenceItem),
 })
 
 export const PermissionItem = z.object({ id: z.string(), cmd: z.string(), reason: z.string() })
@@ -122,8 +180,12 @@ export const AnyEventSchema = z.discriminatedUnion("type", [
   ToolResultEvent,
   CommandResultEvent,
   ErrorEvent,
-  QuestionsEvent,
-  QuestionsReplyEvent,
+  ClarifyEvent,
+  ClarifyReplyEvent,
+  ClarifyConvergenceEvent,
+  InformEvent,
+  InformReplyEvent,
+  InformConvergenceEvent,
   PermissionsEvent,
   PermissionsReplyEvent,
   SubagentSpawnedEvent,
@@ -139,8 +201,19 @@ export type ToolCallEvent = z.infer<typeof ToolCallEvent>
 export type ToolResultEvent = z.infer<typeof ToolResultEvent>
 export type CommandResultEvent = z.infer<typeof CommandResultEvent>
 export type ErrorEvent = z.infer<typeof ErrorEvent>
-export type QuestionsEvent = z.infer<typeof QuestionsEvent>
-export type QuestionsReplyEvent = z.infer<typeof QuestionsReplyEvent>
+export type ClarifyItem = z.infer<typeof ClarifyItem>
+export type ClarifyEvent = z.infer<typeof ClarifyEvent>
+export type ClarifyReplyItem = z.infer<typeof ClarifyReplyItem>
+export type ClarifyReplyEvent = z.infer<typeof ClarifyReplyEvent>
+export type ClarifyConvergenceItem = z.infer<typeof ClarifyConvergenceItem>
+export type ClarifyConvergenceEvent = z.infer<typeof ClarifyConvergenceEvent>
+export type LinkRef = z.infer<typeof LinkRef>
+export type InformItem = z.infer<typeof InformItem>
+export type InformEvent = z.infer<typeof InformEvent>
+export type InformReplyItem = z.infer<typeof InformReplyItem>
+export type InformReplyEvent = z.infer<typeof InformReplyEvent>
+export type InformConvergenceItem = z.infer<typeof InformConvergenceItem>
+export type InformConvergenceEvent = z.infer<typeof InformConvergenceEvent>
 export type PermissionsEvent = z.infer<typeof PermissionsEvent>
 export type PermissionsReplyEvent = z.infer<typeof PermissionsReplyEvent>
 export type SubagentSpawnedEvent = z.infer<typeof SubagentSpawnedEvent>

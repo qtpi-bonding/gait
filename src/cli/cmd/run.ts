@@ -11,16 +11,25 @@ import { buildSystemPrompt, buildTurnContext } from "../../system_prompt"
 import {
   readEvents, appendEvent, lastEvent, countTurnComplete, lastCompactionIndex, initSession,
   type AnyEvent, type PermissionsEvent, type PermissionsReplyEvent,
-  type QuestionsEvent, type TurnCompleteEvent, type CompactionEvent,
+  type ClarifyEvent, type ClarifyConvergenceEvent, type InformEvent, type InformConvergenceEvent,
+  type TurnCompleteEvent, type CompactionEvent,
   type SubagentSpawnedEvent, type SubagentCompleteEvent,
 } from "../../session/transcript"
 import { reconstructMessages } from "../../session/context"
 import { needsCompaction, compact } from "../../session/compaction"
 import { wrapTools, type PendingPermission } from "../../permissions"
 import { createBuiltinTools, createConfigTools } from "../../tools/index"
+import { createMcpTools } from "../../tools/mcp"
 import { Auth } from "../../auth/index"
 import { createSpawnSubagentTool, registerSubagentRunner, type SubagentResult } from "../../tools/spawn_subagent"
-import { getQuestionsSignal, resetQuestionsSignal } from "../../tools/questions"
+import {
+  getClarifySignal, resetClarifySignal,
+  getClarifyConvergenceSignal, resetClarifyConvergenceSignal,
+} from "../../tools/clarify"
+import {
+  getInformSignal, resetInformSignal,
+  getInformConvergenceSignal, resetInformConvergenceSignal,
+} from "../../tools/inform"
 import { DualStream } from "../../stream"
 import readline from "readline"
 
@@ -126,25 +135,49 @@ async function resolvePermissions(
   appendEvent(txPath, { type: "permissions_reply", from: "user", items: replyItems, ts: Date.now() })
 }
 
-async function resolveQuestions(txPath: string, sessionId: string): Promise<void> {
+async function resolveClarify(txPath: string, sessionId: string): Promise<void> {
   const events = readEvents(txPath)
   const last = events[events.length - 1]
-  if (!last || last.type !== "questions") return
+  if (!last || last.type !== "clarify") return
 
   // Show all questions first
-  process.stdout.write("\nQuestions:\n")
+  process.stdout.write("\nClarifying questions:\n")
   for (let i = 0; i < last.items.length; i++) {
-    process.stdout.write(`  [${i + 1}] ${last.items[i]!.content}\n`)
+    const item = last.items[i]!
+    process.stdout.write(`  [${i + 1}] (${item.kind}) ${item.content}\n`)
+    process.stdout.write(`      why: ${item.why}\n`)
   }
   process.stdout.write("\n")
 
   // Then collect answers
-  const replyItems: Array<{ id: string; content: string }> = []
+  const replyItems: ClarifyEvent["items"] = []
   for (let i = 0; i < last.items.length; i++) {
+    const item = last.items[i]!
     const answer = await promptLine(`[${i + 1}] > `)
-    replyItems.push({ id: last.items[i]!.id, content: answer })
+    replyItems.push({ id: item.id, content: answer, why: item.why, kind: item.kind })
   }
-  appendEvent(txPath, { type: "questions_reply", from: "user", items: replyItems, ts: Date.now() })
+  appendEvent(txPath, { type: "clarify_reply", items: replyItems, ts: Date.now() })
+}
+
+async function resolveInform(txPath: string, sessionId: string): Promise<void> {
+  const events = readEvents(txPath)
+  const last = events[events.length - 1]
+  if (!last || last.type !== "inform") return
+
+  // Show all inform items first
+  process.stdout.write("\nInformation shared with you:\n")
+  for (let i = 0; i < last.items.length; i++) {
+    const item = last.items[i]!
+    process.stdout.write(`  [${i + 1}] ${item.content}\n`)
+    if (item.context) {
+      process.stdout.write(`      context: ${item.context}\n`)
+    }
+  }
+  process.stdout.write("\n")
+
+  // The LLM explains in its next turn as assistant_text — we don't write an
+  // inform_reply event from human input. Just wait for the human to be ready.
+  await promptLine("[press enter when ready to hear the explanation]: ")
 }
 
 // Core turn execution — also used by spawn_subagent
@@ -160,6 +193,8 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
 
   // 1. Acquire lock
   acquireLock(sessionDir)
+
+  let closeMcp: () => Promise<void> = async () => {}
 
   try {
     const config = loadConfig(workspacePath)
@@ -185,11 +220,16 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
 
     // 2. Handle pending events from last turn
     const lastEvt = lastEvent(txPath)
-    if (lastEvt?.type === "questions") {
+    if (lastEvt?.type === "clarify") {
       if (isSubagent) {
-        throw new Error("subagents cannot ask questions in v1")
+        throw new Error("subagents cannot ask clarifying questions in v1")
       }
-      await resolveQuestions(txPath, sessionId)
+      await resolveClarify(txPath, sessionId)
+    } else if (lastEvt?.type === "inform") {
+      if (isSubagent) {
+        throw new Error("subagents cannot share information in v1")
+      }
+      await resolveInform(txPath, sessionId)
     } else if (lastEvt?.type === "permissions") {
       await resolvePermissions(
         [],
@@ -245,14 +285,21 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
     // 7. Build tools
     const builtins = createBuiltinTools(codebasePath)
     const configTools = createConfigTools(config.tools, workspacePath, codebasePath)
+    const { tools: mcpTools, close: closeMcpFn } = await createMcpTools(config.mcpServers)
+    closeMcp = closeMcpFn
 
     for (const name of Object.keys(configTools)) {
       if (name in builtins) {
         throw new Error(`Config tool name "${name}" collides with a built-in tool name.`)
       }
     }
+    for (const name of Object.keys(mcpTools)) {
+      if (name in builtins || name in configTools) {
+        throw new Error(`MCP tool name "${name}" collides with an existing tool name.`)
+      }
+    }
 
-    const allTools = { ...builtins, ...configTools }
+    const allTools = { ...builtins, ...configTools, ...mcpTools }
 
     // Register subagent runner
     registerSubagentRunner(async (opts) => {
@@ -273,7 +320,10 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
     // 8. Stream LLM
     const stream = new DualStream()
     const pendingPermissions: PendingPermission[] = []
-    resetQuestionsSignal()
+    resetClarifySignal()
+    resetClarifyConvergenceSignal()
+    resetInformSignal()
+    resetInformConvergenceSignal()
 
     const ac = new AbortController()
 
@@ -285,14 +335,15 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
       trackedTools[name] = {
         ...t,
         execute: async (args: any, opts: any) => {
-          const isPermGated = !config.allow.includes(name) && name !== "questions" && name !== "spawn_subagent"
+          const isPermGated = !config.allow.includes(name) && name !== "clarify" && name !== "clarify_convergence" && name !== "inform" && name !== "inform_convergence" && name !== "spawn_subagent"
           if (isPermGated) {
             return await (t as any).execute(args, opts)
           }
           const id = crypto.randomUUID()
           appendEvent(txPath, { type: "tool_call", id, name, input: args, ts: Date.now() })
           const result = await (t as any).execute(args, opts)
-          appendEvent(txPath, { type: "tool_result", id, output: String(result), ts: Date.now() })
+          const output = typeof result === "string" ? result : JSON.stringify(result)
+          appendEvent(txPath, { type: "tool_result", id, output, ts: Date.now() })
           return result
         },
       } as any
@@ -322,7 +373,7 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
           totalUsage.input += stepUsage.promptTokens
           totalUsage.output += stepUsage.completionTokens
 
-          if (getQuestionsSignal() || pendingPermissions.length > 0) {
+          if (getClarifySignal() || getClarifyConvergenceSignal() || getInformSignal() || getInformConvergenceSignal() || pendingPermissions.length > 0) {
             ac.abort()
           }
         },
@@ -333,7 +384,7 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
       }
     } catch (err: any) {
       if (err?.name === "AbortError") {
-        // Expected abort from questions/permissions signal
+        // Expected abort from clarify/inform/permissions signal
       } else {
         appendEvent(txPath, { type: "error", message: String(err), phase: "llm", ts: Date.now() })
         commitSession(workspacePath, sessionId, `session(${sessionId}): error`)
@@ -343,16 +394,88 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
     }
 
     // Check what ended the turn
-    const questionsSignal = getQuestionsSignal()
+    const clarifySignal = getClarifySignal()
+    const informSignal = getInformSignal()
+    const clarifyConvergenceSignal = getClarifyConvergenceSignal()
+    const informConvergenceSignal = getInformConvergenceSignal()
 
-    if (questionsSignal) {
-      appendEvent(txPath, { type: "questions", items: questionsSignal.items, ts: Date.now() })
+    if (clarifySignal) {
+      appendEvent(txPath, { type: "clarify", items: clarifySignal.items, ts: Date.now() })
       if (isSubagent) {
-        appendEvent(txPath, { type: "error", message: "subagents cannot ask questions in v1", phase: "tool", ts: Date.now() })
+        appendEvent(txPath, { type: "error", message: "subagents cannot ask clarifying questions in v1", phase: "tool", ts: Date.now() })
         commitSession(workspacePath, sessionId, `session(${sessionId}): error`)
-        return { status: "error", result: "subagents cannot ask questions in v1" }
+        return { status: "error", result: "subagents cannot ask clarifying questions in v1" }
       }
       commitSession(workspacePath, sessionId, `session(${sessionId}): questions`)
+      process.exit(0)
+    }
+
+    if (informSignal) {
+      appendEvent(txPath, { type: "inform", items: informSignal.items, ts: Date.now() })
+      if (isSubagent) {
+        appendEvent(txPath, { type: "error", message: "subagents cannot share information in v1", phase: "tool", ts: Date.now() })
+        commitSession(workspacePath, sessionId, `session(${sessionId}): error`)
+        return { status: "error", result: "subagents cannot share information in v1" }
+      }
+      commitSession(workspacePath, sessionId, `session(${sessionId}): inform`)
+      process.exit(0)
+    }
+
+    if (clarifyConvergenceSignal) {
+      const convItems: ClarifyConvergenceEvent["items"] = []
+      for (const item of clarifyConvergenceSignal.items) {
+        process.stdout.write(`\nUnderstanding [${item.id}]: ${item.proposal}\n`)
+        const input = await promptLine(`Correct? [yes / type correction]: `)
+        const trimmed = input.trim()
+        const consistent = trimmed.toLowerCase() === "yes" || trimmed.toLowerCase() === "y"
+        convItems.push({ id: item.id, proposal: item.proposal, response: trimmed, consistent })
+      }
+      appendEvent(txPath, { type: "clarify_convergence", items: convItems, ts: Date.now() })
+      if (isSubagent) {
+        appendEvent(txPath, { type: "error", message: "subagents cannot run convergence in v1", phase: "tool", ts: Date.now() })
+        commitSession(workspacePath, sessionId, `session(${sessionId}): error`)
+        return { status: "error", result: "subagents cannot run convergence in v1" }
+      }
+      commitSession(workspacePath, sessionId, `session(${sessionId}): clarify_convergence`)
+      process.exit(0)
+    }
+
+    if (informConvergenceSignal) {
+      // Look up most recent proposal per id from prior inform_convergence events
+      // (needed when the LLM calls without a proposal — second call shape)
+      const priorEvents = readEvents(txPath)
+      const lastProposalById = new Map<string, string>()
+      for (const e of priorEvents) {
+        if (e.type === "inform_convergence") {
+          for (const it of e.items) {
+            lastProposalById.set(it.id, it.proposal)
+          }
+        }
+      }
+
+      const convItems: InformConvergenceEvent["items"] = []
+      for (const item of informConvergenceSignal.items) {
+        if (item.prompt !== undefined) {
+          process.stdout.write(`\n[${item.id}] ${item.prompt}\n`)
+          const paraphrase = await promptLine(`Your understanding: `)
+          convItems.push({ id: item.id, proposal: paraphrase.trim(), consistent: false })
+        } else {
+          const proposal = lastProposalById.get(item.id) ?? ""
+          convItems.push({
+            id: item.id,
+            proposal,
+            response: item.response,
+            consistent: item.consistent ?? false,
+          })
+        }
+      }
+      appendEvent(txPath, { type: "inform_convergence", items: convItems, ts: Date.now() })
+      if (isSubagent) {
+        appendEvent(txPath, { type: "error", message: "subagents cannot run convergence in v1", phase: "tool", ts: Date.now() })
+        commitSession(workspacePath, sessionId, `session(${sessionId}): error`)
+        return { status: "error", result: "subagents cannot run convergence in v1" }
+      }
+      commitSession(workspacePath, sessionId, `session(${sessionId}): inform_convergence`)
       process.exit(0)
     }
 
@@ -392,6 +515,7 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
     process.exit(1)
   } finally {
     releaseLock(sessionDir)
+    await closeMcp()
   }
 }
 

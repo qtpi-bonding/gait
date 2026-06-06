@@ -8,7 +8,8 @@ import { createGrepTool } from "./grep"
 import { createLsTool } from "./ls"
 import { createCodesearchTool } from "./codesearch"
 import { createWebfetchTool } from "./webfetch"
-import { createQuestionsTool } from "./questions"
+import { createClarifyTool, createClarifyConvergenceTool } from "./clarify"
+import { createInformTool, createInformConvergenceTool } from "./inform"
 import { createShellTool } from "./shell"
 import type { CoreTool } from "ai"
 import type { ConfigDefinedTool } from "../config"
@@ -29,7 +30,10 @@ export function createBuiltinTools(codebasePath: string): Record<string, CoreToo
     codesearch: createCodesearchTool(codebasePath),
     webfetch: createWebfetchTool(),
     shell: createShellTool(codebasePath),
-    questions: createQuestionsTool(),
+    clarify: createClarifyTool(),
+    clarify_convergence: createClarifyConvergenceTool(),
+    inform: createInformTool(),
+    inform_convergence: createInformConvergenceTool(),
   }
 }
 

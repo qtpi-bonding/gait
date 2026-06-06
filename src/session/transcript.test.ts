@@ -12,14 +12,18 @@ import {
   ToolResultEvent,
   CommandResultEvent,
   ErrorEvent,
-  QuestionsEvent,
-  QuestionsReplyEvent,
   PermissionsEvent,
   PermissionsReplyEvent,
   SubagentSpawnedEvent,
   SubagentCompleteEvent,
   TurnCompleteEvent,
   CompactionEvent,
+  ClarifyEvent,
+  ClarifyReplyEvent,
+  ClarifyConvergenceEvent,
+  InformEvent,
+  InformReplyEvent,
+  InformConvergenceEvent,
   type AnyEvent,
 } from "./transcript"
 
@@ -68,6 +72,91 @@ describe("JSONL event schemas", () => {
     const raw = { type: "subagent_complete", session_id: "s1-sub-abc", status: "done", result: "auth module extracted", ts: 1234 }
     const event = parseEvent(raw) as SubagentCompleteEvent
     expect(event.result).toBe("auth module extracted")
+  })
+
+  it("parses clarify event with is kind", () => {
+    const raw = { type: "clarify", items: [{ id: "c1", content: "What is the db?", why: "need it for schema", kind: "is" }], ts: 1 }
+    const event = parseEvent(raw) as ClarifyEvent
+    expect(event.items[0]!.kind).toBe("is")
+    expect(event.items[0]!.why).toBe("need it for schema")
+  })
+
+  it("parses clarify event with ought kind", () => {
+    const raw = { type: "clarify", items: [{ id: "c1", content: "postgres or sqlite?", why: "schema strategy", kind: "ought" }], ts: 1 }
+    const event = parseEvent(raw) as ClarifyEvent
+    expect(event.items[0]!.kind).toBe("ought")
+  })
+
+  it("parses clarify event with links", () => {
+    const raw = {
+      type: "clarify",
+      items: [{ id: "c2", content: "which db?", why: "schema", kind: "ought", links: [{ target: "c1", relation: "depends_on" }] }],
+      ts: 1,
+    }
+    const event = parseEvent(raw) as ClarifyEvent
+    expect(event.items[0]!.links![0]!.relation).toBe("depends_on")
+  })
+
+  it("rejects clarify event with invalid kind", () => {
+    const raw = { type: "clarify", items: [{ id: "c1", content: "?", why: "x", kind: "maybe" }], ts: 1 }
+    expect(() => parseEvent(raw)).toThrow()
+  })
+
+  it("parses clarify_reply with optional reasoning", () => {
+    const raw = { type: "clarify_reply", items: [{ id: "c1", content: "postgres", reasoning: "team knows it" }], ts: 1 }
+    const event = parseEvent(raw) as ClarifyReplyEvent
+    expect(event.items[0]!.reasoning).toBe("team knows it")
+  })
+
+  it("parses clarify_reply without reasoning", () => {
+    const raw = { type: "clarify_reply", items: [{ id: "c1", content: "postgres" }], ts: 1 }
+    const event = parseEvent(raw) as ClarifyReplyEvent
+    expect(event.items[0]!.reasoning).toBeUndefined()
+  })
+
+  it("parses clarify_convergence with consistent true", () => {
+    const raw = { type: "clarify_convergence", items: [{ id: "c1", proposal: "use postgres with optimistic locking", response: "yes", consistent: true }], ts: 1 }
+    const event = parseEvent(raw) as ClarifyConvergenceEvent
+    expect(event.items[0]!.consistent).toBe(true)
+  })
+
+  it("parses clarify_convergence with consistent false and no response yet", () => {
+    const raw = { type: "clarify_convergence", items: [{ id: "c1", proposal: "use postgres with row locking", consistent: false }], ts: 1 }
+    const event = parseEvent(raw) as ClarifyConvergenceEvent
+    expect(event.items[0]!.consistent).toBe(false)
+    expect(event.items[0]!.response).toBeUndefined()
+  })
+
+  it("parses inform event with optional context", () => {
+    const raw = { type: "inform", items: [{ id: "i1", content: "How HNSW works", context: "you asked about vector search" }], ts: 1 }
+    const event = parseEvent(raw) as InformEvent
+    expect(event.items[0]!.content).toBe("How HNSW works")
+    expect(event.items[0]!.context).toBe("you asked about vector search")
+  })
+
+  it("parses inform event without context", () => {
+    const raw = { type: "inform", items: [{ id: "i1", content: "How HNSW works" }], ts: 1 }
+    const event = parseEvent(raw) as InformEvent
+    expect(event.items[0]!.context).toBeUndefined()
+  })
+
+  it("parses inform_reply event", () => {
+    const raw = { type: "inform_reply", items: [{ id: "i1", content: "HNSW is a graph-based approximate nearest neighbour algorithm..." }], ts: 1 }
+    const event = parseEvent(raw) as InformReplyEvent
+    expect(event.items[0]!.id).toBe("i1")
+  })
+
+  it("parses inform_convergence with consistent true", () => {
+    const raw = { type: "inform_convergence", items: [{ id: "i1", proposal: "HNSW builds a layered graph for fast approximate search", response: "correct", consistent: true }], ts: 1 }
+    const event = parseEvent(raw) as InformConvergenceEvent
+    expect(event.items[0]!.consistent).toBe(true)
+  })
+
+  it("parses inform_convergence with no response yet", () => {
+    const raw = { type: "inform_convergence", items: [{ id: "i1", proposal: "HNSW is a tree?", consistent: false }], ts: 1 }
+    const event = parseEvent(raw) as InformConvergenceEvent
+    expect(event.items[0]!.consistent).toBe(false)
+    expect(event.items[0]!.response).toBeUndefined()
   })
 })
 

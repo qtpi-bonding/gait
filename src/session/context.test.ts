@@ -116,47 +116,72 @@ describe("reconstructMessages", () => {
     expect(msgs[3]).toEqual({ role: "assistant", content: "Tests passed." })
   })
 
-  it("reconstructs questions → questions_reply flow", () => {
-    appendEvent(transcriptPath, { type: "user_turn", content: "do the thing", ts: 1 })
-    appendEvent(transcriptPath, { type: "questions", items: [{ id: "q1", content: "Which env?" }], ts: 2 })
-    appendEvent(transcriptPath, { type: "questions_reply", from: "user", items: [{ id: "q1", content: "production" }], ts: 3 })
-    appendEvent(transcriptPath, { type: "user_turn", content: "continue", ts: 4 })
+  it("reconstructs clarify → clarify_reply → clarify_convergence flow", () => {
+    appendEvent(transcriptPath, { type: "user_turn", content: "build the schema", ts: 1 })
+    appendEvent(transcriptPath, { type: "clarify", items: [{ id: "c1", content: "postgres or sqlite?", why: "determines schema strategy", kind: "ought" }], ts: 2 })
+    appendEvent(transcriptPath, { type: "clarify_reply", items: [{ id: "c1", content: "postgres", reasoning: "team knows it" }], ts: 3 })
+    appendEvent(transcriptPath, { type: "clarify_convergence", items: [{ id: "c1", proposal: "I'll design for postgres", response: "yes", consistent: true }], ts: 4 })
 
     const msgs = reconstructMessages(transcriptPath)
-    expect(msgs).toHaveLength(4)
-    expect(msgs[1]!.role).toBe("assistant") // questions shown as assistant
-    expect(msgs[2]!.role).toBe("user")      // reply shown as user
-    expect(typeof msgs[2]!.content === "string" && msgs[2]!.content).toContain("production")
+    // user_turn, clarify(assistant), clarify_reply(user), convergence proposal(assistant), convergence response(user)
+    expect(msgs).toHaveLength(5)
+    expect(msgs[1]!.role).toBe("assistant")
+    expect(typeof msgs[1]!.content === "string" && msgs[1]!.content).toContain("postgres or sqlite")
+    expect(typeof msgs[1]!.content === "string" && msgs[1]!.content).toContain("ought")
+    expect(msgs[2]!.role).toBe("user")
+    expect(typeof msgs[2]!.content === "string" && msgs[2]!.content).toContain("postgres")
+    expect(msgs[3]!.role).toBe("assistant")
+    expect(typeof msgs[3]!.content === "string" && msgs[3]!.content).toContain("I'll design for postgres")
+    expect(msgs[4]!.role).toBe("user")
+    expect(typeof msgs[4]!.content === "string" && msgs[4]!.content).toContain("yes")
   })
 
-  it("reconstructs multiple questions with all answers in reply message", () => {
-    appendEvent(transcriptPath, { type: "user_turn", content: "do the thing", ts: 1 })
-    appendEvent(transcriptPath, {
-      type: "questions",
-      items: [
-        { id: "q1", content: "Which env?" },
-        { id: "q2", content: "Run tests first?" },
-        { id: "q3", content: "Branch name?" },
-      ],
-      ts: 2,
-    })
-    appendEvent(transcriptPath, {
-      type: "questions_reply",
-      from: "user",
-      items: [
-        { id: "q1", content: "production" },
-        { id: "q2", content: "yes" },
-        { id: "q3", content: "feat/new-api" },
-      ],
-      ts: 3,
-    })
+  it("reconstructs clarify_convergence without response as single assistant message", () => {
+    appendEvent(transcriptPath, { type: "clarify_convergence", items: [{ id: "c1", proposal: "use postgres", consistent: false }], ts: 1 })
+    const msgs = reconstructMessages(transcriptPath)
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0]!.role).toBe("assistant")
+    expect(typeof msgs[0]!.content === "string" && msgs[0]!.content).toContain("use postgres")
+  })
+
+  it("reconstructs inform → inform_reply → inform_convergence flow", () => {
+    appendEvent(transcriptPath, { type: "user_turn", content: "what is HNSW?", ts: 1 })
+    appendEvent(transcriptPath, { type: "inform", items: [{ id: "i1", content: "How HNSW indexing works" }], ts: 2 })
+    appendEvent(transcriptPath, { type: "inform_reply", items: [{ id: "i1", content: "HNSW is a graph-based ANN algorithm..." }], ts: 3 })
+    appendEvent(transcriptPath, { type: "inform_convergence", items: [{ id: "i1", proposal: "HNSW builds a graph for fast approximate search", response: "correct", consistent: true }], ts: 4 })
 
     const msgs = reconstructMessages(transcriptPath)
-    expect(msgs).toHaveLength(3) // user_turn, assistant(questions), user(replies)
-    const replyContent = msgs[2]!.content as string
-    expect(replyContent).toContain("production")
-    expect(replyContent).toContain("yes")
-    expect(replyContent).toContain("feat/new-api")
+    // user_turn, inform(assistant), inform_reply(assistant), convergence proposal(user), convergence response(assistant)
+    expect(msgs).toHaveLength(5)
+    expect(msgs[1]!.role).toBe("assistant")
+    expect(typeof msgs[1]!.content === "string" && msgs[1]!.content).toContain("HNSW indexing")
+    expect(msgs[2]!.role).toBe("assistant")
+    expect(typeof msgs[2]!.content === "string" && msgs[2]!.content).toContain("graph-based ANN")
+    expect(msgs[3]!.role).toBe("user")
+    expect(typeof msgs[3]!.content === "string" && msgs[3]!.content).toContain("HNSW builds a graph")
+    expect(msgs[4]!.role).toBe("assistant")
+    expect(typeof msgs[4]!.content === "string" && msgs[4]!.content).toContain("correct")
+  })
+
+  it("reconstructs inform_convergence without response as single user message", () => {
+    appendEvent(transcriptPath, { type: "inform_convergence", items: [{ id: "i1", proposal: "HNSW is a tree?", consistent: false }], ts: 1 })
+    const msgs = reconstructMessages(transcriptPath)
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0]!.role).toBe("user")
+  })
+
+  it("reconstructs multiple iterations of clarify_convergence", () => {
+    appendEvent(transcriptPath, { type: "clarify", items: [{ id: "c1", content: "which db?", why: "schema", kind: "ought" }], ts: 1 })
+    appendEvent(transcriptPath, { type: "clarify_reply", items: [{ id: "c1", content: "postgres" }], ts: 2 })
+    appendEvent(transcriptPath, { type: "clarify_convergence", items: [{ id: "c1", proposal: "use postgres with row locking", response: "no, optimistic locking", consistent: false }], ts: 3 })
+    appendEvent(transcriptPath, { type: "clarify_convergence", items: [{ id: "c1", proposal: "use postgres with optimistic locking", response: "yes", consistent: true }], ts: 4 })
+
+    const msgs = reconstructMessages(transcriptPath)
+    // clarify(asst), clarify_reply(user), convergence1 proposal(asst) + response(user), convergence2 proposal(asst) + response(user)
+    expect(msgs).toHaveLength(6)
+    const contents = msgs.map(m => typeof m.content === "string" ? m.content : "")
+    expect(contents.some(c => c.includes("row locking"))).toBe(true)
+    expect(contents.some(c => c.includes("optimistic locking"))).toBe(true)
   })
 
   it("reconstructs multiple permissions with mixed decisions in reply", () => {
