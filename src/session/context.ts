@@ -23,7 +23,16 @@ export function reconstructMessages(transcriptPath: string): CoreMessage[] {
     }
 
     if (e.type === "session_start") { i++; continue }
-    if (e.type === "subagent_spawned" || e.type === "subagent_complete") { i++; continue }
+
+    if (e.type === "agent_update") {
+      let content = "[agent:" + e.session_id + "] status: " + e.status + "\nsummary: " + e.summary
+      if (e.items && Array.isArray(e.items) && e.items.length > 0) {
+        content += "\nitems: " + JSON.stringify(e.items)
+      }
+      messages.push({ role: "user", content })
+      i++
+      continue
+    }
 
     if (e.type === "user_turn") {
       messages.push({ role: "user", content: e.content })

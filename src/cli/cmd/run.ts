@@ -10,10 +10,9 @@ import { commitSession, getCodebaseHash, getCodebaseDirtyFiles, createSessionWor
 import { buildSystemPrompt, buildTurnContext } from "../../system_prompt"
 import {
   readEvents, appendEvent, lastEvent, countTurnComplete, lastCompactionIndex, initSession,
-  type AnyEvent, type PermissionsEvent, type PermissionsReplyEvent,
-  type ClarifyEvent, type ClarifyConvergenceEvent, type InformEvent, type InformConvergenceEvent,
+  type PermissionsEvent, type PermissionsReplyEvent,
+  type ClarifyEvent, type ClarifyConvergenceEvent, type InformConvergenceEvent,
   type TurnCompleteEvent, type CompactionEvent,
-  type SubagentSpawnedEvent, type SubagentCompleteEvent,
 } from "../../session/transcript"
 import { reconstructMessages } from "../../session/context"
 import { needsCompaction, compact } from "../../session/compaction"
@@ -22,7 +21,7 @@ import { createBuiltinTools, createConfigTools } from "../../tools/index"
 import { createMcpTools } from "../../tools/mcp"
 import { Auth } from "../../auth/index"
 import { resolveAgentPrompt } from "../../agent"
-import { createSpawnSubagentTool, registerSubagentRunner, type SubagentResult } from "../../tools/spawn_subagent"
+import { NativeHarnessBackend } from "../../harness"
 import {
   getClarifySignal, resetClarifySignal,
   getClarifyConvergenceSignal, resetClarifyConvergenceSignal,
@@ -41,7 +40,6 @@ interface RunArgs {
   files: string[]
   workspacePath: string
   codebasePath?: string  // overrides default <workspacePath>/codebase
-  isSubagent?: boolean
   agent?: string         // named agent from agents/{name}.md
   systemPrompt?: string  // inline system prompt (takes precedence over agent)
 }
@@ -191,9 +189,9 @@ async function resolveInform(txPath: string, sessionId: string): Promise<void> {
   await promptLine("[press enter when ready to hear the explanation]: ")
 }
 
-// Core turn execution — also used by spawn_subagent
-export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
-  const { sessionId, task, auto, files, workspacePath, isSubagent = false } = args
+// Core turn execution
+export async function runTurn(args: RunArgs): Promise<void> {
+  const { sessionId, task, auto, files, workspacePath } = args
   const codebasePath = args.codebasePath
     ?? readCodebasePath(workspacePath, sessionId)
     ?? path.join(workspacePath, "codebase")
@@ -201,6 +199,7 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
   // Resolve agent prompt: inline > --agent flag > session.json > config.default_agent
   // (reads session.json before lock so we can fall back to it before the config is loaded)
   const savedSession = readSessionJson(workspacePath, sessionId)
+  const assignedBy: string | undefined = savedSession.assigned_by
 
   createSessionWorktree(workspacePath, sessionId)
   const sessionDir = path.join(workspacePath, "sessions", sessionId)
@@ -213,6 +212,7 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
 
   try {
     const config = loadConfig(workspacePath)
+    const harness = new NativeHarnessBackend(workspacePath)
     const providerId = config.model.split("/")[0] ?? ""
     const authEntry = await Auth.get(providerId)
     const apiKey = authEntry?.type === "api" ? authEntry.key : undefined
@@ -243,14 +243,8 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
     // 2. Handle pending events from last turn
     const lastEvt = lastEvent(txPath)
     if (lastEvt?.type === "clarify") {
-      if (isSubagent) {
-        throw new Error("subagents cannot ask clarifying questions in v1")
-      }
       await resolveClarify(txPath, sessionId)
     } else if (lastEvt?.type === "inform") {
-      if (isSubagent) {
-        throw new Error("subagents cannot share information in v1")
-      }
       await resolveInform(txPath, sessionId)
     } else if (lastEvt?.type === "permissions") {
       await resolvePermissions(
@@ -305,7 +299,7 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
     }
 
     // 7. Build tools
-    const builtins = createBuiltinTools(codebasePath)
+    const builtins = createBuiltinTools(codebasePath, sessionId, workspacePath)
     const configTools = createConfigTools(config.tools, workspacePath, codebasePath)
     const { tools: mcpTools, close: closeMcpFn } = await createMcpTools(config.mcpServers)
     closeMcp = closeMcpFn
@@ -323,24 +317,6 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
 
     const allTools = { ...builtins, ...configTools, ...mcpTools }
 
-    // Register subagent runner
-    registerSubagentRunner(async (opts) => {
-      const result = await runTurn({
-        sessionId: opts.sessionId,
-        task: opts.task,
-        auto: true,
-        files: opts.contextFiles,
-        workspacePath: opts.workspacePath,
-        isSubagent: true,
-      })
-      return result ?? { status: "error", result: "subagent returned null" }
-    })
-
-    const spawnSubagentTool = createSpawnSubagentTool(sessionId, workspacePath)
-    const allToolsWithSubagent = isSubagent
-      ? allTools
-      : { ...allTools, spawn_subagent: spawnSubagentTool }
-
     // 8. Stream LLM
     const stream = new DualStream()
     const pendingPermissions: PendingPermission[] = []
@@ -351,7 +327,7 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
 
     const ac = new AbortController()
 
-    const wrappedTools = wrapTools(allToolsWithSubagent, config.allow, pendingPermissions, codebasePath)
+    const wrappedTools = wrapTools(allTools, config.allow, pendingPermissions, codebasePath)
 
     // Add event-appending wrappers on top of permission wrappers
     const trackedTools: Record<string, CoreTool> = {}
@@ -359,7 +335,7 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
       trackedTools[name] = {
         ...t,
         execute: async (args: any, opts: any) => {
-          const isPermGated = !config.allow.includes(name) && name !== "clarify" && name !== "clarify_convergence" && name !== "inform" && name !== "inform_convergence" && name !== "spawn_subagent"
+          const isPermGated = !config.allow.includes(name) && name !== "clarify" && name !== "clarify_convergence" && name !== "inform" && name !== "inform_convergence" && name !== "spawn_agent" && name !== "list_agents"
           if (isPermGated) {
             return await (t as any).execute(args, opts)
           }
@@ -412,7 +388,6 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
       } else {
         appendEvent(txPath, { type: "error", message: String(err), phase: "llm", ts: Date.now() })
         commitSession(workspacePath, sessionId, `session(${sessionId}): error`)
-        if (isSubagent) return { status: "error", result: String(err) }
         process.exit(1)
       }
     }
@@ -425,30 +400,19 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
 
     if (clarifySignal) {
       appendEvent(txPath, { type: "clarify", items: clarifySignal.items, ts: Date.now() })
-      if (isSubagent) {
-        commitSession(workspacePath, sessionId, `session(${sessionId}): clarify`)
-        return { status: "needs_clarification", result: JSON.stringify(clarifySignal.items) }
-      }
       commitSession(workspacePath, sessionId, `session(${sessionId}): questions`)
+      await harness.afterTurn(sessionId, assignedBy, { type: "clarify", items: clarifySignal.items })
       process.exit(0)
     }
 
     if (informSignal) {
       appendEvent(txPath, { type: "inform", items: informSignal.items, ts: Date.now() })
-      if (isSubagent) {
-        commitSession(workspacePath, sessionId, `session(${sessionId}): inform`)
-        return { status: "needs_inform", result: JSON.stringify(informSignal.items) }
-      }
       commitSession(workspacePath, sessionId, `session(${sessionId}): inform`)
+      await harness.afterTurn(sessionId, assignedBy, { type: "inform", items: informSignal.items })
       process.exit(0)
     }
 
     if (clarifyConvergenceSignal) {
-      if (isSubagent) {
-        appendEvent(txPath, { type: "clarify_convergence", items: clarifyConvergenceSignal.items, ts: Date.now() })
-        commitSession(workspacePath, sessionId, `session(${sessionId}): clarify`)
-        return { status: "needs_clarification", result: JSON.stringify(clarifyConvergenceSignal.items) }
-      }
       const convItems: ClarifyConvergenceEvent["items"] = []
       for (const item of clarifyConvergenceSignal.items) {
         process.stdout.write(`\nUnderstanding [${item.id}]: ${item.proposal}\n`)
@@ -459,16 +423,11 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
       }
       appendEvent(txPath, { type: "clarify_convergence", items: convItems, ts: Date.now() })
       commitSession(workspacePath, sessionId, `session(${sessionId}): clarify_convergence`)
+      await harness.afterTurn(sessionId, assignedBy, { type: "clarify", items: convItems.map((i) => ({ id: i.id, content: i.proposal, why: "", kind: "clarify_convergence" })) })
       process.exit(0)
     }
 
     if (informConvergenceSignal) {
-      if (isSubagent) {
-        appendEvent(txPath, { type: "inform_convergence", items: informConvergenceSignal.items, ts: Date.now() })
-        commitSession(workspacePath, sessionId, `session(${sessionId}): inform`)
-        return { status: "needs_inform", result: JSON.stringify(informConvergenceSignal.items) }
-      }
-
       // Look up most recent proposal per id from prior inform_convergence events
       // (needed when the LLM calls without a proposal — second call shape)
       const priorEvents = readEvents(txPath)
@@ -499,6 +458,7 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
       }
       appendEvent(txPath, { type: "inform_convergence", items: convItems, ts: Date.now() })
       commitSession(workspacePath, sessionId, `session(${sessionId}): inform_convergence`)
+      await harness.afterTurn(sessionId, assignedBy, { type: "inform", items: convItems.map((i) => ({ id: i.id, content: i.proposal, context: undefined })) })
       process.exit(0)
     }
 
@@ -509,6 +469,7 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
         return runTurn({ ...args })
       }
       commitSession(workspacePath, sessionId, `session(${sessionId}): permissions`)
+      await harness.afterTurn(sessionId, assignedBy, { type: "permissions" })
       process.exit(0)
     }
 
@@ -528,15 +489,12 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
     })
     commitSession(workspacePath, sessionId, `session(${sessionId}): turn ${turnN}`)
 
-    if (isSubagent) {
-      return { status: "done", result: lastStepText }
-    }
-    return null
+    await harness.afterTurn(sessionId, assignedBy, { type: "done", summary: lastStepText })
+    return
 
   } catch (err: any) {
     appendEvent(txPath, { type: "error", message: String(err), phase: "init", ts: Date.now() })
     try { commitSession(workspacePath, sessionId, `session(${sessionId}): error`) } catch {}
-    if (isSubagent) return { status: "error", result: String(err) }
     process.stderr.write(`[gait] error: ${err}\n`)
     process.exit(1)
   } finally {

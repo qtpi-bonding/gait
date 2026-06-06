@@ -14,8 +14,6 @@ import {
   ErrorEvent,
   PermissionsEvent,
   PermissionsReplyEvent,
-  SubagentSpawnedEvent,
-  SubagentCompleteEvent,
   TurnCompleteEvent,
   CompactionEvent,
   ClarifyEvent,
@@ -24,6 +22,7 @@ import {
   InformEvent,
   InformReplyEvent,
   InformConvergenceEvent,
+  AgentUpdateEvent,
   type AnyEvent,
 } from "./transcript"
 
@@ -66,12 +65,6 @@ describe("JSONL event schemas", () => {
     const raw = { type: "compaction", summary: "did stuff", turns_covered: 3, from_ts: 100, to_ts: 200, usage: { input: 1000, output: 500 }, ts: 300 }
     const event = parseEvent(raw) as CompactionEvent
     expect(event.usage.input).toBe(1000)
-  })
-
-  it("parses subagent_complete with result", () => {
-    const raw = { type: "subagent_complete", session_id: "s1-sub-abc", status: "done", result: "auth module extracted", ts: 1234 }
-    const event = parseEvent(raw) as SubagentCompleteEvent
-    expect(event.result).toBe("auth module extracted")
   })
 
   it("parses clarify event with is kind", () => {
@@ -157,6 +150,45 @@ describe("JSONL event schemas", () => {
     const event = parseEvent(raw) as InformConvergenceEvent
     expect(event.items[0]!.consistent).toBe(false)
     expect(event.items[0]!.response).toBeUndefined()
+  })
+
+  it("parses agent_update event with status done", () => {
+    const raw = { type: "agent_update", session_id: "s-child", status: "done", summary: "task complete", ts: 1 }
+    const event = parseEvent(raw) as AgentUpdateEvent
+    expect(event.type).toBe("agent_update")
+    expect(event.session_id).toBe("s-child")
+    expect(event.status).toBe("done")
+    expect(event.summary).toBe("task complete")
+  })
+
+  it("parses agent_update event with items when status is clarify", () => {
+    const raw = { type: "agent_update", session_id: "s-child", status: "clarify", summary: "need more info", items: [{ id: "q1", content: "which db?" }], ts: 1 }
+    const event = parseEvent(raw) as AgentUpdateEvent
+    expect(event.status).toBe("clarify")
+    expect(event.items).toEqual([{ id: "q1", content: "which db?" }])
+  })
+
+  it("rejects agent_update summary longer than 500 chars", () => {
+    const raw = { type: "agent_update", session_id: "s-child", status: "done", summary: "x".repeat(501), ts: 1 }
+    expect(() => parseEvent(raw)).toThrow()
+  })
+
+  it("parses clarify item with to field", () => {
+    const raw = { type: "clarify", items: [{ id: "c1", content: "which db?", why: "need it", kind: "is", to: "human:alice" }], ts: 1 }
+    const event = parseEvent(raw) as ClarifyEvent
+    expect(event.items[0]!.to).toBe("human:alice")
+  })
+
+  it("clarify item parses without to field (to is optional)", () => {
+    const raw = { type: "clarify", items: [{ id: "c1", content: "which db?", why: "need it", kind: "is" }], ts: 1 }
+    const event = parseEvent(raw) as ClarifyEvent
+    expect(event.items[0]!.to).toBeUndefined()
+  })
+
+  it("parses inform item with to field routing to an agent", () => {
+    const raw = { type: "inform", items: [{ id: "i1", content: "schema info", to: "agent:s-parent" }], ts: 1 }
+    const event = parseEvent(raw) as InformEvent
+    expect(event.items[0]!.to).toBe("agent:s-parent")
   })
 })
 

@@ -10,6 +10,8 @@ import { createCodesearchTool } from "./codesearch"
 import { createWebfetchTool } from "./webfetch"
 import { createClarifyTool, createClarifyConvergenceTool } from "./clarify"
 import { createInformTool, createInformConvergenceTool } from "./inform"
+import { createSpawnAgentTool } from "./spawn_agent"
+import { createListAgentsTool } from "./list_agents"
 import { createShellTool } from "./shell"
 import type { CoreTool } from "ai"
 import type { ConfigDefinedTool } from "../config"
@@ -17,7 +19,7 @@ import { execSync } from "child_process"
 import { tool } from "ai"
 import { z } from "zod"
 
-export function createBuiltinTools(codebasePath: string): Record<string, CoreTool> {
+export function createBuiltinTools(codebasePath: string, sessionId: string, workspacePath: string): Record<string, CoreTool> {
   return {
     read: createReadTool(codebasePath),
     write: createWriteTool(codebasePath),
@@ -34,6 +36,8 @@ export function createBuiltinTools(codebasePath: string): Record<string, CoreToo
     clarify_convergence: createClarifyConvergenceTool(),
     inform: createInformTool(),
     inform_convergence: createInformConvergenceTool(),
+    spawn_agent: createSpawnAgentTool(sessionId, workspacePath),
+    list_agents: createListAgentsTool(workspacePath),
   }
 }
 

@@ -23,6 +23,7 @@ const ConfigSchema = z.object({
   mcpServers: z.array(McpServerConfig).default([]),
   provider: z.record(z.unknown()).default({}),
   compaction_threshold: z.number().min(0.1).max(1.0).default(0.8),
+  harness: z.enum(["native"]).default("native"),
 })
 
 export type Config = z.infer<typeof ConfigSchema>

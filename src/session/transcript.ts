@@ -63,6 +63,7 @@ export const ClarifyItem = z.object({
   why: z.string(),
   kind: z.enum(["is", "ought"]),
   links: z.array(LinkRef).optional(),
+  to: z.string().optional(),
 })
 export const ClarifyEvent = base.extend({
   type: z.literal("clarify"),
@@ -95,6 +96,7 @@ export const InformItem = z.object({
   content: z.string(),
   context: z.string().optional(),
   links: z.array(LinkRef).optional(),
+  to: z.string().optional(),
 })
 export const InformEvent = base.extend({
   type: z.literal("inform"),
@@ -121,6 +123,15 @@ export const InformConvergenceEvent = base.extend({
   items: z.array(InformConvergenceItem),
 })
 
+export const AgentUpdateEvent = base.extend({
+  type: z.literal("agent_update"),
+  session_id: z.string(),
+  status: z.enum(["done", "clarify", "inform"]),
+  summary: z.string().max(500),
+  items: z.array(z.unknown()).optional(),
+})
+export type AgentUpdateEvent = z.infer<typeof AgentUpdateEvent>
+
 export const PermissionItem = z.object({ id: z.string(), cmd: z.string(), reason: z.string() })
 export const PermissionsEvent = base.extend({
   type: z.literal("permissions"),
@@ -136,19 +147,6 @@ export const PermissionsReplyEvent = base.extend({
   type: z.literal("permissions_reply"),
   from: z.string(),
   items: z.array(PermissionsReplyItem),
-})
-
-export const SubagentSpawnedEvent = base.extend({
-  type: z.literal("subagent_spawned"),
-  session_id: z.string(),
-  task: z.string(),
-})
-
-export const SubagentCompleteEvent = base.extend({
-  type: z.literal("subagent_complete"),
-  session_id: z.string(),
-  status: z.enum(["done", "error"]),
-  result: z.string(),
 })
 
 export const TurnCompleteEvent = base.extend({
@@ -186,10 +184,9 @@ export const AnyEventSchema = z.discriminatedUnion("type", [
   InformEvent,
   InformReplyEvent,
   InformConvergenceEvent,
+  AgentUpdateEvent,
   PermissionsEvent,
   PermissionsReplyEvent,
-  SubagentSpawnedEvent,
-  SubagentCompleteEvent,
   TurnCompleteEvent,
   CompactionEvent,
 ])
@@ -216,8 +213,6 @@ export type InformConvergenceItem = z.infer<typeof InformConvergenceItem>
 export type InformConvergenceEvent = z.infer<typeof InformConvergenceEvent>
 export type PermissionsEvent = z.infer<typeof PermissionsEvent>
 export type PermissionsReplyEvent = z.infer<typeof PermissionsReplyEvent>
-export type SubagentSpawnedEvent = z.infer<typeof SubagentSpawnedEvent>
-export type SubagentCompleteEvent = z.infer<typeof SubagentCompleteEvent>
 export type TurnCompleteEvent = z.infer<typeof TurnCompleteEvent>
 export type CompactionEvent = z.infer<typeof CompactionEvent>
 export type AnyEvent = z.infer<typeof AnyEventSchema>

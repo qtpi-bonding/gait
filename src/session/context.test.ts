@@ -184,6 +184,23 @@ describe("reconstructMessages", () => {
     expect(contents.some(c => c.includes("optimistic locking"))).toBe(true)
   })
 
+  it("maps agent_update done event to user message", () => {
+    appendEvent(transcriptPath, { type: "agent_update", session_id: "s-child", status: "done", summary: "task finished", ts: 1 } as any)
+    const msgs = reconstructMessages(transcriptPath)
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0]!.role).toBe("user")
+    expect(typeof msgs[0]!.content === "string" && msgs[0]!.content).toContain("s-child")
+    expect(typeof msgs[0]!.content === "string" && msgs[0]!.content).toContain("done")
+  })
+
+  it("maps agent_update clarify event includes items in content", () => {
+    appendEvent(transcriptPath, { type: "agent_update", session_id: "s-child", status: "clarify", summary: "needs input", items: [{ id: "q1", content: "which db?" }], ts: 1 } as any)
+    const msgs = reconstructMessages(transcriptPath)
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0]!.role).toBe("user")
+    expect(typeof msgs[0]!.content === "string" && msgs[0]!.content).toContain("items")
+  })
+
   it("reconstructs multiple permissions with mixed decisions in reply", () => {
     appendEvent(transcriptPath, { type: "user_turn", content: "run everything", ts: 1 })
     appendEvent(transcriptPath, {
