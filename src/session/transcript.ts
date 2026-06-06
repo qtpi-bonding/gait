@@ -5,16 +5,24 @@ const base = z.object({ ts: z.number() })
 
 export const SessionStartEvent = base.extend({
   type: z.literal("session_start"),
-  schema_version: z.literal(1),
+  schema_version: z.number(),
   id: z.string(),
   model: z.string(),
   codebase_hash: z.string(),
   codebase_dirty: z.boolean(),
 })
 
+export const UserTurnContext = z.object({
+  codebase_hash: z.string().optional(),
+  codebase_dirty: z.boolean().optional(),
+  dirty_files: z.array(z.string()).optional(),
+  injected_files: z.array(z.string()).optional(),
+})
+
 export const UserTurnEvent = base.extend({
   type: z.literal("user_turn"),
   content: z.string(),
+  context: UserTurnContext.optional(),
 })
 
 export const AssistantTextEvent = base.extend({
@@ -159,6 +167,10 @@ export const TurnCompleteEvent = base.extend({
   }),
   codebase_hash: z.string(),
   codebase_dirty: z.boolean(),
+  output: z.object({
+    summary: z.string(),
+    result: z.record(z.unknown()).optional(),
+  }),
 })
 
 export const CompactionEvent = base.extend({
@@ -192,6 +204,7 @@ export const AnyEventSchema = z.discriminatedUnion("type", [
 ])
 
 export type SessionStartEvent = z.infer<typeof SessionStartEvent>
+export type UserTurnContext = z.infer<typeof UserTurnContext>
 export type UserTurnEvent = z.infer<typeof UserTurnEvent>
 export type AssistantTextEvent = z.infer<typeof AssistantTextEvent>
 export type ToolCallEvent = z.infer<typeof ToolCallEvent>
@@ -261,7 +274,7 @@ export function initSession(opts: {
 }): void {
   const event: SessionStartEvent = {
     type: "session_start",
-    schema_version: 1,
+    schema_version: 2,
     id: opts.id,
     model: opts.model,
     codebase_hash: opts.codebaseHash,

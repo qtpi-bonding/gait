@@ -1,7 +1,7 @@
 import fs from "fs"
 import path from "path"
 import crypto from "crypto"
-import { streamText, type CoreTool } from "ai"
+import { streamText, generateText, type CoreTool } from "ai"
 import { loadConfig } from "../../config"
 import { getSDK } from "../../provider/provider"
 import { getModelContextLength } from "../../provider/models"
@@ -30,6 +30,7 @@ import {
   getInformSignal, resetInformSignal,
   getInformConvergenceSignal, resetInformConvergenceSignal,
 } from "../../tools/inform"
+import { getOutputSignal, resetOutputSignal } from "../../tools/output"
 import { DualStream } from "../../stream"
 import readline from "readline"
 
@@ -258,7 +259,17 @@ export async function runTurn(args: RunArgs): Promise<void> {
 
     // 3. Append user_turn if --task provided
     if (task) {
-      appendEvent(txPath, { type: "user_turn", content: task, ts: Date.now() })
+      appendEvent(txPath, {
+        type: "user_turn",
+        content: task,
+        context: {
+          codebase_hash: codebaseHash || undefined,
+          codebase_dirty: codebaseDirty,
+          dirty_files: dirtyFiles.length > 0 ? dirtyFiles : undefined,
+          injected_files: files.length > 0 ? files : undefined,
+        },
+        ts: Date.now(),
+      })
     }
 
     // 5b. Token estimation + compaction
@@ -324,6 +335,7 @@ export async function runTurn(args: RunArgs): Promise<void> {
     resetClarifyConvergenceSignal()
     resetInformSignal()
     resetInformConvergenceSignal()
+    resetOutputSignal()
 
     const ac = new AbortController()
 
@@ -335,7 +347,7 @@ export async function runTurn(args: RunArgs): Promise<void> {
       trackedTools[name] = {
         ...t,
         execute: async (args: any, opts: any) => {
-          const isPermGated = !config.allow.includes(name) && name !== "clarify" && name !== "clarify_convergence" && name !== "inform" && name !== "inform_convergence" && name !== "spawn_agent" && name !== "list_agents"
+          const isPermGated = !config.allow.includes(name) && name !== "clarify" && name !== "clarify_convergence" && name !== "inform" && name !== "inform_convergence" && name !== "spawn_agent" && name !== "list_agents" && name !== "output"
           if (isPermGated) {
             return await (t as any).execute(args, opts)
           }
@@ -389,6 +401,25 @@ export async function runTurn(args: RunArgs): Promise<void> {
         appendEvent(txPath, { type: "error", message: String(err), phase: "llm", ts: Date.now() })
         commitSession(workspacePath, sessionId, `session(${sessionId}): error`)
         process.exit(1)
+      }
+    }
+
+    // Force output() if model didn't call it voluntarily
+    if (!getOutputSignal() && !getClarifySignal() && !getInformSignal() && pendingPermissions.length === 0) {
+      try {
+        const currentMessages = reconstructMessages(txPath)
+        const turnCtxMsg = buildTurnContext({ codebaseHash, dirtyFiles, timestamp: Date.now() })
+        ;(currentMessages as any[]).unshift({ role: "user", content: turnCtxMsg })
+        await generateText({
+          model,
+          system: buildSystemPrompt({ sessionId, workspacePath, codebasePath, agentPrompt }),
+          messages: currentMessages,
+          tools: { output: trackedTools.output! },
+          toolChoice: { type: "tool", toolName: "output" },
+          maxSteps: 1,
+        })
+      } catch {
+        // non-fatal — fall back to lastStepText in turn_complete
       }
     }
 
@@ -476,11 +507,16 @@ export async function runTurn(args: RunArgs): Promise<void> {
 
     // turn_complete
     const turnN = countTurnComplete(readEvents(txPath)) + 1
+    const outputSignal = getOutputSignal()
     const turnCompleteEvt: TurnCompleteEvent = {
       type: "turn_complete",
       usage: totalUsage,
       codebase_hash: codebaseHash,
       codebase_dirty: codebaseDirty,
+      output: {
+        summary: outputSignal?.summary ?? lastStepText.split("\n")[0] ?? "",
+        result: outputSignal?.result,
+      },
       ts: Date.now(),
     }
     appendEvent(txPath, turnCompleteEvt)
