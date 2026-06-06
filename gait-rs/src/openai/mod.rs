@@ -1,5 +1,5 @@
 use crate::provider::{ChunkStream, Provider, ProviderError, StreamChunk};
-use crate::types::{Message, ToolDef, Usage, AssistantContent, AssistantPart, MessageContent};
+use crate::types::{Message, Tool, Usage, AssistantContent, AssistantPart, MessageContent};
 use async_openai::{
     Client,
     config::OpenAIConfig,
@@ -105,7 +105,7 @@ impl Provider for OpenAIProvider {
         &self,
         system: &str,
         messages: &[Message],
-        tools: &[ToolDef],
+        tools: &[Box<dyn Tool>],
     ) -> Result<ChunkStream, ProviderError> {
         let client = self.build_client();
 
@@ -120,9 +120,9 @@ impl Provider for OpenAIProvider {
         let oai_tools: Vec<ChatCompletionTool> = tools.iter().map(|t| ChatCompletionTool {
             r#type: ChatCompletionToolType::Function,
             function: FunctionObject {
-                name: t.name.clone(),
-                description: Some(t.description.clone()),
-                parameters: Some(t.parameters.clone()),
+                name: t.name().to_string(),
+                description: Some(t.description().to_string()),
+                parameters: Some(t.parameters().clone()),
                 strict: None,
             },
         }).collect();

@@ -1,5 +1,5 @@
 use crate::provider::{Provider, ProviderError};
-use crate::types::{Message, Usage};
+use crate::types::{Message, Tool, Usage};
 use crate::stream::stream_text;
 
 pub struct GenerateResult {
@@ -12,6 +12,6 @@ pub async fn generate_text(
     system: &str,
     messages: &[Message],
 ) -> Result<GenerateResult, ProviderError> {
-    let result = stream_text(provider, system, messages, &[]).await?;
+    let result = stream_text(provider, system, messages, &[] as &[Box<dyn Tool>]).await?;
     Ok(GenerateResult { text: result.text, usage: result.usage })
 }

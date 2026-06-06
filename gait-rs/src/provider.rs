@@ -1,4 +1,4 @@
-use crate::types::{Message, ToolDef, Usage};
+use crate::types::{Message, Tool, Usage};
 use std::pin::Pin;
 use futures_util::Stream;
 
@@ -36,7 +36,7 @@ pub trait Provider: Send + Sync {
         &self,
         system: &str,
         messages: &[Message],
-        tools: &[ToolDef],
+        tools: &[Box<dyn Tool>],
     ) -> Result<ChunkStream, ProviderError>;
 
     fn model_id(&self) -> &str;

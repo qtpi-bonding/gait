@@ -16,6 +16,11 @@ eventsource-stream = "0.2"
 async-stream       = "0.3"
 async-trait        = "0.1"
 anyhow             = "1"
+schemars = { version = "0.8", features = ["derive"] }
+glob = "0.3"
+walkdir = "2"
+regex = "1"
 
 [dev-dependencies]
 tokio-test = "0.4"
+tempfile = "3"

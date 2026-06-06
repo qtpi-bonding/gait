@@ -1,5 +1,5 @@
 use crate::provider::{Provider, ProviderError, StreamChunk};
-use crate::types::{Message, ToolDef, ToolCall, ToolResult, ToolResultKind, StepFinish, Usage};
+use crate::types::{Message, Tool, ToolCall, ToolResult, ToolResultKind, StepFinish, Usage};
 use futures_util::StreamExt;
 
 pub struct StreamTextResult {
@@ -12,7 +12,7 @@ pub async fn stream_text(
     provider: &dyn Provider,
     system: &str,
     messages: &[Message],
-    tools: &[ToolDef],
+    tools: &[Box<dyn Tool>],
 ) -> Result<StreamTextResult, ProviderError> {
     stream_text_with_callback(provider, system, messages, tools, |_| {}).await
 }
@@ -21,7 +21,7 @@ pub async fn stream_text_with_callback<F>(
     provider: &dyn Provider,
     system: &str,
     messages: &[Message],
-    tools: &[ToolDef],
+    tools: &[Box<dyn Tool>],
     mut on_token: F,
 ) -> Result<StreamTextResult, ProviderError>
 where
@@ -78,10 +78,10 @@ where
         // Execute all tool calls
         let mut tool_results: Vec<ToolResult> = vec![];
         for tc in &step_tool_calls {
-            let tool = tools.iter().find(|t| t.name == tc.tool_name);
-            let result = match tool {
-                Some(t) => (t.execute)(tc.args.clone()).await
-                    .unwrap_or_else(|e| serde_json::Value::String(format!("error: {e}"))),
+        let tool = tools.iter().find(|t| t.name() == tc.tool_name);
+        let result = match tool {
+            Some(t) => t.execute(tc.args.clone()).await
+                .unwrap_or_else(|e| serde_json::Value::String(format!("error: {e}"))),
                 None => serde_json::Value::String(format!("unknown tool: {}", tc.tool_name)),
             };
             tool_results.push(ToolResult {
@@ -120,7 +120,7 @@ where
 mod tests {
     use super::*;
     use crate::provider::{ChunkStream, Provider, StreamChunk};
-    use crate::types::{Message, ToolDef};
+    use crate::types::{Message, ToolDef, Tool};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use futures_util::stream;
@@ -136,7 +136,7 @@ mod tests {
             &self,
             _system: &str,
             _messages: &[Message],
-            _tools: &[ToolDef],
+            _tools: &[Box<dyn Tool>],
         ) -> Result<ChunkStream, ProviderError> {
             let count = self.call_count.fetch_add(1, Ordering::SeqCst);
             if count == 0 {
@@ -180,7 +180,7 @@ mod tests {
             &provider,
             "",
             &[Message::User { content: crate::types::MessageContent::Text("go".into()) }],
-            &[tool],
+            &[Box::new(tool)],
         ).await.unwrap();
 
         assert_eq!(result.text, "done");
@@ -196,7 +196,7 @@ mod tests {
             &provider,
             "",
             &[Message::User { content: crate::types::MessageContent::Text("hi".into()) }],
-            &[],
+            &[] as &[Box<dyn Tool>],
         ).await.unwrap();
         assert_eq!(result.text, "done");
     }

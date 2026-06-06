@@ -102,6 +102,35 @@ pub struct StepFinish {
     pub usage: Usage,
 }
 
+/// Extensible tool interface. Implement this to define a callable tool for `stream_text`.
+/// `ToolDef` implements this for backward-compat with ad-hoc closure-based tools.
+#[async_trait::async_trait]
+pub trait Tool: Send + Sync {
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
+    fn parameters(&self) -> &serde_json::Value;
+    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value>;
+
+    /// Convenience: box self into `Box<dyn Tool>`.
+    fn boxed(self) -> Box<dyn Tool>
+    where
+        Self: Sized + 'static,
+    {
+        Box::new(self)
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for ToolDef {
+    fn name(&self) -> &str { &self.name }
+    fn description(&self) -> &str { &self.description }
+    fn parameters(&self) -> &serde_json::Value { &self.parameters }
+    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        // (self.execute) with parens = field access, not recursive method call.
+        (self.execute)(args).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +174,20 @@ mod tests {
         let c = a.add(&b);
         assert_eq!(c.input_tokens, 15);
         assert_eq!(c.output_tokens, 23);
+    }
+
+    #[tokio::test]
+    async fn tool_def_implements_tool_trait() {
+        let tool = ToolDef {
+            name: "greet".into(),
+            description: "says hi".into(),
+            parameters: serde_json::json!({ "type": "object" }),
+            execute: Box::new(|_args| Box::pin(async move {
+                Ok(serde_json::Value::String("hello".into()))
+            })),
+        };
+        let result = tool.execute(serde_json::json!({})).await.unwrap();
+        assert_eq!(result, serde_json::Value::String("hello".into()));
+        assert_eq!(tool.name(), "greet");
     }
 }
