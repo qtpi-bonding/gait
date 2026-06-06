@@ -34,6 +34,21 @@ describe("buildSystemPrompt", () => {
     expect(result).toContain("</agents>")
     fs.rmSync(tmp, { recursive: true })
   })
+
+  it("includes <agent-instructions> block when agentPrompt is provided", () => {
+    const result = buildSystemPrompt({
+      sessionId: "s1", workspacePath: "/nonexistent", codebasePath: "/cb",
+      agentPrompt: "Focus on security.",
+    })
+    expect(result).toContain("<agent-instructions>")
+    expect(result).toContain("Focus on security.")
+    expect(result).toContain("</agent-instructions>")
+  })
+
+  it("omits <agent-instructions> block when agentPrompt is not provided", () => {
+    const result = buildSystemPrompt({ sessionId: "s1", workspacePath: "/nonexistent", codebasePath: "/cb" })
+    expect(result).not.toContain("<agent-instructions>")
+  })
 })
 
 describe("buildTurnContext", () => {

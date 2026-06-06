@@ -17,6 +17,7 @@ const McpServerConfig = z.object({
 
 const ConfigSchema = z.object({
   model: z.string(),
+  default_agent: z.string().optional(),
   allow: z.array(z.string()).default([]),
   tools: z.array(ConfigDefinedTool).default([]),
   mcpServers: z.array(McpServerConfig).default([]),

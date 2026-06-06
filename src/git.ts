@@ -7,19 +7,10 @@ function run(cmd: string, cwd: string): string {
 }
 
 export function checkGitVersion(): void {
-  let output: string
   try {
-    output = run("git --version", process.cwd())
+    run("git --version", process.cwd())
   } catch {
     throw new Error("git is not installed or not in PATH. gait requires git.")
-  }
-  const match = output.match(/(\d+)\.(\d+)\.(\d+)/)
-  if (!match) throw new Error(`Could not parse git version from: ${output}`)
-  const [, major, minor] = match.map(Number)
-  if (major! < 2 || (major === 2 && minor! < 42)) {
-    throw new Error(
-      `gait requires git >= 2.42 (for git worktree add --orphan). Found: ${output.trim()}`
-    )
   }
 }
 
@@ -108,8 +99,8 @@ export function createSessionWorktree(workspacePath: string, sessionId: string):
       // Stale worktree recovery: branch exists but dir was deleted — re-attach
       run(`git worktree add sessions/${sessionId} ${branch}`, workspacePath)
     } else {
-      // Fresh session: create orphan branch + initial commit
-      run(`git worktree add --orphan -b ${branch} sessions/${sessionId}`, workspacePath)
+      // Fresh session: branch off main + initial commit
+      run(`git worktree add -b ${branch} sessions/${sessionId} main`, workspacePath)
       fs.writeFileSync(path.join(sessionDir, ".gitignore"), "lock\n", "utf-8")
       run("git add .gitignore", sessionDir)
       run(`git commit -m "session(${sessionId}): init"`, sessionDir)
@@ -151,6 +142,47 @@ export function commitSession(workspacePath: string, sessionId: string, message:
   } catch (err) { throw new Error(`git commit failed: ${err}`) }
 }
 
+// Merges the session branch into main and removes the worktree.
+// Call this when a session is done — after this, git branch --merged main lists it as finished.
+export function finishSession(workspacePath: string, sessionId: string): void {
+  if (!isExistingWorktree(workspacePath, sessionId) && !branchExists(workspacePath, `session/${sessionId}`)) return
+
+  withWorkspaceLock(workspacePath, () => {
+    // Remove worktree first (required before branch ops)
+    try {
+      run(`git worktree remove --force sessions/${sessionId}`, workspacePath)
+    } catch {
+      try { run("git worktree prune", workspacePath) } catch {}
+    }
+
+    const branch = `session/${sessionId}`
+    if (branchExists(workspacePath, branch)) {
+      run(`git merge --no-ff -m "session(${sessionId}): finish" ${branch}`, workspacePath)
+    }
+  })
+}
+
+// Returns session IDs for all unmerged session/* branches (i.e. active sessions).
+export function listActiveSessions(workspacePath: string): string[] {
+  try {
+    const allBranches = run("git branch --list 'session/*'", workspacePath)
+    const mergedBranches = run("git branch --merged main --list 'session/*'", workspacePath)
+
+    // git branch output: "* current", "+ checked-out-in-worktree", "  other"
+    const parse = (out: string) =>
+      out.split("\n")
+        .map(l => l.replace(/^[*+]?\s+/, "").trim())
+        .filter(l => l.startsWith("session/"))
+        .map(l => l.slice("session/".length))
+
+    const all = new Set(parse(allBranches))
+    const merged = new Set(parse(mergedBranches))
+    return [...all].filter(id => !merged.has(id))
+  } catch {
+    return []
+  }
+}
+
 // Used by gait init
 export function initWorkspace(workspacePath: string): void {
   try {
@@ -166,8 +198,8 @@ export function addSubmodule(workspacePath: string, repoUrl: string): void {
 
 export function initialCommit(workspacePath: string): void {
   const toStage = ["gait.jsonc", ".gitignore"]
-  const agentsPath = path.join(workspacePath, "AGENTS.md")
-  if (fs.existsSync(agentsPath)) toStage.push("AGENTS.md")
+  if (fs.existsSync(path.join(workspacePath, "AGENTS.md"))) toStage.push("AGENTS.md")
+  if (fs.existsSync(path.join(workspacePath, "agents"))) toStage.push("agents")
   run(`git add ${toStage.join(" ")}`, workspacePath)
   run('git commit -m "gait: init workspace"', workspacePath)
 }

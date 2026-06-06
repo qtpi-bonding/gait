@@ -21,6 +21,7 @@ import { wrapTools, type PendingPermission } from "../../permissions"
 import { createBuiltinTools, createConfigTools } from "../../tools/index"
 import { createMcpTools } from "../../tools/mcp"
 import { Auth } from "../../auth/index"
+import { resolveAgentPrompt } from "../../agent"
 import { createSpawnSubagentTool, registerSubagentRunner, type SubagentResult } from "../../tools/spawn_subagent"
 import {
   getClarifySignal, resetClarifySignal,
@@ -41,6 +42,8 @@ interface RunArgs {
   workspacePath: string
   codebasePath?: string  // overrides default <workspacePath>/codebase
   isSubagent?: boolean
+  agent?: string         // named agent from agents/{name}.md
+  systemPrompt?: string  // inline system prompt (takes precedence over agent)
 }
 
 function transcriptPath(workspacePath: string, sessionId: string): string {
@@ -51,16 +54,21 @@ function sessionJsonPath(workspacePath: string, sessionId: string): string {
   return path.join(workspacePath, "sessions", sessionId, "session.json")
 }
 
-function readCodebasePath(workspacePath: string, sessionId: string): string | undefined {
+function readSessionJson(workspacePath: string, sessionId: string): any {
   const p = sessionJsonPath(workspacePath, sessionId)
-  if (!fs.existsSync(p)) return undefined
-  try { return JSON.parse(fs.readFileSync(p, "utf-8")).codebase_path } catch { return undefined }
+  if (!fs.existsSync(p)) return {}
+  try { return JSON.parse(fs.readFileSync(p, "utf-8")) } catch { return {} }
+}
+
+function readCodebasePath(workspacePath: string, sessionId: string): string | undefined {
+  return readSessionJson(workspacePath, sessionId).codebase_path
 }
 
 function updateSessionJson(
   workspacePath: string, sessionId: string,
   codebasePath: string,
-  usageDelta: { input: number; output: number; cache_read: number; cache_write: number }
+  usageDelta: { input: number; output: number; cache_read: number; cache_write: number },
+  agentInfo?: { agentName?: string; systemPrompt?: string }
 ): void {
   const p = sessionJsonPath(workspacePath, sessionId)
   let existing: any = {
@@ -71,8 +79,11 @@ function updateSessionJson(
   }
   if (fs.existsSync(p)) {
     try { existing = JSON.parse(fs.readFileSync(p, "utf-8")) } catch {}
-    // codebase_path is write-once — never overwritten on subsequent turns
+    // codebase_path, agent_name, system_prompt are write-once — never overwritten
   }
+  // Write-once: only set on first turn
+  if (agentInfo?.agentName && !existing.agent_name) existing.agent_name = agentInfo.agentName
+  if (agentInfo?.systemPrompt && !existing.system_prompt) existing.system_prompt = agentInfo.systemPrompt
   existing.token_totals.input += usageDelta.input
   existing.token_totals.output += usageDelta.output
   existing.token_totals.cache_read += usageDelta.cache_read
@@ -187,6 +198,10 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
     ?? readCodebasePath(workspacePath, sessionId)
     ?? path.join(workspacePath, "codebase")
 
+  // Resolve agent prompt: inline > --agent flag > session.json > config.default_agent
+  // (reads session.json before lock so we can fall back to it before the config is loaded)
+  const savedSession = readSessionJson(workspacePath, sessionId)
+
   createSessionWorktree(workspacePath, sessionId)
   const sessionDir = path.join(workspacePath, "sessions", sessionId)
   const txPath = transcriptPath(workspacePath, sessionId)
@@ -202,6 +217,13 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
     const authEntry = await Auth.get(providerId)
     const apiKey = authEntry?.type === "api" ? authEntry.key : undefined
     const model = getSDK(config.model, apiKey)
+
+    // Resolve agent system prompt (first turn: from args; subsequent turns: from session.json)
+    const agentPrompt = resolveAgentPrompt(workspacePath, {
+      systemPrompt: args.systemPrompt ?? savedSession.system_prompt,
+      agentName: args.agent ?? savedSession.agent_name,
+      defaultAgent: config.default_agent,
+    })
 
     // 1b. Initialize session transcript on first run
     const dirtyFiles = getCodebaseDirtyFiles(codebasePath)
@@ -355,7 +377,7 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
     let totalUsage = { input: 0, output: 0, cache_read: 0, cache_write: 0 }
 
     try {
-      const systemPrompt = buildSystemPrompt({ sessionId, workspacePath, codebasePath })
+      const systemPrompt = buildSystemPrompt({ sessionId, workspacePath, codebasePath, agentPrompt })
 
       // No await — streamText returns immediately; streaming happens in the for-await below
       const result = streamText({
@@ -500,7 +522,10 @@ export async function runTurn(args: RunArgs): Promise<SubagentResult | null> {
       ts: Date.now(),
     }
     appendEvent(txPath, turnCompleteEvt)
-    updateSessionJson(workspacePath, sessionId, codebasePath, totalUsage)
+    updateSessionJson(workspacePath, sessionId, codebasePath, totalUsage, {
+      agentName: args.agent ?? savedSession.agent_name,
+      systemPrompt: args.systemPrompt ?? savedSession.system_prompt,
+    })
     commitSession(workspacePath, sessionId, `session(${sessionId}): turn ${turnN}`)
 
     if (isSubagent) {
@@ -528,6 +553,8 @@ export async function runCommand(argv: string[]): Promise<void> {
   const files: string[] = []
   let workspacePath = process.cwd()
   let codebasePath: string | undefined
+  let agent: string | undefined
+  let systemPrompt: string | undefined
 
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--session" && argv[i + 1]) {
@@ -538,6 +565,10 @@ export async function runCommand(argv: string[]): Promise<void> {
       workspacePath = argv[++i]!
     } else if (argv[i] === "--codebase" && argv[i + 1]) {
       codebasePath = argv[++i]!
+    } else if (argv[i] === "--agent" && argv[i + 1]) {
+      agent = argv[++i]
+    } else if (argv[i] === "--system-prompt" && argv[i + 1]) {
+      systemPrompt = argv[++i]
     } else if (argv[i] === "--auto") {
       auto = true
     } else if (argv[i] && !argv[i]!.startsWith("-")) {
@@ -550,5 +581,5 @@ export async function runCommand(argv: string[]): Promise<void> {
     process.stderr.write(`[gait] starting session ${sessionId}\n`)
   }
 
-  await runTurn({ sessionId, task, auto, files, workspacePath, codebasePath })
+  await runTurn({ sessionId, task, auto, files, workspacePath, codebasePath, agent, systemPrompt })
 }

@@ -6,6 +6,7 @@ import { execSync } from "child_process"
 import {
   createSessionWorktree, removeSessionWorktree,
   commitSession, getCodebaseDirtyFiles,
+  finishSession, listActiveSessions,
 } from "./git"
 
 let tmpDir: string
@@ -62,6 +63,16 @@ describe("createSessionWorktree", () => {
     }).trim()
     expect(log.length).toBeGreaterThan(0)
     expect(log).toContain("s1234")
+  })
+
+  it("session branch shares history with main (not an orphan)", () => {
+    createSessionWorktree(tmpDir, "s1234")
+    const mainHash = execSync("git rev-parse HEAD", { cwd: tmpDir, encoding: "utf-8" }).trim()
+    const mergeBase = execSync(
+      `git merge-base session/s1234 HEAD`,
+      { cwd: tmpDir, encoding: "utf-8" }
+    ).trim()
+    expect(mergeBase).toBe(mainHash)
   })
 
   it("does not affect the workspace main branch", () => {
@@ -156,6 +167,55 @@ describe("commitSession", () => {
     commitSession(tmpDir, "sLEG", "session(sLEG): legacy turn 1")
     const log = execSync("git log --oneline", { cwd: tmpDir, encoding: "utf-8" }).trim()
     expect(log).toContain("legacy turn 1")
+  })
+})
+
+describe("finishSession", () => {
+  it("merges session branch into main and removes worktree", () => {
+    createSessionWorktree(tmpDir, "s1234")
+    fs.writeFileSync(path.join(tmpDir, "sessions", "s1234", "transcript.jsonl"), '{"ts":1}\n')
+    commitSession(tmpDir, "s1234", "session(s1234): turn 1")
+
+    finishSession(tmpDir, "s1234")
+
+    // Worktree dir is gone
+    expect(fs.existsSync(path.join(tmpDir, "sessions", "s1234"))).toBe(false)
+    // Branch is now merged into main
+    const merged = execSync("git branch --merged main", { cwd: tmpDir, encoding: "utf-8" })
+    expect(merged).toContain("session/s1234")
+  })
+
+  it("is safe to call when worktree does not exist", () => {
+    expect(() => finishSession(tmpDir, "nonexistent")).not.toThrow()
+  })
+})
+
+describe("listActiveSessions", () => {
+  it("returns empty array when no sessions exist", () => {
+    expect(listActiveSessions(tmpDir)).toEqual([])
+  })
+
+  it("returns session id for an unmerged session branch", () => {
+    createSessionWorktree(tmpDir, "s-active")
+    const active = listActiveSessions(tmpDir)
+    expect(active).toContain("s-active")
+  })
+
+  it("excludes finished (merged) sessions", () => {
+    createSessionWorktree(tmpDir, "s-done")
+    createSessionWorktree(tmpDir, "s-active")
+    finishSession(tmpDir, "s-done")
+    const active = listActiveSessions(tmpDir)
+    expect(active).not.toContain("s-done")
+    expect(active).toContain("s-active")
+  })
+
+  it("returns multiple active sessions", () => {
+    createSessionWorktree(tmpDir, "s-a1")
+    createSessionWorktree(tmpDir, "s-a2")
+    const active = listActiveSessions(tmpDir)
+    expect(active).toContain("s-a1")
+    expect(active).toContain("s-a2")
   })
 })
 
