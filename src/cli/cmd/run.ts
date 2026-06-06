@@ -466,6 +466,7 @@ export async function runTurn(args: RunArgs): Promise<void> {
       await resolvePermissions(pendingPermissions, txPath, codebasePath, auto, sessionId)
       if (auto) {
         pendingPermissions.length = 0
+        releaseLock(sessionDir)
         return runTurn({ ...args })
       }
       commitSession(workspacePath, sessionId, `session(${sessionId}): permissions`)
