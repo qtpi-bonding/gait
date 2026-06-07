@@ -20,6 +20,8 @@ schemars = { version = "0.8", features = ["derive"] }
 glob = "0.3"
 walkdir = "2"
 regex = "1"
+git2 = "0.19"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
