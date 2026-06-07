@@ -280,6 +280,17 @@ pub fn append_event(path: &Path, event: &AnyEvent) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Writes event to transcript file AND stdout as NDJSON.
+/// Use for events in the current session. Cross-session writes use `append_event`.
+pub fn emit_event(path: &Path, event: &AnyEvent) -> anyhow::Result<()> {
+    use std::io::Write;
+    let json = serde_json::to_string(event)?;
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    writeln!(file, "{}", json)?;
+    println!("{}", json);
+    Ok(())
+}
+
 pub fn read_events(path: &Path) -> anyhow::Result<Vec<AnyEvent>> {
     if !path.exists() { return Ok(vec![]); }
     let text = std::fs::read_to_string(path)?;
@@ -310,7 +321,7 @@ pub struct InitSessionOpts {
 }
 
 pub fn init_session(opts: InitSessionOpts) -> anyhow::Result<()> {
-    append_event(&opts.transcript_path, &AnyEvent::SessionStart {
+    emit_event(&opts.transcript_path, &AnyEvent::SessionStart {
         schema_version: 2,
         id: opts.id,
         model: opts.model,
@@ -473,5 +484,18 @@ mod tests {
             let v: serde_json::Value = serde_json::from_str(&json).unwrap();
             assert!(v.get("type").is_some(), "missing type tag in: {json}");
         }
+    }
+
+    #[test]
+    fn emit_event_writes_to_transcript() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        emit_event(&path, &AnyEvent::AssistantText {
+            content: "hello emit".into(),
+            ts: 1,
+        }).unwrap();
+        let events = read_events(&path).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], AnyEvent::AssistantText { content, .. } if content == "hello emit"));
     }
 }
