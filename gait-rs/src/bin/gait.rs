@@ -3,13 +3,21 @@ use std::sync::Arc;
 use gait_ai::{
     config::load_config,
     auth::resolve_api_key,
+    git,
     factory::load_provider,
     tools::builtin_tools,
     turn::{TurnOpts, run_turn},
 };
 
 fn usage() -> ! {
-    eprintln!("usage: gait run [--session <id>] [--task <text>] [--workspace <path>] [--codebase <path>] [--auto] [--model <provider/model>]");
+    eprintln!("usage: gait <command> [options]");
+    eprintln!("commands:");
+    eprintln!("  run      [--session <id>] [--task <text>] [--workspace <path>] [--codebase <path>] [--auto] [--model <provider/model>]");
+    eprintln!("  init     [<repo-url>]");
+    eprintln!("  finish   <session-id> [--workspace <path>]");
+    eprintln!("  sessions [--workspace <path>]");
+    eprintln!("  auth     <list|add|remove> [<provider>]");
+    eprintln!("  models   [<filter>]");
     std::process::exit(1);
 }
 
@@ -19,7 +27,12 @@ async fn main() {
     if args.len() < 2 { usage(); }
 
     match args[1].as_str() {
-        "run" => cmd_run(&args[2..]).await,
+        "run"      => cmd_run(&args[2..]).await,
+        "init"     => cmd_init(&args[2..]),
+        "finish"   => cmd_finish(&args[2..]),
+        "sessions" => cmd_sessions(&args[2..]),
+        "auth"     => cmd_auth(&args[2..]),
+        "models"   => cmd_models(&args[2..]).await,
         _ => {
             eprintln!("[gait] unknown command: {}", args[1]);
             usage();
@@ -132,5 +145,190 @@ async fn cmd_run(argv: &[String]) {
     ).await {
         eprintln!("[gait] error: {}", e);
         std::process::exit(1);
+    }
+}
+
+fn cmd_init(argv: &[String]) {
+    let repo_url = argv.first().filter(|a| !a.starts_with('-')).cloned();
+    let workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    if let Err(e) = git::init_workspace(&workspace) {
+        eprintln!("[gait] git init failed: {}", e);
+        std::process::exit(1);
+    }
+
+    let _ = std::fs::create_dir_all(workspace.join("sessions"));
+
+    // .gitignore
+    let gi_path = workspace.join(".gitignore");
+    let gi_entry = "sessions/\n.gait-ws.lock\n";
+    if !gi_path.exists() {
+        let _ = std::fs::write(&gi_path, gi_entry);
+    } else {
+        let existing = std::fs::read_to_string(&gi_path).unwrap_or_default();
+        if !existing.contains("sessions/") {
+            let _ = std::fs::write(&gi_path, format!("{}\n{}", existing, gi_entry));
+        }
+    }
+
+    // gait.jsonc
+    let config_path = workspace.join("gait.jsonc");
+    if !config_path.exists() {
+        let _ = std::fs::write(&config_path, "{\n  // gait configuration\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  // Allow list: tools that run without approval. Default empty = everything gated.\n  \"allow\": [],\n  // Tier 1 config-defined tools: shell commands the LLM can call by name\n  \"tools\": []\n}\n");
+    }
+
+    // AGENTS.md
+    let agents_path = workspace.join("AGENTS.md");
+    if !agents_path.exists() {
+        let _ = std::fs::write(&agents_path, "# gait agent\n\nYou are a coding agent running inside gait, a stateless turn-based agent framework.\n\n**How it works:**\n- Each `gait run` invocation is one turn. Your full conversation history is replayed from a transcript each turn.\n- The codebase is the external repo you work on. The workspace holds gait config and session history.\n\n**Tools:**\n- `read`, `write`, `edit`, `glob`, `grep`, `ls`, `shell` — work on the codebase\n- Tools not in the allow list require user approval before running\n\n**Turn model:**\n- Complete your task in as few turns as possible\n- Read files rather than asking when you need information\n");
+    }
+
+    // Stage and initial commit
+    let repo = match git2::Repository::open(&workspace) {
+        Ok(r) => r,
+        Err(e) => { eprintln!("[gait] cannot open repo: {e}"); std::process::exit(1); }
+    };
+    let sig = repo.signature()
+        .or_else(|_| git2::Signature::now("gait", "gait@localhost"))
+        .unwrap();
+    let mut index = repo.index().unwrap();
+
+    let to_stage = ["gait.jsonc", ".gitignore", "AGENTS.md"];
+    for f in &to_stage {
+        if workspace.join(f).exists() {
+            let _ = index.add_path(std::path::Path::new(f));
+        }
+    }
+    index.write().unwrap();
+    let tree_id = index.write_tree().unwrap();
+    let tree = repo.find_tree(tree_id).unwrap();
+
+    let parent_commits: Vec<git2::Commit> = repo.head()
+        .ok().and_then(|h| h.peel_to_commit().ok()).into_iter().collect();
+    let parents: Vec<&git2::Commit> = parent_commits.iter().collect();
+    repo.commit(Some("HEAD"), &sig, &sig, "gait: init workspace", &tree, &parents).unwrap();
+
+    if let Some(url) = repo_url {
+        // Add submodule via git CLI (git2 submodule API is complex)
+        let status = std::process::Command::new("git")
+            .args(["submodule", "add", &url, "codebase"])
+            .current_dir(&workspace)
+            .status();
+        match status {
+            Ok(s) if s.success() => {
+                eprintln!("[gait] workspace initialized with codebase submodule at {url}");
+            }
+            _ => eprintln!("[gait] warning: could not add submodule {url}"),
+        }
+    } else {
+        eprintln!("[gait] workspace initialized");
+        eprintln!("[gait] start an agent turn: gait run --task \"...\"");
+    }
+}
+
+fn cmd_finish(argv: &[String]) {
+    let mut session_id: Option<String> = None;
+    let mut workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut i = 0;
+    while i < argv.len() {
+        match argv[i].as_str() {
+            "--workspace" => { i += 1; if let Some(p) = argv.get(i) { workspace = std::path::PathBuf::from(p); } }
+            other if !other.starts_with('-') => { session_id = Some(other.to_string()); }
+            _ => {}
+        }
+        i += 1;
+    }
+    let session_id = match session_id {
+        Some(id) => id,
+        None => {
+            eprintln!("usage: gait finish <session-id> [--workspace <path>]");
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = git::finish_session(&workspace, &session_id) {
+        eprintln!("[gait] error: {}", e);
+        std::process::exit(1);
+    }
+    eprintln!("[gait] session {} merged into main", session_id);
+}
+
+fn cmd_sessions(argv: &[String]) {
+    let mut workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut i = 0;
+    while i < argv.len() {
+        if argv[i] == "--workspace" { i += 1; if let Some(p) = argv.get(i) { workspace = std::path::PathBuf::from(p); } }
+        i += 1;
+    }
+    match git::list_active_sessions(&workspace) {
+        Ok(sessions) if sessions.is_empty() => println!("No active sessions."),
+        Ok(sessions) => { for id in sessions { println!("{}", id); } }
+        Err(e) => { eprintln!("[gait] error: {}", e); std::process::exit(1); }
+    }
+}
+
+fn cmd_auth(argv: &[String]) {
+    use gait_ai::auth;
+    match argv.first().map(|s| s.as_str()) {
+        None | Some("list") | Some("ls") => {
+            let creds = auth::list_credentials();
+            if creds.is_empty() {
+                println!("No credentials configured. Run: gait auth add <provider>");
+            } else {
+                let mut sorted: Vec<_> = creds.into_iter().collect();
+                sorted.sort_by(|a, b| a.0.cmp(&b.0));
+                for (k, v) in sorted { println!("  {}: {}", k, v); }
+            }
+        }
+        Some("add") => {
+            let provider = match argv.get(1) {
+                Some(p) => p.as_str(),
+                None => { eprintln!("usage: gait auth add <provider>"); std::process::exit(1); }
+            };
+            eprint!("{} API key: ", provider);
+            use std::io::BufRead;
+            let key = std::io::BufReader::new(std::io::stdin())
+                .lines().next()
+                .and_then(|l| l.ok())
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if key.is_empty() { eprintln!("empty key, aborted"); std::process::exit(1); }
+            if let Err(e) = auth::write_api_key(provider, &key) {
+                eprintln!("[gait] error: {}", e); std::process::exit(1);
+            }
+            println!("Saved {} credentials", provider);
+        }
+        Some("remove") | Some("rm") => {
+            let provider = match argv.get(1) {
+                Some(p) => p.as_str(),
+                None => { eprintln!("usage: gait auth remove <provider>"); std::process::exit(1); }
+            };
+            if let Err(e) = auth::remove_api_key(provider) {
+                eprintln!("[gait] error: {}", e); std::process::exit(1);
+            }
+            println!("Removed {} credentials", provider);
+        }
+        Some(other) => {
+            eprintln!("unknown auth subcommand: {}", other);
+            eprintln!("usage: gait auth <list|add|remove> [<provider>]");
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn cmd_models(argv: &[String]) {
+    use gait_ai::models;
+    let filter = argv.first().filter(|a| !a.starts_with('-')).map(|s| s.as_str());
+    match models::get_models().await {
+        Ok(models) => {
+            let filtered = models::filter_models(&models, filter);
+            for m in &filtered {
+                println!("  {}/{}", m.provider, m.id);
+            }
+            println!("\n{} models{}",
+                filtered.len(),
+                filter.map(|f| format!(" matching \"{}\"", f)).unwrap_or_default());
+        }
+        Err(e) => { eprintln!("Error fetching models: {}", e); std::process::exit(1); }
     }
 }
