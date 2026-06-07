@@ -82,6 +82,8 @@ impl std::fmt::Debug for ToolDef {
 pub struct Usage {
     pub input_tokens: u32,
     pub output_tokens: u32,
+    pub cache_read_tokens: u32,
+    pub cache_write_tokens: u32,
 }
 
 impl Usage {
@@ -89,6 +91,8 @@ impl Usage {
         Usage {
             input_tokens: self.input_tokens + other.input_tokens,
             output_tokens: self.output_tokens + other.output_tokens,
+            cache_read_tokens: self.cache_read_tokens + other.cache_read_tokens,
+            cache_write_tokens: self.cache_write_tokens + other.cache_write_tokens,
         }
     }
 }
@@ -183,11 +187,13 @@ mod tests {
 
     #[test]
     fn usage_add() {
-        let a = Usage { input_tokens: 10, output_tokens: 20 };
-        let b = Usage { input_tokens: 5, output_tokens: 3 };
+        let a = Usage { input_tokens: 10, output_tokens: 20, cache_read_tokens: 100, cache_write_tokens: 50 };
+        let b = Usage { input_tokens: 5, output_tokens: 3, cache_read_tokens: 200, cache_write_tokens: 0 };
         let c = a.add(&b);
         assert_eq!(c.input_tokens, 15);
         assert_eq!(c.output_tokens, 23);
+        assert_eq!(c.cache_read_tokens, 300);
+        assert_eq!(c.cache_write_tokens, 50);
     }
 
     #[tokio::test]

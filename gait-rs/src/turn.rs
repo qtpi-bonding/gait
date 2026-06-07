@@ -447,10 +447,10 @@ pub async fn run_turn(
             let done_result = output_for_event.result.clone();
             emit_event(&tx_path, &AnyEvent::TurnComplete {
                 usage: TurnUsage {
-                    input: total_usage.input_tokens as u64,   // Usage uses u32; TurnUsage uses u64
+                    input: total_usage.input_tokens as u64,
                     output: total_usage.output_tokens as u64,
-                    cache_read: 0,
-                    cache_write: 0,
+                    cache_read: total_usage.cache_read_tokens as u64,
+                    cache_write: total_usage.cache_write_tokens as u64,
                 },
                 codebase_hash: codebase_hash.clone(),
                 codebase_dirty,

@@ -4,20 +4,24 @@ pub mod types;
 use crate::provider::{ChunkStream, Provider, ProviderError};
 use crate::types::{Message, Tool};
 use crate::anthropic::sse::SseClient;
-use crate::anthropic::types::{AnthropicRequest, AnthropicTool, to_anthropic_messages};
+use crate::anthropic::types::{
+    AnthropicRequest, AnthropicSystem, AnthropicSystemBlock, AnthropicTool,
+    CacheControl, to_anthropic_messages,
+};
 
 pub struct AnthropicProvider {
     pub api_key: String,
     pub model: String,
     pub base_url: Option<String>,
+    pub cache: bool,
 }
 
 impl AnthropicProvider {
     pub fn new(api_key: String, model: String) -> Self {
-        Self { api_key, model, base_url: None }
+        Self { api_key, model, base_url: None, cache: false }
     }
     pub fn with_base_url(api_key: String, model: String, base_url: String) -> Self {
-        Self { api_key, model, base_url: Some(base_url) }
+        Self { api_key, model, base_url: Some(base_url), cache: false }
     }
 }
 
@@ -29,20 +33,36 @@ impl Provider for AnthropicProvider {
         messages: &[Message],
         tools: &[Box<dyn Tool>],
     ) -> Result<ChunkStream, ProviderError> {
+        let system_field = if system.is_empty() {
+            None
+        } else if self.cache {
+            Some(AnthropicSystem::Blocks(vec![AnthropicSystemBlock::text_cached(system)]))
+        } else {
+            Some(AnthropicSystem::Text(system.into()))
+        };
+
+        let mut oai_tools: Vec<AnthropicTool> = tools.iter().map(|t| AnthropicTool {
+            name: t.name().to_string(),
+            description: t.description().to_string(),
+            input_schema: t.parameters().clone(),
+            cache_control: None,
+        }).collect();
+
+        // Mark last tool with cache_control so the system+tools prefix is cached as one block.
+        if self.cache && !oai_tools.is_empty() {
+            let last = oai_tools.last_mut().unwrap();
+            last.cache_control = Some(CacheControl::ephemeral());
+        }
+
         let req = AnthropicRequest {
             model: self.model.clone(),
             max_tokens: 8096,
-            system: if system.is_empty() { None } else { Some(system.into()) },
+            system: system_field,
             messages: to_anthropic_messages(messages),
-            tools: tools.iter().map(|t| AnthropicTool {
-                name: t.name().to_string(),
-                description: t.description().to_string(),
-                input_schema: t.parameters().clone(),
-            }).collect(),
+            tools: oai_tools,
             stream: true,
         };
         let body = serde_json::to_value(&req)?;
-        // Build a fresh SseClient (owned) so the stream it returns is 'static.
         let client = match &self.base_url {
             Some(url) => SseClient::with_base_url(self.api_key.clone(), url.clone()),
             None => SseClient::new(self.api_key.clone()),

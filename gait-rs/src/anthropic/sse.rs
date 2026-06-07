@@ -72,6 +72,8 @@ impl SseClient {
                             yield StreamChunk::StepUsage(Usage {
                                 input_tokens: u.input_tokens.unwrap_or(0),
                                 output_tokens: 0,
+                                cache_read_tokens: u.cache_read_input_tokens.unwrap_or(0),
+                                cache_write_tokens: u.cache_creation_input_tokens.unwrap_or(0),
                             });
                         }
                     }
@@ -124,6 +126,8 @@ impl SseClient {
                         yield StreamChunk::StepUsage(Usage {
                             input_tokens: u.input_tokens.unwrap_or(0),
                             output_tokens: u.output_tokens.unwrap_or(0),
+                            cache_read_tokens: u.cache_read_input_tokens.unwrap_or(0),
+                            cache_write_tokens: u.cache_creation_input_tokens.unwrap_or(0),
                         });
                     }
                     AnthropicEvent::MessageStop => { yield StreamChunk::Done; break; }

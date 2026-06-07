@@ -2,6 +2,18 @@
 
 use serde::{Deserialize, Serialize};
 
+// ── Cache control ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CacheControl {
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+impl CacheControl {
+    pub fn ephemeral() -> Self { Self { kind: "ephemeral".into() } }
+}
+
 // ── Request ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -9,11 +21,37 @@ pub struct AnthropicRequest {
     pub model: String,
     pub max_tokens: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub system: Option<String>,
+    pub system: Option<AnthropicSystem>,
     pub messages: Vec<AnthropicMessage>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<AnthropicTool>,
     pub stream: bool,
+}
+
+/// System prompt: either a plain string or an array of content blocks (needed for cache_control).
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum AnthropicSystem {
+    Text(String),
+    Blocks(Vec<AnthropicSystemBlock>),
+}
+
+#[derive(Debug, Serialize)]
+pub struct AnthropicSystemBlock {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
+}
+
+impl AnthropicSystemBlock {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self { kind: "text".into(), text: text.into(), cache_control: None }
+    }
+    pub fn text_cached(text: impl Into<String>) -> Self {
+        Self { kind: "text".into(), text: text.into(), cache_control: Some(CacheControl::ephemeral()) }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -32,7 +70,11 @@ pub enum AnthropicContent {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AnthropicBlock {
-    Text { text: String },
+    Text {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
     ToolUse { id: String, name: String, input: serde_json::Value },
     ToolResult { tool_use_id: String, content: String },
 }
@@ -42,6 +84,8 @@ pub struct AnthropicTool {
     pub name: String,
     pub description: String,
     pub input_schema: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
 }
 
 // ── SSE Events ────────────────────────────────────────────────────────────────
@@ -93,6 +137,8 @@ pub struct MessageDeltaData {
 pub struct DeltaUsage {
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
+    pub cache_creation_input_tokens: Option<u32>,
+    pub cache_read_input_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -115,7 +161,7 @@ pub fn to_anthropic_messages(messages: &[Message]) -> Vec<AnthropicMessage> {
                 MessageContent::Parts(parts) => AnthropicContent::Blocks(
                     parts.iter().map(|p| match p {
                         crate::types::ContentPart::Text { text } =>
-                            AnthropicBlock::Text { text: text.clone() },
+                            AnthropicBlock::Text { text: text.clone(), cache_control: None },
                     }).collect()
                 ),
             },
@@ -127,7 +173,7 @@ pub fn to_anthropic_messages(messages: &[Message]) -> Vec<AnthropicMessage> {
                 AssistantContent::Parts(parts) => AnthropicContent::Blocks(
                     parts.iter().map(|p| match p {
                         AssistantPart::Text { text } =>
-                            AnthropicBlock::Text { text: text.clone() },
+                            AnthropicBlock::Text { text: text.clone(), cache_control: None },
                         AssistantPart::ToolCall(tc) =>
                             AnthropicBlock::ToolUse {
                                 id: tc.tool_call_id.clone(),
@@ -159,7 +205,7 @@ mod tests {
         let req = AnthropicRequest {
             model: "claude-3-5-sonnet-20241022".into(),
             max_tokens: 4096,
-            system: Some("You are helpful.".into()),
+            system: Some(AnthropicSystem::Text("You are helpful.".into())),
             messages: vec![AnthropicMessage {
                 role: "user".into(),
                 content: AnthropicContent::Text("hello".into()),
@@ -170,8 +216,52 @@ mod tests {
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["model"], "claude-3-5-sonnet-20241022");
         assert_eq!(json["stream"], true);
-        // tools should be omitted when empty
         assert!(json.get("tools").is_none());
+        assert_eq!(json["system"], "You are helpful.");
+    }
+
+    #[test]
+    fn serialize_cached_system_as_blocks() {
+        let req = AnthropicRequest {
+            model: "claude-3".into(),
+            max_tokens: 1024,
+            system: Some(AnthropicSystem::Blocks(vec![
+                AnthropicSystemBlock::text_cached("You are helpful."),
+            ])),
+            messages: vec![],
+            tools: vec![],
+            stream: true,
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        let sys = &json["system"];
+        assert!(sys.is_array());
+        assert_eq!(sys[0]["type"], "text");
+        assert_eq!(sys[0]["text"], "You are helpful.");
+        assert_eq!(sys[0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn serialize_tool_with_cache_control() {
+        let tool = AnthropicTool {
+            name: "read".into(),
+            description: "read a file".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+            cache_control: Some(CacheControl::ephemeral()),
+        };
+        let json = serde_json::to_value(&tool).unwrap();
+        assert_eq!(json["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn serialize_tool_without_cache_control_omits_field() {
+        let tool = AnthropicTool {
+            name: "read".into(),
+            description: "read a file".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+            cache_control: None,
+        };
+        let json = serde_json::to_value(&tool).unwrap();
+        assert!(json.get("cache_control").is_none());
     }
 
     #[test]

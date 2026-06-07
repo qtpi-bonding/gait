@@ -1,103 +1,202 @@
 use crate::provider::{ChunkStream, Provider, ProviderError, StreamChunk};
 use crate::types::{Message, Tool, Usage, AssistantContent, AssistantPart, MessageContent};
-use async_openai::{
-    Client,
-    config::OpenAIConfig,
-    types::{
-        ChatCompletionRequestMessage, ChatCompletionRequestUserMessage,
-        ChatCompletionRequestToolMessage, ChatCompletionRequestSystemMessage,
-        ChatCompletionTool, ChatCompletionToolType, FunctionObject,
-        CreateChatCompletionRequestArgs,
-        ChatCompletionRequestUserMessageContent,
-        ChatCompletionMessageToolCall, ChatCompletionRequestAssistantMessageArgs,
-        ChatCompletionRequestToolMessageContent, ChatCompletionStreamOptions,
-    },
-};
-use async_openai::types::FunctionCall;
+use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
 
 pub struct OpenAIProvider {
     pub api_key: String,
     pub model: String,
-    pub base_url: Option<String>,
+    pub base_url: String,
 }
 
 impl OpenAIProvider {
     pub fn new(api_key: String, model: String, base_url: Option<String>) -> Self {
-        Self { api_key, model, base_url }
-    }
-
-    fn build_client(&self) -> Client<OpenAIConfig> {
-        let mut config = OpenAIConfig::new().with_api_key(&self.api_key);
-        if let Some(url) = &self.base_url {
-            config = config.with_api_base(url);
+        Self {
+            api_key,
+            model,
+            base_url: base_url.unwrap_or_else(|| "https://api.openai.com/v1".into()),
         }
-        Client::with_config(config)
-    }
-
-    fn to_openai_messages(messages: &[Message]) -> Vec<ChatCompletionRequestMessage> {
-        messages.iter().flat_map(|m| -> Vec<ChatCompletionRequestMessage> {
-            match m {
-                Message::User { content } => {
-                    let text = match content {
-                        MessageContent::Text(t) => t.clone(),
-                        MessageContent::Parts(parts) => parts.iter()
-                            .filter_map(|p| if let crate::types::ContentPart::Text { text } = p { Some(text.as_str()) } else { None })
-                            .collect::<Vec<_>>().join(""),
-                    };
-                    vec![ChatCompletionRequestMessage::User(
-                        ChatCompletionRequestUserMessage {
-                            content: ChatCompletionRequestUserMessageContent::Text(text),
-                            name: None,
-                        }
-                    )]
-                }
-                Message::Assistant { content } => {
-                    let (text, tool_calls) = match content {
-                        AssistantContent::Text(t) => (Some(t.clone()), vec![]),
-                        AssistantContent::Parts(parts) => {
-                            let text = parts.iter().find_map(|p| if let AssistantPart::Text { text } = p { Some(text.clone()) } else { None });
-                            let tcs: Vec<_> = parts.iter().filter_map(|p| {
-                                if let AssistantPart::ToolCall(tc) = p {
-                                    Some(ChatCompletionMessageToolCall {
-                                        id: tc.tool_call_id.clone(),
-                                        r#type: ChatCompletionToolType::Function,
-                                        function: FunctionCall {
-                                            name: tc.tool_name.clone(),
-                                            arguments: tc.args.to_string(),
-                                        },
-                                    })
-                                } else { None }
-                            }).collect();
-                            (text, tcs)
-                        }
-                    };
-                    // C2 fix: use builder to avoid missing-field compile errors across async-openai versions.
-                    // async-openai 0.28.3 uses `pattern = "mutable"` — setters take &mut self and return &mut Self,
-                    // so we call them as statements and never reassign.
-                    let mut builder = ChatCompletionRequestAssistantMessageArgs::default();
-                    if let Some(t) = text { builder.content(t); }
-                    if !tool_calls.is_empty() { builder.tool_calls(tool_calls); }
-                    vec![ChatCompletionRequestMessage::Assistant(
-                        builder.build().expect("assistant message build")
-                    )]
-                }
-                Message::Tool { content } => {
-                    content.iter().map(|tr| {
-                        ChatCompletionRequestMessage::Tool(
-                            ChatCompletionRequestToolMessage {
-                                tool_call_id: tr.tool_call_id.clone(),
-                                content: ChatCompletionRequestToolMessageContent::Text(
-                                    tr.result.to_string()
-                                ),
-                            }
-                        )
-                    }).collect()
-                }
-            }
-        }).collect()
     }
 }
+
+// ── Request types ─────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct ChatRequest {
+    model: String,
+    messages: Vec<ChatMessage>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<ChatTool>,
+    stream: bool,
+    stream_options: StreamOptions,
+}
+
+#[derive(Serialize)]
+struct StreamOptions {
+    include_usage: bool,
+}
+
+#[derive(Serialize)]
+struct ChatMessage {
+    role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<ChatToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ChatToolCall {
+    id: String,
+    r#type: String,
+    function: ChatFunction,
+}
+
+#[derive(Serialize)]
+struct ChatFunction {
+    name: String,
+    arguments: String,
+}
+
+#[derive(Serialize)]
+struct ChatTool {
+    r#type: String,
+    function: ChatToolDef,
+}
+
+#[derive(Serialize)]
+struct ChatToolDef {
+    name: String,
+    description: String,
+    parameters: Value,
+}
+
+// ── SSE response types ────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct StreamChunkData {
+    choices: Vec<StreamChoice>,
+    usage: Option<StreamUsage>,
+}
+
+#[derive(Deserialize)]
+struct StreamChoice {
+    delta: Delta,
+    finish_reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Delta {
+    content: Option<String>,
+    tool_calls: Option<Vec<ToolCallDelta>>,
+}
+
+#[derive(Deserialize)]
+struct ToolCallDelta {
+    index: u32,
+    id: Option<String>,
+    function: Option<FunctionDelta>,
+}
+
+#[derive(Deserialize)]
+struct FunctionDelta {
+    name: Option<String>,
+    arguments: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct StreamUsage {
+    prompt_tokens: u32,
+    completion_tokens: u32,
+}
+
+// ── Message conversion ────────────────────────────────────────────────────────
+
+fn to_chat_messages(system: &str, messages: &[Message]) -> Vec<ChatMessage> {
+    let mut out = vec![];
+    if !system.is_empty() {
+        out.push(ChatMessage {
+            role: "system".into(),
+            content: Some(Value::String(system.into())),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        });
+    }
+    for m in messages {
+        match m {
+            Message::User { content } => {
+                let text = match content {
+                    MessageContent::Text(t) => t.clone(),
+                    MessageContent::Parts(parts) => parts.iter()
+                        .filter_map(|p| match p {
+                            crate::types::ContentPart::Text { text } => Some(text.as_str()),
+                        })
+                        .collect::<Vec<_>>().join(""),
+                };
+                out.push(ChatMessage {
+                    role: "user".into(),
+                    content: Some(Value::String(text)),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    name: None,
+                });
+            }
+            Message::Assistant { content } => {
+                let (text, tool_calls) = match content {
+                    AssistantContent::Text(t) => (Some(t.clone()), vec![]),
+                    AssistantContent::Parts(parts) => {
+                        let text = parts.iter().find_map(|p| {
+                            if let AssistantPart::Text { text } = p { Some(text.clone()) } else { None }
+                        });
+                        let tcs: Vec<_> = parts.iter().filter_map(|p| {
+                            if let AssistantPart::ToolCall(tc) = p {
+                                Some(ChatToolCall {
+                                    id: tc.tool_call_id.clone(),
+                                    r#type: "function".into(),
+                                    function: ChatFunction {
+                                        name: tc.tool_name.clone(),
+                                        arguments: tc.args.to_string(),
+                                    },
+                                })
+                            } else { None }
+                        }).collect();
+                        (text, tcs)
+                    }
+                };
+                out.push(ChatMessage {
+                    role: "assistant".into(),
+                    content: text.map(Value::String),
+                    tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+                    tool_call_id: None,
+                    name: None,
+                });
+            }
+            Message::Tool { content } => {
+                for tr in content {
+                    out.push(ChatMessage {
+                        role: "tool".into(),
+                        content: Some(Value::String(tr.result.to_string())),
+                        tool_calls: None,
+                        tool_call_id: Some(tr.tool_call_id.clone()),
+                        name: None,
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+// ── Provider impl ─────────────────────────────────────────────────────────────
 
 #[async_trait::async_trait]
 impl Provider for OpenAIProvider {
@@ -107,61 +206,84 @@ impl Provider for OpenAIProvider {
         messages: &[Message],
         tools: &[Box<dyn Tool>],
     ) -> Result<ChunkStream, ProviderError> {
-        let client = self.build_client();
+        let http = Client::new();
+        let url = format!("{}/chat/completions", self.base_url);
+        let api_key = self.api_key.clone();
 
-        let mut all_messages = vec![];
-        if !system.is_empty() {
-            all_messages.push(ChatCompletionRequestMessage::System(
-                ChatCompletionRequestSystemMessage { content: system.into(), name: None }
-            ));
-        }
-        all_messages.extend(Self::to_openai_messages(messages));
-
-        let oai_tools: Vec<ChatCompletionTool> = tools.iter().map(|t| ChatCompletionTool {
-            r#type: ChatCompletionToolType::Function,
-            function: FunctionObject {
+        let chat_tools: Vec<ChatTool> = tools.iter().map(|t| ChatTool {
+            r#type: "function".into(),
+            function: ChatToolDef {
                 name: t.name().to_string(),
-                description: Some(t.description().to_string()),
-                parameters: Some(t.parameters().clone()),
-                strict: None,
+                description: t.description().to_string(),
+                parameters: t.parameters().clone(),
             },
         }).collect();
 
-        // async-openai 0.28.3 uses `pattern = "mutable"` — setters take &mut self and return &mut Self,
-        // so we must not chain them (the builder is a temporary that would be dropped). Use statements.
-        let mut req_builder = CreateChatCompletionRequestArgs::default();
-        req_builder.model(&self.model);
-        req_builder.messages(all_messages);
-        // C3 fix: request usage in the stream (many OAI-compatible gateways honor this)
-        req_builder.stream_options(ChatCompletionStreamOptions { include_usage: true });
-        if !oai_tools.is_empty() {
-            req_builder.tools(oai_tools);
-        }
-        let req = req_builder.build().map_err(|e| ProviderError::Other(e.to_string()))?;
+        let body = ChatRequest {
+            model: self.model.clone(),
+            messages: to_chat_messages(system, messages),
+            tools: chat_tools,
+            stream: true,
+            stream_options: StreamOptions { include_usage: true },
+        };
 
-        let mut oai_stream = client.chat().create_stream(req).await
-            .map_err(|e| ProviderError::Other(e.to_string()))?;
+        let body_value = serde_json::to_value(&body)?;
 
         let stream = async_stream::try_stream! {
-            // C1 fix: key by index (u32), not by id string — id is only present on first chunk
-            let mut tool_ids:   std::collections::HashMap<u32, String> = std::collections::HashMap::new();
-            let mut tool_names: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
-            let mut tool_args:  std::collections::HashMap<u32, String> = std::collections::HashMap::new();
+            let resp = http
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", api_key))
+                .header("Content-Type", "application/json")
+                .json(&body_value)
+                .send()
+                .await?;
 
-            while let Some(chunk) = oai_stream.next().await {
-                let chunk = chunk.map_err(|e| ProviderError::Other(e.to_string()))?;
+            if !resp.status().is_success() {
+                let status = resp.status().as_u16();
+                let body = resp.text().await.unwrap_or_default();
+                Err(ProviderError::Http { status, body })?;
+                return;
+            }
+
+            let mut tool_ids:   HashMap<u32, String> = HashMap::new();
+            let mut tool_names: HashMap<u32, String> = HashMap::new();
+            let mut tool_args:  HashMap<u32, String> = HashMap::new();
+
+            let mut sse = resp.bytes_stream().eventsource();
+
+            while let Some(event) = sse.next().await {
+                let event = event.map_err(|e| ProviderError::Sse(e.to_string()))?;
+                if event.data == "[DONE]" { break; }
+                if event.data.is_empty() { continue; }
+
+                let chunk: StreamChunkData = match serde_json::from_str(&event.data) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+
+                if let Some(usage) = chunk.usage {
+                    yield StreamChunk::StepUsage(Usage {
+                        input_tokens: usage.prompt_tokens,
+                        output_tokens: usage.completion_tokens,
+                        cache_read_tokens: 0,
+                        cache_write_tokens: 0,
+                    });
+                }
+
                 for choice in &chunk.choices {
-                    if let Some(delta) = &choice.delta.content {
-                        yield StreamChunk::Text(delta.clone());
+                    if let Some(text) = &choice.delta.content {
+                        if !text.is_empty() {
+                            yield StreamChunk::Text(text.clone());
+                        }
                     }
+
                     if let Some(tcs) = &choice.delta.tool_calls {
-                        for tc_delta in tcs {
-                            let idx = tc_delta.index;
-                            // id and name only arrive on the first delta for this index
-                            if let Some(id) = &tc_delta.id {
+                        for tc in tcs {
+                            let idx = tc.index;
+                            if let Some(id) = &tc.id {
                                 tool_ids.entry(idx).or_insert_with(|| id.clone());
                             }
-                            if let Some(f) = &tc_delta.function {
+                            if let Some(f) = &tc.function {
                                 if let Some(name) = &f.name {
                                     tool_names.entry(idx).or_insert_with(|| name.clone());
                                 }
@@ -178,22 +300,17 @@ impl Provider for OpenAIProvider {
                             }
                         }
                     }
-                    if matches!(choice.finish_reason, Some(async_openai::types::FinishReason::ToolCalls) | Some(async_openai::types::FinishReason::Stop)) {
+
+                    if matches!(choice.finish_reason.as_deref(), Some("tool_calls") | Some("stop")) {
                         for (idx, args_str) in &tool_args {
                             let id   = tool_ids.get(idx).cloned().unwrap_or_default();
                             let name = tool_names.get(idx).cloned().unwrap_or_default();
                             let args = serde_json::from_str(args_str)
-                                .unwrap_or(serde_json::Value::String(args_str.clone()));
+                                .unwrap_or(Value::String(args_str.clone()));
                             yield StreamChunk::ToolCallComplete { tool_call_id: id, tool_name: name, args };
                         }
                         yield StreamChunk::Done;
                     }
-                }
-                if let Some(usage) = &chunk.usage {
-                    yield StreamChunk::StepUsage(Usage {
-                        input_tokens: usage.prompt_tokens,
-                        output_tokens: usage.completion_tokens,
-                    });
                 }
             }
         };

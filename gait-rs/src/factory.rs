@@ -20,7 +20,7 @@ pub fn load_provider(
     let key = resolve_api_key(&provider_id, api_key)?;
 
     match provider_id.as_str() {
-        "anthropic" => Ok(Box::new(AnthropicProvider::new(key, model_id))),
+        "anthropic" => Ok(Box::new(AnthropicProvider { api_key: key, model: model_id, base_url: None, cache: true })),
         "openai" => Ok(Box::new(OpenAIProvider::new(key, model_id, None))),
         "groq" => Ok(Box::new(OpenAIProvider::new(
             key,
@@ -42,11 +42,12 @@ pub fn load_provider(
             model_id,
             Some("https://api.deepinfra.com/v1/openai".into()),
         ))),
-        "minimax" => Ok(Box::new(AnthropicProvider::with_base_url(
-            key,
-            model_id,
-            "https://api.minimax.io/anthropic/v1".into(),
-        ))),
+        "minimax" => Ok(Box::new(AnthropicProvider {
+            api_key: key,
+            model: model_id,
+            base_url: Some("https://api.minimax.io/anthropic/v1".into()),
+            cache: true,
+        })),
         other => Err(FactoryError::UnknownProvider(other.into())),
     }
 }
