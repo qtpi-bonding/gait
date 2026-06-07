@@ -13,6 +13,7 @@ import { createInformTool, createInformConvergenceTool } from "./inform"
 import { createSpawnAgentTool } from "./spawn_agent"
 import { createListAgentsTool } from "./list_agents"
 import { createShellTool } from "./shell"
+import { createOutputTool } from "./output"
 import type { CoreTool } from "ai"
 import type { ConfigDefinedTool } from "../config"
 import { execSync } from "child_process"
@@ -38,6 +39,7 @@ export function createBuiltinTools(codebasePath: string, sessionId: string, work
     inform_convergence: createInformConvergenceTool(),
     spawn_agent: createSpawnAgentTool(sessionId, workspacePath),
     list_agents: createListAgentsTool(workspacePath),
+    output: createOutputTool(),
   }
 }
 

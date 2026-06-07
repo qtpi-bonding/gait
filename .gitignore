@@ -3,3 +3,6 @@ dist/
 bun.lockb
 /target/
 /gait-rs/target/
+
+sessions/
+.gait-ws.lock
