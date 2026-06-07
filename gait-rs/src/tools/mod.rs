@@ -47,9 +47,11 @@ pub fn make_schema<T: schemars::JsonSchema>() -> serde_json::Value {
     v
 }
 
-/// Returns all built-in tools configured for the given codebase root path.
+/// Returns all built-in tools.
 pub fn builtin_tools(
     codebase_path: PathBuf,
+    session_id: String,
+    workspace: PathBuf,
     mcp_tools: Vec<McpToolDef>,
     skills: Vec<SkillDef>,
 ) -> Vec<Box<dyn Tool>> {
@@ -67,6 +69,8 @@ pub fn builtin_tools(
         WebfetchTool::new().boxed(),
         McpTool::new(mcp_tools).boxed(),
         SkillTool::new(skills).boxed(),
+        SpawnAgentTool::new(session_id.clone(), workspace.clone(), codebase_path.clone()).boxed(),
+        ListAgentsTool::new(workspace.clone()).boxed(),
     ]
 }
 
@@ -76,13 +80,22 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn builtin_tools_returns_thirteen() {
-        let tools = builtin_tools(PathBuf::from("/tmp"), vec![], vec![]);
-        assert_eq!(tools.len(), 13);
+    fn builtin_tools_returns_fifteen() {
+        // After adding spawn_agent and list_agents — count is 15
+        let tools = builtin_tools(
+            PathBuf::from("/tmp"),
+            "stest".into(),
+            PathBuf::from("/tmp"),
+            vec![], vec![],
+        );
+        assert_eq!(tools.len(), 15);
     }
+
     #[test]
     fn all_tool_names_unique() {
-        let tools = builtin_tools(PathBuf::from("/tmp"), vec![], vec![]);
+        let tools = builtin_tools(
+            PathBuf::from("/tmp"), "stest".into(), PathBuf::from("/tmp"), vec![], vec![],
+        );
         let mut names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         let original_len = names.len();
         names.sort();
@@ -91,10 +104,22 @@ mod tests {
     }
 
     #[test]
-    fn mcp_and_skill_meta_tools_present() {
-        let tools = builtin_tools(PathBuf::from("/tmp"), vec![], vec![]);
+    fn spawn_agent_and_list_agents_present() {
+        let tools = builtin_tools(
+            PathBuf::from("/tmp"), "stest".into(), PathBuf::from("/tmp"), vec![], vec![],
+        );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-        assert!(names.contains(&"mcp"), "mcp tool missing, got: {:?}", names);
-        assert!(names.contains(&"skill"), "skill tool missing, got: {:?}", names);
+        assert!(names.contains(&"spawn_agent"), "missing spawn_agent: {:?}", names);
+        assert!(names.contains(&"list_agents"), "missing list_agents: {:?}", names);
+    }
+
+    #[test]
+    fn mcp_and_skill_meta_tools_present() {
+        let tools = builtin_tools(
+            PathBuf::from("/tmp"), "stest".into(), PathBuf::from("/tmp"), vec![], vec![],
+        );
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert!(names.contains(&"mcp"), "missing mcp: {:?}", names);
+        assert!(names.contains(&"skill"), "missing skill: {:?}", names);
     }
 }
