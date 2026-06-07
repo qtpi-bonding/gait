@@ -22,6 +22,7 @@ export const UserTurnContext = z.object({
 export const UserTurnEvent = base.extend({
   type: z.literal("user_turn"),
   content: z.string(),
+  from: z.string().optional(),
   context: UserTurnContext.optional(),
 })
 
