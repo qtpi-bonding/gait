@@ -184,7 +184,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = write_events(dir.path(), &[
             AnyEvent::SessionStart { schema_version: 2, id: "s1".into(), model: "m".into(), codebase_hash: "h".into(), codebase_dirty: false, ts: 0 },
-            AnyEvent::UserTurn { content: "hello".into(), context: None, ts: 1 },
+            AnyEvent::UserTurn { content: "hello".into(), from: None, context: None, ts: 1 },
             AnyEvent::AssistantText { content: "hi there".into(), ts: 2 },
         ]);
         let msgs = reconstruct_messages(&path).unwrap();
@@ -232,11 +232,11 @@ mod tests {
     fn compaction_breakpoint_discards_earlier_events() {
         let dir = TempDir::new().unwrap();
         let path = write_events(dir.path(), &[
-            AnyEvent::UserTurn { content: "old".into(), context: None, ts: 0 },
+            AnyEvent::UserTurn { content: "old".into(), from: None, context: None, ts: 0 },
             AnyEvent::AssistantText { content: "old response".into(), ts: 1 },
             AnyEvent::TurnComplete { usage: TurnUsage{input:1,output:1,cache_read:0,cache_write:0}, codebase_hash:"h".into(), codebase_dirty:false, output: TurnOutput{summary:"s".into(),result:None}, ts:2 },
             AnyEvent::Compaction { summary: "summary of old stuff".into(), turns_covered: 1, from_ts: 0, to_ts: 2, usage: CompactionUsage{input:10,output:5}, ts: 3 },
-            AnyEvent::UserTurn { content: "new".into(), context: None, ts: 4 },
+            AnyEvent::UserTurn { content: "new".into(), from: None, context: None, ts: 4 },
         ]);
         let msgs = reconstruct_messages(&path).unwrap();
         // Should have: compaction summary + "new" user turn

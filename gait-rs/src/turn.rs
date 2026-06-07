@@ -197,6 +197,7 @@ pub async fn run_turn(
     if let Some(task) = &opts.task {
         append_event(&tx_path, &AnyEvent::UserTurn {
             content: task.clone(),
+            from: None,
             context: Some(crate::session::transcript::UserTurnContext {
                 codebase_hash: Some(codebase_hash.clone()),
                 codebase_dirty: Some(codebase_dirty),

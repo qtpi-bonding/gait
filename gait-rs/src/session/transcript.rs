@@ -114,6 +114,7 @@ pub enum AnyEvent {
     },
     UserTurn {
         content: String,
+        from: Option<String>,
         context: Option<UserTurnContext>,
         ts: u64,
     },
@@ -270,6 +271,7 @@ mod tests {
         let path = dir.path().join("transcript.jsonl");
         append_event(&path, &AnyEvent::UserTurn {
             content: "hello".into(),
+            from: None,
             context: None,
             ts: 1000,
         }).unwrap();
@@ -302,7 +304,7 @@ mod tests {
     #[test]
     fn count_turn_complete_counts_correctly() {
         let events = vec![
-            AnyEvent::UserTurn { content: "x".into(), context: None, ts: 0 },
+            AnyEvent::UserTurn { content: "x".into(), from: None, context: None, ts: 0 },
             AnyEvent::TurnComplete {
                 usage: TurnUsage { input: 1, output: 1, cache_read: 0, cache_write: 0 },
                 codebase_hash: "a".into(),
@@ -310,7 +312,7 @@ mod tests {
                 output: TurnOutput { summary: "done".into(), result: None },
                 ts: 1,
             },
-            AnyEvent::UserTurn { content: "y".into(), context: None, ts: 2 },
+            AnyEvent::UserTurn { content: "y".into(), from: None, context: None, ts: 2 },
             AnyEvent::TurnComplete {
                 usage: TurnUsage { input: 1, output: 1, cache_read: 0, cache_write: 0 },
                 codebase_hash: "a".into(),
@@ -325,22 +327,54 @@ mod tests {
     #[test]
     fn last_compaction_index_finds_last() {
         let events = vec![
-            AnyEvent::UserTurn { content: "x".into(), context: None, ts: 0 },
+            AnyEvent::UserTurn { content: "x".into(), from: None, context: None, ts: 0 },
             AnyEvent::Compaction {
                 summary: "s1".into(), turns_covered: 1,
                 from_ts: 0, to_ts: 1,
                 usage: CompactionUsage { input: 10, output: 5 }, ts: 1,
             },
-            AnyEvent::UserTurn { content: "y".into(), context: None, ts: 2 },
+            AnyEvent::UserTurn { content: "y".into(), from: None, context: None, ts: 2 },
         ];
         assert_eq!(last_compaction_index(&events), Some(1));
+    }
+
+    #[test]
+    fn user_turn_from_field_roundtrips() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        append_event(&path, &AnyEvent::UserTurn {
+            content: "do the thing".into(),
+            from: Some("agent:s-parent123".into()),
+            context: None,
+            ts: 42,
+        }).unwrap();
+        let events = read_events(&path).unwrap();
+        assert_eq!(events.len(), 1);
+        if let AnyEvent::UserTurn { from, content, .. } = &events[0] {
+            assert_eq!(content, "do the thing");
+            assert_eq!(from.as_deref(), Some("agent:s-parent123"));
+        } else {
+            panic!("expected UserTurn");
+        }
+    }
+
+    #[test]
+    fn user_turn_from_defaults_to_none_when_missing() {
+        // Old JSONL without `from` field must deserialize correctly.
+        let json = r#"{"type":"user_turn","content":"hello","ts":1}"#;
+        let event: AnyEvent = serde_json::from_str(json).unwrap();
+        if let AnyEvent::UserTurn { from, .. } = event {
+            assert!(from.is_none(), "expected None when field absent");
+        } else {
+            panic!("expected UserTurn");
+        }
     }
 
     #[test]
     fn all_event_variants_serialize_roundtrip() {
         let events: Vec<AnyEvent> = vec![
             AnyEvent::SessionStart { schema_version: 2, id: "s1".into(), model: "m".into(), codebase_hash: "h".into(), codebase_dirty: false, ts: 0 },
-            AnyEvent::UserTurn { content: "t".into(), context: None, ts: 0 },
+            AnyEvent::UserTurn { content: "t".into(), from: None, context: None, ts: 0 },
             AnyEvent::AssistantText { content: "a".into(), ts: 0 },
             AnyEvent::ToolCall { id: "i".into(), name: "read".into(), input: serde_json::json!({}), ts: 0 },
             AnyEvent::ToolResult { id: "i".into(), output: "r".into(), ts: 0 },
