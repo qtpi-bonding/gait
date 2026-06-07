@@ -11,6 +11,7 @@ pub mod codesearch;
 pub mod webfetch;
 pub mod mcp;
 pub mod skill;
+pub mod spawn_agent;
 
 pub use read::ReadTool;
 pub use write::WriteTool;
@@ -25,6 +26,7 @@ pub use codesearch::CodesearchTool;
 pub use webfetch::WebfetchTool;
 pub use mcp::McpTool;
 pub use skill::SkillTool;
+pub use spawn_agent::SpawnAgentTool;
 
 use std::path::PathBuf;
 use crate::types::Tool;
