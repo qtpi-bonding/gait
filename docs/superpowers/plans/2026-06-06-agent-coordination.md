@@ -36,7 +36,7 @@
 **Files:**
 - Modify: `gait-rs/src/session/transcript.rs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add this test inside the `#[cfg(test)]` module at the bottom of `gait-rs/src/session/transcript.rs`:
 
@@ -74,7 +74,7 @@ fn user_turn_from_defaults_to_none_when_missing() {
 }
 ```
 
-- [ ] **Step 2: Run the test to confirm it fails**
+- [x] **Step 2: Run the test to confirm it fails**
 
 ```bash
 cd gait-rs && cargo test user_turn_from 2>&1 | tail -20
@@ -82,7 +82,7 @@ cd gait-rs && cargo test user_turn_from 2>&1 | tail -20
 
 Expected: compile error — `from` field does not exist on `UserTurn` variant.
 
-- [ ] **Step 3: Add `from` to `UserTurn` in the `AnyEvent` enum**
+- [x] **Step 3: Add `from` to `UserTurn` in the `AnyEvent` enum**
 
 In `gait-rs/src/session/transcript.rs`, change the `UserTurn` variant:
 
@@ -95,7 +95,7 @@ UserTurn {
 },
 ```
 
-- [ ] **Step 4: Fix all `UserTurn` construction sites**
+- [x] **Step 4: Fix all `UserTurn` construction sites**
 
 Every place that constructs `AnyEvent::UserTurn { ... }` must add `from: None`. The sites are:
 
@@ -158,7 +158,7 @@ AnyEvent::UserTurn { content: "x".into(), from: None, context: None, ts: 0 },
 ```
 (Apply `from: None` to every single `UserTurn` construction in the test module.)
 
-- [ ] **Step 5: Run tests to confirm they pass**
+- [x] **Step 5: Run tests to confirm they pass**
 
 ```bash
 cd gait-rs && cargo test 2>&1 | tail -20
@@ -166,7 +166,7 @@ cd gait-rs && cargo test 2>&1 | tail -20
 
 Expected: all tests pass, including `user_turn_from_field_roundtrips` and `user_turn_from_defaults_to_none_when_missing`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cd gait-rs && git add -A && git commit -m "feat: add from field to UserTurn transcript event"
@@ -180,7 +180,7 @@ cd gait-rs && git add -A && git commit -m "feat: add from field to UserTurn tran
 - Create: `gait-rs/src/session/session_json.rs`
 - Modify: `gait-rs/src/session/mod.rs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `gait-rs/src/session/session_json.rs` with only the tests (not the implementation yet):
 
@@ -245,7 +245,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run the test to confirm it fails**
+- [x] **Step 2: Run the test to confirm it fails**
 
 ```bash
 cd gait-rs && cargo test session_json 2>&1 | tail -20
@@ -253,7 +253,7 @@ cd gait-rs && cargo test session_json 2>&1 | tail -20
 
 Expected: compile error — `SessionJson`, `TokenTotals`, `write_session_json`, `read_session_json` do not exist.
 
-- [ ] **Step 3: Implement `session_json.rs`**
+- [x] **Step 3: Implement `session_json.rs`**
 
 Replace the file with full implementation:
 
@@ -378,7 +378,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: Register module in `gait-rs/src/session/mod.rs`**
+- [x] **Step 4: Register module in `gait-rs/src/session/mod.rs`**
 
 ```rust
 pub mod transcript;
@@ -389,7 +389,7 @@ pub use context::reconstruct_messages;
 pub use session_json::{SessionJson, TokenTotals, read_session_json, write_session_json};
 ```
 
-- [ ] **Step 5: Run tests to confirm they pass**
+- [x] **Step 5: Run tests to confirm they pass**
 
 ```bash
 cd gait-rs && cargo test session_json 2>&1 | tail -20
@@ -397,7 +397,7 @@ cd gait-rs && cargo test session_json 2>&1 | tail -20
 
 Expected: 3 tests pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cd gait-rs && git add -A && git commit -m "feat: add session_json read/write for assigned_by metadata"
@@ -410,7 +410,7 @@ cd gait-rs && git add -A && git commit -m "feat: add session_json read/write for
 **Files:**
 - Modify: `gait-rs/src/turn.rs`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add these tests to the `#[cfg(test)]` module in `gait-rs/src/turn.rs`:
 
@@ -490,7 +490,7 @@ async fn run_turn_returns_permissions_when_paused() {
 }
 ```
 
-- [ ] **Step 2: Run the tests to confirm they fail**
+- [x] **Step 2: Run the tests to confirm they fail**
 
 ```bash
 cd gait-rs && cargo test run_turn_returns 2>&1 | tail -20
@@ -498,7 +498,7 @@ cd gait-rs && cargo test run_turn_returns 2>&1 | tail -20
 
 Expected: compile error — `TurnResult` does not exist yet; `run_turn` returns `()`.
 
-- [ ] **Step 3: Define `TurnResult` in `turn.rs`**
+- [x] **Step 3: Define `TurnResult` in `turn.rs`**
 
 Add this enum near the top of `gait-rs/src/turn.rs` (after the `use` imports):
 
@@ -510,7 +510,7 @@ pub enum TurnResult {
 }
 ```
 
-- [ ] **Step 4: Change `run_turn` signature**
+- [x] **Step 4: Change `run_turn` signature**
 
 Change:
 ```rust
@@ -530,7 +530,7 @@ pub async fn run_turn(
 ) -> anyhow::Result<TurnResult> {
 ```
 
-- [ ] **Step 5: Update the two exit points inside `run_turn`**
+- [x] **Step 5: Update the two exit points inside `run_turn`**
 
 **Permissions pause exit** — find the block ending with:
 ```rust
@@ -584,15 +584,15 @@ if step_tool_calls.is_empty() {
 }
 ```
 
-- [ ] **Step 6: Update the max-steps bail at the end of `run_turn`**
+- [x] **Step 6: Update the max-steps bail at the end of `run_turn`**
 
 The final line stays as `anyhow::bail!("reached max steps (50) without turn_complete")` — this is an error, not a `TurnResult`, which is correct.
 
-- [ ] **Step 7: Fix existing tests that call `run_turn` without using the result**
+- [x] **Step 7: Fix existing tests that call `run_turn` without using the result**
 
 Existing tests do `run_turn(...).await.unwrap()` as a statement. These still compile fine — the returned `TurnResult` is just dropped. No changes needed to existing tests.
 
-- [ ] **Step 8: Run all tests**
+- [x] **Step 8: Run all tests**
 
 ```bash
 cd gait-rs && cargo test 2>&1 | tail -30
@@ -600,7 +600,7 @@ cd gait-rs && cargo test 2>&1 | tail -30
 
 Expected: all tests pass, including the two new `run_turn_returns_*` tests.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 cd gait-rs && git add -A && git commit -m "feat: TurnResult return type from run_turn (Done/Permissions)"
@@ -614,7 +614,7 @@ cd gait-rs && git add -A && git commit -m "feat: TurnResult return type from run
 - Create: `gait-rs/src/harness.rs`
 - Modify: `gait-rs/src/lib.rs`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `gait-rs/src/harness.rs` with only the test module:
 
@@ -640,7 +640,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to confirm it fails**
+- [x] **Step 2: Run to confirm it fails**
 
 ```bash
 cd gait-rs && cargo test noop_harness 2>&1 | tail -20
@@ -648,7 +648,7 @@ cd gait-rs && cargo test noop_harness 2>&1 | tail -20
 
 Expected: compile error — `NoopHarnessBackend`, `NativeHarnessBackend`, `HarnessBackend` do not exist.
 
-- [ ] **Step 3: Implement `harness.rs`**
+- [x] **Step 3: Implement `harness.rs`**
 
 Write the full file:
 
@@ -786,7 +786,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: Expose `harness` module in `gait-rs/src/lib.rs`**
+- [x] **Step 4: Expose `harness` module in `gait-rs/src/lib.rs`**
 
 Add to `gait-rs/src/lib.rs`:
 
@@ -829,7 +829,7 @@ pub use turn::{TurnOpts, run_turn, TurnResult};
 pub use harness::{HarnessBackend, NoopHarnessBackend, NativeHarnessBackend};
 ```
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 ```bash
 cd gait-rs && cargo test 2>&1 | tail -30
@@ -837,7 +837,7 @@ cd gait-rs && cargo test 2>&1 | tail -30
 
 Expected: all tests pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cd gait-rs && git add -A && git commit -m "feat: HarnessBackend trait with NoopHarnessBackend and NativeHarnessBackend"
@@ -850,7 +850,7 @@ cd gait-rs && git add -A && git commit -m "feat: HarnessBackend trait with NoopH
 **Files:**
 - Create: `gait-rs/src/tools/spawn_agent.rs`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `gait-rs/src/tools/spawn_agent.rs` with the test module only:
 
@@ -941,7 +941,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to confirm it fails**
+- [x] **Step 2: Run to confirm it fails**
 
 ```bash
 cd gait-rs && cargo test spawn_agent 2>&1 | tail -20
@@ -949,7 +949,7 @@ cd gait-rs && cargo test spawn_agent 2>&1 | tail -20
 
 Expected: compile error — `SpawnAgentTool` does not exist.
 
-- [ ] **Step 3: Implement `spawn_agent.rs`**
+- [x] **Step 3: Implement `spawn_agent.rs`**
 
 Write the full file:
 
@@ -1136,7 +1136,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: Run tests to confirm they pass**
+- [x] **Step 4: Run tests to confirm they pass**
 
 ```bash
 cd gait-rs && cargo test spawn_agent 2>&1 | tail -20
@@ -1144,7 +1144,7 @@ cd gait-rs && cargo test spawn_agent 2>&1 | tail -20
 
 Expected: 2 tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd gait-rs && git add -A && git commit -m "feat: SpawnAgentTool creates session with assigned_by + from field"
@@ -1157,7 +1157,7 @@ cd gait-rs && git add -A && git commit -m "feat: SpawnAgentTool creates session 
 **Files:**
 - Create: `gait-rs/src/tools/list_agents.rs`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `gait-rs/src/tools/list_agents.rs` with the test module only:
 
@@ -1230,7 +1230,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to confirm it fails**
+- [x] **Step 2: Run to confirm it fails**
 
 ```bash
 cd gait-rs && cargo test list_agents 2>&1 | tail -20
@@ -1238,7 +1238,7 @@ cd gait-rs && cargo test list_agents 2>&1 | tail -20
 
 Expected: compile error — `ListAgentsTool` does not exist.
 
-- [ ] **Step 3: Implement `list_agents.rs`**
+- [x] **Step 3: Implement `list_agents.rs`**
 
 ```rust
 use std::path::PathBuf;
@@ -1441,7 +1441,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: Run tests to confirm they pass**
+- [x] **Step 4: Run tests to confirm they pass**
 
 ```bash
 cd gait-rs && cargo test list_agents 2>&1 | tail -20
@@ -1449,7 +1449,7 @@ cd gait-rs && cargo test list_agents 2>&1 | tail -20
 
 Expected: 2 tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd gait-rs && git add -A && git commit -m "feat: ListAgentsTool returns active (non-done) sessions"
@@ -1462,7 +1462,7 @@ cd gait-rs && git add -A && git commit -m "feat: ListAgentsTool returns active (
 **Files:**
 - Modify: `gait-rs/src/tools/mod.rs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 The current test `builtin_tools_returns_thirteen` expects 13 tools. We're adding `spawn_agent` and `list_agents`, so the count becomes 15. Write the new test first (it will fail against the old count).
 
@@ -1495,7 +1495,7 @@ fn spawn_agent_and_list_agents_present() {
 }
 ```
 
-- [ ] **Step 2: Run to confirm it fails**
+- [x] **Step 2: Run to confirm it fails**
 
 ```bash
 cd gait-rs && cargo test builtin_tools_returns_fifteen 2>&1 | tail -20
@@ -1503,7 +1503,7 @@ cd gait-rs && cargo test builtin_tools_returns_fifteen 2>&1 | tail -20
 
 Expected: compile error — `builtin_tools` signature mismatch (no `session_id`/`workspace` params).
 
-- [ ] **Step 3: Update `tools/mod.rs`**
+- [x] **Step 3: Update `tools/mod.rs`**
 
 Replace the full content of `gait-rs/src/tools/mod.rs`:
 
@@ -1634,7 +1634,7 @@ mod tests {
 
 Also update the `lib.rs` re-export to reflect the new signature. In `gait-rs/src/lib.rs`, `pub use tools::builtin_tools;` still works since it re-exports the function by name (callers see the updated signature).
 
-- [ ] **Step 4: Run the tools tests**
+- [x] **Step 4: Run the tools tests**
 
 ```bash
 cd gait-rs && cargo test --lib tools 2>&1 | tail -20
@@ -1642,7 +1642,7 @@ cd gait-rs && cargo test --lib tools 2>&1 | tail -20
 
 Expected: all tests in tools module pass. Some other tests in the crate will fail because they still call `builtin_tools` with the old 3-argument signature — that's expected, we fix those in Task 8.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd gait-rs && git add gait-rs/src/tools/ && git commit -m "feat: add spawn_agent + list_agents to builtin_tools (15 tools)"
@@ -1657,7 +1657,7 @@ cd gait-rs && git add gait-rs/src/tools/ && git commit -m "feat: add spawn_agent
 - Modify: `gait-rs/tests/integration_tools.rs`
 - Modify: `gait-rs/tests/integration_turn.rs`
 
-- [ ] **Step 1: Check which tests are currently broken**
+- [x] **Step 1: Check which tests are currently broken**
 
 ```bash
 cd gait-rs && cargo test 2>&1 | grep -E "^error|FAILED" | head -20
@@ -1665,7 +1665,7 @@ cd gait-rs && cargo test 2>&1 | grep -E "^error|FAILED" | head -20
 
 Expected: compile errors about `builtin_tools` being called with 3 args in several places.
 
-- [ ] **Step 2: Update `gait-rs/src/bin/gait.rs`**
+- [x] **Step 2: Update `gait-rs/src/bin/gait.rs`**
 
 **Change the `builtin_tools` call** (around line 92):
 
@@ -1755,7 +1755,7 @@ use gait_ai::{
 
 (TurnResult is accessible via `gait_ai::turn::TurnResult` without adding to the use list, since we use it as a pattern match target inline.)
 
-- [ ] **Step 3: Update `gait-rs/tests/integration_tools.rs`**
+- [x] **Step 3: Update `gait-rs/tests/integration_tools.rs`**
 
 Find all calls to `builtin_tools(...)` and add `"stest".into(), dir.path().to_path_buf(),` as the 2nd and 3rd arguments:
 
@@ -1782,11 +1782,11 @@ for expected in &["read", "write", "edit", "glob", "grep", "ls", "shell",
                   "spawn_agent", "list_agents"] {
 ```
 
-- [ ] **Step 4: Update `gait-rs/tests/integration_turn.rs`**
+- [x] **Step 4: Update `gait-rs/tests/integration_turn.rs`**
 
 The integration_turn.rs does NOT call `builtin_tools` directly — it passes tools manually via `vec![Box::new(ls_tool)]` etc. No builtin_tools signature change needed here. However, `TurnOpts` must match — it already has `mcp_registry: vec![], skill_registry: vec![]`. No changes needed unless compilation reveals issues.
 
-- [ ] **Step 5: Run all tests**
+- [x] **Step 5: Run all tests**
 
 ```bash
 cd gait-rs && cargo test 2>&1 | tail -30
@@ -1794,7 +1794,7 @@ cd gait-rs && cargo test 2>&1 | tail -30
 
 Expected: all tests pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cd gait-rs && git add -A && git commit -m "feat: wire NativeHarnessBackend in cmd_run; update builtin_tools call sites"
@@ -1810,7 +1810,7 @@ cd gait-rs && git add -A && git commit -m "feat: wire NativeHarnessBackend in cm
 
 ### Part A: Integration coordination test
 
-- [ ] **Step 1: Create `gait-rs/tests/integration_coordination.rs`**
+- [x] **Step 1: Create `gait-rs/tests/integration_coordination.rs`**
 
 ```rust
 use gait_ai::{
@@ -1980,7 +1980,7 @@ async fn run_turn_permissions_result_integration() {
 }
 ```
 
-- [ ] **Step 2: Run the integration coordination test**
+- [x] **Step 2: Run the integration coordination test**
 
 ```bash
 cd gait-rs && cargo test --test integration_coordination 2>&1 | tail -30
@@ -1988,7 +1988,7 @@ cd gait-rs && cargo test --test integration_coordination 2>&1 | tail -30
 
 Expected: all 2 tests pass.
 
-- [ ] **Step 3: Run the full test suite**
+- [x] **Step 3: Run the full test suite**
 
 ```bash
 cd gait-rs && cargo test 2>&1 | tail -30
@@ -1996,7 +1996,7 @@ cd gait-rs && cargo test 2>&1 | tail -30
 
 Expected: all tests pass (zero failures).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 cd gait-rs && git add -A && git commit -m "test: integration_coordination tests for spawn_agent and TurnResult"
@@ -2004,7 +2004,7 @@ cd gait-rs && git add -A && git commit -m "test: integration_coordination tests 
 
 ### Part B: TypeScript `from` field
 
-- [ ] **Step 5: Update `src/session/transcript.ts`**
+- [x] **Step 5: Update `src/session/transcript.ts`**
 
 Find the `UserTurnEvent` type definition in `src/session/transcript.ts`. It currently looks like:
 
@@ -2034,7 +2034,7 @@ export type UserTurnEvent = {
 }
 ```
 
-- [ ] **Step 6: Verify TypeScript compiles**
+- [x] **Step 6: Verify TypeScript compiles**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port && bun tsc --noEmit 2>&1 | head -20
@@ -2042,7 +2042,7 @@ cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port && bun tsc -
 
 Expected: no errors related to `from` field. (Pre-existing errors unrelated to this change are acceptable.)
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/session/transcript.ts && git commit -m "feat: add from field to UserTurnEvent in TypeScript transcript schema"

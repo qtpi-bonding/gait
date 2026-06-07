@@ -29,7 +29,7 @@
 - Create: `gait-rs/src/tools/output.rs`
 - Modify: `gait-rs/src/tools/mod.rs` (add output only)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `gait-rs/src/tools/output.rs`:
 
@@ -111,7 +111,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && cargo test output 2>&1 | tail -10
@@ -119,7 +119,7 @@ cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && c
 
 Expected: compile error — module not registered yet.
 
-- [ ] **Step 3: Register output in mod.rs**
+- [x] **Step 3: Register output in mod.rs**
 
 Add these two lines to `gait-rs/src/tools/mod.rs` (after the existing `pub mod shell;` line):
 
@@ -136,7 +136,7 @@ OutputTool::new().boxed(),
 
 The existing 7-tool list becomes 8 tools. Do NOT add `multiedit`, `codesearch`, or `webfetch` — those files don't exist yet and will break compilation.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && cargo test output 2>&1 | tail -10
@@ -144,7 +144,7 @@ cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && c
 
 Expected: 4 output tests passing.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port && git add gait-rs/src/tools/output.rs gait-rs/src/tools/mod.rs && git commit -m "feat(tools): add output tool (stateless, returns recorded)"
@@ -159,7 +159,7 @@ cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port && git add g
 
 The turn loop currently synthesizes `TurnOutput.summary` from the assistant's plain text response. When the model calls `output(summary="...", result={...})`, we should use those args instead. We also exempt `output` from permission gating so it's never blocked.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to the bottom of `gait-rs/src/turn.rs` inside the `tests` module, after the existing tests:
 
@@ -281,7 +281,7 @@ Add to the bottom of `gait-rs/src/turn.rs` inside the `tests` module, after the 
     }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && cargo test output_tool 2>&1 | tail -10
@@ -289,7 +289,7 @@ cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && c
 
 Expected: test failures (behavior not yet changed).
 
-- [ ] **Step 3: Modify turn.rs — three changes**
+- [x] **Step 3: Modify turn.rs — three changes**
 
 **a) Add `output_signal` before the main `for _step in 0..50` loop** (after `let mut total_usage = Usage::default();`):
 
@@ -343,7 +343,7 @@ output: output_signal.take().unwrap_or_else(|| TurnOutput {
 }),
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && cargo test 2>&1 | tail -10
@@ -351,7 +351,7 @@ cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && c
 
 Expected: all tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port && git add gait-rs/src/turn.rs && git commit -m "feat(turn): output signal extraction + permission exemption"
@@ -365,7 +365,7 @@ cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port && git add g
 - Create: `gait-rs/src/tools/multiedit.rs`
 - Modify: `gait-rs/src/tools/mod.rs` (add multiedit)
 
-- [ ] **Step 1: Create `gait-rs/src/tools/multiedit.rs`**
+- [x] **Step 1: Create `gait-rs/src/tools/multiedit.rs`**
 
 ```rust
 use std::path::PathBuf;
@@ -551,7 +551,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Register multiedit in mod.rs**
+- [x] **Step 2: Register multiedit in mod.rs**
 
 Add to `gait-rs/src/tools/mod.rs` after the output lines:
 
@@ -566,7 +566,7 @@ Add to `builtin_tools()` after `OutputTool::new().boxed(),`:
 MultieditTool::new(codebase_path.clone()).boxed(),
 ```
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && cargo test multiedit 2>&1 | tail -10
@@ -574,7 +574,7 @@ cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && c
 
 Expected: all 6 multiedit tests pass.
 
-- [ ] **Step 4: Full suite**
+- [x] **Step 4: Full suite**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && cargo test 2>&1 | tail -10
@@ -582,7 +582,7 @@ cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && c
 
 Expected: no regressions.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port && git add gait-rs/src/tools/multiedit.rs gait-rs/src/tools/mod.rs && git commit -m "feat(tools): add multiedit tool"
@@ -598,7 +598,7 @@ cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port && git add g
 
 Uses `filter_entry` (not `continue`) for proper directory pruning — this prunes the subtree, not just the directory entry itself.
 
-- [ ] **Step 1: Create `gait-rs/src/tools/codesearch.rs`**
+- [x] **Step 1: Create `gait-rs/src/tools/codesearch.rs`**
 
 ```rust
 use std::path::PathBuf;
@@ -847,7 +847,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Register codesearch in mod.rs**
+- [x] **Step 2: Register codesearch in mod.rs**
 
 Add to `gait-rs/src/tools/mod.rs` after the multiedit lines:
 
@@ -862,7 +862,7 @@ Add to `builtin_tools()` after `MultieditTool::new(codebase_path.clone()).boxed(
 CodesearchTool::new(codebase_path.clone()).boxed(),
 ```
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && cargo test codesearch 2>&1 | tail -10
@@ -870,7 +870,7 @@ cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && c
 
 Expected: all 10 codesearch tests pass.
 
-- [ ] **Step 4: Full suite**
+- [x] **Step 4: Full suite**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && cargo test 2>&1 | tail -10
@@ -878,7 +878,7 @@ cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && c
 
 Expected: no regressions.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port && git add gait-rs/src/tools/codesearch.rs gait-rs/src/tools/mod.rs && git commit -m "feat(tools): add codesearch tool (rg + walkdir fallback, filter_entry pruning)"
@@ -894,7 +894,7 @@ cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port && git add g
 
 HTML → markdown/text conversion uses the `regex` crate (already in Cargo.toml) for char-boundary-safe processing. The hand-rolled `to_lowercase().find()` approach would panic on non-ASCII input because `to_lowercase()` can change byte length.
 
-- [ ] **Step 1: Create `gait-rs/src/tools/webfetch.rs`**
+- [x] **Step 1: Create `gait-rs/src/tools/webfetch.rs`**
 
 ```rust
 use crate::types::Tool;
@@ -1218,7 +1218,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Register webfetch in mod.rs**
+- [x] **Step 2: Register webfetch in mod.rs**
 
 Add to `gait-rs/src/tools/mod.rs` after the codesearch lines:
 
@@ -1233,7 +1233,7 @@ Add to `builtin_tools()` after `CodesearchTool::new(codebase_path.clone()).boxed
 WebfetchTool::new().boxed(),
 ```
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && cargo test webfetch 2>&1 | tail -10
@@ -1241,7 +1241,7 @@ cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && c
 
 Expected: all unit tests pass (URL validation, HTML conversion including non-ASCII, name).
 
-- [ ] **Step 4: Full suite**
+- [x] **Step 4: Full suite**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && cargo test 2>&1 | tail -10
@@ -1249,7 +1249,7 @@ cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && c
 
 Expected: no regressions.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port && git add gait-rs/src/tools/webfetch.rs gait-rs/src/tools/mod.rs && git commit -m "feat(tools): add webfetch tool (regex-based HTML conversion, 5MB limit)"
@@ -1264,7 +1264,7 @@ cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port && git add g
 
 All 4 tool files now exist. This task adds tests to lock in the `builtin_tools()` count and uniqueness, then runs the full suite for final sign-off.
 
-- [ ] **Step 1: Add tests to mod.rs**
+- [x] **Step 1: Add tests to mod.rs**
 
 Append to `gait-rs/src/tools/mod.rs`:
 
@@ -1292,7 +1292,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run mod tests**
+- [x] **Step 2: Run mod tests**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && cargo test builtin 2>&1 | tail -10
@@ -1300,7 +1300,7 @@ cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && c
 
 Expected: both mod tests pass.
 
-- [ ] **Step 3: Full test suite**
+- [x] **Step 3: Full test suite**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && cargo test 2>&1 | tail -20
@@ -1308,7 +1308,7 @@ cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && c
 
 Expected: `test result: ok. N tests; 0 failed` where N ≥ 115.
 
-- [ ] **Step 4: Verify binary builds**
+- [x] **Step 4: Verify binary builds**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && cargo build --release 2>&1 | tail -5
@@ -1316,7 +1316,7 @@ cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs && c
 
 Expected: `Finished release [optimized]`
 
-- [ ] **Step 5: Final commit**
+- [x] **Step 5: Final commit**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port && git add gait-rs/src/tools/mod.rs && git commit -m "test(tools): add builtin_tools count and uniqueness assertions"

@@ -256,20 +256,21 @@ Replaces the existing `questions` / `questions_reply` tools entirely. Clean brea
 - ~~Add `InformEvent`, `InformReplyEvent`, `InformConvergenceEvent`~~ — implemented
 - ~~Update `AnyEvent` discriminated union~~ — implemented
 
-### 2. Tools ⬜ pending
-- Add `gait-rs/src/tools/clarify.rs` — intercepts call in turn.rs, emits Clarify event, exits turn
-- Add `gait-rs/src/tools/inform.rs` — intercepts call in turn.rs, emits Inform event, exits turn
-- Update `gait-rs/src/tools/mod.rs`
+### 2. Tools ✅ done (`15067a1`)
+- ~~Add `gait-rs/src/tools/clarify.rs`~~ — intercepts in turn.rs, emits Clarify event, exits turn
+- ~~Add `gait-rs/src/tools/inform.rs`~~ — intercepts in turn.rs, emits Inform event, exits turn
+- ~~Update `gait-rs/src/tools/mod.rs`~~ — registered; clarify/inform added to permission exemption
 
 ### 3. Message reconstruction (`gait-rs/src/session/context.rs`) ✅ done
 - ~~Add clarify → assistant message, clarify_reply → user message, clarify_convergence → both~~ — implemented
 - ~~Same pattern for inform_*~~ — implemented
 
-### 4. Turn loop (`gait-rs/src/turn.rs`) ⬜ pending
-- ~~Replace questions signal check with clarify + inform signal checks~~ — needs `TurnResult::Clarify` / `TurnResult::Inform` + intercept in step loop
+### 4. Turn loop (`gait-rs/src/turn.rs`) ✅ done (`15067a1`)
+- ~~`TurnResult::Clarify` / `TurnResult::Inform` variants added~~
+- ~~Step loop intercepts clarify/inform calls, emits events, exits turn~~
 
-### 5. Chat REPL (`gait-rs/src/chat.rs`) ⬜ pending
-- Handle `ClarifyNeeded` / `InformNeeded` from renderer — prompt user, write reply events, re-spawn
+### 5. Chat REPL (`gait-rs/src/chat.rs`) ✅ done (`15067a1`)
+- ~~Handle `ClarifyNeeded` / `InformNeeded` from renderer — prompt user, write reply events, re-spawn~~
 
 ### 6. Integration bridges (separate repos/PRs, not in gait)
 - `catuskoti-gait-bridge` — git post-commit watcher, ingests new transcript events

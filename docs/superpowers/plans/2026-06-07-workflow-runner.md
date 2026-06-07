@@ -46,7 +46,7 @@
 - Create: `gait-rs/src/workflow/mod.rs`
 - Modify: `gait-rs/src/lib.rs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to a new file `gait-rs/src/workflow/schema.rs` (create it with just the test first):
 
@@ -108,7 +108,7 @@ nodes:
 }
 ```
 
-- [ ] **Step 2: Add serde_yaml to Cargo.toml**
+- [x] **Step 2: Add serde_yaml to Cargo.toml**
 
 ```toml
 serde_yaml = "0.9"
@@ -116,14 +116,14 @@ serde_yaml = "0.9"
 
 Add after the `serde_json` line in `[dependencies]`.
 
-- [ ] **Step 3: Run test to confirm failure**
+- [x] **Step 3: Run test to confirm failure**
 
 ```bash
 cd gait-rs && cargo test parse_shell_node 2>&1 | tail -5
 ```
 Expected: compile error — `WorkflowDef` not defined.
 
-- [ ] **Step 4: Implement schema.rs**
+- [x] **Step 4: Implement schema.rs**
 
 Write `gait-rs/src/workflow/schema.rs`:
 
@@ -352,14 +352,14 @@ Add to `gait-rs/src/lib.rs`:
 pub mod workflow;
 ```
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 ```bash
 cd gait-rs && cargo test parse_shell_node parse_branch_node parse_on_error_goto 2>&1 | tail -10
 ```
 Expected: 3 tests pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add gait-rs/Cargo.toml gait-rs/src/workflow/ gait-rs/src/lib.rs
@@ -375,7 +375,7 @@ git commit -m "feat: workflow schema types + serde_yaml"
 - Modify: `gait-rs/src/turn.rs`
 - Modify: `gait-rs/src/harness.rs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to the `#[cfg(test)]` block in `transcript.rs`:
 
@@ -406,14 +406,14 @@ fn workflow_events_roundtrip() {
 
 Also in `turn.rs` tests, find `TurnResult::Done { summary }` and note it must become `TurnResult::Done { summary, .. }`.
 
-- [ ] **Step 2: Run test to confirm failure**
+- [x] **Step 2: Run test to confirm failure**
 
 ```bash
 cd gait-rs && cargo test workflow_events_roundtrip 2>&1 | tail -5
 ```
 Expected: compile error — `AnyEvent::WorkflowStart` not defined.
 
-- [ ] **Step 3: Add workflow events to AnyEvent**
+- [x] **Step 3: Add workflow events to AnyEvent**
 
 In `transcript.rs`, add after the `Compaction` variant (before the closing `}`):
 
@@ -480,7 +480,7 @@ In `transcript.rs`, add after the `Compaction` variant (before the closing `}`):
     },
 ```
 
-- [ ] **Step 4: Update TurnResult to carry structured output**
+- [x] **Step 4: Update TurnResult to carry structured output**
 
 In `turn.rs`, change:
 ```rust
@@ -521,14 +521,14 @@ Update `turn.rs` test (find `if let TurnResult::Done { summary } = result`):
 if let TurnResult::Done { summary, .. } = result {
 ```
 
-- [ ] **Step 5: Run all tests**
+- [x] **Step 5: Run all tests**
 
 ```bash
 cd gait-rs && cargo test 2>&1 | grep -E "^test result|FAILED"
 ```
 Expected: all pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add gait-rs/src/session/transcript.rs gait-rs/src/turn.rs gait-rs/src/harness.rs
@@ -543,7 +543,7 @@ git commit -m "feat: workflow transcript events; TurnResult carries structured o
 - Create: `gait-rs/src/workflow/vars.rs`
 - Modify: `gait-rs/src/workflow/mod.rs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `gait-rs/src/workflow/vars.rs` with only the tests:
 
@@ -616,14 +616,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to confirm failure**
+- [x] **Step 2: Run to confirm failure**
 
 ```bash
 cd gait-rs && cargo test substitute_well_known_vars 2>&1 | tail -5
 ```
 Expected: compile error.
 
-- [ ] **Step 3: Implement vars.rs**
+- [x] **Step 3: Implement vars.rs**
 
 ```rust
 use std::collections::HashMap;
@@ -738,14 +738,14 @@ fn compare_values(lhs: &str, rhs: &str, op: &str) -> bool {
 
 Update `mod.rs` to add `pub mod vars;`.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 ```bash
 cd gait-rs && cargo test substitute_ eval_bool_ 2>&1 | tail -10
 ```
 Expected: 5 tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add gait-rs/src/workflow/
@@ -761,7 +761,7 @@ git commit -m "feat: workflow variable substitution and bool expression evaluato
 - Create: `gait-rs/src/workflow/state.rs`
 - Modify: `gait-rs/src/workflow/mod.rs`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `gait-rs/src/workflow/progress.rs` with only tests:
 
@@ -823,14 +823,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to confirm failure**
+- [x] **Step 2: Run to confirm failure**
 
 ```bash
 cd gait-rs && cargo test write_and_read_progress reconstruct_from_events 2>&1 | tail -5
 ```
 Expected: compile errors.
 
-- [ ] **Step 3: Implement progress.rs**
+- [x] **Step 3: Implement progress.rs**
 
 ```rust
 use serde::{Deserialize, Serialize};
@@ -889,7 +889,7 @@ pub fn init_progress(workflow_id: &str, name: &str, node_ids: &[&str]) -> Progre
 }
 ```
 
-- [ ] **Step 4: Implement state.rs**
+- [x] **Step 4: Implement state.rs**
 
 ```rust
 use std::collections::HashMap;
@@ -966,14 +966,14 @@ pub fn reconstruct_state(events: &[AnyEvent]) -> WorkflowState {
 
 Add `pub mod progress;` and `pub mod state;` to `workflow/mod.rs`.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 ```bash
 cd gait-rs && cargo test write_and_read_progress reconstruct_from_events 2>&1 | tail -10
 ```
 Expected: 2 tests pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add gait-rs/src/workflow/
@@ -989,7 +989,7 @@ git commit -m "feat: workflow progress YAML and state reconstruction"
 - Modify: `gait-rs/src/git.rs`
 - Modify: `gait-rs/src/workflow/mod.rs`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `gait-rs/src/workflow/hooks.rs` with tests:
 
@@ -1038,14 +1038,14 @@ fn create_and_remove_branch_worktree_works() {
 }
 ```
 
-- [ ] **Step 2: Run to confirm failure**
+- [x] **Step 2: Run to confirm failure**
 
 ```bash
 cd gait-rs && cargo test hook_runs_and_returns_exit 2>&1 | tail -5
 ```
 Expected: compile error.
 
-- [ ] **Step 3: Implement hooks.rs**
+- [x] **Step 3: Implement hooks.rs**
 
 ```rust
 use std::collections::HashMap;
@@ -1068,7 +1068,7 @@ pub async fn run_hook(cmd: &str, env_vars: &HashMap<String, String>) -> (i32, St
 }
 ```
 
-- [ ] **Step 4: Add git branch worktree helpers to git.rs**
+- [x] **Step 4: Add git branch worktree helpers to git.rs**
 
 Add these functions to `gait-rs/src/git.rs` (after the existing functions):
 
@@ -1121,14 +1121,14 @@ pub fn merge_branch_ff(workspace: &Path, target_branch: &str, source_branch: &st
 
 Add `pub mod hooks;` to `workflow/mod.rs`.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 ```bash
 cd gait-rs && cargo test hook_runs hook_nonzero create_and_remove_branch_worktree 2>&1 | tail -10
 ```
 Expected: 3 tests pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add gait-rs/src/workflow/ gait-rs/src/git.rs
@@ -1144,7 +1144,7 @@ git commit -m "feat: hook execution and git branch worktree helpers"
 - Create: `gait-rs/src/workflow/exec_prompt.rs`
 - Modify: `gait-rs/src/workflow/mod.rs`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `gait-rs/src/workflow/exec_shell.rs` with tests:
 
@@ -1193,14 +1193,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to confirm failure**
+- [x] **Step 2: Run to confirm failure**
 
 ```bash
 cd gait-rs && cargo test shell_captures_output 2>&1 | tail -5
 ```
 Expected: compile error.
 
-- [ ] **Step 3: Define NodeContext and implement exec_shell.rs**
+- [x] **Step 3: Define NodeContext and implement exec_shell.rs**
 
 Create `gait-rs/src/workflow/exec_shell.rs`:
 
@@ -1242,7 +1242,7 @@ pub async fn exec_shell_node(shell: &ShellConfig, ctx: &NodeContext<'_>) -> anyh
 }
 ```
 
-- [ ] **Step 4: Implement exec_prompt.rs**
+- [x] **Step 4: Implement exec_prompt.rs**
 
 Create `gait-rs/src/workflow/exec_prompt.rs`:
 
@@ -1321,14 +1321,14 @@ fn resolve_system_prompt(node: &NodeDef, workspace: &Path) -> String {
 
 Add `pub mod exec_shell;` and `pub mod exec_prompt;` to `workflow/mod.rs`.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 ```bash
 cd gait-rs && cargo test shell_captures_output shell_nonzero 2>&1 | tail -10
 ```
 Expected: 2 tests pass. (exec_prompt has no unit test — it requires a real provider; tested in integration.)
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add gait-rs/src/workflow/
@@ -1345,7 +1345,7 @@ git commit -m "feat: shell and prompt node executors"
 - Create: `gait-rs/src/workflow/exec_gate.rs`
 - Modify: `gait-rs/src/workflow/mod.rs`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `gait-rs/src/workflow/exec_branch.rs` with tests:
 
@@ -1391,14 +1391,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to confirm failure**
+- [x] **Step 2: Run to confirm failure**
 
 ```bash
 cd gait-rs && cargo test two_way_branch_then 2>&1 | tail -5
 ```
 Expected: compile error.
 
-- [ ] **Step 3: Implement exec_branch.rs**
+- [x] **Step 3: Implement exec_branch.rs**
 
 ```rust
 use std::collections::HashMap;
@@ -1424,7 +1424,7 @@ pub fn resolve_branch(cfg: &BranchConfig, _outputs: &HashMap<String, NodeOutput>
 }
 ```
 
-- [ ] **Step 4: Implement exec_loop.rs**
+- [x] **Step 4: Implement exec_loop.rs**
 
 Create `gait-rs/src/workflow/exec_loop.rs`:
 
@@ -1496,7 +1496,7 @@ pub async fn exec_loop_node(
 }
 ```
 
-- [ ] **Step 5: Implement exec_gate.rs**
+- [x] **Step 5: Implement exec_gate.rs**
 
 Create `gait-rs/src/workflow/exec_gate.rs`:
 
@@ -1536,14 +1536,14 @@ pub fn exec_gate_node(
 
 Add all three modules to `workflow/mod.rs`: `pub mod exec_loop;`, `pub mod exec_branch;`, `pub mod exec_gate;`.
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 ```bash
 cd gait-rs && cargo test two_way_branch multiway_branch 2>&1 | tail -10
 ```
 Expected: 3 tests pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add gait-rs/src/workflow/
@@ -1558,7 +1558,7 @@ git commit -m "feat: loop, branch, and gate node executors"
 - Create: `gait-rs/src/workflow/runner.rs`
 - Modify: `gait-rs/src/workflow/mod.rs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `gait-rs/src/workflow/runner.rs` with only the test:
 
@@ -1595,14 +1595,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to confirm failure**
+- [x] **Step 2: Run to confirm failure**
 
 ```bash
 cd gait-rs && cargo test topological_sort_respects 2>&1 | tail -5
 ```
 Expected: compile error.
 
-- [ ] **Step 3: Implement topological_sort**
+- [x] **Step 3: Implement topological_sort**
 
 ```rust
 use std::collections::{HashMap, VecDeque};
@@ -1635,7 +1635,7 @@ pub fn topological_sort(nodes: &[NodeDef]) -> Vec<usize> {
 }
 ```
 
-- [ ] **Step 4: Implement run_workflow**
+- [x] **Step 4: Implement run_workflow**
 
 Write the full `runner.rs`:
 
@@ -2028,7 +2028,7 @@ fn make_env_vars(workflow_id: &str, session_id: &str, workspace: &Path, codebase
 
 Add `pub mod runner;` to `workflow/mod.rs`.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 ```bash
 cd gait-rs && cargo test topological_sort_respects 2>&1 | tail -10
@@ -2039,7 +2039,7 @@ cd gait-rs && cargo build 2>&1 | grep '^error' | head -10
 ```
 Expected: no errors.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add gait-rs/src/workflow/
@@ -2054,7 +2054,7 @@ git commit -m "feat: workflow runner with DAG execution, retry, branch routing, 
 - Modify: `gait-rs/src/bin/gait.rs`
 - Create: `gait-rs/tests/integration_workflow.rs`
 
-- [ ] **Step 1: Write the failing integration test**
+- [x] **Step 1: Write the failing integration test**
 
 Create `gait-rs/tests/integration_workflow.rs`:
 
@@ -2184,14 +2184,14 @@ nodes:
 }
 ```
 
-- [ ] **Step 2: Run to confirm failure**
+- [x] **Step 2: Run to confirm failure**
 
 ```bash
 cd gait-rs && cargo test --test integration_workflow 2>&1 | tail -10
 ```
 Expected: compile error — `run_workflow` not in public API.
 
-- [ ] **Step 3: Export workflow module from lib.rs**
+- [x] **Step 3: Export workflow module from lib.rs**
 
 In `gait-rs/src/lib.rs` add at the bottom:
 ```rust
@@ -2203,7 +2203,7 @@ Also make sure `workflow` mod is declared (add if not already present):
 pub mod workflow;
 ```
 
-- [ ] **Step 4: Fix any compilation errors**
+- [x] **Step 4: Fix any compilation errors**
 
 ```bash
 cd gait-rs && cargo build 2>&1 | grep '^error' | head -20
@@ -2214,7 +2214,7 @@ Fix all errors. Common ones:
 - Lifetime issues with `NodeContext` — if `make_test_ctx` used `Box::leak`, that won't compile in prod code. The runner creates `NodeContext` with references to local variables; ensure they live long enough.
 - Any `NodeContext` struct needs to be in a shared location if used by multiple executors. Currently it's in `exec_shell.rs`. The other executors import it from there: `use crate::workflow::exec_shell::NodeContext;`
 
-- [ ] **Step 5: Add `gait workflow` CLI subcommand**
+- [x] **Step 5: Add `gait workflow` CLI subcommand**
 
 In `gait-rs/src/bin/gait.rs`, add:
 1. Add `workflow` to main match:
@@ -2391,7 +2391,7 @@ And add required imports for `serde_yaml`:
 // serde_yaml is in the library crate via workflow::schema, no direct import needed in bin
 ```
 
-- [ ] **Step 6: Run all tests**
+- [x] **Step 6: Run all tests**
 
 ```bash
 cd gait-rs && cargo test 2>&1 | grep -E "^test result|FAILED"
@@ -2403,7 +2403,7 @@ cd gait-rs && cargo test --test integration_workflow 2>&1 | tail -15
 ```
 Expected: 2 integration tests pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add gait-rs/src/bin/gait.rs gait-rs/src/lib.rs gait-rs/tests/integration_workflow.rs gait-rs/src/workflow/

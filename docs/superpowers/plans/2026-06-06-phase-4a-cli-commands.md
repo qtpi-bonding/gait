@@ -31,7 +31,7 @@ The `finish` command needs to merge the session branch into main. The `init` com
 - Modify: `gait-rs/src/git.rs`
 - Test: `gait-rs/src/git.rs` (inline `#[cfg(test)]` block — already exists)
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to the `#[cfg(test)]` block at the bottom of `gait-rs/src/git.rs`:
 
@@ -72,7 +72,7 @@ fn finish_session_noop_when_not_found() {
 }
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 ```bash
 cargo test -p gait-ai git::tests::finish_session_merges_into_main git::tests::init_workspace_creates_git_repo git::tests::finish_session_noop_when_not_found 2>&1 | tail -15
@@ -80,7 +80,7 @@ cargo test -p gait-ai git::tests::finish_session_merges_into_main git::tests::in
 
 Expected: `error[E0425]: cannot find function 'finish_session'` (or similar compile error)
 
-- [ ] **Step 3: Implement `finish_session` and `init_workspace`**
+- [x] **Step 3: Implement `finish_session` and `init_workspace`**
 
 Add to `gait-rs/src/git.rs` (after the existing `list_active_sessions` function, before `#[cfg(test)]`):
 
@@ -153,7 +153,7 @@ pub fn init_workspace(workspace: &Path) -> anyhow::Result<()> {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 ```bash
 cargo test -p gait-ai git::tests::finish_session_merges_into_main git::tests::init_workspace_creates_git_repo git::tests::finish_session_noop_when_not_found 2>&1 | tail -10
@@ -161,7 +161,7 @@ cargo test -p gait-ai git::tests::finish_session_merges_into_main git::tests::in
 
 Expected: `test result: ok. 3 passed`
 
-- [ ] **Step 5: Run all tests to check no regressions**
+- [x] **Step 5: Run all tests to check no regressions**
 
 ```bash
 cargo test 2>&1 | grep -E "^(test result|FAILED)"
@@ -169,7 +169,7 @@ cargo test 2>&1 | grep -E "^(test result|FAILED)"
 
 Expected: all lines show `ok`, no `FAILED`
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add gait-rs/src/git.rs
@@ -185,7 +185,7 @@ The `auth add`, `auth remove`, and `auth list` commands need to write to and rea
 **Files:**
 - Modify: `gait-rs/src/auth.rs`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to the `#[cfg(test)]` block in `gait-rs/src/auth.rs`:
 
@@ -223,7 +223,7 @@ fn list_credentials_masks_keys() {
 }
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 ```bash
 cargo test -p gait-ai auth::tests 2>&1 | tail -10
@@ -231,7 +231,7 @@ cargo test -p gait-ai auth::tests 2>&1 | tail -10
 
 Expected: compile error — `write_api_key_to`, `list_credentials_from`, `remove_api_key_from` not found.
 
-- [ ] **Step 3: Implement the auth write/remove/list functions**
+- [x] **Step 3: Implement the auth write/remove/list functions**
 
 Add to `gait-rs/src/auth.rs` (after the existing `resolve_api_key` function, before `#[cfg(test)]`):
 
@@ -296,7 +296,7 @@ pub fn list_credentials() -> HashMap<String, String> {
 }
 ```
 
-- [ ] **Step 4: Run the auth tests**
+- [x] **Step 4: Run the auth tests**
 
 ```bash
 cargo test -p gait-ai auth::tests 2>&1 | tail -10
@@ -304,7 +304,7 @@ cargo test -p gait-ai auth::tests 2>&1 | tail -10
 
 Expected: `test result: ok. 4 passed` (3 new + 1 existing)
 
-- [ ] **Step 5: Run all tests**
+- [x] **Step 5: Run all tests**
 
 ```bash
 cargo test 2>&1 | grep -E "^(test result|FAILED)"
@@ -312,7 +312,7 @@ cargo test 2>&1 | grep -E "^(test result|FAILED)"
 
 Expected: all `ok`
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add gait-rs/src/auth.rs
@@ -329,7 +329,7 @@ The `models` command fetches from `https://models.dev/api.json`, caches to `~/.c
 - Create: `gait-rs/src/models.rs`
 - Modify: `gait-rs/src/lib.rs` (add `pub mod models;`)
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `gait-rs/src/models.rs` with just the test module first:
 
@@ -377,7 +377,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 ```bash
 cargo test -p gait-ai models::tests 2>&1 | tail -5
@@ -385,7 +385,7 @@ cargo test -p gait-ai models::tests 2>&1 | tail -5
 
 Expected: compile errors — `ModelInfo`, `load_from_cache`, `filter_models` not found.
 
-- [ ] **Step 3: Implement `models.rs`**
+- [x] **Step 3: Implement `models.rs`**
 
 Replace `gait-rs/src/models.rs` with the full implementation:
 
@@ -525,7 +525,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: Add `pub mod models;` to `gait-rs/src/lib.rs`**
+- [x] **Step 4: Add `pub mod models;` to `gait-rs/src/lib.rs`**
 
 ```rust
 pub mod models;
@@ -533,7 +533,7 @@ pub mod models;
 
 (Add after `pub mod factory;`)
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 ```bash
 cargo test -p gait-ai models::tests 2>&1 | tail -10
@@ -541,7 +541,7 @@ cargo test -p gait-ai models::tests 2>&1 | tail -10
 
 Expected: `test result: ok. 3 passed`
 
-- [ ] **Step 6: Run all tests**
+- [x] **Step 6: Run all tests**
 
 ```bash
 cargo test 2>&1 | grep -E "^(test result|FAILED)"
@@ -549,7 +549,7 @@ cargo test 2>&1 | grep -E "^(test result|FAILED)"
 
 Expected: all `ok`
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add gait-rs/src/models.rs gait-rs/src/lib.rs
@@ -573,7 +573,7 @@ These need to be instantiated as `Box<dyn Tool>` and passed to `run_turn`. The `
 - Modify: `gait-rs/src/bin/gait.rs`
 - Modify: `gait-rs/src/config.rs` (add 2 config tests for config tools)
 
-- [ ] **Step 1: Add a test for config tool parsing in `config.rs`**
+- [x] **Step 1: Add a test for config tool parsing in `config.rs`**
 
 Add to the `#[cfg(test)]` block in `gait-rs/src/config.rs`:
 
@@ -601,7 +601,7 @@ fn parses_config_defined_tools() {
 }
 ```
 
-- [ ] **Step 2: Run to verify it passes (config parsing already works)**
+- [x] **Step 2: Run to verify it passes (config parsing already works)**
 
 ```bash
 cargo test -p gait-ai config::tests::parses_config_defined_tools 2>&1 | tail -5
@@ -609,7 +609,7 @@ cargo test -p gait-ai config::tests::parses_config_defined_tools 2>&1 | tail -5
 
 Expected: `test result: ok. 1 passed`
 
-- [ ] **Step 3: Wire config tools into `cmd_run` in `src/bin/gait.rs`**
+- [x] **Step 3: Wire config tools into `cmd_run` in `src/bin/gait.rs`**
 
 In `cmd_run`, after `let tools = builtin_tools(codebase_path.clone());`, add:
 
@@ -656,7 +656,7 @@ for ct in &config.tools {
 }
 ```
 
-- [ ] **Step 4: Build to verify it compiles**
+- [x] **Step 4: Build to verify it compiles**
 
 ```bash
 cargo build --bin gait 2>&1 | grep -E "^(error|warning\[)" | head -20
@@ -664,7 +664,7 @@ cargo build --bin gait 2>&1 | grep -E "^(error|warning\[)" | head -20
 
 Expected: no errors (warnings about unused imports are fine)
 
-- [ ] **Step 5: Run all tests**
+- [x] **Step 5: Run all tests**
 
 ```bash
 cargo test 2>&1 | grep -E "^(test result|FAILED)"
@@ -672,7 +672,7 @@ cargo test 2>&1 | grep -E "^(test result|FAILED)"
 
 Expected: all `ok`
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add gait-rs/src/bin/gait.rs gait-rs/src/config.rs
@@ -721,7 +721,7 @@ You are a coding agent running inside gait, a stateless turn-based agent framewo
 - Read files rather than asking when you need information
 ```
 
-- [ ] **Step 1: Add `init`, `finish`, `sessions` to the match in `main()`**
+- [x] **Step 1: Add `init`, `finish`, `sessions` to the match in `main()`**
 
 Replace the match block in `main()`:
 
@@ -756,7 +756,7 @@ fn usage() -> ! {
 }
 ```
 
-- [ ] **Step 2: Implement `cmd_init`**
+- [x] **Step 2: Implement `cmd_init`**
 
 ```rust
 fn cmd_init(argv: &[String]) {
@@ -838,7 +838,7 @@ fn cmd_init(argv: &[String]) {
 }
 ```
 
-- [ ] **Step 3: Implement `cmd_finish`**
+- [x] **Step 3: Implement `cmd_finish`**
 
 ```rust
 fn cmd_finish(argv: &[String]) {
@@ -868,7 +868,7 @@ fn cmd_finish(argv: &[String]) {
 }
 ```
 
-- [ ] **Step 4: Implement `cmd_sessions`**
+- [x] **Step 4: Implement `cmd_sessions`**
 
 ```rust
 fn cmd_sessions(argv: &[String]) {
@@ -886,7 +886,7 @@ fn cmd_sessions(argv: &[String]) {
 }
 ```
 
-- [ ] **Step 5: Build to verify it compiles**
+- [x] **Step 5: Build to verify it compiles**
 
 ```bash
 cargo build --bin gait 2>&1 | grep "^error" | head -20
@@ -894,7 +894,7 @@ cargo build --bin gait 2>&1 | grep "^error" | head -20
 
 Expected: no errors
 
-- [ ] **Step 6: Smoke test**
+- [x] **Step 6: Smoke test**
 
 ```bash
 /Users/aicoder/develop/cargo-target/debug/gait init --help 2>&1 || true
@@ -904,7 +904,7 @@ Expected: no errors
 
 Expected: usage/error messages (no panics)
 
-- [ ] **Step 7: Run all tests**
+- [x] **Step 7: Run all tests**
 
 ```bash
 cargo test 2>&1 | grep -E "^(test result|FAILED)"
@@ -912,7 +912,7 @@ cargo test 2>&1 | grep -E "^(test result|FAILED)"
 
 Expected: all `ok`
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add gait-rs/src/bin/gait.rs
@@ -926,7 +926,7 @@ git commit -m "feat(rs): init, finish, sessions CLI commands"
 **Files:**
 - Modify: `gait-rs/src/bin/gait.rs`
 
-- [ ] **Step 1: Implement `cmd_auth`**
+- [x] **Step 1: Implement `cmd_auth`**
 
 Add to `gait-rs/src/bin/gait.rs`:
 
@@ -983,7 +983,7 @@ fn cmd_auth(argv: &[String]) {
 }
 ```
 
-- [ ] **Step 2: Implement `cmd_models`**
+- [x] **Step 2: Implement `cmd_models`**
 
 ```rust
 async fn cmd_models(argv: &[String]) {
@@ -1002,7 +1002,7 @@ async fn cmd_models(argv: &[String]) {
 }
 ```
 
-- [ ] **Step 3: Build to verify it compiles**
+- [x] **Step 3: Build to verify it compiles**
 
 ```bash
 cargo build --bin gait 2>&1 | grep "^error" | head -20
@@ -1010,7 +1010,7 @@ cargo build --bin gait 2>&1 | grep "^error" | head -20
 
 Expected: no errors
 
-- [ ] **Step 4: Smoke test `auth list`**
+- [x] **Step 4: Smoke test `auth list`**
 
 ```bash
 /Users/aicoder/develop/cargo-target/debug/gait auth list
@@ -1018,7 +1018,7 @@ Expected: no errors
 
 Expected: either "No credentials configured." or a list of masked keys from `~/.local/share/gait/auth.json`
 
-- [ ] **Step 5: Run all tests**
+- [x] **Step 5: Run all tests**
 
 ```bash
 cargo test 2>&1 | grep -E "^(test result|FAILED)"
@@ -1026,7 +1026,7 @@ cargo test 2>&1 | grep -E "^(test result|FAILED)"
 
 Expected: all `ok`
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add gait-rs/src/bin/gait.rs
@@ -1040,7 +1040,7 @@ git commit -m "feat(rs): auth and models CLI commands"
 **Files:**
 - Create: `gait-rs/tests/integration_commands.rs`
 
-- [ ] **Step 1: Write the integration tests**
+- [x] **Step 1: Write the integration tests**
 
 Create `gait-rs/tests/integration_commands.rs`:
 
@@ -1124,7 +1124,7 @@ fn models_filter_works() {
 }
 ```
 
-- [ ] **Step 2: Run the integration tests**
+- [x] **Step 2: Run the integration tests**
 
 ```bash
 cargo test --test integration_commands 2>&1 | tail -10
@@ -1132,7 +1132,7 @@ cargo test --test integration_commands 2>&1 | tail -10
 
 Expected: `test result: ok. 4 passed`
 
-- [ ] **Step 3: Run the full test suite**
+- [x] **Step 3: Run the full test suite**
 
 ```bash
 cargo test 2>&1 | grep -E "^(test result|FAILED|running)"
@@ -1140,7 +1140,7 @@ cargo test 2>&1 | grep -E "^(test result|FAILED|running)"
 
 Expected: all `ok`, no `FAILED`. Total test count should be 85+.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add gait-rs/tests/integration_commands.rs

@@ -39,7 +39,7 @@ gait-rs/
 - Modify: `gait-rs/Cargo.toml`
 - Create: `gait-rs/src/git.rs`
 
-- [ ] **Step 1: Add git2 and uuid to Cargo.toml**
+- [x] **Step 1: Add git2 and uuid to Cargo.toml**
 
 In `gait-rs/Cargo.toml`, add to `[dependencies]`:
 
@@ -48,7 +48,7 @@ git2 = "0.19"
 uuid = { version = "1", features = ["v4"] }
 ```
 
-- [ ] **Step 2: Write failing tests for git operations**
+- [x] **Step 2: Write failing tests for git operations**
 
 Create `gait-rs/src/git.rs` with just the function signatures and a `#[cfg(test)]` block:
 
@@ -155,7 +155,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs
@@ -164,7 +164,7 @@ cargo test git::tests 2>&1 | head -30
 
 Expected: compilation errors or `todo!()` panics — confirms tests are wired.
 
-- [ ] **Step 4: Implement `src/git.rs`**
+- [x] **Step 4: Implement `src/git.rs`**
 
 Replace the stub functions with:
 
@@ -276,7 +276,7 @@ pub fn list_active_sessions(workspace: &Path) -> anyhow::Result<Vec<String>> {
 }
 ```
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs
@@ -285,7 +285,7 @@ cargo test git::tests 2>&1
 
 Expected: all 7 git tests pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add gait-rs/Cargo.toml gait-rs/src/git.rs
@@ -302,7 +302,7 @@ git commit -m "feat(rs): git2 session operations — worktree create/commit/list
 
 All 18 event variants matching the TypeScript JSONL schema exactly. Supporting structs. JSONL helpers.
 
-- [ ] **Step 1: Create `src/session/mod.rs`**
+- [x] **Step 1: Create `src/session/mod.rs`**
 
 ```rust
 pub mod transcript;
@@ -311,7 +311,7 @@ pub use transcript::*;
 pub use context::reconstruct_messages;
 ```
 
-- [ ] **Step 2: Write failing tests in `src/session/transcript.rs`**
+- [x] **Step 2: Write failing tests in `src/session/transcript.rs`**
 
 Create the file with test stubs only first:
 
@@ -678,7 +678,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs
@@ -687,7 +687,7 @@ cargo test session::transcript::tests 2>&1
 
 Expected: all 5 tests pass.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add gait-rs/src/session/
@@ -703,7 +703,7 @@ git commit -m "feat(rs): session transcript — 18 event variants + JSONL helper
 
 Port of `session/context.ts` — turns JSONL events into `Vec<Message>` for the LLM.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Create `gait-rs/src/session/context.rs`:
 
@@ -953,7 +953,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run tests**
+- [x] **Step 2: Run tests**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs
@@ -962,7 +962,7 @@ cargo test session::context::tests 2>&1
 
 Expected: all 5 tests pass.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add gait-rs/src/session/context.rs
@@ -979,7 +979,7 @@ git commit -m "feat(rs): session context — reconstruct messages from JSONL eve
 
 Minimal config parser (strips `//` comments from JSONC) and API key resolution (env var first, then `~/.local/share/gait/auth.json`).
 
-- [ ] **Step 1: Write `src/config.rs`**
+- [x] **Step 1: Write `src/config.rs`**
 
 ```rust
 use serde::Deserialize;
@@ -1090,7 +1090,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Write `src/auth.rs`**
+- [x] **Step 2: Write `src/auth.rs`**
 
 ```rust
 use serde::Deserialize;
@@ -1142,7 +1142,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: Add `dirs-next` to Cargo.toml**
+- [x] **Step 3: Add `dirs-next` to Cargo.toml**
 
 In `gait-rs/Cargo.toml` `[dependencies]`:
 
@@ -1150,7 +1150,7 @@ In `gait-rs/Cargo.toml` `[dependencies]`:
 dirs-next = "2"
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs
@@ -1159,7 +1159,7 @@ cargo test config::tests 2>&1
 
 Expected: 3 config tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add gait-rs/Cargo.toml gait-rs/src/config.rs gait-rs/src/auth.rs
@@ -1175,7 +1175,7 @@ git commit -m "feat(rs): config parser (JSONC) + API key resolution"
 
 The core agentic loop. Streams the provider, dispatches tools with permission gating, appends events to the transcript, commits after each turn.
 
-- [ ] **Step 1: Write `src/turn.rs`**
+- [x] **Step 1: Write `src/turn.rs`**
 
 ```rust
 use std::path::{Path, PathBuf};
@@ -1607,7 +1607,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Add `libc` to Cargo.toml**
+- [x] **Step 2: Add `libc` to Cargo.toml**
 
 In `gait-rs/Cargo.toml` `[dependencies]`:
 
@@ -1615,7 +1615,7 @@ In `gait-rs/Cargo.toml` `[dependencies]`:
 libc = "0.2"
 ```
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs
@@ -1624,7 +1624,7 @@ cargo test turn::tests 2>&1
 
 Expected: both turn tests pass.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add gait-rs/Cargo.toml gait-rs/src/turn.rs
@@ -1639,7 +1639,7 @@ git commit -m "feat(rs): run_turn — agentic loop with permission gate and tran
 - Modify: `gait-rs/src/lib.rs`
 - Create: `gait-rs/src/bin/gait.rs`
 
-- [ ] **Step 1: Update `src/lib.rs`**
+- [x] **Step 1: Update `src/lib.rs`**
 
 Add module declarations at the top:
 
@@ -1665,7 +1665,7 @@ pub use turn::{TurnOpts, run_turn};
 
 (Keep the existing re-exports; just add the new `pub mod` lines and re-exports.)
 
-- [ ] **Step 2: Create `src/bin/gait.rs`**
+- [x] **Step 2: Create `src/bin/gait.rs`**
 
 ```rust
 use std::path::PathBuf;
@@ -1770,7 +1770,7 @@ async fn cmd_run(argv: &[String]) {
 }
 ```
 
-- [ ] **Step 3: Verify the binary compiles**
+- [x] **Step 3: Verify the binary compiles**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs
@@ -1779,7 +1779,7 @@ cargo build --bin gait 2>&1
 
 Expected: compiles without errors. Fix any type errors before continuing.
 
-- [ ] **Step 4: Smoke test the binary help output**
+- [x] **Step 4: Smoke test the binary help output**
 
 ```bash
 ./target/debug/gait 2>&1 || true
@@ -1787,7 +1787,7 @@ Expected: compiles without errors. Fix any type errors before continuing.
 
 Expected: prints usage line and exits 1.
 
-- [ ] **Step 5: Run full test suite to verify nothing regressed**
+- [x] **Step 5: Run full test suite to verify nothing regressed**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs
@@ -1796,7 +1796,7 @@ cargo test 2>&1 | tail -20
 
 Expected: all existing tests still pass plus new tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add gait-rs/src/lib.rs gait-rs/src/bin/gait.rs
@@ -1812,7 +1812,7 @@ git commit -m "feat(rs): gait binary — run command wires config, auth, provide
 
 End-to-end test: starts a fresh git workspace, runs a full turn with a mock provider (one tool call + final text), verifies transcript JSONL and git commit.
 
-- [ ] **Step 1: Create `gait-rs/tests/integration_turn.rs`**
+- [x] **Step 1: Create `gait-rs/tests/integration_turn.rs`**
 
 ```rust
 use gait_ai::{
@@ -1974,7 +1974,7 @@ async fn second_turn_resumes_session() {
 }
 ```
 
-- [ ] **Step 2: Run integration tests**
+- [x] **Step 2: Run integration tests**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs
@@ -1983,7 +1983,7 @@ cargo test --test integration_turn 2>&1
 
 Expected: both integration tests pass.
 
-- [ ] **Step 3: Run complete test suite**
+- [x] **Step 3: Run complete test suite**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs
@@ -1992,7 +1992,7 @@ cargo test 2>&1 | tail -5
 
 Expected: all tests pass (should be 70+).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add gait-rs/tests/integration_turn.rs

@@ -58,7 +58,7 @@ Every `PermissionItem` carries the original tool call so the resume path can re-
 
 For compound shell commands (`cargo test && git push`), **multiple PermissionItems share the same `id`** (the original `tool_call_id`). Each carries its own segment-level `cmd`/`patterns` for the UX, but they all carry the **same full `tool_args`** (the original complete shell args). This way the resume path can group by `id` and execute the original command once when all segments are approved.
 
-- [ ] **Step 1: Write failing test**
+- [x] **Step 1: Write failing test**
 
 Add to the `#[cfg(test)]` block in `transcript.rs`:
 
@@ -80,13 +80,13 @@ fn permission_item_carries_tool_call_for_reexecution() {
 }
 ```
 
-- [ ] **Step 2: Run to confirm it fails**
+- [x] **Step 2: Run to confirm it fails**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/gait-rs && cargo test permission_item_carries 2>&1 | tail -5
 ```
 
-- [ ] **Step 3: Add fields to PermissionItem**
+- [x] **Step 3: Add fields to PermissionItem**
 
 In `gait-rs/src/session/transcript.rs`:
 
@@ -105,7 +105,7 @@ pub struct PermissionItem {
 }
 ```
 
-- [ ] **Step 4: Update construction sites in `turn.rs`**
+- [x] **Step 4: Update construction sites in `turn.rs`**
 
 Find every `PermissionItem {` in `src/`:
 
@@ -149,13 +149,13 @@ for tc in &step_tool_calls {
 
 Add `tool_name: String::new(), tool_args: serde_json::Value::Null,` to any remaining test construction sites.
 
-- [ ] **Step 5: Run full test suite**
+- [x] **Step 5: Run full test suite**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/gait-rs && cargo test 2>&1 | tail -10
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/gait-rs && git add src/session/transcript.rs src/turn.rs
@@ -188,7 +188,7 @@ git commit -m "feat(transcript): add tool_name+tool_args to PermissionItem for d
 
 **Remove the existing `resuming_after_permission` block** from the already-committed code (it only skips UserTurn injection; the new resume path handles everything).
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Add to `turn.rs` tests:
 
@@ -332,13 +332,13 @@ fn permissions_excluded_from_context_reconstruction() {
 }
 ```
 
-- [ ] **Step 2: Run to confirm tests fail**
+- [x] **Step 2: Run to confirm tests fail**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/gait-rs && cargo test resume_executes resume_emits permissions_excluded 2>&1 | tail -15
 ```
 
-- [ ] **Step 3: Update `context.rs` — exclude Permissions/PermissionsReply**
+- [x] **Step 3: Update `context.rs` — exclude Permissions/PermissionsReply**
 
 In `gait-rs/src/session/context.rs`, replace the two arms:
 
@@ -360,7 +360,7 @@ AnyEvent::Permissions { .. } => { i += 1; }    // audit event — excluded from 
 AnyEvent::PermissionsReply { .. } => { i += 1; } // audit event — excluded from model context
 ```
 
-- [ ] **Step 4: Add `execute_tool_call` helper above `run_turn`**
+- [x] **Step 4: Add `execute_tool_call` helper above `run_turn`**
 
 ```rust
 /// Execute one tool call: emit ToolCall event, run the tool, emit ToolResult event.
@@ -402,7 +402,7 @@ async fn execute_tool_call(
 }
 ```
 
-- [ ] **Step 5: Replace the existing `resuming_after_permission` block in `run_turn`**
+- [x] **Step 5: Replace the existing `resuming_after_permission` block in `run_turn`**
 
 The already-committed code has a `resuming_after_permission` check that only skips UserTurn injection. Delete that entire block and replace it with the full resume path.
 
@@ -501,7 +501,7 @@ if !did_resume {
 
 > Note: `messages` must be declared as `let mut messages: Vec<Message>;` before this block.
 
-- [ ] **Step 6: Merge the permission-check and execution loops (B2 fix + execute_tool_call)**
+- [x] **Step 6: Merge the permission-check and execution loops (B2 fix + execute_tool_call)**
 
 The committed `turn.rs` has TWO separate loops over `step_tool_calls`:
 - Loop A (permission check): `if !is_tool_allowed { pending_permissions.push(...) }` — exits if any are gated
@@ -563,7 +563,7 @@ if !pending_permissions.is_empty() {
 
 Keep all existing special-case side-effect logic (`output`/`mcp`/`skill`) intact — only restructure the outer if/else.
 
-- [ ] **Step 7: Run tests**
+- [x] **Step 7: Run tests**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/gait-rs && cargo test 2>&1 | tail -15
@@ -571,7 +571,7 @@ cd /Users/aicoder/Documents/ideation/gait/gait-rs && cargo test 2>&1 | tail -15
 
 Expected: all pass including the three new tests.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/gait-rs && git add src/turn.rs src/session/context.rs
@@ -591,7 +591,7 @@ git commit -m "feat(turn): execute_tool_call helper, direct resume execution, de
 
 Operates on raw `serde_json::Value` — never `GaitConfig`. Bails (returns Err, does NOT write) if the file exists but fails to parse.
 
-- [ ] **Step 1: Write failing tests for append_allow_pattern**
+- [x] **Step 1: Write failing tests for append_allow_pattern**
 
 ```rust
 #[test]
@@ -636,7 +636,7 @@ fn append_allow_pattern_bails_on_parse_error() {
 }
 ```
 
-- [ ] **Step 2: Implement `append_allow_pattern`**
+- [x] **Step 2: Implement `append_allow_pattern`**
 
 Add to `gait-rs/src/config.rs` after `load_config`:
 
@@ -682,7 +682,7 @@ allow:
 # System prompt...
 ```
 
-- [ ] **Step 3: Write failing tests for agent_frontmatter**
+- [x] **Step 3: Write failing tests for agent_frontmatter**
 
 Create test file inline in `src/agent_frontmatter.rs`:
 
@@ -742,7 +742,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: Implement `agent_frontmatter.rs`**
+- [x] **Step 4: Implement `agent_frontmatter.rs`**
 
 Create `gait-rs/src/agent_frontmatter.rs`:
 
@@ -837,17 +837,17 @@ fn extract_allow(yaml: &serde_yaml::Value) -> Vec<String> {
 mod tests { /* ... tests from step 3 ... */ }
 ```
 
-- [ ] **Step 5: Add to lib.rs**
+- [x] **Step 5: Add to lib.rs**
 
 Add `pub mod agent_frontmatter;` to `gait-rs/src/lib.rs`.
 
-- [ ] **Step 6: Run all tests**
+- [x] **Step 6: Run all tests**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/gait-rs && cargo test 2>&1 | tail -10
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/gait-rs && git add src/config.rs src/agent_frontmatter.rs src/lib.rs
@@ -896,7 +896,7 @@ All decisions collected for ALL items before writing/re-spawning (prevents once-
 
 After all decisions: write `PermissionsReply` to transcript. Re-spawn if any approved; else print "permission denied".
 
-- [ ] **Step 1: Update `bin/gait.rs` — add `--agent` flag**
+- [x] **Step 1: Update `bin/gait.rs` — add `--agent` flag**
 
 Find the `run` subcommand argument parsing in `gait-rs/src/bin/gait.rs`. Add:
 
@@ -936,7 +936,7 @@ fn cmd_chat(workspace: PathBuf, codebase: PathBuf, agent_name: Option<String>) -
 
 Note: `chat` passes an **absolute path** (already resolved via `resolve_agent_path`) to each `gait run` spawn. `run`'s `--agent` therefore receives a path. `resolve_agent_path` must short-circuit for absolute paths: if the name is absolute (`Path::is_absolute()`), use it directly without joining to workspace.
 
-- [ ] **Step 2: Load agent frontmatter allow in `bin/gait.rs`**
+- [x] **Step 2: Load agent frontmatter allow in `bin/gait.rs`**
 
 When `--agent <name>` is provided for `gait run`, resolve the path and merge its allow list:
 
@@ -953,7 +953,7 @@ let mut allow = cfg.allow.clone();
 allow.extend(agent_allow);
 ```
 
-- [ ] **Step 3: Write failing tests for chat helpers**
+- [x] **Step 3: Write failing tests for chat helpers**
 
 ```rust
 #[test]
@@ -1027,13 +1027,13 @@ fn parse_permission_response_invalid() {
 }
 ```
 
-- [ ] **Step 4: Run to confirm tests fail**
+- [x] **Step 4: Run to confirm tests fail**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/gait-rs && cargo test bang_command parse_permission 2>&1 | tail -5
 ```
 
-- [ ] **Step 5: Implement helpers**
+- [x] **Step 5: Implement helpers**
 
 ```rust
 fn is_bang_command(s: &str) -> bool { s.starts_with('!') }
@@ -1091,7 +1091,7 @@ fn parse_permission_response(
 }
 ```
 
-- [ ] **Step 6: Implement `prompt_single_permission` and the full REPL**
+- [x] **Step 6: Implement `prompt_single_permission` and the full REPL**
 
 ```rust
 fn prompt_single_permission(
@@ -1134,7 +1134,7 @@ fn prompt_single_permission(
 }
 ```
 
-- [ ] **Step 7: Rewrite `run_chat`**
+- [x] **Step 7: Rewrite `run_chat`**
 
 ```rust
 pub fn run_chat(
@@ -1301,25 +1301,25 @@ pub fn run_chat(
 }
 ```
 
-- [ ] **Step 8: Run tests**
+- [x] **Step 8: Run tests**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/gait-rs && cargo test bang_command parse_permission 2>&1 | tail -5
 ```
 
-- [ ] **Step 9: Build**
+- [x] **Step 9: Build**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/gait-rs && cargo build 2>&1 | tail -10
 ```
 
-- [ ] **Step 10: Run full test suite**
+- [x] **Step 10: Run full test suite**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/gait-rs && cargo test 2>&1 | tail -10
 ```
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/gait-rs && git add src/chat.rs src/bin/gait.rs
@@ -1330,14 +1330,14 @@ git commit -m "feat(chat): permission prompt with agent/global/once/reject, --ag
 
 ## Post-implementation smoke tests
 
-- [ ] `cargo build --release` — clean build
-- [ ] Full test suite: `cargo test 2>&1 | grep -E "test result|FAILED"`
-- [ ] `gait chat`: send a shell task → prompt appears → `g1` → written to `gait.jsonc` → resume executes tool directly (no extra LLM call) → model continues with result
-- [ ] `gait chat --agent code`: same task → `a1` → written to `agents/code.md` frontmatter → subsequent runs with `--agent code` auto-approve
-- [ ] `[o]nce` → tool executes in this run → next run re-asks
-- [ ] `[r]` → "permission denied" ToolResult in transcript → model told "denied", no retry loop
-- [ ] Compound command `cargo test && git push` → two segment prompts → approve cargo, reject git → "permission denied" ToolResult → model sees denial, does not retry git push
-- [ ] Both segments approved → compound command executes once → ToolCall/ToolResult with original compound cmd
+- [x] `cargo build --release` — clean build
+- [x] Full test suite: `cargo test 2>&1 | grep -E "test result|FAILED"`
+- [x] `gait chat`: send a shell task → prompt appears → `g1` → written to `gait.jsonc` → resume executes tool directly (no extra LLM call) → model continues with result
+- [x] `gait chat --agent code`: same task → `a1` → written to `agents/code.md` frontmatter → subsequent runs with `--agent code` auto-approve
+- [x] `[o]nce` → tool executes in this run → next run re-asks
+- [x] `[r]` → "permission denied" ToolResult in transcript → model told "denied", no retry loop
+- [x] Compound command `cargo test && git push` → two segment prompts → approve cargo, reject git → "permission denied" ToolResult → model sees denial, does not retry git push
+- [x] Both segments approved → compound command executes once → ToolCall/ToolResult with original compound cmd
 
 ---
 

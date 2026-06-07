@@ -30,7 +30,7 @@
 **Files:**
 - Modify: `gait-rs/src/config.rs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `gait-rs/src/config.rs` inside the `#[cfg(test)]` block:
 
@@ -67,7 +67,7 @@ fn parses_mcp_tools_and_skills() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 ```bash
 cd /path/to/gait-rs && cargo test parses_mcp_tools_and_skills 2>&1 | tail -5
@@ -75,7 +75,7 @@ cd /path/to/gait-rs && cargo test parses_mcp_tools_and_skills 2>&1 | tail -5
 
 Expected: FAIL — `GaitConfig` has no `mcp_tools` or `skills` field.
 
-- [ ] **Step 3: Add structs and fields to config.rs**
+- [x] **Step 3: Add structs and fields to config.rs**
 
 Add after the existing `ConfigTool` struct (around line 11):
 
@@ -140,7 +140,7 @@ impl Default for GaitConfig {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 ```bash
 cargo test parses_mcp_tools_and_skills 2>&1 | tail -5
@@ -148,7 +148,7 @@ cargo test parses_mcp_tools_and_skills 2>&1 | tail -5
 
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add gait-rs/src/config.rs
@@ -164,7 +164,7 @@ git commit -m "feat(config): add McpToolDef, SkillDef types and mcp_tools/skills
 
 The `McpTool` is always in the tools array. When the model calls `mcp("slack_send", true)`, it returns the full JSON schema of `slack_send` as a string — which lands in messages as a tool result. When called with `false`, it returns an unload marker. The harness (turn.rs) handles actually adding/removing the tool from the active tools vec.
 
-- [ ] **Step 1: Create mcp.rs with tests**
+- [x] **Step 1: Create mcp.rs with tests**
 
 Create `gait-rs/src/tools/mcp.rs`:
 
@@ -294,7 +294,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 ```bash
 cargo test mcp:: 2>&1 | tail -10
@@ -302,7 +302,7 @@ cargo test mcp:: 2>&1 | tail -10
 
 Expected: FAIL — module not registered yet.
 
-- [ ] **Step 3: Register module in mod.rs (minimal — just enough to compile)**
+- [x] **Step 3: Register module in mod.rs (minimal — just enough to compile)**
 
 Add to `gait-rs/src/tools/mod.rs` top section:
 
@@ -311,7 +311,7 @@ pub mod mcp;
 pub use mcp::McpTool;
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 ```bash
 cargo test mcp:: 2>&1 | tail -10
@@ -319,7 +319,7 @@ cargo test mcp:: 2>&1 | tail -10
 
 Expected: all 5 tests PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add gait-rs/src/tools/mcp.rs gait-rs/src/tools/mod.rs
@@ -334,7 +334,7 @@ git commit -m "feat(tools): add McpTool for progressive MCP loading"
 - Create: `gait-rs/src/tools/skill.rs`
 - Modify: `gait-rs/src/tools/mod.rs`
 
-- [ ] **Step 1: Create skill.rs with tests**
+- [x] **Step 1: Create skill.rs with tests**
 
 Create `gait-rs/src/tools/skill.rs`:
 
@@ -449,7 +449,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 ```bash
 cargo test skill:: 2>&1 | tail -10
@@ -457,7 +457,7 @@ cargo test skill:: 2>&1 | tail -10
 
 Expected: FAIL — module not registered yet.
 
-- [ ] **Step 3: Register in mod.rs**
+- [x] **Step 3: Register in mod.rs**
 
 Add to `gait-rs/src/tools/mod.rs`:
 
@@ -466,7 +466,7 @@ pub mod skill;
 pub use skill::SkillTool;
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 ```bash
 cargo test skill:: 2>&1 | tail -10
@@ -474,7 +474,7 @@ cargo test skill:: 2>&1 | tail -10
 
 Expected: all 5 tests PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add gait-rs/src/tools/skill.rs gait-rs/src/tools/mod.rs
@@ -491,7 +491,7 @@ git commit -m "feat(tools): add SkillTool for progressive skill loading"
 
 The `builtin_tools` function must be updated to accept registries and include `McpTool` + `SkillTool`, bringing the total to 13.
 
-- [ ] **Step 1: Update the unit tests in mod.rs**
+- [x] **Step 1: Update the unit tests in mod.rs**
 
 In `gait-rs/src/tools/mod.rs`, replace the existing tests block with:
 
@@ -527,7 +527,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 ```bash
 cargo test tools::tests 2>&1 | tail -10
@@ -535,7 +535,7 @@ cargo test tools::tests 2>&1 | tail -10
 
 Expected: FAIL — `builtin_tools` still takes one arg.
 
-- [ ] **Step 3: Update builtin_tools in mod.rs**
+- [x] **Step 3: Update builtin_tools in mod.rs**
 
 Replace the current `builtin_tools` function and update imports:
 
@@ -566,7 +566,7 @@ pub fn builtin_tools(
 }
 ```
 
-- [ ] **Step 4: Run unit tests to verify they pass**
+- [x] **Step 4: Run unit tests to verify they pass**
 
 ```bash
 cargo test tools::tests 2>&1 | tail -10
@@ -574,7 +574,7 @@ cargo test tools::tests 2>&1 | tail -10
 
 Expected: all 3 tests PASS.
 
-- [ ] **Step 5: Update integration test**
+- [x] **Step 5: Update integration test**
 
 In `gait-rs/tests/integration_tools.rs`, update `builtin_tools_returns_expected_tools`:
 
@@ -604,7 +604,7 @@ And `read_write_roundtrip_via_builtin_tools` similarly:
 let tools = builtin_tools(dir.path().to_path_buf(), vec![], vec![]);
 ```
 
-- [ ] **Step 6: Run all tests to confirm no regressions**
+- [x] **Step 6: Run all tests to confirm no regressions**
 
 ```bash
 cargo test 2>&1 | tail -15
@@ -620,7 +620,7 @@ cargo build 2>&1 | grep "^error" | head -10
 
 Note the compile error location — you will fix it in Task 7.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add gait-rs/src/tools/mod.rs gait-rs/tests/integration_tools.rs
@@ -640,7 +640,7 @@ This task adds:
 2. `derive_loaded_mcps`, `derive_loaded_skills` to turn.rs
 3. `build_mcp_index`, `build_skill_index` to turn.rs
 
-- [ ] **Step 1: Write failing tests in turn.rs**
+- [x] **Step 1: Write failing tests in turn.rs**
 
 Add to `gait-rs/src/turn.rs` inside the `#[cfg(test)]` block:
 
@@ -739,7 +739,7 @@ fn build_skill_index_formats_correctly() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 ```bash
 cargo test "derive_loaded\|build_mcp_index\|build_skill_index" 2>&1 | tail -10
@@ -747,7 +747,7 @@ cargo test "derive_loaded\|build_mcp_index\|build_skill_index" 2>&1 | tail -10
 
 Expected: FAIL — functions don't exist yet.
 
-- [ ] **Step 3: Add derive functions and index builders to turn.rs**
+- [x] **Step 3: Add derive functions and index builders to turn.rs**
 
 Add these functions to `gait-rs/src/turn.rs` (before `run_turn`, after the imports):
 
@@ -814,7 +814,7 @@ pub fn build_skill_index(registry: &[SkillDef]) -> String {
 }
 ```
 
-- [ ] **Step 4: Add reconstruct_messages_from_events to context.rs**
+- [x] **Step 4: Add reconstruct_messages_from_events to context.rs**
 
 In `gait-rs/src/session/context.rs`, refactor `reconstruct_messages` to expose an events-based variant:
 
@@ -837,7 +837,7 @@ pub fn reconstruct_messages(path: &Path) -> anyhow::Result<Vec<Message>> {
 
 The full body of `reconstruct_messages_from_events` is the current body of `reconstruct_messages` (lines 6–155 of context.rs), with only one change: replace `let all_events = read_events(path)?;` with the function parameter and keep the rest identical.
 
-- [ ] **Step 5: Run all tests**
+- [x] **Step 5: Run all tests**
 
 ```bash
 cargo test 2>&1 | tail -15
@@ -845,7 +845,7 @@ cargo test 2>&1 | tail -15
 
 Expected: all tests pass (the new derive/index tests + no regressions).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add gait-rs/src/turn.rs gait-rs/src/session/context.rs
@@ -865,7 +865,7 @@ This task wires derived state into the actual `run_turn` loop:
 3. In step loop: when `mcp`/`skill` tool is called with context=true, add the actual ToolDef to tools
 4. Exempt `mcp` and `skill` from permission gating (like `output`)
 
-- [ ] **Step 1: Write failing test**
+- [x] **Step 1: Write failing test**
 
 Add to `gait-rs/src/turn.rs` tests:
 
@@ -1081,7 +1081,7 @@ async fn system_prompt_contains_mcp_index_when_registry_nonempty() {
 
 Note: these tests use `Arc<Mutex<...>>` to capture arguments passed to the provider. You'll need `use std::sync::Mutex;` at the top of the test module.
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 ```bash
 cargo test "loaded_mcp_from_prior\|system_prompt_contains_mcp" 2>&1 | tail -10
@@ -1089,7 +1089,7 @@ cargo test "loaded_mcp_from_prior\|system_prompt_contains_mcp" 2>&1 | tail -10
 
 Expected: FAIL — `TurnOpts` missing `mcp_registry` and `skill_registry`.
 
-- [ ] **Step 3: Add fields to TurnOpts**
+- [x] **Step 3: Add fields to TurnOpts**
 
 In `gait-rs/src/turn.rs`, update `TurnOpts`:
 
@@ -1110,7 +1110,7 @@ pub struct TurnOpts {
 }
 ```
 
-- [ ] **Step 4: Update run_turn to augment tools and system prompt**
+- [x] **Step 4: Update run_turn to augment tools and system prompt**
 
 In `run_turn`, after the `reconstruct_messages` call and before the step loop, add:
 
@@ -1196,7 +1196,7 @@ Also change the `provider.stream()` call to use the local `system_prompt` instea
 let mut chunk_stream = provider.stream(&system_prompt, &messages, &tools).await
 ```
 
-- [ ] **Step 5: Add within-turn mcp mutation**
+- [x] **Step 5: Add within-turn mcp mutation**
 
 In the tool execution loop (after `let output = match tools.iter()...`), add handling after executing `mcp` and `skill` calls:
 
@@ -1223,7 +1223,7 @@ if tc.tool_name == "mcp" {
 
 Place this block right before the `append_event(ToolResult)` call in the tool execution loop (after `output` is computed).
 
-- [ ] **Step 6: Exempt mcp and skill from permission gating**
+- [x] **Step 6: Exempt mcp and skill from permission gating**
 
 Find this line in `run_turn`:
 
@@ -1240,7 +1240,7 @@ let allowed = opts.auto || opts.allow.contains(&tc.tool_name)
     || tc.tool_name == "skill";
 ```
 
-- [ ] **Step 7: Fix existing tests that construct TurnOpts**
+- [x] **Step 7: Fix existing tests that construct TurnOpts**
 
 All existing tests in `turn.rs` that construct `TurnOpts` must add the two new fields. Add to each:
 
@@ -1251,7 +1251,7 @@ skill_registry: vec![],
 
 There are 4 such tests: `run_turn_writes_transcript_and_commits`, `output_tool_result_used_in_turn_complete`, `output_tool_exempt_from_permission_gating`, `permission_gating_pauses_turn_in_non_auto_mode`.
 
-- [ ] **Step 8: Run all tests**
+- [x] **Step 8: Run all tests**
 
 ```bash
 cargo test 2>&1 | tail -20
@@ -1259,7 +1259,7 @@ cargo test 2>&1 | tail -20
 
 Expected: all tests pass. Fix any compile errors before continuing.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add gait-rs/src/turn.rs gait-rs/src/session/context.rs
@@ -1275,7 +1275,7 @@ git commit -m "feat(turn): integrate progressive tool loading — derived state,
 
 The `cmd_run` function currently calls `builtin_tools(codebase_path.clone())` and builds `TurnOpts` without mcp/skill registries. Both need updating.
 
-- [ ] **Step 1: Update builtin_tools call**
+- [x] **Step 1: Update builtin_tools call**
 
 In `cmd_run`, find:
 
@@ -1289,7 +1289,7 @@ Replace with:
 let mut tools = builtin_tools(codebase_path.clone(), config.mcp_tools.clone(), config.skills.clone());
 ```
 
-- [ ] **Step 2: Update TurnOpts construction**
+- [x] **Step 2: Update TurnOpts construction**
 
 In `cmd_run`, find the `TurnOpts { ... }` struct literal and add:
 
@@ -1298,7 +1298,7 @@ mcp_registry: config.mcp_tools.clone(),
 skill_registry: config.skills.clone(),
 ```
 
-- [ ] **Step 3: Build and verify**
+- [x] **Step 3: Build and verify**
 
 ```bash
 cargo build 2>&1 | grep "^error" | head -10
@@ -1306,7 +1306,7 @@ cargo build 2>&1 | grep "^error" | head -10
 
 Expected: clean build, no errors.
 
-- [ ] **Step 4: Run full test suite**
+- [x] **Step 4: Run full test suite**
 
 ```bash
 cargo test 2>&1 | tail -20
@@ -1314,7 +1314,7 @@ cargo test 2>&1 | tail -20
 
 Expected: all tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add gait-rs/src/bin/gait.rs
@@ -1328,7 +1328,7 @@ git commit -m "feat(cli): wire mcp/skill registries from config to builtin_tools
 **Files:**
 - No code changes — manual verification only.
 
-- [ ] **Step 1: Build the release binary**
+- [x] **Step 1: Build the release binary**
 
 ```bash
 cargo build --release --manifest-path gait-rs/Cargo.toml 2>&1 | tail -5
@@ -1336,7 +1336,7 @@ cargo build --release --manifest-path gait-rs/Cargo.toml 2>&1 | tail -5
 
 Expected: compiles to `target/release/gait`.
 
-- [ ] **Step 2: Create a test workspace with mcp and skill config**
+- [x] **Step 2: Create a test workspace with mcp and skill config**
 
 ```bash
 mkdir -p /tmp/gait-ptl-test && cd /tmp/gait-ptl-test && git init && git commit --allow-empty -m "init"
@@ -1371,7 +1371,7 @@ You are a test agent. Your task is to:
 EOF
 ```
 
-- [ ] **Step 3: Run with rs-gait binary**
+- [x] **Step 3: Run with rs-gait binary**
 
 ```bash
 /path/to/gait-rs/target/release/gait run \
@@ -1387,7 +1387,7 @@ Expected output includes:
 - Model calls `mcp("echo_tool", true)` → sees schema in next step
 - Model calls `output(summary="...")` → `[gait] turn 1 complete`
 
-- [ ] **Step 4: Verify system prompt contains indexes**
+- [x] **Step 4: Verify system prompt contains indexes**
 
 Check transcript for the session to confirm the session ran cleanly:
 

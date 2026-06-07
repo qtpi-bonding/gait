@@ -23,7 +23,7 @@
 
 ---
 
-- [ ] **Step 1: Add dependencies to Cargo.toml**
+- [x] **Step 1: Add dependencies to Cargo.toml**
 
 In `gait-rs/Cargo.toml`, add to `[dependencies]`:
 
@@ -41,7 +41,7 @@ Add a new `[dev-dependencies]` section:
 tempfile = "3"
 ```
 
-- [ ] **Step 2: Add `Tool` trait to `types.rs`**
+- [x] **Step 2: Add `Tool` trait to `types.rs`**
 
 Add this block to `gait-rs/src/types.rs`, immediately before `#[cfg(test)]`:
 
@@ -76,7 +76,7 @@ impl Tool for ToolDef {
 }
 ```
 
-- [ ] **Step 3: Write a test that the Tool trait works on ToolDef**
+- [x] **Step 3: Write a test that the Tool trait works on ToolDef**
 
 Add to the `#[cfg(test)]` block in `types.rs`:
 
@@ -97,7 +97,7 @@ Add to the `#[cfg(test)]` block in `types.rs`:
     }
 ```
 
-- [ ] **Step 4: Run the new test to make sure it compiles and passes**
+- [x] **Step 4: Run the new test to make sure it compiles and passes**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs
@@ -106,7 +106,7 @@ cargo test tool_def_implements_tool_trait
 
 Expected: PASS
 
-- [ ] **Step 5: Update `provider.rs` — change `stream()` signature**
+- [x] **Step 5: Update `provider.rs` — change `stream()` signature**
 
 In `gait-rs/src/provider.rs`, replace the import line:
 ```rust
@@ -136,7 +136,7 @@ To:
     ) -> Result<ChunkStream, ProviderError>;
 ```
 
-- [ ] **Step 6: Update `stream.rs` — change signatures and tool lookup**
+- [x] **Step 6: Update `stream.rs` — change signatures and tool lookup**
 
 In `gait-rs/src/stream.rs`, update the import:
 ```rust
@@ -162,7 +162,7 @@ To:
             Some(t) => t.execute(tc.args.clone()).await
 ```
 
-- [ ] **Step 7: Update the `stream.rs` test to box the ToolDef**
+- [x] **Step 7: Update the `stream.rs` test to box the ToolDef**
 
 In the `#[cfg(test)]` block of `stream.rs`, find both `stream_text(...)` calls that pass `&[tool]` and replace with `&[Box::new(tool)]`. There are two tests: `executes_tool_and_loops` and `returns_text_immediately_when_no_tools`. The second passes `&[]` which needs no change.
 
@@ -181,7 +181,7 @@ Also update the import inside the test module — add `Tool` to the import:
     use crate::types::{Message, ToolDef, Tool};
 ```
 
-- [ ] **Step 8: Update `generate.rs` — fix empty tools slice type annotation (C1)**
+- [x] **Step 8: Update `generate.rs` — fix empty tools slice type annotation (C1)**
 
 `gait-rs/src/generate.rs` calls `stream_text(provider, system, messages, &[])`. After the signature change to `&[Box<dyn Tool>]`, the empty slice `&[]` cannot infer its element type and produces `error[E0282]: type annotations needed`. Read the file and apply this fix — find:
 
@@ -198,7 +198,7 @@ stream_text(provider, system, messages, &[] as &[Box<dyn Tool>]).await
 
 Or add the import at the top of `generate.rs` and write `&[] as &[Box<dyn Tool>]` inline.
 
-- [ ] **Step 10: Update `anthropic/mod.rs`**
+- [x] **Step 10: Update `anthropic/mod.rs`**
 
 Replace:
 ```rust
@@ -245,7 +245,7 @@ To:
             }).collect(),
 ```
 
-- [ ] **Step 11: Update `openai/mod.rs`** (I2 fix — exact import)
+- [x] **Step 11: Update `openai/mod.rs`** (I2 fix — exact import)
 
 The current import line in `openai/mod.rs` is:
 ```rust
@@ -284,7 +284,7 @@ To:
         }).collect();
 ```
 
-- [ ] **Step 12: Run all tests to confirm the refactor compiles clean**
+- [x] **Step 12: Run all tests to confirm the refactor compiles clean**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs
@@ -293,7 +293,7 @@ cargo test
 
 Expected: All existing tests pass. Zero compile errors. (Integration tests skip if API key not set — that's fine.)
 
-- [ ] **Step 13: Commit**
+- [x] **Step 13: Commit**
 
 ```bash
 git add gait-rs/Cargo.toml gait-rs/src/types.rs gait-rs/src/provider.rs gait-rs/src/stream.rs gait-rs/src/generate.rs gait-rs/src/anthropic/mod.rs gait-rs/src/openai/mod.rs
@@ -311,7 +311,7 @@ git commit -m "feat(rs): Tool trait — extensible tool interface, refactor stre
 
 ---
 
-- [ ] **Step 1: Create `gait-rs/src/tools/mod.rs` with module stubs and `make_schema` helper**
+- [x] **Step 1: Create `gait-rs/src/tools/mod.rs` with module stubs and `make_schema` helper**
 
 ```rust
 pub mod read;
@@ -360,7 +360,7 @@ pub fn builtin_tools(codebase_path: PathBuf) -> Vec<Box<dyn Tool>> {
 }
 ```
 
-- [ ] **Step 2: Add `pub mod tools;` to `gait-rs/src/lib.rs`**
+- [x] **Step 2: Add `pub mod tools;` to `gait-rs/src/lib.rs`**
 
 Append to `gait-rs/src/lib.rs`:
 ```rust
@@ -368,7 +368,7 @@ pub mod tools;
 pub use tools::builtin_tools;
 ```
 
-- [ ] **Step 3: Create stub files so the module compiles**
+- [x] **Step 3: Create stub files so the module compiles**
 
 Create `gait-rs/src/tools/write.rs`, `gait-rs/src/tools/edit.rs`, `gait-rs/src/tools/glob.rs`, `gait-rs/src/tools/grep.rs`, `gait-rs/src/tools/ls.rs`, `gait-rs/src/tools/shell.rs` each containing a temporary stub:
 
@@ -392,7 +392,7 @@ impl Tool for WriteTool {
 
 Repeat the same stub pattern for `edit.rs`, `glob.rs`, `grep.rs`, `ls.rs`, `shell.rs` with respective struct names and tool names.
 
-- [ ] **Step 4: Write failing tests for `read.rs`**
+- [x] **Step 4: Write failing tests for `read.rs`**
 
 Create `gait-rs/src/tools/read.rs` with the tests but no implementation yet:
 
@@ -490,7 +490,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 5: Run tests to verify they fail (todo! panics)**
+- [x] **Step 5: Run tests to verify they fail (todo! panics)**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs
@@ -499,7 +499,7 @@ cargo test read
 
 Expected: Tests panic with `not yet implemented`
 
-- [ ] **Step 6: Implement `ReadTool`**
+- [x] **Step 6: Implement `ReadTool`**
 
 Replace the `todo!()` stubs in `read.rs` with the full implementation:
 
@@ -665,7 +665,7 @@ impl Tool for ReadTool {
 }
 ```
 
-- [ ] **Step 7: Run read tests**
+- [x] **Step 7: Run read tests**
 
 ```bash
 cargo test read
@@ -673,7 +673,7 @@ cargo test read
 
 Expected: All 4 tests PASS
 
-- [ ] **Step 8: Verify full test suite still passes**
+- [x] **Step 8: Verify full test suite still passes**
 
 ```bash
 cargo test
@@ -681,7 +681,7 @@ cargo test
 
 Expected: All tests pass
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add gait-rs/src/lib.rs gait-rs/src/tools/
@@ -697,7 +697,7 @@ git commit -m "feat(rs): tools module skeleton + ReadTool with binary detection"
 
 ---
 
-- [ ] **Step 1: Write failing tests in `write.rs`**
+- [x] **Step 1: Write failing tests in `write.rs`**
 
 Replace the stub content of `gait-rs/src/tools/write.rs` with:
 
@@ -782,7 +782,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 ```bash
 cargo test write
@@ -790,7 +790,7 @@ cargo test write
 
 Expected: panic with `not yet implemented`
 
-- [ ] **Step 3: Implement `WriteTool`**
+- [x] **Step 3: Implement `WriteTool`**
 
 Replace both `todo!()` stubs with the real implementation:
 
@@ -819,7 +819,7 @@ async fn execute(&self, args: Value) -> anyhow::Result<Value> {
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 ```bash
 cargo test write
@@ -827,7 +827,7 @@ cargo test write
 
 Expected: All 3 tests PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add gait-rs/src/tools/write.rs
@@ -845,7 +845,7 @@ This is the most complex tool. The `replace(content, old_str, new_str, replace_a
 
 ---
 
-- [ ] **Step 1: Write failing tests for the `replace()` function**
+- [x] **Step 1: Write failing tests for the `replace()` function**
 
 Replace the stub in `gait-rs/src/tools/edit.rs` with this (tests + skeleton, no implementation):
 
@@ -1163,7 +1163,7 @@ pub fn replace(content: &str, old_str: &str, new_str: &str, replace_all: bool) -
 }
 ```
 
-- [ ] **Step 2: Write tests for `replace()` + `EditTool` (add after the `replace()` fn)**
+- [x] **Step 2: Write tests for `replace()` + `EditTool` (add after the `replace()` fn)**
 
 ```rust
 #[derive(Deserialize, JsonSchema)]
@@ -1300,7 +1300,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: Run to verify tests compile but todo!() panics**
+- [x] **Step 3: Run to verify tests compile but todo!() panics**
 
 ```bash
 cargo test edit
@@ -1308,7 +1308,7 @@ cargo test edit
 
 Expected: Compile succeeds, tests for `EditTool` panic on `todo!()`; `replace()` tests run.
 
-- [ ] **Step 4: Implement `EditTool`**
+- [x] **Step 4: Implement `EditTool`**
 
 Replace both `todo!()` stubs in `EditTool`:
 
@@ -1361,7 +1361,7 @@ async fn execute(&self, args: Value) -> anyhow::Result<Value> {
 }
 ```
 
-- [ ] **Step 5: Run all edit tests**
+- [x] **Step 5: Run all edit tests**
 
 ```bash
 cargo test edit
@@ -1369,7 +1369,7 @@ cargo test edit
 
 Expected: All tests PASS
 
-- [ ] **Step 6: Run full suite**
+- [x] **Step 6: Run full suite**
 
 ```bash
 cargo test
@@ -1377,7 +1377,7 @@ cargo test
 
 Expected: All tests pass
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add gait-rs/src/tools/edit.rs
@@ -1393,7 +1393,7 @@ git commit -m "feat(rs): EditTool — 9-strategy fuzzy string replacement (port 
 
 ---
 
-- [ ] **Step 1: Write failing tests for `GlobTool`**
+- [x] **Step 1: Write failing tests for `GlobTool`**
 
 Replace the stub in `gait-rs/src/tools/glob.rs` with:
 
@@ -1497,7 +1497,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to verify tests fail**
+- [x] **Step 2: Run to verify tests fail**
 
 ```bash
 cargo test glob
@@ -1505,7 +1505,7 @@ cargo test glob
 
 Expected: panic with `not yet implemented`
 
-- [ ] **Step 3: Implement `GlobTool`**
+- [x] **Step 3: Implement `GlobTool`**
 
 Replace `todo!()` stubs:
 
@@ -1567,7 +1567,7 @@ async fn execute(&self, args: Value) -> anyhow::Result<Value> {
 }
 ```
 
-- [ ] **Step 4: Run glob tests**
+- [x] **Step 4: Run glob tests**
 
 ```bash
 cargo test glob
@@ -1575,7 +1575,7 @@ cargo test glob
 
 Expected: All 4 tests PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add gait-rs/src/tools/glob.rs
@@ -1591,7 +1591,7 @@ git commit -m "feat(rs): GlobTool — find files by glob pattern using glob crat
 
 ---
 
-- [ ] **Step 1: Write failing tests for `GrepTool`**
+- [x] **Step 1: Write failing tests for `GrepTool`**
 
 Replace the stub in `gait-rs/src/tools/grep.rs` with:
 
@@ -1748,7 +1748,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to verify tests fail**
+- [x] **Step 2: Run to verify tests fail**
 
 ```bash
 cargo test grep
@@ -1756,7 +1756,7 @@ cargo test grep
 
 Expected: panic with `not yet implemented`
 
-- [ ] **Step 3: Implement `GrepTool`**
+- [x] **Step 3: Implement `GrepTool`**
 
 Replace both `todo!()` stubs:
 
@@ -1816,7 +1816,7 @@ async fn execute(&self, args: Value) -> anyhow::Result<Value> {
 }
 ```
 
-- [ ] **Step 4: Run grep tests**
+- [x] **Step 4: Run grep tests**
 
 ```bash
 cargo test grep
@@ -1824,7 +1824,7 @@ cargo test grep
 
 Expected: All 3 tests PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add gait-rs/src/tools/grep.rs
@@ -1840,7 +1840,7 @@ git commit -m "feat(rs): GrepTool — regex search with rg binary + walkdir fall
 
 ---
 
-- [ ] **Step 1: Write failing tests for `LsTool`**
+- [x] **Step 1: Write failing tests for `LsTool`**
 
 Replace the stub in `gait-rs/src/tools/ls.rs` with:
 
@@ -2038,7 +2038,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to verify tests fail**
+- [x] **Step 2: Run to verify tests fail**
 
 ```bash
 cargo test 'tools::ls::'
@@ -2046,7 +2046,7 @@ cargo test 'tools::ls::'
 
 Expected: panic with `not yet implemented`
 
-- [ ] **Step 3: Implement `LsTool`**
+- [x] **Step 3: Implement `LsTool`**
 
 Replace `todo!()` stubs:
 
@@ -2083,7 +2083,7 @@ async fn execute(&self, args: Value) -> anyhow::Result<Value> {
 }
 ```
 
-- [ ] **Step 4: Run ls tests**
+- [x] **Step 4: Run ls tests**
 
 ```bash
 cargo test 'tools::ls::'
@@ -2091,7 +2091,7 @@ cargo test 'tools::ls::'
 
 Expected: All 3 tests PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add gait-rs/src/tools/ls.rs
@@ -2107,7 +2107,7 @@ git commit -m "feat(rs): LsTool — directory tree listing with rg + walkdir fal
 
 ---
 
-- [ ] **Step 1: Write failing tests for `ShellTool`**
+- [x] **Step 1: Write failing tests for `ShellTool`**
 
 Replace the stub in `gait-rs/src/tools/shell.rs` with:
 
@@ -2211,7 +2211,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to verify tests fail**
+- [x] **Step 2: Run to verify tests fail**
 
 ```bash
 cargo test shell
@@ -2219,7 +2219,7 @@ cargo test shell
 
 Expected: panic with `not yet implemented`
 
-- [ ] **Step 3: Implement `ShellTool`**
+- [x] **Step 3: Implement `ShellTool`**
 
 Replace `todo!()` stubs:
 
@@ -2273,7 +2273,7 @@ async fn execute(&self, args: Value) -> anyhow::Result<Value> {
 }
 ```
 
-- [ ] **Step 4: Run shell tests**
+- [x] **Step 4: Run shell tests**
 
 ```bash
 cargo test shell
@@ -2281,7 +2281,7 @@ cargo test shell
 
 Expected: All 4 tests PASS. The timeout test may take ~100ms.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add gait-rs/src/tools/shell.rs
@@ -2299,7 +2299,7 @@ git commit -m "feat(rs): ShellTool — async command runner with configurable ti
 
 ---
 
-- [ ] **Step 1: Finalize `tools/mod.rs`**
+- [x] **Step 1: Finalize `tools/mod.rs`**
 
 `gait-rs/src/tools/mod.rs` should already have `builtin_tools()` from Task 2 Step 1. Verify it compiles now that all stubs have real implementations:
 
@@ -2310,7 +2310,7 @@ cargo build
 
 Expected: no errors
 
-- [ ] **Step 2: Update `lib.rs` exports**
+- [x] **Step 2: Update `lib.rs` exports**
 
 The current `gait-rs/src/lib.rs` should have:
 ```rust
@@ -2338,7 +2338,7 @@ pub use factory::load_provider;
 pub use tools::builtin_tools;
 ```
 
-- [ ] **Step 3: Write integration test**
+- [x] **Step 3: Write integration test**
 
 Create `gait-rs/tests/integration_tools.rs`:
 
@@ -2447,7 +2447,7 @@ async fn glob_finds_written_files() {
 }
 ```
 
-- [ ] **Step 4: Run all tests**
+- [x] **Step 4: Run all tests**
 
 ```bash
 cd /Users/aicoder/Documents/ideation/gait/.claude/worktrees/rs-port/gait-rs
@@ -2456,7 +2456,7 @@ cargo test
 
 Expected: All unit and integration tests pass. (Live API integration tests skip if env vars not set.)
 
-- [ ] **Step 5: Final commit**
+- [x] **Step 5: Final commit**
 
 ```bash
 git add gait-rs/src/lib.rs gait-rs/src/tools/mod.rs gait-rs/tests/integration_tools.rs
