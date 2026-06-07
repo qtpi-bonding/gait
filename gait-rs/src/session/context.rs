@@ -129,17 +129,8 @@ pub fn reconstruct_messages_from_events(all_events: &[AnyEvent]) -> anyhow::Resu
                 i += 1;
             }
 
-            AnyEvent::Permissions { items, .. } => {
-                let text = items.iter().map(|p| format!("permission requested: {} — {}", p.cmd, p.reason)).collect::<Vec<_>>().join("\n");
-                messages.push(Message::Assistant { content: AssistantContent::Text(text) });
-                i += 1;
-            }
-
-            AnyEvent::PermissionsReply { from, items, .. } => {
-                let text = items.iter().map(|r| format!("{}: {}", r.id, r.decision)).collect::<Vec<_>>().join("\n");
-                messages.push(Message::User { content: MessageContent::Text(format!("permissions reply (from: {})\n{}", from, text)) });
-                i += 1;
-            }
+            AnyEvent::Permissions { .. } => { i += 1; }    // audit event — excluded from model context
+            AnyEvent::PermissionsReply { .. } => { i += 1; } // audit event — excluded from model context
 
             AnyEvent::Error { message, phase, .. } => {
                 messages.push(Message::User { content: MessageContent::Text(format!("error during {}: {}", phase, message)) });
@@ -226,6 +217,31 @@ mod tests {
         if let Message::Tool { content } = &msgs[1] {
             assert_eq!(content.len(), 2);
         } else { panic!("expected tool message with 2 results"); }
+    }
+
+    #[test]
+    fn permissions_excluded_from_context_reconstruction() {
+        let events = vec![
+            AnyEvent::UserTurn { content: "do x".into(), from: None, context: None, ts: 1 },
+            AnyEvent::Permissions {
+                items: vec![PermissionItem {
+                    id: "tc1".into(), cmd: "shell".into(), reason: "test".into(),
+                    patterns: vec![], tool_name: "shell".into(),
+                    tool_args: serde_json::Value::Null,
+                }],
+                ts: 2,
+            },
+            AnyEvent::PermissionsReply {
+                from: "user".into(),
+                items: vec![PermissionsReplyItem {
+                    id: "tc1".into(), decision: "approve".into(), text: None,
+                }],
+                ts: 3,
+            },
+        ];
+        let messages = reconstruct_messages_from_events(&events).unwrap();
+        assert_eq!(messages.len(), 1, "only UserTurn should appear; got: {} messages", messages.len());
+        assert!(matches!(&messages[0], Message::User { .. }));
     }
 
     #[test]

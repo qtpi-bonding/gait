@@ -172,6 +172,59 @@ fn make_mcp_tool_def(
     })
 }
 
+/// Execute one tool call: emit ToolCall event, run the tool, emit ToolResult event.
+/// Used identically by the normal execution loop and the permission-resume path.
+/// Does NOT handle output/mcp/skill special tools — those are never gated.
+async fn execute_tool_call(
+    tc: &ToolCall,
+    tools: &[Box<dyn Tool>],
+    tx_path: &std::path::Path,
+) -> anyhow::Result<(AssistantPart, ToolResult)> {
+    let id = tc.tool_call_id.clone();
+    emit_event(tx_path, &AnyEvent::ToolCall {
+        id: id.clone(),
+        name: tc.tool_name.clone(),
+        input: tc.args.clone(),
+        ts: now_ms(),
+    })?;
+    let assistant_part = AssistantPart::ToolCall(ToolCall {
+        tool_call_id: id.clone(),
+        tool_name: tc.tool_name.clone(),
+        args: tc.args.clone(),
+    });
+    let output = match tools.iter().find(|t| t.name() == tc.tool_name) {
+        Some(t) => match t.execute(tc.args.clone()).await {
+            Ok(v) => if v.is_string() { v.as_str().unwrap().to_owned() } else { v.to_string() },
+            Err(e) => format!("error: {e}"),
+        },
+        None => format!("unknown tool: {}", tc.tool_name),
+    };
+    emit_event(tx_path, &AnyEvent::ToolResult {
+        id: id.clone(), output: output.clone(), ts: now_ms(),
+    })?;
+    let tool_result = ToolResult {
+        kind: ToolResultKind::ToolResult,
+        tool_call_id: id,
+        result: serde_json::Value::String(output),
+    };
+    Ok((assistant_part, tool_result))
+}
+
+/// Build a (AssistantPart, ToolResult) pair representing a tool-call error
+/// WITHOUT emitting events. Use when `execute_tool_call` fails — the model
+/// still gets a result back so the turn can continue.
+fn error_tool_result(tc: &ToolCall, e: anyhow::Error) -> (AssistantPart, ToolResult) {
+    let output = format!("error: {e}");
+    (
+        AssistantPart::ToolCall(tc.clone()),
+        ToolResult {
+            kind: ToolResultKind::ToolResult,
+            tool_call_id: tc.tool_call_id.clone(),
+            result: serde_json::Value::String(output),
+        },
+    )
+}
+
 pub async fn run_turn(
     opts: TurnOpts,
     provider: Arc<dyn Provider>,
@@ -212,14 +265,91 @@ pub async fn run_turn(
     let mut effective_allow = opts.allow.clone();
     effective_allow.extend(once_allow);
 
-    // Detect resume after permission approval: skip UserTurn injection if last event is PermissionsReply
-    // (chat.rs appends PermissionsReply before re-spawning, so the model already has context)
+    // Detect resume after permission approval: last two transcript events are
+    // Permissions → PermissionsReply. On resume we directly execute the
+    // approved tools (or emit denied ToolCall/ToolResult for rejected ones),
+    // re-read the transcript, and reconstruct messages — all without an
+    // extra LLM round-trip.
     let pre_events = read_events(&tx_path)?;
-    let resuming_after_permission = pre_events.last()
-        .map(|e| matches!(e, AnyEvent::PermissionsReply { .. }))
-        .unwrap_or(false);
+    let mut messages: Vec<Message> = Vec::new();
+    let mut tools = tools; // take ownership so we can mutate (mcp load/unload)
+    let did_resume = if matches!(pre_events.last(), Some(AnyEvent::PermissionsReply { .. })) {
+        // Find the Permissions event immediately preceding the reply
+        let perm_event = pre_events.iter().rev()
+            .skip(1) // skip PermissionsReply
+            .find(|e| matches!(e, AnyEvent::Permissions { .. }));
+        let reply_event = pre_events.last();
 
-    if !resuming_after_permission {
+        if let (
+            Some(AnyEvent::Permissions { items: perm_items, .. }),
+            Some(AnyEvent::PermissionsReply { items: reply_items, .. }),
+        ) = (perm_event, reply_event) {
+            // Build a map: id → decision
+            let decisions: std::collections::HashMap<&str, &str> = reply_items.iter()
+                .map(|r| (r.id.as_str(), r.decision.as_str()))
+                .collect();
+
+            // Deduplicate by id: collect unique tool_call_ids and their items
+            let mut by_id: std::collections::BTreeMap<String, Vec<&PermissionItem>> =
+                std::collections::BTreeMap::new();
+            for item in perm_items {
+                by_id.entry(item.id.clone()).or_default().push(item);
+            }
+
+            // Execute or deny each unique tool call
+            for (id, items) in &by_id {
+                // All-or-nothing: all segments of this tool_call_id must be approved
+                let all_approved = items.iter().all(|item| {
+                    decisions.get(item.id.as_str()).copied() == Some("approve")
+                });
+
+                if all_approved {
+                    // Execute using original tool_args from the first item (all share same args)
+                    let tc = ToolCall {
+                        tool_call_id: id.clone(),
+                        tool_name: items[0].tool_name.clone(),
+                        args: items[0].tool_args.clone(),
+                    };
+                    if let Err(e) = execute_tool_call(&tc, &tools, &tx_path).await {
+                        // Emit error as tool result so model sees it
+                        emit_event(&tx_path, &AnyEvent::ToolResult {
+                            id: id.clone(),
+                            output: format!("error executing approved tool: {e}"),
+                            ts: now_ms(),
+                        })?;
+                    }
+                } else {
+                    // At least one segment denied — emit ToolCall FIRST, then ToolResult.
+                    // Without a preceding ToolCall, context.rs silently drops the orphan
+                    // ToolResult during reconstruction, and the model retries forever (gate loop).
+                    emit_event(&tx_path, &AnyEvent::ToolCall {
+                        id: id.clone(),
+                        name: items[0].tool_name.clone(),
+                        input: items[0].tool_args.clone(),
+                        ts: now_ms(),
+                    })?;
+                    emit_event(&tx_path, &AnyEvent::ToolResult {
+                        id: id.clone(),
+                        output: "permission denied by user".into(),
+                        ts: now_ms(),
+                    })?;
+                }
+            }
+
+            // Re-read events after execution and reconstruct messages.
+            // This is the ONLY source of truth — do not manually push to messages.
+            let events_after = read_events(&tx_path)?;
+            messages = reconstruct_messages_from_events(&events_after)?;
+            // Do NOT inject UserTurn or turn_ctx — model already has context from the prior turn.
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if !did_resume {
         if let Some(task) = &opts.task {
             emit_event(&tx_path, &AnyEvent::UserTurn {
                 content: task.clone(),
@@ -233,22 +363,18 @@ pub async fn run_turn(
                 ts: now_ms(),
             })?;
         }
-    }
-
-    // Read events once for both message reconstruction and derived tool state.
-    let events = read_events(&tx_path)?;
-    let mut messages = reconstruct_messages_from_events(&events)?;
-    if !resuming_after_permission {
+        let events = read_events(&tx_path)?;
+        messages = reconstruct_messages_from_events(&events)?;
         let turn_ctx = build_turn_context(&codebase_hash, &dirty_files);
         messages.insert(0, Message::User { content: MessageContent::Text(turn_ctx) });
     }
 
     // Derive loaded MCP tools from the POST-COMPACTION slice only.
     // Pre-compaction loads are intentionally forgotten (spec: model reloads after compaction).
+    let events = read_events(&tx_path)?;
     let compaction_start = crate::session::transcript::last_compaction_index(&events).unwrap_or(0);
     let post_compaction = &events[compaction_start..];
     let loaded_mcp_names = derive_loaded_mcps(post_compaction);
-    let mut tools = tools;  // take ownership so we can mutate
     for name in &loaded_mcp_names {
         if let Some(def) = opts.mcp_registry.iter().find(|d| d.name == *name) {
             tools.push(make_mcp_tool_def(def, &opts.workspace, &opts.codebase_path));
@@ -334,7 +460,10 @@ pub async fn run_turn(
             });
         }
 
-        // Partition tool calls: allowed vs needs permission
+        // Merged loop: execute allowed tool calls immediately; collect gated ones
+        // for a Permissions event. B2 fix: this ensures allowed tool calls are
+        // recorded in the transcript (and survive any subsequent permission exit)
+        // — they are not silently dropped just because an adjacent call was gated.
         let mut pending_permissions: Vec<PermissionItem> = vec![];
         let mut tool_results: Vec<ToolResult> = vec![];
         let mut assistant_parts: Vec<AssistantPart> = vec![];
@@ -343,123 +472,130 @@ pub async fn run_turn(
             assistant_parts.push(AssistantPart::Text { text: step_text.clone() });
         }
 
-        // First pass: collect pending permissions for non-allowed tools
         for tc in &step_tool_calls {
             if opts.auto || is_tool_allowed(&tc.tool_name, &tc.args, &effective_allow) {
-                continue;
-            }
-            if tc.tool_name == "shell" {
-                let cmd = tc.args.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
-                for seg in unapproved_segments(cmd, &effective_allow) {
-                    // All segments for the same tool call share the same id and tool_args.
-                    // The resume path groups by id for all-or-nothing execution.
-                    pending_permissions.push(PermissionItem {
-                        id: tc.tool_call_id.clone(),
-                        cmd: seg.clone(),
-                        reason: "shell command requires permission".into(),
-                        patterns: command_patterns(&seg),
-                        tool_name: tc.tool_name.clone(),
-                        tool_args: tc.args.clone(), // full original args (not the segment)
-                    });
+                // Allowed — execute now so it lands in the transcript.
+                if tc.tool_name == "mcp" {
+                    // mcp side-effect: load/unload tool from registry
+                    if let (Some(name), Some(ctx)) = (
+                        tc.args.get("name").and_then(|v| v.as_str()),
+                        tc.args.get("context").and_then(|v| v.as_bool()),
+                    ) {
+                        if ctx {
+                            if let Some(def) = opts.mcp_registry.iter().find(|d| d.name == name) {
+                                if !tools.iter().any(|t| t.name() == name) {
+                                    tools.push(make_mcp_tool_def(def, &opts.workspace, &opts.codebase_path));
+                                }
+                            }
+                        } else {
+                            tools.retain(|t| t.name() != name);
+                        }
+                    }
+                    // mcp calls also have a regular ToolCall/ToolResult trace
+                    let (part, result) = execute_tool_call(tc, &tools, &tx_path).await
+                        .unwrap_or_else(|e| error_tool_result(tc, e));
+                    assistant_parts.push(part);
+                    tool_results.push(result);
+                } else if tc.tool_name == "output" {
+                    // output signal: record the desired TurnOutput, but still emit
+                    // a ToolCall/ToolResult event so transcript matches what the model saw.
+                    if let Some(summary) = tc.args.get("summary").and_then(|v| v.as_str()) {
+                        output_signal = Some(TurnOutput {
+                            summary: summary.to_string(),
+                            result: tc.args.get("result").cloned(),
+                        });
+                    }
+                    let (part, result) = execute_tool_call(tc, &tools, &tx_path).await
+                        .unwrap_or_else(|e| error_tool_result(tc, e));
+                    assistant_parts.push(part);
+                    tool_results.push(result);
+                } else if tc.tool_name == "skill" {
+                    // skill is a context-registration call (like mcp) — record event
+                    // and execute so any side-effect on `tools` happens.
+                    let (part, result) = execute_tool_call(tc, &tools, &tx_path).await
+                        .unwrap_or_else(|e| error_tool_result(tc, e));
+                    assistant_parts.push(part);
+                    tool_results.push(result);
+                } else {
+                    let (part, result) = execute_tool_call(tc, &tools, &tx_path).await
+                        .unwrap_or_else(|e| error_tool_result(tc, e));
+                    assistant_parts.push(part);
+                    tool_results.push(result);
                 }
             } else {
-                pending_permissions.push(PermissionItem {
-                    id: tc.tool_call_id.clone(),
-                    cmd: tc.tool_name.clone(),
-                    reason: format!("{} requires permission", tc.tool_name),
-                    patterns: vec![tc.tool_name.clone()],
-                    tool_name: tc.tool_name.clone(),
-                    tool_args: tc.args.clone(),
-                });
-            }
-        }
-
-        // If non-auto and permissions needed: write event, commit, exit
-        if !pending_permissions.is_empty() && !opts.auto {
-            emit_event(&tx_path, &AnyEvent::Permissions {
-                items: pending_permissions,
-                ts: now_ms(),
-            })?;
-            git::commit_session(&opts.workspace, &opts.session_id,
-                &format!("session({}): permissions", opts.session_id))?;
-            return Ok(TurnResult::Permissions);
-        }
-
-        // Execute all tool calls (in auto mode, write permissions audit trail)
-        if !pending_permissions.is_empty() {
-            // Auto mode: write permissions + auto-reply for audit
-            emit_event(&tx_path, &AnyEvent::Permissions {
-                items: pending_permissions.clone(),
-                ts: now_ms(),
-            })?;
-            emit_event(&tx_path, &AnyEvent::PermissionsReply {
-                from: "auto".into(),
-                items: pending_permissions.iter().map(|p| PermissionsReplyItem {
-                    id: p.id.clone(),
-                    decision: "approve".into(),
-                    text: None,
-                }).collect(),
-                ts: now_ms(),
-            })?;
-        }
-
-        // Execute all tool calls
-        for tc in &step_tool_calls {
-            let id = tc.tool_call_id.clone();
-            emit_event(&tx_path, &AnyEvent::ToolCall {
-                id: id.clone(),
-                name: tc.tool_name.clone(),
-                input: tc.args.clone(),
-                ts: now_ms(),
-            })?;
-            assistant_parts.push(AssistantPart::ToolCall(ToolCall {
-                tool_call_id: id.clone(),
-                tool_name: tc.tool_name.clone(),
-                args: tc.args.clone(),
-            }));
-            let output = match tools.iter().find(|t| t.name() == tc.tool_name) {
-                Some(tool) => match tool.execute(tc.args.clone()).await {
-                    Ok(v) => if v.is_string() { v.as_str().unwrap_or("").to_string() } else { v.to_string() },
-                    Err(e) => format!("error: {}", e),
-                },
-                None => format!("error: unknown tool '{}'", tc.tool_name),
-            };
-            // Handle within-turn mcp/skill context changes
-            if tc.tool_name == "mcp" {
-                if let (Some(name), Some(ctx)) = (
-                    tc.args.get("name").and_then(|v| v.as_str()),
-                    tc.args.get("context").and_then(|v| v.as_bool()),
-                ) {
-                    if ctx {
-                        if let Some(def) = opts.mcp_registry.iter().find(|d| d.name == name) {
-                            // Only add if not already present
-                            if !tools.iter().any(|t| t.name() == name) {
-                                tools.push(make_mcp_tool_def(def, &opts.workspace, &opts.codebase_path));
-                            }
-                        }
-                    } else {
-                        tools.retain(|t| t.name() != name);
+                // Gated — collect for permission prompt.
+                if tc.tool_name == "shell" {
+                    let cmd = tc.args.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
+                    for seg in unapproved_segments(cmd, &effective_allow) {
+                        // All segments for the same tool call share the same id and tool_args.
+                        // The resume path groups by id for all-or-nothing execution.
+                        pending_permissions.push(PermissionItem {
+                            id: tc.tool_call_id.clone(),
+                            cmd: seg.clone(),
+                            reason: "shell command requires permission".into(),
+                            patterns: command_patterns(&seg),
+                            tool_name: tc.tool_name.clone(),
+                            tool_args: tc.args.clone(), // full original args (not the segment)
+                        });
                     }
-                }
-            }
-            if tc.tool_name == "output" {
-                if let Some(summary) = tc.args.get("summary").and_then(|v| v.as_str()) {
-                    output_signal = Some(TurnOutput {
-                        summary: summary.to_string(),
-                        result: tc.args.get("result").cloned(),
+                } else {
+                    pending_permissions.push(PermissionItem {
+                        id: tc.tool_call_id.clone(),
+                        cmd: tc.tool_name.clone(),
+                        reason: format!("{} requires permission", tc.tool_name),
+                        patterns: vec![tc.tool_name.clone()],
+                        tool_name: tc.tool_name.clone(),
+                        tool_args: tc.args.clone(),
                     });
                 }
             }
-            emit_event(&tx_path, &AnyEvent::ToolResult {
-                id: id.clone(),
-                output: output.clone(),
-                ts: now_ms(),
-            })?;
-            tool_results.push(ToolResult {
-                kind: ToolResultKind::ToolResult,
-                tool_call_id: id,
-                result: serde_json::Value::String(output),
-            });
+        }
+
+        // If gated calls exist and not auto: emit Permissions and exit.
+        // Allowed calls in this step are already in the transcript.
+        if !pending_permissions.is_empty() {
+            if opts.auto {
+                // Auto mode: write permissions + auto-reply audit trail, then
+                // execute the gated calls (auto-approved) so the turn can continue.
+                emit_event(&tx_path, &AnyEvent::Permissions {
+                    items: pending_permissions.clone(),
+                    ts: now_ms(),
+                })?;
+                emit_event(&tx_path, &AnyEvent::PermissionsReply {
+                    from: "auto".into(),
+                    items: pending_permissions.iter().map(|p| PermissionsReplyItem {
+                        id: p.id.clone(),
+                        decision: "approve".into(),
+                        text: None,
+                    }).collect(),
+                    ts: now_ms(),
+                })?;
+                // Execute gated calls in the auto-approved batch
+                for tc in &step_tool_calls {
+                    if pending_permissions.iter().any(|p| p.id == tc.tool_call_id) {
+                        if tc.tool_name == "output" {
+                            if let Some(summary) = tc.args.get("summary").and_then(|v| v.as_str()) {
+                                output_signal = Some(TurnOutput {
+                                    summary: summary.to_string(),
+                                    result: tc.args.get("result").cloned(),
+                                });
+                            }
+                        }
+                        let (part, result) = execute_tool_call(tc, &tools, &tx_path).await
+                            .unwrap_or_else(|e| error_tool_result(tc, e));
+                        assistant_parts.push(part);
+                        tool_results.push(result);
+                    }
+                }
+            } else {
+                emit_event(&tx_path, &AnyEvent::Permissions {
+                    items: pending_permissions,
+                    ts: now_ms(),
+                })?;
+                git::commit_session(&opts.workspace, &opts.session_id,
+                    &format!("session({}): permissions", opts.session_id))?;
+                return Ok(TurnResult::Permissions);
+            }
         }
 
         // Append this step to messages for next iteration
@@ -959,5 +1095,208 @@ mod tests {
         if let AnyEvent::AssistantText { content, .. } = text_events[0] {
             assert_eq!(content, "hello world");
         }
+    }
+
+    // ── Test fixtures for Task 3 (resume path) ───────────────────────────────
+
+    /// One step in a scripted provider response. A `text` step produces a
+    /// text-only response (turn complete after this); a `tool_call` step
+    /// produces a tool call followed by a final text step.
+    #[derive(Debug, Clone)]
+    enum FakeStep {
+        Text(String),
+        ToolCall { id: String, name: String, args: serde_json::Value },
+    }
+
+    impl FakeStep {
+        fn text(s: &str) -> Self { FakeStep::Text(s.into()) }
+    }
+
+    /// Scripted provider that returns a deterministic sequence of steps.
+    /// Each `text` step is one model call (text → Done).
+    /// Each `tool_call` step is one model call (ToolCallComplete → Done).
+    /// The test must provide enough steps to satisfy the model's stream loop.
+    struct FakeProvider {
+        steps: Arc<Vec<FakeStep>>,
+        call_idx: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for FakeProvider {
+        fn model_id(&self) -> &str { "fake" }
+        async fn stream(
+            &self, _system: &str, _messages: &[Message], _tools: &[Box<dyn Tool>],
+        ) -> Result<std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, ProviderError>> + Send>>, ProviderError> {
+            let idx = self.call_idx.fetch_add(1, Ordering::SeqCst);
+            let step = self.steps.get(idx).cloned().unwrap_or(FakeStep::Text("".into()));
+            let chunks: Vec<StreamChunk> = match step {
+                FakeStep::Text(s) => vec![StreamChunk::Text(s), StreamChunk::Done],
+                FakeStep::ToolCall { id, name, args } => vec![
+                    StreamChunk::ToolCallComplete { tool_call_id: id, tool_name: name, args },
+                    StreamChunk::Done,
+                ],
+            };
+            Ok(Box::pin(stream! {
+                for c in chunks { yield Ok(c); }
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_executes_approved_tool_directly() {
+        let ws = TempDir::new().unwrap();
+        init_git_repo(ws.path());
+        let codebase = TempDir::new().unwrap();
+        let session_id = "resume-exec-test";
+        // Initialize the session worktree (creates the session dir + branch)
+        crate::git::create_session_worktree(ws.path(), session_id).unwrap();
+        let session_dir = ws.path().join("sessions").join(session_id);
+        let tx_path = session_dir.join("transcript.jsonl");
+
+        // Pre-populate transcript: SessionStart + UserTurn + Permissions + PermissionsReply
+        let perm_item = PermissionItem {
+            id: "tc-resume-1".into(),
+            cmd: "echo hello".into(),
+            reason: "shell requires permission".into(),
+            patterns: vec!["echo *".into()],
+            tool_name: "shell".into(),
+            tool_args: serde_json::json!({"cmd": "echo hello", "reason": "test"}),
+        };
+        append_event(&tx_path, &AnyEvent::SessionStart {
+            schema_version: 1, id: session_id.into(),
+            model: "test".into(), codebase_hash: "".into(), codebase_dirty: false, ts: 1,
+        }).unwrap();
+        append_event(&tx_path, &AnyEvent::UserTurn {
+            content: "run echo".into(), from: None, context: None, ts: 2,
+        }).unwrap();
+        append_event(&tx_path, &AnyEvent::Permissions { items: vec![perm_item], ts: 3 }).unwrap();
+        append_event(&tx_path, &AnyEvent::PermissionsReply {
+            from: "user".into(),
+            items: vec![PermissionsReplyItem {
+                id: "tc-resume-1".into(), decision: "approve".into(),
+                text: Some("shell:echo *".into()),
+            }],
+            ts: 4,
+        }).unwrap();
+
+        let shell_tool = ToolDef {
+            name: "shell".into(),
+            description: "run a shell command".into(),
+            parameters: serde_json::json!({ "type": "object" }),
+            execute: Box::new(|_args| Box::pin(async move {
+                Ok(serde_json::Value::String("hello\n".into()))
+            })),
+        };
+        let provider = Arc::new(FakeProvider {
+            steps: Arc::new(vec![FakeStep::text("done")]),
+            call_idx: Arc::new(AtomicUsize::new(0)),
+        });
+        let result = run_turn(
+            TurnOpts {
+                session_id: session_id.into(),
+                task: None, // resume path: no new task
+                auto: false,
+                workspace: ws.path().to_path_buf(),
+                codebase_path: codebase.path().to_path_buf(),
+                allow: vec!["shell:echo *".into()],
+                system_prompt: "".into(),
+                model: "test".into(),
+                mcp_registry: vec![],
+                skill_registry: vec![],
+            },
+            provider,
+            vec![Box::new(shell_tool)],
+        ).await.unwrap();
+        assert!(matches!(result, TurnResult::Done { .. }), "expected Done, got: {:?}", result);
+
+        let events = read_events(&tx_path).unwrap();
+        // ToolCall + ToolResult must appear (from direct execution, not re-request)
+        assert!(events.iter().any(|e| matches!(e, AnyEvent::ToolCall { name, .. } if name == "shell")),
+            "expected ToolCall from resume");
+        assert!(events.iter().any(|e| matches!(e, AnyEvent::ToolResult { .. })),
+            "expected ToolResult from resume");
+        // No extra Permissions event (tool was executed, not gated again)
+        let perm_count = events.iter().filter(|e| matches!(e, AnyEvent::Permissions { .. })).count();
+        assert_eq!(perm_count, 1, "should have only the pre-existing Permissions event");
+    }
+
+    #[tokio::test]
+    async fn resume_emits_denied_tool_result_for_rejected_call() {
+        let ws = TempDir::new().unwrap();
+        init_git_repo(ws.path());
+        let codebase = TempDir::new().unwrap();
+        let session_id = "resume-deny-test";
+        // Initialize the session worktree (creates the session dir + branch)
+        crate::git::create_session_worktree(ws.path(), session_id).unwrap();
+        let session_dir = ws.path().join("sessions").join(session_id);
+        let tx_path = session_dir.join("transcript.jsonl");
+
+        let perm_item = PermissionItem {
+            id: "tc-deny-1".into(), cmd: "rm -rf /".into(),
+            reason: "shell requires permission".into(), patterns: vec!["rm *".into()],
+            tool_name: "shell".into(),
+            tool_args: serde_json::json!({"cmd": "rm -rf /", "reason": "cleanup"}),
+        };
+        append_event(&tx_path, &AnyEvent::SessionStart {
+            schema_version: 1, id: session_id.into(),
+            model: "test".into(), codebase_hash: "".into(), codebase_dirty: false, ts: 1,
+        }).unwrap();
+        append_event(&tx_path, &AnyEvent::UserTurn {
+            content: "clean up".into(), from: None, context: None, ts: 2,
+        }).unwrap();
+        append_event(&tx_path, &AnyEvent::Permissions { items: vec![perm_item], ts: 3 }).unwrap();
+        append_event(&tx_path, &AnyEvent::PermissionsReply {
+            from: "user".into(),
+            items: vec![PermissionsReplyItem {
+                id: "tc-deny-1".into(), decision: "deny".into(), text: None,
+            }],
+            ts: 4,
+        }).unwrap();
+
+        let shell_tool = ToolDef {
+            name: "shell".into(),
+            description: "run a shell command".into(),
+            parameters: serde_json::json!({ "type": "object" }),
+            execute: Box::new(|_args| Box::pin(async move {
+                Ok(serde_json::Value::String("should not run".into()))
+            })),
+        };
+        let provider = Arc::new(FakeProvider {
+            steps: Arc::new(vec![FakeStep::text("ok I won't do that")]),
+            call_idx: Arc::new(AtomicUsize::new(0)),
+        });
+        let result = run_turn(
+            TurnOpts {
+                session_id: session_id.into(),
+                task: None, // resume path: no new task
+                auto: false,
+                workspace: ws.path().to_path_buf(),
+                codebase_path: codebase.path().to_path_buf(),
+                allow: vec![],
+                system_prompt: "".into(),
+                model: "test".into(),
+                mcp_registry: vec![],
+                skill_registry: vec![],
+            },
+            provider,
+            vec![Box::new(shell_tool)],
+        ).await.unwrap();
+        assert!(matches!(result, TurnResult::Done { .. }), "expected Done, got: {:?}", result);
+
+        // Must have a ToolResult for the denied call (API invariant)
+        let events_after = read_events(&tx_path).unwrap();
+        let denied_result = events_after.iter().any(|e| matches!(e, AnyEvent::ToolResult { id, .. } if id == "tc-deny-1"));
+        assert!(denied_result, "expected ToolResult for denied call");
+        if let Some(AnyEvent::ToolResult { output, .. }) = events_after.iter().find(|e| matches!(e, AnyEvent::ToolResult { id, .. } if id == "tc-deny-1")) {
+            assert!(output.contains("denied"), "got: {output}");
+        }
+
+        // Reconstruction must yield paired messages — not drop the orphan ToolResult.
+        // Without a preceding ToolCall the ToolResult is silently skipped by context.rs,
+        // so the model never sees the denial and retries the tool call in a loop.
+        let messages = reconstruct_messages_from_events(&events_after).unwrap();
+        // Expect: User (UserTurn), Assistant (ToolCall), Tool (ToolResult with denial)
+        let has_tool_msg = messages.iter().any(|m| matches!(m, Message::Tool { .. }));
+        assert!(has_tool_msg, "reconstruction must include Tool message with denied result; got {} messages", messages.len());
     }
 }
