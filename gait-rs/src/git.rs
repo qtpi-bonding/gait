@@ -186,6 +186,51 @@ pub fn init_workspace(workspace: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn create_branch_worktree(
+    workspace: &Path,
+    base_branch: &str,
+    new_branch: &str,
+    worktree_path: &Path,
+) -> anyhow::Result<()> {
+    let repo = Repository::open(workspace)?;
+    let base = repo.find_branch(base_branch, BranchType::Local)?;
+    let base_commit = base.into_reference().peel_to_commit()?;
+    let branch = repo.branch(new_branch, &base_commit, false)?;
+    let reference = branch.into_reference();
+    let mut opts = git2::WorktreeAddOptions::new();
+    opts.reference(Some(&reference));
+    let wt_name = new_branch.replace('/', "-");
+    repo.worktree(&wt_name, worktree_path, Some(&opts))?;
+    Ok(())
+}
+
+pub fn remove_branch_worktree(workspace: &Path, worktree_path: &Path) -> anyhow::Result<()> {
+    if worktree_path.exists() {
+        std::fs::remove_dir_all(worktree_path)?;
+    }
+    let repo = Repository::open(workspace)?;
+    let mut prune_opts = git2::WorktreePruneOptions::new();
+    prune_opts.valid(true);
+    for name in repo.worktrees()?.iter().flatten() {
+        if let Ok(wt) = repo.find_worktree(name) {
+            if wt.path() == worktree_path {
+                wt.prune(Some(&mut prune_opts))?;
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn merge_branch_ff(workspace: &Path, target_branch: &str, source_branch: &str) -> anyhow::Result<()> {
+    let repo = Repository::open(workspace)?;
+    let source = repo.find_branch(source_branch, BranchType::Local)?;
+    let source_oid = source.into_reference().peel_to_commit()?.id();
+    let target_ref = format!("refs/heads/{}", target_branch);
+    repo.reference(&target_ref, source_oid, true, "workflow ff-merge")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,5 +356,27 @@ mod tests {
         init_repo(ws.path());
         // Should not error for a non-existent session
         finish_session(ws.path(), "snonexistent").unwrap();
+    }
+
+    #[test]
+    fn create_and_remove_branch_worktree_works() {
+        let ws = TempDir::new().unwrap();
+        let repo = Repository::init(ws.path()).unwrap();
+        let sig = git2::Signature::now("t", "t@t.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        // Rename to main
+        repo.find_branch("master", BranchType::Local)
+            .and_then(|mut b| { b.rename("main", false)?; Ok(()) }).ok();
+
+        let wt_path = ws.path().join("branches").join("feat");
+        // Create the parent directory — git2 worktree creates only the final component
+        std::fs::create_dir_all(wt_path.parent().unwrap()).unwrap();
+        create_branch_worktree(ws.path(), "main", "branch/feat", &wt_path).unwrap();
+        assert!(wt_path.join(".git").exists());
+
+        remove_branch_worktree(ws.path(), &wt_path).unwrap();
+        assert!(!wt_path.join(".git").exists());
     }
 }
