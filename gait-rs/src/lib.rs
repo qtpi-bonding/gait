@@ -2,6 +2,7 @@ pub mod git;
 pub mod session;
 pub mod config;
 pub mod auth;
+pub mod models;
 pub mod turn;
 pub mod types;
 pub mod provider;
