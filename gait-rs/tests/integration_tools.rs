@@ -3,18 +3,15 @@ use gait_ai::types::Tool;
 use tempfile::TempDir;
 
 #[tokio::test]
-async fn builtin_tools_returns_seven_tools() {
+async fn builtin_tools_returns_expected_tools() {
     let dir = TempDir::new().unwrap();
     let tools = builtin_tools(dir.path().to_path_buf());
-    assert_eq!(tools.len(), 7);
+    assert_eq!(tools.len(), 11);
     let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-    assert!(names.contains(&"read"));
-    assert!(names.contains(&"write"));
-    assert!(names.contains(&"edit"));
-    assert!(names.contains(&"glob"));
-    assert!(names.contains(&"grep"));
-    assert!(names.contains(&"ls"));
-    assert!(names.contains(&"shell"));
+    for expected in &["read", "write", "edit", "glob", "grep", "ls", "shell",
+                      "output", "multiedit", "codesearch", "webfetch"] {
+        assert!(names.contains(expected), "missing tool '{}', got: {:?}", expected, names);
+    }
 }
 
 #[tokio::test]

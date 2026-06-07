@@ -1,0 +1,75 @@
+use crate::types::Tool;
+use schemars::JsonSchema;
+use serde::Deserialize;
+use serde_json::Value;
+
+#[derive(Deserialize, JsonSchema)]
+struct OutputParams {
+    /// One sentence summary of what was accomplished this turn
+    summary: String,
+    /// Structured result for workflow nodes
+    result: Option<Value>,
+}
+
+pub struct OutputTool {
+    parameters: Value,
+}
+
+impl OutputTool {
+    pub fn new() -> Self {
+        let parameters = crate::tools::make_schema::<OutputParams>();
+        Self { parameters }
+    }
+    pub fn boxed(self) -> Box<dyn Tool> { Box::new(self) }
+}
+
+#[async_trait::async_trait]
+impl Tool for OutputTool {
+    fn name(&self) -> &str { "output" }
+    fn description(&self) -> &str {
+        "Signal that your turn is complete. Always call this as your final action with a one-sentence summary of what you accomplished."
+    }
+    fn parameters(&self) -> &Value { &self.parameters }
+
+    async fn execute(&self, _args: Value) -> anyhow::Result<Value> {
+        Ok(Value::String("recorded".into()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn execute_returns_recorded() {
+        let tool = OutputTool::new();
+        let result = tool.execute(serde_json::json!({
+            "summary": "added health endpoint"
+        })).await.unwrap();
+        assert_eq!(result, Value::String("recorded".into()));
+    }
+
+    #[tokio::test]
+    async fn execute_with_result_still_returns_recorded() {
+        let tool = OutputTool::new();
+        let result = tool.execute(serde_json::json!({
+            "summary": "done",
+            "result": { "files_changed": ["a.rs"] }
+        })).await.unwrap();
+        assert_eq!(result, Value::String("recorded".into()));
+    }
+
+    #[test]
+    fn name_is_output() {
+        let tool = OutputTool::new();
+        assert_eq!(tool.name(), "output");
+    }
+
+    #[test]
+    fn parameters_schema_has_summary_field() {
+        let tool = OutputTool::new();
+        let schema = tool.parameters();
+        let props = schema["properties"].as_object().unwrap();
+        assert!(props.contains_key("summary"), "schema missing summary field");
+    }
+}

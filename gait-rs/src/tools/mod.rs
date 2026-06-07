@@ -5,6 +5,10 @@ pub mod glob;
 pub mod grep;
 pub mod ls;
 pub mod shell;
+pub mod output;
+pub mod multiedit;
+pub mod codesearch;
+pub mod webfetch;
 
 pub use read::ReadTool;
 pub use write::WriteTool;
@@ -13,6 +17,10 @@ pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use ls::LsTool;
 pub use shell::ShellTool;
+pub use output::OutputTool;
+pub use multiedit::MultieditTool;
+pub use codesearch::CodesearchTool;
+pub use webfetch::WebfetchTool;
 
 use std::path::PathBuf;
 use crate::types::Tool;
@@ -30,7 +38,7 @@ pub fn make_schema<T: schemars::JsonSchema>() -> serde_json::Value {
     v
 }
 
-/// Returns all seven built-in tools configured for the given codebase root path.
+/// Returns all built-in tools configured for the given codebase root path.
 pub fn builtin_tools(codebase_path: PathBuf) -> Vec<Box<dyn Tool>> {
     vec![
         ReadTool::new(codebase_path.clone()).boxed(),
@@ -39,6 +47,32 @@ pub fn builtin_tools(codebase_path: PathBuf) -> Vec<Box<dyn Tool>> {
         GlobTool::new(codebase_path.clone()).boxed(),
         GrepTool::new(codebase_path.clone()).boxed(),
         LsTool::new(codebase_path.clone()).boxed(),
-        ShellTool::new(codebase_path).boxed(),
+        ShellTool::new(codebase_path.clone()).boxed(),
+        OutputTool::new().boxed(),
+        MultieditTool::new(codebase_path.clone()).boxed(),
+        CodesearchTool::new(codebase_path.clone()).boxed(),
+        WebfetchTool::new().boxed(),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn builtin_tools_returns_eleven() {
+        let tools = builtin_tools(PathBuf::from("/tmp"));
+        assert_eq!(tools.len(), 11);
+    }
+
+    #[test]
+    fn all_tool_names_unique() {
+        let tools = builtin_tools(PathBuf::from("/tmp"));
+        let mut names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        let original_len = names.len();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), original_len, "duplicate tool names found");
+    }
 }
