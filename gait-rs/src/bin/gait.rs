@@ -80,7 +80,13 @@ async fn cmd_run(argv: &[String]) {
     let model = model_override.as_deref().unwrap_or(&config.model).to_string();
     let codebase_path = codebase_path.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-    let provider_name = model.split('/').next().unwrap_or("anthropic");
+    let provider_name = match model.split_once('/') {
+        Some((p, _)) => p,
+        None => {
+            eprintln!("[gait] error: model must be 'provider/model', got: '{}'", model);
+            std::process::exit(1);
+        }
+    };
     let api_key = resolve_api_key(provider_name);
 
     let provider = match load_provider(&model, api_key) {
