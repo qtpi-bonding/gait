@@ -114,6 +114,7 @@ pub async fn run_turn(
     messages.insert(0, Message::User { content: MessageContent::Text(turn_ctx) });
 
     let mut total_usage = Usage::default();
+    let mut output_signal: Option<TurnOutput> = None;
 
     for _step in 0..50 {
         let mut chunk_stream = provider.stream(&opts.system_prompt, &messages, &tools).await
@@ -163,10 +164,10 @@ pub async fn run_turn(
                 },
                 codebase_hash: codebase_hash.clone(),
                 codebase_dirty,
-                output: TurnOutput {
+                output: output_signal.take().unwrap_or_else(|| TurnOutput {
                     summary: step_text.lines().next().unwrap_or("").to_string(),
                     result: None,
-                },
+                }),
                 ts: now_ms(),
             })?;
             git::commit_session(&opts.workspace, &opts.session_id,
@@ -186,7 +187,7 @@ pub async fn run_turn(
 
         // First pass: collect pending permissions for non-allowed tools
         for tc in &step_tool_calls {
-            let allowed = opts.auto || opts.allow.contains(&tc.tool_name);
+            let allowed = opts.auto || opts.allow.contains(&tc.tool_name) || tc.tool_name == "output";
             if !allowed {
                 pending_permissions.push(PermissionItem {
                     id: tc.tool_call_id.clone(),
@@ -247,6 +248,14 @@ pub async fn run_turn(
                 },
                 None => format!("error: unknown tool '{}'", tc.tool_name),
             };
+            if tc.tool_name == "output" {
+                if let Some(summary) = tc.args.get("summary").and_then(|v| v.as_str()) {
+                    output_signal = Some(TurnOutput {
+                        summary: summary.to_string(),
+                        result: tc.args.get("result").cloned(),
+                    });
+                }
+            }
             append_event(&tx_path, &AnyEvent::ToolResult {
                 id: id.clone(),
                 output: output.clone(),
@@ -383,6 +392,119 @@ mod tests {
         let repo = git2::Repository::open(ws.path().join("sessions/stest001")).unwrap();
         let msg = repo.head().unwrap().peel_to_commit().unwrap().message().unwrap().to_string();
         assert!(msg.contains("turn 1"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn output_tool_result_used_in_turn_complete() {
+        let ws = TempDir::new().unwrap();
+        init_git_repo(ws.path());
+
+        let provider = Arc::new(MockProvider {
+            responses: Arc::new(vec![
+                vec![
+                    StreamChunk::ToolCallComplete {
+                        tool_call_id: "tc1".into(),
+                        tool_name: "output".into(),
+                        args: serde_json::json!({ "summary": "fixed the bug", "result": { "files": 2 } }),
+                    },
+                    StreamChunk::Done,
+                ],
+                vec![
+                    StreamChunk::Text("".into()),
+                    StreamChunk::Done,
+                ],
+            ]),
+            call_idx: Arc::new(AtomicUsize::new(0)),
+        });
+
+        let output_tool = ToolDef {
+            name: "output".into(),
+            description: "signal done".into(),
+            parameters: serde_json::json!({ "type": "object" }),
+            execute: Box::new(|_args| Box::pin(async move {
+                Ok(serde_json::Value::String("recorded".into()))
+            })),
+        };
+
+        run_turn(
+            TurnOpts {
+                session_id: "stest_out".into(),
+                task: Some("fix a bug".into()),
+                auto: true,
+                workspace: ws.path().to_path_buf(),
+                codebase_path: ws.path().to_path_buf(),
+                allow: vec![],
+                system_prompt: "".into(),
+                model: "mock/test".into(),
+            },
+            provider,
+            vec![Box::new(output_tool)],
+        ).await.unwrap();
+
+        let tx_path = ws.path().join("sessions/stest_out/transcript.jsonl");
+        let events = read_events(&tx_path).unwrap();
+        let tc_event = events.iter().find(|e| matches!(e, AnyEvent::TurnComplete { .. })).unwrap();
+        if let AnyEvent::TurnComplete { output, .. } = tc_event {
+            assert_eq!(output.summary, "fixed the bug");
+            assert!(output.result.is_some());
+        } else {
+            panic!("expected TurnComplete");
+        }
+    }
+
+    #[tokio::test]
+    async fn output_tool_exempt_from_permission_gating() {
+        let ws = TempDir::new().unwrap();
+        init_git_repo(ws.path());
+
+        let provider = Arc::new(MockProvider {
+            responses: Arc::new(vec![
+                vec![
+                    StreamChunk::ToolCallComplete {
+                        tool_call_id: "tc1".into(),
+                        tool_name: "output".into(),
+                        args: serde_json::json!({ "summary": "done" }),
+                    },
+                    StreamChunk::Done,
+                ],
+                vec![
+                    StreamChunk::Text("".into()),
+                    StreamChunk::Done,
+                ],
+            ]),
+            call_idx: Arc::new(AtomicUsize::new(0)),
+        });
+
+        let output_tool = ToolDef {
+            name: "output".into(),
+            description: "signal done".into(),
+            parameters: serde_json::json!({ "type": "object" }),
+            execute: Box::new(|_args| Box::pin(async move {
+                Ok(serde_json::Value::String("recorded".into()))
+            })),
+        };
+
+        run_turn(
+            TurnOpts {
+                session_id: "stest_out2".into(),
+                task: Some("do it".into()),
+                auto: false,
+                workspace: ws.path().to_path_buf(),
+                codebase_path: ws.path().to_path_buf(),
+                allow: vec![],
+                system_prompt: "".into(),
+                model: "mock/test".into(),
+            },
+            provider,
+            vec![Box::new(output_tool)],
+        ).await.unwrap();
+
+        let tx_path = ws.path().join("sessions/stest_out2/transcript.jsonl");
+        let events = read_events(&tx_path).unwrap();
+        let has_tc = events.iter().any(|e| matches!(e, AnyEvent::TurnComplete { .. }));
+        let has_permissions = events.iter().any(|e| matches!(e, AnyEvent::Permissions { .. }));
+        assert!(has_tc, "output tool should complete the turn");
+        assert!(!has_permissions, "output tool should not trigger permission gating");
     }
 
     #[tokio::test]
