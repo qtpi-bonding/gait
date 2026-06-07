@@ -12,10 +12,12 @@ pub mod stream;
 pub mod generate;
 pub mod factory;
 pub mod tools;
+pub mod harness;
 
 pub use types::*;
 pub use stream::stream_text;
 pub use generate::generate_text;
 pub use factory::load_provider;
 pub use tools::builtin_tools;
-pub use turn::{TurnOpts, run_turn};
+pub use turn::{TurnOpts, run_turn, TurnResult};
+pub use harness::{HarnessBackend, NoopHarnessBackend, NativeHarnessBackend};
