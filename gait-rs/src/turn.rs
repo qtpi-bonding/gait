@@ -255,7 +255,7 @@ pub async fn run_turn(
         while let Some(chunk) = chunk_stream.next().await {
             match chunk.map_err(|e| anyhow::anyhow!("stream error: {}", e))? {
                 StreamChunk::Text(t) => {
-                    eprint!("{}", t);
+                    println!("{}", serde_json::json!({"type": "text_delta", "content": t, "ts": now_ms()}));
                     step_text.push_str(&t);
                 }
                 StreamChunk::ToolCallComplete { tool_call_id, tool_name, args } => {
@@ -306,7 +306,6 @@ pub async fn run_turn(
             })?;
             git::commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): turn {}", opts.session_id, turn_n))?;
-            eprintln!("\n[gait] turn {} complete", turn_n);
             return Ok(TurnResult::Done {
                 summary,
                 result: done_result,
@@ -345,7 +344,6 @@ pub async fn run_turn(
             })?;
             git::commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): permissions", opts.session_id))?;
-            eprintln!("\n[gait] turn paused — permission approval required. re-run with --auto or approve interactively.");
             return Ok(TurnResult::Permissions);
         }
 
@@ -881,5 +879,47 @@ mod tests {
         ).await.unwrap();
 
         assert!(matches!(result, TurnResult::Permissions), "expected Permissions, got: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn streaming_text_does_not_produce_extra_transcript_events() {
+        let ws = TempDir::new().unwrap();
+        init_git_repo(ws.path());
+
+        let provider = Arc::new(MockProvider {
+            responses: Arc::new(vec![
+                vec![
+                    StreamChunk::Text("hello ".into()),
+                    StreamChunk::Text("world".into()),
+                    StreamChunk::Done,
+                ],
+            ]),
+            call_idx: Arc::new(AtomicUsize::new(0)),
+        });
+
+        run_turn(
+            TurnOpts {
+                session_id: "sdelta01".into(),
+                task: Some("say hello".into()),
+                auto: true,
+                workspace: ws.path().to_path_buf(),
+                codebase_path: ws.path().to_path_buf(),
+                allow: vec![],
+                system_prompt: "".into(),
+                model: "mock/test".into(),
+                mcp_registry: vec![],
+                skill_registry: vec![],
+            },
+            provider,
+            vec![],
+        ).await.unwrap();
+
+        let tx_path = ws.path().join("sessions/sdelta01/transcript.jsonl");
+        let events = read_events(&tx_path).unwrap();
+        let text_events: Vec<_> = events.iter().filter(|e| matches!(e, AnyEvent::AssistantText { .. })).collect();
+        assert_eq!(text_events.len(), 1);
+        if let AnyEvent::AssistantText { content, .. } = text_events[0] {
+            assert_eq!(content, "hello world");
+        }
     }
 }
