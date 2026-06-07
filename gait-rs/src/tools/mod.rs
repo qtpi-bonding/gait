@@ -12,6 +12,7 @@ pub mod webfetch;
 pub mod mcp;
 pub mod skill;
 pub mod spawn_agent;
+pub mod list_agents;
 
 pub use read::ReadTool;
 pub use write::WriteTool;
@@ -27,6 +28,7 @@ pub use webfetch::WebfetchTool;
 pub use mcp::McpTool;
 pub use skill::SkillTool;
 pub use spawn_agent::SpawnAgentTool;
+pub use list_agents::ListAgentsTool;
 
 use std::path::PathBuf;
 use crate::types::Tool;
