@@ -44,7 +44,7 @@ impl HarnessBackend for NativeHarnessBackend {
 
         // C3 fix: distinguish Permissions from Done so assigner knows child paused, not finished.
         let summary = match result {
-            TurnResult::Done { summary } => summary.chars().take(500).collect::<String>(),
+            TurnResult::Done { summary, .. } => summary.chars().take(500).collect::<String>(),
             TurnResult::Permissions => "needs permissions approval".to_string(),
         };
 
@@ -119,7 +119,7 @@ mod tests {
     #[tokio::test]
     async fn noop_harness_always_succeeds() {
         let h = NoopHarnessBackend;
-        h.after_turn("s1", None, &TurnResult::Done { summary: "done".into() }).await.unwrap();
+        h.after_turn("s1", None, &TurnResult::Done { summary: "done".into(), result: None }).await.unwrap();
         h.after_turn("s1", Some("s-parent"), &TurnResult::Permissions).await.unwrap();
     }
 
@@ -127,6 +127,6 @@ mod tests {
     async fn native_harness_with_no_assigned_by_is_noop() {
         let h = NativeHarnessBackend::new(std::path::PathBuf::from("/tmp/fake-ws"));
         // assigned_by = None → no action, returns Ok
-        h.after_turn("s1", None, &TurnResult::Done { summary: "done".into() }).await.unwrap();
+        h.after_turn("s1", None, &TurnResult::Done { summary: "done".into(), result: None }).await.unwrap();
     }
 }

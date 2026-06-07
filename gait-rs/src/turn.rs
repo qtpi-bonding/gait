@@ -28,7 +28,7 @@ pub struct TurnOpts {
 
 #[derive(Debug, Clone)]
 pub enum TurnResult {
-    Done { summary: String },
+    Done { summary: String, result: Option<serde_json::Value> },
     Permissions,
 }
 
@@ -305,7 +305,10 @@ pub async fn run_turn(
             git::commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): turn {}", opts.session_id, turn_n))?;
             eprintln!("\n[gait] turn {} complete", turn_n);
-            return Ok(TurnResult::Done { summary });
+            return Ok(TurnResult::Done {
+                summary,
+                result: output_signal.as_ref().and_then(|o| o.result.clone()),
+            });
         }
 
         // Partition tool calls: allowed vs needs permission
@@ -834,7 +837,7 @@ mod tests {
         ).await.unwrap();
 
         assert!(matches!(result, TurnResult::Done { .. }), "expected Done, got: {:?}", result);
-        if let TurnResult::Done { summary } = result {
+        if let TurnResult::Done { summary, .. } = result {
             assert!(!summary.is_empty(), "summary should not be empty");
         }
     }

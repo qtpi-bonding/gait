@@ -202,6 +202,66 @@ pub enum AnyEvent {
         usage: CompactionUsage,
         ts: u64,
     },
+    WorkflowStart {
+        workflow_id: String,
+        name: String,
+        yaml_path: String,
+        args: Vec<String>,
+        ts: u64,
+    },
+    NodeStart {
+        workflow_id: String,
+        node_id: String,
+        node_type: String,
+        attempt: u32,
+        ts: u64,
+    },
+    NodeComplete {
+        workflow_id: String,
+        node_id: String,
+        output: String,
+        exit_code: Option<i32>,
+        json_output: Option<serde_json::Value>,
+        routed_to: Option<String>,
+        ts: u64,
+    },
+    NodeSkip {
+        workflow_id: String,
+        node_id: String,
+        reason: String,
+        ts: u64,
+    },
+    NodeError {
+        workflow_id: String,
+        node_id: String,
+        error: String,
+        attempt: u32,
+        ts: u64,
+    },
+    HookRun {
+        workflow_id: String,
+        node_id: Option<String>,
+        hook_type: String,
+        cmd: String,
+        exit_code: i32,
+        ts: u64,
+    },
+    WorkflowComplete {
+        workflow_id: String,
+        ts: u64,
+    },
+    WorkflowError {
+        workflow_id: String,
+        failed_node: String,
+        error: String,
+        ts: u64,
+    },
+    WorkflowGate {
+        workflow_id: String,
+        node_id: String,
+        message: String,
+        ts: u64,
+    },
 }
 
 // ── JSONL helpers ─────────────────────────────────────────────────────────────
@@ -368,6 +428,29 @@ mod tests {
         } else {
             panic!("expected UserTurn");
         }
+    }
+
+    #[test]
+    fn workflow_events_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("t.jsonl");
+        append_event(&path, &AnyEvent::WorkflowStart {
+            workflow_id: "wf1".into(), name: "test".into(),
+            yaml_path: "workflows/test.yaml".into(), args: vec![], ts: 1,
+        }).unwrap();
+        append_event(&path, &AnyEvent::NodeStart {
+            workflow_id: "wf1".into(), node_id: "n1".into(),
+            node_type: "shell".into(), attempt: 1, ts: 2,
+        }).unwrap();
+        append_event(&path, &AnyEvent::NodeComplete {
+            workflow_id: "wf1".into(), node_id: "n1".into(),
+            output: "ok".into(), exit_code: Some(0),
+            json_output: None, routed_to: None, ts: 3,
+        }).unwrap();
+        let events = read_events(&path).unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(matches!(&events[0], AnyEvent::WorkflowStart { workflow_id, .. } if workflow_id == "wf1"));
+        assert!(matches!(&events[2], AnyEvent::NodeComplete { exit_code: Some(0), .. }));
     }
 
     #[test]
