@@ -12,7 +12,7 @@ use crate::workflow::exec_prompt::exec_prompt_node;
 use crate::workflow::exec_loop::exec_loop_node;
 use crate::workflow::exec_branch::resolve_branch;
 use crate::workflow::exec_gate::exec_gate_node;
-use crate::session::transcript::{AnyEvent, append_event, read_events, now_ms};
+use crate::session::transcript::{AnyEvent, emit_event, read_events, now_ms};
 use crate::git;
 
 pub struct WorkflowRunOpts {
@@ -44,7 +44,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
     let args_str = args.join(" ");
 
     if existing_events.is_empty() {
-        append_event(&tx_path, &AnyEvent::WorkflowStart {
+        emit_event(&tx_path, &AnyEvent::WorkflowStart {
             workflow_id: workflow_id.clone(),
             name: wf.name.clone(),
             yaml_path: yaml_path.clone(),
@@ -60,7 +60,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
             if let Some(cmd) = &hooks.before {
                 let env = make_env_vars(&workflow_id, &session_id, &workspace, &codebase, &args_str, None, &state);
                 let (exit, _) = run_hook(cmd, &env).await;
-                append_event(&tx_path, &AnyEvent::HookRun {
+                emit_event(&tx_path, &AnyEvent::HookRun {
                     workflow_id: workflow_id.clone(), node_id: None,
                     hook_type: "before".into(), cmd: cmd.clone(), exit_code: exit, ts: now_ms(),
                 })?;
@@ -85,7 +85,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
         }
 
         if should_skip_node(node, &state) {
-            append_event(&tx_path, &AnyEvent::NodeSkip {
+            emit_event(&tx_path, &AnyEvent::NodeSkip {
                 workflow_id: workflow_id.clone(), node_id: node_id.clone(),
                 reason: "inactive branch path".into(), ts: now_ms(),
             })?;
@@ -99,14 +99,14 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
         if let Some(hooks) = &node.hooks {
             if let Some(cmd) = &hooks.before {
                 let (exit, _) = run_hook(cmd, &env).await;
-                append_event(&tx_path, &AnyEvent::HookRun {
+                emit_event(&tx_path, &AnyEvent::HookRun {
                     workflow_id: workflow_id.clone(), node_id: Some(node_id.clone()),
                     hook_type: "before".into(), cmd: cmd.clone(), exit_code: exit, ts: now_ms(),
                 })?;
             }
         }
 
-        append_event(&tx_path, &AnyEvent::NodeStart {
+        emit_event(&tx_path, &AnyEvent::NodeStart {
             workflow_id: workflow_id.clone(), node_id: node_id.clone(),
             node_type: node.node_type_name().into(), attempt: 1, ts: now_ms(),
         })?;
@@ -136,7 +136,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
                 Ok(out) => { node_result = Some(out); break; }
                 Err(e) => {
                     last_error = e.to_string();
-                    append_event(&tx_path, &AnyEvent::NodeError {
+                    emit_event(&tx_path, &AnyEvent::NodeError {
                         workflow_id: workflow_id.clone(), node_id: node_id.clone(),
                         error: last_error.clone(), attempt: attempt as u32, ts: now_ms(),
                     })?;
@@ -159,7 +159,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
                     propagate_branch_skips(node, &routed, &wf.nodes, &mut state, &tx_path, &workflow_id)?;
                 }
 
-                append_event(&tx_path, &AnyEvent::NodeComplete {
+                emit_event(&tx_path, &AnyEvent::NodeComplete {
                     workflow_id: workflow_id.clone(), node_id: node_id.clone(),
                     output: out.text.clone(), exit_code: out.exit_code,
                     json_output: out.json.clone(), routed_to: out.routed_to.clone(), ts: now_ms(),
@@ -171,7 +171,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
                     if let Some(cmd) = &hooks.after {
                         let env = make_env_vars(&workflow_id, &session_id, &workspace, &codebase, &args_str, Some(&node_id), &state);
                         let (exit, _) = run_hook(cmd, &env).await;
-                        append_event(&tx_path, &AnyEvent::HookRun {
+                        emit_event(&tx_path, &AnyEvent::HookRun {
                             workflow_id: workflow_id.clone(), node_id: Some(node_id.clone()),
                             hook_type: "after".into(), cmd: cmd.clone(), exit_code: exit, ts: now_ms(),
                         })?;
@@ -189,7 +189,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
 
                 let on_error = &node.on_error;
                 if on_error.is_abort() {
-                    append_event(&tx_path, &AnyEvent::WorkflowError {
+                    emit_event(&tx_path, &AnyEvent::WorkflowError {
                         workflow_id: workflow_id.clone(), failed_node: node_id.clone(),
                         error: last_error.clone(), ts: now_ms(),
                     })?;
@@ -217,7 +217,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
         git::commit_session(&workspace, &session_id, &format!("workflow: {}", node_id))?;
     }
 
-    append_event(&tx_path, &AnyEvent::WorkflowComplete { workflow_id: workflow_id.clone(), ts: now_ms() })?;
+    emit_event(&tx_path, &AnyEvent::WorkflowComplete { workflow_id: workflow_id.clone(), ts: now_ms() })?;
     update_progress_done(&workspace, &session_id, &workflow_id, &wf.name, &state, &wf.nodes)?;
     git::commit_session(&workspace, &session_id, "workflow: complete")?;
 
@@ -298,7 +298,7 @@ fn propagate_branch_skips(
     for id in &inactive {
         if !state.is_done(id) && !state.is_skipped(id) {
             state.set_status(id, NodeStatus::Skipped);
-            append_event(tx_path, &AnyEvent::NodeSkip {
+            emit_event(tx_path, &AnyEvent::NodeSkip {
                 workflow_id: workflow_id.to_string(), node_id: id.clone(),
                 reason: format!("inactive branch (routed to {})", routed_to), ts: now_ms(),
             })?;

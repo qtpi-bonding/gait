@@ -68,7 +68,7 @@ async fn cmd_run(argv: &[String]) {
 
     let session_id = session_id.unwrap_or_else(|| {
         let id = format!("s{}", &uuid::Uuid::new_v4().to_string().replace('-', "")[..8]);
-        eprintln!("[gait] starting session {}", id);
+        println!("{}", serde_json::json!({"type": "session_id", "id": id}));
         id
     });
 
@@ -484,7 +484,7 @@ fn cmd_workflow_abort(argv: &[String], workspace: PathBuf) {
         None => { eprintln!("[gait] usage: gait workflow abort <workflow-id>"); std::process::exit(1); }
     };
     let tx_path = workspace.join("sessions").join(&workflow_id).join("transcript.jsonl");
-    let _ = gait_ai::session::transcript::append_event(&tx_path, &gait_ai::session::transcript::AnyEvent::WorkflowError {
+    let _ = gait_ai::session::transcript::emit_event(&tx_path, &gait_ai::session::transcript::AnyEvent::WorkflowError {
         workflow_id: workflow_id.clone(),
         failed_node: "(aborted)".into(),
         error: "user aborted".into(),
