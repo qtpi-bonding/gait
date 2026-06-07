@@ -26,6 +26,12 @@ pub struct TurnOpts {
     pub skill_registry: Vec<SkillDef>,
 }
 
+#[derive(Debug, Clone)]
+pub enum TurnResult {
+    Done { summary: String },
+    Permissions,
+}
+
 // ── Session lock (RAII PID file) ─────────────────────────────────────────────
 
 pub struct SessionLock {
@@ -169,7 +175,7 @@ pub async fn run_turn(
     opts: TurnOpts,
     provider: Arc<dyn Provider>,
     tools: Vec<Box<dyn Tool>>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<TurnResult> {
     git::create_session_worktree(&opts.workspace, &opts.session_id)?;
 
     let session_dir = opts.workspace.join("sessions").join(&opts.session_id);
@@ -278,6 +284,9 @@ pub async fn run_turn(
         if step_tool_calls.is_empty() {
             let events = read_events(&tx_path)?;
             let turn_n = count_turn_complete(&events) + 1;
+            let summary = output_signal.as_ref()
+                .map(|o| o.summary.clone())
+                .unwrap_or_else(|| step_text.lines().next().unwrap_or("").to_string());
             append_event(&tx_path, &AnyEvent::TurnComplete {
                 usage: TurnUsage {
                     input: total_usage.input_tokens as u64,   // Usage uses u32; TurnUsage uses u64
@@ -288,7 +297,7 @@ pub async fn run_turn(
                 codebase_hash: codebase_hash.clone(),
                 codebase_dirty,
                 output: output_signal.take().unwrap_or_else(|| TurnOutput {
-                    summary: step_text.lines().next().unwrap_or("").to_string(),
+                    summary: summary.clone(),
                     result: None,
                 }),
                 ts: now_ms(),
@@ -296,7 +305,7 @@ pub async fn run_turn(
             git::commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): turn {}", opts.session_id, turn_n))?;
             eprintln!("\n[gait] turn {} complete", turn_n);
-            return Ok(());
+            return Ok(TurnResult::Done { summary });
         }
 
         // Partition tool calls: allowed vs needs permission
@@ -332,7 +341,7 @@ pub async fn run_turn(
             git::commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): permissions", opts.session_id))?;
             eprintln!("\n[gait] turn paused — permission approval required. re-run with --auto or approve interactively.");
-            return Ok(());
+            return Ok(TurnResult::Permissions);
         }
 
         // Execute all tool calls (in auto mode, write permissions audit trail)
@@ -793,5 +802,79 @@ mod tests {
         assert!(index.contains("tdd"), "got: {index}");
         assert!(index.contains("TDD workflow"), "got: {index}");
         assert!(index.contains("</skill-index>"), "got: {index}");
+    }
+
+    #[tokio::test]
+    async fn run_turn_returns_done_result_on_completion() {
+        let ws = TempDir::new().unwrap();
+        init_git_repo(ws.path());
+
+        let provider = Arc::new(MockProvider {
+            responses: Arc::new(vec![
+                vec![StreamChunk::Text("I finished the task.".into()), StreamChunk::Done],
+            ]),
+            call_idx: Arc::new(AtomicUsize::new(0)),
+        });
+
+        let result = run_turn(
+            TurnOpts {
+                session_id: "sdone001".into(),
+                task: Some("do something".into()),
+                auto: true,
+                workspace: ws.path().to_path_buf(),
+                codebase_path: ws.path().to_path_buf(),
+                allow: vec![],
+                system_prompt: "".into(),
+                model: "mock/test".into(),
+                mcp_registry: vec![],
+                skill_registry: vec![],
+            },
+            provider,
+            vec![],
+        ).await.unwrap();
+
+        assert!(matches!(result, TurnResult::Done { .. }), "expected Done, got: {:?}", result);
+        if let TurnResult::Done { summary } = result {
+            assert!(!summary.is_empty(), "summary should not be empty");
+        }
+    }
+
+    #[tokio::test]
+    async fn run_turn_returns_permissions_when_paused() {
+        let ws = TempDir::new().unwrap();
+        init_git_repo(ws.path());
+
+        let provider = Arc::new(MockProvider {
+            responses: Arc::new(vec![
+                vec![
+                    StreamChunk::ToolCallComplete {
+                        tool_call_id: "tc1".into(),
+                        tool_name: "shell".into(),
+                        args: serde_json::json!({ "cmd": "ls", "reason": "listing" }),
+                    },
+                    StreamChunk::Done,
+                ],
+            ]),
+            call_idx: Arc::new(AtomicUsize::new(0)),
+        });
+
+        let result = run_turn(
+            TurnOpts {
+                session_id: "sperm001".into(),
+                task: Some("list files".into()),
+                auto: false,
+                workspace: ws.path().to_path_buf(),
+                codebase_path: ws.path().to_path_buf(),
+                allow: vec![],
+                system_prompt: "".into(),
+                model: "mock/test".into(),
+                mcp_registry: vec![],
+                skill_registry: vec![],
+            },
+            provider,
+            vec![],
+        ).await.unwrap();
+
+        assert!(matches!(result, TurnResult::Permissions), "expected Permissions, got: {:?}", result);
     }
 }
