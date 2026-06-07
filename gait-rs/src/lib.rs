@@ -14,6 +14,7 @@ pub mod factory;
 pub mod tools;
 pub mod harness;
 pub mod workflow;
+pub mod permission;
 pub mod render;
 pub mod chat;
 
