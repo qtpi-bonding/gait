@@ -10,7 +10,16 @@ pub enum RenderAction {
 }
 
 pub struct Renderer {
+    /// Partial line accumulator — holds bytes from the current streaming chunk
+    /// that haven't yet been terminated by a newline.
     pub line_buf: String,
+    /// Complete-line block accumulator — holds one or more full lines that
+    /// form the current markdown block (paragraph, table, code fence, etc.).
+    /// Flushed to the skin as a unit when a block boundary is detected.
+    block_buf: String,
+    /// Whether we are currently inside a fenced code block (``` ... ```).
+    /// Blank lines inside fences must NOT trigger a block flush.
+    in_fence: bool,
     skin: MadSkin,
 }
 
@@ -18,7 +27,47 @@ impl Renderer {
     pub fn new() -> Self {
         Self {
             line_buf: String::new(),
+            block_buf: String::new(),
+            in_fence: false,
             skin: MadSkin::default(),
+        }
+    }
+
+    /// Append a complete (newline-terminated) line to the block buffer,
+    /// flushing the block when a boundary is detected.
+    fn push_line(&mut self, line: &str) {
+        let is_fence_marker = line.trim_start().starts_with("```");
+
+        if self.in_fence {
+            self.append_to_block(line);
+            if is_fence_marker {
+                // Closing fence — render the complete code block now.
+                self.in_fence = false;
+                self.render_block();
+            }
+        } else if line.is_empty() {
+            // Blank line is a block boundary: render whatever accumulated, then a blank.
+            self.render_block();
+            println!();
+        } else {
+            self.append_to_block(line);
+            if is_fence_marker {
+                self.in_fence = true;
+            }
+        }
+    }
+
+    fn append_to_block(&mut self, line: &str) {
+        if !self.block_buf.is_empty() {
+            self.block_buf.push('\n');
+        }
+        self.block_buf.push_str(line);
+    }
+
+    fn render_block(&mut self) {
+        if !self.block_buf.is_empty() {
+            let block = std::mem::take(&mut self.block_buf);
+            self.skin.print_text(&block);
         }
     }
 
@@ -35,7 +84,7 @@ impl Renderer {
                 while let Some(pos) = self.line_buf.find('\n') {
                     let line = self.line_buf[..pos].to_string();
                     self.line_buf = self.line_buf[pos + 1..].to_string();
-                    self.skin.print_text(&line);
+                    self.push_line(&line);
                 }
                 RenderAction::Continue
             }
@@ -88,12 +137,15 @@ impl Renderer {
         }
     }
 
-    /// Flush any partial line remaining in the buffer.
+    /// Flush any partial line and the accumulated block buffer.
+    /// Called at turn boundaries (turn_complete, permission prompt, etc.)
     pub fn flush(&mut self) {
         if !self.line_buf.is_empty() {
-            let line = std::mem::take(&mut self.line_buf);
-            self.skin.print_text(&line);
+            let partial = std::mem::take(&mut self.line_buf);
+            self.append_to_block(&partial);
         }
+        self.render_block();
+        self.in_fence = false;
     }
 }
 
