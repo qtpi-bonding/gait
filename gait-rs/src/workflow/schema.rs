@@ -63,7 +63,6 @@ impl OnError {
     pub fn goto_node(&self) -> Option<&str> {
         match self {
             Self::Goto { goto } => Some(goto.as_str()),
-            Self::Named(s) if s.starts_with("goto: ") => Some(&s[6..]),
             _ => None,
         }
     }
