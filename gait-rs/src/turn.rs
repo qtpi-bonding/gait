@@ -245,7 +245,7 @@ pub async fn run_turn(
     let mut total_usage = Usage::default();
     let mut output_signal: Option<TurnOutput> = None;
 
-    for _step in 0..50 {
+    for _step in 0..100 {
         let mut chunk_stream = provider.stream(&system_prompt, &messages, &tools).await
             .map_err(|e| anyhow::anyhow!("provider error: {}", e))?;
 
@@ -426,7 +426,7 @@ pub async fn run_turn(
         messages.push(Message::Tool { content: tool_results });
     }
 
-    anyhow::bail!("reached max steps (50) without turn_complete")
+    anyhow::bail!("reached max steps (100) without turn_complete")
 }
 
 #[cfg(test)]
