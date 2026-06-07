@@ -8,6 +8,7 @@ use crate::types::Tool;
 use crate::session::transcript::{
     AnyEvent, append_event, emit_event, read_events, init_session, count_turn_complete, now_ms,
     InitSessionOpts, PermissionItem, PermissionsReplyItem, TurnUsage, TurnOutput,
+    ClarifyItem, InformItem,
 };
 use crate::session::context::reconstruct_messages_from_events;
 use crate::config::{McpToolDef, SkillDef};
@@ -31,6 +32,8 @@ pub struct TurnOpts {
 pub enum TurnResult {
     Done { summary: String, result: Option<serde_json::Value> },
     Permissions,
+    Clarify { items: Vec<ClarifyItem> },
+    Inform  { items: Vec<InformItem> },
 }
 
 // ── Session lock (RAII PID file) ─────────────────────────────────────────────
@@ -392,6 +395,8 @@ pub async fn run_turn(
 
     let mut total_usage = Usage::default();
     let mut output_signal: Option<TurnOutput> = None;
+    let mut clarify_signal: Option<Vec<ClarifyItem>> = None;
+    let mut inform_signal: Option<Vec<InformItem>> = None;
 
     for _step in 0..100 {
         let mut chunk_stream = provider.stream(&system_prompt, &messages, &tools).await
@@ -509,6 +514,21 @@ pub async fn run_turn(
                         .unwrap_or_else(|e| error_tool_result(tc, e));
                     assistant_parts.push(part);
                     tool_results.push(result);
+                } else if tc.tool_name == "clarify" {
+                    // Emit Clarify event to transcript (also prints to stdout via emit_event).
+                    // Then exit the turn so chat.rs can prompt the user.
+                    let items: Vec<ClarifyItem> = tc.args.get("items")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok())
+                        .unwrap_or_default();
+                    emit_event(&tx_path, &AnyEvent::Clarify { items: items.clone(), ts: now_ms() })?;
+                    clarify_signal = Some(items);
+                } else if tc.tool_name == "inform" {
+                    // Emit Inform event to transcript (also prints to stdout via emit_event).
+                    let items: Vec<InformItem> = tc.args.get("items")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok())
+                        .unwrap_or_default();
+                    emit_event(&tx_path, &AnyEvent::Inform { items: items.clone(), ts: now_ms() })?;
+                    inform_signal = Some(items);
                 } else if tc.tool_name == "skill" {
                     // skill is a context-registration call (like mcp) — record event
                     // and execute so any side-effect on `tools` happens.
@@ -596,6 +616,18 @@ pub async fn run_turn(
                     &format!("session({}): permissions", opts.session_id))?;
                 return Ok(TurnResult::Permissions);
             }
+        }
+
+        // Exit turn for clarify/inform — event already in transcript+stdout via emit_event
+        if let Some(items) = clarify_signal.take() {
+            git::commit_session(&opts.workspace, &opts.session_id,
+                &format!("session({}): clarify", opts.session_id))?;
+            return Ok(TurnResult::Clarify { items });
+        }
+        if let Some(items) = inform_signal.take() {
+            git::commit_session(&opts.workspace, &opts.session_id,
+                &format!("session({}): inform", opts.session_id))?;
+            return Ok(TurnResult::Inform { items });
         }
 
         // Append this step to messages for next iteration

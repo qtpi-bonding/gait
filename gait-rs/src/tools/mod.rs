@@ -13,6 +13,8 @@ pub mod mcp;
 pub mod skill;
 pub mod spawn_agent;
 pub mod list_agents;
+pub mod clarify;
+pub mod inform;
 
 pub use read::ReadTool;
 pub use write::WriteTool;
@@ -29,6 +31,8 @@ pub use mcp::McpTool;
 pub use skill::SkillTool;
 pub use spawn_agent::SpawnAgentTool;
 pub use list_agents::ListAgentsTool;
+pub use clarify::ClarifyTool;
+pub use inform::InformTool;
 
 use std::path::PathBuf;
 use crate::types::Tool;
@@ -71,6 +75,8 @@ pub fn builtin_tools(
         SkillTool::new(skills).boxed(),
         SpawnAgentTool::new(session_id.clone(), workspace.clone(), codebase_path.clone()).boxed(),
         ListAgentsTool::new(workspace.clone()).boxed(),
+        ClarifyTool::new().boxed(),
+        InformTool::new().boxed(),
     ]
 }
 
@@ -81,14 +87,14 @@ mod tests {
 
     #[test]
     fn builtin_tools_returns_fifteen() {
-        // After adding spawn_agent and list_agents — count is 15
+        // After adding clarify and inform — count is 17
         let tools = builtin_tools(
             PathBuf::from("/tmp"),
             "stest".into(),
             PathBuf::from("/tmp"),
             vec![], vec![],
         );
-        assert_eq!(tools.len(), 15);
+        assert_eq!(tools.len(), 17);
     }
 
     #[test]

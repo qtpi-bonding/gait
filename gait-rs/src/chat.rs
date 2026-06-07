@@ -6,6 +6,7 @@ use rustyline::error::ReadlineError;
 
 use crate::session::transcript::{
     self, AnyEvent, PermissionItem, PermissionsReplyItem,
+    ClarifyItem, ClarifyReplyItem, InformItem, InformReplyItem,
 };
 
 pub fn new_session_id() -> String {
@@ -74,6 +75,47 @@ fn parse_permission_response(
         }
     }
     None
+}
+
+fn prompt_clarify_items(items: &[ClarifyItem]) -> Vec<ClarifyReplyItem> {
+    let mut replies = Vec::new();
+    for item in items {
+        eprintln!();
+        eprintln!("\x1b[36m? [{}] {}\x1b[0m", item.kind, item.content);
+        eprintln!("  \x1b[2mwhy: {}\x1b[0m", item.why);
+        eprint!("> ");
+        let _ = std::io::stderr().flush();
+        let mut input = String::new();
+        let _ = std::io::stdin().lock().read_line(&mut input);
+        replies.push(ClarifyReplyItem {
+            id: item.id.clone(),
+            content: input.trim().to_string(),
+            reasoning: None,
+        });
+    }
+    replies
+}
+
+fn prompt_inform_items(items: &[InformItem]) -> Vec<InformReplyItem> {
+    let mut replies = Vec::new();
+    for item in items {
+        eprintln!();
+        eprintln!("\x1b[35m→ {}\x1b[0m", item.content);
+        if let Some(ctx) = &item.context {
+            eprintln!("  \x1b[2mcontext: {}\x1b[0m", ctx);
+        }
+        eprintln!("  \x1b[2mPress Enter to confirm, or type a correction:\x1b[0m");
+        eprint!("> ");
+        let _ = std::io::stderr().flush();
+        let mut input = String::new();
+        let _ = std::io::stdin().lock().read_line(&mut input);
+        let response = input.trim().to_string();
+        replies.push(InformReplyItem {
+            id: item.id.clone(),
+            content: if response.is_empty() { "understood".into() } else { response },
+        });
+    }
+    replies
 }
 
 fn prompt_single_permission(
@@ -210,22 +252,48 @@ pub fn run_chat(
             let stdout = child.stdout.take().expect("piped stdout");
             let reader = BufReader::new(stdout);
             let mut renderer = crate::render::Renderer::new();
-            let mut pending_items: Vec<PermissionItem> = vec![];
+            let mut pending_permissions: Vec<PermissionItem> = vec![];
+            let mut pending_clarify: Vec<ClarifyItem> = vec![];
+            let mut pending_inform: Vec<InformItem> = vec![];
 
             for json_line in reader.lines() {
-                if let crate::render::RenderAction::PermissionNeeded(items) =
-                    renderer.handle_line(&json_line?)
-                {
-                    pending_items = items;
+                match renderer.handle_line(&json_line?) {
+                    crate::render::RenderAction::PermissionNeeded(items) => pending_permissions = items,
+                    crate::render::RenderAction::ClarifyNeeded(items) => pending_clarify = items,
+                    crate::render::RenderAction::InformNeeded(items) => pending_inform = items,
+                    _ => {}
                 }
             }
             renderer.flush();
             child.wait()?;
 
-            if pending_items.is_empty() {
+            // Handle clarify: prompt user for each question, write ClarifyReply, re-spawn
+            if !pending_clarify.is_empty() {
+                let tx_path = workspace.join("sessions").join(&session_id).join("transcript.jsonl");
+                let reply_items = prompt_clarify_items(&pending_clarify);
+                let _ = transcript::append_event(&tx_path, &AnyEvent::ClarifyReply {
+                    items: reply_items,
+                    ts: transcript::now_ms(),
+                });
+                continue 'spawn;
+            }
+
+            // Handle inform: prompt user to confirm understanding, write InformReply, re-spawn
+            if !pending_inform.is_empty() {
+                let tx_path = workspace.join("sessions").join(&session_id).join("transcript.jsonl");
+                let reply_items = prompt_inform_items(&pending_inform);
+                let _ = transcript::append_event(&tx_path, &AnyEvent::InformReply {
+                    items: reply_items,
+                    ts: transcript::now_ms(),
+                });
+                continue 'spawn;
+            }
+
+            if pending_permissions.is_empty() {
                 println!();
                 break 'spawn;
             }
+            let pending_items = pending_permissions;
 
             // Group items by id for display (show compound command segments together)
             // then collect ALL decisions before writing anything

@@ -67,7 +67,7 @@ pub fn is_tool_allowed(
     tool_args: &serde_json::Value,
     allow: &[String],
 ) -> bool {
-    if matches!(tool_name, "output" | "mcp" | "skill") {
+    if matches!(tool_name, "output" | "mcp" | "skill" | "clarify" | "inform") {
         return true;
     }
     if tool_name == "shell" {

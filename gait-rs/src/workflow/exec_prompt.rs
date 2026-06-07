@@ -56,6 +56,12 @@ pub async fn exec_prompt_node(
         TurnResult::Permissions => Ok(NodeOutput {
             text: "(permissions required)".into(), exit_code: None, json: None, routed_to: None,
         }),
+        TurnResult::Clarify { .. } => Ok(NodeOutput {
+            text: "(paused for clarification)".into(), exit_code: None, json: None, routed_to: None,
+        }),
+        TurnResult::Inform { .. } => Ok(NodeOutput {
+            text: "(paused to inform user)".into(), exit_code: None, json: None, routed_to: None,
+        }),
     }
 }
 

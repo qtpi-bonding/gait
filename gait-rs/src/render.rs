@@ -1,9 +1,11 @@
 use termimad::MadSkin;
-use crate::session::transcript::PermissionItem;
+use crate::session::transcript::{PermissionItem, ClarifyItem, InformItem};
 
 pub enum RenderAction {
     Continue,
     PermissionNeeded(Vec<PermissionItem>),
+    ClarifyNeeded(Vec<ClarifyItem>),
+    InformNeeded(Vec<InformItem>),
     TurnComplete,
 }
 
@@ -51,6 +53,26 @@ impl Renderer {
                         .collect())
                     .unwrap_or_default();
                 RenderAction::PermissionNeeded(items)
+            }
+            Some("clarify") => {
+                self.flush();
+                let items: Vec<ClarifyItem> = v["items"]
+                    .as_array()
+                    .map(|arr| arr.iter()
+                        .filter_map(|i| serde_json::from_value(i.clone()).ok())
+                        .collect())
+                    .unwrap_or_default();
+                RenderAction::ClarifyNeeded(items)
+            }
+            Some("inform") => {
+                self.flush();
+                let items: Vec<InformItem> = v["items"]
+                    .as_array()
+                    .map(|arr| arr.iter()
+                        .filter_map(|i| serde_json::from_value(i.clone()).ok())
+                        .collect())
+                    .unwrap_or_default();
+                RenderAction::InformNeeded(items)
             }
             Some("turn_complete") => {
                 self.flush();

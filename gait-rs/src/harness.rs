@@ -42,16 +42,18 @@ impl HarnessBackend for NativeHarnessBackend {
     ) -> anyhow::Result<()> {
         let Some(assigner_id) = assigned_by else { return Ok(()); };
 
-        // C3 fix: distinguish Permissions from Done so assigner knows child paused, not finished.
         let summary = match result {
             TurnResult::Done { summary, .. } => summary.chars().take(500).collect::<String>(),
             TurnResult::Permissions => "needs permissions approval".to_string(),
+            TurnResult::Clarify { .. } => "paused for clarification".to_string(),
+            TurnResult::Inform { .. } => "paused to inform user".to_string(),
         };
 
-        // C3 fix: Permissions is NOT "done" — it paused for human approval.
         let status = match result {
             TurnResult::Done { .. } => "done",
             TurnResult::Permissions => "permissions",
+            TurnResult::Clarify { .. } => "clarify",
+            TurnResult::Inform { .. } => "inform",
         };
 
         let event = AnyEvent::AgentUpdate {
