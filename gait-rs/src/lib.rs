@@ -15,6 +15,7 @@ pub mod tools;
 pub mod harness;
 pub mod workflow;
 pub mod render;
+pub mod chat;
 
 pub use types::*;
 pub use stream::stream_text;

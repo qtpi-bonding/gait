@@ -21,6 +21,7 @@ fn usage() -> ! {
     eprintln!("  auth     <list|add|remove> [<provider>]");
     eprintln!("  models   [<filter>]");
     eprintln!("  workflow <run|list|continue|abort|log> [args...]");
+    eprintln!("  chat     [--workspace <path>] [--codebase <path>]");
     std::process::exit(1);
 }
 
@@ -37,6 +38,7 @@ async fn main() {
         "auth"     => cmd_auth(&args[2..]),
         "models"   => cmd_models(&args[2..]).await,
         "workflow" => cmd_workflow(&args[2..]).await,
+        "chat" => cmd_chat(&args[2..]),
         _ => {
             eprintln!("[gait] unknown command: {}", args[1]);
             usage();
@@ -503,5 +505,27 @@ fn cmd_workflow_log(argv: &[String], workspace: PathBuf) {
     let events = gait_ai::session::transcript::read_events(&tx_path).unwrap_or_default();
     for event in &events {
         println!("{}", serde_json::to_string(event).unwrap_or_default());
+    }
+}
+
+fn cmd_chat(argv: &[String]) {
+    let mut workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut codebase_path: Option<PathBuf> = None;
+
+    let mut i = 0;
+    while i < argv.len() {
+        match argv[i].as_str() {
+            "--workspace" => { i += 1; workspace = argv.get(i).map(PathBuf::from).unwrap_or(workspace); }
+            "--codebase"  => { i += 1; codebase_path = argv.get(i).map(PathBuf::from); }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let codebase = codebase_path.unwrap_or_else(|| workspace.join("codebase"));
+
+    if let Err(e) = gait_ai::chat::run_chat(workspace, codebase) {
+        eprintln!("[gait] error: {}", e);
+        std::process::exit(1);
     }
 }
