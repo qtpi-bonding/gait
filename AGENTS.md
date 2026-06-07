@@ -16,11 +16,15 @@ The codebase root is `gait-rs/`. Key files:
 - `src/anthropic/` — Anthropic SSE streaming client
 - `tests/` — integration tests
 
+## Layout note
+
+The codebase root is the `rs-port/` directory (not `gait-rs/`). All file paths for read/write/edit are relative to `rs-port/`. The Rust source lives under `gait-rs/` within that root. Plans live under `docs/superpowers/plans/`.
+
 ## Commands
 
-- **Run all tests**: `cargo test 2>&1 | tail -30` (or use `cargo_test` tool)
-- **Check compilation**: `cargo build 2>&1 | grep '^error'` (or use `cargo_build` tool)
-- **Run specific test**: `cargo test <test_name> 2>&1 | tail -10`
+- **Run all tests**: `cargo_test` tool, or `shell` with `cd gait-rs && cargo test 2>&1 | tail -30`
+- **Check compilation**: `cargo_build` tool, or `shell` with `cd gait-rs && cargo build 2>&1 | grep '^error'`
+- **Run specific test**: `shell` with `cd gait-rs && cargo test <test_name> 2>&1 | tail -10`
 
 ## Key patterns
 

@@ -7,6 +7,7 @@ use gait_ai::{
     factory::load_provider,
     tools::builtin_tools,
     turn::{TurnOpts, run_turn},
+    HarnessBackend,
 };
 
 fn usage() -> ! {
@@ -89,7 +90,13 @@ async fn cmd_run(argv: &[String]) {
     });
 
     // Append config-defined tools
-    let mut tools = builtin_tools(codebase_path.clone(), config.mcp_tools.clone(), config.skills.clone());
+    let mut tools = builtin_tools(
+        codebase_path.clone(),
+        session_id.clone(),
+        workspace.clone(),
+        config.mcp_tools.clone(),
+        config.skills.clone(),
+    );
     for ct in &config.tools {
         let cmd = ct.cmd.clone();
         let cwd = if ct.cwd == "workspace" {
@@ -129,12 +136,12 @@ async fn cmd_run(argv: &[String]) {
         }) as Box<dyn gait_ai::types::Tool>);
     }
 
-    if let Err(e) = run_turn(
+    let turn_result = match run_turn(
         TurnOpts {
-            session_id,
+            session_id: session_id.clone(),
             task,
             auto,
-            workspace,
+            workspace: workspace.clone(),
             codebase_path,
             allow: config.allow,
             system_prompt,
@@ -145,8 +152,18 @@ async fn cmd_run(argv: &[String]) {
         provider,
         tools,
     ).await {
-        eprintln!("[gait] error: {}", e);
-        std::process::exit(1);
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[gait] error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Wire harness: inject agent_update into assigner + re-trigger if assigned_by is set
+    let sj = gait_ai::session::session_json::read_session_json(&workspace, &session_id);
+    let harness = gait_ai::harness::NativeHarnessBackend::new(workspace.clone());
+    if let Err(e) = harness.after_turn(&session_id, sj.assigned_by.as_deref(), &turn_result).await {
+        eprintln!("[gait] warning: harness after_turn failed: {}", e);
     }
 }
 

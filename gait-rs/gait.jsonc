@@ -1,0 +1,8 @@
+{
+  // gait configuration
+  "model": "anthropic/claude-sonnet-4-6",
+  // Allow list: tools that run without approval. Default empty = everything gated.
+  "allow": [],
+  // Tier 1 config-defined tools: shell commands the LLM can call by name
+  "tools": []
+}

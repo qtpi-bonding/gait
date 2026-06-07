@@ -5,8 +5,8 @@
   "allow": ["read", "glob", "grep", "ls", "codesearch", "output", "mcp", "skill"],
   // Tier 1 config-defined tools
   "tools": [
-    { "name": "cargo_test", "description": "Run the full gait-rs test suite", "cmd": "cargo test 2>&1 | tail -30", "cwd": "codebase" },
-    { "name": "cargo_build", "description": "Build gait-rs in debug mode to check for compile errors", "cmd": "cargo build 2>&1 | grep -E '^error|^warning.*unused' | head -20", "cwd": "codebase" },
-    { "name": "cargo_test_filter", "description": "Run a filtered subset of tests. Pass the filter string as the entire cmd (it will be appended). Use shell tool instead if you need a specific filter.", "cmd": "cargo test 2>&1 | tail -20", "cwd": "codebase" }
+    { "name": "cargo_test", "description": "Run the full gait-rs test suite (codebase root is the rs-port dir, Cargo.toml is in gait-rs/ subfolder)", "cmd": "cd gait-rs && cargo test 2>&1 | tail -30", "cwd": "workspace" },
+    { "name": "cargo_build", "description": "Build gait-rs in debug mode to check for compile errors", "cmd": "cd gait-rs && cargo build 2>&1 | grep -E '^error|^warning.*unused' | head -20", "cwd": "workspace" },
+    { "name": "cargo_test_filter", "description": "Run tests by name filter. Usage: shell tool with cmd='cd gait-rs && cargo test <filter> 2>&1 | tail -20'", "cmd": "cd gait-rs && cargo test 2>&1 | tail -20", "cwd": "workspace" }
   ]
 }
