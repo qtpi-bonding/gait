@@ -1,3 +1,8 @@
+pub mod git;
+pub mod session;
+pub mod config;
+pub mod auth;
+pub mod turn;
 pub mod types;
 pub mod provider;
 pub mod anthropic;
@@ -12,3 +17,4 @@ pub use stream::stream_text;
 pub use generate::generate_text;
 pub use factory::load_provider;
 pub use tools::builtin_tools;
+pub use turn::{TurnOpts, run_turn};
