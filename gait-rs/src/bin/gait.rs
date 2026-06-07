@@ -21,7 +21,7 @@ fn usage() -> ! {
     eprintln!("  auth     <list|add|remove> [<provider>]");
     eprintln!("  models   [<filter>]");
     eprintln!("  workflow <run|list|continue|abort|log> [args...]");
-    eprintln!("  chat     [--workspace <path>] [--codebase <path>]");
+    eprintln!("  chat     [--workspace <path>] [--codebase <path>] [--agent <name>]");
     std::process::exit(1);
 }
 
@@ -53,6 +53,7 @@ async fn cmd_run(argv: &[String]) {
     let mut codebase_path: Option<PathBuf> = None;
     let mut auto = false;
     let mut model_override: Option<String> = None;
+    let mut agent_name: Option<String> = None;
 
     let mut i = 0;
     while i < argv.len() {
@@ -63,6 +64,7 @@ async fn cmd_run(argv: &[String]) {
             "--codebase"  => { i += 1; codebase_path = argv.get(i).map(PathBuf::from); }
             "--model"     => { i += 1; model_override = argv.get(i).cloned(); }
             "--auto"      => { auto = true; }
+            "--agent"     => { i += 1; agent_name = argv.get(i).cloned(); }
             _ => {}
         }
         i += 1;
@@ -141,6 +143,16 @@ async fn cmd_run(argv: &[String]) {
         }) as Box<dyn gait_ai::types::Tool>);
     }
 
+    // Merge agent-scoped allow patterns (from agents/<name>.md frontmatter) into config allow
+    let mut effective_allow = config.allow;
+    if let Some(ref name) = agent_name {
+        let agent_path = gait_ai::agent_frontmatter::resolve_agent_path(&workspace, name);
+        match gait_ai::agent_frontmatter::read_agent_allow(agent_path) {
+            Ok(patterns) => effective_allow.extend(patterns),
+            Err(e) => eprintln!("[gait] warning: could not read agent allow list: {}", e),
+        }
+    }
+
     let turn_result = match run_turn(
         TurnOpts {
             session_id: session_id.clone(),
@@ -148,7 +160,7 @@ async fn cmd_run(argv: &[String]) {
             auto,
             workspace: workspace.clone(),
             codebase_path,
-            allow: config.allow,
+            allow: effective_allow,
             system_prompt,
             model: model.clone(),
             mcp_registry: config.mcp_tools,
@@ -511,12 +523,14 @@ fn cmd_workflow_log(argv: &[String], workspace: PathBuf) {
 fn cmd_chat(argv: &[String]) {
     let mut workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut codebase_path: Option<PathBuf> = None;
+    let mut agent_name: Option<String> = None;
 
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
             "--workspace" => { i += 1; workspace = argv.get(i).map(PathBuf::from).unwrap_or(workspace); }
             "--codebase"  => { i += 1; codebase_path = argv.get(i).map(PathBuf::from); }
+            "--agent"     => { i += 1; agent_name = argv.get(i).cloned(); }
             _ => {}
         }
         i += 1;
@@ -524,7 +538,7 @@ fn cmd_chat(argv: &[String]) {
 
     let codebase = codebase_path.unwrap_or_else(|| workspace.join("codebase"));
 
-    if let Err(e) = gait_ai::chat::run_chat(workspace, codebase) {
+    if let Err(e) = gait_ai::chat::run_chat(workspace, codebase, agent_name) {
         eprintln!("[gait] error: {}", e);
         std::process::exit(1);
     }

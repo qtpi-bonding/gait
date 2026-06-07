@@ -1,24 +1,149 @@
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 
+use crate::session::transcript::{
+    self, AnyEvent, PermissionItem, PermissionsReplyItem,
+};
+
 pub fn new_session_id() -> String {
     format!("s{}", &uuid::Uuid::new_v4().to_string().replace('-', "")[..8])
 }
 
-pub fn run_chat(workspace: PathBuf, codebase: PathBuf) -> anyhow::Result<()> {
+fn is_bang_command(s: &str) -> bool {
+    s.starts_with('!')
+}
+
+fn bang_command_str(s: &str) -> &str {
+    s.strip_prefix("! ").or_else(|| s.strip_prefix('!')).unwrap_or(s)
+}
+
+#[derive(Debug, PartialEq)]
+enum PermissionChoice {
+    Global(String),
+    Agent(String),
+    Once(String),
+    Reject,
+}
+
+/// Parse one line of user input into a PermissionChoice.
+/// `tool_name`: used to compute the allow-list prefix ("shell:" for shell, "" for others).
+/// `has_agent`: whether --agent is active (controls whether a{N} is valid).
+/// Returns None if input is invalid → caller re-prompts.
+fn parse_permission_response(
+    input: &str,
+    patterns: &[String],
+    tool_name: &str,
+    has_agent: bool,
+) -> Option<PermissionChoice> {
+    // Shell patterns stored as "shell:<pattern>"; non-shell patterns stored bare (exact match).
+    // Must match is_tool_allowed's storage format exactly.
+    let prefix = if tool_name == "shell" { "shell:" } else { "" };
+    match input.trim() {
+        "r" | "reject" => return Some(PermissionChoice::Reject),
+        "o" | "once" => {
+            let pat = patterns.last()?;
+            return Some(PermissionChoice::Once(format!("{}{}", prefix, pat)));
+        }
+        _ => {}
+    }
+    if let Some(rest) = input.trim().strip_prefix('g') {
+        if let Ok(n) = rest.parse::<usize>() {
+            if n >= 1 && n <= patterns.len() {
+                return Some(PermissionChoice::Global(format!(
+                    "{}{}",
+                    prefix,
+                    patterns[n - 1]
+                )));
+            }
+        }
+    }
+    if has_agent {
+        if let Some(rest) = input.trim().strip_prefix('a') {
+            if let Ok(n) = rest.parse::<usize>() {
+                if n >= 1 && n <= patterns.len() {
+                    return Some(PermissionChoice::Agent(format!(
+                        "{}{}",
+                        prefix,
+                        patterns[n - 1]
+                    )));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn prompt_single_permission(
+    item: &PermissionItem,
+    label: Option<&str>,
+    has_agent: bool,
+) -> PermissionChoice {
+    eprintln!();
+    if let Some(l) = label {
+        eprintln!("\x1b[33m⟳ shell: {}  \x1b[2m({})\x1b[0m", item.cmd, l);
+    } else {
+        eprintln!("\x1b[33m⟳ shell: {}\x1b[0m", item.cmd);
+    }
+    eprintln!();
+    for (i, pat) in item.patterns.iter().enumerate() {
+        eprintln!("  [{}] {}", i + 1, pat);
+    }
+    eprintln!();
+    eprintln!("  [o] once   [r] reject");
+    if has_agent {
+        eprintln!("  scope: [a] agent  [g] global   (e.g. a2, g1, o, r)");
+    } else {
+        eprintln!("  g = global  (e.g. g1, g2, o, r)");
+    }
+    loop {
+        eprint!("  > ");
+        let _ = std::io::stderr().flush();
+        let mut input = String::new();
+        match std::io::stdin().lock().read_line(&mut input) {
+            Ok(0) | Err(_) => return PermissionChoice::Reject,
+            Ok(_) => {}
+        }
+        match parse_permission_response(input.trim(), &item.patterns, &item.tool_name, has_agent) {
+            Some(c) => return c,
+            None => eprintln!(
+                "  unrecognized — try {}g1..g{}, o, or r",
+                if has_agent {
+                    format!("a1..a{}, ", item.patterns.len())
+                } else {
+                    String::new()
+                },
+                item.patterns.len()
+            ),
+        }
+    }
+}
+
+pub fn run_chat(
+    workspace: PathBuf,
+    codebase: PathBuf,
+    agent_name: Option<String>,
+) -> anyhow::Result<()> {
     let gait_bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gait"));
     let history_path = dirs_next::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("gait/chat_history");
 
+    let agent_path: Option<PathBuf> = agent_name.as_deref().map(|n| {
+        crate::agent_frontmatter::resolve_agent_path(&workspace, n)
+    });
+    let has_agent = agent_path.is_some();
+
     let mut rl = DefaultEditor::new()?;
     let _ = rl.load_history(&history_path);
 
     let mut session_id = new_session_id();
-    eprintln!("gait  session {}  (ctrl+d to exit, /new for fresh session)", session_id);
+    eprintln!(
+        "gait  session {}  (ctrl+d to exit, /new for fresh session)",
+        session_id
+    );
 
     loop {
         let readline = rl.readline("> ");
@@ -27,10 +152,25 @@ pub fn run_chat(workspace: PathBuf, codebase: PathBuf) -> anyhow::Result<()> {
             Err(ReadlineError::Eof) | Err(ReadlineError::Interrupted) => break,
             Err(e) => return Err(e.into()),
         };
-
         let line = line.trim().to_string();
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
         let _ = rl.add_history_entry(&line);
+
+        if is_bang_command(&line) {
+            let cmd = bang_command_str(&line);
+            match Command::new("sh")
+                .args(["-c", cmd])
+                .current_dir(&codebase)
+                .status()
+            {
+                Ok(s) if !s.success() => eprintln!("[!] exit {}", s.code().unwrap_or(1)),
+                Err(e) => eprintln!("[!] error: {e}"),
+                _ => {}
+            }
+            continue;
+        }
 
         match line.as_str() {
             "/new" => {
@@ -42,30 +182,146 @@ pub fn run_chat(workspace: PathBuf, codebase: PathBuf) -> anyhow::Result<()> {
             _ => {}
         }
 
-        let mut child = Command::new(&gait_bin)
-            .args([
+        let task = line.clone();
+
+        'spawn: loop {
+            let mut cmd = Command::new(&gait_bin);
+            cmd.args([
                 "run",
-                "--session", &session_id,
-                "--task", &line,
-                "--workspace", workspace.to_str().unwrap_or("."),
-                "--codebase", codebase.to_str().unwrap_or("."),
-                "--auto",
-            ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()?;
+                "--session",
+                &session_id,
+                "--task",
+                &task,
+                "--workspace",
+                workspace.to_str().unwrap_or("."),
+                "--codebase",
+                codebase.to_str().unwrap_or("."),
+                // No --auto: allow list governs execution
+            ]);
+            if let Some(ref p) = agent_path {
+                cmd.args(["--agent", p.to_str().unwrap_or("")]);
+            }
 
-        let stdout = child.stdout.take().expect("piped stdout");
-        let reader = BufReader::new(stdout);
-        let mut renderer = crate::render::Renderer::new();
+            let mut child = cmd
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()?;
 
-        for json_line in reader.lines() {
-            renderer.handle_line(&json_line?);
+            let stdout = child.stdout.take().expect("piped stdout");
+            let reader = BufReader::new(stdout);
+            let mut renderer = crate::render::Renderer::new();
+            let mut pending_items: Vec<PermissionItem> = vec![];
+
+            for json_line in reader.lines() {
+                if let crate::render::RenderAction::PermissionNeeded(items) =
+                    renderer.handle_line(&json_line?)
+                {
+                    pending_items = items;
+                }
+            }
+            renderer.flush();
+            child.wait()?;
+
+            if pending_items.is_empty() {
+                println!();
+                break 'spawn;
+            }
+
+            // Group items by id for display (show compound command segments together)
+            // then collect ALL decisions before writing anything
+            let mut reply_items: Vec<PermissionsReplyItem> = vec![];
+            let mut any_approved = false;
+
+            for item in &pending_items {
+                // For compound commands, find total segment count for this id
+                let total_segs = pending_items.iter().filter(|i| i.id == item.id).count();
+                let seg_idx = pending_items
+                    .iter()
+                    .filter(|i| i.id == item.id)
+                    .position(|i| std::ptr::eq(i, item))
+                    .unwrap_or(0);
+                let label = if total_segs > 1 {
+                    Some(format!("part {} of {}", seg_idx + 1, total_segs))
+                } else {
+                    None
+                };
+
+                let choice = prompt_single_permission(item, label.as_deref(), has_agent);
+                match &choice {
+                    PermissionChoice::Global(pat) => {
+                        if let Err(e) = crate::config::append_allow_pattern(&workspace, pat) {
+                            eprintln!("[gait] warning: could not save to gait.jsonc: {e}");
+                        }
+                        reply_items.push(PermissionsReplyItem {
+                            id: item.id.clone(),
+                            decision: "approve".into(),
+                            text: Some(pat.clone()),
+                        });
+                        any_approved = true;
+                    }
+                    PermissionChoice::Agent(pat) => {
+                        if let Some(ref p) = agent_path {
+                            if let Err(e) =
+                                crate::agent_frontmatter::append_agent_allow(p.clone(), pat)
+                            {
+                                eprintln!("[gait] warning: could not save to agent file: {e}");
+                            }
+                        }
+                        reply_items.push(PermissionsReplyItem {
+                            id: item.id.clone(),
+                            decision: "approve".into(),
+                            text: Some(pat.clone()),
+                        });
+                        any_approved = true;
+                    }
+                    PermissionChoice::Once(pat) => {
+                        let temp = format!("/tmp/gait-approve-{}", session_id);
+                        if let Ok(mut f) = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&temp)
+                        {
+                            let _ = writeln!(f, "{}", pat);
+                        }
+                        reply_items.push(PermissionsReplyItem {
+                            id: item.id.clone(),
+                            decision: "approve".into(),
+                            text: Some(pat.clone()),
+                        });
+                        any_approved = true;
+                    }
+                    PermissionChoice::Reject => {
+                        reply_items.push(PermissionsReplyItem {
+                            id: item.id.clone(),
+                            decision: "deny".into(),
+                            text: None,
+                        });
+                    }
+                }
+            }
+
+            // Write PermissionsReply to transcript (even on full reject — needed for denied ToolResult)
+            let tx_path = workspace
+                .join("sessions")
+                .join(&session_id)
+                .join("transcript.jsonl");
+            let _ = transcript::append_event(
+                &tx_path,
+                &AnyEvent::PermissionsReply {
+                    from: "user".into(),
+                    items: reply_items,
+                    ts: transcript::now_ms(),
+                },
+            );
+
+            if any_approved {
+                continue 'spawn;
+            } else {
+                eprintln!("[gait] permission denied");
+                println!();
+                break 'spawn;
+            }
         }
-        renderer.flush();
-        println!();
-
-        child.wait()?;
     }
 
     let _ = rl.save_history(&history_path);
@@ -81,5 +337,78 @@ mod tests {
         let id = new_session_id();
         assert!(id.starts_with('s'), "got: {}", id);
         assert_eq!(id.len(), 9, "got: {}", id);
+    }
+
+    #[test]
+    fn bang_command_detected() {
+        assert!(is_bang_command("! ls"));
+        assert!(is_bang_command("!ls"));
+        assert!(!is_bang_command("ls"));
+        assert!(!is_bang_command("/new"));
+    }
+
+    #[test]
+    fn bang_command_extracts_cmd() {
+        assert_eq!(bang_command_str("! ls -la"), "ls -la");
+        assert_eq!(bang_command_str("!pwd"), "pwd");
+    }
+
+    #[test]
+    fn parse_permission_response_global_shell() {
+        let patterns = vec!["cargo *".to_string(), "cargo test *".to_string()];
+        assert_eq!(
+            parse_permission_response("g1", &patterns, "shell", true),
+            Some(PermissionChoice::Global("shell:cargo *".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_permission_response_global_non_shell() {
+        // Non-shell tools store bare tool name in allow list (no "shell:" prefix)
+        let patterns = vec!["write".to_string()];
+        assert_eq!(
+            parse_permission_response("g1", &patterns, "write", false),
+            Some(PermissionChoice::Global("write".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_permission_response_agent() {
+        let patterns = vec!["cargo *".to_string()];
+        assert_eq!(
+            parse_permission_response("a1", &patterns, "shell", true),
+            Some(PermissionChoice::Agent("shell:cargo *".to_string()))
+        );
+        // a{N} not offered when no agent active
+        assert_eq!(
+            parse_permission_response("a1", &patterns, "shell", false),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_permission_response_once() {
+        let patterns = vec!["cargo *".to_string(), "cargo test".to_string()];
+        // Once uses the most specific (last) pattern
+        assert_eq!(
+            parse_permission_response("o", &patterns, "shell", false),
+            Some(PermissionChoice::Once("shell:cargo test".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_permission_response_reject() {
+        assert_eq!(
+            parse_permission_response("r", &[], "shell", false),
+            Some(PermissionChoice::Reject)
+        );
+    }
+
+    #[test]
+    fn parse_permission_response_invalid() {
+        let p = vec!["cargo *".to_string()];
+        assert_eq!(parse_permission_response("g99", &p, "shell", false), None);
+        assert_eq!(parse_permission_response("xyz", &p, "shell", false), None);
+        assert_eq!(parse_permission_response("", &p, "shell", false), None);
     }
 }
