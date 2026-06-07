@@ -332,6 +332,7 @@ pub async fn run_turn(
                     id: tc.tool_call_id.clone(),
                     cmd: format!("{}({})", tc.tool_name, tc.args),
                     reason: format!("{} requires permission", tc.tool_name),
+                    patterns: vec![],
                 });
             }
         }

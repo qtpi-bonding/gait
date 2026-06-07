@@ -90,6 +90,8 @@ pub struct PermissionItem {
     pub id: String,
     pub cmd: String,
     pub reason: String,
+    #[serde(default)]
+    pub patterns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -497,5 +499,18 @@ mod tests {
         let events = read_events(&path).unwrap();
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], AnyEvent::AssistantText { content, .. } if content == "hello emit"));
+    }
+
+    #[test]
+    fn permission_item_roundtrips_patterns() {
+        let item = PermissionItem {
+            id: "tc-1".into(),
+            cmd: "cargo test".into(),
+            reason: "needs permission".into(),
+            patterns: vec!["cargo *".into(), "cargo test".into()],
+        };
+        let json = serde_json::to_string(&item).unwrap();
+        let back: PermissionItem = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.patterns, vec!["cargo *", "cargo test"]);
     }
 }
