@@ -3,7 +3,7 @@ use std::pin::Pin;
 use futures_util::Stream;
 
 // A chunk of streaming output from the LLM
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum StreamChunk {
     Text(String),
     ToolCallDelta { tool_call_id: String, tool_name: String, args_delta: String },
