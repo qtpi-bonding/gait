@@ -25,6 +25,8 @@ git2 = "0.19"
 uuid = { version = "1", features = ["v4"] }
 dirs-next = "2"
 libc = "0.2"
+termimad  = "0.23"
+rustyline = "14"
 
 [dev-dependencies]
 tokio-test = "0.4"
