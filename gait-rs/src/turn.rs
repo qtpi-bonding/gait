@@ -287,6 +287,11 @@ pub async fn run_turn(
             let summary = output_signal.as_ref()
                 .map(|o| o.summary.clone())
                 .unwrap_or_else(|| step_text.lines().next().unwrap_or("").to_string());
+            let output_for_event = output_signal.take().unwrap_or_else(|| TurnOutput {
+                summary: summary.clone(),
+                result: None,
+            });
+            let done_result = output_for_event.result.clone();
             append_event(&tx_path, &AnyEvent::TurnComplete {
                 usage: TurnUsage {
                     input: total_usage.input_tokens as u64,   // Usage uses u32; TurnUsage uses u64
@@ -296,10 +301,7 @@ pub async fn run_turn(
                 },
                 codebase_hash: codebase_hash.clone(),
                 codebase_dirty,
-                output: output_signal.take().unwrap_or_else(|| TurnOutput {
-                    summary: summary.clone(),
-                    result: None,
-                }),
+                output: output_for_event,
                 ts: now_ms(),
             })?;
             git::commit_session(&opts.workspace, &opts.session_id,
@@ -307,7 +309,7 @@ pub async fn run_turn(
             eprintln!("\n[gait] turn {} complete", turn_n);
             return Ok(TurnResult::Done {
                 summary,
-                result: output_signal.as_ref().and_then(|o| o.result.clone()),
+                result: done_result,
             });
         }
 
