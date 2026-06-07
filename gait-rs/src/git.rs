@@ -211,9 +211,11 @@ pub fn remove_branch_worktree(workspace: &Path, worktree_path: &Path) -> anyhow:
     let repo = Repository::open(workspace)?;
     let mut prune_opts = git2::WorktreePruneOptions::new();
     prune_opts.valid(true);
+    let canonical = worktree_path.canonicalize().unwrap_or_else(|_| worktree_path.to_path_buf());
     for name in repo.worktrees()?.iter().flatten() {
         if let Ok(wt) = repo.find_worktree(name) {
-            if wt.path() == worktree_path {
+            let wt_canonical = wt.path().canonicalize().unwrap_or_else(|_| wt.path().to_path_buf());
+            if wt_canonical == canonical {
                 wt.prune(Some(&mut prune_opts))?;
                 return Ok(());
             }

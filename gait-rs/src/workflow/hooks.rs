@@ -10,7 +10,9 @@ pub async fn run_hook(cmd: &str, env_vars: &HashMap<String, String>) -> (i32, St
     match result {
         Ok(o) => {
             let exit = o.status.code().unwrap_or(-1);
-            let out = String::from_utf8_lossy(&o.stdout).to_string();
+            let stdout = String::from_utf8_lossy(&o.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+            let out = if stderr.is_empty() { stdout } else { format!("{}{}", stdout, stderr) };
             (exit, out)
         }
         Err(_) => (-1, String::new()),
