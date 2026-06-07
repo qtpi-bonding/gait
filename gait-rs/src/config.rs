@@ -103,4 +103,26 @@ mod tests {
         let cfg = load_config(dir.path());
         assert_eq!(cfg.model, "anthropic/claude-sonnet-4-6");
     }
+
+    #[test]
+    fn parses_config_defined_tools() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("gait.jsonc"), r#"
+{
+  "model": "anthropic/claude-sonnet-4-6",
+  "allow": [],
+  "tools": [
+    { "name": "run_tests", "description": "Run tests", "cmd": "cargo test", "cwd": "codebase" },
+    { "name": "lint", "description": "Run linter", "cmd": "cargo clippy" }
+  ]
+}
+"#).unwrap();
+        let cfg = load_config(dir.path());
+        assert_eq!(cfg.tools.len(), 2);
+        assert_eq!(cfg.tools[0].name, "run_tests");
+        assert_eq!(cfg.tools[0].cmd, "cargo test");
+        assert_eq!(cfg.tools[0].cwd, "codebase");
+        assert_eq!(cfg.tools[1].name, "lint");
+        assert_eq!(cfg.tools[1].cwd, "codebase"); // default
+    }
 }

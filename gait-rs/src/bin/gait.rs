@@ -75,7 +75,46 @@ async fn cmd_run(argv: &[String]) {
         "You are a helpful AI coding assistant. You have access to tools to read, write, and edit files in the codebase.".into()
     });
 
-    let tools = builtin_tools(codebase_path.clone());
+    // Append config-defined tools
+    let mut tools = builtin_tools(codebase_path.clone());
+    for ct in &config.tools {
+        let cmd = ct.cmd.clone();
+        let cwd = if ct.cwd == "workspace" {
+            workspace.clone()
+        } else {
+            codebase_path.clone()
+        };
+        let name = ct.name.clone();
+        let description = ct.description.clone();
+        // Note: config-defined tools receive no arguments from the model — they are fixed shell
+        // commands. The empty parameters schema tells the model to call them with no input.
+        tools.push(Box::new(gait_ai::types::ToolDef {
+            name,
+            description,
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+            execute: Box::new(move |_args| {
+                let cmd = cmd.clone();
+                let cwd = cwd.clone();
+                Box::pin(async move {
+                    let output = tokio::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(&cmd)
+                        .current_dir(&cwd)
+                        .output()
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                    let combined = if stderr.is_empty() { stdout } else { format!("{}\nstderr:\n{}", stdout, stderr) };
+                    Ok(serde_json::Value::String(combined))
+                })
+            }),
+        }) as Box<dyn gait_ai::types::Tool>);
+    }
 
     if let Err(e) = run_turn(
         TurnOpts {
