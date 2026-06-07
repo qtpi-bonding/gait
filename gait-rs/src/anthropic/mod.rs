@@ -9,11 +9,15 @@ use crate::anthropic::types::{AnthropicRequest, AnthropicTool, to_anthropic_mess
 pub struct AnthropicProvider {
     pub api_key: String,
     pub model: String,
+    pub base_url: Option<String>,
 }
 
 impl AnthropicProvider {
     pub fn new(api_key: String, model: String) -> Self {
-        Self { api_key, model }
+        Self { api_key, model, base_url: None }
+    }
+    pub fn with_base_url(api_key: String, model: String, base_url: String) -> Self {
+        Self { api_key, model, base_url: Some(base_url) }
     }
 }
 
@@ -39,7 +43,10 @@ impl Provider for AnthropicProvider {
         };
         let body = serde_json::to_value(&req)?;
         // Build a fresh SseClient (owned) so the stream it returns is 'static.
-        let client = SseClient::new(self.api_key.clone());
+        let client = match &self.base_url {
+            Some(url) => SseClient::with_base_url(self.api_key.clone(), url.clone()),
+            None => SseClient::new(self.api_key.clone()),
+        };
         let stream = client.stream_request(body);
         Ok(Box::pin(stream))
     }

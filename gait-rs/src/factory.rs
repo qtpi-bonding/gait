@@ -42,10 +42,10 @@ pub fn load_provider(
             model_id,
             Some("https://api.deepinfra.com/v1/openai".into()),
         ))),
-        "minimax" => Ok(Box::new(OpenAIProvider::new(
+        "minimax" => Ok(Box::new(AnthropicProvider::with_base_url(
             key,
             model_id,
-            Some("https://api.minimaxi.chat/v1".into()),
+            "https://api.minimax.io/anthropic/v1".into(),
         ))),
         other => Err(FactoryError::UnknownProvider(other.into())),
     }

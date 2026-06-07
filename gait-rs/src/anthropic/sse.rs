@@ -9,6 +9,7 @@ use std::collections::HashMap;
 pub struct SseClient {
     pub(crate) http: Client,
     pub(crate) api_key: String,
+    pub(crate) base_url: String,
 }
 
 impl SseClient {
@@ -16,7 +17,12 @@ impl SseClient {
         Self {
             http: Client::new(),
             api_key,
+            base_url: "https://api.anthropic.com/v1".into(),
         }
+    }
+
+    pub fn with_base_url(api_key: String, base_url: String) -> Self {
+        Self { http: Client::new(), api_key, base_url }
     }
 
     /// Issue a streaming POST and return a 'static stream of chunks.
@@ -27,10 +33,11 @@ impl SseClient {
     ) -> impl Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static {
         let http = self.http;
         let api_key = self.api_key;
+        let url = format!("{}/messages", self.base_url);
 
         async_stream::try_stream! {
             let resp = http
-                .post("https://api.anthropic.com/v1/messages")
+                .post(&url)
                 .header("x-api-key", &api_key)
                 .header("anthropic-version", "2023-06-01")
                 .header("content-type", "application/json")
@@ -96,6 +103,7 @@ impl SseClient {
                                 };
                             }
                         }
+                        ContentDelta::ThinkingDelta { .. } | ContentDelta::Unknown => {}
                     },
                     AnthropicEvent::ContentBlockStop { index } => {
                         if let (Some(id), Some(name), Some(buf)) = (

@@ -18,10 +18,9 @@ pub fn resolve_api_key(provider: &str) -> Option<String> {
         if !key.is_empty() { return Some(key); }
     }
     // 2. Check auth.json
-    let auth_path = dirs_next::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("~/.local/share"))
-        .join("gait")
-        .join("auth.json");
+    let auth_path = dirs_next::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("~"))
+        .join(".local").join("share").join("gait").join("auth.json");
     if !auth_path.exists() { return None; }
     let Ok(text) = std::fs::read_to_string(&auth_path) else { return None; };
     let Ok(map) = serde_json::from_str::<HashMap<String, AuthEntry>>(&text) else { return None; };
@@ -33,10 +32,10 @@ pub fn resolve_api_key(provider: &str) -> Option<String> {
 }
 
 fn auth_path() -> std::path::PathBuf {
-    dirs_next::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("~/.local/share"))
-        .join("gait")
-        .join("auth.json")
+    // Match TypeScript gait: always ~/.local/share/gait/auth.json (cross-platform convention)
+    dirs_next::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("~"))
+        .join(".local").join("share").join("gait").join("auth.json")
 }
 
 fn read_raw_auth(path: &std::path::Path) -> HashMap<String, serde_json::Value> {

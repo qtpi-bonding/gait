@@ -69,6 +69,9 @@ pub struct MessageStartData {
 pub enum ContentBlock {
     Text { text: String },
     ToolUse { id: String, name: String },
+    Thinking { thinking: String },
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Deserialize)]
@@ -76,6 +79,9 @@ pub enum ContentBlock {
 pub enum ContentDelta {
     TextDelta { text: String },
     InputJsonDelta { partial_json: String },
+    ThinkingDelta { thinking: String },
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Deserialize)]
