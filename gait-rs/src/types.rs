@@ -102,6 +102,15 @@ pub struct StepFinish {
     pub usage: Usage,
 }
 
+/// Whether a tool is safe to execute concurrently with other parallel-mode tools.
+/// Serial tools run one at a time (default). Parallel tools can run in a concurrent batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExecutionMode {
+    #[default]
+    Serial,
+    Parallel,
+}
+
 /// Extensible tool interface. Implement this to define a callable tool for `stream_text`.
 /// `ToolDef` implements this for backward-compat with ad-hoc closure-based tools.
 #[async_trait::async_trait]
@@ -110,6 +119,11 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     fn parameters(&self) -> &serde_json::Value;
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value>;
+
+    /// Whether this tool is safe to run concurrently alongside other parallel-mode tools.
+    /// Read-only tools (read, glob, grep, ls, codesearch, webfetch) return Parallel.
+    /// Anything with side effects (write, edit, shell, mcp, output, clarify) returns Serial.
+    fn execution_mode(&self) -> ExecutionMode { ExecutionMode::Serial }
 
     /// Convenience: box self into `Box<dyn Tool>`.
     fn boxed(self) -> Box<dyn Tool>

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::types::Tool;
+use crate::types::{Tool, ExecutionMode};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -63,6 +63,7 @@ impl Tool for CodesearchTool {
         "Search for symbols, function names, class definitions, or patterns in the codebase. Use for finding where something is defined or used. Returns file:line matches."
     }
     fn parameters(&self) -> &Value { &self.parameters }
+    fn execution_mode(&self) -> ExecutionMode { ExecutionMode::Parallel }
 
     async fn execute(&self, args: Value) -> anyhow::Result<Value> {
         let params: CodesearchParams = serde_json::from_value(args)?;

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::types::Tool;
+use crate::types::{Tool, ExecutionMode};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -34,6 +34,7 @@ impl Tool for GlobTool {
         "Find files in the codebase matching a glob pattern. Results sorted by modification time (newest first)."
     }
     fn parameters(&self) -> &Value { &self.parameters }
+    fn execution_mode(&self) -> ExecutionMode { ExecutionMode::Parallel }
 
     async fn execute(&self, args: Value) -> anyhow::Result<Value> {
         let params: GlobParams = serde_json::from_value(args)?;

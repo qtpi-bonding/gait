@@ -1,4 +1,4 @@
-use crate::types::Tool;
+use crate::types::{Tool, ExecutionMode};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -149,6 +149,7 @@ impl Tool for WebfetchTool {
         "Fetch content from a URL and return it as text or markdown."
     }
     fn parameters(&self) -> &Value { &self.parameters }
+    fn execution_mode(&self) -> ExecutionMode { ExecutionMode::Parallel }
 
     async fn execute(&self, args: Value) -> anyhow::Result<Value> {
         let params: WebfetchParams = serde_json::from_value(args)?;

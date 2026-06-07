@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::types::Tool;
+use crate::types::{Tool, ExecutionMode};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -147,6 +147,7 @@ impl Tool for LsTool {
         "List files in a directory of the codebase as a tree. Ignores common build/dependency directories."
     }
     fn parameters(&self) -> &Value { &self.parameters }
+    fn execution_mode(&self) -> ExecutionMode { ExecutionMode::Parallel }
 
     async fn execute(&self, args: Value) -> anyhow::Result<Value> {
         let params: LsParams = serde_json::from_value(args)?;

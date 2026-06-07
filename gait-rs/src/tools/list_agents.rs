@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use serde_json::Value;
-use crate::types::Tool;
+use crate::types::{Tool, ExecutionMode};
 use crate::session::transcript::AnyEvent;
 
 pub struct ListAgentsTool {
@@ -28,6 +28,7 @@ impl Tool for ListAgentsTool {
         "List active agent sessions not yet done, sorted by last activity descending."
     }
     fn parameters(&self) -> &Value { &self.parameters }
+    fn execution_mode(&self) -> ExecutionMode { ExecutionMode::Parallel }
 
     async fn execute(&self, _args: Value) -> anyhow::Result<Value> {
         // C1 fix: read transcript from the branch's committed git tree, NOT from the filesystem

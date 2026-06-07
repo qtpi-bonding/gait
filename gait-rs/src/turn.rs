@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use futures_util::StreamExt;
 use crate::provider::{Provider, StreamChunk};
-use crate::types::{Message, MessageContent, AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind, Usage};
+use crate::types::{Message, MessageContent, AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind, Usage, ExecutionMode};
 use crate::types::Tool;
 use crate::session::transcript::{
     AnyEvent, append_event, emit_event, read_events, init_session, count_turn_complete, now_ms,
@@ -465,97 +465,28 @@ pub async fn run_turn(
             });
         }
 
-        // Merged loop: execute allowed tool calls immediately; collect gated ones
-        // for a Permissions event. B2 fix: this ensures allowed tool calls are
-        // recorded in the transcript (and survive any subsequent permission exit)
-        // — they are not silently dropped just because an adjacent call was gated.
+        // Single permission gate: classify all tool calls into allowed vs gated.
+        // Allowed tools execute below (parallel batch + serial). Gated tools either
+        // trigger a Permissions exit (non-auto) or never exist (auto mode, where
+        // is_tool_allowed is never consulted and all tools are allowed).
+        // B2: allowed tools execute and land in the transcript before we potentially
+        // exit for permissions — their results survive any subsequent permission exit.
         let mut pending_permissions: Vec<PermissionItem> = vec![];
-        let mut tool_results: Vec<ToolResult> = vec![];
-        let mut assistant_parts: Vec<AssistantPart> = vec![];
-
-        if !step_text.is_empty() {
-            assistant_parts.push(AssistantPart::Text { text: step_text.clone() });
-        }
+        let mut gated_ids: std::collections::HashSet<String> = Default::default();
 
         for tc in &step_tool_calls {
-            if opts.auto || is_tool_allowed(&tc.tool_name, &tc.args, &effective_allow) {
-                // Allowed — execute now so it lands in the transcript.
-                if tc.tool_name == "mcp" {
-                    // mcp side-effect: load/unload tool from registry
-                    if let (Some(name), Some(ctx)) = (
-                        tc.args.get("name").and_then(|v| v.as_str()),
-                        tc.args.get("context").and_then(|v| v.as_bool()),
-                    ) {
-                        if ctx {
-                            if let Some(def) = opts.mcp_registry.iter().find(|d| d.name == name) {
-                                if !tools.iter().any(|t| t.name() == name) {
-                                    tools.push(make_mcp_tool_def(def, &opts.workspace, &opts.codebase_path));
-                                }
-                            }
-                        } else {
-                            tools.retain(|t| t.name() != name);
-                        }
-                    }
-                    // mcp calls also have a regular ToolCall/ToolResult trace
-                    let (part, result) = execute_tool_call(tc, &tools, &tx_path).await
-                        .unwrap_or_else(|e| error_tool_result(tc, e));
-                    assistant_parts.push(part);
-                    tool_results.push(result);
-                } else if tc.tool_name == "output" {
-                    // output signal: record the desired TurnOutput, but still emit
-                    // a ToolCall/ToolResult event so transcript matches what the model saw.
-                    if let Some(summary) = tc.args.get("summary").and_then(|v| v.as_str()) {
-                        output_signal = Some(TurnOutput {
-                            summary: summary.to_string(),
-                            result: tc.args.get("result").cloned(),
-                        });
-                    }
-                    let (part, result) = execute_tool_call(tc, &tools, &tx_path).await
-                        .unwrap_or_else(|e| error_tool_result(tc, e));
-                    assistant_parts.push(part);
-                    tool_results.push(result);
-                } else if tc.tool_name == "clarify" {
-                    // Emit Clarify event to transcript (also prints to stdout via emit_event).
-                    // Then exit the turn so chat.rs can prompt the user.
-                    let items: Vec<ClarifyItem> = tc.args.get("items")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_default();
-                    emit_event(&tx_path, &AnyEvent::Clarify { items: items.clone(), ts: now_ms() })?;
-                    clarify_signal = Some(items);
-                } else if tc.tool_name == "inform" {
-                    // Emit Inform event to transcript (also prints to stdout via emit_event).
-                    let items: Vec<InformItem> = tc.args.get("items")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_default();
-                    emit_event(&tx_path, &AnyEvent::Inform { items: items.clone(), ts: now_ms() })?;
-                    inform_signal = Some(items);
-                } else if tc.tool_name == "skill" {
-                    // skill is a context-registration call (like mcp) — record event
-                    // and execute so any side-effect on `tools` happens.
-                    let (part, result) = execute_tool_call(tc, &tools, &tx_path).await
-                        .unwrap_or_else(|e| error_tool_result(tc, e));
-                    assistant_parts.push(part);
-                    tool_results.push(result);
-                } else {
-                    let (part, result) = execute_tool_call(tc, &tools, &tx_path).await
-                        .unwrap_or_else(|e| error_tool_result(tc, e));
-                    assistant_parts.push(part);
-                    tool_results.push(result);
-                }
-            } else {
-                // Gated — collect for permission prompt.
+            if !(opts.auto || is_tool_allowed(&tc.tool_name, &tc.args, &effective_allow)) {
+                gated_ids.insert(tc.tool_call_id.clone());
                 if tc.tool_name == "shell" {
                     let cmd = tc.args.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
                     for seg in unapproved_segments(cmd, &effective_allow) {
-                        // All segments for the same tool call share the same id and tool_args.
-                        // The resume path groups by id for all-or-nothing execution.
                         pending_permissions.push(PermissionItem {
                             id: tc.tool_call_id.clone(),
                             cmd: seg.clone(),
                             reason: "shell command requires permission".into(),
                             patterns: command_patterns(&seg),
                             tool_name: tc.tool_name.clone(),
-                            tool_args: tc.args.clone(), // full original args (not the segment)
+                            tool_args: tc.args.clone(),
                         });
                     }
                 } else {
@@ -571,51 +502,123 @@ pub async fn run_turn(
             }
         }
 
-        // If gated calls exist and not auto: emit Permissions and exit.
-        // Allowed calls in this step are already in the transcript.
-        if !pending_permissions.is_empty() {
-            if opts.auto {
-                // Auto mode: write permissions + auto-reply audit trail, then
-                // execute the gated calls (auto-approved) so the turn can continue.
-                emit_event(&tx_path, &AnyEvent::Permissions {
-                    items: pending_permissions.clone(),
-                    ts: now_ms(),
-                })?;
-                emit_event(&tx_path, &AnyEvent::PermissionsReply {
-                    from: "auto".into(),
-                    items: pending_permissions.iter().map(|p| PermissionsReplyItem {
-                        id: p.id.clone(),
-                        decision: "approve".into(),
-                        text: None,
-                    }).collect(),
-                    ts: now_ms(),
-                })?;
-                // Execute gated calls in the auto-approved batch
-                for tc in &step_tool_calls {
-                    if pending_permissions.iter().any(|p| p.id == tc.tool_call_id) {
-                        if tc.tool_name == "output" {
-                            if let Some(summary) = tc.args.get("summary").and_then(|v| v.as_str()) {
-                                output_signal = Some(TurnOutput {
-                                    summary: summary.to_string(),
-                                    result: tc.args.get("result").cloned(),
-                                });
+        // Execute all allowed tool calls. Results are collected by original index
+        // so the assistant_parts / tool_results vectors stay in call order.
+        let mut tool_results: Vec<ToolResult> = vec![];
+        let mut assistant_parts: Vec<AssistantPart> = vec![];
+
+        if !step_text.is_empty() {
+            assistant_parts.push(AssistantPart::Text { text: step_text.clone() });
+        }
+
+        {
+            let allowed: Vec<(usize, &ToolCall)> = step_tool_calls.iter().enumerate()
+                .filter(|(_, tc)| !gated_ids.contains(&tc.tool_call_id))
+                .collect();
+
+            // Special-signal tools must be serial (they mutate turn state or the tools vec).
+            // Everything else with ExecutionMode::Parallel runs as a concurrent batch.
+            let is_parallel_eligible = |tc: &ToolCall| -> bool {
+                if matches!(tc.tool_name.as_str(), "clarify" | "inform" | "output" | "mcp" | "skill") {
+                    return false;
+                }
+                tools.iter()
+                    .find(|t| t.name() == tc.tool_name)
+                    .map(|t| t.execution_mode() == ExecutionMode::Parallel)
+                    .unwrap_or(false)
+            };
+
+            let (parallel_items, serial_items): (Vec<_>, Vec<_>) = allowed.iter()
+                .partition(|(_, tc)| is_parallel_eligible(tc));
+
+            // Parallel batch — all futures share &tools (immutable), safe to join
+            let par_raw = futures_util::future::join_all(
+                parallel_items.iter().map(|(_, tc)| execute_tool_call(tc, &tools, &tx_path))
+            ).await;
+
+            // Serial items — run in original order, handle special cases inline
+            let mut all_results: Vec<Option<(AssistantPart, ToolResult)>> =
+                vec![None; step_tool_calls.len()];
+
+            for ((i, tc), raw) in parallel_items.iter().zip(par_raw) {
+                all_results[*i] = Some(raw.unwrap_or_else(|e| error_tool_result(tc, e)));
+            }
+
+            for (i, tc) in &serial_items {
+                match tc.tool_name.as_str() {
+                    "mcp" => {
+                        if let (Some(name), Some(ctx)) = (
+                            tc.args.get("name").and_then(|v| v.as_str()),
+                            tc.args.get("context").and_then(|v| v.as_bool()),
+                        ) {
+                            if ctx {
+                                if let Some(def) = opts.mcp_registry.iter().find(|d| d.name == name) {
+                                    if !tools.iter().any(|t| t.name() == name) {
+                                        tools.push(make_mcp_tool_def(def, &opts.workspace, &opts.codebase_path));
+                                    }
+                                }
+                            } else {
+                                tools.retain(|t| t.name() != name);
                             }
                         }
-                        let (part, result) = execute_tool_call(tc, &tools, &tx_path).await
+                        let r = execute_tool_call(tc, &tools, &tx_path).await
                             .unwrap_or_else(|e| error_tool_result(tc, e));
-                        assistant_parts.push(part);
-                        tool_results.push(result);
+                        all_results[*i] = Some(r);
+                    }
+                    "output" => {
+                        if let Some(summary) = tc.args.get("summary").and_then(|v| v.as_str()) {
+                            output_signal = Some(TurnOutput {
+                                summary: summary.to_string(),
+                                result: tc.args.get("result").cloned(),
+                            });
+                        }
+                        let r = execute_tool_call(tc, &tools, &tx_path).await
+                            .unwrap_or_else(|e| error_tool_result(tc, e));
+                        all_results[*i] = Some(r);
+                    }
+                    "clarify" => {
+                        let items: Vec<ClarifyItem> = tc.args.get("items")
+                            .and_then(|v| serde_json::from_value(v.clone()).ok())
+                            .unwrap_or_default();
+                        emit_event(&tx_path, &AnyEvent::Clarify { items: items.clone(), ts: now_ms() })?;
+                        clarify_signal = Some(items);
+                        // no tool result — clarify exits the turn
+                    }
+                    "inform" => {
+                        let items: Vec<InformItem> = tc.args.get("items")
+                            .and_then(|v| serde_json::from_value(v.clone()).ok())
+                            .unwrap_or_default();
+                        emit_event(&tx_path, &AnyEvent::Inform { items: items.clone(), ts: now_ms() })?;
+                        inform_signal = Some(items);
+                        // no tool result — inform exits the turn
+                    }
+                    _ => {
+                        // skill and all other serial tools
+                        let r = execute_tool_call(tc, &tools, &tx_path).await
+                            .unwrap_or_else(|e| error_tool_result(tc, e));
+                        all_results[*i] = Some(r);
                     }
                 }
-            } else {
-                emit_event(&tx_path, &AnyEvent::Permissions {
-                    items: pending_permissions,
-                    ts: now_ms(),
-                })?;
-                git::commit_session(&opts.workspace, &opts.session_id,
-                    &format!("session({}): permissions", opts.session_id))?;
-                return Ok(TurnResult::Permissions);
             }
+
+            for r in all_results {
+                if let Some((part, result)) = r {
+                    assistant_parts.push(part);
+                    tool_results.push(result);
+                }
+            }
+        }
+
+        // Gated tools: emit Permissions and exit so the user can decide.
+        // (In auto mode gated_ids is always empty — this block is never reached.)
+        if !pending_permissions.is_empty() {
+            emit_event(&tx_path, &AnyEvent::Permissions {
+                items: pending_permissions,
+                ts: now_ms(),
+            })?;
+            git::commit_session(&opts.workspace, &opts.session_id,
+                &format!("session({}): permissions", opts.session_id))?;
+            return Ok(TurnResult::Permissions);
         }
 
         // Exit turn for clarify/inform — event already in transcript+stdout via emit_event

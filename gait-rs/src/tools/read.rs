@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::types::Tool;
+use crate::types::{Tool, ExecutionMode};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -72,6 +72,7 @@ impl Tool for ReadTool {
         "Read a file from the codebase, optionally with line range. Paths are relative to the codebase root."
     }
     fn parameters(&self) -> &Value { &self.parameters }
+    fn execution_mode(&self) -> ExecutionMode { ExecutionMode::Parallel }
 
     async fn execute(&self, args: Value) -> anyhow::Result<Value> {
         let params: ReadParams = serde_json::from_value(args)?;
