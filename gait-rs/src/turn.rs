@@ -6,7 +6,7 @@ use crate::provider::{Provider, StreamChunk};
 use crate::types::{Message, MessageContent, AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind, Usage};
 use crate::types::Tool;
 use crate::session::transcript::{
-    AnyEvent, append_event, read_events, init_session, count_turn_complete, now_ms,
+    AnyEvent, append_event, emit_event, read_events, init_session, count_turn_complete, now_ms,
     InitSessionOpts, PermissionItem, PermissionsReplyItem, TurnUsage, TurnOutput,
 };
 use crate::session::context::reconstruct_messages_from_events;
@@ -201,7 +201,7 @@ pub async fn run_turn(
 
     // Append user_turn if task provided
     if let Some(task) = &opts.task {
-        append_event(&tx_path, &AnyEvent::UserTurn {
+        emit_event(&tx_path, &AnyEvent::UserTurn {
             content: task.clone(),
             from: None,
             context: Some(crate::session::transcript::UserTurnContext {
@@ -274,7 +274,7 @@ pub async fn run_turn(
         // Parts message below. Writing a separate AssistantText event here would produce
         // two consecutive assistant messages in context reconstruction, which Anthropic rejects.
         if !step_text.is_empty() && step_tool_calls.is_empty() {
-            append_event(&tx_path, &AnyEvent::AssistantText {
+            emit_event(&tx_path, &AnyEvent::AssistantText {
                 content: step_text.clone(),
                 ts: now_ms(),
             })?;
@@ -292,7 +292,7 @@ pub async fn run_turn(
                 result: None,
             });
             let done_result = output_for_event.result.clone();
-            append_event(&tx_path, &AnyEvent::TurnComplete {
+            emit_event(&tx_path, &AnyEvent::TurnComplete {
                 usage: TurnUsage {
                     input: total_usage.input_tokens as u64,   // Usage uses u32; TurnUsage uses u64
                     output: total_usage.output_tokens as u64,
@@ -339,7 +339,7 @@ pub async fn run_turn(
 
         // If non-auto and permissions needed: write event, commit, exit
         if !pending_permissions.is_empty() && !opts.auto {
-            append_event(&tx_path, &AnyEvent::Permissions {
+            emit_event(&tx_path, &AnyEvent::Permissions {
                 items: pending_permissions,
                 ts: now_ms(),
             })?;
@@ -352,11 +352,11 @@ pub async fn run_turn(
         // Execute all tool calls (in auto mode, write permissions audit trail)
         if !pending_permissions.is_empty() {
             // Auto mode: write permissions + auto-reply for audit
-            append_event(&tx_path, &AnyEvent::Permissions {
+            emit_event(&tx_path, &AnyEvent::Permissions {
                 items: pending_permissions.clone(),
                 ts: now_ms(),
             })?;
-            append_event(&tx_path, &AnyEvent::PermissionsReply {
+            emit_event(&tx_path, &AnyEvent::PermissionsReply {
                 from: "auto".into(),
                 items: pending_permissions.iter().map(|p| PermissionsReplyItem {
                     id: p.id.clone(),
@@ -370,7 +370,7 @@ pub async fn run_turn(
         // Execute all tool calls
         for tc in &step_tool_calls {
             let id = tc.tool_call_id.clone();
-            append_event(&tx_path, &AnyEvent::ToolCall {
+            emit_event(&tx_path, &AnyEvent::ToolCall {
                 id: id.clone(),
                 name: tc.tool_name.clone(),
                 input: tc.args.clone(),
@@ -414,7 +414,7 @@ pub async fn run_turn(
                     });
                 }
             }
-            append_event(&tx_path, &AnyEvent::ToolResult {
+            emit_event(&tx_path, &AnyEvent::ToolResult {
                 id: id.clone(),
                 output: output.clone(),
                 ts: now_ms(),
