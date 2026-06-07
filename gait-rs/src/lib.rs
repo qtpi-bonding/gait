@@ -17,6 +17,7 @@ pub mod workflow;
 pub mod permission;
 pub mod render;
 pub mod chat;
+pub mod agent_frontmatter;
 
 pub use types::*;
 pub use stream::stream_text;

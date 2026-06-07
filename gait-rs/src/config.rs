@@ -87,6 +87,33 @@ pub fn load_config(workspace: &Path) -> GaitConfig {
     })
 }
 
+pub fn append_allow_pattern(workspace: &Path, pattern: &str) -> anyhow::Result<()> {
+    let path = workspace.join("gait.jsonc");
+    let mut obj: serde_json::Map<String, serde_json::Value> = if path.exists() {
+        let raw = std::fs::read_to_string(&path)?;
+        let stripped = strip_jsonc_comments(&raw);
+        match serde_json::from_str::<serde_json::Value>(&stripped) {
+            Ok(serde_json::Value::Object(m)) => m,
+            Ok(_) => anyhow::bail!("gait.jsonc root is not a JSON object"),
+            Err(e) => anyhow::bail!("gait.jsonc parse error: {e}"),
+        }
+    } else {
+        let mut m = serde_json::Map::new();
+        m.insert("model".into(), serde_json::Value::String("minimax/MiniMax-M1-80k".into()));
+        m
+    };
+    let allow = obj.entry("allow")
+        .or_insert_with(|| serde_json::Value::Array(vec![]))
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("allow field is not an array"))?;
+    if !allow.iter().any(|v| v.as_str() == Some(pattern)) {
+        allow.push(serde_json::Value::String(pattern.to_string()));
+    }
+    let pretty = serde_json::to_string_pretty(&serde_json::Value::Object(obj))?;
+    std::fs::write(&path, pretty + "\n")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +174,47 @@ mod tests {
         assert_eq!(cfg.tools[0].cwd, "codebase");
         assert_eq!(cfg.tools[1].name, "lint");
         assert_eq!(cfg.tools[1].cwd, "codebase"); // default
+    }
+
+    #[test]
+    fn append_allow_pattern_adds_to_existing_allow() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M1-80k","allow":["read"]}"#).unwrap();
+        append_allow_pattern(dir.path(), "shell:cargo *").unwrap();
+        let cfg = load_config(dir.path());
+        assert!(cfg.allow.contains(&"shell:cargo *".to_string()));
+    }
+
+    #[test]
+    fn append_allow_pattern_preserves_model_field() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M1-80k","allow":[]}"#).unwrap();
+        append_allow_pattern(dir.path(), "shell:git *").unwrap();
+        assert_eq!(load_config(dir.path()).model, "minimax/MiniMax-M1-80k");
+    }
+
+    #[test]
+    fn append_allow_pattern_creates_file_when_missing() {
+        let dir = TempDir::new().unwrap();
+        append_allow_pattern(dir.path(), "shell:cargo *").unwrap();
+        assert!(load_config(dir.path()).allow.contains(&"shell:cargo *".to_string()));
+    }
+
+    #[test]
+    fn append_allow_pattern_deduplicates() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M1-80k","allow":["shell:cargo *"]}"#).unwrap();
+        append_allow_pattern(dir.path(), "shell:cargo *").unwrap();
+        assert_eq!(load_config(dir.path()).allow.iter().filter(|p| p.as_str() == "shell:cargo *").count(), 1);
+    }
+
+    #[test]
+    fn append_allow_pattern_bails_on_parse_error() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("gait.jsonc"), "{ invalid json").unwrap();
+        assert!(append_allow_pattern(dir.path(), "shell:cargo *").is_err());
+        // Must NOT overwrite the broken file
+        assert!(std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap().contains("invalid json"));
     }
 
     #[test]
