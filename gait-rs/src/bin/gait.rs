@@ -536,7 +536,13 @@ fn cmd_chat(argv: &[String]) {
         i += 1;
     }
 
-    let codebase = codebase_path.unwrap_or_else(|| workspace.join("codebase"));
+    let codebase = match codebase_path.as_deref().and_then(|p| p.to_str()) {
+        Some(".") => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        _ => codebase_path.unwrap_or_else(|| workspace.join("codebase")),
+    };
+    if !codebase.exists() {
+        eprintln!("[gait] warning: codebase path does not exist: {}", codebase.display());
+    }
 
     if let Err(e) = gait_ai::chat::run_chat(workspace, codebase, agent_name) {
         eprintln!("[gait] error: {}", e);
