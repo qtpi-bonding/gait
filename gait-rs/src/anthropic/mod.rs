@@ -6,7 +6,7 @@ use crate::types::{Message, Tool};
 use crate::anthropic::sse::SseClient;
 use crate::anthropic::types::{
     AnthropicRequest, AnthropicSystem, AnthropicSystemBlock, AnthropicTool,
-    CacheControl, to_anthropic_messages,
+    AnthropicContent, AnthropicBlock, CacheControl, to_anthropic_messages,
 };
 
 pub struct AnthropicProvider {
@@ -54,11 +54,34 @@ impl Provider for AnthropicProvider {
             last.cache_control = Some(CacheControl::ephemeral());
         }
 
+        let mut anthro_messages = to_anthropic_messages(messages);
+
+        // Cache the full conversation history up to the current call.
+        // Only the LLM's next response is "new" — everything already in messages is stable.
+        // Checkpoint 3 of 4: mark the last content block of the last message.
+        if self.cache {
+            if let Some(last_msg) = anthro_messages.last_mut() {
+                match &mut last_msg.content {
+                    AnthropicContent::Text(text) => {
+                        let t = std::mem::take(text);
+                        last_msg.content = AnthropicContent::Blocks(vec![
+                            AnthropicBlock::Text { text: t, cache_control: Some(CacheControl::ephemeral()) }
+                        ]);
+                    }
+                    AnthropicContent::Blocks(blocks) => {
+                        if let Some(last) = blocks.last_mut() {
+                            *last = std::mem::replace(last, AnthropicBlock::Text { text: String::new(), cache_control: None }).with_cache();
+                        }
+                    }
+                }
+            }
+        }
+
         let req = AnthropicRequest {
             model: self.model.clone(),
             max_tokens: 8096,
             system: system_field,
-            messages: to_anthropic_messages(messages),
+            messages: anthro_messages,
             tools: oai_tools,
             stream: true,
         };

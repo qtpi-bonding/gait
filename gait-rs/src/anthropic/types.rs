@@ -76,7 +76,24 @@ pub enum AnthropicBlock {
         cache_control: Option<CacheControl>,
     },
     ToolUse { id: String, name: String, input: serde_json::Value },
-    ToolResult { tool_use_id: String, content: String },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
+}
+
+impl AnthropicBlock {
+    /// Set cache_control on this block, regardless of variant.
+    pub fn with_cache(mut self) -> Self {
+        match &mut self {
+            AnthropicBlock::Text { cache_control, .. } => *cache_control = Some(CacheControl::ephemeral()),
+            AnthropicBlock::ToolResult { cache_control, .. } => *cache_control = Some(CacheControl::ephemeral()),
+            AnthropicBlock::ToolUse { .. } => {}
+        }
+        self
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -190,6 +207,7 @@ pub fn to_anthropic_messages(messages: &[Message]) -> Vec<AnthropicMessage> {
                 content.iter().map(|tr| AnthropicBlock::ToolResult {
                     tool_use_id: tr.tool_call_id.clone(),
                     content: tr.result.to_string(),
+                    cache_control: None,
                 }).collect()
             ),
         },
@@ -300,7 +318,7 @@ mod tests {
         let converted = to_anthropic_messages(&messages);
         assert_eq!(converted[0].role, "user");
         if let AnthropicContent::Blocks(blocks) = &converted[0].content {
-            assert!(matches!(blocks[0], AnthropicBlock::ToolResult { .. }));
+            assert!(matches!(blocks[0], AnthropicBlock::ToolResult { cache_control: None, .. }));
         } else {
             panic!("expected blocks");
         }
