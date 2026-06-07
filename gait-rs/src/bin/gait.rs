@@ -78,7 +78,7 @@ async fn cmd_run(argv: &[String]) {
 
     let config = load_config(&workspace);
     let model = model_override.as_deref().unwrap_or(&config.model).to_string();
-    let codebase_path = codebase_path.unwrap_or_else(|| workspace.join("codebase"));
+    let codebase_path = codebase_path.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
     let provider_name = model.split('/').next().unwrap_or("anthropic");
     let api_key = resolve_api_key(provider_name);
@@ -538,7 +538,7 @@ fn cmd_chat(argv: &[String]) {
 
     let codebase = match codebase_path.as_deref().and_then(|p| p.to_str()) {
         Some(".") => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        _ => codebase_path.unwrap_or_else(|| workspace.join("codebase")),
+        _ => codebase_path.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
     };
     if !codebase.exists() {
         eprintln!("[gait] warning: codebase path does not exist: {}", codebase.display());
