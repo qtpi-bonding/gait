@@ -351,11 +351,15 @@ pub async fn run_turn(
             if tc.tool_name == "shell" {
                 let cmd = tc.args.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
                 for seg in unapproved_segments(cmd, &effective_allow) {
+                    // All segments for the same tool call share the same id and tool_args.
+                    // The resume path groups by id for all-or-nothing execution.
                     pending_permissions.push(PermissionItem {
                         id: tc.tool_call_id.clone(),
                         cmd: seg.clone(),
                         reason: "shell command requires permission".into(),
                         patterns: command_patterns(&seg),
+                        tool_name: tc.tool_name.clone(),
+                        tool_args: tc.args.clone(), // full original args (not the segment)
                     });
                 }
             } else {
@@ -364,6 +368,8 @@ pub async fn run_turn(
                     cmd: tc.tool_name.clone(),
                     reason: format!("{} requires permission", tc.tool_name),
                     patterns: vec![tc.tool_name.clone()],
+                    tool_name: tc.tool_name.clone(),
+                    tool_args: tc.args.clone(),
                 });
             }
         }

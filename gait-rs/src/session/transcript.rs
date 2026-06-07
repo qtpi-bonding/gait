@@ -92,6 +92,10 @@ pub struct PermissionItem {
     pub reason: String,
     #[serde(default)]
     pub patterns: Vec<String>,
+    #[serde(default)]
+    pub tool_name: String,
+    #[serde(default)]
+    pub tool_args: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -508,9 +512,27 @@ mod tests {
             cmd: "cargo test".into(),
             reason: "needs permission".into(),
             patterns: vec!["cargo *".into(), "cargo test".into()],
+            tool_name: String::new(),
+            tool_args: serde_json::Value::Null,
         };
         let json = serde_json::to_string(&item).unwrap();
         let back: PermissionItem = serde_json::from_str(&json).unwrap();
         assert_eq!(back.patterns, vec!["cargo *", "cargo test"]);
+    }
+
+    #[test]
+    fn permission_item_carries_tool_call_for_reexecution() {
+        let item = PermissionItem {
+            id: "tc-1".into(),
+            cmd: "cargo test".into(),
+            reason: "shell requires permission".into(),
+            patterns: vec!["cargo *".into(), "cargo test".into()],
+            tool_name: "shell".into(),
+            tool_args: serde_json::json!({"cmd": "cargo test --verbose", "reason": "run tests"}),
+        };
+        let json = serde_json::to_string(&item).unwrap();
+        let back: PermissionItem = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.tool_name, "shell");
+        assert_eq!(back.tool_args["cmd"], "cargo test --verbose");
     }
 }
