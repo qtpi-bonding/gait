@@ -58,18 +58,19 @@ skill("tdd", false)   // unload
 2. Model knows to stop referencing it
 3. On compaction, content gets summarized away
 
-## Harness state
+## Derived state — no separate storage
 
-The harness tracks loaded MCP tools per session:
+Loaded tool state is derived from the transcript on every turn. No in-memory tracking needed.
 
-```typescript
-interface SessionToolState {
-  loadedMcp: Set<string>   // currently in tools array
-  loadedSkills: Set<string> // currently in messages (informational)
-}
+```
+scan all tool_call events where name = "mcp" or "skill"
+last call per tool name wins
+context=true → loaded, context=false → unloaded
 ```
 
-On every API call, `tools` array = core tools + `mcp()` + `skill()` meta-tools + `loadedMcp` schemas.
+On every API call, `tools` array = core tools + `mcp()` + `skill()` meta-tools + schemas for all currently-loaded MCP tools.
+
+This is free — gait already reads the transcript to reconstruct messages. Loaded tool state is just one more derived view from the same scan. Resume after crash, mid-workflow, gate pause — always correct, no sync needed.
 
 ## What you win
 
@@ -85,7 +86,7 @@ On every API call, `tools` array = core tools + `mcp()` + `skill()` meta-tools +
 
 ## Compaction interaction
 
-After compaction, `loadedMcp` and `loadedSkills` sets are reset — schemas were summarized away. Model reloads only what it still needs for the current task. This is the natural long-session reset.
+After compaction, prior `mcp()`/`skill()` tool calls are summarized away. The derived loaded set becomes empty — schemas were compacted out of history. Model reloads only what it still needs. This is the natural long-session reset, no explicit handling required.
 
 ## Index format (system prompt injection)
 
@@ -113,8 +114,7 @@ Tiny. Stable. Prompt-cached. Model reads it once and knows what's available.
 4. On `mcp(name, false)`: remove from `loadedMcp`
 5. On `skill(name, true)`: inject skill content into messages, add to `loadedSkills`
 6. On `skill(name, false)`: inject unload marker, remove from `loadedSkills`
-7. Build `tools` array dynamically each turn: core + meta-tools + `loadedMcp` schemas
+7. At turn start, scan transcript for `mcp()`/`skill()` calls → derive loaded set → build `tools` array
 8. Inject MCP index + skill index into system prompt from `gait.jsonc` registered servers/skills
-9. Reset `loadedMcp` + `loadedSkills` on compaction
 
 > Implementation target: Rust port. Do not implement in TypeScript.
