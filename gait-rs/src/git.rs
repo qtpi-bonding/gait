@@ -119,6 +119,73 @@ pub fn list_active_sessions(workspace: &Path) -> anyhow::Result<Vec<String>> {
     Ok(sessions)
 }
 
+pub fn finish_session(workspace: &Path, session_id: &str) -> anyhow::Result<()> {
+    let repo = Repository::open(workspace)?;
+    let branch_name = format!("session/{}", session_id);
+
+    // If no such branch, nothing to do
+    if repo.find_branch(&branch_name, BranchType::Local).is_err() {
+        return Ok(());
+    }
+
+    // Remove the worktree directory if it exists (required before branch ops).
+    // Prune worktree registration first (while dir still exists), then remove the dir.
+    let session_dir = workspace.join("sessions").join(session_id);
+    if session_dir.exists() {
+        if let Ok(wt) = repo.find_worktree(session_dir.to_str().unwrap_or("")) {
+            let mut o = git2::WorktreePruneOptions::new();
+            o.valid(true);
+            let _ = wt.prune(Some(&mut o));
+        }
+        let _ = std::fs::remove_dir_all(&session_dir);
+    }
+
+    // Merge session branch into HEAD
+    let branch_ref = repo.find_branch(&branch_name, BranchType::Local)?
+        .into_reference();
+    let branch_commit = branch_ref.peel_to_commit()?;
+    let annotated = repo.find_annotated_commit(branch_commit.id())?;
+
+    let mut merge_opts = git2::MergeOptions::new();
+    let mut checkout_opts = git2::build::CheckoutBuilder::new();
+    repo.merge(&[&annotated], Some(&mut merge_opts), Some(&mut checkout_opts))?;
+
+    // Commit the merge
+    let sig = repo.signature()
+        .or_else(|_| Signature::now("gait", "gait@localhost"))?;
+    let mut index = repo.index()?;
+    if index.has_conflicts() {
+        repo.cleanup_state()?;
+        anyhow::bail!("session {} has merge conflicts with main; resolve manually", session_id);
+    }
+    index.write()?;
+    let tree_id = index.write_tree()?;
+    let tree = repo.find_tree(tree_id)?;
+    let head_commit = repo.head()?.peel_to_commit()?;
+    repo.commit(
+        Some("HEAD"),
+        &sig, &sig,
+        &format!("session({}): finish", session_id),
+        &tree,
+        &[&head_commit, &branch_commit],
+    )?;
+    repo.cleanup_state()?;
+
+    // Delete the session branch
+    let mut b = repo.find_branch(&branch_name, BranchType::Local)?;
+    b.delete()?;
+
+    Ok(())
+}
+
+pub fn init_workspace(workspace: &Path) -> anyhow::Result<()> {
+    // git init — no-op if already a repo
+    match Repository::init(workspace) {
+        Ok(_) | Err(_) => {}
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,5 +276,40 @@ mod tests {
         create_session_worktree(ws.path(), "sabc1234").unwrap();
         let sessions = list_active_sessions(ws.path()).unwrap();
         assert!(sessions.contains(&"sabc1234".to_string()), "got: {:?}", sessions);
+    }
+
+    #[test]
+    fn finish_session_merges_into_main() {
+        let ws = TempDir::new().unwrap();
+        init_repo(ws.path());
+        create_session_worktree(ws.path(), "sfin001").unwrap();
+        // Write a file in the session so there's something to merge
+        std::fs::write(ws.path().join("sessions/sfin001/result.txt"), "done").unwrap();
+        commit_session(ws.path(), "sfin001", "session(sfin001): turn 1").unwrap();
+        finish_session(ws.path(), "sfin001").unwrap();
+        // After finish: session branch should be merged into main
+        let repo = git2::Repository::open(ws.path()).unwrap();
+        let sessions = list_active_sessions(ws.path()).unwrap();
+        assert!(!sessions.contains(&"sfin001".to_string()), "should be merged: {:?}", sessions);
+        // The merge commit should mention the session id
+        let msg = repo.head().unwrap().peel_to_commit().unwrap().message().unwrap().to_string();
+        assert!(msg.contains("sfin001"), "expected merge commit msg to contain session id, got: {msg}");
+    }
+
+    #[test]
+    fn init_workspace_creates_git_repo() {
+        let dir = TempDir::new().unwrap();
+        init_workspace(dir.path()).unwrap();
+        assert!(dir.path().join(".git").exists());
+        // Idempotent — calling again does not error
+        init_workspace(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn finish_session_noop_when_not_found() {
+        let ws = TempDir::new().unwrap();
+        init_repo(ws.path());
+        // Should not error for a non-existent session
+        finish_session(ws.path(), "snonexistent").unwrap();
     }
 }
