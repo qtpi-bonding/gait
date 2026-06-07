@@ -66,7 +66,7 @@ pub fn builtin_tools(
         GlobTool::new(codebase_path.clone()).boxed(),
         GrepTool::new(codebase_path.clone()).boxed(),
         LsTool::new(codebase_path.clone()).boxed(),
-        ShellTool::new(codebase_path.clone()).boxed(),
+        ShellTool::new(codebase_path.clone(), workspace.clone()).boxed(),
         OutputTool::new().boxed(),
         MultieditTool::new(codebase_path.clone()).boxed(),
         CodesearchTool::new(codebase_path.clone()).boxed(),

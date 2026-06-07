@@ -15,17 +15,27 @@ struct ShellParams {
     reason: String,
     /// Timeout in milliseconds (default 30000)
     timeout_ms: Option<u64>,
+    /// Optional pipeline to filter the full output (e.g. "grep FAILED | head -20").
+    /// Use this when you expect large output (test runs, build logs) to avoid flooding
+    /// context. The full output is always written to a tmp file whose path is returned,
+    /// so you can grep/read it later without re-running the command.
+    parse: Option<String>,
 }
 
 pub struct ShellTool {
     codebase_path: Arc<PathBuf>,
+    workspace: Arc<PathBuf>,
     parameters: Value,
 }
 
 impl ShellTool {
-    pub fn new(codebase_path: PathBuf) -> Self {
+    pub fn new(codebase_path: PathBuf, workspace: PathBuf) -> Self {
         let parameters = crate::tools::make_schema::<ShellParams>();
-        Self { codebase_path: Arc::new(codebase_path), parameters }
+        Self {
+            codebase_path: Arc::new(codebase_path),
+            workspace: Arc::new(workspace),
+            parameters,
+        }
     }
 }
 
@@ -33,7 +43,12 @@ impl ShellTool {
 impl Tool for ShellTool {
     fn name(&self) -> &str { "shell" }
     fn description(&self) -> &str {
-        "Run a shell command in the codebase directory. All shell commands require permission approval unless pre-allowed."
+        "Run a shell command in the codebase directory. Full output is always written to a \
+        workspace tmp file and its path is included in the result. For commands that produce \
+        large output (cargo test, build logs, grep over large trees) use the `parse` field \
+        (e.g. \"grep FAILED | head -30\") to return only relevant lines and keep context small. \
+        You can then grep/read the tmp file for more detail without re-running. \
+        All shell commands require permission approval unless pre-allowed."
     }
     fn parameters(&self) -> &Value { &self.parameters }
 
@@ -41,6 +56,15 @@ impl Tool for ShellTool {
         let params: ShellParams = serde_json::from_value(args)?;
         let timeout_ms = params.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
         let cwd = (*self.codebase_path).clone();
+
+        let tmp_dir = self.workspace.join("tmp");
+        let _ = std::fs::create_dir_all(&tmp_dir);
+
+        let run_id = {
+            let s = uuid::Uuid::new_v4().to_string().replace('-', "");
+            s[..8].to_string()
+        };
+        let out_path = tmp_dir.join(format!("shell-{}.txt", run_id));
 
         let start = std::time::Instant::now();
 
@@ -58,19 +82,38 @@ impl Tool for ShellTool {
 
         let duration_ms = start.elapsed().as_millis();
 
-        match result {
+        let (exit_code, combined) = match result {
             Ok(Ok(output)) => {
-                let exit_code = output.status.code().unwrap_or(1);
+                let code = output.status.code().unwrap_or(1);
                 let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
                 let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-                let combined = format!("{}{}", stdout, stderr);
-                Ok(Value::String(format!("exit {} ({}ms)\n{}", exit_code, duration_ms, combined)))
+                (code, format!("{}{}", stdout, stderr))
             }
-            Ok(Err(e)) => anyhow::bail!("Process error: {}", e),
-            Err(_) => {
-                Ok(Value::String(format!("TIMED OUT after {}ms\n", timeout_ms)))
-            }
-        }
+            Ok(Err(e)) => return Err(anyhow::anyhow!("Process error: {}", e)),
+            Err(_) => return Ok(Value::String(format!("TIMED OUT after {}ms\n", timeout_ms))),
+        };
+
+        let _ = std::fs::write(&out_path, &combined);
+        let file_note = format!("[full output: {} ({} bytes)]", out_path.display(), combined.len());
+
+        let display = if let Some(parse_cmd) = params.parse {
+            let piped = format!("cat {} | {}", out_path.display(), parse_cmd);
+            let parse_out = tokio::process::Command::new("sh")
+                .args(["-c", &piped])
+                .output()
+                .await
+                .map(|o| {
+                    let stdout = String::from_utf8_lossy(&o.stdout).into_owned();
+                    let stderr = String::from_utf8_lossy(&o.stderr).into_owned();
+                    format!("{}{}", stdout, stderr)
+                })
+                .unwrap_or_else(|e| format!("[parse error: {}]\n", e));
+            format!("{}\n{}", parse_out.trim_end(), file_note)
+        } else {
+            format!("{}\n{}", combined.trim_end(), file_note)
+        };
+
+        Ok(Value::String(format!("exit {} ({}ms)\n{}", exit_code, duration_ms, display)))
     }
 }
 
@@ -79,10 +122,14 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn make_tool(dir: &TempDir) -> ShellTool {
+        ShellTool::new(dir.path().to_path_buf(), dir.path().to_path_buf())
+    }
+
     #[tokio::test]
     async fn runs_command_and_captures_output() {
         let dir = TempDir::new().unwrap();
-        let tool = ShellTool::new(dir.path().to_path_buf());
+        let tool = make_tool(&dir);
         let result = tool.execute(serde_json::json!({
             "cmd": "echo hello",
             "reason": "test"
@@ -95,7 +142,7 @@ mod tests {
     #[tokio::test]
     async fn returns_nonzero_exit_code_on_failure() {
         let dir = TempDir::new().unwrap();
-        let tool = ShellTool::new(dir.path().to_path_buf());
+        let tool = make_tool(&dir);
         let result = tool.execute(serde_json::json!({
             "cmd": "false",
             "reason": "test"
@@ -108,7 +155,7 @@ mod tests {
     async fn runs_in_codebase_dir() {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("sentinel.txt"), "marker").unwrap();
-        let tool = ShellTool::new(dir.path().to_path_buf());
+        let tool = make_tool(&dir);
         let result = tool.execute(serde_json::json!({
             "cmd": "cat sentinel.txt",
             "reason": "test"
@@ -120,7 +167,7 @@ mod tests {
     #[tokio::test]
     async fn times_out_long_running_command() {
         let dir = TempDir::new().unwrap();
-        let tool = ShellTool::new(dir.path().to_path_buf());
+        let tool = make_tool(&dir);
         let result = tool.execute(serde_json::json!({
             "cmd": "sleep 10",
             "reason": "test timeout",
@@ -129,4 +176,39 @@ mod tests {
         let text = result.as_str().unwrap();
         assert!(text.contains("TIMED OUT"), "got: {text}");
     }
+
+    #[tokio::test]
+    async fn writes_output_to_tmp_file() {
+        let dir = TempDir::new().unwrap();
+        let tool = make_tool(&dir);
+        let result = tool.execute(serde_json::json!({
+            "cmd": "echo payload",
+            "reason": "test"
+        })).await.unwrap();
+        let text = result.as_str().unwrap();
+        // Result references the tmp file
+        assert!(text.contains("full output:"), "got: {text}");
+        assert!(text.contains("shell-"), "got: {text}");
+        // Tmp file actually exists with the content
+        let tmp_dir = dir.path().join("tmp");
+        assert!(tmp_dir.exists(), "tmp dir not created");
+        let files: Vec<_> = std::fs::read_dir(&tmp_dir).unwrap().collect();
+        assert!(!files.is_empty(), "no tmp file written");
+    }
+
+    #[tokio::test]
+    async fn parse_filters_output() {
+        let dir = TempDir::new().unwrap();
+        let tool = make_tool(&dir);
+        let result = tool.execute(serde_json::json!({
+            "cmd": "printf 'line1\nFAILED: test_foo\nline3\n'",
+            "reason": "test",
+            "parse": "grep FAILED"
+        })).await.unwrap();
+        let text = result.as_str().unwrap();
+        assert!(text.contains("FAILED: test_foo"), "got: {text}");
+        assert!(!text.contains("line1"), "got: {text}");
+        assert!(text.contains("full output:"), "got: {text}");
+    }
+
 }

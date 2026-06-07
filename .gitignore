@@ -5,4 +5,5 @@ bun.lockb
 /gait-rs/target/
 
 sessions/
+tmp/
 .gait-ws.lock

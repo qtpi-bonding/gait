@@ -257,7 +257,7 @@ pub async fn run_turn(
     }
 
     // Read and delete once-approval temp file (written by gait chat after user approval)
-    let once_path = format!("/tmp/gait-approve-{}", opts.session_id);
+    let once_path = opts.workspace.join("tmp").join(format!("gait-approve-{}", opts.session_id));
     let once_allow: Vec<String> = std::fs::read_to_string(&once_path)
         .unwrap_or_default()
         .lines()
