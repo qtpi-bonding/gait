@@ -12,6 +12,7 @@ use crate::session::transcript::{
 use crate::session::context::reconstruct_messages_from_events;
 use crate::config::{McpToolDef, SkillDef};
 use crate::git;
+use crate::permission::{is_tool_allowed, unapproved_segments, command_patterns};
 
 pub struct TurnOpts {
     pub session_id: String,
@@ -199,27 +200,48 @@ pub async fn run_turn(
         })?;
     }
 
-    // Append user_turn if task provided
-    if let Some(task) = &opts.task {
-        emit_event(&tx_path, &AnyEvent::UserTurn {
-            content: task.clone(),
-            from: None,
-            context: Some(crate::session::transcript::UserTurnContext {
-                codebase_hash: Some(codebase_hash.clone()),
-                codebase_dirty: Some(codebase_dirty),
-                dirty_files: if dirty_files.is_empty() { None } else { Some(dirty_files.clone()) },
-                injected_files: None,
-            }),
-            ts: now_ms(),
-        })?;
+    // Read and delete once-approval temp file (written by gait chat after user approval)
+    let once_path = format!("/tmp/gait-approve-{}", opts.session_id);
+    let once_allow: Vec<String> = std::fs::read_to_string(&once_path)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let _ = std::fs::remove_file(&once_path);
+    let mut effective_allow = opts.allow.clone();
+    effective_allow.extend(once_allow);
+
+    // Detect resume after permission approval: skip UserTurn injection if last event is PermissionsReply
+    // (chat.rs appends PermissionsReply before re-spawning, so the model already has context)
+    let pre_events = read_events(&tx_path)?;
+    let resuming_after_permission = pre_events.last()
+        .map(|e| matches!(e, AnyEvent::PermissionsReply { .. }))
+        .unwrap_or(false);
+
+    if !resuming_after_permission {
+        if let Some(task) = &opts.task {
+            emit_event(&tx_path, &AnyEvent::UserTurn {
+                content: task.clone(),
+                from: None,
+                context: Some(crate::session::transcript::UserTurnContext {
+                    codebase_hash: Some(codebase_hash.clone()),
+                    codebase_dirty: Some(codebase_dirty),
+                    dirty_files: if dirty_files.is_empty() { None } else { Some(dirty_files.clone()) },
+                    injected_files: None,
+                }),
+                ts: now_ms(),
+            })?;
+        }
     }
 
     // Read events once for both message reconstruction and derived tool state.
     let events = read_events(&tx_path)?;
     let mut messages = reconstruct_messages_from_events(&events)?;
-    // Prepend turn context as first user message
-    let turn_ctx = build_turn_context(&codebase_hash, &dirty_files);
-    messages.insert(0, Message::User { content: MessageContent::Text(turn_ctx) });
+    if !resuming_after_permission {
+        let turn_ctx = build_turn_context(&codebase_hash, &dirty_files);
+        messages.insert(0, Message::User { content: MessageContent::Text(turn_ctx) });
+    }
 
     // Derive loaded MCP tools from the POST-COMPACTION slice only.
     // Pre-compaction loads are intentionally forgotten (spec: model reloads after compaction).
@@ -323,16 +345,25 @@ pub async fn run_turn(
 
         // First pass: collect pending permissions for non-allowed tools
         for tc in &step_tool_calls {
-            let allowed = opts.auto || opts.allow.contains(&tc.tool_name)
-                || tc.tool_name == "output"
-                || tc.tool_name == "mcp"
-                || tc.tool_name == "skill";
-            if !allowed {
+            if opts.auto || is_tool_allowed(&tc.tool_name, &tc.args, &effective_allow) {
+                continue;
+            }
+            if tc.tool_name == "shell" {
+                let cmd = tc.args.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
+                for seg in unapproved_segments(cmd, &effective_allow) {
+                    pending_permissions.push(PermissionItem {
+                        id: tc.tool_call_id.clone(),
+                        cmd: seg.clone(),
+                        reason: "shell command requires permission".into(),
+                        patterns: command_patterns(&seg),
+                    });
+                }
+            } else {
                 pending_permissions.push(PermissionItem {
                     id: tc.tool_call_id.clone(),
-                    cmd: format!("{}({})", tc.tool_name, tc.args),
+                    cmd: tc.tool_name.clone(),
                     reason: format!("{} requires permission", tc.tool_name),
-                    patterns: vec![],
+                    patterns: vec![tc.tool_name.clone()],
                 });
             }
         }
