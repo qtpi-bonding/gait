@@ -1,76 +1,50 @@
-# gait — agent guidelines
+# gait-rs agent guidelines
+
+You are implementing features in **gait-rs** — a Rust port of the gait CLI agent runner.
+
+## Codebase layout
+
+The codebase root is `gait-rs/`. Key files:
+- `src/bin/gait.rs` — CLI entry point (cmd_run, cmd_init, cmd_auth, etc.)
+- `src/turn.rs` — core turn loop (`run_turn`, `TurnOpts`, permission gating)
+- `src/session/transcript.rs` — `AnyEvent` enum, JSONL helpers
+- `src/session/context.rs` — `reconstruct_messages` from transcript
+- `src/tools/mod.rs` — `builtin_tools()`, tool registry
+- `src/tools/*.rs` — individual tool implementations
+- `src/config.rs` — `GaitConfig`, `ConfigTool` parsed from gait.jsonc
+- `src/factory.rs` — `load_provider(model_str)` → `Box<dyn Provider>`
+- `src/anthropic/` — Anthropic SSE streaming client
+- `tests/` — integration tests
 
 ## Commands
 
-- **Test**: `bun test`
-- **Single file**: `bun test src/tools/mcp.test.ts`
-- **Run CLI**: `bun run src/cli/index.ts <command>`
-- **Build binary**: `bun run build` → `dist/gait`
-- **Typecheck**: `bun run tsc --noEmit` (no explicit typecheck script; use tsc directly)
+- **Run all tests**: `cargo test 2>&1 | tail -30` (or use `cargo_test` tool)
+- **Check compilation**: `cargo build 2>&1 | grep '^error'` (or use `cargo_build` tool)
+- **Run specific test**: `cargo test <test_name> 2>&1 | tail -10`
 
-## Architecture
+## Key patterns
 
-gait is a **daemonless, git-native agent runner**. Each `gait run` is one turn. Nothing persists in memory between turns.
+- Tool implementations: see `src/tools/output.rs` for the minimal stateless pattern
+- Tools that scope to codebase: see `src/tools/read.rs` for how `codebase_path` is used
+- Adding a new tool: create `src/tools/foo.rs`, register in `src/tools/mod.rs`, add to `builtin_tools()`
+- All tests use TDD pattern: write failing test → implement → verify passing → commit
 
-### Key invariants
+## Invariants
 
-- **Transcript-first**: every event (tool call, result, clarify, turn_complete, etc.) is appended to an append-only JSONL file before anything else. If it didn't get written to the transcript, it didn't happen.
-- **Git-native**: each session lives on its own branch (`session/{id}`) branched off `main`. Commits happen at every turn boundary. `git branch --merged main` identifies finished sessions.
-- **Daemonless**: `runTurn` in `src/cli/cmd/run.ts` is the entire execution unit. It acquires a file lock, runs one LLM turn, commits, releases. No background processes.
-- **Per-turn MCP**: MCP server subprocesses are spawned at the start of `runTurn` and closed in the `finally` block. Never persist across turns.
-- **Flat agent configs**: agent system prompts live in `agents/{name}.md` at the workspace root. No config hierarchy — one location, flat directory.
+- Always run `cargo test` after completing each task to verify no regressions
+- Never skip steps in the plan — follow TDD order exactly
+- Commit after each task with a meaningful message
+- Do not modify `gait.jsonc` model field — it must always be `minimax/MiniMax-M1-80k`
 
-### Source layout
+## Working on a plan
 
-```
-src/
-  cli/cmd/run.ts        — runTurn(): the core turn loop
-  config.ts             — gait.jsonc schema (Zod); includes default_agent field
-  agent.ts              — loadAgentSystemPrompt(), resolveAgentPrompt()
-  system_prompt.ts      — buildSystemPrompt() — gait block + AGENTS.md + agent-instructions
-  session/
-    transcript.ts       — all event schemas + append/read helpers
-    context.ts          — reconstruct JSONL events → AI SDK messages
-    compaction.ts       — LLM-based context compression
-  tools/
-    index.ts            — createBuiltinTools(), createConfigTools()
-    mcp.ts              — createMcpTools() — stdio MCP client per turn
-    clarify.ts          — clarify/clarify_convergence tools + signals
-    inform.ts           — inform/inform_convergence tools + signals
-    spawn_subagent.ts   — (deprecated, being replaced by async agent model)
-  git.ts                — worktree create/commit/lock helpers
-  permissions.ts        — tool call gating + approval flow
-  provider/             — AI SDK model resolution across providers
-agents/
-  default.md            — generic agent system prompt stub; customize per workspace
-```
+When given a plan file, follow it task-by-task:
+1. Read the task, understand what it requires
+2. Write the failing test first
+3. Run tests to confirm failure
+4. Implement the code
+5. Run tests to confirm passing
+6. Commit
+7. Move to the next task
 
-### Transcript event types
-
-`session_start` → `user_turn` → `tool_call` / `tool_result` → `assistant_text` → `turn_complete`
-
-Special exits: `clarify`, `inform`, `permissions` (each commits and exits; next `gait run` resumes from that state).
-
-Compaction: `compaction` event replaces old events with a summary; `reconstructMessages` uses the latest compaction as its starting point.
-
-## Code style
-
-- **Runtime**: Bun + TypeScript ESM
-- **Validation**: Zod everywhere for external inputs (config, transcript events, tool parameters)
-- **AI SDK**: `ai` package from Vercel — `streamText`, `CoreTool`, `tool()`
-- **Tests**: `bun:test` — always TDD; watch each test fail before implementing
-- **No mocks** unless unavoidable; test against real implementations
-- **No comments** unless the why is non-obvious
-- **No error handling** for impossible cases; validate at boundaries only
-
-## Testing patterns
-
-Each tool module exports its signal/state + a `reset*Signal()` for test isolation. Tests call `beforeEach` to reset.
-
-Transcript tests write to a `tmpDir` via `fs.mkdtempSync` and clean up in `afterEach`.
-
-MCP tests use `src/tools/mcp_fake_server.ts` — a real stdio MCP server subprocess.
-
-## Active design work
-
-- **Agent coordination redesign**: `spawn_subagent` (in-process recursive) is being replaced by an async peer-agent model. See `docs/superpowers/specs/2026-06-06-agent-coordination-design.md`.
+Call `output()` when the entire plan is complete with a summary of what was implemented.

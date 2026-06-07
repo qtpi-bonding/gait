@@ -89,7 +89,7 @@ async fn cmd_run(argv: &[String]) {
     });
 
     // Append config-defined tools
-    let mut tools = builtin_tools(codebase_path.clone());
+    let mut tools = builtin_tools(codebase_path.clone(), config.mcp_tools.clone(), config.skills.clone());
     for ct in &config.tools {
         let cmd = ct.cmd.clone();
         let cwd = if ct.cwd == "workspace" {
@@ -139,6 +139,8 @@ async fn cmd_run(argv: &[String]) {
             allow: config.allow,
             system_prompt,
             model: model.clone(),
+            mcp_registry: config.mcp_tools,
+            skill_registry: config.skills,
         },
         provider,
         tools,

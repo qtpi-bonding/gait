@@ -81,6 +81,8 @@ async fn full_turn_creates_transcript_and_git_commit() {
             allow: vec!["ls".into()],
             system_prompt: "you are helpful".into(),
             model: "mock/test".into(),
+            mcp_registry: vec![],
+            skill_registry: vec![],
         },
         provider,
         vec![Box::new(ls_tool)],
@@ -136,12 +138,14 @@ async fn second_turn_resumes_session() {
         session_id: "sint002".into(), task: Some("task 1".into()), auto: true,
         workspace: ws.path().to_path_buf(), codebase_path: ws.path().to_path_buf(),
         allow: vec![], system_prompt: "".into(), model: "mock/test".into(),
+        mcp_registry: vec![], skill_registry: vec![],
     }, provider.clone(), vec![]).await.unwrap();
 
     run_turn(TurnOpts {
         session_id: "sint002".into(), task: Some("task 2".into()), auto: true,
         workspace: ws.path().to_path_buf(), codebase_path: ws.path().to_path_buf(),
         allow: vec![], system_prompt: "".into(), model: "mock/test".into(),
+        mcp_registry: vec![], skill_registry: vec![],
     }, provider, vec![]).await.unwrap();
 
     let tx = ws.path().join("sessions/sint002/transcript.jsonl");

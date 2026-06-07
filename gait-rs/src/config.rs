@@ -1,7 +1,7 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigTool {
     pub name: String,
     pub description: String,
@@ -12,6 +12,23 @@ pub struct ConfigTool {
 
 fn default_cwd() -> String { "codebase".into() }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpToolDef {
+    pub name: String,
+    pub description: String,
+    pub schema: serde_json::Value,
+    pub cmd: String,
+    #[serde(default = "default_cwd")]
+    pub cwd: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillDef {
+    pub name: String,
+    pub description: String,
+    pub content: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct GaitConfig {
     pub model: String,
@@ -21,6 +38,10 @@ pub struct GaitConfig {
     pub tools: Vec<ConfigTool>,
     #[serde(default = "default_compaction_threshold")]
     pub compaction_threshold: f64,
+    #[serde(default)]
+    pub mcp_tools: Vec<McpToolDef>,
+    #[serde(default)]
+    pub skills: Vec<SkillDef>,
 }
 
 fn default_compaction_threshold() -> f64 { 0.8 }
@@ -32,6 +53,8 @@ impl Default for GaitConfig {
             allow: vec!["read".into(), "glob".into(), "grep".into(), "ls".into()],
             tools: vec![],
             compaction_threshold: 0.8,
+            mcp_tools: vec![],
+            skills: vec![],
         }
     }
 }
@@ -124,5 +147,27 @@ mod tests {
         assert_eq!(cfg.tools[0].cwd, "codebase");
         assert_eq!(cfg.tools[1].name, "lint");
         assert_eq!(cfg.tools[1].cwd, "codebase"); // default
+    }
+
+    #[test]
+    fn parses_mcp_tools_and_skills() {
+        let dir = TempDir::new().unwrap();
+        // Build the JSON content using concat! and individual line strings to avoid
+        // Rust raw-string backslash-line-continuation issues with literal "\n" sequences.
+        let content_str = "# TDD\n1. Write failing test\n2. Make it pass\n3. Refactor";
+        let content_json = serde_json::to_string(content_str).unwrap();
+        let jsonc = format!(
+            "{{\n  \"model\": \"minimax/MiniMax-M1\",\n  \"mcp_tools\": [\n    {{\n      \"name\": \"slack_send\",\n      \"description\": \"post a message to Slack\",\n      \"schema\": {{ \"type\": \"object\", \"properties\": {{ \"channel\": {{ \"type\": \"string\" }}, \"text\": {{ \"type\": \"string\" }} }}, \"required\": [\"channel\", \"text\"] }},\n      \"cmd\": \"node mcp-slack.js\",\n      \"cwd\": \"workspace\"\n    }}\n  ],\n  \"skills\": [\n    {{ \"name\": \"tdd\", \"description\": \"test-driven development workflow\", \"content\": {content_json} }}\n  ]\n}}\n"
+        );
+        std::fs::write(dir.path().join("gait.jsonc"), jsonc).unwrap();
+        let cfg = load_config(dir.path());
+        assert_eq!(cfg.mcp_tools.len(), 1);
+        assert_eq!(cfg.mcp_tools[0].name, "slack_send");
+        assert_eq!(cfg.mcp_tools[0].cmd, "node mcp-slack.js");
+        assert_eq!(cfg.mcp_tools[0].cwd, "workspace");
+        assert!(cfg.mcp_tools[0].schema.is_object());
+        assert_eq!(cfg.skills.len(), 1);
+        assert_eq!(cfg.skills[0].name, "tdd");
+        assert!(cfg.skills[0].content.contains("TDD"));
     }
 }

@@ -1,8 +1,12 @@
 {
   // gait configuration
-  "model": "anthropic/claude-sonnet-4-6",
-  // Allow list: tools that run without approval. Default empty = everything gated.
-  "allow": [],
-  // Tier 1 config-defined tools: shell commands the LLM can call by name
-  "tools": []
+  "model": "minimax/MiniMax-M1-80k",
+  // Allow list: tools that run without approval in non-auto mode
+  "allow": ["read", "glob", "grep", "ls", "codesearch", "output", "mcp", "skill"],
+  // Tier 1 config-defined tools
+  "tools": [
+    { "name": "cargo_test", "description": "Run the full gait-rs test suite", "cmd": "cargo test 2>&1 | tail -30", "cwd": "codebase" },
+    { "name": "cargo_build", "description": "Build gait-rs in debug mode to check for compile errors", "cmd": "cargo build 2>&1 | grep -E '^error|^warning.*unused' | head -20", "cwd": "codebase" },
+    { "name": "cargo_test_filter", "description": "Run a filtered subset of tests. Pass the filter string as the entire cmd (it will be appended). Use shell tool instead if you need a specific filter.", "cmd": "cargo test 2>&1 | tail -20", "cwd": "codebase" }
+  ]
 }

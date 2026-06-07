@@ -2,12 +2,11 @@ use std::path::Path;
 use crate::types::{Message, MessageContent, AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind};
 use crate::session::transcript::{AnyEvent, read_events, last_compaction_index};
 
-pub fn reconstruct_messages(path: &Path) -> anyhow::Result<Vec<Message>> {
-    let all_events = read_events(path)?;
+pub fn reconstruct_messages_from_events(all_events: &[AnyEvent]) -> anyhow::Result<Vec<Message>> {
     if all_events.is_empty() { return Ok(vec![]); }
 
     // Start from last compaction breakpoint (or beginning)
-    let start = last_compaction_index(&all_events).unwrap_or(0);
+    let start = last_compaction_index(all_events).unwrap_or(0);
     // If there IS a compaction at `start`, include it (it provides the summary message)
     let events = &all_events[start..];
 
@@ -153,6 +152,11 @@ pub fn reconstruct_messages(path: &Path) -> anyhow::Result<Vec<Message>> {
     }
 
     Ok(messages)
+}
+
+pub fn reconstruct_messages(path: &Path) -> anyhow::Result<Vec<Message>> {
+    let all_events = read_events(path)?;
+    reconstruct_messages_from_events(&all_events)
 }
 
 #[cfg(test)]

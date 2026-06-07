@@ -9,6 +9,8 @@ pub mod output;
 pub mod multiedit;
 pub mod codesearch;
 pub mod webfetch;
+pub mod mcp;
+pub mod skill;
 
 pub use read::ReadTool;
 pub use write::WriteTool;
@@ -21,9 +23,12 @@ pub use output::OutputTool;
 pub use multiedit::MultieditTool;
 pub use codesearch::CodesearchTool;
 pub use webfetch::WebfetchTool;
+pub use mcp::McpTool;
+pub use skill::SkillTool;
 
 use std::path::PathBuf;
 use crate::types::Tool;
+use crate::config::{McpToolDef, SkillDef};
 
 /// Generate a JSON Schema for type T and strip the `$schema` and `title` meta-keys
 /// that schemars adds by default. Anthropic's `input_schema` field accepts a plain
@@ -39,7 +44,11 @@ pub fn make_schema<T: schemars::JsonSchema>() -> serde_json::Value {
 }
 
 /// Returns all built-in tools configured for the given codebase root path.
-pub fn builtin_tools(codebase_path: PathBuf) -> Vec<Box<dyn Tool>> {
+pub fn builtin_tools(
+    codebase_path: PathBuf,
+    mcp_tools: Vec<McpToolDef>,
+    skills: Vec<SkillDef>,
+) -> Vec<Box<dyn Tool>> {
     vec![
         ReadTool::new(codebase_path.clone()).boxed(),
         WriteTool::new(codebase_path.clone()).boxed(),
@@ -52,6 +61,8 @@ pub fn builtin_tools(codebase_path: PathBuf) -> Vec<Box<dyn Tool>> {
         MultieditTool::new(codebase_path.clone()).boxed(),
         CodesearchTool::new(codebase_path.clone()).boxed(),
         WebfetchTool::new().boxed(),
+        McpTool::new(mcp_tools).boxed(),
+        SkillTool::new(skills).boxed(),
     ]
 }
 
@@ -61,18 +72,25 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn builtin_tools_returns_eleven() {
-        let tools = builtin_tools(PathBuf::from("/tmp"));
-        assert_eq!(tools.len(), 11);
+    fn builtin_tools_returns_thirteen() {
+        let tools = builtin_tools(PathBuf::from("/tmp"), vec![], vec![]);
+        assert_eq!(tools.len(), 13);
     }
-
     #[test]
     fn all_tool_names_unique() {
-        let tools = builtin_tools(PathBuf::from("/tmp"));
+        let tools = builtin_tools(PathBuf::from("/tmp"), vec![], vec![]);
         let mut names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         let original_len = names.len();
         names.sort();
         names.dedup();
         assert_eq!(names.len(), original_len, "duplicate tool names found");
+    }
+
+    #[test]
+    fn mcp_and_skill_meta_tools_present() {
+        let tools = builtin_tools(PathBuf::from("/tmp"), vec![], vec![]);
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert!(names.contains(&"mcp"), "mcp tool missing, got: {:?}", names);
+        assert!(names.contains(&"skill"), "skill tool missing, got: {:?}", names);
     }
 }

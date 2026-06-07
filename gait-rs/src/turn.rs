@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::collections::HashMap;
 use futures_util::StreamExt;
 use crate::provider::{Provider, StreamChunk};
 use crate::types::{Message, MessageContent, AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind, Usage};
@@ -8,7 +9,8 @@ use crate::session::transcript::{
     AnyEvent, append_event, read_events, init_session, count_turn_complete, now_ms,
     InitSessionOpts, PermissionItem, PermissionsReplyItem, TurnUsage, TurnOutput,
 };
-use crate::session::context::reconstruct_messages;
+use crate::session::context::reconstruct_messages_from_events;
+use crate::config::{McpToolDef, SkillDef};
 use crate::git;
 
 pub struct TurnOpts {
@@ -20,6 +22,8 @@ pub struct TurnOpts {
     pub allow: Vec<String>,
     pub system_prompt: String,
     pub model: String,  // stored in session_start event for wire-compat with TS gait
+    pub mcp_registry: Vec<McpToolDef>,
+    pub skill_registry: Vec<SkillDef>,
 }
 
 // ── Session lock (RAII PID file) ─────────────────────────────────────────────
@@ -66,6 +70,101 @@ fn build_turn_context(codebase_hash: &str, dirty_files: &[String]) -> String {
     ctx
 }
 
+/// Scan transcript events to derive which MCP tools are currently loaded.
+/// Last call per tool name wins. Returns names of tools where context=true.
+/// IMPORTANT: Pass only the post-compaction slice (from last_compaction_index forward).
+/// Loads before the compaction breakpoint are intentionally forgotten — the model
+/// reloads only what it still needs after compaction.
+pub fn derive_loaded_mcps(events: &[AnyEvent]) -> Vec<String> {
+    let mut state: HashMap<String, bool> = HashMap::new();
+    for event in events {
+        if let AnyEvent::ToolCall { name, input, .. } = event {
+            if name == "mcp" {
+                if let (Some(tool_name), Some(context)) = (
+                    input.get("name").and_then(|v| v.as_str()),
+                    input.get("context").and_then(|v| v.as_bool()),
+                ) {
+                    state.insert(tool_name.to_string(), context);
+                }
+            }
+        }
+    }
+    state.into_iter().filter(|(_, loaded)| *loaded).map(|(name, _)| name).collect()
+}
+
+/// Same as derive_loaded_mcps but for skills.
+pub fn derive_loaded_skills(events: &[AnyEvent]) -> Vec<String> {
+    let mut state: HashMap<String, bool> = HashMap::new();
+    for event in events {
+        if let AnyEvent::ToolCall { name, input, .. } = event {
+            if name == "skill" {
+                if let (Some(skill_name), Some(context)) = (
+                    input.get("name").and_then(|v| v.as_str()),
+                    input.get("context").and_then(|v| v.as_bool()),
+                ) {
+                    state.insert(skill_name.to_string(), context);
+                }
+            }
+        }
+    }
+    state.into_iter().filter(|(_, loaded)| *loaded).map(|(name, _)| name).collect()
+}
+
+/// Build the <mcp-index> system prompt section. Returns empty string if registry is empty.
+pub fn build_mcp_index(registry: &[McpToolDef]) -> String {
+    if registry.is_empty() { return String::new(); }
+    let lines: Vec<String> = registry.iter()
+        .map(|d| format!("{} — {}", d.name, d.description))
+        .collect();
+    format!("\n<mcp-index>\n{}\n</mcp-index>", lines.join("\n"))
+}
+
+/// Build the <skill-index> system prompt section. Returns empty string if registry is empty.
+pub fn build_skill_index(registry: &[SkillDef]) -> String {
+    if registry.is_empty() { return String::new(); }
+    let lines: Vec<String> = registry.iter()
+        .map(|d| format!("{} — {}", d.name, d.description))
+        .collect();
+    format!("\n<skill-index>\n{}\n</skill-index>", lines.join("\n"))
+}
+
+fn make_mcp_tool_def(
+    def: &McpToolDef,
+    workspace: &std::path::Path,
+    codebase_path: &std::path::Path,
+) -> Box<dyn crate::types::Tool> {
+    let cmd = def.cmd.clone();
+    let cwd = if def.cwd == "workspace" {
+        workspace.to_path_buf()
+    } else {
+        codebase_path.to_path_buf()
+    };
+    let name = def.name.clone();
+    let description = def.description.clone();
+    let schema = def.schema.clone();
+    Box::new(crate::types::ToolDef {
+        name,
+        description,
+        parameters: schema,
+        execute: Box::new(move |_args| {
+            let cmd = cmd.clone();
+            let cwd = cwd.clone();
+            Box::pin(async move {
+                let output = tokio::process::Command::new("sh")
+                    .arg("-c").arg(&cmd)
+                    .current_dir(&cwd)
+                    .output().await
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                let combined = if stderr.is_empty() { stdout }
+                    else { format!("{}\nstderr:\n{}", stdout, stderr) };
+                Ok(serde_json::Value::String(combined))
+            })
+        }),
+    })
+}
+
 pub async fn run_turn(
     opts: TurnOpts,
     provider: Arc<dyn Provider>,
@@ -108,16 +207,39 @@ pub async fn run_turn(
         })?;
     }
 
-    let mut messages = reconstruct_messages(&tx_path)?;
+    // Read events once for both message reconstruction and derived tool state.
+    let events = read_events(&tx_path)?;
+    let mut messages = reconstruct_messages_from_events(&events)?;
     // Prepend turn context as first user message
     let turn_ctx = build_turn_context(&codebase_hash, &dirty_files);
     messages.insert(0, Message::User { content: MessageContent::Text(turn_ctx) });
+
+    // Derive loaded MCP tools from the POST-COMPACTION slice only.
+    // Pre-compaction loads are intentionally forgotten (spec: model reloads after compaction).
+    let compaction_start = crate::session::transcript::last_compaction_index(&events).unwrap_or(0);
+    let post_compaction = &events[compaction_start..];
+    let loaded_mcp_names = derive_loaded_mcps(post_compaction);
+    let mut tools = tools;  // take ownership so we can mutate
+    for name in &loaded_mcp_names {
+        if let Some(def) = opts.mcp_registry.iter().find(|d| d.name == *name) {
+            tools.push(make_mcp_tool_def(def, &opts.workspace, &opts.codebase_path));
+        }
+    }
+
+    // Augment system prompt with MCP/skill indexes
+    let mcp_idx = build_mcp_index(&opts.mcp_registry);
+    let skill_idx = build_skill_index(&opts.skill_registry);
+    let system_prompt = if mcp_idx.is_empty() && skill_idx.is_empty() {
+        opts.system_prompt.clone()
+    } else {
+        format!("{}{}{}", opts.system_prompt, mcp_idx, skill_idx)
+    };
 
     let mut total_usage = Usage::default();
     let mut output_signal: Option<TurnOutput> = None;
 
     for _step in 0..50 {
-        let mut chunk_stream = provider.stream(&opts.system_prompt, &messages, &tools).await
+        let mut chunk_stream = provider.stream(&system_prompt, &messages, &tools).await
             .map_err(|e| anyhow::anyhow!("provider error: {}", e))?;
 
         let mut step_text = String::new();
@@ -187,7 +309,10 @@ pub async fn run_turn(
 
         // First pass: collect pending permissions for non-allowed tools
         for tc in &step_tool_calls {
-            let allowed = opts.auto || opts.allow.contains(&tc.tool_name) || tc.tool_name == "output";
+            let allowed = opts.auto || opts.allow.contains(&tc.tool_name)
+                || tc.tool_name == "output"
+                || tc.tool_name == "mcp"
+                || tc.tool_name == "skill";
             if !allowed {
                 pending_permissions.push(PermissionItem {
                     id: tc.tool_call_id.clone(),
@@ -248,6 +373,24 @@ pub async fn run_turn(
                 },
                 None => format!("error: unknown tool '{}'", tc.tool_name),
             };
+            // Handle within-turn mcp/skill context changes
+            if tc.tool_name == "mcp" {
+                if let (Some(name), Some(ctx)) = (
+                    tc.args.get("name").and_then(|v| v.as_str()),
+                    tc.args.get("context").and_then(|v| v.as_bool()),
+                ) {
+                    if ctx {
+                        if let Some(def) = opts.mcp_registry.iter().find(|d| d.name == name) {
+                            // Only add if not already present
+                            if !tools.iter().any(|t| t.name() == name) {
+                                tools.push(make_mcp_tool_def(def, &opts.workspace, &opts.codebase_path));
+                            }
+                        }
+                    } else {
+                        tools.retain(|t| t.name() != name);
+                    }
+                }
+            }
             if tc.tool_name == "output" {
                 if let Some(summary) = tc.args.get("summary").and_then(|v| v.as_str()) {
                     output_signal = Some(TurnOutput {
@@ -281,6 +424,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use crate::provider::ProviderError;
     use crate::types::ToolDef;
     use async_stream::stream;
@@ -365,6 +509,8 @@ mod tests {
                 allow: vec!["read".into()],
                 system_prompt: "you are a helpful assistant".into(),
                 model: "mock/test".into(),
+                mcp_registry: vec![],
+                skill_registry: vec![],
             },
             provider,
             vec![Box::new(read_tool)],
@@ -436,6 +582,8 @@ mod tests {
                 allow: vec![],
                 system_prompt: "".into(),
                 model: "mock/test".into(),
+                mcp_registry: vec![],
+                skill_registry: vec![],
             },
             provider,
             vec![Box::new(output_tool)],
@@ -494,6 +642,8 @@ mod tests {
                 allow: vec![],
                 system_prompt: "".into(),
                 model: "mock/test".into(),
+                mcp_registry: vec![],
+                skill_registry: vec![],
             },
             provider,
             vec![Box::new(output_tool)],
@@ -536,6 +686,8 @@ mod tests {
                 allow: vec!["read".into()], // shell is NOT allowed
                 system_prompt: "".into(),
                 model: "mock/test".into(),
+                mcp_registry: vec![],
+                skill_registry: vec![],
             },
             provider,
             vec![],
@@ -547,5 +699,98 @@ mod tests {
         let has_turn_complete = events.iter().any(|e| matches!(e, AnyEvent::TurnComplete { .. }));
         assert!(has_permissions, "should have permissions event");
         assert!(!has_turn_complete, "should NOT have turn_complete — turn was paused");
+    }
+
+    #[test]
+    fn derive_loaded_mcps_empty_events() {
+        let events: Vec<AnyEvent> = vec![];
+        let loaded = derive_loaded_mcps(&events);
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn derive_loaded_mcps_single_load() {
+        let events = vec![
+            AnyEvent::ToolCall {
+                id: "tc1".into(),
+                name: "mcp".into(),
+                input: serde_json::json!({ "name": "slack_send", "context": true }),
+                ts: 1,
+            },
+        ];
+        let loaded = derive_loaded_mcps(&events);
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded.contains(&"slack_send".to_string()));
+    }
+
+    #[test]
+    fn derive_loaded_mcps_load_then_unload() {
+        let events = vec![
+            AnyEvent::ToolCall {
+                id: "tc1".into(), name: "mcp".into(),
+                input: serde_json::json!({ "name": "slack_send", "context": true }), ts: 1,
+            },
+            AnyEvent::ToolCall {
+                id: "tc2".into(), name: "mcp".into(),
+                input: serde_json::json!({ "name": "slack_send", "context": false }), ts: 2,
+            },
+        ];
+        let loaded = derive_loaded_mcps(&events);
+        assert!(loaded.is_empty(), "should be empty after unload, got: {:?}", loaded);
+    }
+
+    #[test]
+    fn derive_loaded_mcps_multiple_tools() {
+        let events = vec![
+            AnyEvent::ToolCall {
+                id: "tc1".into(), name: "mcp".into(),
+                input: serde_json::json!({ "name": "slack_send", "context": true }), ts: 1,
+            },
+            AnyEvent::ToolCall {
+                id: "tc2".into(), name: "mcp".into(),
+                input: serde_json::json!({ "name": "notion_create", "context": true }), ts: 2,
+            },
+            AnyEvent::ToolCall {
+                id: "tc3".into(), name: "mcp".into(),
+                input: serde_json::json!({ "name": "slack_send", "context": false }), ts: 3,
+            },
+        ];
+        let loaded = derive_loaded_mcps(&events);
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded.contains(&"notion_create".to_string()));
+    }
+
+    #[test]
+    fn build_mcp_index_empty() {
+        use crate::config::McpToolDef;
+        let index = build_mcp_index(&[]);
+        assert!(index.is_empty());
+    }
+
+    #[test]
+    fn build_mcp_index_formats_correctly() {
+        use crate::config::McpToolDef;
+        let registry = vec![
+            McpToolDef { name: "slack_send".into(), description: "post to Slack".into(),
+                schema: serde_json::json!({}), cmd: "node s.js".into(), cwd: "workspace".into() },
+        ];
+        let index = build_mcp_index(&registry);
+        assert!(index.contains("<mcp-index>"), "got: {index}");
+        assert!(index.contains("slack_send"), "got: {index}");
+        assert!(index.contains("post to Slack"), "got: {index}");
+        assert!(index.contains("</mcp-index>"), "got: {index}");
+    }
+
+    #[test]
+    fn build_skill_index_formats_correctly() {
+        use crate::config::SkillDef;
+        let registry = vec![
+            SkillDef { name: "tdd".into(), description: "TDD workflow".into(), content: "...".into() },
+        ];
+        let index = build_skill_index(&registry);
+        assert!(index.contains("<skill-index>"), "got: {index}");
+        assert!(index.contains("tdd"), "got: {index}");
+        assert!(index.contains("TDD workflow"), "got: {index}");
+        assert!(index.contains("</skill-index>"), "got: {index}");
     }
 }
