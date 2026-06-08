@@ -375,9 +375,6 @@ pub fn run_chat(
     agent_name: Option<String>,
 ) -> anyhow::Result<()> {
     let gait_bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gait"));
-    let history_path = dirs_next::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("gait/chat_history");
 
     let agent_path: Option<PathBuf> = agent_name.as_deref().map(|n| {
         crate::agent_frontmatter::resolve_agent_path(&workspace, n)
@@ -396,7 +393,7 @@ pub fn run_chat(
     );
 
     let mut rl = Editor::<ReplHelper, DefaultHistory>::new()?;
-    let _ = rl.load_history(&history_path);
+    seed_history_from_transcripts(&mut rl, &workspace);
     rl.set_helper(Some(ReplHelper {
         shell_history_path: shell_history_path.clone(),
     }));
@@ -414,8 +411,6 @@ pub fn run_chat(
         if line.is_empty() {
             continue;
         }
-        let _ = rl.add_history_entry(&line);
-
         if is_bang_command(&line) {
             let cmd = bang_command_str(&line);
             let (output, code) = run_and_capture(cmd, &codebase);
@@ -444,6 +439,8 @@ pub fn run_chat(
             "/exit" | "exit" | "quit" => break,
             _ => {}
         }
+
+        let _ = rl.add_history_entry(&line);
 
         let task: String = match expand_at_markers(&line, &shell_history_path, &codebase) {
             Ok(expanded) => expanded,
@@ -591,8 +588,35 @@ pub fn run_chat(
         }
     }
 
-    let _ = rl.save_history(&history_path);
     Ok(())
+}
+
+fn seed_history_from_transcripts(
+    rl: &mut Editor<ReplHelper, DefaultHistory>,
+    workspace: &std::path::Path,
+) {
+    let sessions_dir = workspace.join("sessions");
+    let Ok(entries) = std::fs::read_dir(&sessions_dir) else { return };
+
+    let mut sessions: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let tx = e.path().join("transcript.jsonl");
+            let mtime = std::fs::metadata(&tx).ok()?.modified().ok()?;
+            Some((mtime, tx))
+        })
+        .collect();
+
+    sessions.sort_by_key(|(mtime, _)| *mtime);
+
+    for (_, tx_path) in &sessions {
+        let Ok(events) = crate::session::transcript::read_events(tx_path) else { continue };
+        for event in events {
+            if let crate::session::transcript::AnyEvent::UserTurn { content, .. } = event {
+                let _ = rl.add_history_entry(&content);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
