@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::types::Tool;
+use crate::types::{Tool, ToolPermission, PermissionRequest};
+use crate::permission::{split_commands, command_patterns};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -51,6 +52,20 @@ impl Tool for ShellTool {
         All shell commands require permission approval unless pre-allowed."
     }
     fn parameters(&self) -> &Value { &self.parameters }
+
+    fn permission(&self, args: &serde_json::Value) -> ToolPermission {
+        let cmd = args.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
+        let segs = split_commands(cmd);
+        let segs = if segs.is_empty() { vec![cmd.trim().to_string()] } else { segs };
+        let requests = segs.iter().map(|seg| PermissionRequest {
+            display: seg.clone(),
+            patterns: command_patterns(seg)
+                .into_iter()
+                .map(|p| format!("shell:{}", p))
+                .collect(),
+        }).collect();
+        ToolPermission::RequiresApproval(requests)
+    }
 
     async fn execute(&self, args: Value) -> anyhow::Result<Value> {
         let params: ShellParams = serde_json::from_value(args)?;
@@ -209,6 +224,54 @@ mod tests {
         assert!(text.contains("FAILED: test_foo"), "got: {text}");
         assert!(!text.contains("line1"), "got: {text}");
         assert!(text.contains("full output:"), "got: {text}");
+    }
+
+    #[test]
+    fn shell_permission_single_command() {
+        let tool = ShellTool::new(
+            std::path::PathBuf::from("/tmp"),
+            std::path::PathBuf::from("/tmp"),
+        );
+        match tool.permission(&serde_json::json!({"cmd": "cargo test", "reason": ""})) {
+            crate::types::ToolPermission::RequiresApproval(reqs) => {
+                assert_eq!(reqs.len(), 1);
+                assert_eq!(reqs[0].display, "cargo test");
+                assert!(reqs[0].patterns.contains(&"shell:cargo *".to_string()));
+                assert!(reqs[0].patterns.contains(&"shell:cargo test".to_string()));
+            }
+            other => panic!("{:?}", other),
+        }
+    }
+
+    #[test]
+    fn shell_permission_compound_command() {
+        let tool = ShellTool::new(
+            std::path::PathBuf::from("/tmp"),
+            std::path::PathBuf::from("/tmp"),
+        );
+        match tool.permission(&serde_json::json!({"cmd": "cargo build && git push", "reason": ""})) {
+            crate::types::ToolPermission::RequiresApproval(reqs) => {
+                assert_eq!(reqs.len(), 2);
+                assert_eq!(reqs[0].display, "cargo build");
+                assert_eq!(reqs[1].display, "git push");
+            }
+            other => panic!("{:?}", other),
+        }
+    }
+
+    #[test]
+    fn shell_permission_patterns_prefixed_with_shell() {
+        let tool = ShellTool::new(
+            std::path::PathBuf::from("/tmp"),
+            std::path::PathBuf::from("/tmp"),
+        );
+        if let crate::types::ToolPermission::RequiresApproval(reqs) =
+            tool.permission(&serde_json::json!({"cmd": "cargo test --verbose", "reason": ""}))
+        {
+            for pat in &reqs[0].patterns {
+                assert!(pat.starts_with("shell:"), "pattern missing shell: prefix: {pat}");
+            }
+        }
     }
 
 }
