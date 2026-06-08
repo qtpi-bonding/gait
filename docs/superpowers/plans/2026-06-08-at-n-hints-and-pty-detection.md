@@ -15,7 +15,7 @@
 | File | Action | Responsibility |
 |------|--------|----------------|
 | `gait-rs/src/repl_helper.rs` | Create | `ReplHelper` struct + all rustyline helper trait impls + `collect_at_refs` |
-| `gait-rs/src/chat.rs` | Modify | Swap `DefaultEditor` → `Editor<ReplHelper, DefaultHistory>`, update path on `/new`, add `run_and_capture_pty`, update `expand_paren_marker` |
+| `gait-rs/src/chat.rs` | Modify | Swap `DefaultEditor` → `Editor<ReplHelper, DefaultHistory>`, update path on `/new`, add `run_and_capture_pty_raw`, update `expand_paren_marker` |
 | `gait-rs/Cargo.toml` | Modify | Add `portable-pty = "0.8"` |
 
 ---
@@ -179,10 +179,15 @@ impl Completer for ReplHelper {
 // ── Validator (no-op) ───────────────────────────────────────────────────────
 impl Validator for ReplHelper {}
 
-// ── Highlighter: dim the ghost text ─────────────────────────────────────────
+// ── Highlighter: dim the ghost text + trigger re-render on each keystroke ────
 impl Highlighter for ReplHelper {
     fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
         Cow::Owned(format!("\x1b[2m{}\x1b[0m", hint))
+    }
+    // Return true so rustyline re-renders the hint after every keystroke.
+    // Without this, the hint can appear stale as @(N) is being typed.
+    fn highlight_char(&self, _grapheme: &str, _pos: usize, _forced: bool) -> bool {
+        true
     }
 }
 
@@ -190,7 +195,8 @@ impl Highlighter for ReplHelper {
 pub struct ReplHint(pub String);
 
 impl Hint for ReplHint {
-    fn text(&self) -> &str {
+    // rustyline 14 uses `display()`, not `text()`
+    fn display(&self) -> &str {
         &self.0
     }
     fn completion(&self) -> Option<&str> {
@@ -241,8 +247,8 @@ Inside the existing `#[cfg(test)]` block in `repl_helper.rs`, add:
         let ctx = rustyline::Context::new(&rustyline::history::DefaultHistory::new());
         // @(1) = most recent = cat src/main.rs, @(2) = cargo test
         let hint = helper.hint("diff @(1) and @(2)", 18, &ctx).unwrap();
-        assert!(hint.text().contains("cat src/main.rs"), "got: {}", hint.text());
-        assert!(hint.text().contains("cargo test"), "got: {}", hint.text());
+        assert!(hint.display().contains("cat src/main.rs"), "got: {}", hint.display());
+        assert!(hint.display().contains("cargo test"), "got: {}", hint.display());
     }
 
     #[test]
@@ -405,9 +411,15 @@ Inside the `#[cfg(test)]` block at the bottom of `chat.rs`, add:
 ```rust
     #[test]
     fn pty_capture_normal_command() {
-        let (result, code) = run_and_capture_pty("echo hello", std::path::Path::new("."));
-        assert_eq!(result.trim(), "hello");
-        assert_eq!(code, Some(0));
+        // CaptureResult::Output for a command that produces no escape codes
+        let result = run_and_capture_pty_raw("echo hello", std::path::Path::new("."));
+        match result {
+            CaptureResult::Output(out, code) => {
+                assert_eq!(out.trim(), "hello");
+                assert_eq!(code, Some(0));
+            }
+            CaptureResult::Interactive => panic!("echo should not be Interactive"),
+        }
     }
 
     #[test]
@@ -423,8 +435,6 @@ Inside the `#[cfg(test)]` block at the bottom of `chat.rs`, add:
         );
     }
 ```
-
-Note: two separate functions are exposed — `run_and_capture_pty` returns `(String, Option<i32>)` for the normal path (used by `expand_paren_marker`), and `run_and_capture_pty_raw` returns `CaptureResult` (used in tests for the interactive branch). See implementation step.
 
 - [ ] **Step 2: Run the test to confirm it fails**
 
@@ -513,21 +523,17 @@ fn run_and_capture_pty_raw(cmd: &str, cwd: &std::path::Path) -> CaptureResult {
 
     let mut rest = Vec::new();
     let _ = reader.read_to_end(&mut rest);
-    let code = child.wait().ok().and_then(|s| s.exit_code()).map(|c| c as i32);
+    // exit_code() returns u32 (not Option) in portable-pty 0.8
+    let code = child.wait().ok().map(|s| s.exit_code() as i32);
 
     let all = [buf, rest].concat();
+    // Note: PTY output is buffered (not streamed line-by-line) — acceptable
+    // for @(cmd) since output is inlined into the LLM prompt, not displayed live.
     let output = String::from_utf8_lossy(&all).into_owned();
     for line in output.lines() {
         println!("{}", line);
     }
     CaptureResult::Output(output, code)
-}
-
-fn run_and_capture_pty(cmd: &str, cwd: &std::path::Path) -> (String, Option<i32>) {
-    match run_and_capture_pty_raw(cmd, cwd) {
-        CaptureResult::Output(out, code) => (out, code),
-        CaptureResult::Interactive => (String::new(), Some(1)),
-    }
 }
 ```
 
