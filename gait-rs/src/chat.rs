@@ -291,11 +291,17 @@ fn expand_paren_marker(
             };
         }
     }
-    let (output, code) = run_and_capture(inner, codebase);
-    if code != Some(0) {
-        eprintln!("[!] @({inner}) exit {}", code.unwrap_or(1));
+    match run_and_capture_pty_raw(inner, codebase) {
+        CaptureResult::Output(output, code) => {
+            if code != Some(0) {
+                eprintln!("[!] @({inner}) exit {}", code.unwrap_or(1));
+            }
+            format!("[shell: {}]\n{}", inner, output.trim_end())
+        }
+        CaptureResult::Interactive => {
+            format!("[interactive TUI — run @({inner}) directly in your terminal]")
+        }
     }
-    format!("[shell: {}]\n{}", inner, output.trim_end())
 }
 
 pub fn expand_at_markers(
