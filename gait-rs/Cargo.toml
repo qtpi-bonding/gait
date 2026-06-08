@@ -28,6 +28,7 @@ libc = "0.2"
 termimad  = "0.23"
 rustyline = "14"
 rmcp = { version = "1", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+portable-pty = "0.8"
 
 [dev-dependencies]
 tokio-test = "0.4"
