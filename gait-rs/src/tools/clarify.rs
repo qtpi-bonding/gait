@@ -1,4 +1,4 @@
-use crate::types::Tool;
+use crate::types::{Tool, ToolPermission, PermissionRequest, ExecutionSignal};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -29,7 +29,6 @@ impl ClarifyTool {
         let parameters = crate::tools::make_schema::<ClarifyParams>();
         Self { parameters }
     }
-    pub fn boxed(self) -> Box<dyn Tool> { Box::new(self) }
 }
 
 #[async_trait::async_trait]
@@ -39,6 +38,16 @@ impl Tool for ClarifyTool {
         "Ask the user one or more questions and pause until they answer. Use when you need information or judgment from the user before you can proceed correctly. Each item needs an 'id', 'content' (the question), 'why' (what changes based on the answer), and 'kind' ('is' for facts, 'ought' for judgment)."
     }
     fn parameters(&self) -> &Value { &self.parameters }
+
+    fn permission(&self, _args: &serde_json::Value) -> ToolPermission {
+        ToolPermission::RequiresApproval(vec![PermissionRequest {
+            display: "clarify".to_string(),
+            patterns: vec!["clarify".to_string()],
+        }])
+    }
+    fn execution_signal(&self) -> ExecutionSignal {
+        ExecutionSignal::Clarify
+    }
 
     async fn execute(&self, _args: Value) -> anyhow::Result<Value> {
         // turn.rs intercepts this call before execution and handles the signal.
@@ -69,5 +78,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result, Value::String("clarify_signal".into()));
+    }
+
+    #[test]
+    fn clarify_permission_requires_approval() {
+        let tool = ClarifyTool::new();
+        match tool.permission(&serde_json::json!({})) {
+            crate::types::ToolPermission::RequiresApproval(reqs) => {
+                assert_eq!(reqs[0].patterns, vec!["clarify"]);
+            }
+            other => panic!("expected RequiresApproval, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn clarify_execution_signal_is_clarify() {
+        let tool = ClarifyTool::new();
+        assert_eq!(tool.execution_signal(), crate::types::ExecutionSignal::Clarify);
     }
 }

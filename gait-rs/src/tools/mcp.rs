@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use schemars::JsonSchema;
 use serde_json::Value;
-use crate::types::Tool;
+use crate::types::{Tool, ToolPermission, PermissionRequest, ExecutionSignal};
 use crate::config::McpToolDef;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -22,10 +22,6 @@ impl McpTool {
         let parameters = crate::tools::make_schema::<McpParams>();
         Self { registry, parameters }
     }
-
-    pub fn boxed(self) -> Box<dyn Tool> {
-        Box::new(self)
-    }
 }
 
 #[async_trait::async_trait]
@@ -39,6 +35,17 @@ impl Tool for McpTool {
     }
 
     fn parameters(&self) -> &Value { &self.parameters }
+
+    fn permission(&self, args: &serde_json::Value) -> ToolPermission {
+        let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("*");
+        ToolPermission::RequiresApproval(vec![PermissionRequest {
+            display: name.to_string(),
+            patterns: vec!["mcp".to_string(), format!("mcp:{}", name)],
+        }])
+    }
+    fn execution_signal(&self) -> ExecutionSignal {
+        ExecutionSignal::LoadContext
+    }
 
     async fn execute(&self, args: Value) -> anyhow::Result<Value> {
         let name = args.get("name").and_then(|v| v.as_str())
@@ -118,5 +125,23 @@ mod tests {
     fn has_correct_name() {
         let tool = McpTool::new(vec![]);
         assert_eq!(tool.name(), "mcp");
+    }
+
+    #[test]
+    fn mcp_permission_has_name_patterns() {
+        let tool = McpTool::new(vec![]);
+        let perm = tool.permission(&serde_json::json!({"name": "slack_send", "context": true}));
+        match perm {
+            crate::types::ToolPermission::RequiresApproval(reqs) => {
+                assert_eq!(reqs[0].patterns, vec!["mcp", "mcp:slack_send"]);
+            }
+            other => panic!("expected RequiresApproval, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn mcp_execution_signal_is_load_context() {
+        let tool = McpTool::new(vec![]);
+        assert_eq!(tool.execution_signal(), crate::types::ExecutionSignal::LoadContext);
     }
 }
