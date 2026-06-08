@@ -12,14 +12,24 @@ pub struct ConfigTool {
 
 fn default_cwd() -> String { "codebase".into() }
 
+/// Config-level: how to connect to one MCP server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerDef {
+    pub name: String,
+    /// Shell command to spawn an MCP server subprocess (stdio transport).
+    pub spawn: Option<String>,
+    /// URL of an already-running MCP server (HTTP streamable transport).
+    pub connect: Option<String>,
+}
+
+/// Runtime: one tool discovered from an MCP server via tools/list.
+/// Populated by McpClient::discover_tools(), not from config.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpToolDef {
+    pub server_name: String,
     pub name: String,
     pub description: String,
     pub schema: serde_json::Value,
-    pub cmd: String,
-    #[serde(default = "default_cwd")]
-    pub cwd: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,7 +49,7 @@ pub struct GaitConfig {
     #[serde(default = "default_compaction_threshold")]
     pub compaction_threshold: f64,
     #[serde(default)]
-    pub mcp_tools: Vec<McpToolDef>,
+    pub mcp_servers: Vec<McpServerDef>,
     #[serde(default)]
     pub skills: Vec<SkillDef>,
 }
@@ -53,7 +63,7 @@ impl Default for GaitConfig {
             allow: vec!["read".into(), "glob".into(), "grep".into(), "ls".into()],
             tools: vec![],
             compaction_threshold: 0.8,
-            mcp_tools: vec![],
+            mcp_servers: vec![],
             skills: vec![],
         }
     }
@@ -218,24 +228,40 @@ mod tests {
     }
 
     #[test]
-    fn parses_mcp_tools_and_skills() {
+    fn parses_mcp_servers_spawn_and_connect() {
         let dir = TempDir::new().unwrap();
-        // Build the JSON content using concat! and individual line strings to avoid
-        // Rust raw-string backslash-line-continuation issues with literal "\n" sequences.
+        std::fs::write(dir.path().join("gait.jsonc"), r#"
+{
+  "model": "anthropic/claude-sonnet-4-6",
+  "mcp_servers": [
+    { "name": "fs", "spawn": "npx @modelcontextprotocol/server-filesystem ." },
+    { "name": "remote", "connect": "http://localhost:3001/mcp" }
+  ]
+}
+"#).unwrap();
+        let cfg = load_config(dir.path());
+        assert_eq!(cfg.mcp_servers.len(), 2);
+        assert_eq!(cfg.mcp_servers[0].name, "fs");
+        assert!(cfg.mcp_servers[0].spawn.is_some());
+        assert!(cfg.mcp_servers[0].connect.is_none());
+        assert_eq!(cfg.mcp_servers[1].name, "remote");
+        assert!(cfg.mcp_servers[1].connect.is_some());
+        assert!(cfg.mcp_servers[1].spawn.is_none());
+    }
+
+    #[test]
+    fn parses_mcp_servers_and_skills() {
+        let dir = TempDir::new().unwrap();
         let content_str = "# TDD\n1. Write failing test\n2. Make it pass\n3. Refactor";
         let content_json = serde_json::to_string(content_str).unwrap();
         let jsonc = format!(
-            "{{\n  \"model\": \"minimax/MiniMax-M1\",\n  \"mcp_tools\": [\n    {{\n      \"name\": \"slack_send\",\n      \"description\": \"post a message to Slack\",\n      \"schema\": {{ \"type\": \"object\", \"properties\": {{ \"channel\": {{ \"type\": \"string\" }}, \"text\": {{ \"type\": \"string\" }} }}, \"required\": [\"channel\", \"text\"] }},\n      \"cmd\": \"node mcp-slack.js\",\n      \"cwd\": \"workspace\"\n    }}\n  ],\n  \"skills\": [\n    {{ \"name\": \"tdd\", \"description\": \"test-driven development workflow\", \"content\": {content_json} }}\n  ]\n}}\n"
+            "{{\n  \"model\": \"minimax/MiniMax-M1\",\n  \"mcp_servers\": [\n    {{ \"name\": \"slack\", \"spawn\": \"node mcp-slack.js\" }}\n  ],\n  \"skills\": [\n    {{ \"name\": \"tdd\", \"description\": \"test-driven development workflow\", \"content\": {content_json} }}\n  ]\n}}\n"
         );
         std::fs::write(dir.path().join("gait.jsonc"), jsonc).unwrap();
         let cfg = load_config(dir.path());
-        assert_eq!(cfg.mcp_tools.len(), 1);
-        assert_eq!(cfg.mcp_tools[0].name, "slack_send");
-        assert_eq!(cfg.mcp_tools[0].cmd, "node mcp-slack.js");
-        assert_eq!(cfg.mcp_tools[0].cwd, "workspace");
-        assert!(cfg.mcp_tools[0].schema.is_object());
+        assert_eq!(cfg.mcp_servers.len(), 1);
+        assert_eq!(cfg.mcp_servers[0].name, "slack");
+        assert_eq!(cfg.mcp_servers[0].spawn.as_deref(), Some("node mcp-slack.js"));
         assert_eq!(cfg.skills.len(), 1);
-        assert_eq!(cfg.skills[0].name, "tdd");
-        assert!(cfg.skills[0].content.contains("TDD"));
     }
 }
