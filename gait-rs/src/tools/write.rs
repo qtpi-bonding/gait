@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::types::Tool;
+use crate::types::{Tool, ToolPermission, PermissionRequest};
+use crate::permission::path_patterns;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -46,6 +47,18 @@ impl Tool for WriteTool {
         let bytes = params.content.len();
         Ok(Value::String(format!("Wrote {} bytes to {}", bytes, resolved.display())))
     }
+
+    fn permission(&self, args: &serde_json::Value) -> ToolPermission {
+        let raw = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("*");
+        let rel = std::path::Path::new(raw)
+            .strip_prefix(&*self.codebase_path)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| raw.to_string());
+        ToolPermission::RequiresApproval(vec![PermissionRequest {
+            display: rel.clone(),
+            patterns: path_patterns("write", &rel),
+        }])
+    }
 }
 
 #[cfg(test)]
@@ -88,5 +101,19 @@ mod tests {
         })).await.unwrap();
         let content = std::fs::read_to_string(dir.path().join("existing.txt")).unwrap();
         assert_eq!(content, "new");
+    }
+
+    #[test]
+    fn write_permission_relative_path() {
+        let codebase = std::path::PathBuf::from("/project");
+        let tool = WriteTool::new(codebase);
+        match tool.permission(&serde_json::json!({"file_path": "/project/src/main.rs"})) {
+            crate::types::ToolPermission::RequiresApproval(reqs) => {
+                assert_eq!(reqs[0].display, "src/main.rs");
+                assert!(reqs[0].patterns.contains(&"write".to_string()));
+                assert!(reqs[0].patterns.contains(&"write:src/main.rs".to_string()));
+            }
+            other => panic!("{:?}", other),
+        }
     }
 }

@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::types::Tool;
+use crate::types::{Tool, ToolPermission, PermissionRequest};
+use crate::permission::path_patterns;
 use crate::tools::edit::replace;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -34,7 +35,6 @@ impl MultieditTool {
         let parameters = crate::tools::make_schema::<MultieditParams>();
         Self { codebase_path: Arc::new(codebase_path), parameters }
     }
-    pub fn boxed(self) -> Box<dyn Tool> { Box::new(self) }
 }
 
 #[async_trait::async_trait]
@@ -74,6 +74,31 @@ impl Tool for MultieditTool {
 
         std::fs::write(&resolved, &content)?;
         Ok(Value::String(format!("Applied {} edits to {}", params.edits.len(), resolved.display())))
+    }
+
+    fn permission(&self, args: &serde_json::Value) -> ToolPermission {
+        let edits = args.get("edits").and_then(|v| v.as_array());
+        let paths: Vec<String> = match edits {
+            None => vec!["*".to_string()],
+            Some(arr) => {
+                let mut seen = std::collections::HashSet::new();
+                arr.iter()
+                    .filter_map(|e| e.get("file_path").and_then(|v| v.as_str()))
+                    .filter(|p| seen.insert(p.to_string()))
+                .map(|p| {
+                    std::path::Path::new(p)
+                        .strip_prefix(&*self.codebase_path)
+                        .map(|r| r.to_string_lossy().into_owned())
+                        .unwrap_or_else(|_| p.to_string())
+                })
+                    .collect()
+            }
+        };
+        let requests = paths.iter().map(|rel| PermissionRequest {
+            display: rel.clone(),
+            patterns: path_patterns("edit", rel),
+        }).collect();
+        ToolPermission::RequiresApproval(requests)
     }
 }
 
@@ -177,5 +202,23 @@ mod tests {
             "edits": []
         })).await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn multiedit_permission_deduplicates_files() {
+        let codebase = std::path::PathBuf::from("/project");
+        let tool = MultieditTool::new(codebase);
+        match tool.permission(&serde_json::json!({
+            "edits": [
+                {"file_path": "/project/src/a.rs", "old_string": "x", "new_string": "y"},
+                {"file_path": "/project/src/b.rs", "old_string": "x", "new_string": "y"},
+                {"file_path": "/project/src/a.rs", "old_string": "z", "new_string": "w"},
+            ]
+        })) {
+            crate::types::ToolPermission::RequiresApproval(reqs) => {
+                assert_eq!(reqs.len(), 2);
+            }
+            other => panic!("{:?}", other),
+        }
     }
 }
