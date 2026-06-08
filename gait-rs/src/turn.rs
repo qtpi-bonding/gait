@@ -996,7 +996,7 @@ mod tests {
     fn build_skill_index_formats_correctly() {
         use crate::config::SkillDef;
         let registry = vec![
-            SkillDef { name: "tdd".into(), description: "TDD workflow".into(), content: "...".into() },
+            SkillDef { name: "tdd".into(), description: "TDD workflow".into(), content: "...".into(), enabled: true },
         ];
         let index = build_skill_index(&registry);
         assert!(index.contains("<skill-index>"), "got: {index}");

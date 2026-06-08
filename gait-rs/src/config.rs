@@ -14,6 +14,8 @@ pub struct ConfigTool {
 
 fn default_cwd() -> String { "codebase".into() }
 
+fn default_enabled() -> bool { true }
+
 /// Config-level: how to connect to one MCP server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerDef {
@@ -22,6 +24,11 @@ pub struct McpServerDef {
     pub spawn: Option<String>,
     /// URL of an already-running MCP server (HTTP streamable transport).
     pub connect: Option<String>,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    /// Optional description for the <loadable-index>. If absent, index shows tool count.
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 /// Runtime: one tool discovered from an MCP server via tools/list.
@@ -39,6 +46,21 @@ pub struct SkillDef {
     pub name: String,
     pub description: String,
     pub content: String,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+/// Stub for future WASM plugin support.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasmPluginDef {
+    pub name: String,
+    pub path: String,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub allow_exec: Vec<String>,
+    #[serde(default)]
+    pub allow_fs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -54,6 +76,8 @@ pub struct GaitConfig {
     pub mcp_servers: Vec<McpServerDef>,
     #[serde(default)]
     pub skills: Vec<SkillDef>,
+    #[serde(default)]
+    pub wasm_plugins: Vec<WasmPluginDef>,
 }
 
 fn default_compaction_threshold() -> f64 { 0.8 }
@@ -70,11 +94,12 @@ impl Default for GaitConfig {
             compaction_threshold: 0.8,
             mcp_servers: vec![],
             skills: vec![],
+            wasm_plugins: vec![],
         }
     }
 }
 
-fn strip_jsonc_comments(input: &str) -> String {
+pub fn strip_jsonc_comments(input: &str) -> String {
     input.lines().map(|line| {
         // Find // that isn't inside a string (count unescaped " before pos)
         let mut in_string = false;
@@ -266,6 +291,36 @@ mod tests {
             "anthropic/claude-sonnet-4-6",
             "newly created gait.jsonc must use the same default model as GaitConfig::default()"
         );
+    }
+
+    #[test]
+    fn enabled_defaults_to_true_for_backward_compat() {
+        let json = r##"{ "model": "anthropic/claude-sonnet-4-6",
+            "mcp_servers": [{ "name": "slack", "spawn": "node mcp-slack.js" }],
+            "skills": [{ "name": "tdd", "description": "tdd workflow", "content": "# TDD" }]
+        }"##;
+        let cfg: GaitConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.mcp_servers[0].enabled, "mcp without enabled field should default true");
+        assert!(cfg.skills[0].enabled, "skill without enabled field should default true");
+    }
+
+    #[test]
+    fn enabled_false_is_respected() {
+        let json = r#"{ "model": "anthropic/claude-sonnet-4-6",
+            "mcp_servers": [{ "name": "slack", "spawn": "node mcp-slack.js", "enabled": false }]
+        }"#;
+        let cfg: GaitConfig = serde_json::from_str(json).unwrap();
+        assert!(!cfg.mcp_servers[0].enabled);
+    }
+
+    #[test]
+    fn wasm_plugin_def_parses() {
+        let json = r#"{ "model": "anthropic/claude-sonnet-4-6",
+            "wasm_plugins": [{ "name": "formatter", "path": "plugins/fmt.wasm", "enabled": true }]
+        }"#;
+        let cfg: GaitConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.wasm_plugins[0].name, "formatter");
+        assert!(cfg.wasm_plugins[0].enabled);
     }
 
     #[test]

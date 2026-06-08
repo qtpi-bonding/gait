@@ -81,6 +81,8 @@ mod tests {
             name: "test".into(),
             spawn: Some("no-such-binary-xyz-abc --foo".into()),
             connect: None,
+            enabled: true,
+            description: None,
         };
         let result = McpClient::connect(&def).await;
         assert!(result.is_err(), "expected error for missing binary");
@@ -92,6 +94,8 @@ mod tests {
             name: "test".into(),
             spawn: None,
             connect: Some("http://127.0.0.1:19191/mcp".into()),
+            enabled: true,
+            description: None,
         };
         let result = McpClient::connect(&def).await;
         assert!(result.is_err(), "expected error for unreachable URL");
@@ -99,7 +103,7 @@ mod tests {
 
     #[tokio::test]
     async fn connect_fails_when_neither_spawn_nor_connect() {
-        let def = McpServerDef { name: "test".into(), spawn: None, connect: None };
+        let def = McpServerDef { name: "test".into(), spawn: None, connect: None, enabled: true, description: None };
         let result = McpClient::connect(&def).await;
         match result {
             Err(e) => assert!(e.to_string().contains("neither spawn nor connect"), "got: {e}"),

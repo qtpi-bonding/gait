@@ -73,6 +73,7 @@ mod tests {
             name: "tdd".into(),
             description: "test-driven development workflow".into(),
             content: "# TDD\n1. Write failing test\n2. Make it pass\n3. Refactor".into(),
+            enabled: true,
         }]
     }
 
