@@ -23,6 +23,7 @@ regex = "1"
 git2 = "0.19"
 uuid = { version = "1", features = ["v4"] }
 dirs-next = "2"
+termbg = "0.5"
 libc = "0.2"
 termimad  = "0.23"
 rustyline = "14"

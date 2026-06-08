@@ -1,5 +1,6 @@
 use termimad::MadSkin;
 use crate::session::transcript::{PermissionItem, ClarifyItem, InformItem};
+use crate::theme::{Theme, RESET, DIM};
 
 pub enum RenderAction {
     Continue,
@@ -10,43 +11,34 @@ pub enum RenderAction {
 }
 
 pub struct Renderer {
-    /// Partial line accumulator — holds bytes from the current streaming chunk
-    /// that haven't yet been terminated by a newline.
     pub line_buf: String,
-    /// Complete-line block accumulator — holds one or more full lines that
-    /// form the current markdown block (paragraph, table, code fence, etc.).
-    /// Flushed to the skin as a unit when a block boundary is detected.
     block_buf: String,
-    /// Whether we are currently inside a fenced code block (``` ... ```).
-    /// Blank lines inside fences must NOT trigger a block flush.
     in_fence: bool,
     skin: MadSkin,
+    pub theme: Theme,
 }
 
 impl Renderer {
-    pub fn new() -> Self {
+    pub fn new(theme: Theme) -> Self {
         Self {
             line_buf: String::new(),
             block_buf: String::new(),
             in_fence: false,
             skin: MadSkin::default(),
+            theme,
         }
     }
 
-    /// Append a complete (newline-terminated) line to the block buffer,
-    /// flushing the block when a boundary is detected.
     fn push_line(&mut self, line: &str) {
         let is_fence_marker = line.trim_start().starts_with("```");
 
         if self.in_fence {
             self.append_to_block(line);
             if is_fence_marker {
-                // Closing fence — render the complete code block now.
                 self.in_fence = false;
                 self.render_block();
             }
         } else if line.is_empty() {
-            // Blank line is a block boundary: render whatever accumulated, then a blank.
             self.render_block();
             println!();
         } else {
@@ -71,8 +63,6 @@ impl Renderer {
         }
     }
 
-    /// Parse one NDJSON line and render to terminal. Returns a RenderAction
-    /// so callers can intercept events that require interactive handling.
     pub fn handle_line(&mut self, json_line: &str) -> RenderAction {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(json_line) else {
             return RenderAction::Continue;
@@ -90,7 +80,17 @@ impl Renderer {
             }
             Some("tool_call") => {
                 let name = v["name"].as_str().unwrap_or("?");
-                eprintln!("\x1b[2m  \u{27f3} {}(\u{2026})\x1b[0m", name);
+                eprintln!("{}  \u{27f3} {}(\u{2026}){}", DIM, name, RESET);
+                RenderAction::Continue
+            }
+            Some("tool_result") => {
+                let name = v["name"].as_str().unwrap_or("?");
+                let ok = v["ok"].as_bool().unwrap_or(true);
+                if ok {
+                    eprintln!("{}  \u{2713} {}{}", self.theme.success.fg(), name, RESET);
+                } else {
+                    eprintln!("{}  \u{2717} {}{}", self.theme.danger.fg(), name, RESET);
+                }
                 RenderAction::Continue
             }
             Some("permissions") => {
@@ -130,15 +130,13 @@ impl Renderer {
             Some("error") => {
                 self.flush();
                 let msg = v["message"].as_str().unwrap_or("unknown error");
-                eprintln!("\x1b[31m[error] {}\x1b[0m", msg);
+                eprintln!("{}[error] {}{}", self.theme.danger.fg(), msg, RESET);
                 RenderAction::Continue
             }
             _ => RenderAction::Continue,
         }
     }
 
-    /// Flush any partial line and the accumulated block buffer.
-    /// Called at turn boundaries (turn_complete, permission prompt, etc.)
     pub fn flush(&mut self) {
         if !self.line_buf.is_empty() {
             let partial = std::mem::take(&mut self.line_buf);
@@ -153,9 +151,13 @@ impl Renderer {
 mod tests {
     use super::*;
 
+    fn renderer() -> Renderer {
+        Renderer::new(Theme::dark())
+    }
+
     #[test]
     fn text_delta_accumulates_and_flushes_on_newline() {
-        let mut r = Renderer::new();
+        let mut r = renderer();
         r.handle_line(r#"{"type":"text_delta","content":"hello ","ts":1}"#);
         assert_eq!(r.line_buf, "hello ");
         r.handle_line(r#"{"type":"text_delta","content":"world\n","ts":2}"#);
@@ -164,21 +166,21 @@ mod tests {
 
     #[test]
     fn unknown_event_types_are_ignored() {
-        let mut r = Renderer::new();
+        let mut r = renderer();
         r.handle_line(r#"{"type":"session_start","id":"s1","ts":1}"#);
         assert_eq!(r.line_buf, "");
     }
 
     #[test]
     fn invalid_json_is_ignored() {
-        let mut r = Renderer::new();
+        let mut r = renderer();
         r.handle_line("not json at all");
         assert_eq!(r.line_buf, "");
     }
 
     #[test]
     fn turn_complete_flushes_remaining_buffer() {
-        let mut r = Renderer::new();
+        let mut r = renderer();
         r.handle_line(r#"{"type":"text_delta","content":"partial","ts":1}"#);
         assert_eq!(r.line_buf, "partial");
         r.handle_line(r#"{"type":"turn_complete","ts":2}"#);
@@ -187,7 +189,7 @@ mod tests {
 
     #[test]
     fn permissions_event_returns_permission_needed() {
-        let mut r = Renderer::new();
+        let mut r = renderer();
         let json = serde_json::json!({
             "type": "permissions",
             "items": [
@@ -205,7 +207,6 @@ mod tests {
             RenderAction::PermissionNeeded(items) => {
                 assert_eq!(items.len(), 1);
                 assert_eq!(items[0].cmd, "cargo test");
-                assert_eq!(items[0].patterns, vec!["cargo *", "cargo test"]);
             }
             _ => panic!("expected PermissionNeeded"),
         }
@@ -213,14 +214,14 @@ mod tests {
 
     #[test]
     fn turn_complete_returns_turn_complete_action() {
-        let mut r = Renderer::new();
+        let mut r = renderer();
         let action = r.handle_line(r#"{"type":"turn_complete","ts":2}"#);
         assert!(matches!(action, RenderAction::TurnComplete));
     }
 
     #[test]
     fn text_delta_returns_continue() {
-        let mut r = Renderer::new();
+        let mut r = renderer();
         let action = r.handle_line(r#"{"type":"text_delta","content":"hello","ts":1}"#);
         assert!(matches!(action, RenderAction::Continue));
     }

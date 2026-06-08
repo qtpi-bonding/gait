@@ -8,6 +8,7 @@ use crate::session::transcript::{
     self, AnyEvent, PermissionItem, PermissionsReplyItem,
     ClarifyItem, ClarifyReplyItem, InformItem, InformReplyItem,
 };
+use crate::theme::{Theme, RESET, DIM};
 
 pub fn new_session_id() -> String {
     format!("s{}", &uuid::Uuid::new_v4().to_string().replace('-', "")[..8])
@@ -77,12 +78,12 @@ fn parse_permission_response(
     None
 }
 
-fn prompt_clarify_items(items: &[ClarifyItem]) -> Vec<ClarifyReplyItem> {
+fn prompt_clarify_items(items: &[ClarifyItem], theme: &Theme) -> Vec<ClarifyReplyItem> {
     let mut replies = Vec::new();
     for item in items {
         eprintln!();
-        eprintln!("\x1b[36m? [{}] {}\x1b[0m", item.kind, item.content);
-        eprintln!("  \x1b[2mwhy: {}\x1b[0m", item.why);
+        eprintln!("{}? [{}] {}{}", theme.warning.fg(), item.kind, item.content, RESET);
+        eprintln!("  {}why: {}{}", DIM, item.why, RESET);
         eprint!("> ");
         let _ = std::io::stderr().flush();
         let mut input = String::new();
@@ -96,15 +97,15 @@ fn prompt_clarify_items(items: &[ClarifyItem]) -> Vec<ClarifyReplyItem> {
     replies
 }
 
-fn prompt_inform_items(items: &[InformItem]) -> Vec<InformReplyItem> {
+fn prompt_inform_items(items: &[InformItem], theme: &Theme) -> Vec<InformReplyItem> {
     let mut replies = Vec::new();
     for item in items {
         eprintln!();
-        eprintln!("\x1b[35m→ {}\x1b[0m", item.content);
+        eprintln!("{}\u{2192} {}{}", theme.warning.fg(), item.content, RESET);
         if let Some(ctx) = &item.context {
-            eprintln!("  \x1b[2mcontext: {}\x1b[0m", ctx);
+            eprintln!("  {}context: {}{}", DIM, ctx, RESET);
         }
-        eprintln!("  \x1b[2mPress Enter to confirm, or type a correction:\x1b[0m");
+        eprintln!("  {}Press Enter to confirm, or type a correction:{}", DIM, RESET);
         eprint!("> ");
         let _ = std::io::stderr().flush();
         let mut input = String::new();
@@ -122,12 +123,13 @@ fn prompt_single_permission(
     item: &PermissionItem,
     label: Option<&str>,
     has_agent: bool,
+    theme: &Theme,
 ) -> PermissionChoice {
     eprintln!();
     if let Some(l) = label {
-        eprintln!("\x1b[33m⟳ shell: {}  \x1b[2m({})\x1b[0m", item.cmd, l);
+        eprintln!("{}\u{27f3} shell: {}  {}({}){}", theme.warning.fg(), item.cmd, DIM, l, RESET);
     } else {
-        eprintln!("\x1b[33m⟳ shell: {}\x1b[0m", item.cmd);
+        eprintln!("{}\u{27f3} shell: {}{}", theme.warning.fg(), item.cmd, RESET);
     }
     eprintln!();
     for (i, pat) in item.patterns.iter().enumerate() {
@@ -178,13 +180,17 @@ pub fn run_chat(
     });
     let has_agent = agent_path.is_some();
 
+    let theme = Theme::detect();
+
     let mut rl = DefaultEditor::new()?;
     let _ = rl.load_history(&history_path);
 
     let mut session_id = new_session_id();
     eprintln!(
-        "gait  session {}  (ctrl+d to exit, /new for fresh session)",
-        session_id
+        "{}gait{}  {}session {}{}  {}(ctrl+d to exit, /new for fresh session){}",
+        theme.accent.fg(), RESET,
+        theme.meta.fg(), session_id, RESET,
+        DIM, RESET,
     );
 
     loop {
@@ -251,7 +257,7 @@ pub fn run_chat(
 
             let stdout = child.stdout.take().expect("piped stdout");
             let reader = BufReader::new(stdout);
-            let mut renderer = crate::render::Renderer::new();
+            let mut renderer = crate::render::Renderer::new(theme.clone());
             let mut pending_permissions: Vec<PermissionItem> = vec![];
             let mut pending_clarify: Vec<ClarifyItem> = vec![];
             let mut pending_inform: Vec<InformItem> = vec![];
@@ -270,7 +276,7 @@ pub fn run_chat(
             // Handle clarify: prompt user for each question, write ClarifyReply, re-spawn
             if !pending_clarify.is_empty() {
                 let tx_path = workspace.join("sessions").join(&session_id).join("transcript.jsonl");
-                let reply_items = prompt_clarify_items(&pending_clarify);
+                let reply_items = prompt_clarify_items(&pending_clarify, &theme);
                 let _ = transcript::append_event(&tx_path, &AnyEvent::ClarifyReply {
                     items: reply_items,
                     ts: transcript::now_ms(),
@@ -281,7 +287,7 @@ pub fn run_chat(
             // Handle inform: prompt user to confirm understanding, write InformReply, re-spawn
             if !pending_inform.is_empty() {
                 let tx_path = workspace.join("sessions").join(&session_id).join("transcript.jsonl");
-                let reply_items = prompt_inform_items(&pending_inform);
+                let reply_items = prompt_inform_items(&pending_inform, &theme);
                 let _ = transcript::append_event(&tx_path, &AnyEvent::InformReply {
                     items: reply_items,
                     ts: transcript::now_ms(),
@@ -314,7 +320,7 @@ pub fn run_chat(
                     None
                 };
 
-                let choice = prompt_single_permission(item, label.as_deref(), has_agent);
+                let choice = prompt_single_permission(item, label.as_deref(), has_agent, &theme);
                 match &choice {
                     PermissionChoice::Global(pat) => {
                         if let Err(e) = crate::config::append_allow_pattern(&workspace, pat) {
