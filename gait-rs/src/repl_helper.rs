@@ -35,6 +35,65 @@ pub fn collect_at_refs(line: &str) -> Vec<usize> {
     result
 }
 
+use std::borrow::Cow;
+use rustyline::completion::Completer;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::{Hint, Hinter};
+use rustyline::validate::Validator;
+use rustyline::{Context, Helper};
+
+impl Helper for ReplHelper {}
+
+impl Completer for ReplHelper {
+    type Candidate = String;
+}
+
+impl Validator for ReplHelper {}
+
+impl Highlighter for ReplHelper {
+    fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
+        Cow::Owned(format!("\x1b[2m{}\x1b[0m", hint))
+    }
+    fn highlight_char(&self, _grapheme: &str, _pos: usize, _forced: bool) -> bool {
+        true
+    }
+}
+
+pub struct ReplHint(pub String);
+
+impl Hint for ReplHint {
+    fn display(&self) -> &str {
+        &self.0
+    }
+    fn completion(&self) -> Option<&str> {
+        None
+    }
+}
+
+impl Hinter for ReplHelper {
+    type Hint = ReplHint;
+
+    fn hint(&self, line: &str, _pos: usize, _ctx: &Context<'_>) -> Option<ReplHint> {
+        let refs = collect_at_refs(line);
+        if refs.is_empty() {
+            return None;
+        }
+        let cmds: Vec<String> = refs
+            .iter()
+            .filter_map(|&n| {
+                crate::shell_history::recall(&self.shell_history_path, n)
+                    .ok()
+                    .flatten()
+            })
+            .map(|e| e.cmd)
+            .collect();
+        if cmds.is_empty() {
+            return None;
+        }
+        Some(ReplHint(format!("  \u{2190} {}", cmds.join(" \u{00b7} "))))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,5 +136,42 @@ mod tests {
     #[test]
     fn two_digit_ref() {
         assert_eq!(collect_at_refs("@(12)"), vec![12]);
+    }
+
+    #[test]
+    fn hint_shows_command_names() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("shell.jsonl");
+        crate::shell_history::append(&path, "cargo test", "ok", 1).unwrap();
+        crate::shell_history::append(&path, "cat src/main.rs", "fn main", 2).unwrap();
+        let helper = ReplHelper { shell_history_path: path };
+        let history = rustyline::history::DefaultHistory::new();
+        let ctx = rustyline::Context::new(&history);
+        let hint = helper.hint("diff @(1) and @(2)", 18, &ctx).unwrap();
+        assert!(hint.display().contains("cat src/main.rs"), "got: {}", hint.display());
+        assert!(hint.display().contains("cargo test"), "got: {}", hint.display());
+    }
+
+    #[test]
+    fn hint_none_when_no_refs() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("shell.jsonl");
+        let helper = ReplHelper { shell_history_path: path };
+        let history = rustyline::history::DefaultHistory::new();
+        let ctx = rustyline::Context::new(&history);
+        assert!(helper.hint("plain prompt no refs", 20, &ctx).is_none());
+    }
+
+    #[test]
+    fn hint_none_when_history_empty() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("shell.jsonl");
+        let helper = ReplHelper { shell_history_path: path };
+        let history = rustyline::history::DefaultHistory::new();
+        let ctx = rustyline::Context::new(&history);
+        assert!(helper.hint("explain @(1)", 12, &ctx).is_none());
     }
 }
