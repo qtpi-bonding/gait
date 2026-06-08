@@ -8,7 +8,7 @@ use crate::session::transcript::{
     self, AnyEvent, PermissionItem, PermissionsReplyItem,
     ClarifyItem, ClarifyReplyItem, InformItem, InformReplyItem,
 };
-use crate::theme::{Theme, RESET, DIM};
+use crate::theme::{Theme, RESET, DIM, DIM_FG};
 
 pub fn new_session_id() -> String {
     format!("s{}", &uuid::Uuid::new_v4().to_string().replace('-', "")[..8])
@@ -108,12 +108,13 @@ fn prompt_clarify_items(items: &[ClarifyItem], theme: &Theme) -> Vec<ClarifyRepl
     let mut replies = Vec::new();
     for item in items {
         eprintln!();
-        eprintln!("{}? [{}] {}{}", theme.warning.fg(), item.kind, item.content, RESET);
-        eprintln!("  {}why: {}{}", DIM, item.why, RESET);
-        eprint!("> ");
+        eprintln!("{}? [{}] {}{}", theme.accent.fg(), item.kind, item.content, RESET);
+        eprintln!("  {}why: {}{}", DIM_FG, item.why, RESET);
+        eprint!("{}>{} {}", theme.accent.fg(), RESET, theme.user_msg.fg());
         let _ = std::io::stderr().flush();
         let mut input = String::new();
         let _ = std::io::stdin().lock().read_line(&mut input);
+        eprint!("{}", RESET);
         replies.push(ClarifyReplyItem {
             id: item.id.clone(),
             content: input.trim().to_string(),
@@ -127,15 +128,16 @@ fn prompt_inform_items(items: &[InformItem], theme: &Theme) -> Vec<InformReplyIt
     let mut replies = Vec::new();
     for item in items {
         eprintln!();
-        eprintln!("{}\u{2192} {}{}", theme.warning.fg(), item.content, RESET);
+        eprintln!("{}\u{2192} {}{}", theme.accent.fg(), item.content, RESET);
         if let Some(ctx) = &item.context {
-            eprintln!("  {}context: {}{}", DIM, ctx, RESET);
+            eprintln!("  {}context: {}{}", DIM_FG, ctx, RESET);
         }
-        eprintln!("  {}Press Enter to confirm, or type a correction:{}", DIM, RESET);
-        eprint!("> ");
+        eprintln!("  {}Press Enter to confirm, or type a correction:{}", DIM_FG, RESET);
+        eprint!("{}>{} {}", theme.accent.fg(), RESET, theme.user_msg.fg());
         let _ = std::io::stderr().flush();
         let mut input = String::new();
         let _ = std::io::stdin().lock().read_line(&mut input);
+        eprint!("{}", RESET);
         let response = input.trim().to_string();
         replies.push(InformReplyItem {
             id: item.id.clone(),
@@ -153,28 +155,28 @@ fn prompt_single_permission(
 ) -> PermissionChoice {
     eprintln!();
     if let Some(l) = label {
-        eprintln!("{}\u{27f3} shell: {}  {}({}){}", theme.warning.fg(), item.cmd, DIM, l, RESET);
+        eprintln!("{}\u{27f3} shell: {}  {}({}){}", theme.accent.fg(), item.cmd, DIM_FG, l, RESET);
     } else {
-        eprintln!("{}\u{27f3} shell: {}{}", theme.warning.fg(), item.cmd, RESET);
+        eprintln!("{}\u{27f3} shell: {}{}", theme.accent.fg(), item.cmd, RESET);
     }
     eprintln!();
     for (i, pat) in item.patterns.iter().enumerate() {
-        eprintln!("  [{}] {}", i + 1, pat);
+        eprintln!("  {}[{}] {}{}", DIM_FG, i + 1, pat, RESET);
     }
     eprintln!();
-    eprintln!("  [o] once   [r] reject");
+    eprintln!("  {}[o] once   [r] reject{}", DIM_FG, RESET);
     if has_agent {
-        eprintln!("  scope: [a] agent  [g] global   (e.g. a2, g1, o, r)");
+        eprintln!("  {}scope: [a] agent  [g] global   (e.g. a2, g1, o, r){}", DIM_FG, RESET);
     } else {
-        eprintln!("  g = global  (e.g. g1, g2, o, r)");
+        eprintln!("  {}g = global  (e.g. g1, g2, o, r){}", DIM_FG, RESET);
     }
     loop {
-        eprint!("  > ");
+        eprint!("  {}>{} {}", theme.accent.fg(), RESET, theme.user_msg.fg());
         let _ = std::io::stderr().flush();
         let mut input = String::new();
         match std::io::stdin().lock().read_line(&mut input) {
-            Ok(0) | Err(_) => return PermissionChoice::Reject,
-            Ok(_) => {}
+            Ok(0) | Err(_) => { eprint!("{}", RESET); return PermissionChoice::Reject; }
+            Ok(_) => { eprint!("{}", RESET); }
         }
         match parse_permission_response(input.trim(), &item.patterns, &item.tool_name, has_agent) {
             Some(c) => return c,
@@ -204,7 +206,7 @@ fn run_and_capture(cmd: &str, cwd: &std::path::Path) -> (String, Option<i32>) {
     {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[!] error: {e}");
+            eprintln!("\x1b[31m[!] error: {}\x1b[0m", e);
             return (String::new(), None);
         }
     };
@@ -251,13 +253,15 @@ pub fn run_chat(
     eprintln!(
         "{}gait{}  {}session {}{}  {}(ctrl+d to exit, /new for fresh session){}",
         theme.accent.fg(), RESET,
-        theme.meta.fg(), session_id, RESET,
-        DIM, RESET,
+        DIM_FG, session_id, RESET,
+        DIM_FG, RESET,
     );
     let mut shell_history_path = workspace.join("tmp").join(format!("shell-{}.jsonl", session_id));
 
     loop {
-        let readline = rl.readline("> ");
+        let prompt = format!("{}>{} {}", theme.accent.fg(), RESET, theme.user_msg.fg());
+        let readline = rl.readline(&prompt);
+        eprint!("{}", RESET);
         let line = match readline {
             Ok(l) => l,
             Err(ReadlineError::Eof) | Err(ReadlineError::Interrupted) => break,

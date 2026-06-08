@@ -1,7 +1,7 @@
 use termimad::MadSkin;
 use termimad::crossterm::style::Color as CColor;
 use crate::session::transcript::{PermissionItem, ClarifyItem, InformItem};
-use crate::theme::{Theme, RESET, DIM};
+use crate::theme::{Theme, RESET, DIM, DIM_FG};
 
 pub enum RenderAction {
     Continue,
@@ -17,30 +17,40 @@ pub struct Renderer {
     in_fence: bool,
     skin: MadSkin,
     pub theme: Theme,
+    pending_tool: Option<String>,
+}
+
+fn to_ccolor(r: u8, g: u8, b: u8) -> CColor {
+    if crate::theme::supports_truecolor() {
+        CColor::Rgb { r, g, b }
+    } else {
+        CColor::AnsiValue(crate::theme::rgb_to_ansi256(r, g, b))
+    }
 }
 
 fn themed_skin(theme: &Theme) -> MadSkin {
-    let accent = CColor::Rgb { r: theme.accent.0, g: theme.accent.1, b: theme.accent.2 };
-    let meta   = CColor::Rgb { r: theme.meta.0,   g: theme.meta.1,   b: theme.meta.2   };
+    let accent = to_ccolor(theme.accent.0, theme.accent.1, theme.accent.2);
+
+    // Code blocks get the opposite mode's accent: muted teal in dark, bright cyan in light.
+    let code_block_color = if theme.is_dark {
+        to_ccolor(0x00, 0x62, 0x80)
+    } else {
+        to_ccolor(0x00, 0xC3, 0xFF)
+    };
 
     let mut skin = MadSkin::default();
 
-    // Headings: accent color
-    for h in skin.headers.iter_mut() {
-        h.compound_style.set_fg(accent);
-    }
+    // Body, headings, bold, italic → terminal default (no fg set)
 
-    // Bold: accent (headings + emphasis both draw the eye to the same hue)
-    skin.bold.set_fg(accent);
+    // Inline code: full accent (no background, so full cyan reads fine)
+    skin.inline_code.set_fgbg(accent, CColor::Reset);
 
-    // Inline code: accent
-    skin.inline_code.set_fg(accent);
+    // Code blocks: opposite-mode accent via set_fgbg (LineStyle, not CompoundStyle)
+    skin.code_block.set_fgbg(code_block_color, CColor::Reset);
 
-    // Italic: meta (softer)
-    skin.italic.set_fg(meta);
-    // Blockquote bar + horizontal rule: meta
-    skin.quote_mark = termimad::StyledChar::from_fg_char(meta, '▐');
-    skin.horizontal_rule = termimad::StyledChar::from_fg_char(meta, '─');
+    // Structural chrome: DarkGrey (dim, recedes, no hue)
+    skin.quote_mark = termimad::StyledChar::from_fg_char(CColor::DarkGrey, '▐');
+    skin.horizontal_rule = termimad::StyledChar::from_fg_char(CColor::DarkGrey, '─');
 
     skin
 }
@@ -54,6 +64,7 @@ impl Renderer {
             in_fence: false,
             skin,
             theme,
+            pending_tool: None,
         }
     }
 
@@ -107,13 +118,21 @@ impl Renderer {
                 RenderAction::Continue
             }
             Some("tool_call") => {
-                let name = v["name"].as_str().unwrap_or("?");
-                eprintln!("{}  \u{27f3} {}(\u{2026}){}", DIM, name, RESET);
+                let name = v["name"].as_str().unwrap_or("?").to_string();
+                eprintln!("{}  \u{27f3} {}(\u{2026}){}", DIM_FG, name, RESET);
+                self.pending_tool = Some(name);
                 RenderAction::Continue
             }
             Some("tool_result") => {
-                let name = v["name"].as_str().unwrap_or("?");
+                let had_pending = self.pending_tool.is_some();
+                let name = self.pending_tool.take()
+                    .or_else(|| v["name"].as_str().map(str::to_string))
+                    .unwrap_or_else(|| "?".to_string());
                 let ok = v["ok"].as_bool().unwrap_or(true);
+                if had_pending {
+                    // Overwrite the ⟳ pending line in-place
+                    eprint!("\x1b[1A\x1b[2K");
+                }
                 if ok {
                     eprintln!("{}  \u{2713} {}{}", self.theme.success.fg(), name, RESET);
                 } else {
