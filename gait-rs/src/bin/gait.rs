@@ -72,7 +72,7 @@ fn try_docker_route(orig_args: &[String]) {
 fn usage() -> ! {
     eprintln!("usage: gait <command> [options]");
     eprintln!("commands:");
-    eprintln!("  run      [--session <id>] [--task <text>] [--workspace <path>] [--codebase <path>] [--auto] [--model <provider/model>]");
+    eprintln!("  run      [--session <id>] [--task <text>] [--workspace <path>] [--codebase <path>] [--auto] [--model <provider/model>] [--container]");
     eprintln!("  init     [<repo-url>]");
     eprintln!("  finish   <session-id> [--workspace <path>]");
     eprintln!("  sessions [--workspace <path>]");
@@ -88,10 +88,9 @@ async fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 { usage(); }
 
-    // Auto-route through Docker unless: already inside container, or --native flag present.
-    // --native must appear after the subcommand (e.g. `gait run --native`), not at position 1.
-    let has_native = args[2..].iter().any(|a| a == "--native");
-    if !has_native && !gait_ai::docker::is_inside_container() {
+    // Route through Docker only when --container is explicitly requested and we're not already inside one.
+    let has_container = args[2..].iter().any(|a| a == "--container");
+    if has_container && !gait_ai::docker::is_inside_container() {
         try_docker_route(&args[1..]); // calls process::exit if Docker succeeds
     }
 

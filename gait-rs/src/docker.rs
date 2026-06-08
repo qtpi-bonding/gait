@@ -129,7 +129,7 @@ fn rewrite_inner_args(args: &[String], mounts: &MountMap) -> Vec<String> {
             "--workspace" | "--codebase" => {
                 i += 2;
             }
-            "--native" => {
+            "--container" => {
                 i += 1;
             }
             _ => {
@@ -221,14 +221,14 @@ mod tests {
     }
 
     #[test]
-    fn build_docker_args_strips_native_flag() {
+    fn build_docker_args_strips_container_flag() {
         let mounts = build_mount_map(
             &PathBuf::from("/host/ws"),
             &PathBuf::from("/host/ws"),
         );
-        let orig = vec!["run".to_string(), "--native".to_string(), "--task".to_string(), "hi".to_string()];
+        let orig = vec!["run".to_string(), "--container".to_string(), "--task".to_string(), "hi".to_string()];
         let args = build_docker_args("gaitai/gait:latest", &mounts, None, &orig, false);
-        assert!(!args.contains(&"--native".to_string()));
+        assert!(!args.contains(&"--container".to_string()));
     }
 
     #[test]
