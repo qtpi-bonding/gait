@@ -22,6 +22,7 @@ pub mod shell_history;
 pub mod docker;
 pub mod agent_frontmatter;
 pub mod mcp_client;
+pub mod repl_helper;
 
 pub use types::*;
 pub use stream::stream_text;
