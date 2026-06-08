@@ -6,10 +6,10 @@ use tempfile::TempDir;
 async fn builtin_tools_returns_expected_tools() {
     let dir = TempDir::new().unwrap();
     let tools = builtin_tools(dir.path().to_path_buf(), "stest".into(), dir.path().to_path_buf(), vec![], vec![]);
-    assert_eq!(tools.len(), 16);
+    assert_eq!(tools.len(), 15);
     let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
     for expected in &["read", "write", "edit", "glob", "grep", "ls", "shell",
-                      "output", "codesearch", "webfetch", "mcp", "skill",
+                      "output", "codesearch", "webfetch", "load",
                       "spawn_agent", "list_agents", "clarify", "inform"] {
         assert!(names.contains(expected), "missing tool '{}', got: {:?}", expected, names);
     }

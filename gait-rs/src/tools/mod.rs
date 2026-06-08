@@ -8,8 +8,7 @@ pub mod shell;
 pub mod output;
 pub mod codesearch;
 pub mod webfetch;
-pub mod mcp;
-pub mod skill;
+pub mod load;
 pub mod spawn_agent;
 pub mod list_agents;
 pub mod clarify;
@@ -25,8 +24,7 @@ pub use shell::ShellTool;
 pub use output::OutputTool;
 pub use codesearch::CodesearchTool;
 pub use webfetch::WebfetchTool;
-pub use mcp::McpTool;
-pub use skill::SkillTool;
+pub use load::LoadTool;
 pub use spawn_agent::SpawnAgentTool;
 pub use list_agents::ListAgentsTool;
 pub use clarify::ClarifyTool;
@@ -68,8 +66,7 @@ pub fn builtin_tools(
         OutputTool::new().boxed(),
         CodesearchTool::new(codebase_path.clone()).boxed(),
         WebfetchTool::new().boxed(),
-        McpTool::new(mcp_tools).boxed(),
-        SkillTool::new(skills).boxed(),
+        LoadTool::new(mcp_tools, skills).boxed(),
         SpawnAgentTool::new(session_id.clone(), workspace.clone(), codebase_path.clone()).boxed(),
         ListAgentsTool::new(workspace.clone()).boxed(),
         ClarifyTool::new().boxed(),
@@ -90,7 +87,7 @@ mod tests {
             PathBuf::from("/tmp"),
             vec![], vec![],
         );
-        assert_eq!(tools.len(), 16);
+        assert_eq!(tools.len(), 15);
     }
 
     #[test]
@@ -116,12 +113,11 @@ mod tests {
     }
 
     #[test]
-    fn mcp_and_skill_meta_tools_present() {
+    fn load_meta_tool_present() {
         let tools = builtin_tools(
             PathBuf::from("/tmp"), "stest".into(), PathBuf::from("/tmp"), vec![], vec![],
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-        assert!(names.contains(&"mcp"), "missing mcp: {:?}", names);
-        assert!(names.contains(&"skill"), "missing skill: {:?}", names);
+        assert!(names.contains(&"load"), "missing load: {:?}", names);
     }
 }
