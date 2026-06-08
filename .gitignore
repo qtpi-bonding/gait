@@ -7,3 +7,4 @@ bun.lockb
 sessions/
 tmp/
 .gait-ws.lock
+.worktrees/
