@@ -6,7 +6,6 @@ pub mod grep;
 pub mod ls;
 pub mod shell;
 pub mod output;
-pub mod multiedit;
 pub mod codesearch;
 pub mod webfetch;
 pub mod mcp;
@@ -15,7 +14,6 @@ pub mod spawn_agent;
 pub mod list_agents;
 pub mod clarify;
 pub mod inform;
-pub mod hashline_edit;
 
 pub use read::ReadTool;
 pub use write::WriteTool;
@@ -25,7 +23,6 @@ pub use grep::GrepTool;
 pub use ls::LsTool;
 pub use shell::ShellTool;
 pub use output::OutputTool;
-pub use multiedit::MultieditTool;
 pub use codesearch::CodesearchTool;
 pub use webfetch::WebfetchTool;
 pub use mcp::McpTool;
@@ -34,7 +31,6 @@ pub use spawn_agent::SpawnAgentTool;
 pub use list_agents::ListAgentsTool;
 pub use clarify::ClarifyTool;
 pub use inform::InformTool;
-pub use hashline_edit::HashlineEditTool;
 
 use std::path::PathBuf;
 use crate::types::Tool;
@@ -70,7 +66,6 @@ pub fn builtin_tools(
         LsTool::new(codebase_path.clone()).boxed(),
         ShellTool::new(codebase_path.clone(), workspace.clone()).boxed(),
         OutputTool::new().boxed(),
-        MultieditTool::new(codebase_path.clone()).boxed(),
         CodesearchTool::new(codebase_path.clone()).boxed(),
         WebfetchTool::new().boxed(),
         McpTool::new(mcp_tools).boxed(),
@@ -79,7 +74,6 @@ pub fn builtin_tools(
         ListAgentsTool::new(workspace.clone()).boxed(),
         ClarifyTool::new().boxed(),
         InformTool::new().boxed(),
-        HashlineEditTool::new(codebase_path.clone()).boxed(),
     ]
 }
 
@@ -96,7 +90,7 @@ mod tests {
             PathBuf::from("/tmp"),
             vec![], vec![],
         );
-        assert_eq!(tools.len(), 18);
+        assert_eq!(tools.len(), 16);
     }
 
     #[test]

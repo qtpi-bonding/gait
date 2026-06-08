@@ -71,7 +71,10 @@ impl ReadTool {
 impl Tool for ReadTool {
     fn name(&self) -> &str { "read" }
     fn description(&self) -> &str {
-        "Read a file from the codebase, optionally with line range. Paths are relative to the codebase root."
+        "Read a file from the codebase, optionally with line range. Each line is prefixed with \
+        N#XY|content where N is the 1-based line number and XY is a 2-char content hash. \
+        Use these N#XY anchors with the `edit` tool to modify lines without reproducing old content. \
+        Paths are relative to the codebase root."
     }
     fn parameters(&self) -> &Value { &self.parameters }
     fn execution_mode(&self) -> ExecutionMode { ExecutionMode::Parallel }

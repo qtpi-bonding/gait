@@ -6,11 +6,11 @@ use tempfile::TempDir;
 async fn builtin_tools_returns_expected_tools() {
     let dir = TempDir::new().unwrap();
     let tools = builtin_tools(dir.path().to_path_buf(), "stest".into(), dir.path().to_path_buf(), vec![], vec![]);
-    assert_eq!(tools.len(), 18);
+    assert_eq!(tools.len(), 16);
     let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
     for expected in &["read", "write", "edit", "glob", "grep", "ls", "shell",
-                      "output", "multiedit", "codesearch", "webfetch", "mcp", "skill",
-                      "spawn_agent", "list_agents", "hashline_edit"] {
+                      "output", "codesearch", "webfetch", "mcp", "skill",
+                      "spawn_agent", "list_agents", "clarify", "inform"] {
         assert!(names.contains(expected), "missing tool '{}', got: {:?}", expected, names);
     }
 }
@@ -61,16 +61,26 @@ async fn write_then_edit_then_read() {
     let edit  = tools.iter().find(|t| t.name() == "edit").unwrap();
     let read  = tools.iter().find(|t| t.name() == "read").unwrap();
 
+    let src = "fn hello() -> &'static str { \"hello\" }";
     write.execute(serde_json::json!({
         "file_path": "code.rs",
-        "content": "fn hello() -> &'static str { \"hello\" }"
+        "content": src
     })).await.unwrap();
+
+    // Read to get the hashline anchor for line 1
+    let read_result = read.execute(serde_json::json!({ "file_path": "code.rs" })).await.unwrap();
+    let read_text = read_result.as_str().unwrap();
+    // Extract the anchor: first token before '|'
+    let anchor = read_text.lines()
+        .find(|l| l.contains("|fn hello"))
+        .and_then(|l| l.split('|').next())
+        .unwrap()
+        .trim()
+        .to_string();
 
     edit.execute(serde_json::json!({
         "file_path": "code.rs",
-        "old_string": "hello",
-        "new_string": "world",
-        "replace_all": true
+        "edits": [{"op": "replace", "pos": anchor, "lines": ["fn world() -> &'static str { \"world\" }"]}]
     })).await.unwrap();
 
     let result = read.execute(serde_json::json!({ "file_path": "code.rs" })).await.unwrap();
