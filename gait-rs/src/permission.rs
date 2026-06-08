@@ -100,45 +100,6 @@ pub fn wildcard_match(pattern: &str, value: &str) -> bool {
     }
 }
 
-fn is_segment_allowed(segment: &str, allow: &[String]) -> bool {
-    allow.iter().any(|entry| {
-        if let Some(("shell", pat)) = entry.split_once(':') {
-            wildcard_match(pat, segment)
-        } else {
-            false
-        }
-    })
-}
-
-/// Return segments of a compound shell command that are NOT covered by the allow list.
-pub fn unapproved_segments(cmd: &str, allow: &[String]) -> Vec<String> {
-    let segs = split_commands(cmd);
-    let segs = if segs.is_empty() { vec![cmd.trim().to_string()] } else { segs };
-    segs.into_iter()
-        .filter(|seg| !is_segment_allowed(seg, allow))
-        .collect()
-}
-
-/// Check if a tool call is fully allowed given the allow list.
-/// Built-in tools (output, mcp, skill) are always allowed.
-/// For the shell tool, every segment of a compound command must be covered.
-pub fn is_tool_allowed(
-    tool_name: &str,
-    tool_args: &serde_json::Value,
-    allow: &[String],
-) -> bool {
-    if matches!(tool_name, "output" | "mcp" | "skill" | "clarify" | "inform") {
-        return true;
-    }
-    if tool_name == "shell" {
-        let cmd = tool_args.get("cmd")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        return unapproved_segments(cmd, allow).is_empty();
-    }
-    allow.iter().any(|entry| !entry.contains(':') && entry == tool_name)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,54 +187,6 @@ mod tests {
         assert!(wildcard_match("git push *", "git push origin main"));
         assert!(!wildcard_match("git push *", "git pull origin main"));
         assert!(wildcard_match("git push *", "git push"));
-    }
-
-    #[test]
-    fn is_allowed_exact_tool() {
-        let allow = vec!["read".into(), "glob".into()];
-        assert!(is_tool_allowed("read", &serde_json::json!({}), &allow));
-        assert!(!is_tool_allowed("write", &serde_json::json!({}), &allow));
-    }
-
-    #[test]
-    fn is_allowed_shell_pattern() {
-        let allow = vec!["shell:cargo *".into()];
-        assert!(is_tool_allowed("shell", &serde_json::json!({"cmd": "cargo test", "reason": ""}), &allow));
-        assert!(!is_tool_allowed("shell", &serde_json::json!({"cmd": "rm -rf /", "reason": ""}), &allow));
-    }
-
-    #[test]
-    fn is_allowed_shell_compound_all_covered() {
-        let allow = vec!["shell:cargo *".into(), "shell:git *".into()];
-        assert!(is_tool_allowed(
-            "shell",
-            &serde_json::json!({"cmd": "cargo test && git status", "reason": ""}),
-            &allow,
-        ));
-    }
-
-    #[test]
-    fn is_allowed_shell_compound_partial_coverage() {
-        let allow = vec!["shell:cargo *".into()];
-        assert!(!is_tool_allowed(
-            "shell",
-            &serde_json::json!({"cmd": "cargo test && git status", "reason": ""}),
-            &allow,
-        ));
-    }
-
-    #[test]
-    fn unapproved_segments_returns_unapproved_only() {
-        let allow = vec!["shell:cargo *".into()];
-        let segments = unapproved_segments("cargo test && git push", &allow);
-        assert_eq!(segments, vec!["git push"]);
-    }
-
-    #[test]
-    fn unapproved_segments_empty_when_all_allowed() {
-        let allow = vec!["shell:cargo *".into(), "shell:git *".into()];
-        let segments = unapproved_segments("cargo test && git status", &allow);
-        assert!(segments.is_empty());
     }
 
     #[test]

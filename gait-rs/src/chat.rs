@@ -41,7 +41,7 @@ fn parse_permission_response(
     has_agent: bool,
 ) -> Option<PermissionChoice> {
     // Shell patterns stored as "shell:<pattern>"; non-shell patterns stored bare (exact match).
-    // Must match is_tool_allowed's storage format exactly.
+    // Must match what the tool's `permission()` method emits as patterns.
     let prefix = if tool_name == "shell" { "shell:" } else { "" };
     match input.trim() {
         "r" | "reject" => return Some(PermissionChoice::Reject),
