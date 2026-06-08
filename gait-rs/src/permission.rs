@@ -1,4 +1,5 @@
 use regex::Regex;
+use std::path::Path;
 
 use crate::types::PermissionRequest;
 
@@ -13,6 +14,47 @@ pub enum PermissionChoice {
     Once(String),
     /// Deny — model receives "permission denied" and can react.
     Reject,
+}
+
+/// Persist a `PermissionChoice` to its backing store.
+///
+/// * `Global(pattern)` → appends to `<workspace>/gait.jsonc`
+/// * `Agent(pattern)` → appends to the agent's frontmatter at `agent_path`
+/// * `Once(pattern)`  → appends a line to the per-session temp file
+///   (read once at the start of the next turn, then deleted)
+/// * `Reject`         → no side effect
+///
+/// The `Once` case is intentionally line-based to match the existing reader
+/// in `turn.rs`, which consumes the file with `.lines()`.
+pub fn save_choice(
+    choice: &PermissionChoice,
+    workspace: &Path,
+    session_id: &str,
+    agent_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    match choice {
+        PermissionChoice::Global(pattern) => {
+            crate::config::append_allow_pattern(workspace, pattern)?;
+        }
+        PermissionChoice::Agent(pattern) => {
+            if let Some(path) = agent_path {
+                crate::agent_frontmatter::append_agent_allow(path.to_path_buf(), pattern)?;
+            }
+        }
+        PermissionChoice::Once(pattern) => {
+            let tmp_dir = workspace.join("tmp");
+            std::fs::create_dir_all(&tmp_dir)?;
+            let once_path = crate::turn::once_approval_path(workspace, session_id);
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&once_path)?;
+            writeln!(f, "{}", pattern)?;
+        }
+        PermissionChoice::Reject => {}
+    }
+    Ok(())
 }
 
 /// Generate allow-list patterns for a file path, from broadest to most specific.
