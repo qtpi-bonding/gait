@@ -8,7 +8,7 @@ use crate::session::transcript::{
     self, AnyEvent, PermissionItem, PermissionsReplyItem,
     ClarifyItem, ClarifyReplyItem, InformItem, InformReplyItem,
 };
-use crate::theme::{Theme, RESET, DIM, DIM_FG};
+use crate::theme::{Theme, RESET, DIM_FG};
 
 pub fn new_session_id() -> String {
     format!("s{}", &uuid::Uuid::new_v4().to_string().replace('-', "")[..8])
@@ -22,43 +22,31 @@ fn bang_command_str(s: &str) -> &str {
     s.strip_prefix("! ").or_else(|| s.strip_prefix('!')).unwrap_or(s)
 }
 
-#[derive(Debug, PartialEq)]
-enum PermissionChoice {
-    Global(String),
-    Agent(String),
-    Once(String),
-    Reject,
-}
-
 /// Parse one line of user input into a PermissionChoice.
-/// `tool_name`: used to compute the allow-list prefix ("shell:" for shell, "" for others).
 /// `has_agent`: whether --agent is active (controls whether a{N} is valid).
 /// Returns None if input is invalid → caller re-prompts.
+///
+/// Patterns are returned verbatim — they are already correctly formatted by the
+/// tool's `permission()` method (e.g. shell patterns arrive as "shell:cargo *").
+/// The REPL is a pure UI layer: it must not add or strip prefixes.
 fn parse_permission_response(
     input: &str,
     patterns: &[String],
-    tool_name: &str,
     has_agent: bool,
-) -> Option<PermissionChoice> {
-    // Shell patterns stored as "shell:<pattern>"; non-shell patterns stored bare (exact match).
-    // Must match is_tool_allowed's storage format exactly.
-    let prefix = if tool_name == "shell" { "shell:" } else { "" };
+) -> Option<crate::permission::PermissionChoice> {
+    use crate::permission::PermissionChoice;
     match input.trim() {
         "r" | "reject" => return Some(PermissionChoice::Reject),
         "o" | "once" => {
             let pat = patterns.last()?;
-            return Some(PermissionChoice::Once(format!("{}{}", prefix, pat)));
+            return Some(PermissionChoice::Once(pat.clone()));
         }
         _ => {}
     }
     if let Some(rest) = input.trim().strip_prefix('g') {
         if let Ok(n) = rest.parse::<usize>() {
             if n >= 1 && n <= patterns.len() {
-                return Some(PermissionChoice::Global(format!(
-                    "{}{}",
-                    prefix,
-                    patterns[n - 1]
-                )));
+                return Some(PermissionChoice::Global(patterns[n - 1].clone()));
             }
         }
     }
@@ -66,11 +54,7 @@ fn parse_permission_response(
         if let Some(rest) = input.trim().strip_prefix('a') {
             if let Ok(n) = rest.parse::<usize>() {
                 if n >= 1 && n <= patterns.len() {
-                    return Some(PermissionChoice::Agent(format!(
-                        "{}{}",
-                        prefix,
-                        patterns[n - 1]
-                    )));
+                    return Some(PermissionChoice::Agent(patterns[n - 1].clone()));
                 }
             }
         }
@@ -126,12 +110,14 @@ fn prompt_single_permission(
     label: Option<&str>,
     has_agent: bool,
     theme: &Theme,
-) -> PermissionChoice {
+) -> crate::permission::PermissionChoice {
     eprintln!();
+    // `item.cmd` is the tool-rendered display string (ShellTool.permission() etc.).
+    // We don't add a "shell:" prefix here — the tool has already formatted the display.
     if let Some(l) = label {
-        eprintln!("{}\u{27f3} shell: {}  {}({}){}", theme.accent.fg(), item.cmd, DIM_FG, l, RESET);
+        eprintln!("{}⟳ {}  {}({}){}", theme.accent.fg(), item.cmd, DIM_FG, l, RESET);
     } else {
-        eprintln!("{}\u{27f3} shell: {}{}", theme.accent.fg(), item.cmd, RESET);
+        eprintln!("{}⟳ {}{}", theme.accent.fg(), item.cmd, RESET);
     }
     eprintln!();
     for (i, pat) in item.patterns.iter().enumerate() {
@@ -149,10 +135,10 @@ fn prompt_single_permission(
         let _ = std::io::stderr().flush();
         let mut input = String::new();
         match std::io::stdin().lock().read_line(&mut input) {
-            Ok(0) | Err(_) => { eprint!("{}", RESET); return PermissionChoice::Reject; }
+            Ok(0) | Err(_) => { eprint!("{}", RESET); return crate::permission::PermissionChoice::Reject; }
             Ok(_) => { eprint!("{}", RESET); }
         }
-        match parse_permission_response(input.trim(), &item.patterns, &item.tool_name, has_agent) {
+        match parse_permission_response(input.trim(), &item.patterns, has_agent) {
             Some(c) => return c,
             None => eprintln!(
                 "  unrecognized — try {}g1..g{}, o, or r",
@@ -468,11 +454,20 @@ pub fn run_chat(
                 };
 
                 let choice = prompt_single_permission(item, label.as_deref(), has_agent, &theme);
+                // Persist the choice to its backing store (gait.jsonc / agent file / once-file).
+                // The REPL is a pure UI layer — all persistence lives in `crate::permission`.
+                if let Err(e) = crate::permission::save_choice(
+                    &choice,
+                    &workspace,
+                    &session_id,
+                    agent_path.as_deref(),
+                ) {
+                    eprintln!("[gait] warning: could not save permission: {e}");
+                }
                 match &choice {
-                    PermissionChoice::Global(pat) => {
-                        if let Err(e) = crate::config::append_allow_pattern(&workspace, pat) {
-                            eprintln!("[gait] warning: could not save to gait.jsonc: {e}");
-                        }
+                    crate::permission::PermissionChoice::Global(pat)
+                    | crate::permission::PermissionChoice::Agent(pat)
+                    | crate::permission::PermissionChoice::Once(pat) => {
                         reply_items.push(PermissionsReplyItem {
                             id: item.id.clone(),
                             decision: "approve".into(),
@@ -480,40 +475,7 @@ pub fn run_chat(
                         });
                         any_approved = true;
                     }
-                    PermissionChoice::Agent(pat) => {
-                        if let Some(ref p) = agent_path {
-                            if let Err(e) =
-                                crate::agent_frontmatter::append_agent_allow(p.clone(), pat)
-                            {
-                                eprintln!("[gait] warning: could not save to agent file: {e}");
-                            }
-                        }
-                        reply_items.push(PermissionsReplyItem {
-                            id: item.id.clone(),
-                            decision: "approve".into(),
-                            text: Some(pat.clone()),
-                        });
-                        any_approved = true;
-                    }
-                    PermissionChoice::Once(pat) => {
-                        let tmp_dir = workspace.join("tmp");
-                        let _ = std::fs::create_dir_all(&tmp_dir);
-                        let temp = tmp_dir.join(format!("gait-approve-{}", session_id));
-                        if let Ok(mut f) = std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(&temp)
-                        {
-                            let _ = writeln!(f, "{}", pat);
-                        }
-                        reply_items.push(PermissionsReplyItem {
-                            id: item.id.clone(),
-                            decision: "approve".into(),
-                            text: Some(pat.clone()),
-                        });
-                        any_approved = true;
-                    }
-                    PermissionChoice::Reject => {
+                    crate::permission::PermissionChoice::Reject => {
                         reply_items.push(PermissionsReplyItem {
                             id: item.id.clone(),
                             decision: "deny".into(),
@@ -523,19 +485,13 @@ pub fn run_chat(
                 }
             }
 
-            // Write PermissionsReply to transcript (even on full reject — needed for denied ToolResult)
+            // Emit the reply event through the shared transcript helper.
+            // (Even on full reject — the model needs a denied ToolResult.)
             let tx_path = workspace
                 .join("sessions")
                 .join(&session_id)
                 .join("transcript.jsonl");
-            let _ = transcript::append_event(
-                &tx_path,
-                &AnyEvent::PermissionsReply {
-                    from: "user".into(),
-                    items: reply_items,
-                    ts: transcript::now_ms(),
-                },
-            );
+            let _ = transcript::write_permissions_reply(&tx_path, "user", reply_items);
 
             if any_approved {
                 continue 'spawn;
@@ -578,61 +534,63 @@ mod tests {
 
     #[test]
     fn parse_permission_response_global_shell() {
-        let patterns = vec!["cargo *".to_string(), "cargo test *".to_string()];
+        // Patterns arrive pre-prefixed from ShellTool.permission() (e.g. "shell:cargo *").
+        // The REPL is a pure UI layer — it must not add any prefix.
+        let patterns = vec!["shell:cargo *".to_string(), "shell:cargo test *".to_string()];
         assert_eq!(
-            parse_permission_response("g1", &patterns, "shell", true),
-            Some(PermissionChoice::Global("shell:cargo *".to_string()))
+            parse_permission_response("g1", &patterns, true),
+            Some(crate::permission::PermissionChoice::Global("shell:cargo *".to_string()))
         );
     }
 
     #[test]
     fn parse_permission_response_global_non_shell() {
-        // Non-shell tools store bare tool name in allow list (no "shell:" prefix)
+        // Non-shell tools store bare tool name in allow list (no "shell:" prefix).
         let patterns = vec!["write".to_string()];
         assert_eq!(
-            parse_permission_response("g1", &patterns, "write", false),
-            Some(PermissionChoice::Global("write".to_string()))
+            parse_permission_response("g1", &patterns, false),
+            Some(crate::permission::PermissionChoice::Global("write".to_string()))
         );
     }
 
     #[test]
     fn parse_permission_response_agent() {
-        let patterns = vec!["cargo *".to_string()];
+        let patterns = vec!["shell:cargo *".to_string()];
         assert_eq!(
-            parse_permission_response("a1", &patterns, "shell", true),
-            Some(PermissionChoice::Agent("shell:cargo *".to_string()))
+            parse_permission_response("a1", &patterns, true),
+            Some(crate::permission::PermissionChoice::Agent("shell:cargo *".to_string()))
         );
         // a{N} not offered when no agent active
         assert_eq!(
-            parse_permission_response("a1", &patterns, "shell", false),
+            parse_permission_response("a1", &patterns, false),
             None
         );
     }
 
     #[test]
     fn parse_permission_response_once() {
-        let patterns = vec!["cargo *".to_string(), "cargo test".to_string()];
-        // Once uses the most specific (last) pattern
+        // Once uses the most specific (last) pattern, returned verbatim.
+        let patterns = vec!["shell:cargo *".to_string(), "shell:cargo test".to_string()];
         assert_eq!(
-            parse_permission_response("o", &patterns, "shell", false),
-            Some(PermissionChoice::Once("shell:cargo test".to_string()))
+            parse_permission_response("o", &patterns, false),
+            Some(crate::permission::PermissionChoice::Once("shell:cargo test".to_string()))
         );
     }
 
     #[test]
     fn parse_permission_response_reject() {
         assert_eq!(
-            parse_permission_response("r", &[], "shell", false),
-            Some(PermissionChoice::Reject)
+            parse_permission_response("r", &[], false),
+            Some(crate::permission::PermissionChoice::Reject)
         );
     }
 
     #[test]
     fn parse_permission_response_invalid() {
-        let p = vec!["cargo *".to_string()];
-        assert_eq!(parse_permission_response("g99", &p, "shell", false), None);
-        assert_eq!(parse_permission_response("xyz", &p, "shell", false), None);
-        assert_eq!(parse_permission_response("", &p, "shell", false), None);
+        let p = vec!["shell:cargo *".to_string()];
+        assert_eq!(parse_permission_response("g99", &p, false), None);
+        assert_eq!(parse_permission_response("xyz", &p, false), None);
+        assert_eq!(parse_permission_response("", &p, false), None);
     }
 
     #[test]

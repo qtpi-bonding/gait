@@ -27,7 +27,6 @@ impl CodesearchTool {
         let parameters = crate::tools::make_schema::<CodesearchParams>();
         Self { codebase_path: Arc::new(codebase_path), parameters }
     }
-    pub fn boxed(self) -> Box<dyn Tool> { Box::new(self) }
 }
 
 pub fn walk_and_search(dir: &std::path::Path, pattern: &regex::Regex, results: &mut Vec<String>) {

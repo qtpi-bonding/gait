@@ -48,7 +48,7 @@ impl Tool for SpawnAgentTool {
             .ok_or_else(|| anyhow::anyhow!("spawn_agent: missing task"))?
             .to_string();
 
-        let new_id = format!("s{}", &uuid::Uuid::new_v4().to_string().replace('-', "")[..8]);
+        let new_id = crate::chat::new_session_id();
 
         git::create_session_worktree(&self.workspace, &new_id)?;
 

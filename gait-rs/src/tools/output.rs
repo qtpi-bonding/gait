@@ -1,4 +1,4 @@
-use crate::types::Tool;
+use crate::types::{Tool, ToolPermission, ExecutionSignal};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -20,7 +20,6 @@ impl OutputTool {
         let parameters = crate::tools::make_schema::<OutputParams>();
         Self { parameters }
     }
-    pub fn boxed(self) -> Box<dyn Tool> { Box::new(self) }
 }
 
 #[async_trait::async_trait]
@@ -30,6 +29,13 @@ impl Tool for OutputTool {
         "Signal that your turn is complete. Always call this as your final action with a one-sentence summary of what you accomplished."
     }
     fn parameters(&self) -> &Value { &self.parameters }
+
+    fn permission(&self, _args: &serde_json::Value) -> ToolPermission {
+        ToolPermission::Passthrough
+    }
+    fn execution_signal(&self) -> ExecutionSignal {
+        ExecutionSignal::TurnComplete
+    }
 
     async fn execute(&self, _args: Value) -> anyhow::Result<Value> {
         Ok(Value::String("recorded".into()))
@@ -71,5 +77,17 @@ mod tests {
         let schema = tool.parameters();
         let props = schema["properties"].as_object().unwrap();
         assert!(props.contains_key("summary"), "schema missing summary field");
+    }
+
+    #[test]
+    fn output_permission_is_passthrough() {
+        let tool = OutputTool::new();
+        assert_eq!(tool.permission(&serde_json::json!({})), crate::types::ToolPermission::Passthrough);
+    }
+
+    #[test]
+    fn output_execution_signal_is_turn_complete() {
+        let tool = OutputTool::new();
+        assert_eq!(tool.execution_signal(), crate::types::ExecutionSignal::TurnComplete);
     }
 }

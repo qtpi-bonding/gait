@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::types::{Tool, ExecutionMode};
+use crate::types::{Tool, ExecutionMode, ToolPermission, PermissionRequest};
+use crate::permission::path_patterns;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -157,6 +158,18 @@ impl Tool for ReadTool {
 
         Ok(Value::String(format!("<file>\n{}{}\n</file>", content, footer)))
     }
+
+    fn permission(&self, args: &serde_json::Value) -> ToolPermission {
+        let raw = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("*");
+        let rel = std::path::Path::new(raw)
+            .strip_prefix(&*self.codebase_path)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| raw.to_string());
+        ToolPermission::RequiresApproval(vec![PermissionRequest {
+            display: rel.clone(),
+            patterns: path_patterns("read", &rel),
+        }])
+    }
 }
 
 #[cfg(test)]
@@ -208,5 +221,19 @@ mod tests {
         let tool = ReadTool::new(dir.path().to_path_buf());
         let result = tool.execute(serde_json::json!({ "file_path": "img.png" })).await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn read_permission_relative_path() {
+        let codebase = std::path::PathBuf::from("/project");
+        let tool = ReadTool::new(codebase);
+        match tool.permission(&serde_json::json!({"file_path": "/project/src/main.rs"})) {
+            crate::types::ToolPermission::RequiresApproval(reqs) => {
+                assert_eq!(reqs[0].display, "src/main.rs");
+                assert!(reqs[0].patterns.contains(&"read".to_string()));
+                assert!(reqs[0].patterns.contains(&"read:src/main.rs".to_string()));
+            }
+            other => panic!("{:?}", other),
+        }
     }
 }

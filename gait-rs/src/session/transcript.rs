@@ -326,6 +326,83 @@ pub struct InitSessionOpts {
     pub codebase_dirty: bool,
 }
 
+// ── Session state introspection ─────────────────────────────────────────────
+
+/// Snapshot of where a session is right now, derived from the transcript tail.
+/// Used by external runners (CLI, REPL) to detect pending approval/clarify
+/// requests so they can resume or reject after a restart.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum SessionState {
+    /// No pending request — runner should start a new turn.
+    Idle,
+    /// A tool permission request is awaiting a decision.
+    AwaitingPermission {
+        items: Vec<PermissionItem>,
+    },
+    /// A clarify request is awaiting user answers.
+    AwaitingClarify {
+        items: Vec<ClarifyItem>,
+    },
+    /// An inform request is awaiting user acknowledgement.
+    AwaitingInform {
+        items: Vec<InformItem>,
+    },
+}
+
+/// Walk the transcript backwards to determine the current session state.
+///
+/// A reply event encountered before its corresponding request means the
+/// request is already resolved (e.g. resumed after a previous run wrote
+/// the reply). The first unresolved request encountered wins.
+pub fn session_state(tx_path: &std::path::Path) -> anyhow::Result<SessionState> {
+    let events = read_events(tx_path)?;
+    for event in events.iter().rev() {
+        match event {
+            AnyEvent::Permissions { items, .. } => {
+                return Ok(SessionState::AwaitingPermission { items: items.clone() });
+            }
+            AnyEvent::PermissionsReply { .. } => {
+                return Ok(SessionState::Idle);
+            }
+            AnyEvent::Clarify { items, .. } => {
+                return Ok(SessionState::AwaitingClarify { items: items.clone() });
+            }
+            AnyEvent::ClarifyReply { .. } => {
+                return Ok(SessionState::Idle);
+            }
+            AnyEvent::Inform { items, .. } => {
+                return Ok(SessionState::AwaitingInform { items: items.clone() });
+            }
+            AnyEvent::InformReply { .. } => {
+                return Ok(SessionState::Idle);
+            }
+            AnyEvent::TurnComplete { .. } => {
+                return Ok(SessionState::Idle);
+            }
+            _ => continue,
+        }
+    }
+    Ok(SessionState::Idle)
+}
+
+/// Append a `PermissionsReply` event to the transcript and stdout.
+///
+/// `from` identifies the source of the decisions (e.g. "user", "auto-deny").
+/// Each `PermissionsReplyItem.id` corresponds to a `PermissionItem.id` in
+/// the preceding `Permissions` request, and `decision` is "approve" | "deny" | "instruct".
+pub fn write_permissions_reply(
+    tx_path: &std::path::Path,
+    from: &str,
+    items: Vec<PermissionsReplyItem>,
+) -> anyhow::Result<()> {
+    emit_event(tx_path, &AnyEvent::PermissionsReply {
+        from: from.to_string(),
+        items,
+        ts: now_ms(),
+    })
+}
+
 pub fn init_session(opts: InitSessionOpts) -> anyhow::Result<()> {
     emit_event(&opts.transcript_path, &AnyEvent::SessionStart {
         schema_version: 2,

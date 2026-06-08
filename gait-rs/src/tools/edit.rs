@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::types::Tool;
+use crate::types::{Tool, ToolPermission, PermissionRequest};
+use crate::permission::path_patterns;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -369,6 +370,18 @@ impl Tool for EditTool {
         let chars_changed = (new_content.len() as i64 - old_content.len() as i64).unsigned_abs() as usize;
         Ok(Value::String(format!("Edited {}: replaced {} chars", resolved.display(), chars_changed)))
     }
+
+    fn permission(&self, args: &serde_json::Value) -> ToolPermission {
+        let raw = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("*");
+        let rel = std::path::Path::new(raw)
+            .strip_prefix(&*self.codebase_path)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| raw.to_string());
+        ToolPermission::RequiresApproval(vec![PermissionRequest {
+            display: rel.clone(),
+            patterns: path_patterns("edit", &rel),
+        }])
+    }
 }
 
 #[cfg(test)]
@@ -463,5 +476,19 @@ mod tests {
             "new_string": "x"
         })).await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn edit_permission_relative_path() {
+        let codebase = std::path::PathBuf::from("/project");
+        let tool = EditTool::new(codebase);
+        match tool.permission(&serde_json::json!({"file_path": "/project/src/main.rs"})) {
+            crate::types::ToolPermission::RequiresApproval(reqs) => {
+                assert_eq!(reqs[0].display, "src/main.rs");
+                assert!(reqs[0].patterns.contains(&"edit".to_string()));
+                assert!(reqs[0].patterns.contains(&"edit:src/main.rs".to_string()));
+            }
+            other => panic!("{:?}", other),
+        }
     }
 }

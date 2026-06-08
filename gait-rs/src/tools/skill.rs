@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use schemars::JsonSchema;
 use serde_json::Value;
-use crate::types::Tool;
+use crate::types::{Tool, ToolPermission, PermissionRequest, ExecutionSignal};
 use crate::config::SkillDef;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -22,10 +22,6 @@ impl SkillTool {
         let parameters = crate::tools::make_schema::<SkillParams>();
         Self { registry, parameters }
     }
-
-    pub fn boxed(self) -> Box<dyn Tool> {
-        Box::new(self)
-    }
 }
 
 #[async_trait::async_trait]
@@ -39,6 +35,17 @@ impl Tool for SkillTool {
     }
 
     fn parameters(&self) -> &Value { &self.parameters }
+
+    fn permission(&self, args: &serde_json::Value) -> ToolPermission {
+        let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("*");
+        ToolPermission::RequiresApproval(vec![PermissionRequest {
+            display: name.to_string(),
+            patterns: vec!["skill".to_string(), format!("skill:{}", name)],
+        }])
+    }
+    fn execution_signal(&self) -> ExecutionSignal {
+        ExecutionSignal::LoadContext
+    }
 
     async fn execute(&self, args: Value) -> anyhow::Result<Value> {
         let name = args.get("name").and_then(|v| v.as_str())
@@ -104,5 +111,23 @@ mod tests {
     fn has_correct_name() {
         let tool = SkillTool::new(vec![]);
         assert_eq!(tool.name(), "skill");
+    }
+
+    #[test]
+    fn skill_permission_has_name_patterns() {
+        let tool = SkillTool::new(vec![]);
+        let perm = tool.permission(&serde_json::json!({"name": "tdd", "context": true}));
+        match perm {
+            crate::types::ToolPermission::RequiresApproval(reqs) => {
+                assert_eq!(reqs[0].patterns, vec!["skill", "skill:tdd"]);
+            }
+            other => panic!("expected RequiresApproval, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn skill_execution_signal_is_load_context() {
+        let tool = SkillTool::new(vec![]);
+        assert_eq!(tool.execution_signal(), crate::types::ExecutionSignal::LoadContext);
     }
 }

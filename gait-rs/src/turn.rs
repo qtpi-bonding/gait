@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use futures_util::StreamExt;
 use crate::provider::{Provider, StreamChunk};
-use crate::types::{Message, MessageContent, AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind, Usage, ExecutionMode};
+use crate::types::{Message, MessageContent, AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind, Usage, ExecutionMode, ExecutionSignal, ToolPermission};
 use crate::types::Tool;
 use crate::session::transcript::{
     AnyEvent, append_event, emit_event, read_events, init_session, count_turn_complete, now_ms,
@@ -14,7 +14,7 @@ use crate::session::context::reconstruct_messages_from_events;
 use crate::config::{McpToolDef, SkillDef};
 use crate::git;
 use crate::mcp_client::McpClient;
-use crate::permission::{is_tool_allowed, unapproved_segments, command_patterns};
+use crate::permission::is_request_approved;
 
 pub struct TurnOpts {
     pub session_id: String,
@@ -42,6 +42,11 @@ pub enum TurnResult {
 
 pub struct SessionLock {
     path: PathBuf,
+}
+
+/// Shared path for the once-approval temp file, used by both turn.rs and chat.rs.
+pub fn once_approval_path(workspace: &std::path::Path, session_id: &str) -> std::path::PathBuf {
+    workspace.join("tmp").join(format!("gait-approve-{}", session_id))
 }
 
 impl SessionLock {
@@ -87,16 +92,16 @@ fn build_turn_context(codebase_hash: &str, dirty_files: &[String]) -> String {
 /// IMPORTANT: Pass only the post-compaction slice (from last_compaction_index forward).
 /// Loads before the compaction breakpoint are intentionally forgotten — the model
 /// reloads only what it still needs after compaction.
-pub fn derive_loaded_mcps(events: &[AnyEvent]) -> Vec<String> {
+pub fn derive_loaded_context_tool(events: &[AnyEvent], tool_name: &str) -> Vec<String> {
     let mut state: HashMap<String, bool> = HashMap::new();
     for event in events {
         if let AnyEvent::ToolCall { name, input, .. } = event {
-            if name == "mcp" {
-                if let (Some(tool_name), Some(context)) = (
+            if name == tool_name {
+                if let (Some(item_name), Some(context)) = (
                     input.get("name").and_then(|v| v.as_str()),
                     input.get("context").and_then(|v| v.as_bool()),
                 ) {
-                    state.insert(tool_name.to_string(), context);
+                    state.insert(item_name.to_string(), context);
                 }
             }
         }
@@ -104,22 +109,13 @@ pub fn derive_loaded_mcps(events: &[AnyEvent]) -> Vec<String> {
     state.into_iter().filter(|(_, loaded)| *loaded).map(|(name, _)| name).collect()
 }
 
+pub fn derive_loaded_mcps(events: &[AnyEvent]) -> Vec<String> {
+    derive_loaded_context_tool(events, "mcp")
+}
+
 /// Same as derive_loaded_mcps but for skills.
 pub fn derive_loaded_skills(events: &[AnyEvent]) -> Vec<String> {
-    let mut state: HashMap<String, bool> = HashMap::new();
-    for event in events {
-        if let AnyEvent::ToolCall { name, input, .. } = event {
-            if name == "skill" {
-                if let (Some(skill_name), Some(context)) = (
-                    input.get("name").and_then(|v| v.as_str()),
-                    input.get("context").and_then(|v| v.as_bool()),
-                ) {
-                    state.insert(skill_name.to_string(), context);
-                }
-            }
-        }
-    }
-    state.into_iter().filter(|(_, loaded)| *loaded).map(|(name, _)| name).collect()
+    derive_loaded_context_tool(events, "skill")
 }
 
 /// Build the <mcp-index> system prompt section. Returns empty string if registry is empty.
@@ -238,7 +234,7 @@ pub async fn run_turn(
     }
 
     // Read and delete once-approval temp file (written by gait chat after user approval)
-    let once_path = opts.workspace.join("tmp").join(format!("gait-approve-{}", opts.session_id));
+    let once_path = once_approval_path(&opts.workspace, &opts.session_id);
     let once_allow: Vec<String> = std::fs::read_to_string(&once_path)
         .unwrap_or_default()
         .lines()
@@ -377,7 +373,6 @@ pub async fn run_turn(
     };
 
     let mut total_usage = Usage::default();
-    let mut output_signal: Option<TurnOutput> = None;
     let mut clarify_signal: Option<Vec<ClarifyItem>> = None;
     let mut inform_signal: Option<Vec<InformItem>> = None;
 
@@ -416,18 +411,13 @@ pub async fn run_turn(
             })?;
         }
 
-        // No tool calls → turn complete
+        // No tool calls → turn complete (plain text fallback; output tool is handled
+        // via ExecutionSignal::TurnComplete in the serial dispatch loop below).
         if step_tool_calls.is_empty() {
             let events = read_events(&tx_path)?;
             let turn_n = count_turn_complete(&events) + 1;
-            let summary = output_signal.as_ref()
-                .map(|o| o.summary.clone())
-                .unwrap_or_else(|| step_text.lines().next().unwrap_or("").to_string());
-            let output_for_event = output_signal.take().unwrap_or_else(|| TurnOutput {
-                summary: summary.clone(),
-                result: None,
-            });
-            let done_result = output_for_event.result.clone();
+            let summary = step_text.lines().next().unwrap_or("").to_string();
+            let output_for_event = TurnOutput { summary: summary.clone(), result: None };
             emit_event(&tx_path, &AnyEvent::TurnComplete {
                 usage: TurnUsage {
                     input: total_usage.input_tokens as u64,
@@ -444,43 +434,51 @@ pub async fn run_turn(
                 &format!("session({}): turn {}", opts.session_id, turn_n))?;
             return Ok(TurnResult::Done {
                 summary,
-                result: done_result,
+                result: None,
             });
         }
 
         // Single permission gate: classify all tool calls into allowed vs gated.
         // Allowed tools execute below (parallel batch + serial). Gated tools either
         // trigger a Permissions exit (non-auto) or never exist (auto mode, where
-        // is_tool_allowed is never consulted and all tools are allowed).
+        // the gate is short-circuited and all tools are allowed).
         // B2: allowed tools execute and land in the transcript before we potentially
         // exit for permissions — their results survive any subsequent permission exit.
         let mut pending_permissions: Vec<PermissionItem> = vec![];
         let mut gated_ids: std::collections::HashSet<String> = Default::default();
 
         for tc in &step_tool_calls {
-            if !(opts.auto || is_tool_allowed(&tc.tool_name, &tc.args, &effective_allow)) {
+            let perm = tools.iter()
+                .find(|t| t.name() == tc.tool_name)
+                .map(|t| t.permission(&tc.args))
+                .unwrap_or_else(|| ToolPermission::RequiresApproval(vec![
+                    crate::types::PermissionRequest {
+                        display: tc.tool_name.clone(),
+                        patterns: vec![tc.tool_name.clone()],
+                    }
+                ]));
+
+            let is_allowed = opts.auto || match &perm {
+                ToolPermission::Passthrough => true,
+                ToolPermission::RequiresApproval(requests) => requests.iter()
+                    .all(|req| is_request_approved(&tc.tool_name, req, &effective_allow)),
+            };
+
+            if !is_allowed {
                 gated_ids.insert(tc.tool_call_id.clone());
-                if tc.tool_name == "shell" {
-                    let cmd = tc.args.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
-                    for seg in unapproved_segments(cmd, &effective_allow) {
+                if let ToolPermission::RequiresApproval(requests) = &perm {
+                    for req in requests.iter()
+                        .filter(|r| !is_request_approved(&tc.tool_name, r, &effective_allow))
+                    {
                         pending_permissions.push(PermissionItem {
                             id: tc.tool_call_id.clone(),
-                            cmd: seg.clone(),
-                            reason: "shell command requires permission".into(),
-                            patterns: command_patterns(&seg),
+                            cmd: req.display.clone(),
+                            reason: format!("{} requires permission", tc.tool_name),
+                            patterns: req.patterns.clone(),
                             tool_name: tc.tool_name.clone(),
                             tool_args: tc.args.clone(),
                         });
                     }
-                } else {
-                    pending_permissions.push(PermissionItem {
-                        id: tc.tool_call_id.clone(),
-                        cmd: tc.tool_name.clone(),
-                        reason: format!("{} requires permission", tc.tool_name),
-                        patterns: vec![tc.tool_name.clone()],
-                        tool_name: tc.tool_name.clone(),
-                        tool_args: tc.args.clone(),
-                    });
                 }
             }
         }
@@ -502,12 +500,12 @@ pub async fn run_turn(
             // Special-signal tools must be serial (they mutate turn state or the tools vec).
             // Everything else with ExecutionMode::Parallel runs as a concurrent batch.
             let is_parallel_eligible = |tc: &ToolCall| -> bool {
-                if matches!(tc.tool_name.as_str(), "clarify" | "inform" | "output" | "mcp" | "skill") {
-                    return false;
-                }
                 tools.iter()
                     .find(|t| t.name() == tc.tool_name)
-                    .map(|t| t.execution_mode() == ExecutionMode::Parallel)
+                    .map(|t| {
+                        t.execution_signal() == ExecutionSignal::Continue
+                            && t.execution_mode() == ExecutionMode::Parallel
+                    })
                     .unwrap_or(false)
             };
 
@@ -528,8 +526,14 @@ pub async fn run_turn(
             }
 
             for (i, tc) in &serial_items {
-                match tc.tool_name.as_str() {
-                    "mcp" => {
+                let signal = tools.iter()
+                    .find(|t| t.name() == tc.tool_name)
+                    .map(|t| t.execution_signal())
+                    .unwrap_or(ExecutionSignal::Continue);
+
+                match signal {
+                    ExecutionSignal::LoadContext => {
+                        // mcp / skill: load or unload the named tool from the active tools vec
                         if let (Some(name), Some(ctx)) = (
                             tc.args.get("name").and_then(|v| v.as_str()),
                             tc.args.get("context").and_then(|v| v.as_bool()),
@@ -550,35 +554,45 @@ pub async fn run_turn(
                             .unwrap_or_else(|e| error_tool_result(tc, e));
                         all_results[*i] = Some(r);
                     }
-                    "output" => {
-                        if let Some(summary) = tc.args.get("summary").and_then(|v| v.as_str()) {
-                            output_signal = Some(TurnOutput {
-                                summary: summary.to_string(),
-                                result: tc.args.get("result").cloned(),
-                            });
-                        }
-                        let r = execute_tool_call(tc, &tools, &tx_path).await
-                            .unwrap_or_else(|e| error_tool_result(tc, e));
-                        all_results[*i] = Some(r);
+                    ExecutionSignal::TurnComplete => {
+                        // output: exit the inner loop immediately — emit TurnComplete, return Done.
+                        // No tool result is sent back to the model.
+                        let summary = tc.args.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let result = tc.args.get("result").cloned();
+                        let events_now = read_events(&tx_path)?;
+                        let turn_n = count_turn_complete(&events_now) + 1;
+                        emit_event(&tx_path, &AnyEvent::TurnComplete {
+                            usage: TurnUsage {
+                                input: total_usage.input_tokens as u64,
+                                output: total_usage.output_tokens as u64,
+                                cache_read: total_usage.cache_read_tokens as u64,
+                                cache_write: total_usage.cache_write_tokens as u64,
+                            },
+                            codebase_hash: codebase_hash.clone(),
+                            codebase_dirty,
+                            output: TurnOutput { summary: summary.clone(), result: result.clone() },
+                            ts: now_ms(),
+                        })?;
+                        git::commit_session(&opts.workspace, &opts.session_id,
+                            &format!("session({}): turn {}", opts.session_id, turn_n))?;
+                        return Ok(TurnResult::Done { summary, result });
                     }
-                    "clarify" => {
+                    ExecutionSignal::Clarify => {
                         let items: Vec<ClarifyItem> = tc.args.get("items")
                             .and_then(|v| serde_json::from_value(v.clone()).ok())
                             .unwrap_or_default();
                         emit_event(&tx_path, &AnyEvent::Clarify { items: items.clone(), ts: now_ms() })?;
                         clarify_signal = Some(items);
-                        // no tool result — clarify exits the turn
                     }
-                    "inform" => {
+                    ExecutionSignal::Inform => {
                         let items: Vec<InformItem> = tc.args.get("items")
                             .and_then(|v| serde_json::from_value(v.clone()).ok())
                             .unwrap_or_default();
                         emit_event(&tx_path, &AnyEvent::Inform { items: items.clone(), ts: now_ms() })?;
                         inform_signal = Some(items);
-                        // no tool result — inform exits the turn
                     }
-                    _ => {
-                        // skill and all other serial tools
+                    ExecutionSignal::Continue => {
+                        // skill (default) and any other serial tool
                         let r = execute_tool_call(tc, &tools, &tx_path).await
                             .unwrap_or_else(|e| error_tool_result(tc, e));
                         all_results[*i] = Some(r);
@@ -634,6 +648,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use crate::provider::ProviderError;
     use crate::types::ToolDef;
+    use crate::tools::OutputTool;
     use async_stream::stream;
 
     fn init_git_repo(dir: &Path) {
@@ -753,6 +768,8 @@ mod tests {
         let ws = TempDir::new().unwrap();
         init_git_repo(ws.path());
 
+        // output tool now exits immediately on ExecutionSignal::TurnComplete —
+        // no second LLM call, no empty-text follow-up response.
         let provider = Arc::new(MockProvider {
             responses: Arc::new(vec![
                 vec![
@@ -763,22 +780,11 @@ mod tests {
                     },
                     StreamChunk::Done,
                 ],
-                vec![
-                    StreamChunk::Text("".into()),
-                    StreamChunk::Done,
-                ],
             ]),
             call_idx: Arc::new(AtomicUsize::new(0)),
         });
 
-        let output_tool = ToolDef {
-            name: "output".into(),
-            description: "signal done".into(),
-            parameters: serde_json::json!({ "type": "object" }),
-            execute: Box::new(|_args| Box::pin(async move {
-                Ok(serde_json::Value::String("recorded".into()))
-            })),
-        };
+        let output_tool = OutputTool::new();
 
         run_turn(
             TurnOpts {
@@ -795,7 +801,7 @@ mod tests {
                 skill_registry: vec![],
             },
             provider,
-            vec![Box::new(output_tool)],
+            vec![output_tool.boxed()],
         ).await.unwrap();
 
         let tx_path = ws.path().join("sessions/stest_out/transcript.jsonl");
@@ -814,6 +820,7 @@ mod tests {
         let ws = TempDir::new().unwrap();
         init_git_repo(ws.path());
 
+        // output tool now exits immediately on ExecutionSignal::TurnComplete.
         let provider = Arc::new(MockProvider {
             responses: Arc::new(vec![
                 vec![
@@ -824,22 +831,11 @@ mod tests {
                     },
                     StreamChunk::Done,
                 ],
-                vec![
-                    StreamChunk::Text("".into()),
-                    StreamChunk::Done,
-                ],
             ]),
             call_idx: Arc::new(AtomicUsize::new(0)),
         });
 
-        let output_tool = ToolDef {
-            name: "output".into(),
-            description: "signal done".into(),
-            parameters: serde_json::json!({ "type": "object" }),
-            execute: Box::new(|_args| Box::pin(async move {
-                Ok(serde_json::Value::String("recorded".into()))
-            })),
-        };
+        let output_tool = OutputTool::new();
 
         run_turn(
             TurnOpts {
@@ -856,7 +852,7 @@ mod tests {
                 skill_registry: vec![],
             },
             provider,
-            vec![Box::new(output_tool)],
+            vec![output_tool.boxed()],
         ).await.unwrap();
 
         let tx_path = ws.path().join("sessions/stest_out2/transcript.jsonl");
