@@ -37,14 +37,28 @@ impl GrepTool {
     }
 }
 
-fn rg_search(pattern: &str, search_path: &str, include: Option<&str>) -> anyhow::Result<Vec<MatchEntry>> {
+/// Returns None if rg is unavailable or errored (caller should fall back to regex_search).
+/// Returns Some(matches) — possibly empty — when rg ran and produced an authoritative result.
+/// rg exit codes: 0 = matches found, 1 = no matches, 2 = error.
+fn rg_search(pattern: &str, search_path: &str, include: Option<&str>) -> anyhow::Result<Option<Vec<MatchEntry>>> {
     let mut cmd = std::process::Command::new("rg");
     cmd.args(["-nH", "--hidden", "--no-heading", "--no-messages", "--regexp", pattern]);
     if let Some(inc) = include { cmd.args(["--glob", inc]); }
     cmd.arg(search_path);
-    let output = cmd.output()?;
+
+    let output = match cmd.output() {
+        Ok(o) => o,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None), // rg not installed
+        Err(e) => return Err(e.into()),
+    };
+
+    match output.status.code() {
+        Some(0) | Some(1) => {} // 0 = matches, 1 = no matches — both authoritative, don't re-scan
+        _ => return Ok(None),   // exit 2 or signal: rg error, fall back to regex_search
+    }
+
     if output.stdout.is_empty() {
-        return Ok(vec![]);
+        return Ok(Some(vec![]));
     }
     let text = String::from_utf8_lossy(&output.stdout);
     let mut matches = vec![];
@@ -60,7 +74,7 @@ fn rg_search(pattern: &str, search_path: &str, include: Option<&str>) -> anyhow:
         let mod_time = std::fs::metadata(&file_path).ok().and_then(|m| m.modified().ok());
         matches.push(MatchEntry { path: file_path, line_num, line_text, mod_time });
     }
-    Ok(matches)
+    Ok(Some(matches))
 }
 
 fn regex_search(pattern: &str, search_path: &std::path::Path) -> anyhow::Result<Vec<MatchEntry>> {
@@ -113,12 +127,10 @@ impl Tool for GrepTool {
             None => (*self.codebase_path).clone(),
         };
 
-        let mut matches = rg_search(&params.pattern, &resolved.display().to_string(), params.include.as_deref())
-            .unwrap_or_default();
-
-        if matches.is_empty() {
-            matches = regex_search(&params.pattern, &resolved)?;
-        }
+        let mut matches = match rg_search(&params.pattern, &resolved.display().to_string(), params.include.as_deref())? {
+            Some(m) => m,                                  // rg ran — authoritative (even if empty)
+            None => regex_search(&params.pattern, &resolved)?, // rg unavailable/errored — fall back
+        };
 
         if matches.is_empty() { return Ok(Value::String("No files found".into())); }
 
