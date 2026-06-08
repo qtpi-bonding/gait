@@ -31,9 +31,29 @@ pub async fn exec_prompt_node(
         .unwrap_or_else(|| ctx.codebase.to_path_buf());
 
     let config = crate::config::load_config(ctx.workspace);
+
+    // Discover tools from all configured MCP servers
+    let mut mcp_registry: Vec<crate::config::McpToolDef> = vec![];
+    let mut mcp_clients: std::collections::HashMap<String, std::sync::Arc<crate::mcp_client::McpClient>> = std::collections::HashMap::new();
+    for server_def in &config.mcp_servers {
+        match crate::mcp_client::McpClient::connect(server_def).await {
+            Ok(client) => {
+                match client.discover_tools().await {
+                    Ok(tools) => {
+                        eprintln!("[gait] mcp {}: {} tool(s)", server_def.name, tools.len());
+                        mcp_registry.extend(tools);
+                        mcp_clients.insert(server_def.name.clone(), std::sync::Arc::new(client));
+                    }
+                    Err(e) => eprintln!("[gait] warning: mcp {} tools/list: {e}", server_def.name),
+                }
+            }
+            Err(e) => eprintln!("[gait] warning: mcp {} connect: {e}", server_def.name),
+        }
+    }
+
     let tools = crate::tools::builtin_tools(
         codebase.clone(), ctx.session_id.to_string(), ctx.workspace.to_path_buf(),
-        config.mcp_tools.clone(), config.skills.clone(),
+        mcp_registry.clone(), config.skills.clone(),
     );
 
     let result = run_turn(TurnOpts {
@@ -45,7 +65,8 @@ pub async fn exec_prompt_node(
         allow,
         system_prompt,
         model,
-        mcp_registry: config.mcp_tools,
+        mcp_registry,
+        mcp_clients,
         skill_registry: config.skills,
     }, provider, tools).await?;
 

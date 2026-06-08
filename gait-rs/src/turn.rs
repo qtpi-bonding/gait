@@ -13,6 +13,7 @@ use crate::session::transcript::{
 use crate::session::context::reconstruct_messages_from_events;
 use crate::config::{McpToolDef, SkillDef};
 use crate::git;
+use crate::mcp_client::McpClient;
 use crate::permission::{is_tool_allowed, unapproved_segments, command_patterns};
 
 pub struct TurnOpts {
@@ -25,6 +26,7 @@ pub struct TurnOpts {
     pub system_prompt: String,
     pub model: String,  // stored in session_start event for wire-compat with TS gait
     pub mcp_registry: Vec<McpToolDef>,
+    pub mcp_clients: HashMap<String, Arc<McpClient>>,
     pub skill_registry: Vec<SkillDef>,
 }
 
@@ -138,39 +140,18 @@ pub fn build_skill_index(registry: &[SkillDef]) -> String {
     format!("\n<skill-index>\n{}\n</skill-index>", lines.join("\n"))
 }
 
-fn make_mcp_tool_def(
-    def: &McpToolDef,
-    workspace: &std::path::Path,
-    codebase_path: &std::path::Path,
-) -> Box<dyn crate::types::Tool> {
-    let cmd = def.cmd.clone();
-    let cwd = if def.cwd == "workspace" {
-        workspace.to_path_buf()
-    } else {
-        codebase_path.to_path_buf()
-    };
+fn make_mcp_tool_def(def: &McpToolDef, client: Arc<McpClient>) -> Box<dyn crate::types::Tool> {
     let name = def.name.clone();
     let description = def.description.clone();
     let schema = def.schema.clone();
     Box::new(crate::types::ToolDef {
-        name,
+        name: name.clone(),
         description,
         parameters: schema,
-        execute: Box::new(move |_args| {
-            let cmd = cmd.clone();
-            let cwd = cwd.clone();
-            Box::pin(async move {
-                let output = tokio::process::Command::new("sh")
-                    .arg("-c").arg(&cmd)
-                    .current_dir(&cwd)
-                    .output().await
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
-                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                let combined = if stderr.is_empty() { stdout }
-                    else { format!("{}\nstderr:\n{}", stdout, stderr) };
-                Ok(serde_json::Value::String(combined))
-            })
+        execute: Box::new(move |args| {
+            let client = client.clone();
+            let name = name.clone();
+            Box::pin(async move { client.call_tool(&name, args).await })
         }),
     })
 }
@@ -380,7 +361,9 @@ pub async fn run_turn(
     let loaded_mcp_names = derive_loaded_mcps(post_compaction);
     for name in &loaded_mcp_names {
         if let Some(def) = opts.mcp_registry.iter().find(|d| d.name == *name) {
-            tools.push(make_mcp_tool_def(def, &opts.workspace, &opts.codebase_path));
+            if let Some(client) = opts.mcp_clients.get(&def.server_name) {
+                tools.push(make_mcp_tool_def(def, client.clone()));
+            }
         }
     }
 
@@ -554,7 +537,9 @@ pub async fn run_turn(
                             if ctx {
                                 if let Some(def) = opts.mcp_registry.iter().find(|d| d.name == name) {
                                     if !tools.iter().any(|t| t.name() == name) {
-                                        tools.push(make_mcp_tool_def(def, &opts.workspace, &opts.codebase_path));
+                                        if let Some(client) = opts.mcp_clients.get(&def.server_name) {
+                                            tools.push(make_mcp_tool_def(def, client.clone()));
+                                        }
                                     }
                                 }
                             } else {
@@ -732,6 +717,7 @@ mod tests {
                 system_prompt: "you are a helpful assistant".into(),
                 model: "mock/test".into(),
                 mcp_registry: vec![],
+                mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
             },
             provider,
@@ -805,6 +791,7 @@ mod tests {
                 system_prompt: "".into(),
                 model: "mock/test".into(),
                 mcp_registry: vec![],
+                mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
             },
             provider,
@@ -865,6 +852,7 @@ mod tests {
                 system_prompt: "".into(),
                 model: "mock/test".into(),
                 mcp_registry: vec![],
+                mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
             },
             provider,
@@ -909,6 +897,7 @@ mod tests {
                 system_prompt: "".into(),
                 model: "mock/test".into(),
                 mcp_registry: vec![],
+                mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
             },
             provider,
@@ -993,8 +982,12 @@ mod tests {
     fn build_mcp_index_formats_correctly() {
         use crate::config::McpToolDef;
         let registry = vec![
-            McpToolDef { name: "slack_send".into(), description: "post to Slack".into(),
-                schema: serde_json::json!({}), cmd: "node s.js".into(), cwd: "workspace".into() },
+            McpToolDef {
+                server_name: "slack".into(),
+                name: "slack_send".into(),
+                description: "post to Slack".into(),
+                schema: serde_json::json!({}),
+            },
         ];
         let index = build_mcp_index(&registry);
         assert!(index.contains("<mcp-index>"), "got: {index}");
@@ -1039,6 +1032,7 @@ mod tests {
                 system_prompt: "".into(),
                 model: "mock/test".into(),
                 mcp_registry: vec![],
+                mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
             },
             provider,
@@ -1081,6 +1075,7 @@ mod tests {
                 system_prompt: "".into(),
                 model: "mock/test".into(),
                 mcp_registry: vec![],
+                mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
             },
             provider,
@@ -1117,6 +1112,7 @@ mod tests {
                 system_prompt: "".into(),
                 model: "mock/test".into(),
                 mcp_registry: vec![],
+                mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
             },
             provider,
@@ -1237,6 +1233,7 @@ mod tests {
                 system_prompt: "".into(),
                 model: "test".into(),
                 mcp_registry: vec![],
+                mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
             },
             provider,
@@ -1311,6 +1308,7 @@ mod tests {
                 system_prompt: "".into(),
                 model: "test".into(),
                 mcp_registry: vec![],
+                mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
             },
             provider,

@@ -68,6 +68,7 @@ mod tests {
 
     fn make_registry() -> Vec<McpToolDef> {
         vec![McpToolDef {
+            server_name: "slack".into(),
             name: "slack_send".into(),
             description: "post a message to Slack".into(),
             schema: serde_json::json!({
@@ -78,8 +79,6 @@ mod tests {
                 },
                 "required": ["channel", "text"]
             }),
-            cmd: "node slack.js".into(),
-            cwd: "workspace".into(),
         }]
     }
 

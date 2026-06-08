@@ -166,12 +166,31 @@ async fn cmd_run(argv: &[String]) {
         "You are a helpful AI coding assistant. You have access to tools to read, write, and edit files in the codebase.".into()
     });
 
+    // Discover tools from all configured MCP servers
+    let mut mcp_registry: Vec<gait_ai::config::McpToolDef> = vec![];
+    let mut mcp_clients: std::collections::HashMap<String, std::sync::Arc<gait_ai::mcp_client::McpClient>> = std::collections::HashMap::new();
+    for server_def in &config.mcp_servers {
+        match gait_ai::mcp_client::McpClient::connect(server_def).await {
+            Ok(client) => {
+                match client.discover_tools().await {
+                    Ok(tools) => {
+                        eprintln!("[gait] mcp {}: {} tool(s)", server_def.name, tools.len());
+                        mcp_registry.extend(tools);
+                        mcp_clients.insert(server_def.name.clone(), std::sync::Arc::new(client));
+                    }
+                    Err(e) => eprintln!("[gait] warning: mcp {} tools/list: {e}", server_def.name),
+                }
+            }
+            Err(e) => eprintln!("[gait] warning: mcp {} connect: {e}", server_def.name),
+        }
+    }
+
     // Append config-defined tools
     let mut tools = builtin_tools(
         codebase_path.clone(),
         session_id.clone(),
         workspace.clone(),
-        config.mcp_tools.clone(),
+        mcp_registry.clone(),
         config.skills.clone(),
     );
     for ct in &config.tools {
@@ -233,7 +252,8 @@ async fn cmd_run(argv: &[String]) {
             allow: effective_allow,
             system_prompt,
             model: model.clone(),
-            mcp_registry: config.mcp_tools,
+            mcp_registry,
+            mcp_clients,
             skill_registry: config.skills,
         },
         provider,
