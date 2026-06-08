@@ -287,6 +287,7 @@ pub fn run_chat(
         match line.as_str() {
             "/new" => {
                 session_id = new_session_id();
+                shell_history_path = workspace.join("tmp").join(format!("shell-{}.jsonl", session_id));
                 eprintln!("new session {}", session_id);
                 continue;
             }
@@ -294,7 +295,42 @@ pub fn run_chat(
             _ => {}
         }
 
-        let task = line.clone();
+        let task: String = if is_at_command(&line) {
+            match parse_at_command(&line) {
+                Some(AtCommand::Run(cmd)) => {
+                    let (output, code) = run_and_capture(&cmd, &codebase);
+                    if code != Some(0) {
+                        eprintln!("[!] exit {}", code.unwrap_or(1));
+                    }
+                    let _ = crate::shell_history::append(
+                        &shell_history_path,
+                        &cmd,
+                        &output,
+                        crate::session::transcript::now_ms(),
+                    );
+                    format!("[shell: {}]\n{}", cmd, output)
+                }
+                Some(AtCommand::Recall(n)) => {
+                    match crate::shell_history::recall(&shell_history_path, n) {
+                        Ok(Some(entry)) => format!("[shell: {}]\n{}", entry.cmd, entry.output),
+                        Ok(None) => {
+                            eprintln!("[!] no shell history at @-{}", n);
+                            continue;
+                        }
+                        Err(e) => {
+                            eprintln!("[!] shell history error: {e}");
+                            continue;
+                        }
+                    }
+                }
+                None => {
+                    eprintln!("[!] invalid @ command — use `@ <cmd>` or `@-N`");
+                    continue;
+                }
+            }
+        } else {
+            line.clone()
+        };
 
         'spawn: loop {
             let mut cmd = Command::new(&gait_bin);
