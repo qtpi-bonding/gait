@@ -1,8 +1,20 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+pub struct ShellNavState {
+    pub path: PathBuf,
+    pub index: usize,
+    pub original_line: String,
+}
 
 pub struct ReplHelper {
-    pub shell_history_path: PathBuf,
+    pub nav: Arc<Mutex<ShellNavState>>,
+}
+
+pub struct ShellNavHandler {
+    pub nav: Arc<Mutex<ShellNavState>>,
+    pub up: bool,
 }
 
 /// Returns numeric @(N) indices found in `line`, in order, deduplicated.
@@ -40,7 +52,9 @@ use rustyline::completion::Completer;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::{Hint, Hinter};
 use rustyline::validate::Validator;
-use rustyline::{Context, Helper};
+use rustyline::{
+    Cmd, ConditionalEventHandler, Context, Event, EventContext, Helper, Movement, RepeatCount,
+};
 
 impl Helper for ReplHelper {}
 
@@ -78,10 +92,11 @@ impl Hinter for ReplHelper {
         if refs.is_empty() {
             return None;
         }
+        let path = self.nav.lock().unwrap().path.clone();
         let cmds: Vec<String> = refs
             .iter()
             .filter_map(|&n| {
-                crate::shell_history::recall(&self.shell_history_path, n)
+                crate::shell_history::recall(&path, n)
                     .ok()
                     .flatten()
             })
@@ -94,9 +109,64 @@ impl Hinter for ReplHelper {
     }
 }
 
+impl ConditionalEventHandler for ShellNavHandler {
+    fn handle(
+        &self,
+        _evt: &Event,
+        _n: RepeatCount,
+        _positive: bool,
+        ctx: &EventContext,
+    ) -> Option<Cmd> {
+        let mut state = self.nav.lock().unwrap();
+        if self.up {
+            if state.index == 0 {
+                state.original_line = ctx.line().to_string();
+            }
+            let next_index = state.index + 1;
+            let entry = crate::shell_history::recall(&state.path, next_index)
+                .ok()
+                .flatten()?;
+            state.index = next_index;
+            Some(Cmd::Replace(
+                Movement::WholeLine,
+                Some(format!("!{}", entry.cmd)),
+            ))
+        } else {
+            if state.index == 0 {
+                return None;
+            }
+            if state.index == 1 {
+                let original = std::mem::take(&mut state.original_line);
+                state.index = 0;
+                Some(Cmd::Replace(Movement::WholeLine, Some(original)))
+            } else {
+                let next_index = state.index - 1;
+                let entry = crate::shell_history::recall(&state.path, next_index)
+                    .ok()
+                    .flatten()?;
+                state.index = next_index;
+                Some(Cmd::Replace(
+                    Movement::WholeLine,
+                    Some(format!("!{}", entry.cmd)),
+                ))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn make_helper(path: PathBuf) -> ReplHelper {
+        ReplHelper {
+            nav: Arc::new(Mutex::new(ShellNavState {
+                path,
+                index: 0,
+                original_line: String::new(),
+            })),
+        }
+    }
 
     #[test]
     fn no_refs_returns_empty() {
@@ -145,7 +215,7 @@ mod tests {
         let path = dir.path().join("shell.jsonl");
         crate::shell_history::append(&path, "cargo test", "ok", 1).unwrap();
         crate::shell_history::append(&path, "cat src/main.rs", "fn main", 2).unwrap();
-        let helper = ReplHelper { shell_history_path: path };
+        let helper = make_helper(path);
         let history = rustyline::history::DefaultHistory::new();
         let ctx = rustyline::Context::new(&history);
         let hint = helper.hint("diff @(1) and @(2)", 18, &ctx).unwrap();
@@ -158,7 +228,7 @@ mod tests {
         use tempfile::tempdir;
         let dir = tempdir().unwrap();
         let path = dir.path().join("shell.jsonl");
-        let helper = ReplHelper { shell_history_path: path };
+        let helper = make_helper(path);
         let history = rustyline::history::DefaultHistory::new();
         let ctx = rustyline::Context::new(&history);
         assert!(helper.hint("plain prompt no refs", 20, &ctx).is_none());
@@ -169,7 +239,7 @@ mod tests {
         use tempfile::tempdir;
         let dir = tempdir().unwrap();
         let path = dir.path().join("shell.jsonl");
-        let helper = ReplHelper { shell_history_path: path };
+        let helper = make_helper(path);
         let history = rustyline::history::DefaultHistory::new();
         let ctx = rustyline::Context::new(&history);
         assert!(helper.hint("explain @(1)", 12, &ctx).is_none());

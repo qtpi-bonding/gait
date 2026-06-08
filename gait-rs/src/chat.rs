@@ -6,8 +6,10 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use rustyline::Editor;
 use rustyline::history::DefaultHistory;
 
-use crate::repl_helper::ReplHelper;
+use crate::repl_helper::{ReplHelper, ShellNavHandler, ShellNavState};
 use rustyline::error::ReadlineError;
+use rustyline::{EventHandler, KeyCode, KeyEvent, Modifiers};
+use std::sync::{Arc, Mutex};
 
 use crate::session::transcript::{
     self, AnyEvent, PermissionItem, PermissionsReplyItem,
@@ -392,13 +394,26 @@ pub fn run_chat(
         DIM_FG, RESET,
     );
 
-    let mut rl = Editor::<ReplHelper, DefaultHistory>::new()?;
-    seed_history_from_transcripts(&mut rl, &workspace);
-    rl.set_helper(Some(ReplHelper {
-        shell_history_path: shell_history_path.clone(),
+    let nav = Arc::new(Mutex::new(ShellNavState {
+        path: shell_history_path.clone(),
+        index: 0,
+        original_line: String::new(),
     }));
 
+    let mut rl = Editor::<ReplHelper, DefaultHistory>::new()?;
+    seed_history_from_transcripts(&mut rl, &workspace);
+    rl.set_helper(Some(ReplHelper { nav: nav.clone() }));
+    rl.bind_sequence(
+        KeyEvent(KeyCode::Up, Modifiers::SHIFT),
+        EventHandler::Conditional(Box::new(ShellNavHandler { nav: nav.clone(), up: true })),
+    );
+    rl.bind_sequence(
+        KeyEvent(KeyCode::Down, Modifiers::SHIFT),
+        EventHandler::Conditional(Box::new(ShellNavHandler { nav: nav.clone(), up: false })),
+    );
+
     loop {
+        nav.lock().unwrap().index = 0;
         let prompt = format!("{}>{} {}", theme.accent.fg(), RESET, theme.user_msg.fg());
         let readline = rl.readline(&prompt);
         eprint!("{}", RESET);
@@ -430,9 +445,7 @@ pub fn run_chat(
             "/new" => {
                 session_id = new_session_id();
                 shell_history_path = workspace.join("tmp").join(format!("shell-{}.jsonl", session_id));
-                if let Some(h) = rl.helper_mut() {
-                    h.shell_history_path = shell_history_path.clone();
-                }
+                nav.lock().unwrap().path = shell_history_path.clone();
                 eprintln!("new session {}", session_id);
                 continue;
             }
