@@ -1,5 +1,5 @@
 # Stage 1: build the gait binary inside a Rust container
-FROM rust:1.80-slim AS builder
+FROM rust:slim AS builder
 
 # cmake + pkg-config + libssl-dev: required by git2 vendored libgit2 (needs OpenSSL for HTTPS transport)
 # gcc is already present in rust:slim — not re-listed
@@ -9,10 +9,16 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /build
 COPY gait-rs/ .
-RUN cargo build --release --locked
+# Cache the cargo registry + git deps + build artifacts across rebuilds.
+# CARGO_HOME in rust:slim is /usr/local/cargo — mount all three subdirs.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo build --release --locked && \
+    cp target/release/gait /gait
 
 # Stage 2: minimal runtime image with tooling
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y \
     git \
@@ -30,7 +36,7 @@ RUN git config --system user.name "gait" \
  && git config --system user.email "gait@localhost" \
  && git config --system --add safe.directory '*'
 
-COPY --from=builder /build/target/release/gait /usr/local/bin/gait
+COPY --from=builder /gait /usr/local/bin/gait
 
 # C.UTF-8 is built into glibc — no locales package needed
 ENV LANG=C.UTF-8 \
