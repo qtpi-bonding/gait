@@ -74,6 +74,27 @@ pub fn build_docker_args(
         args.push("-it".to_string());
     }
 
+    // Pass through host git identity so commits in the container use the user's name/email.
+    // git and libgit2 respect GIT_AUTHOR_* / GIT_COMMITTER_* natively.
+    let git_name = std::process::Command::new("git")
+        .args(["config", "user.name"])
+        .output().ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+    let git_email = std::process::Command::new("git")
+        .args(["config", "user.email"])
+        .output().ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+    if let (Some(name), Some(email)) = (git_name, git_email) {
+        args.extend(["-e".to_string(), format!("GIT_AUTHOR_NAME={}", name)]);
+        args.extend(["-e".to_string(), format!("GIT_AUTHOR_EMAIL={}", email)]);
+        args.extend(["-e".to_string(), format!("GIT_COMMITTER_NAME={}", name)]);
+        args.extend(["-e".to_string(), format!("GIT_COMMITTER_EMAIL={}", email)]);
+    }
+
     args.extend([
         "-v".to_string(),
         format!("{}:{}", mounts.workspace_host.display(), mounts.workspace_container.display()),

@@ -60,18 +60,32 @@ fn collect_files_walkdir(dir: &std::path::Path, extra_ignore: &[String]) -> (Vec
     (files, truncated)
 }
 
-fn collect_files_rg(dir: &std::path::Path, extra_ignore: &[String]) -> anyhow::Result<(Vec<PathBuf>, bool)> {
+/// Returns None if rg is unavailable or errored (caller should fall back to walkdir).
+/// Returns Some(files, truncated) — possibly empty — when rg ran and produced an authoritative result.
+/// rg exit codes: 0 = files found, 1 = no files, 2 = error.
+fn collect_files_rg(dir: &std::path::Path, extra_ignore: &[String]) -> anyhow::Result<Option<(Vec<PathBuf>, bool)>> {
     let mut cmd = std::process::Command::new("rg");
     cmd.args(["--files", "--hidden", "--no-messages"]);
     for name in IGNORE_NAMES.iter().copied().chain(extra_ignore.iter().map(|s| s.as_str())) {
         cmd.arg(format!("--glob=!{}/**", name));
     }
     cmd.arg(dir);
-    let output = cmd.output()?;
+
+    let output = match cmd.output() {
+        Ok(o) => o,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None), // rg not installed
+        Err(e) => return Err(e.into()),
+    };
+
+    match output.status.code() {
+        Some(0) | Some(1) => {} // 0 = files found, 1 = no files — both authoritative, don't re-scan
+        _ => return Ok(None),   // exit 2 or signal: rg error, fall back to walkdir
+    }
+
     let text = String::from_utf8_lossy(&output.stdout);
     let all: Vec<PathBuf> = text.lines().filter(|l| !l.is_empty()).map(PathBuf::from).collect();
     let truncated = all.len() >= LS_LIMIT;
-    Ok((all.into_iter().take(LS_LIMIT).collect(), truncated))
+    Ok(Some((all.into_iter().take(LS_LIMIT).collect(), truncated)))
 }
 
 fn render_tree(search_dir: &std::path::Path, files: &[PathBuf], truncated: bool) -> String {
@@ -166,10 +180,10 @@ impl Tool for LsTool {
             anyhow::bail!("Not a directory: {}", search_dir.display());
         }
 
-        let (files, truncated) = collect_files_rg(&search_dir, &extra_ignore)
-            .ok()
-            .filter(|(f, _)| !f.is_empty())
-            .unwrap_or_else(|| collect_files_walkdir(&search_dir, &extra_ignore));
+        let (files, truncated) = match collect_files_rg(&search_dir, &extra_ignore)? {
+            Some(r) => r,                                          // rg ran — authoritative (even if empty)
+            None => collect_files_walkdir(&search_dir, &extra_ignore), // rg unavailable/errored — fall back
+        };
 
         Ok(Value::String(render_tree(&search_dir, &files, truncated)))
     }

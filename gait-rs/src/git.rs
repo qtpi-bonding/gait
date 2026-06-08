@@ -1,6 +1,10 @@
 use std::path::Path;
 use git2::{Repository, BranchType, IndexAddOption, Signature};
 
+fn with_gait_trailer(message: &str) -> String {
+    format!("{}\n\nCo-Authored-By: gait <gait@localhost>", message)
+}
+
 pub fn get_codebase_hash(codebase: &Path) -> String {
     match Repository::open(codebase) {
         Ok(repo) => {
@@ -95,7 +99,7 @@ pub fn commit_session(workspace: &Path, session_id: &str, message: &str) -> anyh
         return Ok(());
     }
     let tree = repo.find_tree(tree_id)?;
-    repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&head_commit])?;
+    repo.commit(Some("HEAD"), &sig, &sig, &with_gait_trailer(message), &tree, &[&head_commit])?;
     Ok(())
 }
 
@@ -165,7 +169,7 @@ pub fn finish_session(workspace: &Path, session_id: &str) -> anyhow::Result<()> 
     repo.commit(
         Some("HEAD"),
         &sig, &sig,
-        &format!("session({}): finish", session_id),
+        &with_gait_trailer(&format!("session({}): finish", session_id)),
         &tree,
         &[&head_commit, &branch_commit],
     )?;
@@ -313,7 +317,7 @@ mod tests {
         // Verify: repo in session dir has 2+ commits (init + our commit)
         let repo = git2::Repository::open(ws.path().join("sessions/sabc1234")).unwrap();
         let head = repo.head().unwrap().peel_to_commit().unwrap();
-        assert_eq!(head.message().unwrap(), "session(sabc1234): turn 1");
+        assert_eq!(head.message().unwrap(), "session(sabc1234): turn 1\n\nCo-Authored-By: gait <gait@localhost>");
     }
 
     #[test]
