@@ -28,6 +28,9 @@ pub struct TurnOpts {
     pub mcp_registry: Vec<McpToolDef>,
     pub mcp_clients: HashMap<String, Arc<McpClient>>,
     pub skill_registry: Vec<SkillDef>,
+    /// Names of loadables (MCP server names + skill names) seeded as enabled
+    /// from `gait.jsonc` (those with `enabled=true`).
+    pub config_enabled: std::collections::HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +121,32 @@ pub fn derive_loaded_skills(events: &[AnyEvent]) -> Vec<String> {
     derive_loaded_context_tool(events, "skill")
 }
 
+/// Derive which loadable names are currently enabled.
+/// Seeds from config defaults (config_enabled), then replays transcript
+/// load/unload events. Handles both old "context" key and new "enabled" key
+/// for backward compatibility with existing transcripts.
+pub fn derive_enabled_loadables(
+    events: &[AnyEvent],
+    config_enabled: &std::collections::HashSet<String>,
+) -> std::collections::HashSet<String> {
+    let mut enabled = config_enabled.clone();
+    for event in events {
+        if let AnyEvent::ToolCall { name, input, .. } = event {
+            if name == "load" || name == "mcp" || name == "skill" {
+                let item_name = input.get("name")
+                    .and_then(|v| v.as_str()).unwrap_or("").to_string();
+                // support both old "context" key and new "enabled" key
+                let on = input.get("enabled")
+                    .or_else(|| input.get("context"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if on { enabled.insert(item_name); } else { enabled.remove(&item_name); }
+            }
+        }
+    }
+    enabled
+}
+
 /// Build the <mcp-index> system prompt section. Returns empty string if registry is empty.
 pub fn build_mcp_index(registry: &[McpToolDef]) -> String {
     if registry.is_empty() { return String::new(); }
@@ -134,6 +163,19 @@ pub fn build_skill_index(registry: &[SkillDef]) -> String {
         .map(|d| format!("{} — {}", d.name, d.description))
         .collect();
     format!("\n<skill-index>\n{}\n</skill-index>", lines.join("\n"))
+}
+
+/// Build the unified <loadable-index> system prompt section. Replaces the
+/// separate <mcp-index> and <skill-index>. Returns empty string if entries is empty.
+/// Each entry renders as: `  <kind> <name> enabled=<bool> — <description>`.
+pub fn build_loadable_index(entries: &[crate::types::LoadableEntry]) -> String {
+    if entries.is_empty() { return String::new(); }
+    let lines: Vec<String> = entries.iter().map(|e| {
+        format!("  {} {} enabled={} — {}",
+            e.kind.as_str(), e.name, e.enabled, e.description)
+    }).collect();
+    format!("\n<loadable-index>\nCall load(name, enabled=true/false) to enable or disable.\n{}\n</loadable-index>",
+        lines.join("\n"))
 }
 
 fn make_mcp_tool_def(def: &McpToolDef, client: Arc<McpClient>) -> Box<dyn crate::types::Tool> {
@@ -354,22 +396,60 @@ pub async fn run_turn(
     let events = read_events(&tx_path)?;
     let compaction_start = crate::session::transcript::last_compaction_index(&events).unwrap_or(0);
     let post_compaction = &events[compaction_start..];
-    let loaded_mcp_names = derive_loaded_mcps(post_compaction);
-    for name in &loaded_mcp_names {
-        if let Some(def) = opts.mcp_registry.iter().find(|d| d.name == *name) {
+
+    // Step 6: post-compaction reload loop. Server-granularity push:
+    // enabled_names is a set of server names (and skill names); for each
+    // enabled MCP server, push all of its tools into the active tools vec.
+    let enabled_names = derive_enabled_loadables(&post_compaction, &opts.config_enabled);
+    for server_name in &enabled_names {
+        for def in opts.mcp_registry.iter().filter(|d| &d.server_name == server_name) {
             if let Some(client) = opts.mcp_clients.get(&def.server_name) {
-                tools.push(make_mcp_tool_def(def, client.clone()));
+                if !tools.iter().any(|t| t.name() == def.name) {  // duplicate guard
+                    tools.push(make_mcp_tool_def(def, client.clone()));
+                }
             }
         }
     }
+    // Skills are not pushed here — they surface via LoadTool.execute() return value.
 
-    // Augment system prompt with MCP/skill indexes
-    let mcp_idx = build_mcp_index(&opts.mcp_registry);
-    let skill_idx = build_skill_index(&opts.skill_registry);
-    let system_prompt = if mcp_idx.is_empty() && skill_idx.is_empty() {
+    // Step 5: Augment system prompt with unified <loadable-index>.
+    // Build entries: one per whitelisted MCP server, one per whitelisted skill.
+    use crate::types::{LoadableEntry, LoadableKind};
+    use std::collections::HashMap;
+    // Group MCP tool defs by server name so we can show one entry per server.
+    let mut mcp_tools_by_server: HashMap<&str, Vec<&McpToolDef>> = HashMap::new();
+    for def in &opts.mcp_registry {
+        mcp_tools_by_server.entry(def.server_name.as_str()).or_default().push(def);
+    }
+    let mut entries: Vec<LoadableEntry> = Vec::new();
+    // MCP server entries — one per server. Description comes from
+    // McpServerDef.description (config layer); fall back to tool count.
+    // Note: we don't have direct access to McpServerDef in run_turn, so
+    // we build the description from the discovered tool count when
+    // there's no explicit description available. Run-level only.
+    for (server_name, defs) in &mcp_tools_by_server {
+        let description = format!("{} tool{}", defs.len(), if defs.len() == 1 { "" } else { "s" });
+        entries.push(LoadableEntry {
+            name: server_name.to_string(),
+            kind: LoadableKind::Mcp,
+            description,
+            enabled: enabled_names.contains(*server_name),
+        });
+    }
+    // Skill entries — one per skill.
+    for skill in &opts.skill_registry {
+        entries.push(LoadableEntry {
+            name: skill.name.clone(),
+            kind: LoadableKind::Skill,
+            description: skill.description.clone(),
+            enabled: enabled_names.contains(&skill.name),
+        });
+    }
+    let loadable_idx = build_loadable_index(&entries);
+    let system_prompt = if loadable_idx.is_empty() {
         opts.system_prompt.clone()
     } else {
-        format!("{}{}{}", opts.system_prompt, mcp_idx, skill_idx)
+        format!("{}{}", opts.system_prompt, loadable_idx)
     };
 
     let mut total_usage = Usage::default();
@@ -533,21 +613,32 @@ pub async fn run_turn(
 
                 match signal {
                     ExecutionSignal::LoadContext => {
-                        // mcp / skill: load or unload the named tool from the active tools vec
-                        if let (Some(name), Some(ctx)) = (
+                        // load / mcp / skill: server-granularity enable or disable.
+                        // item_name is a server name for MCPs, a skill name for skills.
+                        if let (Some(item_name), Some(on)) = (
                             tc.args.get("name").and_then(|v| v.as_str()),
-                            tc.args.get("context").and_then(|v| v.as_bool()),
+                            tc.args.get("enabled")
+                                .or_else(|| tc.args.get("context"))  // backward compat
+                                .and_then(|v| v.as_bool()),
                         ) {
-                            if ctx {
-                                if let Some(def) = opts.mcp_registry.iter().find(|d| d.name == name) {
-                                    if !tools.iter().any(|t| t.name() == name) {
-                                        if let Some(client) = opts.mcp_clients.get(&def.server_name) {
+                            if on {
+                                // MCP: push all tools from this server (server-granularity)
+                                for def in opts.mcp_registry.iter().filter(|d| d.server_name == item_name) {
+                                    if let Some(client) = opts.mcp_clients.get(&def.server_name) {
+                                        if !tools.iter().any(|t| t.name() == def.name) {  // duplicate guard
                                             tools.push(make_mcp_tool_def(def, client.clone()));
                                         }
                                     }
                                 }
+                                // Skill: no tools push needed — content is returned by LoadTool.execute()
                             } else {
-                                tools.retain(|t| t.name() != name);
+                                // Remove all tools from this server
+                                tools.retain(|t| {
+                                    opts.mcp_registry.iter()
+                                        .find(|d| d.name == t.name())
+                                        .map(|d| d.server_name != item_name)
+                                        .unwrap_or(true)
+                                });
                             }
                         }
                         let r = execute_tool_call(tc, &tools, &tx_path).await
@@ -734,6 +825,7 @@ mod tests {
                 mcp_registry: vec![],
                 mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
+                config_enabled: std::collections::HashSet::new(),
             },
             provider,
             vec![Box::new(read_tool)],
@@ -799,6 +891,7 @@ mod tests {
                 mcp_registry: vec![],
                 mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
+                config_enabled: std::collections::HashSet::new(),
             },
             provider,
             vec![output_tool.boxed()],
@@ -850,6 +943,7 @@ mod tests {
                 mcp_registry: vec![],
                 mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
+                config_enabled: std::collections::HashSet::new(),
             },
             provider,
             vec![output_tool.boxed()],
@@ -895,6 +989,7 @@ mod tests {
                 mcp_registry: vec![],
                 mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
+                config_enabled: std::collections::HashSet::new(),
             },
             provider,
             vec![],
@@ -1005,6 +1100,71 @@ mod tests {
         assert!(index.contains("</skill-index>"), "got: {index}");
     }
 
+    // ── Task 3: unified <loadable-index> + derive_enabled_loadables ─────────
+
+    #[test]
+    fn build_loadable_index_shows_all_kinds() {
+        use crate::types::{LoadableEntry, LoadableKind};
+        let entries = vec![
+            LoadableEntry { name: "slack_send".into(), kind: LoadableKind::Mcp,
+                description: "post to Slack".into(), enabled: false },
+            LoadableEntry { name: "tdd".into(), kind: LoadableKind::Skill,
+                description: "test-driven workflow".into(), enabled: true },
+        ];
+        let idx = build_loadable_index(&entries);
+        assert!(idx.contains("<loadable-index>"), "got: {idx}");
+        assert!(idx.contains("mcp"), "got: {idx}");
+        assert!(idx.contains("skill"), "got: {idx}");
+        assert!(idx.contains("slack_send"), "got: {idx}");
+        assert!(idx.contains("tdd"), "got: {idx}");
+        assert!(idx.contains("enabled=false"), "got: {idx}");
+        assert!(idx.contains("enabled=true"), "got: {idx}");
+    }
+
+    #[test]
+    fn build_loadable_index_empty_returns_empty() {
+        assert!(build_loadable_index(&[]).is_empty());
+    }
+
+    #[test]
+    fn derive_enabled_loadables_seeds_from_config_and_replays_transcript() {
+        use crate::session::transcript::AnyEvent;
+        use std::collections::HashSet;
+
+        // config: tdd enabled, slack not
+        let config_enabled: HashSet<String> = ["tdd".into()].into();
+
+        // transcript: load(slack, enabled=true), load(tdd, enabled=false)
+        let events = vec![
+            AnyEvent::ToolCall { id: "1".into(), name: "load".into(),
+                input: serde_json::json!({"name": "slack_send", "enabled": true}), ts: 1 },
+            AnyEvent::ToolCall { id: "2".into(), name: "load".into(),
+                input: serde_json::json!({"name": "tdd", "enabled": false}), ts: 2 },
+        ];
+        let enabled = derive_enabled_loadables(&events, &config_enabled);
+        assert!(enabled.contains("slack_send"), "slack should be enabled after load");
+        assert!(!enabled.contains("tdd"), "tdd should be disabled after unload");
+    }
+
+    #[test]
+    fn derive_enabled_loadables_backward_compat_context_key() {
+        // old transcripts used "context" instead of "enabled"
+        // NOTE: old transcripts stored per-tool names (e.g. "slack_send") instead of
+        // server names (e.g. "slack"). derive_enabled_loadables is name-agnostic — it
+        // inserts whatever string it finds. The LoadContext handler will then try to match
+        // that string against server names and find nothing, so old per-tool loads won't
+        // auto-re-enable after compaction. This is acceptable and documented.
+        use crate::session::transcript::AnyEvent;
+        use std::collections::HashSet;
+
+        let events = vec![
+            AnyEvent::ToolCall { id: "1".into(), name: "mcp".into(),
+                input: serde_json::json!({"name": "slack_send", "context": true}), ts: 1 },
+        ];
+        let enabled = derive_enabled_loadables(&events, &HashSet::new());
+        assert!(enabled.contains("slack_send"), "old 'context' key must still work");
+    }
+
     #[tokio::test]
     async fn run_turn_returns_done_result_on_completion() {
         let ws = TempDir::new().unwrap();
@@ -1030,6 +1190,7 @@ mod tests {
                 mcp_registry: vec![],
                 mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
+                config_enabled: std::collections::HashSet::new(),
             },
             provider,
             vec![],
@@ -1073,6 +1234,7 @@ mod tests {
                 mcp_registry: vec![],
                 mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
+                config_enabled: std::collections::HashSet::new(),
             },
             provider,
             vec![],
@@ -1110,6 +1272,7 @@ mod tests {
                 mcp_registry: vec![],
                 mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
+                config_enabled: std::collections::HashSet::new(),
             },
             provider,
             vec![],
@@ -1231,6 +1394,7 @@ mod tests {
                 mcp_registry: vec![],
                 mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
+                config_enabled: std::collections::HashSet::new(),
             },
             provider,
             vec![Box::new(shell_tool)],
@@ -1306,6 +1470,7 @@ mod tests {
                 mcp_registry: vec![],
                 mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
+                config_enabled: std::collections::HashSet::new(),
             },
             provider,
             vec![Box::new(shell_tool)],

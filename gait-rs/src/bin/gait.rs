@@ -260,7 +260,12 @@ async fn cmd_run(argv: &[String]) {
             model: model.clone(),
             mcp_registry,
             mcp_clients,
-            skill_registry: config.skills,
+            skill_registry: config.skills.clone(),
+            config_enabled: config.mcp_servers.iter()
+                .filter(|s| s.enabled)
+                .map(|s| s.name.clone())           // server name, not tool names
+                .chain(config.skills.iter().filter(|s| s.enabled).map(|s| s.name.clone()))
+                .collect(),
         },
         provider,
         tools,
