@@ -1,7 +1,10 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use rustyline::DefaultEditor;
+use rustyline::Editor;
+use rustyline::history::DefaultHistory;
+
+use crate::repl_helper::ReplHelper;
 use rustyline::error::ReadlineError;
 
 use crate::session::transcript::{
@@ -304,17 +307,20 @@ pub fn run_chat(
 
     let theme = Theme::detect();
 
-    let mut rl = DefaultEditor::new()?;
-    let _ = rl.load_history(&history_path);
-
     let mut session_id = new_session_id();
+    let mut shell_history_path = workspace.join("tmp").join(format!("shell-{}.jsonl", session_id));
     eprintln!(
         "{}gait{}  {}session {}{}  {}(ctrl+d to exit, /new for fresh session){}",
         theme.accent.fg(), RESET,
         DIM_FG, session_id, RESET,
         DIM_FG, RESET,
     );
-    let mut shell_history_path = workspace.join("tmp").join(format!("shell-{}.jsonl", session_id));
+
+    let mut rl = Editor::<ReplHelper, DefaultHistory>::new()?;
+    let _ = rl.load_history(&history_path);
+    rl.set_helper(Some(ReplHelper {
+        shell_history_path: shell_history_path.clone(),
+    }));
 
     loop {
         let prompt = format!("{}>{} {}", theme.accent.fg(), RESET, theme.user_msg.fg());
@@ -350,6 +356,9 @@ pub fn run_chat(
             "/new" => {
                 session_id = new_session_id();
                 shell_history_path = workspace.join("tmp").join(format!("shell-{}.jsonl", session_id));
+                if let Some(h) = rl.helper_mut() {
+                    h.shell_history_path = shell_history_path.clone();
+                }
                 eprintln!("new session {}", session_id);
                 continue;
             }
