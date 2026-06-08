@@ -19,6 +19,7 @@ pub mod permission;
 pub mod render;
 pub mod chat;
 pub mod shell_history;
+pub mod docker;
 pub mod agent_frontmatter;
 
 pub use types::*;
