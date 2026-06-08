@@ -1,14 +1,18 @@
-/// Hashline: content-hash-anchored line references for reliable file edits.
-///
-/// Read output format:  `42#NB|fn render_help() {`
-/// Edit ref format:     `42#NB`
-///
-/// Hash is xxHash32(trimmed_content, seed) % 256 mapped to a 2-char code.
-/// Seed is 0 for lines with alphanumeric content (position-independent),
-/// or the line number for structural lines like `{`, `}`, blank lines
-/// (gives distinct hashes to identical structural chars at different positions).
-///
-/// Ported from oh-my-openagent (MIT) — github.com/code-yeongyu/oh-my-openagent
+//! Hashline — content-hash-anchored line references for reliable file edits.
+//!
+//! Read output format:  `42#NB|fn render_help() {`
+//! Edit ref format:     `42#NB`
+//!
+//! Hash is xxHash32(trimmed_content, seed) % 256 mapped to a 2-char code.
+//! Seed 0 for lines with alphanumeric content (position-independent).
+//! Seed = line number for structural lines (`{`, `}`, blank) so identical
+//! structural characters at different positions get distinct hashes.
+//!
+//! Ported and adapted from oh-my-openagent by code-yeongyu (MIT License)
+//! <https://github.com/code-yeongyu/oh-my-openagent>
+//!
+//! The hash-anchored edit scheme, xxHash32 implementation, and autocorrect
+//! normalization layer are all derived from that project's TypeScript source.
 
 // ── xxHash32 ─────────────────────────────────────────────────────────────────
 
@@ -334,6 +338,104 @@ fn detect_overlapping_ranges(ops: &[HashlineEditOp]) -> Option<String> {
     None
 }
 
+// ── Autocorrect ───────────────────────────────────────────────────────────────
+// Silent fixups for common model mistakes in replacement payloads.
+// Every function is a no-op when the model sends correct content.
+
+fn has_hashline_prefix(line: &str) -> bool {
+    let Some(hash_pos) = line.find('#') else { return false };
+    let before = &line[..hash_pos];
+    if before.is_empty() || !before.bytes().all(|b| b.is_ascii_digit()) { return false; }
+    let after = &line[hash_pos + 1..];
+    after.len() >= 3 && is_valid_hash(&after[..2]) && after.as_bytes()[2] == b'|'
+}
+
+/// Strip accidental `N#XY|` or `+` prefixes if ≥50% of non-empty replacement lines carry them.
+/// Models sometimes copy-paste directly from read output and forget to remove the anchor prefix.
+fn strip_line_prefixes(lines: Vec<String>) -> Vec<String> {
+    let non_empty: usize = lines.iter().filter(|l| !l.trim().is_empty()).count();
+    if non_empty == 0 { return lines; }
+    let prefixed: usize = lines.iter()
+        .filter(|l| !l.trim().is_empty() && (has_hashline_prefix(l) || l.starts_with('+')))
+        .count();
+    if prefixed * 2 < non_empty { return lines; }
+    lines.into_iter().map(|l| {
+        if has_hashline_prefix(&l) {
+            l.splitn(2, '|').nth(1).unwrap_or(&l).to_string()
+        } else if l.starts_with('+') {
+            l[1..].to_string()
+        } else {
+            l
+        }
+    }).collect()
+}
+
+/// Strip the anchor line if the model echoed it as the first line of an `append` payload.
+fn strip_insert_anchor_echo(anchor_content: &str, mut lines: Vec<String>) -> Vec<String> {
+    if lines.first().map(|l| l.trim()) == Some(anchor_content.trim()) {
+        lines.remove(0);
+    }
+    lines
+}
+
+/// Strip the anchor line if the model echoed it as the last line of a `prepend` payload.
+fn strip_insert_before_echo(anchor_content: &str, mut lines: Vec<String>) -> Vec<String> {
+    if lines.last().map(|l| l.trim()) == Some(anchor_content.trim()) {
+        lines.pop();
+    }
+    lines
+}
+
+/// Strip the line just before or after the replaced range if the model included it as context.
+fn strip_range_boundary_echo(
+    file_lines: &[String],
+    start_line: usize, // 1-indexed inclusive
+    end_line: usize,   // 1-indexed inclusive
+    mut new_lines: Vec<String>,
+) -> Vec<String> {
+    if start_line > 1 {
+        let before = file_lines[start_line - 2].trim();
+        if new_lines.first().map(|l| l.trim()) == Some(before) {
+            new_lines.remove(0);
+        }
+    }
+    if end_line < file_lines.len() {
+        let after = file_lines[end_line].trim(); // 0-indexed: file_lines[end_line] is one past end
+        if new_lines.last().map(|l| l.trim()) == Some(after) {
+            new_lines.pop();
+        }
+    }
+    new_lines
+}
+
+/// Restore leading whitespace the model dropped from a replacement line.
+fn restore_leading_indent(template: &str, new_line: String) -> String {
+    let indent: String = template.chars().take_while(|c| c.is_whitespace()).collect();
+    if indent.is_empty() { return new_line; }
+    let new_indent: String = new_line.chars().take_while(|c| c.is_whitespace()).collect();
+    if new_indent.is_empty() && !new_line.trim().is_empty() {
+        format!("{}{}", indent, new_line)
+    } else {
+        new_line
+    }
+}
+
+/// Restore per-line indentation using original lines as templates.
+/// When counts match, restores each line; otherwise just restores the first.
+fn autocorrect_replacement_lines(original_lines: &[String], mut new_lines: Vec<String>) -> Vec<String> {
+    if new_lines.is_empty() || original_lines.is_empty() { return new_lines; }
+    if original_lines.len() == new_lines.len() {
+        new_lines = new_lines.into_iter()
+            .zip(original_lines.iter())
+            .map(|(n, o)| restore_leading_indent(o, n))
+            .collect();
+    } else {
+        let first = new_lines.remove(0);
+        new_lines.insert(0, restore_leading_indent(&original_lines[0], first));
+    }
+    new_lines
+}
+
 // ── Apply ─────────────────────────────────────────────────────────────────────
 
 /// Apply a list of `HashlineEditOp` to `content`. Validates all refs upfront before
@@ -383,32 +485,41 @@ pub fn apply_hashline_edits(content: &str, ops: &[HashlineEditOp]) -> anyhow::Re
                 if start > end {
                     anyhow::bail!("replace: start line {} > end line {}", start, end);
                 }
-                owned.splice((start - 1)..end, op.lines.iter().cloned());
+                let original_lines: Vec<String> = owned[start - 1..end].to_vec();
+                let new_lines = strip_line_prefixes(op.lines.clone());
+                let new_lines = strip_range_boundary_echo(&owned, start, end, new_lines);
+                let new_lines = autocorrect_replacement_lines(&original_lines, new_lines);
+                owned.splice((start - 1)..end, new_lines.into_iter());
             }
             "append" => {
                 match op.pos.as_deref().map(parse_line_ref) {
                     Some(Ok(lr)) => {
-                        let idx = lr.line; // insert after line lr.line (0-indexed = lr.line)
-                        for (i, line) in op.lines.iter().enumerate() {
-                            owned.insert(idx + i, line.clone());
+                        let anchor_content = owned[lr.line - 1].clone();
+                        let new_lines = strip_line_prefixes(op.lines.clone());
+                        let new_lines = strip_insert_anchor_echo(&anchor_content, new_lines);
+                        for (i, line) in new_lines.iter().enumerate() {
+                            owned.insert(lr.line + i, line.clone());
                         }
                     }
-                    None => owned.extend(op.lines.iter().cloned()),
+                    None => owned.extend(strip_line_prefixes(op.lines.clone())),
                     Some(Err(e)) => return Err(e),
                 }
             }
             "prepend" => {
                 match op.pos.as_deref().map(parse_line_ref) {
                     Some(Ok(lr)) => {
-                        let idx = lr.line - 1; // insert before line lr.line
-                        for (i, line) in op.lines.iter().enumerate() {
+                        let anchor_content = owned[lr.line - 1].clone();
+                        let new_lines = strip_line_prefixes(op.lines.clone());
+                        let new_lines = strip_insert_before_echo(&anchor_content, new_lines);
+                        let idx = lr.line - 1;
+                        for (i, line) in new_lines.iter().enumerate() {
                             owned.insert(idx + i, line.clone());
                         }
                     }
                     None => {
-                        let mut new_lines = op.lines.clone();
-                        new_lines.extend(owned);
-                        owned = new_lines;
+                        let mut prefix = strip_line_prefixes(op.lines.clone());
+                        prefix.extend(owned);
+                        owned = prefix;
                     }
                     Some(Err(e)) => return Err(e),
                 }
@@ -599,6 +710,83 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains(">>>"));
+    }
+
+    #[test]
+    fn autocorrect_strips_hashline_prefixes() {
+        let lines = vec![
+            "1#NB|fn foo() {".to_string(),
+            "2#ZP|    bar();".to_string(),
+            "3#QR|}".to_string(),
+        ];
+        let result = strip_line_prefixes(lines);
+        assert_eq!(result, vec!["fn foo() {", "    bar();", "}"]);
+    }
+
+    #[test]
+    fn autocorrect_strips_diff_plus_prefixes() {
+        let lines = vec!["+fn foo() {".to_string(), "+    bar();".to_string()];
+        let result = strip_line_prefixes(lines);
+        assert_eq!(result, vec!["fn foo() {", "    bar();"]);
+    }
+
+    #[test]
+    fn autocorrect_does_not_strip_when_minority_prefixed() {
+        let lines = vec!["1#NB|fn foo() {".to_string(), "normal line".to_string(), "another".to_string()];
+        let result = strip_line_prefixes(lines.clone());
+        assert_eq!(result, lines); // unchanged — only 1/3 prefixed
+    }
+
+    #[test]
+    fn autocorrect_strips_anchor_echo_for_append() {
+        let anchor = "fn foo() {".to_string();
+        let lines = vec!["fn foo() {".to_string(), "    // new comment".to_string()];
+        let result = strip_insert_anchor_echo(&anchor, lines);
+        assert_eq!(result, vec!["    // new comment"]);
+    }
+
+    #[test]
+    fn autocorrect_strips_anchor_echo_for_prepend() {
+        let anchor = "fn foo() {".to_string();
+        let lines = vec!["    // new comment".to_string(), "fn foo() {".to_string()];
+        let result = strip_insert_before_echo(&anchor, lines);
+        assert_eq!(result, vec!["    // new comment"]);
+    }
+
+    #[test]
+    fn autocorrect_strips_range_boundary_echo() {
+        let file: Vec<String> = vec!["before".into(), "line2".into(), "line3".into(), "after".into()];
+        // Replacing lines 2-3; model included "before" at start and "after" at end
+        let new_lines = vec!["before".into(), "replacement".into(), "after".into()];
+        let result = strip_range_boundary_echo(&file, 2, 3, new_lines);
+        assert_eq!(result, vec!["replacement"]);
+    }
+
+    #[test]
+    fn autocorrect_restores_indent_on_paired_replace() {
+        let original = vec!["    fn foo() {".to_string(), "    }".to_string()];
+        let replacement = vec!["fn bar() {".to_string(), "}".to_string()];
+        let result = autocorrect_replacement_lines(&original, replacement);
+        assert_eq!(result, vec!["    fn bar() {", "    }"]);
+    }
+
+    #[test]
+    fn replace_autocorrects_prefixed_lines() {
+        let content = "fn foo() {\n    bar();\n}";
+        let file_lines: Vec<&str> = content.split('\n').collect();
+        let h2 = compute_line_hash(2, file_lines[1]);
+        // Model accidentally includes the N#XY| prefix in its replacement
+        let result = apply_hashline_edits(
+            content,
+            &[HashlineEditOp {
+                op: "replace".into(),
+                pos: Some(format!("2#{}", h2)),
+                end: None,
+                lines: vec![format!("2#{}|    baz();", h2)],
+            }],
+        ).unwrap();
+        assert!(result.contains("    baz();"), "got: {result}");
+        assert!(!result.contains('#'), "prefix should have been stripped: {result}");
     }
 
     #[test]
