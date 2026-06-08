@@ -165,6 +165,42 @@ fn prompt_single_permission(
     }
 }
 
+/// Run `cmd` via `sh -c`, merging stderr into stdout (2>&1).
+/// Prints each line to terminal as it arrives.
+/// Returns (accumulated_output, exit_code). exit_code is None if spawn fails.
+fn run_and_capture(cmd: &str, cwd: &std::path::Path) -> (String, Option<i32>) {
+    let merged = format!("{} 2>&1", cmd);
+    let mut child = match Command::new("sh")
+        .args(["-c", &merged])
+        .current_dir(cwd)
+        .stdout(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[!] error: {e}");
+            return (String::new(), None);
+        }
+    };
+    let stdout = child.stdout.take().expect("piped stdout");
+    let reader = BufReader::new(stdout);
+    let mut lines: Vec<String> = Vec::new();
+    for line in reader.lines() {
+        match line {
+            Ok(l) => {
+                println!("{}", l);
+                lines.push(l);
+            }
+            Err(_) => break,
+        }
+    }
+    let code = child
+        .wait()
+        .ok()
+        .and_then(|s| s.code());
+    (lines.join("\n"), code)
+}
+
 pub fn run_chat(
     workspace: PathBuf,
     codebase: PathBuf,
@@ -192,6 +228,7 @@ pub fn run_chat(
         theme.meta.fg(), session_id, RESET,
         DIM, RESET,
     );
+    let mut shell_history_path = workspace.join("tmp").join(format!("shell-{}.jsonl", session_id));
 
     loop {
         let readline = rl.readline("> ");
@@ -208,15 +245,16 @@ pub fn run_chat(
 
         if is_bang_command(&line) {
             let cmd = bang_command_str(&line);
-            match Command::new("sh")
-                .args(["-c", cmd])
-                .current_dir(&codebase)
-                .status()
-            {
-                Ok(s) if !s.success() => eprintln!("[!] exit {}", s.code().unwrap_or(1)),
-                Err(e) => eprintln!("[!] error: {e}"),
-                _ => {}
+            let (output, code) = run_and_capture(cmd, &codebase);
+            if code != Some(0) {
+                eprintln!("[!] exit {}", code.unwrap_or(1));
             }
+            let _ = crate::shell_history::append(
+                &shell_history_path,
+                cmd,
+                &output,
+                crate::session::transcript::now_ms(),
+            );
             continue;
         }
 
@@ -486,5 +524,35 @@ mod tests {
         assert_eq!(parse_permission_response("g99", &p, "shell", false), None);
         assert_eq!(parse_permission_response("xyz", &p, "shell", false), None);
         assert_eq!(parse_permission_response("", &p, "shell", false), None);
+    }
+
+    #[test]
+    fn run_and_capture_captures_stdout() {
+        let (out, code) = run_and_capture("echo hello", std::path::Path::new("."));
+        assert_eq!(out.trim(), "hello");
+        assert_eq!(code, Some(0));
+    }
+
+    #[test]
+    fn run_and_capture_captures_stderr() {
+        // Nested sh so the inner >&2 sees fd2 already pointing to the pipe (not terminal).
+        // Plain "echo err >&2" would NOT work — shell-level redirects interact badly with
+        // the appended 2>&1 when both are in the same sh -c string.
+        let (out, code) = run_and_capture("sh -c 'echo err >&2'", std::path::Path::new("."));
+        assert_eq!(out.trim(), "err");
+        assert_eq!(code, Some(0));
+    }
+
+    #[test]
+    fn run_and_capture_nonzero_exit() {
+        let (_, code) = run_and_capture("exit 42", std::path::Path::new("."));
+        assert_eq!(code, Some(42));
+    }
+
+    #[test]
+    fn run_and_capture_bad_command_returns_none_code() {
+        // A command that doesn't exist — sh returns exit 127
+        let (_, code) = run_and_capture("_no_such_cmd_xyz_", std::path::Path::new("."));
+        assert!(code != Some(0));
     }
 }
