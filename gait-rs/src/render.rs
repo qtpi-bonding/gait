@@ -1,4 +1,5 @@
 use termimad::MadSkin;
+use termimad::crossterm::style::Color as CColor;
 use crate::session::transcript::{PermissionItem, ClarifyItem, InformItem};
 use crate::theme::{Theme, RESET, DIM};
 
@@ -18,13 +19,40 @@ pub struct Renderer {
     pub theme: Theme,
 }
 
+fn themed_skin(theme: &Theme) -> MadSkin {
+    let accent = CColor::Rgb { r: theme.accent.0, g: theme.accent.1, b: theme.accent.2 };
+    let meta   = CColor::Rgb { r: theme.meta.0,   g: theme.meta.1,   b: theme.meta.2   };
+
+    let mut skin = MadSkin::default();
+
+    // Headings: accent color
+    for h in skin.headers.iter_mut() {
+        h.compound_style.set_fg(accent);
+    }
+
+    // Bold: accent (headings + emphasis both draw the eye to the same hue)
+    skin.bold.set_fg(accent);
+
+    // Inline code: accent
+    skin.inline_code.set_fg(accent);
+
+    // Italic: meta (softer)
+    skin.italic.set_fg(meta);
+    // Blockquote bar + horizontal rule: meta
+    skin.quote_mark = termimad::StyledChar::from_fg_char(meta, '▐');
+    skin.horizontal_rule = termimad::StyledChar::from_fg_char(meta, '─');
+
+    skin
+}
+
 impl Renderer {
     pub fn new(theme: Theme) -> Self {
+        let skin = themed_skin(&theme);
         Self {
             line_buf: String::new(),
             block_buf: String::new(),
             in_fence: false,
-            skin: MadSkin::default(),
+            skin,
             theme,
         }
     }
