@@ -117,8 +117,7 @@ async fn main() {
         "status"   => cmd_status(&args[2..]),
         "load"     => {
             let rest: Vec<String> = args[2..].to_vec();
-            let (yes, rest) = extract_yes_flag(&rest);
-            if let Err(e) = cmd_load(&workspace, &rest, yes) {
+            if let Err(e) = cmd_load(&workspace, &rest) {
                 eprintln!("[gait] error: {}", e);
                 std::process::exit(1);
             }
@@ -126,6 +125,20 @@ async fn main() {
         "unload"   => {
             let rest: Vec<String> = args[2..].to_vec();
             if let Err(e) = cmd_unload(&workspace, &rest) {
+                eprintln!("[gait] error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        "enable"   => {
+            let rest: Vec<String> = args[2..].to_vec();
+            if let Err(e) = cmd_enable_disable(&workspace, &rest, true) {
+                eprintln!("[gait] error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        "disable"  => {
+            let rest: Vec<String> = args[2..].to_vec();
+            if let Err(e) = cmd_enable_disable(&workspace, &rest, false) {
                 eprintln!("[gait] error: {}", e);
                 std::process::exit(1);
             }
@@ -940,12 +953,13 @@ fn read_config_as_value(config_path: &std::path::Path) -> anyhow::Result<serde_j
     Ok(serde_json::from_str(&stripped).unwrap_or_default())
 }
 
-fn cmd_load(workspace: &std::path::Path, args: &[String], yes: bool) -> anyhow::Result<()> {
+fn cmd_load(workspace: &std::path::Path, args: &[String]) -> anyhow::Result<()> {
     // Supported usage:
     //   gait load mcp <name> --spawn <cmd>
     //   gait load mcp <name> --connect <url>
     //   gait load skill <name> --path <file>
     //   gait load skill <name> --description <text> --content <text>
+    // Adds to whitelist with enabled=false. Run 'gait enable <kind> <name>' to activate.
 
     let kind = args.get(0).map(|s| s.as_str())
         .ok_or_else(|| anyhow::anyhow!("usage: gait load <mcp|skill> <name> [flags]"))?;
@@ -956,22 +970,12 @@ fn cmd_load(workspace: &std::path::Path, args: &[String], yes: bool) -> anyhow::
     let config_path = workspace.join("gait.jsonc");
     let mut val = read_config_as_value(&config_path)?;
 
-    // Prompt for enable-now (skip with --yes)
-    let enabled = if yes {
-        true
-    } else {
-        eprint!("Enable '{}' now? [Y/n] ", name);
-        let mut answer = String::new();
-        std::io::stdin().read_line(&mut answer)?;
-        !answer.trim().eq_ignore_ascii_case("n")
-    };
-
     let entry = match kind {
         "mcp" => {
             if let Some(spawn) = flags.get("spawn") {
-                serde_json::json!({ "name": name, "spawn": spawn, "enabled": enabled })
+                serde_json::json!({ "name": name, "spawn": spawn, "enabled": false })
             } else if let Some(connect) = flags.get("connect") {
-                serde_json::json!({ "name": name, "connect": connect, "enabled": enabled })
+                serde_json::json!({ "name": name, "connect": connect, "enabled": false })
             } else {
                 return Err(anyhow::anyhow!("gait load mcp: requires --spawn <cmd> or --connect <url>"));
             }
@@ -989,7 +993,7 @@ fn cmd_load(workspace: &std::path::Path, args: &[String], yes: bool) -> anyhow::
             };
             serde_json::json!({
                 "name": name, "description": description,
-                "content": content, "enabled": enabled
+                "content": content, "enabled": false
             })
         }
         other => return Err(anyhow::anyhow!("unknown kind '{}': use mcp or skill", other)),
@@ -1005,7 +1009,36 @@ fn cmd_load(workspace: &std::path::Path, args: &[String], yes: bool) -> anyhow::
 
     eprintln!("Note: gait.jsonc comments are stripped on rewrite.");
     std::fs::write(&config_path, serde_json::to_string_pretty(&val)?)?;
-    eprintln!("Added {} '{}' (enabled={}).", kind, name, enabled);
+    eprintln!("Added {} '{}' (disabled by default).", kind, name);
+    eprintln!("Run 'gait enable {} {}' to activate it.", kind, name);
+    Ok(())
+}
+
+fn cmd_enable_disable(workspace: &std::path::Path, args: &[String], enable: bool) -> anyhow::Result<()> {
+    let kind = args.get(0).map(|s| s.as_str())
+        .ok_or_else(|| anyhow::anyhow!("usage: gait enable/disable <mcp|skill> <name>"))?;
+    let name = args.get(1).map(|s| s.as_str())
+        .ok_or_else(|| anyhow::anyhow!("usage: gait enable/disable <mcp|skill> <name>"))?;
+
+    let array_key = match kind {
+        "mcp" => "mcp_servers",
+        "skill" => "skills",
+        other => return Err(anyhow::anyhow!("unknown kind '{}': use mcp or skill", other)),
+    };
+
+    let config_path = workspace.join("gait.jsonc");
+    let mut val = read_config_as_value(&config_path)?;
+
+    let arr = val[array_key].as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("{} is not an array", array_key))?;
+    let entry = arr.iter_mut()
+        .find(|v| v.get("name").and_then(|n| n.as_str()) == Some(name))
+        .ok_or_else(|| anyhow::anyhow!("{} '{}' not found in whitelist; run 'gait load {} {}' first", kind, name, kind, name))?;
+    entry["enabled"] = serde_json::Value::Bool(enable);
+
+    eprintln!("Note: gait.jsonc comments are stripped on rewrite.");
+    std::fs::write(&config_path, serde_json::to_string_pretty(&val)?)?;
+    eprintln!("{} {} '{}'.", if enable { "Enabled" } else { "Disabled" }, kind, name);
     Ok(())
 }
 
@@ -1034,14 +1067,6 @@ fn cmd_unload(workspace: &std::path::Path, args: &[String]) -> anyhow::Result<()
     Ok(())
 }
 
-fn extract_yes_flag(args: &[String]) -> (bool, Vec<String>) {
-    let yes = args.iter().any(|a| a == "--yes" || a == "-y");
-    let rest = args.iter()
-        .filter(|a| *a != "--yes" && *a != "-y")
-        .cloned()
-        .collect();
-    (yes, rest)
-}
 
 #[cfg(test)]
 mod tests {
@@ -1072,17 +1097,17 @@ mod tests {
     }
 
     #[test]
-    fn cmd_load_mcp_writes_entry() {
+    fn cmd_load_mcp_writes_entry_disabled() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("gait.jsonc"),
             r#"{"model":"anthropic/claude-sonnet-4-6","mcp_servers":[]}"#).unwrap();
         let args: Vec<String> = ["mcp", "slack", "--spawn", "node mcp-slack.js"]
             .iter().map(|s| s.to_string()).collect();
-        cmd_load(dir.path(), &args, true).unwrap();
-        let content = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
-        let val: serde_json::Value = serde_json::from_str(&content).unwrap();
+        cmd_load(dir.path(), &args).unwrap();
+        let val: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap()).unwrap();
         assert_eq!(val["mcp_servers"][0]["name"], "slack");
-        assert_eq!(val["mcp_servers"][0]["enabled"], true);
+        assert_eq!(val["mcp_servers"][0]["enabled"], false, "load should default to disabled");
     }
 
     #[test]
@@ -1092,10 +1117,44 @@ mod tests {
             r#"{"model":"anthropic/claude-sonnet-4-6","skills":[]}"#).unwrap();
         let args: Vec<String> = ["skill", "tdd", "--description", "tdd workflow",
             "--content", "# TDD"].iter().map(|s| s.to_string()).collect();
-        cmd_load(dir.path(), &args, true).unwrap();
+        cmd_load(dir.path(), &args).unwrap();
         let val: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap()).unwrap();
         assert_eq!(val["skills"][0]["name"], "tdd");
+        assert_eq!(val["skills"][0]["enabled"], false);
+    }
+
+    #[test]
+    fn cmd_enable_sets_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("gait.jsonc"),
+            r#"{"model":"x","mcp_servers":[{"name":"slack","spawn":"node s.js","enabled":false}]}"#).unwrap();
+        let args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
+        cmd_enable_disable(dir.path(), &args, true).unwrap();
+        let val: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap()).unwrap();
+        assert_eq!(val["mcp_servers"][0]["enabled"], true);
+    }
+
+    #[test]
+    fn cmd_disable_sets_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("gait.jsonc"),
+            r#"{"model":"x","mcp_servers":[{"name":"slack","spawn":"node s.js","enabled":true}]}"#).unwrap();
+        let args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
+        cmd_enable_disable(dir.path(), &args, false).unwrap();
+        let val: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap()).unwrap();
+        assert_eq!(val["mcp_servers"][0]["enabled"], false);
+    }
+
+    #[test]
+    fn cmd_enable_missing_entry_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("gait.jsonc"),
+            r#"{"model":"x","mcp_servers":[]}"#).unwrap();
+        let args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
+        assert!(cmd_enable_disable(dir.path(), &args, true).is_err());
     }
 
     #[test]
@@ -1115,6 +1174,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"x"}"#).unwrap();
         let args: Vec<String> = ["plugin", "foo"].iter().map(|s| s.to_string()).collect();
-        assert!(cmd_load(dir.path(), &args, true).is_err());
+        assert!(cmd_load(dir.path(), &args).is_err());
     }
 }

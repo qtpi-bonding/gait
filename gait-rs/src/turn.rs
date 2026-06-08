@@ -91,40 +91,9 @@ fn build_turn_context(codebase_hash: &str, dirty_files: &[String]) -> String {
 }
 
 /// Scan transcript events to derive which MCP tools are currently loaded.
-/// Last call per tool name wins. Returns names of tools where context=true.
-/// IMPORTANT: Pass only the post-compaction slice (from last_compaction_index forward).
-/// Loads before the compaction breakpoint are intentionally forgotten — the model
-/// reloads only what it still needs after compaction.
-pub fn derive_loaded_context_tool(events: &[AnyEvent], tool_name: &str) -> Vec<String> {
-    let mut state: HashMap<String, bool> = HashMap::new();
-    for event in events {
-        if let AnyEvent::ToolCall { name, input, .. } = event {
-            if name == tool_name {
-                if let (Some(item_name), Some(context)) = (
-                    input.get("name").and_then(|v| v.as_str()),
-                    input.get("context").and_then(|v| v.as_bool()),
-                ) {
-                    state.insert(item_name.to_string(), context);
-                }
-            }
-        }
-    }
-    state.into_iter().filter(|(_, loaded)| *loaded).map(|(name, _)| name).collect()
-}
-
-pub fn derive_loaded_mcps(events: &[AnyEvent]) -> Vec<String> {
-    derive_loaded_context_tool(events, "mcp")
-}
-
-/// Same as derive_loaded_mcps but for skills.
-pub fn derive_loaded_skills(events: &[AnyEvent]) -> Vec<String> {
-    derive_loaded_context_tool(events, "skill")
-}
-
 /// Derive which loadable names are currently enabled.
 /// Seeds from config defaults (config_enabled), then replays transcript
-/// load/unload events. Handles both old "context" key and new "enabled" key
-/// for backward compatibility with existing transcripts.
+/// load/unload events from the `load` tool.
 pub fn derive_enabled_loadables(
     events: &[AnyEvent],
     config_enabled: &std::collections::HashSet<String>,
@@ -132,12 +101,10 @@ pub fn derive_enabled_loadables(
     let mut enabled = config_enabled.clone();
     for event in events {
         if let AnyEvent::ToolCall { name, input, .. } = event {
-            if name == "load" || name == "mcp" || name == "skill" {
+            if name == "load" {
                 let item_name = input.get("name")
                     .and_then(|v| v.as_str()).unwrap_or("").to_string();
-                // support both old "context" key and new "enabled" key
                 let on = input.get("enabled")
-                    .or_else(|| input.get("context"))
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 if on { enabled.insert(item_name); } else { enabled.remove(&item_name); }
@@ -147,23 +114,7 @@ pub fn derive_enabled_loadables(
     enabled
 }
 
-/// Build the <mcp-index> system prompt section. Returns empty string if registry is empty.
-pub fn build_mcp_index(registry: &[McpToolDef]) -> String {
-    if registry.is_empty() { return String::new(); }
-    let lines: Vec<String> = registry.iter()
-        .map(|d| format!("{} — {}", d.name, d.description))
-        .collect();
-    format!("\n<mcp-index>\n{}\n</mcp-index>", lines.join("\n"))
-}
 
-/// Build the <skill-index> system prompt section. Returns empty string if registry is empty.
-pub fn build_skill_index(registry: &[SkillDef]) -> String {
-    if registry.is_empty() { return String::new(); }
-    let lines: Vec<String> = registry.iter()
-        .map(|d| format!("{} — {}", d.name, d.description))
-        .collect();
-    format!("\n<skill-index>\n{}\n</skill-index>", lines.join("\n"))
-}
 
 /// Build the unified <loadable-index> system prompt section. Replaces the
 /// separate <mcp-index> and <skill-index>. Returns empty string if entries is empty.
@@ -613,13 +564,11 @@ pub async fn run_turn(
 
                 match signal {
                     ExecutionSignal::LoadContext => {
-                        // load / mcp / skill: server-granularity enable or disable.
+                        // load: server-granularity enable or disable.
                         // item_name is a server name for MCPs, a skill name for skills.
                         if let (Some(item_name), Some(on)) = (
                             tc.args.get("name").and_then(|v| v.as_str()),
-                            tc.args.get("enabled")
-                                .or_else(|| tc.args.get("context"))  // backward compat
-                                .and_then(|v| v.as_bool()),
+                            tc.args.get("enabled").and_then(|v| v.as_bool()),
                         ) {
                             if on {
                                 // MCP: push all tools from this server (server-granularity)
@@ -1003,104 +952,7 @@ mod tests {
         assert!(!has_turn_complete, "should NOT have turn_complete — turn was paused");
     }
 
-    #[test]
-    fn derive_loaded_mcps_empty_events() {
-        let events: Vec<AnyEvent> = vec![];
-        let loaded = derive_loaded_mcps(&events);
-        assert!(loaded.is_empty());
-    }
-
-    #[test]
-    fn derive_loaded_mcps_single_load() {
-        let events = vec![
-            AnyEvent::ToolCall {
-                id: "tc1".into(),
-                name: "mcp".into(),
-                input: serde_json::json!({ "name": "slack_send", "context": true }),
-                ts: 1,
-            },
-        ];
-        let loaded = derive_loaded_mcps(&events);
-        assert_eq!(loaded.len(), 1);
-        assert!(loaded.contains(&"slack_send".to_string()));
-    }
-
-    #[test]
-    fn derive_loaded_mcps_load_then_unload() {
-        let events = vec![
-            AnyEvent::ToolCall {
-                id: "tc1".into(), name: "mcp".into(),
-                input: serde_json::json!({ "name": "slack_send", "context": true }), ts: 1,
-            },
-            AnyEvent::ToolCall {
-                id: "tc2".into(), name: "mcp".into(),
-                input: serde_json::json!({ "name": "slack_send", "context": false }), ts: 2,
-            },
-        ];
-        let loaded = derive_loaded_mcps(&events);
-        assert!(loaded.is_empty(), "should be empty after unload, got: {:?}", loaded);
-    }
-
-    #[test]
-    fn derive_loaded_mcps_multiple_tools() {
-        let events = vec![
-            AnyEvent::ToolCall {
-                id: "tc1".into(), name: "mcp".into(),
-                input: serde_json::json!({ "name": "slack_send", "context": true }), ts: 1,
-            },
-            AnyEvent::ToolCall {
-                id: "tc2".into(), name: "mcp".into(),
-                input: serde_json::json!({ "name": "notion_create", "context": true }), ts: 2,
-            },
-            AnyEvent::ToolCall {
-                id: "tc3".into(), name: "mcp".into(),
-                input: serde_json::json!({ "name": "slack_send", "context": false }), ts: 3,
-            },
-        ];
-        let loaded = derive_loaded_mcps(&events);
-        assert_eq!(loaded.len(), 1);
-        assert!(loaded.contains(&"notion_create".to_string()));
-    }
-
-    #[test]
-    fn build_mcp_index_empty() {
-        use crate::config::McpToolDef;
-        let index = build_mcp_index(&[]);
-        assert!(index.is_empty());
-    }
-
-    #[test]
-    fn build_mcp_index_formats_correctly() {
-        use crate::config::McpToolDef;
-        let registry = vec![
-            McpToolDef {
-                server_name: "slack".into(),
-                name: "slack_send".into(),
-                description: "post to Slack".into(),
-                schema: serde_json::json!({}),
-            },
-        ];
-        let index = build_mcp_index(&registry);
-        assert!(index.contains("<mcp-index>"), "got: {index}");
-        assert!(index.contains("slack_send"), "got: {index}");
-        assert!(index.contains("post to Slack"), "got: {index}");
-        assert!(index.contains("</mcp-index>"), "got: {index}");
-    }
-
-    #[test]
-    fn build_skill_index_formats_correctly() {
-        use crate::config::SkillDef;
-        let registry = vec![
-            SkillDef { name: "tdd".into(), description: "TDD workflow".into(), content: "...".into(), enabled: true },
-        ];
-        let index = build_skill_index(&registry);
-        assert!(index.contains("<skill-index>"), "got: {index}");
-        assert!(index.contains("tdd"), "got: {index}");
-        assert!(index.contains("TDD workflow"), "got: {index}");
-        assert!(index.contains("</skill-index>"), "got: {index}");
-    }
-
-    // ── Task 3: unified <loadable-index> + derive_enabled_loadables ─────────
+    // ── unified <loadable-index> + derive_enabled_loadables ─────────────────
 
     #[test]
     fn build_loadable_index_shows_all_kinds() {
@@ -1146,24 +998,6 @@ mod tests {
         assert!(!enabled.contains("tdd"), "tdd should be disabled after unload");
     }
 
-    #[test]
-    fn derive_enabled_loadables_backward_compat_context_key() {
-        // old transcripts used "context" instead of "enabled"
-        // NOTE: old transcripts stored per-tool names (e.g. "slack_send") instead of
-        // server names (e.g. "slack"). derive_enabled_loadables is name-agnostic — it
-        // inserts whatever string it finds. The LoadContext handler will then try to match
-        // that string against server names and find nothing, so old per-tool loads won't
-        // auto-re-enable after compaction. This is acceptable and documented.
-        use crate::session::transcript::AnyEvent;
-        use std::collections::HashSet;
-
-        let events = vec![
-            AnyEvent::ToolCall { id: "1".into(), name: "mcp".into(),
-                input: serde_json::json!({"name": "slack_send", "context": true}), ts: 1 },
-        ];
-        let enabled = derive_enabled_loadables(&events, &HashSet::new());
-        assert!(enabled.contains("slack_send"), "old 'context' key must still work");
-    }
 
     #[tokio::test]
     async fn run_turn_returns_done_result_on_completion() {
