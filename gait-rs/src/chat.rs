@@ -371,7 +371,13 @@ pub fn run_chat(
             _ => {}
         }
 
-        let task: String = line.clone();
+        let task: String = match expand_at_markers(&line, &shell_history_path, &codebase) {
+            Ok(expanded) => expanded,
+            Err(e) => {
+                eprintln!("[!] @ expand error: {e}");
+                continue;
+            }
+        };
 
         'spawn: loop {
             let mut cmd = Command::new(&gait_bin);
