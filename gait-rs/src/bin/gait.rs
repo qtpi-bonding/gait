@@ -47,7 +47,8 @@ fn try_docker_route(orig_args: &[String]) {
     let mounts = gait_ai::docker::build_mount_map(&workspace, &codebase);
     let _ = gait_ai::docker::write_mount_map(&workspace, &mounts);
 
-    let auth_dir = dirs_next::data_dir().map(|d| d.join("gait"));
+    // Must match auth.rs: always ~/.local/share/gait (XDG convention, cross-platform)
+    let auth_dir = dirs_next::home_dir().map(|h| h.join(".local/share/gait"));
     let interactive = std::io::stdin().is_terminal();
     let docker_args = gait_ai::docker::build_docker_args(
         IMAGE,
