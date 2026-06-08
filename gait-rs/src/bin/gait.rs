@@ -1009,8 +1009,8 @@ fn cmd_load(workspace: &std::path::Path, args: &[String]) -> anyhow::Result<()> 
 
     eprintln!("Note: gait.jsonc comments are stripped on rewrite.");
     std::fs::write(&config_path, serde_json::to_string_pretty(&val)?)?;
-    eprintln!("Added {} '{}' (disabled by default).", kind, name);
-    eprintln!("Run 'gait enable {} {}' to activate it.", kind, name);
+    println!("Added {} '{}'.", kind, name);
+    println!("→ Run 'gait enable {} {}' to activate it.", kind, name);
     Ok(())
 }
 
