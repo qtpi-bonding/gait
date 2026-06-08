@@ -199,6 +199,32 @@ impl Tool for ToolDef {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoadableKind {
+    Mcp,
+    Skill,
+    WasmPlugin,
+}
+
+impl LoadableKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LoadableKind::Mcp => "mcp",
+            LoadableKind::Skill => "skill",
+            LoadableKind::WasmPlugin => "plugin",
+        }
+    }
+}
+
+/// A whitelisted item that can be enabled/disabled by the LLM at runtime.
+#[derive(Debug, Clone)]
+pub struct LoadableEntry {
+    pub name: String,
+    pub kind: LoadableKind,
+    pub description: String,
+    pub enabled: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,5 +323,12 @@ mod tests {
         let req = PermissionRequest { display: "foo".into(), patterns: vec!["foo".to_string()] };
         assert_eq!(req.display, "foo");
         assert_eq!(req.patterns, vec!["foo"]);
+    }
+
+    #[test]
+    fn loadable_kind_as_str() {
+        assert_eq!(LoadableKind::Mcp.as_str(), "mcp");
+        assert_eq!(LoadableKind::Skill.as_str(), "skill");
+        assert_eq!(LoadableKind::WasmPlugin.as_str(), "plugin");
     }
 }
