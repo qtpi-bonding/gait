@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+pub const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4-6";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigTool {
     pub name: String,
@@ -59,8 +61,11 @@ fn default_compaction_threshold() -> f64 { 0.8 }
 impl Default for GaitConfig {
     fn default() -> Self {
         Self {
-            model: "anthropic/claude-sonnet-4-6".into(),
-            allow: vec!["read".into(), "glob".into(), "grep".into(), "ls".into()],
+            model: DEFAULT_MODEL.into(),
+            allow: vec![
+                "read".into(), "glob".into(), "grep".into(), "ls".into(),
+                "clarify".into(), "inform".into(),
+            ],
             tools: vec![],
             compaction_threshold: 0.8,
             mcp_servers: vec![],
@@ -109,7 +114,7 @@ pub fn append_allow_pattern(workspace: &Path, pattern: &str) -> anyhow::Result<(
         }
     } else {
         let mut m = serde_json::Map::new();
-        m.insert("model".into(), serde_json::Value::String("minimax/MiniMax-M1-80k".into()));
+        m.insert("model".into(), serde_json::Value::String(DEFAULT_MODEL.into()));
         m
     };
     let allow = obj.entry("allow")
@@ -247,6 +252,20 @@ mod tests {
         assert_eq!(cfg.mcp_servers[1].name, "remote");
         assert!(cfg.mcp_servers[1].connect.is_some());
         assert!(cfg.mcp_servers[1].spawn.is_none());
+    }
+
+    #[test]
+    fn append_allow_creates_file_with_correct_default_model() {
+        let dir = TempDir::new().unwrap();
+        // No gait.jsonc exists yet — append_allow_pattern must create one
+        append_allow_pattern(dir.path(), "read").unwrap();
+        let content = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(
+            val["model"].as_str().unwrap(),
+            "anthropic/claude-sonnet-4-6",
+            "newly created gait.jsonc must use the same default model as GaitConfig::default()"
+        );
     }
 
     #[test]
