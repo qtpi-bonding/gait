@@ -498,7 +498,7 @@ pub fn run_chat(
                     PermissionChoice::Once(pat) => {
                         let tmp_dir = workspace.join("tmp");
                         let _ = std::fs::create_dir_all(&tmp_dir);
-                        let temp = tmp_dir.join(format!("gait-approve-{}", session_id));
+                        let temp = crate::turn::once_approval_path(&workspace, &session_id);
                         if let Ok(mut f) = std::fs::OpenOptions::new()
                             .create(true)
                             .append(true)

@@ -44,6 +44,11 @@ pub struct SessionLock {
     path: PathBuf,
 }
 
+/// Shared path for the once-approval temp file, used by both turn.rs and chat.rs.
+pub fn once_approval_path(workspace: &std::path::Path, session_id: &str) -> std::path::PathBuf {
+    workspace.join("tmp").join(format!("gait-approve-{}", session_id))
+}
+
 impl SessionLock {
     pub fn acquire(session_dir: &Path) -> anyhow::Result<Self> {
         let path = session_dir.join("lock");
@@ -87,16 +92,16 @@ fn build_turn_context(codebase_hash: &str, dirty_files: &[String]) -> String {
 /// IMPORTANT: Pass only the post-compaction slice (from last_compaction_index forward).
 /// Loads before the compaction breakpoint are intentionally forgotten — the model
 /// reloads only what it still needs after compaction.
-pub fn derive_loaded_mcps(events: &[AnyEvent]) -> Vec<String> {
+pub fn derive_loaded_context_tool(events: &[AnyEvent], tool_name: &str) -> Vec<String> {
     let mut state: HashMap<String, bool> = HashMap::new();
     for event in events {
         if let AnyEvent::ToolCall { name, input, .. } = event {
-            if name == "mcp" {
-                if let (Some(tool_name), Some(context)) = (
+            if name == tool_name {
+                if let (Some(item_name), Some(context)) = (
                     input.get("name").and_then(|v| v.as_str()),
                     input.get("context").and_then(|v| v.as_bool()),
                 ) {
-                    state.insert(tool_name.to_string(), context);
+                    state.insert(item_name.to_string(), context);
                 }
             }
         }
@@ -104,22 +109,13 @@ pub fn derive_loaded_mcps(events: &[AnyEvent]) -> Vec<String> {
     state.into_iter().filter(|(_, loaded)| *loaded).map(|(name, _)| name).collect()
 }
 
+pub fn derive_loaded_mcps(events: &[AnyEvent]) -> Vec<String> {
+    derive_loaded_context_tool(events, "mcp")
+}
+
 /// Same as derive_loaded_mcps but for skills.
 pub fn derive_loaded_skills(events: &[AnyEvent]) -> Vec<String> {
-    let mut state: HashMap<String, bool> = HashMap::new();
-    for event in events {
-        if let AnyEvent::ToolCall { name, input, .. } = event {
-            if name == "skill" {
-                if let (Some(skill_name), Some(context)) = (
-                    input.get("name").and_then(|v| v.as_str()),
-                    input.get("context").and_then(|v| v.as_bool()),
-                ) {
-                    state.insert(skill_name.to_string(), context);
-                }
-            }
-        }
-    }
-    state.into_iter().filter(|(_, loaded)| *loaded).map(|(name, _)| name).collect()
+    derive_loaded_context_tool(events, "skill")
 }
 
 /// Build the <mcp-index> system prompt section. Returns empty string if registry is empty.
@@ -238,7 +234,7 @@ pub async fn run_turn(
     }
 
     // Read and delete once-approval temp file (written by gait chat after user approval)
-    let once_path = opts.workspace.join("tmp").join(format!("gait-approve-{}", opts.session_id));
+    let once_path = once_approval_path(&opts.workspace, &opts.session_id);
     let once_allow: Vec<String> = std::fs::read_to_string(&once_path)
         .unwrap_or_default()
         .lines()

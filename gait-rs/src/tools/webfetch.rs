@@ -38,7 +38,6 @@ impl WebfetchTool {
         let parameters = crate::tools::make_schema::<WebfetchParams>();
         Self { parameters }
     }
-    pub fn boxed(self) -> Box<dyn Tool> { Box::new(self) }
 }
 
 /// Strip all HTML tags and decode entities. Uses regex for char-boundary-safe processing.

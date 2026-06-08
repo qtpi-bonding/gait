@@ -1,7 +1,12 @@
 use std::path::PathBuf;
 use serde_json::Value;
+use schemars::JsonSchema;
+use serde::Deserialize;
 use crate::types::{Tool, ExecutionMode};
 use crate::session::transcript::AnyEvent;
+
+#[derive(Deserialize, JsonSchema)]
+struct ListAgentsParams {}
 
 pub struct ListAgentsTool {
     workspace: PathBuf,
@@ -10,13 +15,10 @@ pub struct ListAgentsTool {
 
 impl ListAgentsTool {
     pub fn new(workspace: PathBuf) -> Self {
+        let parameters = crate::tools::make_schema::<ListAgentsParams>();
         Self {
             workspace,
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            }),
+            parameters,
         }
     }
 }
