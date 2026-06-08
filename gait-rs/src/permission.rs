@@ -57,6 +57,77 @@ pub fn save_choice(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+pub enum ApproveScope {
+    Global,
+    Agent,
+    Once,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApproveParams {
+    pub scope: ApproveScope,
+    pub pattern: Option<String>,
+}
+
+/// Execute an approval against a session's pending permissions.
+pub fn execute_approve(
+    workspace: &std::path::Path,
+    session_id: &str,
+    params: &ApproveParams,
+    agent_path: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    let tx_path = workspace.join("sessions").join(session_id).join("transcript.jsonl");
+    let state = crate::session::transcript::session_state(&tx_path)?;
+
+    let items = match &state {
+        crate::session::transcript::SessionState::AwaitingPermission { items } => items.clone(),
+        _ => return Err(anyhow::anyhow!("no pending permissions for session {}", session_id)),
+    };
+
+    let mut reply_items: Vec<crate::session::transcript::PermissionsReplyItem> = Vec::new();
+
+    for item in &items {
+        let effective_pattern = params.pattern.clone()
+            .unwrap_or_else(|| item.patterns.first().cloned().unwrap_or_else(|| item.tool_name.clone()));
+
+        let req = crate::types::PermissionRequest {
+            display: item.cmd.clone(),
+            patterns: item.patterns.clone(),
+        };
+
+        // When --pattern is supplied, only approve if that pattern would cover the request.
+        // When --pattern is absent, default to approving every pending item.
+        let covered = match params.pattern.as_ref() {
+            Some(p) => is_request_approved(&item.tool_name, &req, &[p.clone()]),
+            None => true,
+        };
+
+        if covered {
+            let choice = match &params.scope {
+                ApproveScope::Global => PermissionChoice::Global(effective_pattern.clone()),
+                ApproveScope::Agent => PermissionChoice::Agent(effective_pattern.clone()),
+                ApproveScope::Once => PermissionChoice::Once(effective_pattern.clone()),
+            };
+            save_choice(&choice, workspace, session_id, agent_path)?;
+            reply_items.push(crate::session::transcript::PermissionsReplyItem {
+                id: item.id.clone(),
+                decision: "approve".to_string(),
+                text: None,
+            });
+        } else {
+            reply_items.push(crate::session::transcript::PermissionsReplyItem {
+                id: item.id.clone(),
+                decision: "deny".to_string(),
+                text: None,
+            });
+        }
+    }
+
+    crate::session::transcript::write_permissions_reply(&tx_path, "user", reply_items)?;
+    Ok(())
+}
+
 /// Generate allow-list patterns for a file path, from broadest to most specific.
 ///
 /// path_patterns("read", "src/tools/edit.rs")

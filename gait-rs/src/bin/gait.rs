@@ -80,6 +80,9 @@ fn usage() -> ! {
     eprintln!("  models   [<filter>]");
     eprintln!("  workflow <run|list|continue|abort|log> [args...]");
     eprintln!("  chat     [--workspace <path>] [--codebase <path>] [--agent <name>]");
+    eprintln!("  approve  <session-id> [--pattern <pat>] [--scope <global|agent|once>] [--workspace <path>] [--agent <name>]");
+    eprintln!("  reject   <session-id> [--workspace <path>]");
+    eprintln!("  status   <session-id> [--workspace <path>] [--json]");
     std::process::exit(1);
 }
 
@@ -103,6 +106,9 @@ async fn main() {
         "models"   => cmd_models(&args[2..]).await,
         "workflow" => cmd_workflow(&args[2..]).await,
         "chat" => cmd_chat(&args[2..]),
+        "approve"  => cmd_approve(&args[2..]),
+        "reject"   => cmd_reject(&args[2..]),
+        "status"   => cmd_status(&args[2..]),
         _ => {
             eprintln!("[gait] unknown command: {}", args[1]);
             usage();
@@ -637,6 +643,249 @@ fn cmd_chat(argv: &[String]) {
     if let Err(e) = gait_ai::chat::run_chat(workspace, codebase, agent_name) {
         eprintln!("[gait] error: {}", e);
         std::process::exit(1);
+    }
+}
+
+fn cmd_approve(argv: &[String]) {
+    use gait_ai::permission::{execute_approve, ApproveParams, ApproveScope};
+    use gait_ai::agent_frontmatter::resolve_agent_path;
+
+    let mut workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut session_id: Option<String> = None;
+    let mut pattern: Option<String> = None;
+    let mut scope: Option<ApproveScope> = None;
+    let mut agent_name: Option<String> = None;
+
+    let mut i = 0;
+    while i < argv.len() {
+        match argv[i].as_str() {
+            "--workspace" => { i += 1; if let Some(p) = argv.get(i) { workspace = PathBuf::from(p); } }
+            "--pattern"   => { i += 1; pattern = argv.get(i).cloned(); }
+            "--scope"     => {
+                i += 1;
+                scope = match argv.get(i).map(|s| s.as_str()) {
+                    Some("global") => Some(ApproveScope::Global),
+                    Some("agent")  => Some(ApproveScope::Agent),
+                    Some("once")   => Some(ApproveScope::Once),
+                    Some(other) => {
+                        eprintln!("[gait] error: unknown --scope '{}' (expected global|agent|once)", other);
+                        std::process::exit(1);
+                    }
+                    None => {
+                        eprintln!("[gait] error: --scope requires a value");
+                        std::process::exit(1);
+                    }
+                };
+            }
+            "--agent"     => { i += 1; agent_name = argv.get(i).cloned(); }
+            other if !other.starts_with('-') => { session_id = Some(other.to_string()); }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let session_id = match session_id {
+        Some(id) => id,
+        None => {
+            eprintln!("usage: gait approve <session-id> [--pattern <pat>] [--scope <global|agent|once>] [--workspace <path>] [--agent <name>]");
+            std::process::exit(1);
+        }
+    };
+
+    // Default scope is Once (single-turn only) when not specified.
+    let scope = scope.unwrap_or(ApproveScope::Once);
+    let agent_path = agent_name.as_deref().map(|n| resolve_agent_path(&workspace, n));
+
+    let params = ApproveParams { scope, pattern };
+    if let Err(e) = execute_approve(&workspace, &session_id, &params, agent_path.as_deref()) {
+        eprintln!("[gait] error: {}", e);
+        std::process::exit(1);
+    }
+    eprintln!("[gait] approved {} (scope: {:?})", session_id, params.scope);
+}
+
+fn cmd_reject(argv: &[String]) {
+    use gait_ai::session::transcript::{session_state, write_permissions_reply, PermissionsReplyItem, SessionState};
+
+    let mut workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut session_id: Option<String> = None;
+
+    let mut i = 0;
+    while i < argv.len() {
+        match argv[i].as_str() {
+            "--workspace" => { i += 1; if let Some(p) = argv.get(i) { workspace = PathBuf::from(p); } }
+            other if !other.starts_with('-') => { session_id = Some(other.to_string()); }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let session_id = match session_id {
+        Some(id) => id,
+        None => {
+            eprintln!("usage: gait reject <session-id> [--workspace <path>]");
+            std::process::exit(1);
+        }
+    };
+
+    let tx_path = workspace.join("sessions").join(&session_id).join("transcript.jsonl");
+    let state = match session_state(&tx_path) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("[gait] error: {}", e); std::process::exit(1); }
+    };
+
+    let items = match state {
+        SessionState::AwaitingPermission { items } => items,
+        _ => {
+            eprintln!("[gait] no pending permissions for session {}", session_id);
+            std::process::exit(1);
+        }
+    };
+
+    if items.is_empty() {
+        eprintln!("[gait] no pending permissions for session {}", session_id);
+        return;
+    }
+
+    let reply: Vec<PermissionsReplyItem> = items.iter().map(|it| PermissionsReplyItem {
+        id: it.id.clone(),
+        decision: "deny".to_string(),
+        text: None,
+    }).collect();
+
+    if let Err(e) = write_permissions_reply(&tx_path, "user", reply) {
+        eprintln!("[gait] error: {}", e);
+        std::process::exit(1);
+    }
+    eprintln!("[gait] rejected {} pending permission(s) for session {}", items.len(), session_id);
+}
+
+fn cmd_status(argv: &[String]) {
+    use gait_ai::session::transcript::{session_state, SessionState};
+
+    let mut workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut session_id: Option<String> = None;
+    let mut json = false;
+
+    let mut i = 0;
+    while i < argv.len() {
+        match argv[i].as_str() {
+            "--workspace" => { i += 1; if let Some(p) = argv.get(i) { workspace = PathBuf::from(p); } }
+            "--json"      => { json = true; }
+            other if !other.starts_with('-') => { session_id = Some(other.to_string()); }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let session_id = match session_id {
+        Some(id) => id,
+        None => {
+            eprintln!("usage: gait status <session-id> [--workspace <path>] [--json]");
+            std::process::exit(1);
+        }
+    };
+
+    let tx_path = workspace.join("sessions").join(&session_id).join("transcript.jsonl");
+    let state = match session_state(&tx_path) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("[gait] error: {}", e); std::process::exit(1); }
+    };
+
+    if json {
+        // Build a JSON object that includes the session id and the SessionState
+        // (which already serializes with a `state` tag via serde).
+        let mut value = serde_json::json!({
+            "session_id": session_id,
+            "state": state,
+        });
+        // For awaiting states, attach the human-readable details from the items.
+        match &state {
+            SessionState::AwaitingPermission { items } => {
+                let pending: Vec<serde_json::Value> = items.iter().map(|it| serde_json::json!({
+                    "id": it.id,
+                    "cmd": it.cmd,
+                    "reason": it.reason,
+                    "tool_name": it.tool_name,
+                    "patterns": it.patterns,
+                })).collect();
+                value["pending"] = serde_json::Value::Array(pending);
+            }
+            SessionState::AwaitingClarify { items } => {
+                let pending: Vec<serde_json::Value> = items.iter().map(|it| serde_json::json!({
+                    "id": it.id,
+                    "content": it.content,
+                    "why": it.why,
+                    "kind": it.kind,
+                })).collect();
+                value["pending"] = serde_json::Value::Array(pending);
+            }
+            SessionState::AwaitingInform { items } => {
+                let pending: Vec<serde_json::Value> = items.iter().map(|it| serde_json::json!({
+                    "id": it.id,
+                    "content": it.content,
+                    "context": it.context,
+                })).collect();
+                value["pending"] = serde_json::Value::Array(pending);
+            }
+            SessionState::Idle => {}
+        }
+        println!("{}", serde_json::to_string_pretty(&value).unwrap_or_else(|e| {
+            eprintln!("[gait] error serializing status: {}", e);
+            std::process::exit(1);
+        }));
+        return;
+    }
+
+    // Human-readable output
+    match &state {
+        SessionState::Idle => {
+            println!("Session: {}", session_id);
+            println!("State:   idle (no pending requests)");
+        }
+        SessionState::AwaitingPermission { items } => {
+            println!("Session: {}", session_id);
+            println!("State:   awaiting_permission ({} item(s))", items.len());
+            for (n, it) in items.iter().enumerate() {
+                println!("  [{}] id: {}", n + 1, it.id);
+                if !it.tool_name.is_empty() {
+                    println!("      tool: {}", it.tool_name);
+                }
+                println!("      cmd:  {}", it.cmd);
+                if !it.reason.is_empty() {
+                    println!("      reason: {}", it.reason);
+                }
+                if !it.patterns.is_empty() {
+                    println!("      suggested patterns:");
+                    for p in &it.patterns {
+                        println!("        - {}", p);
+                    }
+                }
+            }
+        }
+        SessionState::AwaitingClarify { items } => {
+            println!("Session: {}", session_id);
+            println!("State:   awaiting_clarify ({} item(s))", items.len());
+            for (n, it) in items.iter().enumerate() {
+                println!("  [{}] id:    {}", n + 1, it.id);
+                println!("      kind:  {}", it.kind);
+                println!("      Q:     {}", it.content);
+                if !it.why.is_empty() {
+                    println!("      why:   {}", it.why);
+                }
+            }
+        }
+        SessionState::AwaitingInform { items } => {
+            println!("Session: {}", session_id);
+            println!("State:   awaiting_inform ({} item(s))", items.len());
+            for (n, it) in items.iter().enumerate() {
+                println!("  [{}] id:    {}", n + 1, it.id);
+                println!("      msg:   {}", it.content);
+                if let Some(ctx) = &it.context {
+                    println!("      ctx:   {}", ctx);
+                }
+            }
+        }
     }
 }
 
