@@ -23,32 +23,6 @@ fn bang_command_str(s: &str) -> &str {
 }
 
 #[derive(Debug, PartialEq)]
-enum AtCommand {
-    Run(String),    // @ <cmd>  — run and inject
-    Recall(usize),  // @-N     — inject Nth most recent ! output
-}
-
-fn is_at_command(s: &str) -> bool {
-    s.starts_with('@')
-}
-
-fn parse_at_command(s: &str) -> Option<AtCommand> {
-    let rest = s.strip_prefix('@')?;
-    // Strip single leading space if present (handles "@ cmd" vs "@cmd")
-    let rest = rest.strip_prefix(' ').unwrap_or(rest);
-    if rest.is_empty() {
-        return None;
-    }
-    if let Some(neg) = rest.strip_prefix('-') {
-        match neg.parse::<usize>() {
-            Ok(n) if n >= 1 => return Some(AtCommand::Recall(n)),
-            _ => return None,
-        }
-    }
-    Some(AtCommand::Run(rest.to_string()))
-}
-
-#[derive(Debug, PartialEq)]
 enum PermissionChoice {
     Global(String),
     Agent(String),
@@ -299,42 +273,7 @@ pub fn run_chat(
             _ => {}
         }
 
-        let task: String = if is_at_command(&line) {
-            match parse_at_command(&line) {
-                Some(AtCommand::Run(cmd)) => {
-                    let (output, code) = run_and_capture(&cmd, &codebase);
-                    if code != Some(0) {
-                        eprintln!("[!] exit {}", code.unwrap_or(1));
-                    }
-                    let _ = crate::shell_history::append(
-                        &shell_history_path,
-                        &cmd,
-                        &output,
-                        crate::session::transcript::now_ms(),
-                    );
-                    format!("[shell: {}]\n{}", cmd, output)
-                }
-                Some(AtCommand::Recall(n)) => {
-                    match crate::shell_history::recall(&shell_history_path, n) {
-                        Ok(Some(entry)) => format!("[shell: {}]\n{}", entry.cmd, entry.output),
-                        Ok(None) => {
-                            eprintln!("[!] no shell history at @-{}", n);
-                            continue;
-                        }
-                        Err(e) => {
-                            eprintln!("[!] shell history error: {e}");
-                            continue;
-                        }
-                    }
-                }
-                None => {
-                    eprintln!("[!] invalid @ command — use `@ <cmd>` or `@-N`");
-                    continue;
-                }
-            }
-        } else {
-            line.clone()
-        };
+        let task: String = line.clone();
 
         'spawn: loop {
             let mut cmd = Command::new(&gait_bin);
@@ -620,43 +559,5 @@ mod tests {
         // A command that doesn't exist — sh returns exit 127
         let (_, code) = run_and_capture("_no_such_cmd_xyz_", std::path::Path::new("."));
         assert!(code != Some(0));
-    }
-
-    #[test]
-    fn at_command_detected() {
-        assert!(is_at_command("@ls"));
-        assert!(is_at_command("@ ls -la"));
-        assert!(is_at_command("@-1"));
-        assert!(is_at_command("@-10"));
-    }
-
-    #[test]
-    fn at_command_not_detected() {
-        assert!(!is_at_command("!ls"));
-        assert!(!is_at_command("ls"));
-        assert!(!is_at_command("/new"));
-        assert!(!is_at_command(""));
-    }
-
-    #[test]
-    fn parse_at_command_run() {
-        assert!(matches!(parse_at_command("@ ls -la"), Some(AtCommand::Run(s)) if s == "ls -la"));
-        assert!(matches!(parse_at_command("@pwd"), Some(AtCommand::Run(s)) if s == "pwd"));
-        assert!(matches!(parse_at_command("@cargo test"), Some(AtCommand::Run(s)) if s == "cargo test"));
-    }
-
-    #[test]
-    fn parse_at_command_recall() {
-        assert!(matches!(parse_at_command("@-1"), Some(AtCommand::Recall(1))));
-        assert!(matches!(parse_at_command("@-5"), Some(AtCommand::Recall(5))));
-        assert!(matches!(parse_at_command("@-10"), Some(AtCommand::Recall(10))));
-    }
-
-    #[test]
-    fn parse_at_command_invalid() {
-        assert!(parse_at_command("@").is_none());
-        assert!(parse_at_command("@-0").is_none());
-        assert!(parse_at_command("@--1").is_none());
-        assert!(parse_at_command("@ ").is_none());
     }
 }
