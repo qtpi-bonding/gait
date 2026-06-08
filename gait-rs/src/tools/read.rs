@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use crate::hashline::{compute_line_hash};
 use crate::types::{Tool, ExecutionMode, ToolPermission, PermissionRequest};
 use crate::permission::path_patterns;
 use schemars::JsonSchema;
@@ -140,7 +141,8 @@ impl Tool for ReadTool {
                 truncated_by_bytes = true;
                 break;
             }
-            output_lines.push(format!("{:05}| {}", i + 1, line));
+            let hash = compute_line_hash(i + 1, &line);
+            output_lines.push(format!("{}#{}|{}", i + 1, hash, line));
             bytes += size;
         }
 
@@ -185,9 +187,11 @@ mod tests {
         let tool = ReadTool::new(dir.path().to_path_buf());
         let result = tool.execute(serde_json::json!({ "file_path": "test.txt" })).await.unwrap();
         let text = result.as_str().unwrap();
-        assert!(text.contains("00001| line1"), "got: {text}");
-        assert!(text.contains("00002| line2"), "got: {text}");
-        assert!(text.contains("00003| line3"), "got: {text}");
+        assert!(text.contains("|line1"), "got: {text}");
+        assert!(text.contains("|line2"), "got: {text}");
+        assert!(text.contains("|line3"), "got: {text}");
+        // hashline format: N#XY|content
+        assert!(text.contains("1#"), "should have hash anchor: {text}");
     }
 
     #[tokio::test]
@@ -209,9 +213,9 @@ mod tests {
             "file_path": "test.txt", "offset": 1, "limit": 2
         })).await.unwrap();
         let text = result.as_str().unwrap();
-        assert!(text.contains("00002| b"), "got: {text}");
-        assert!(text.contains("00003| c"), "got: {text}");
-        assert!(!text.contains("00001| a"), "should not contain line 1");
+        assert!(text.contains("|b"), "got: {text}");
+        assert!(text.contains("|c"), "got: {text}");
+        assert!(!text.contains("|a"), "should not contain line 1");
     }
 
     #[tokio::test]

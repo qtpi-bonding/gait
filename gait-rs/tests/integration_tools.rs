@@ -6,11 +6,11 @@ use tempfile::TempDir;
 async fn builtin_tools_returns_expected_tools() {
     let dir = TempDir::new().unwrap();
     let tools = builtin_tools(dir.path().to_path_buf(), "stest".into(), dir.path().to_path_buf(), vec![], vec![]);
-    assert_eq!(tools.len(), 17);
+    assert_eq!(tools.len(), 18);
     let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
     for expected in &["read", "write", "edit", "glob", "grep", "ls", "shell",
                       "output", "multiedit", "codesearch", "webfetch", "mcp", "skill",
-                      "spawn_agent", "list_agents"] {
+                      "spawn_agent", "list_agents", "hashline_edit"] {
         assert!(names.contains(expected), "missing tool '{}', got: {:?}", expected, names);
     }
 }
@@ -49,7 +49,8 @@ async fn read_write_roundtrip_via_builtin_tools() {
 
     let text = result.as_str().unwrap();
     assert!(text.contains("hello from gait-rs"), "got: {text}");
-    assert!(text.contains("00001|"), "should have line numbers");
+    // hashline format: N#XY|content
+    assert!(text.contains("1#") && text.contains("|"), "should have hashline format: {text}");
 }
 
 #[tokio::test]

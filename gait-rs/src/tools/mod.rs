@@ -15,6 +15,7 @@ pub mod spawn_agent;
 pub mod list_agents;
 pub mod clarify;
 pub mod inform;
+pub mod hashline_edit;
 
 pub use read::ReadTool;
 pub use write::WriteTool;
@@ -33,6 +34,7 @@ pub use spawn_agent::SpawnAgentTool;
 pub use list_agents::ListAgentsTool;
 pub use clarify::ClarifyTool;
 pub use inform::InformTool;
+pub use hashline_edit::HashlineEditTool;
 
 use std::path::PathBuf;
 use crate::types::Tool;
@@ -77,6 +79,7 @@ pub fn builtin_tools(
         ListAgentsTool::new(workspace.clone()).boxed(),
         ClarifyTool::new().boxed(),
         InformTool::new().boxed(),
+        HashlineEditTool::new(codebase_path.clone()).boxed(),
     ]
 }
 
@@ -87,14 +90,13 @@ mod tests {
 
     #[test]
     fn builtin_tools_returns_fifteen() {
-        // After adding clarify and inform — count is 17
         let tools = builtin_tools(
             PathBuf::from("/tmp"),
             "stest".into(),
             PathBuf::from("/tmp"),
             vec![], vec![],
         );
-        assert_eq!(tools.len(), 17);
+        assert_eq!(tools.len(), 18);
     }
 
     #[test]
