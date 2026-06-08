@@ -11,6 +11,63 @@ use gait_ai::{
     HarnessBackend,
 };
 
+fn extract_path_arg(args: &[String], flag: &str) -> Option<std::path::PathBuf> {
+    args.windows(2)
+        .find(|w| w[0] == flag)
+        .map(|w| std::path::PathBuf::from(&w[1]))
+}
+
+fn try_docker_route(orig_args: &[String]) {
+    use std::io::IsTerminal;
+    const IMAGE: &str = "gaitai/gait:latest";
+
+    if !gait_ai::docker::docker_available() {
+        eprintln!("[gait] Docker not available — running without sandbox. Install Docker for isolated execution.");
+        return;
+    }
+
+    if !gait_ai::docker::image_present(IMAGE) {
+        eprintln!("[gait] pulling {}...", IMAGE);
+        if let Err(e) = gait_ai::docker::pull_image(IMAGE) {
+            eprintln!("[gait] pull failed: {e} — running without sandbox.");
+            return;
+        }
+    }
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let workspace = extract_path_arg(orig_args, "--workspace")
+        .unwrap_or_else(|| cwd.clone())
+        .canonicalize()
+        .unwrap_or_else(|_| cwd.clone());
+    let codebase = extract_path_arg(orig_args, "--codebase")
+        .unwrap_or_else(|| workspace.clone())
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.clone());
+
+    let mounts = gait_ai::docker::build_mount_map(&workspace, &codebase);
+    let _ = gait_ai::docker::write_mount_map(&workspace, &mounts);
+
+    let auth_dir = dirs_next::data_dir().map(|d| d.join("gait"));
+    let interactive = std::io::stdin().is_terminal();
+    let docker_args = gait_ai::docker::build_docker_args(
+        IMAGE,
+        &mounts,
+        auth_dir.as_deref(),
+        orig_args,
+        interactive,
+    );
+
+    let status = std::process::Command::new("docker")
+        .args(&docker_args)
+        .status()
+        .unwrap_or_else(|e| {
+            eprintln!("[gait] docker exec failed: {e}");
+            std::process::exit(1);
+        });
+
+    std::process::exit(status.code().unwrap_or(1));
+}
+
 fn usage() -> ! {
     eprintln!("usage: gait <command> [options]");
     eprintln!("commands:");
@@ -29,6 +86,13 @@ fn usage() -> ! {
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 { usage(); }
+
+    // Auto-route through Docker unless: already inside container, or --native flag present.
+    // --native must appear after the subcommand (e.g. `gait run --native`), not at position 1.
+    let has_native = args[2..].iter().any(|a| a == "--native");
+    if !has_native && !gait_ai::docker::is_inside_container() {
+        try_docker_route(&args[1..]); // calls process::exit if Docker succeeds
+    }
 
     match args[1].as_str() {
         "run"      => cmd_run(&args[2..]).await,
@@ -553,5 +617,34 @@ fn cmd_chat(argv: &[String]) {
     if let Err(e) = gait_ai::chat::run_chat(workspace, codebase, agent_name) {
         eprintln!("[gait] error: {}", e);
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_path_arg_finds_value() {
+        let args = vec![
+            "run".to_string(),
+            "--workspace".to_string(),
+            "/foo/bar".to_string(),
+        ];
+        assert_eq!(
+            extract_path_arg(&args, "--workspace"),
+            Some(std::path::PathBuf::from("/foo/bar"))
+        );
+    }
+
+    #[test]
+    fn extract_path_arg_returns_none_when_missing() {
+        let args = vec!["run".to_string(), "--task".to_string(), "hi".to_string()];
+        assert_eq!(extract_path_arg(&args, "--workspace"), None);
+    }
+
+    #[test]
+    fn extract_path_arg_returns_none_for_empty() {
+        assert_eq!(extract_path_arg(&[], "--workspace"), None);
     }
 }
