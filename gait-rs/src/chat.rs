@@ -203,6 +203,104 @@ fn run_and_capture(cmd: &str, cwd: &std::path::Path) -> (String, Option<i32>) {
     (lines.join("\n"), code)
 }
 
+fn looks_like_path(token: &str) -> bool {
+    if token.is_empty() { return false; }
+    if token.starts_with('/') || token.starts_with("~/") { return true; }
+    if token.starts_with("./") || token.starts_with("../") { return true; }
+    if token.contains('/') { return true; }
+    if let Some(dot) = token.rfind('.') {
+        let ext = &token[dot + 1..];
+        return !ext.is_empty() && ext.chars().all(|c| c.is_alphanumeric());
+    }
+    false
+}
+
+fn expand_paren_marker(
+    inner: &str,
+    history_path: &std::path::Path,
+    codebase: &std::path::Path,
+) -> String {
+    if let Ok(n) = inner.trim().parse::<usize>() {
+        if n >= 1 {
+            return match crate::shell_history::recall(history_path, n) {
+                Ok(Some(entry)) => format!("[shell: {}]\n{}", entry.cmd, entry.output.trim_end()),
+                Ok(None) => format!("[history @({n}) — no entry]"),
+                Err(e) => format!("[history @({n}) — error: {e}]"),
+            };
+        }
+    }
+    let (output, code) = run_and_capture(inner, codebase);
+    if code != Some(0) {
+        eprintln!("[!] @({inner}) exit {}", code.unwrap_or(1));
+    }
+    format!("[shell: {}]\n{}", inner, output.trim_end())
+}
+
+pub fn expand_at_markers(
+    input: &str,
+    history_path: &std::path::Path,
+    codebase: &std::path::Path,
+) -> anyhow::Result<String> {
+    let mut result = String::with_capacity(input.len());
+    let chars: Vec<char> = input.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '@' {
+            result.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let rest_start = i + 1;
+        if rest_start >= chars.len() {
+            result.push('@');
+            i += 1;
+            continue;
+        }
+        if chars[rest_start] == '(' {
+            let inner_start = rest_start + 1;
+            let close = chars[inner_start..].iter().position(|&c| c == ')');
+            if let Some(rel) = close {
+                let inner: String = chars[inner_start..inner_start + rel].iter().collect();
+                let expanded = expand_paren_marker(&inner, history_path, codebase);
+                result.push_str(&expanded);
+                i = inner_start + rel + 1;
+                continue;
+            }
+            result.push('@');
+            i += 1;
+            continue;
+        }
+        let token_end = chars[rest_start..]
+            .iter()
+            .position(|c| c.is_whitespace())
+            .map(|p| rest_start + p)
+            .unwrap_or(chars.len());
+        let token: String = chars[rest_start..token_end].iter().collect();
+        if looks_like_path(&token) {
+            let path = if token.starts_with('/') || token.starts_with('~') {
+                std::path::PathBuf::from(&token)
+            } else {
+                codebase.join(&token)
+            };
+            match std::fs::read_to_string(&path) {
+                Ok(contents) => {
+                    result.push_str(&format!("[file: {}]\n{}", token, contents.trim_end()));
+                    i = token_end;
+                    continue;
+                }
+                Err(e) => {
+                    result.push_str(&format!("[file: {} — error: {}]", token, e));
+                    i = token_end;
+                    continue;
+                }
+            }
+        }
+        result.push('@');
+        i += 1;
+    }
+    Ok(result)
+}
+
 pub fn run_chat(
     workspace: PathBuf,
     codebase: PathBuf,
@@ -559,5 +657,71 @@ mod tests {
         // A command that doesn't exist — sh returns exit 127
         let (_, code) = run_and_capture("_no_such_cmd_xyz_", std::path::Path::new("."));
         assert!(code != Some(0));
+    }
+}
+
+#[cfg(test)]
+mod expand_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn make_history(dir: &std::path::Path) -> std::path::PathBuf {
+        let p = dir.join("hist.jsonl");
+        crate::shell_history::append(&p, "ls .", "file_a\nfile_b", 1).unwrap();
+        p
+    }
+
+    #[test]
+    fn passthrough_plain_text() {
+        let dir = TempDir::new().unwrap();
+        let hist = dir.path().join("hist.jsonl");
+        let result = expand_at_markers("hello world", &hist, dir.path()).unwrap();
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn expands_command_inline() {
+        let dir = TempDir::new().unwrap();
+        let hist = dir.path().join("hist.jsonl");
+        let result = expand_at_markers("files: @(echo hi)", &hist, dir.path()).unwrap();
+        assert!(result.contains("[shell: echo hi]"), "got: {result}");
+        assert!(result.contains("hi"), "got: {result}");
+    }
+
+    #[test]
+    fn expands_history_recall() {
+        let dir = TempDir::new().unwrap();
+        let hist = make_history(dir.path());
+        let result = expand_at_markers("prev: @(1)", &hist, dir.path()).unwrap();
+        assert!(result.contains("[shell: ls .]"), "got: {result}");
+        assert!(result.contains("file_a"), "got: {result}");
+    }
+
+    #[test]
+    fn expands_file_path() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "hello file").unwrap();
+        let hist = dir.path().join("hist.jsonl");
+        let result = expand_at_markers("read this: @notes.txt", &hist, dir.path()).unwrap();
+        assert!(result.contains("[file: notes.txt]"), "got: {result}");
+        assert!(result.contains("hello file"), "got: {result}");
+    }
+
+    #[test]
+    fn ignores_at_username() {
+        let dir = TempDir::new().unwrap();
+        let hist = dir.path().join("hist.jsonl");
+        let result = expand_at_markers("ping @alice today", &hist, dir.path()).unwrap();
+        assert_eq!(result, "ping @alice today");
+    }
+
+    #[test]
+    fn multiple_expansions() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "aaa").unwrap();
+        let hist = dir.path().join("hist.jsonl");
+        let result = expand_at_markers("x=@(echo x) y=@a.txt", &hist, dir.path()).unwrap();
+        assert!(result.contains("[shell: echo x]"), "got: {result}");
+        assert!(result.contains("[file: a.txt]"), "got: {result}");
     }
 }
