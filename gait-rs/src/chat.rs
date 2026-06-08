@@ -1,6 +1,8 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::io::Read;
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use rustyline::Editor;
 use rustyline::history::DefaultHistory;
 
@@ -190,6 +192,77 @@ fn run_and_capture(cmd: &str, cwd: &std::path::Path) -> (String, Option<i32>) {
         .ok()
         .and_then(|s| s.code());
     (lines.join("\n"), code)
+}
+
+#[derive(Debug)]
+enum CaptureResult {
+    Output(String, Option<i32>),
+    Interactive,
+}
+
+fn run_and_capture_pty_raw(cmd: &str, cwd: &std::path::Path) -> CaptureResult {
+    let pty_system = native_pty_system();
+    let pair = match pty_system.openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    }) {
+        Ok(p) => p,
+        Err(_) => {
+            let (out, code) = run_and_capture(cmd, cwd);
+            return CaptureResult::Output(out, code);
+        }
+    };
+
+    let mut builder = CommandBuilder::new("sh");
+    builder.args(["-c", cmd]);
+    builder.cwd(cwd);
+
+    let mut child = match pair.slave.spawn_command(builder) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("\x1b[31m[!] error: {}\x1b[0m", e);
+            return CaptureResult::Output(String::new(), None);
+        }
+    };
+
+    drop(pair.slave);
+
+    let mut reader = match pair.master.try_clone_reader() {
+        Ok(r) => r,
+        Err(_) => return CaptureResult::Output(String::new(), None),
+    };
+
+    const ALT_SCREEN: &[u8] = b"\x1b[?1049h";
+    const SCAN_LIMIT: usize = 4096;
+    let mut buf = Vec::new();
+    let mut byte = [0u8; 1];
+
+    while buf.len() < SCAN_LIMIT {
+        match reader.read(&mut byte) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                buf.push(byte[0]);
+                if buf.ends_with(ALT_SCREEN) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return CaptureResult::Interactive;
+                }
+            }
+        }
+    }
+
+    let mut rest = Vec::new();
+    let _ = reader.read_to_end(&mut rest);
+    let code = child.wait().ok().map(|s| s.exit_code() as i32);
+
+    let all = [buf, rest].concat();
+    let output = String::from_utf8_lossy(&all).into_owned();
+    for line in output.lines() {
+        println!("{}", line);
+    }
+    CaptureResult::Output(output, code)
 }
 
 fn looks_like_path(token: &str) -> bool {
@@ -630,6 +703,30 @@ mod tests {
         // A command that doesn't exist — sh returns exit 127
         let (_, code) = run_and_capture("_no_such_cmd_xyz_", std::path::Path::new("."));
         assert!(code != Some(0));
+    }
+
+    #[test]
+    fn pty_capture_normal_command() {
+        let result = run_and_capture_pty_raw("echo hello", std::path::Path::new("."));
+        match result {
+            CaptureResult::Output(out, code) => {
+                assert_eq!(out.trim(), "hello");
+                assert_eq!(code, Some(0));
+            }
+            CaptureResult::Interactive => panic!("echo should not be Interactive"),
+        }
+    }
+
+    #[test]
+    fn pty_capture_detects_alt_screen() {
+        let result = run_and_capture_pty_raw(
+            r#"printf "\033[?1049h""#,
+            std::path::Path::new("."),
+        );
+        assert!(
+            matches!(result, CaptureResult::Interactive),
+            "expected Interactive"
+        );
     }
 }
 
