@@ -1,3 +1,4 @@
+use std::io::Write;
 use termimad::MadSkin;
 use termimad::crossterm::style::Color as CColor;
 use crate::session::transcript::{PermissionItem, ClarifyItem, InformItem};
@@ -19,6 +20,9 @@ pub struct Renderer {
     pub theme: Theme,
     pending_tool: Option<String>,
     pending_ts: Option<u64>,
+    /// Raw content of each numbered block in the current agent turn, for `>N` quote-reply.
+    pub turn_blocks: Vec<String>,
+    block_num: usize,
 }
 
 fn to_ccolor(r: u8, g: u8, b: u8) -> CColor {
@@ -67,6 +71,8 @@ impl Renderer {
             theme,
             pending_tool: None,
             pending_ts: None,
+            turn_blocks: Vec::new(),
+            block_num: 0,
         }
     }
 
@@ -100,6 +106,10 @@ impl Renderer {
     fn render_block(&mut self) {
         if !self.block_buf.is_empty() {
             let block = std::mem::take(&mut self.block_buf);
+            self.block_num += 1;
+            self.turn_blocks.push(block.clone());
+            print!("{}{:>3}\u{2502}{} ", DIM_FG, self.block_num, RESET);
+            let _ = std::io::stdout().flush();
             self.skin.print_text(&block);
         }
     }
@@ -296,5 +306,34 @@ mod tests {
         let mut r = renderer();
         let action = r.handle_line(r#"{"type":"text_delta","content":"hello","ts":1}"#);
         assert!(matches!(action, RenderAction::Continue));
+    }
+
+    #[test]
+    fn turn_blocks_populated_on_paragraph() {
+        let mut r = renderer();
+        // Paragraph: text line then empty line flushes the block
+        r.handle_line(r#"{"type":"text_delta","content":"hello world\n","ts":1}"#);
+        r.handle_line(r#"{"type":"text_delta","content":"\n","ts":2}"#);
+        assert_eq!(r.turn_blocks.len(), 1);
+        assert_eq!(r.turn_blocks[0], "hello world");
+    }
+
+    #[test]
+    fn turn_blocks_numbered_sequentially() {
+        let mut r = renderer();
+        r.handle_line(r#"{"type":"text_delta","content":"para one\n\n","ts":1}"#);
+        r.handle_line(r#"{"type":"text_delta","content":"para two\n\n","ts":2}"#);
+        assert_eq!(r.turn_blocks.len(), 2);
+        assert_eq!(r.block_num, 2);
+    }
+
+    #[test]
+    fn turn_complete_flushes_to_turn_blocks() {
+        let mut r = renderer();
+        r.handle_line(r#"{"type":"text_delta","content":"trailing","ts":1}"#);
+        // No trailing newline — flush() captures it
+        r.handle_line(r#"{"type":"turn_complete","ts":2}"#);
+        assert_eq!(r.turn_blocks.len(), 1);
+        assert_eq!(r.turn_blocks[0], "trailing");
     }
 }

@@ -36,6 +36,50 @@ fn bang_command_str(s: &str) -> &str {
 /// Patterns are returned verbatim — they are already correctly formatted by the
 /// tool's `permission()` method (e.g. shell patterns arrive as "shell:cargo *").
 /// The REPL is a pure UI layer: it must not add or strip prefixes.
+/// Expand `>(N)`, `>(N-M)`, or `>(N) message` quote-reply syntax.
+/// Returns the expanded string, or the original unchanged if no match.
+fn expand_quote_reply(input: &str, blocks: &[String]) -> String {
+    // Must start with >( to avoid picking up stray > usage
+    let Some(inner) = input.strip_prefix(">(") else {
+        return input.to_string();
+    };
+    let Some(close) = inner.find(')') else {
+        return input.to_string();
+    };
+    let range_part = &inner[..close];
+    let msg_part = inner[close + 1..].trim();
+
+    let selected: Vec<&str> = if let Some((s, e)) = range_part.split_once('-') {
+        let start: usize = s.trim().parse().unwrap_or(0);
+        let end: usize = e.trim().parse().unwrap_or(0);
+        if start == 0 || end < start {
+            return input.to_string();
+        }
+        blocks.iter()
+            .enumerate()
+            .filter(|(i, _)| *i + 1 >= start && *i + 1 <= end)
+            .map(|(_, b)| b.as_str())
+            .collect()
+    } else if let Ok(n) = range_part.trim().parse::<usize>() {
+        if n == 0 { return input.to_string(); }
+        match blocks.get(n - 1) {
+            Some(b) => vec![b.as_str()],
+            None => return input.to_string(),
+        }
+    } else {
+        return input.to_string();
+    };
+
+    if selected.is_empty() {
+        return input.to_string();
+    }
+    let quoted = selected.iter()
+        .flat_map(|b| b.lines().map(|l| format!("> {}", l)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if msg_part.is_empty() { quoted } else { format!("{}\n\n{}", quoted, msg_part) }
+}
+
 fn parse_permission_response(
     input: &str,
     patterns: &[String],
@@ -385,6 +429,8 @@ pub fn run_chat(
         EventHandler::Conditional(Box::new(ShellNavHandler { nav: nav.clone(), up: false })),
     );
 
+    let mut last_turn_blocks: Vec<String> = Vec::new();
+
     loop {
         nav.lock().unwrap().index = 0;
         let prompt = format!("{}>{} {}", theme.accent.fg(), RESET, theme.user_msg.fg());
@@ -427,6 +473,9 @@ pub fn run_chat(
         }
 
         let _ = rl.add_history_entry(&line);
+        let line = expand_quote_reply(&line, &last_turn_blocks);
+
+        let mut current_turn_blocks: Vec<String> = Vec::new();
 
         'spawn: loop {
             let mut cmd = Command::new(&gait_bin);
@@ -466,6 +515,7 @@ pub fn run_chat(
             }
             renderer.flush();
             child.wait()?;
+            current_turn_blocks.extend(renderer.turn_blocks.drain(..));
 
             // Handle clarify: prompt user for each question, write ClarifyReply, re-spawn
             if !pending_clarify.is_empty() {
@@ -580,6 +630,7 @@ pub fn run_chat(
                 continue 'spawn;
             }
         }
+        last_turn_blocks = current_turn_blocks;
     }
 
     Ok(())
@@ -794,5 +845,78 @@ mod expand_tests {
         let result = expand_at_markers("x=@(echo x) y=@a.txt", &hist, dir.path()).unwrap();
         assert!(result.contains("[shell: echo x]"), "got: {result}");
         assert!(result.contains("[file: a.txt]"), "got: {result}");
+    }
+}
+
+#[cfg(test)]
+mod quote_reply_tests {
+    use super::expand_quote_reply;
+
+    fn blocks() -> Vec<String> {
+        vec![
+            "First paragraph here.".into(),
+            "Second paragraph here.".into(),
+            "Third paragraph here.".into(),
+        ]
+    }
+
+    #[test]
+    fn no_prefix_passes_through() {
+        assert_eq!(expand_quote_reply("hello", &blocks()), "hello");
+    }
+
+    #[test]
+    fn bare_gt_passes_through() {
+        assert_eq!(expand_quote_reply(">", &blocks()), ">");
+    }
+
+    #[test]
+    fn gt_without_parens_passes_through() {
+        assert_eq!(expand_quote_reply(">2", &blocks()), ">2");
+    }
+
+    #[test]
+    fn gt_paren_non_number_passes_through() {
+        assert_eq!(expand_quote_reply(">(foo)", &blocks()), ">(foo)");
+    }
+
+    #[test]
+    fn unclosed_paren_passes_through() {
+        assert_eq!(expand_quote_reply(">(2", &blocks()), ">(2");
+    }
+
+    #[test]
+    fn single_block_quoted() {
+        let result = expand_quote_reply(">(2)", &blocks());
+        assert_eq!(result, "> Second paragraph here.");
+    }
+
+    #[test]
+    fn single_block_with_message() {
+        let result = expand_quote_reply(">(1) follow up", &blocks());
+        assert_eq!(result, "> First paragraph here.\n\nfollow up");
+    }
+
+    #[test]
+    fn range_quoted() {
+        let result = expand_quote_reply(">(1-2)", &blocks());
+        assert!(result.contains("> First paragraph here."), "got: {result}");
+        assert!(result.contains("> Second paragraph here."), "got: {result}");
+        assert!(!result.contains("Third"), "got: {result}");
+    }
+
+    #[test]
+    fn out_of_range_passes_through() {
+        assert_eq!(expand_quote_reply(">(99)", &blocks()), ">(99)");
+    }
+
+    #[test]
+    fn zero_passes_through() {
+        assert_eq!(expand_quote_reply(">(0)", &blocks()), ">(0)");
+    }
+
+    #[test]
+    fn empty_blocks_passes_through() {
+        assert_eq!(expand_quote_reply(">(1)", &[]), ">(1)");
     }
 }
