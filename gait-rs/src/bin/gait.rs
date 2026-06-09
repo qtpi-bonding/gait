@@ -150,6 +150,47 @@ async fn main() {
     }
 }
 
+/// Compose the system prompt from the built-in harness description and the
+/// workspace AGENTS.md (if present). Each source is attributed with a hash so
+/// both the model and humans reviewing transcripts can see exactly what was used.
+///
+/// Format:
+///   <!-- gait-agent.md @ <git-hash-of-gait-binary> -->
+///   <harness content>
+///
+///   <!-- AGENTS.md @ <content-hash> -->
+///   <workspace agent content>
+fn compose_system_prompt(workspace: &std::path::Path) -> String {
+    let gait_hash = &gait_ai::GAIT_BUILD_GIT_HASH[..gait_ai::GAIT_BUILD_GIT_HASH.len().min(7)];
+    let mut prompt = format!(
+        "<!-- gait-agent.md @ {} -->\n{}",
+        gait_hash,
+        gait_ai::GAIT_AGENT_PROMPT.trim_end(),
+    );
+
+    let agents_md = workspace.join("AGENTS.md");
+    if let Ok(content) = std::fs::read_to_string(&agents_md) {
+        if !content.trim().is_empty() {
+            let hash = content_hash_short(&content);
+            prompt.push_str(&format!(
+                "\n\n<!-- AGENTS.md @ {} -->\n{}",
+                hash,
+                content.trim_end(),
+            ));
+        }
+    }
+
+    prompt
+}
+
+/// First 7 hex chars of a simple content hash — used for attribution only, not security.
+fn content_hash_short(s: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut h);
+    format!("{:016x}", std::hash::Hasher::finish(&h))[..7].to_string()
+}
+
 async fn cmd_run(argv: &[String]) {
     let mut session_id: Option<String> = None;
     let mut task: Option<String> = None;
@@ -201,9 +242,7 @@ async fn cmd_run(argv: &[String]) {
         }
     };
 
-    let agents_md = workspace.join("AGENTS.md");
-    let system_prompt = std::fs::read_to_string(&agents_md)
-        .unwrap_or_else(|_| gait_ai::GAIT_AGENT_PROMPT.to_string());
+    let system_prompt = compose_system_prompt(&workspace);
 
     // Discover tools from all configured MCP servers
     let mut mcp_registry: Vec<gait_ai::config::McpToolDef> = vec![];
@@ -354,10 +393,11 @@ fn cmd_init(argv: &[String]) {
         let _ = std::fs::write(&config_path, "{\n  // gait configuration\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  // Allow list: tools that run without approval. Default empty = everything gated.\n  \"allow\": [],\n  // Tier 1 config-defined tools: shell commands the LLM can call by name\n  \"tools\": []\n}\n");
     }
 
-    // AGENTS.md
+    // AGENTS.md — workspace-local additive prompt layer (not tracked in git).
+    // gait-agent.md (built-in harness description) is always prepended automatically.
     let agents_path = workspace.join("AGENTS.md");
     if !agents_path.exists() {
-        let _ = std::fs::write(&agents_path, gait_ai::GAIT_AGENT_PROMPT);
+        let _ = std::fs::write(&agents_path, "# Agent instructions\n\nAdd project-specific context here. This is appended to the built-in gait harness description.\n");
     }
 
     // Stage and initial commit
