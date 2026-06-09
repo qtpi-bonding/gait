@@ -63,6 +63,7 @@ pub async fn exec_prompt_node(
         workspace: ctx.workspace.to_path_buf(),
         codebase_path: codebase,
         allow,
+        deny: vec![],
         system_prompt,
         model,
         mcp_registry,

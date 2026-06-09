@@ -202,9 +202,8 @@ async fn cmd_run(argv: &[String]) {
     };
 
     let agents_md = workspace.join("AGENTS.md");
-    let system_prompt = std::fs::read_to_string(&agents_md).unwrap_or_else(|_| {
-        "You are a helpful AI coding assistant. You have access to tools to read, write, and edit files in the codebase.".into()
-    });
+    let system_prompt = std::fs::read_to_string(&agents_md)
+        .unwrap_or_else(|_| gait_ai::GAIT_AGENT_PROMPT.to_string());
 
     // Discover tools from all configured MCP servers
     let mut mcp_registry: Vec<gait_ai::config::McpToolDef> = vec![];
@@ -272,15 +271,21 @@ async fn cmd_run(argv: &[String]) {
         }) as Box<dyn gait_ai::types::Tool>);
     }
 
-    // Merge agent-scoped allow patterns (from agents/<name>.md frontmatter) into config allow
-    let mut effective_allow = config.allow;
-    if let Some(ref name) = agent_name {
+    // Agent-scoped allow (frontmatter) supersedes workspace allow when present.
+    // Workspace allow is the fallback for agents with no frontmatter allow list.
+    let effective_allow = if let Some(ref name) = agent_name {
         let agent_path = gait_ai::agent_frontmatter::resolve_agent_path(&workspace, name);
         match gait_ai::agent_frontmatter::read_agent_allow(agent_path) {
-            Ok(patterns) => effective_allow.extend(patterns),
-            Err(e) => eprintln!("[gait] warning: could not read agent allow list: {}", e),
+            Ok(patterns) if !patterns.is_empty() => patterns,
+            Ok(_) => config.allow,
+            Err(e) => {
+                eprintln!("[gait] warning: could not read agent allow list: {}", e);
+                config.allow
+            }
         }
-    }
+    } else {
+        config.allow
+    };
 
     let turn_result = match run_turn(
         TurnOpts {
@@ -290,6 +295,7 @@ async fn cmd_run(argv: &[String]) {
             workspace: workspace.clone(),
             codebase_path,
             allow: effective_allow,
+            deny: config.deny.clone(),
             system_prompt,
             model: model.clone(),
             mcp_registry,
@@ -351,7 +357,7 @@ fn cmd_init(argv: &[String]) {
     // AGENTS.md
     let agents_path = workspace.join("AGENTS.md");
     if !agents_path.exists() {
-        let _ = std::fs::write(&agents_path, "# gait agent\n\nYou are a coding agent running inside gait, a stateless turn-based agent framework.\n\n**How it works:**\n- Each `gait run` invocation is one turn. Your full conversation history is replayed from a transcript each turn.\n- The codebase is the external repo you work on. The workspace holds gait config and session history.\n\n**Tools:**\n- `read`, `write`, `edit`, `glob`, `grep`, `ls`, `shell` — work on the codebase\n- Tools not in the allow list require user approval before running\n\n**Turn model:**\n- Complete your task in as few turns as possible\n- Read files rather than asking when you need information\n");
+        let _ = std::fs::write(&agents_path, gait_ai::GAIT_AGENT_PROMPT);
     }
 
     // Stage and initial commit

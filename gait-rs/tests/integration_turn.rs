@@ -79,6 +79,7 @@ async fn full_turn_creates_transcript_and_git_commit() {
             workspace: ws.path().to_path_buf(),
             codebase_path: ws.path().to_path_buf(),
             allow: vec!["ls".into()],
+            deny: vec![],
             system_prompt: "you are helpful".into(),
             model: "mock/test".into(),
             mcp_registry: vec![],
@@ -139,7 +140,7 @@ async fn second_turn_resumes_session() {
     run_turn(TurnOpts {
         session_id: "sint002".into(), task: Some("task 1".into()), auto: true,
         workspace: ws.path().to_path_buf(), codebase_path: ws.path().to_path_buf(),
-        allow: vec![], system_prompt: "".into(), model: "mock/test".into(),
+        allow: vec![], deny: vec![], system_prompt: "".into(), model: "mock/test".into(),
         mcp_registry: vec![], mcp_clients: std::collections::HashMap::new(), skill_registry: vec![],
         config_enabled: std::collections::HashSet::new(),
     }, provider.clone(), vec![]).await.unwrap();
@@ -147,7 +148,7 @@ async fn second_turn_resumes_session() {
     run_turn(TurnOpts {
         session_id: "sint002".into(), task: Some("task 2".into()), auto: true,
         workspace: ws.path().to_path_buf(), codebase_path: ws.path().to_path_buf(),
-        allow: vec![], system_prompt: "".into(), model: "mock/test".into(),
+        allow: vec![], deny: vec![], system_prompt: "".into(), model: "mock/test".into(),
         mcp_registry: vec![], mcp_clients: std::collections::HashMap::new(), skill_registry: vec![],
         config_enabled: std::collections::HashSet::new(),
     }, provider, vec![]).await.unwrap();

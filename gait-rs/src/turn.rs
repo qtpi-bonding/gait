@@ -14,7 +14,7 @@ use crate::session::context::reconstruct_messages_from_events;
 use crate::config::{McpToolDef, SkillDef};
 use crate::git;
 use crate::mcp_client::McpClient;
-use crate::permission::is_request_approved;
+use crate::permission::{is_request_approved, find_matched_allow_pattern, is_request_denied, find_matched_deny_pattern};
 
 pub struct TurnOpts {
     pub session_id: String,
@@ -23,6 +23,7 @@ pub struct TurnOpts {
     pub workspace: PathBuf,
     pub codebase_path: PathBuf,
     pub allow: Vec<String>,
+    pub deny: Vec<String>,
     pub system_prompt: String,
     pub model: String,  // stored in session_start event for wire-compat with TS gait
     pub mcp_registry: Vec<McpToolDef>,
@@ -152,6 +153,7 @@ async fn execute_tool_call(
     tc: &ToolCall,
     tools: &[Box<dyn Tool>],
     tx_path: &std::path::Path,
+    approval_prefix: Option<String>,
 ) -> anyhow::Result<(AssistantPart, ToolResult)> {
     let id = tc.tool_call_id.clone();
     emit_event(tx_path, &AnyEvent::ToolCall {
@@ -165,12 +167,16 @@ async fn execute_tool_call(
         tool_name: tc.tool_name.clone(),
         args: tc.args.clone(),
     });
-    let output = match tools.iter().find(|t| t.name() == tc.tool_name) {
+    let raw = match tools.iter().find(|t| t.name() == tc.tool_name) {
         Some(t) => match t.execute(tc.args.clone()).await {
             Ok(v) => if v.is_string() { v.as_str().unwrap().to_owned() } else { v.to_string() },
             Err(e) => format!("error: {e}"),
         },
         None => format!("unknown tool: {}", tc.tool_name),
+    };
+    let output = match approval_prefix {
+        Some(prefix) => format!("{}\n{}", prefix, raw),
+        None => raw,
     };
     emit_event(tx_path, &AnyEvent::ToolResult {
         id: id.clone(), output: output.clone(), ts: now_ms(),
@@ -283,7 +289,7 @@ pub async fn run_turn(
                         tool_name: items[0].tool_name.clone(),
                         args: items[0].tool_args.clone(),
                     };
-                    if let Err(e) = execute_tool_call(&tc, &tools, &tx_path).await {
+                    if let Err(e) = execute_tool_call(&tc, &tools, &tx_path, Some("[User approved.]".to_string())).await {
                         // Emit error as tool result so model sees it
                         emit_event(&tx_path, &AnyEvent::ToolResult {
                             id: id.clone(),
@@ -362,6 +368,18 @@ pub async fn run_turn(
         }
     }
     // Skills are not pushed here — they surface via LoadTool.execute() return value.
+
+    // Warn about allow-list entries that don't match any builtin tool name.
+    // Catches stale names (e.g. "mcp", "skill") after tool renames.
+    {
+        let builtin_names: std::collections::HashSet<&str> =
+            crate::tools::builtin_tool_names().iter().copied().collect();
+        for entry in &effective_allow {
+            if !entry.contains(':') && !builtin_names.contains(entry.as_str()) {
+                eprintln!("[gait] warning: allow entry {:?} doesn't match any builtin tool — will never auto-approve", entry);
+            }
+        }
+    }
 
     // Step 5: Augment system prompt with unified <loadable-index>.
     // Build entries: one per whitelisted MCP server, one per whitelisted skill.
@@ -442,13 +460,12 @@ pub async fn run_turn(
             })?;
         }
 
-        // No tool calls → turn complete (plain text fallback; output tool is handled
-        // via ExecutionSignal::TurnComplete in the serial dispatch loop below).
+        // No tool calls → auto-wrap the text as an implicit output() call.
+        // output() is always the turn-completion path; plain text is just a short-hand.
         if step_tool_calls.is_empty() {
-            let events = read_events(&tx_path)?;
-            let turn_n = count_turn_complete(&events) + 1;
             let summary = step_text.lines().next().unwrap_or("").to_string();
-            let output_for_event = TurnOutput { summary: summary.clone(), result: None };
+            let events_now = read_events(&tx_path)?;
+            let turn_n = count_turn_complete(&events_now) + 1;
             emit_event(&tx_path, &AnyEvent::TurnComplete {
                 usage: TurnUsage {
                     input: total_usage.input_tokens as u64,
@@ -458,15 +475,12 @@ pub async fn run_turn(
                 },
                 codebase_hash: codebase_hash.clone(),
                 codebase_dirty,
-                output: output_for_event,
+                output: TurnOutput { summary: summary.clone(), result: None },
                 ts: now_ms(),
             })?;
             git::commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): turn {}", opts.session_id, turn_n))?;
-            return Ok(TurnResult::Done {
-                summary,
-                result: None,
-            });
+            return Ok(TurnResult::Done { summary, result: None });
         }
 
         // Single permission gate: classify all tool calls into allowed vs gated.
@@ -477,6 +491,8 @@ pub async fn run_turn(
         // exit for permissions — their results survive any subsequent permission exit.
         let mut pending_permissions: Vec<PermissionItem> = vec![];
         let mut gated_ids: std::collections::HashSet<String> = Default::default();
+        let mut denied_ids: std::collections::HashSet<String> = Default::default();
+        let mut tool_approval_prefixes: HashMap<String, String> = HashMap::new();
 
         for tc in &step_tool_calls {
             let perm = tools.iter()
@@ -489,27 +505,56 @@ pub async fn run_turn(
                     }
                 ]));
 
+            // Tier 1: deny list — hard floor, checked before allow, applies even in auto mode
+            let is_denied = match &perm {
+                ToolPermission::Passthrough => false,
+                ToolPermission::RequiresApproval(requests) => requests.iter()
+                    .any(|req| is_request_denied(&tc.tool_name, req, &opts.deny)),
+            };
+
+            if is_denied {
+                denied_ids.insert(tc.tool_call_id.clone());
+                continue;
+            }
+
+            // Tier 2: check allow list
             let is_allowed = opts.auto || match &perm {
                 ToolPermission::Passthrough => true,
                 ToolPermission::RequiresApproval(requests) => requests.iter()
                     .all(|req| is_request_approved(&tc.tool_name, req, &effective_allow)),
             };
 
-            if !is_allowed {
-                gated_ids.insert(tc.tool_call_id.clone());
-                if let ToolPermission::RequiresApproval(requests) = &perm {
-                    for req in requests.iter()
-                        .filter(|r| !is_request_approved(&tc.tool_name, r, &effective_allow))
-                    {
-                        pending_permissions.push(PermissionItem {
-                            id: tc.tool_call_id.clone(),
-                            cmd: req.display.clone(),
-                            reason: format!("{} requires permission", tc.tool_name),
-                            patterns: req.patterns.clone(),
-                            tool_name: tc.tool_name.clone(),
-                            tool_args: tc.args.clone(),
-                        });
+            if is_allowed {
+                let prefix: Option<String> = if opts.auto {
+                    Some("[Auto mode.]".to_string())
+                } else {
+                    match &perm {
+                        ToolPermission::Passthrough => None,
+                        ToolPermission::RequiresApproval(requests) => requests.iter()
+                            .find_map(|req| find_matched_allow_pattern(&tc.tool_name, req, &effective_allow))
+                            .map(|p| format!("[Auto-approved: {}]", p)),
                     }
+                };
+                if let Some(p) = prefix {
+                    tool_approval_prefixes.insert(tc.tool_call_id.clone(), p);
+                }
+                continue;
+            }
+
+            // Tier 3: ask
+            gated_ids.insert(tc.tool_call_id.clone());
+            if let ToolPermission::RequiresApproval(requests) = &perm {
+                for req in requests.iter()
+                    .filter(|r| !is_request_approved(&tc.tool_name, r, &effective_allow))
+                {
+                    pending_permissions.push(PermissionItem {
+                        id: tc.tool_call_id.clone(),
+                        cmd: req.display.clone(),
+                        reason: format!("{} requires permission", tc.tool_name),
+                        patterns: req.patterns.clone(),
+                        tool_name: tc.tool_name.clone(),
+                        tool_args: tc.args.clone(),
+                    });
                 }
             }
         }
@@ -523,9 +568,51 @@ pub async fn run_turn(
             assistant_parts.push(AssistantPart::Text { text: step_text.clone() });
         }
 
+        // Emit blocked results for denied tools immediately (no prompt, model sees why)
+        for tc in step_tool_calls.iter().filter(|tc| denied_ids.contains(&tc.tool_call_id)) {
+            let perm = tools.iter()
+                .find(|t| t.name() == tc.tool_name)
+                .map(|t| t.permission(&tc.args))
+                .unwrap_or_else(|| ToolPermission::RequiresApproval(vec![
+                    crate::types::PermissionRequest {
+                        display: tc.tool_name.clone(),
+                        patterns: vec![tc.tool_name.clone()],
+                    }
+                ]));
+            let pattern = if let ToolPermission::RequiresApproval(requests) = &perm {
+                requests.iter()
+                    .find_map(|req| find_matched_deny_pattern(&tc.tool_name, req, &opts.deny))
+                    .unwrap_or_else(|| tc.tool_name.clone())
+            } else {
+                tc.tool_name.clone()
+            };
+            let output = format!("[Blocked by config: {}] permission denied", pattern);
+            emit_event(&tx_path, &AnyEvent::ToolCall {
+                id: tc.tool_call_id.clone(),
+                name: tc.tool_name.clone(),
+                input: tc.args.clone(),
+                ts: now_ms(),
+            })?;
+            emit_event(&tx_path, &AnyEvent::ToolResult {
+                id: tc.tool_call_id.clone(),
+                output: output.clone(),
+                ts: now_ms(),
+            })?;
+            assistant_parts.push(AssistantPart::ToolCall(ToolCall {
+                tool_call_id: tc.tool_call_id.clone(),
+                tool_name: tc.tool_name.clone(),
+                args: tc.args.clone(),
+            }));
+            tool_results.push(ToolResult {
+                kind: ToolResultKind::ToolResult,
+                tool_call_id: tc.tool_call_id.clone(),
+                result: serde_json::Value::String(output),
+            });
+        }
+
         {
             let allowed: Vec<(usize, &ToolCall)> = step_tool_calls.iter().enumerate()
-                .filter(|(_, tc)| !gated_ids.contains(&tc.tool_call_id))
+                .filter(|(_, tc)| !gated_ids.contains(&tc.tool_call_id) && !denied_ids.contains(&tc.tool_call_id))
                 .collect();
 
             // Special-signal tools must be serial (they mutate turn state or the tools vec).
@@ -545,7 +632,10 @@ pub async fn run_turn(
 
             // Parallel batch — all futures share &tools (immutable), safe to join
             let par_raw = futures_util::future::join_all(
-                parallel_items.iter().map(|(_, tc)| execute_tool_call(tc, &tools, &tx_path))
+                parallel_items.iter().map(|(_, tc)| {
+                    let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
+                    execute_tool_call(tc, &tools, &tx_path, prefix)
+                })
             ).await;
 
             // Serial items — run in original order, handle special cases inline
@@ -590,7 +680,8 @@ pub async fn run_turn(
                                 });
                             }
                         }
-                        let r = execute_tool_call(tc, &tools, &tx_path).await
+                        let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
+                        let r = execute_tool_call(tc, &tools, &tx_path, prefix).await
                             .unwrap_or_else(|e| error_tool_result(tc, e));
                         all_results[*i] = Some(r);
                     }
@@ -633,7 +724,8 @@ pub async fn run_turn(
                     }
                     ExecutionSignal::Continue => {
                         // skill (default) and any other serial tool
-                        let r = execute_tool_call(tc, &tools, &tx_path).await
+                        let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
+                        let r = execute_tool_call(tc, &tools, &tx_path, prefix).await
                             .unwrap_or_else(|e| error_tool_result(tc, e));
                         all_results[*i] = Some(r);
                     }
@@ -769,6 +861,7 @@ mod tests {
                 workspace: ws.path().to_path_buf(),
                 codebase_path: codebase,
                 allow: vec!["read".into()],
+                deny: vec![],
                 system_prompt: "you are a helpful assistant".into(),
                 model: "mock/test".into(),
                 mcp_registry: vec![],
@@ -835,6 +928,7 @@ mod tests {
                 workspace: ws.path().to_path_buf(),
                 codebase_path: ws.path().to_path_buf(),
                 allow: vec![],
+                deny: vec![],
                 system_prompt: "".into(),
                 model: "mock/test".into(),
                 mcp_registry: vec![],
@@ -887,6 +981,7 @@ mod tests {
                 workspace: ws.path().to_path_buf(),
                 codebase_path: ws.path().to_path_buf(),
                 allow: vec![],
+                deny: vec![],
                 system_prompt: "".into(),
                 model: "mock/test".into(),
                 mcp_registry: vec![],
@@ -932,7 +1027,8 @@ mod tests {
                 auto: false, // non-auto
                 workspace: ws.path().to_path_buf(),
                 codebase_path: ws.path().to_path_buf(),
-                allow: vec!["read".into()], // shell is NOT allowed
+                allow: vec!["read".into()],
+                deny: vec![],
                 system_prompt: "".into(),
                 model: "mock/test".into(),
                 mcp_registry: vec![],
@@ -1019,6 +1115,7 @@ mod tests {
                 workspace: ws.path().to_path_buf(),
                 codebase_path: ws.path().to_path_buf(),
                 allow: vec![],
+                deny: vec![],
                 system_prompt: "".into(),
                 model: "mock/test".into(),
                 mcp_registry: vec![],
@@ -1063,6 +1160,7 @@ mod tests {
                 workspace: ws.path().to_path_buf(),
                 codebase_path: ws.path().to_path_buf(),
                 allow: vec![],
+                deny: vec![],
                 system_prompt: "".into(),
                 model: "mock/test".into(),
                 mcp_registry: vec![],
@@ -1101,6 +1199,7 @@ mod tests {
                 workspace: ws.path().to_path_buf(),
                 codebase_path: ws.path().to_path_buf(),
                 allow: vec![],
+                deny: vec![],
                 system_prompt: "".into(),
                 model: "mock/test".into(),
                 mcp_registry: vec![],
@@ -1119,6 +1218,141 @@ mod tests {
         if let AnyEvent::AssistantText { content, .. } = text_events[0] {
             assert_eq!(content, "hello world");
         }
+    }
+
+    // ── Three-tier permission model: deny tests ───────────────────────────────
+
+    #[tokio::test]
+    async fn denied_tool_gets_blocked_result_without_prompting() {
+        let ws = TempDir::new().unwrap();
+        init_git_repo(ws.path());
+
+        // MockProvider: step 1 = shell rm call, step 2 = output with summary
+        let provider = Arc::new(MockProvider {
+            responses: Arc::new(vec![
+                vec![
+                    StreamChunk::ToolCallComplete {
+                        tool_call_id: "tc1".into(),
+                        tool_name: "shell".into(),
+                        args: serde_json::json!({ "cmd": "rm -rf /", "reason": "cleanup" }),
+                    },
+                    StreamChunk::Done,
+                ],
+                vec![
+                    StreamChunk::ToolCallComplete {
+                        tool_call_id: "tc2".into(),
+                        tool_name: "output".into(),
+                        args: serde_json::json!({ "summary": "blocked" }),
+                    },
+                    StreamChunk::Done,
+                ],
+            ]),
+            call_idx: Arc::new(AtomicUsize::new(0)),
+        });
+
+        let shell_tool = crate::tools::ShellTool::new(
+            ws.path().to_path_buf(),
+            ws.path().to_path_buf(),
+        );
+        let output_tool = OutputTool::new();
+
+        run_turn(
+            TurnOpts {
+                session_id: "sdeny001".into(),
+                task: Some("try to destroy".into()),
+                auto: false,
+                workspace: ws.path().to_path_buf(),
+                codebase_path: ws.path().to_path_buf(),
+                allow: vec![],
+                deny: vec!["shell:rm *".to_string()],
+                system_prompt: "".into(),
+                model: "mock/test".into(),
+                mcp_registry: vec![],
+                mcp_clients: std::collections::HashMap::new(),
+                skill_registry: vec![],
+                config_enabled: std::collections::HashSet::new(),
+            },
+            provider,
+            vec![shell_tool.boxed(), output_tool.boxed()],
+        ).await.unwrap();
+
+        let tx_path = ws.path().join("sessions/sdeny001/transcript.jsonl");
+        let events = read_events(&tx_path).unwrap();
+
+        // Must have a ToolResult indicating blocked by config
+        let blocked_result = events.iter().any(|e| matches!(e, AnyEvent::ToolResult { id, output, .. }
+            if id == "tc1" && output.contains("Blocked by config")));
+        assert!(blocked_result, "expected blocked ToolResult for tc1; events: {:?}", events);
+
+        // NO Permissions event should be emitted (deny is a hard floor, not a prompt)
+        let has_permissions = events.iter().any(|e| matches!(e, AnyEvent::Permissions { .. }));
+        assert!(!has_permissions, "deny should not trigger a Permissions event");
+    }
+
+    #[tokio::test]
+    async fn deny_wins_when_tool_in_both_allow_and_deny() {
+        let ws = TempDir::new().unwrap();
+        init_git_repo(ws.path());
+
+        let provider = Arc::new(MockProvider {
+            responses: Arc::new(vec![
+                vec![
+                    StreamChunk::ToolCallComplete {
+                        tool_call_id: "tc1".into(),
+                        tool_name: "shell".into(),
+                        args: serde_json::json!({ "cmd": "rm -rf /", "reason": "cleanup" }),
+                    },
+                    StreamChunk::Done,
+                ],
+                vec![
+                    StreamChunk::ToolCallComplete {
+                        tool_call_id: "tc2".into(),
+                        tool_name: "output".into(),
+                        args: serde_json::json!({ "summary": "blocked" }),
+                    },
+                    StreamChunk::Done,
+                ],
+            ]),
+            call_idx: Arc::new(AtomicUsize::new(0)),
+        });
+
+        let shell_tool = crate::tools::ShellTool::new(
+            ws.path().to_path_buf(),
+            ws.path().to_path_buf(),
+        );
+        let output_tool = OutputTool::new();
+
+        run_turn(
+            TurnOpts {
+                session_id: "sdeny002".into(),
+                task: Some("try to destroy".into()),
+                auto: false,
+                workspace: ws.path().to_path_buf(),
+                codebase_path: ws.path().to_path_buf(),
+                // Same pattern in BOTH allow and deny — deny must win.
+                allow: vec!["shell:rm *".to_string()],
+                deny: vec!["shell:rm *".to_string()],
+                system_prompt: "".into(),
+                model: "mock/test".into(),
+                mcp_registry: vec![],
+                mcp_clients: std::collections::HashMap::new(),
+                skill_registry: vec![],
+                config_enabled: std::collections::HashSet::new(),
+            },
+            provider,
+            vec![shell_tool.boxed(), output_tool.boxed()],
+        ).await.unwrap();
+
+        let tx_path = ws.path().join("sessions/sdeny002/transcript.jsonl");
+        let events = read_events(&tx_path).unwrap();
+
+        // Same assertions as the first deny test
+        let blocked_result = events.iter().any(|e| matches!(e, AnyEvent::ToolResult { id, output, .. }
+            if id == "tc1" && output.contains("Blocked by config")));
+        assert!(blocked_result, "expected blocked ToolResult for tc1 even with allow match; events: {:?}", events);
+
+        let has_permissions = events.iter().any(|e| matches!(e, AnyEvent::Permissions { .. }));
+        assert!(!has_permissions, "deny-wins: should not trigger Permissions event");
     }
 
     // ── Test fixtures for Task 3 (resume path) ───────────────────────────────
@@ -1223,6 +1457,7 @@ mod tests {
                 workspace: ws.path().to_path_buf(),
                 codebase_path: codebase.path().to_path_buf(),
                 allow: vec!["shell:echo *".into()],
+                deny: vec![],
                 system_prompt: "".into(),
                 model: "test".into(),
                 mcp_registry: vec![],
@@ -1299,6 +1534,7 @@ mod tests {
                 workspace: ws.path().to_path_buf(),
                 codebase_path: codebase.path().to_path_buf(),
                 allow: vec![],
+                deny: vec![],
                 system_prompt: "".into(),
                 model: "test".into(),
                 mcp_registry: vec![],
