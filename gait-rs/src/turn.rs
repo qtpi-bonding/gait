@@ -14,6 +14,7 @@ use crate::session::context::reconstruct_messages_from_events;
 use crate::config::{McpToolDef, SkillDef};
 use crate::git;
 use crate::git::workspace::{WorkspaceRepo, GitWorkspaceRepo};
+use crate::git::rewind::RewindRepo;
 use crate::mcp_client::McpClient;
 use crate::permission::{is_request_approved, find_matched_allow_pattern, is_request_denied, find_matched_deny_pattern};
 use grep_regex::RegexMatcher;
@@ -82,6 +83,27 @@ impl SessionLock {
 impl Drop for SessionLock {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Snapshot the codebase into the shadow db for this turn. Returns the
+/// checkpoint SHA, or None if the codebase is not a git repo or the checkpoint
+/// failed — a checkpoint failure must never fail the turn. Does NOT commit the
+/// transcript; the caller's existing commit_session runs after emit.
+fn checkpoint_codebase(
+    rewind: &dyn RewindRepo,
+    workspace: &Path,
+    session_id: &str,
+    codebase: &Path,
+    turn: u32,
+) -> Option<String> {
+    match rewind.checkpoint(workspace, session_id, codebase, turn) {
+        Ok(sha) if !sha.is_empty() => Some(sha),
+        Ok(_) => None, // non-git codebase
+        Err(e) => {
+            eprintln!("rewind checkpoint failed for session {}: {}; rewind unavailable for this turn", session_id, e);
+            None
+        }
     }
 }
 
@@ -356,6 +378,8 @@ pub async fn run_turn(
     tools: Vec<Box<dyn Tool>>,
 ) -> anyhow::Result<TurnResult> {
     GitWorkspaceRepo.create_session_worktree(&opts.workspace, &opts.session_id)?;
+    crate::git::rewind::GitRewindRepo
+        .init(&opts.workspace, &opts.session_id, &opts.codebase_path)?;
 
     let session_dir = opts.workspace.join("sessions").join(&opts.session_id);
     let tx_path = session_dir.join("transcript.jsonl");
@@ -633,7 +657,11 @@ pub async fn run_turn(
         if step_tool_calls.is_empty() {
             let message = step_text.clone();
             let events_now = read_events(&tx_path)?;
-            let turn_n = count_turn_complete(&events_now) + 1;
+            let turn_n = count_turn_complete(&events_now) as u32 + 1;
+            let code_checkpoint = checkpoint_codebase(
+                &crate::git::rewind::GitRewindRepo,
+                &opts.workspace, &opts.session_id, &opts.codebase_path, turn_n,
+            );
             emit_event(&tx_path, &AnyEvent::TurnComplete {
                 usage: TurnUsage {
                     input: total_usage.input_tokens as u64,
@@ -643,7 +671,7 @@ pub async fn run_turn(
                 },
                 codebase_hash: codebase_hash.clone(),
                 codebase_dirty,
-                code_checkpoint: None,
+                code_checkpoint,
                 output: TurnOutput { message: message.clone(), result: None },
                 ts: now_ms(),
             })?;
@@ -956,7 +984,11 @@ pub async fn run_turn(
                         let message = tc.args.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
                         let result = tc.args.get("result").cloned();
                         let events_now = read_events(&tx_path)?;
-                        let turn_n = count_turn_complete(&events_now) + 1;
+                        let turn_n = count_turn_complete(&events_now) as u32 + 1;
+                        let code_checkpoint = checkpoint_codebase(
+                            &crate::git::rewind::GitRewindRepo,
+                            &opts.workspace, &opts.session_id, &opts.codebase_path, turn_n,
+                        );
                         emit_event(&tx_path, &AnyEvent::TurnComplete {
                             usage: TurnUsage {
                                 input: total_usage.input_tokens as u64,
@@ -966,7 +998,7 @@ pub async fn run_turn(
                             },
                             codebase_hash: codebase_hash.clone(),
                             codebase_dirty,
-                            code_checkpoint: None,
+                            code_checkpoint,
                             output: TurnOutput { message: message.clone(), result: result.clone() },
                             ts: now_ms(),
                         })?;
@@ -2034,5 +2066,93 @@ mod tests {
         let ops = serde_json::json!([]);
         let result = apply_parse_filter(raw, &ops);
         assert_eq!(result, raw);
+    }
+
+    #[test]
+    fn checkpoint_codebase_returns_sha_and_records_call() {
+        use crate::git::rewind::MockRewindRepo;
+        let ws = tempfile::TempDir::new().unwrap();
+        let codebase = ws.path().to_path_buf();
+        let rewind = MockRewindRepo::new();
+        let sha = checkpoint_codebase(&rewind, ws.path(), "scp1", &codebase, 1);
+        assert_eq!(sha.as_deref(), Some("mock-sha-1"));
+        assert_eq!(rewind.checkpoint_calls(), vec![("scp1".to_string(), 1u32)]);
+    }
+
+    #[test]
+    fn checkpoint_codebase_tolerates_error() {
+        use crate::git::rewind::MockRewindRepo;
+        let ws = tempfile::TempDir::new().unwrap();
+        let codebase = ws.path().to_path_buf();
+        let rewind = MockRewindRepo::new();
+        rewind.inject_checkpoint_error("disk full");
+        let sha = checkpoint_codebase(&rewind, ws.path(), "scp2", &codebase, 1);
+        assert!(sha.is_none());
+    }
+
+    #[tokio::test]
+    async fn run_turn_records_code_checkpoint_for_git_codebase() {
+        let ws = TempDir::new().unwrap();
+        init_git_repo(ws.path());
+
+        // Build a SEPARATE codebase dir that is its own git repo with one commit
+        let codebase_dir = TempDir::new().unwrap();
+        {
+            let repo = git2::Repository::init(codebase_dir.path()).unwrap();
+            let mut cfg = repo.config().unwrap();
+            cfg.set_str("user.name", "test").unwrap();
+            cfg.set_str("user.email", "test@test.com").unwrap();
+            std::fs::write(codebase_dir.path().join("hello.txt"), "hello\n").unwrap();
+            let mut idx = repo.index().unwrap();
+            idx.add_path(std::path::Path::new("hello.txt")).unwrap();
+            idx.write().unwrap();
+            let tree_id = idx.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let sig = git2::Signature::now("test", "test@test.com").unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        }
+
+        let session_id = "scpgit001";
+
+        let provider = Arc::new(MockProvider {
+            responses: Arc::new(vec![
+                vec![
+                    StreamChunk::Text("done".into()),
+                    StreamChunk::Done,
+                ],
+            ]),
+            call_idx: Arc::new(AtomicUsize::new(0)),
+        });
+
+        run_turn(
+            TurnOpts {
+                session_id: session_id.into(),
+                task: Some("checkpoint test".into()),
+                auto: true,
+                workspace: ws.path().to_path_buf(),
+                codebase_path: codebase_dir.path().to_path_buf(),
+                allow: vec![],
+                deny: vec![],
+                system_prompt: "".into(),
+                model: "mock/test".into(),
+                mcp_registry: vec![],
+                mcp_clients: std::collections::HashMap::new(),
+                skill_registry: vec![],
+                config_enabled: std::collections::HashSet::new(),
+                max_iter: None,
+                hooks: vec![],
+            },
+            provider,
+            vec![],
+        ).await.unwrap();
+
+        let tx_path = ws.path().join("sessions").join(session_id).join("transcript.jsonl");
+        let events = read_events(&tx_path).unwrap();
+        let cp = events.iter().rev().find_map(|e| match e {
+            AnyEvent::TurnComplete { code_checkpoint, .. } => Some(code_checkpoint.clone()),
+            _ => None,
+        }).flatten();
+        assert!(cp.is_some(), "expected a code checkpoint SHA");
+        assert!(crate::git::rewind_git_dir(ws.path(), session_id).exists());
     }
 }
