@@ -107,6 +107,7 @@ async fn main() {
         "run"      => cmd_run(&args[2..]).await,
         "init"     => cmd_init(&args[2..]),
         "finish"   => cmd_finish(&args[2..]),
+        "rewind"   => cmd_rewind(&args[2..]),
         "sessions" => cmd_sessions(&args[2..]),
         "auth"     => cmd_auth(&args[2..]),
         "models"   => cmd_models(&args[2..]).await,
@@ -488,6 +489,156 @@ fn cmd_finish(argv: &[String]) {
         std::process::exit(1);
     }
     eprintln!("[gait] session {} merged into main", session_id);
+}
+
+fn cmd_rewind(argv: &[String]) {
+    let mut session_id: Option<String> = None;
+    let mut turn: Option<u32> = None;
+    let mut code = false;
+    let mut transcript = false;
+    let mut list = false;
+    let mut workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    let mut i = 0;
+    while i < argv.len() {
+        match argv[i].as_str() {
+            "--turn" => {
+                i += 1;
+                turn = Some(match argv.get(i) {
+                    Some(v) => match v.parse() {
+                        Ok(n) => n,
+                        Err(e) => { eprintln!("[gait] error: --turn needs a numeric value: {}", e); std::process::exit(1); }
+                    },
+                    None => { eprintln!("[gait] error: --turn needs a value"); std::process::exit(1); }
+                });
+            }
+            "--code" => code = true,
+            "--transcript" => transcript = true,
+            "--list" => list = true,
+            "--workspace" => {
+                i += 1;
+                workspace = match argv.get(i) {
+                    Some(p) => std::path::PathBuf::from(p),
+                    None => { eprintln!("[gait] error: --workspace needs a value"); std::process::exit(1); }
+                };
+            }
+            other if !other.starts_with("--") && session_id.is_none() => {
+                session_id = Some(other.to_string());
+            }
+            other => { eprintln!("[gait] error: unexpected argument: {}", other); std::process::exit(1); }
+        }
+        i += 1;
+    }
+
+    let session_id = match session_id {
+        Some(id) => id,
+        None => {
+            eprintln!("usage: gait rewind <session-id> [--turn N | --list] [--code] [--transcript] [--workspace <path>]");
+            std::process::exit(1);
+        }
+    };
+
+    if let Err(e) = rewind_command(&session_id, turn, code, transcript, list, workspace) {
+        eprintln!("[gait] error: {}", e);
+        std::process::exit(1);
+    }
+}
+
+fn rewind_command(
+    session_id: &str,
+    turn: Option<u32>,
+    code: bool,
+    transcript: bool,
+    list: bool,
+    workspace: std::path::PathBuf,
+) -> anyhow::Result<()> {
+    use gait_ai::session::transcript::{read_events, AnyEvent};
+    use gait_ai::git::rewind::{RewindRepo, GitRewindRepo};
+
+    let session_dir = workspace.join("sessions").join(session_id);
+    let tx_path = session_dir.join("transcript.jsonl");
+    let events = read_events(&tx_path)?;
+
+    // Collect (turn_index, summary, checkpoint) from TurnComplete events.
+    let mut turns: Vec<(u32, String, Option<String>)> = Vec::new();
+    for e in &events {
+        if let AnyEvent::TurnComplete { output, code_checkpoint, .. } = e {
+            let idx = turns.len() as u32 + 1;
+            turns.push((idx, output.message.clone(), code_checkpoint.clone()));
+        }
+    }
+
+    if list {
+        for (idx, summary, cp) in &turns {
+            let mark = cp.as_deref().map(|s| &s[..s.len().min(8)]).unwrap_or("--------");
+            println!("turn {idx}  [{mark}]  {summary}");
+        }
+        return Ok(());
+    }
+
+    let turn = turn.ok_or_else(|| anyhow::anyhow!("--turn <n> is required (or use --list)"))?;
+    let (_, _, checkpoint) = turns.iter()
+        .find(|(idx, _, _)| *idx == turn)
+        .ok_or_else(|| anyhow::anyhow!("no turn {} in session {}", turn, session_id))?
+        .clone();
+
+    // Default (neither flag) = both axes.
+    let do_code = code || (!code && !transcript);
+    let do_transcript = transcript || (!code && !transcript);
+
+    // Guard: refuse if a turn is in progress (lock held by a live PID).
+    let lock = session_dir.join("lock");
+    if lock.exists() {
+        let pid_str = std::fs::read_to_string(&lock).unwrap_or_default();
+        if let Ok(pid) = pid_str.trim().parse::<i32>() {
+            if unsafe { libc::kill(pid, 0) } == 0 {
+                anyhow::bail!("session {} is running (PID {}); stop it before rewinding", session_id, pid);
+            }
+        }
+    }
+
+    if do_code {
+        let codebase = gait_ai::session::session_json::read_session_json(&workspace, session_id)
+            .codebase_path
+            .map(std::path::PathBuf::from)
+            .ok_or_else(|| anyhow::anyhow!("session.json has no codebase_path; cannot rewind code"))?;
+        match checkpoint.as_deref() {
+            Some(sha) => {
+                GitRewindRepo.rewind_to(&workspace, session_id, &codebase, sha)?;
+                println!("code rewound to turn {turn} ({})", &sha[..sha.len().min(8)]);
+            }
+            None => println!("turn {turn} has no code checkpoint (non-git codebase); code not rewound"),
+        }
+    }
+
+    if do_transcript {
+        rewind_transcript_to_turn(&workspace, session_id, turn)?;
+        println!("transcript rewound to turn {turn}");
+    }
+    Ok(())
+}
+
+fn rewind_transcript_to_turn(workspace: &std::path::Path, session_id: &str, turn: u32) -> anyhow::Result<()> {
+    let session_dir = workspace.join("sessions").join(session_id);
+    let repo = git2::Repository::open(&session_dir)?;
+    let needle = format!("session({}): turn {}", session_id, turn);
+    let mut walk = repo.revwalk()?;
+    walk.push_head()?;
+    let mut target: Option<git2::Oid> = None;
+    for oid in walk {
+        let oid = oid?;
+        let commit = repo.find_commit(oid)?;
+        if commit.summary() == Some(needle.as_str()) {
+            target = Some(oid);
+            break;
+        }
+    }
+    let oid = target.ok_or_else(|| anyhow::anyhow!(
+        "no commit for turn {} in session {} (transcript rewind applies to interactive turn sessions, not workflows)",
+        turn, session_id))?;
+    let obj = repo.find_object(oid, None)?;
+    repo.reset(&obj, git2::ResetType::Hard, None)?;
+    Ok(())
 }
 
 fn cmd_sessions(argv: &[String]) {
