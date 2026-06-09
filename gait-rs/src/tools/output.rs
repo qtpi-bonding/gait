@@ -5,7 +5,8 @@ use serde_json::Value;
 
 #[derive(Deserialize, JsonSchema)]
 struct OutputParams {
-    /// What the user reads. Markdown OK, multi-paragraph OK, no length cap. Required, non-empty.
+    /// What the user reads. Markdown OK, multi-paragraph OK. Required, non-empty.
+    #[schemars(length(min = 1))]
     message: String,
     /// Structured JSON result — readable by workflow nodes ($node.output.field) or parent agents
     result: Option<Value>,
@@ -89,5 +90,17 @@ mod tests {
     fn output_execution_signal_is_turn_complete() {
         let tool = OutputTool::new();
         assert_eq!(tool.execution_signal(), crate::types::ExecutionSignal::TurnComplete);
+    }
+
+    #[test]
+    fn message_schema_requires_non_empty() {
+        let tool = OutputTool::new();
+        let schema = tool.parameters();
+        let msg = &schema["properties"]["message"];
+        assert_eq!(
+            msg["minLength"].as_u64(),
+            Some(1),
+            "message field must have minLength:1 in schema, got: {schema}"
+        );
     }
 }
