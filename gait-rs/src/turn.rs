@@ -130,6 +130,21 @@ pub fn build_loadable_index(entries: &[crate::types::LoadableEntry]) -> String {
         lines.join("\n"))
 }
 
+pub fn build_permission_status(allow: &[String], deny: &[String]) -> String {
+    if allow.is_empty() && deny.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec![];
+    if !allow.is_empty() {
+        lines.push(format!("Auto-approved: {}", allow.join(", ")));
+    }
+    if !deny.is_empty() {
+        lines.push(format!("Blocked: {}", deny.join(", ")));
+    }
+    lines.push("Anything else requires user approval.".to_string());
+    format!("\n<permission-status>\n{}\n</permission-status>", lines.join("\n"))
+}
+
 fn make_mcp_tool_def(def: &McpToolDef, client: Arc<McpClient>) -> Box<dyn crate::types::Tool> {
     let name = def.name.clone();
     let description = def.description.clone();
@@ -415,11 +430,8 @@ pub async fn run_turn(
         });
     }
     let loadable_idx = build_loadable_index(&entries);
-    let system_prompt = if loadable_idx.is_empty() {
-        opts.system_prompt.clone()
-    } else {
-        format!("{}{}", opts.system_prompt, loadable_idx)
-    };
+    let permission_status = build_permission_status(&effective_allow, &opts.deny);
+    let system_prompt = format!("{}{}{}", opts.system_prompt, loadable_idx, permission_status);
 
     let mut total_usage = Usage::default();
     let mut clarify_signal: Option<Vec<ClarifyItem>> = None;
@@ -1562,5 +1574,22 @@ mod tests {
         // Expect: User (UserTurn), Assistant (ToolCall), Tool (ToolResult with denial)
         let has_tool_msg = messages.iter().any(|m| matches!(m, Message::Tool { .. }));
         assert!(has_tool_msg, "reconstruction must include Tool message with denied result; got {} messages", messages.len());
+    }
+    // ── build_permission_status: three-tier model prompt injection ─────────────
+
+    #[test]
+    fn build_permission_status_shows_three_tiers() {
+        let allow = vec!["read".to_string(), "shell:ls *".to_string()];
+        let deny = vec!["shell:rm *".to_string()];
+        let status = build_permission_status(&allow, &deny);
+        assert!(status.contains("<permission-status>"), "got: {status}");
+        assert!(status.contains("read"), "got: {status}");
+        assert!(status.contains("shell:ls *"), "got: {status}");
+        assert!(status.contains("shell:rm *"), "got: {status}");
+    }
+
+    #[test]
+    fn build_permission_status_empty_returns_empty() {
+        assert!(build_permission_status(&[], &[]).is_empty());
     }
 }
