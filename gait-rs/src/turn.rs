@@ -42,7 +42,7 @@ pub struct TurnOpts {
 
 #[derive(Debug, Clone)]
 pub enum TurnResult {
-    Done { summary: String, result: Option<serde_json::Value> },
+    Done { message: String, result: Option<serde_json::Value> },
     Permissions,
     Clarify { items: Vec<ClarifyItem> },
     Inform  { items: Vec<InformItem> },
@@ -124,10 +124,13 @@ pub fn derive_enabled_loadables(
 
 
 /// Build the unified <loadable-index> system prompt section. Replaces the
-/// separate <mcp-index> and <skill-index>. Returns empty string if entries is empty.
+/// separate <mcp-index> and <skill-index>. Always emits the block so the
+/// system prompt instruction to "check <loadable-index>" is never a lie.
 /// Each entry renders as: `  <kind> <name> enabled=<bool> — <description>`.
 pub fn build_loadable_index(entries: &[crate::types::LoadableEntry]) -> String {
-    if entries.is_empty() { return String::new(); }
+    if entries.is_empty() {
+        return "\n<loadable-index>\n  (none enabled)\n</loadable-index>".to_string();
+    }
     let lines: Vec<String> = entries.iter().map(|e| {
         format!("  {} {} enabled={} — {}",
             e.kind.as_str(), e.name, e.enabled, e.description)
@@ -626,7 +629,7 @@ pub async fn run_turn(
         // No tool calls → auto-wrap the text as an implicit output() call.
         // output() is always the turn-completion path; plain text is just a short-hand.
         if step_tool_calls.is_empty() {
-            let summary = step_text.lines().next().unwrap_or("").to_string();
+            let message = step_text.clone();
             let events_now = read_events(&tx_path)?;
             let turn_n = count_turn_complete(&events_now) + 1;
             emit_event(&tx_path, &AnyEvent::TurnComplete {
@@ -638,13 +641,13 @@ pub async fn run_turn(
                 },
                 codebase_hash: codebase_hash.clone(),
                 codebase_dirty,
-                output: TurnOutput { summary: summary.clone(), result: None },
+                output: TurnOutput { message: message.clone(), result: None },
                 ts: now_ms(),
             })?;
             git::commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): turn {}", opts.session_id, turn_n))?;
             for h in &opts.hooks { h.post_turn(); }
-            return Ok(TurnResult::Done { summary, result: None });
+            return Ok(TurnResult::Done { message, result: None });
         }
 
         // Single permission gate: classify all tool calls into allowed vs gated.
@@ -947,7 +950,7 @@ pub async fn run_turn(
                             output: "recorded".to_string(),
                             ts: now_ms(),
                         })?;
-                        let summary = tc.args.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let message = tc.args.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
                         let result = tc.args.get("result").cloned();
                         let events_now = read_events(&tx_path)?;
                         let turn_n = count_turn_complete(&events_now) + 1;
@@ -960,13 +963,13 @@ pub async fn run_turn(
                             },
                             codebase_hash: codebase_hash.clone(),
                             codebase_dirty,
-                            output: TurnOutput { summary: summary.clone(), result: result.clone() },
+                            output: TurnOutput { message: message.clone(), result: result.clone() },
                             ts: now_ms(),
                         })?;
                         git::commit_session(&opts.workspace, &opts.session_id,
                             &format!("session({}): turn {}", opts.session_id, turn_n))?;
                         for h in &opts.hooks { h.post_turn(); }
-                        return Ok(TurnResult::Done { summary, result });
+                        return Ok(TurnResult::Done { message, result });
                     }
                     ExecutionSignal::Clarify => {
                         let items: Vec<ClarifyItem> = tc.args.get("items")
@@ -1198,7 +1201,7 @@ mod tests {
                     StreamChunk::ToolCallComplete {
                         tool_call_id: "tc1".into(),
                         tool_name: "output".into(),
-                        args: serde_json::json!({ "summary": "fixed the bug", "result": { "files": 2 } }),
+                        args: serde_json::json!({ "message": "fixed the bug", "result": { "files": 2 } }),
                     },
                     StreamChunk::Done,
                 ],
@@ -1234,7 +1237,7 @@ mod tests {
         let events = read_events(&tx_path).unwrap();
         let tc_event = events.iter().find(|e| matches!(e, AnyEvent::TurnComplete { .. })).unwrap();
         if let AnyEvent::TurnComplete { output, .. } = tc_event {
-            assert_eq!(output.summary, "fixed the bug");
+            assert_eq!(output.message, "fixed the bug");
             assert!(output.result.is_some());
         } else {
             panic!("expected TurnComplete");
@@ -1253,7 +1256,7 @@ mod tests {
                     StreamChunk::ToolCallComplete {
                         tool_call_id: "tc1".into(),
                         tool_name: "output".into(),
-                        args: serde_json::json!({ "summary": "done" }),
+                        args: serde_json::json!({ "message": "done" }),
                     },
                     StreamChunk::Done,
                 ],
@@ -1364,8 +1367,10 @@ mod tests {
     }
 
     #[test]
-    fn build_loadable_index_empty_returns_empty() {
-        assert!(build_loadable_index(&[]).is_empty());
+    fn build_loadable_index_empty_emits_none_block() {
+        let result = build_loadable_index(&[]);
+        assert!(result.contains("<loadable-index>"), "got: {result}");
+        assert!(result.contains("(none enabled)"), "got: {result}");
     }
 
     #[test]
@@ -1424,8 +1429,8 @@ mod tests {
         ).await.unwrap();
 
         assert!(matches!(result, TurnResult::Done { .. }), "expected Done, got: {:?}", result);
-        if let TurnResult::Done { summary, .. } = result {
-            assert!(!summary.is_empty(), "summary should not be empty");
+        if let TurnResult::Done { message, .. } = result {
+            assert!(!message.is_empty(), "message should not be empty");
         }
     }
 
@@ -1542,7 +1547,7 @@ mod tests {
                     StreamChunk::ToolCallComplete {
                         tool_call_id: "tc2".into(),
                         tool_name: "output".into(),
-                        args: serde_json::json!({ "summary": "blocked" }),
+                        args: serde_json::json!({ "message": "blocked" }),
                     },
                     StreamChunk::Done,
                 ],
@@ -1610,7 +1615,7 @@ mod tests {
                     StreamChunk::ToolCallComplete {
                         tool_call_id: "tc2".into(),
                         tool_name: "output".into(),
-                        args: serde_json::json!({ "summary": "blocked" }),
+                        args: serde_json::json!({ "message": "blocked" }),
                     },
                     StreamChunk::Done,
                 ],

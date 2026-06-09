@@ -352,9 +352,10 @@ pub fn run_chat(
 ) -> anyhow::Result<()> {
     let gait_bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gait"));
 
-    let agent_path: Option<PathBuf> = agent_name.as_deref().map(|n| {
-        crate::agent_frontmatter::resolve_agent_path(&workspace, n)
-    });
+    let agent_path: PathBuf = match agent_name.as_deref() {
+        Some(n) => crate::agent_frontmatter::resolve_agent_path(&workspace, n),
+        None => workspace.join("agent.md"),
+    };
     let theme = Theme::detect();
 
     let mut session_id = new_session_id();
@@ -441,9 +442,7 @@ pub fn run_chat(
                 codebase.to_str().unwrap_or("."),
                 // No --auto: allow list governs execution
             ]);
-            if let Some(ref p) = agent_path {
-                cmd.args(["--agent", p.to_str().unwrap_or("")]);
-            }
+            cmd.args(["--agent", agent_path.to_str().unwrap_or("")]);
 
             let mut child = cmd
                 .stdout(Stdio::piped())
@@ -522,7 +521,7 @@ pub fn run_chat(
                     &choice,
                     &workspace,
                     &session_id,
-                    agent_path.as_deref(),
+                    Some(agent_path.as_path()),
                 ) {
                     eprintln!("[gait] warning: could not save permission: {e}");
                 }

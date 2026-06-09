@@ -42,8 +42,8 @@ impl HarnessBackend for NativeHarnessBackend {
     ) -> anyhow::Result<()> {
         let Some(assigner_id) = assigned_by else { return Ok(()); };
 
-        let summary = match result {
-            TurnResult::Done { summary, .. } => summary.chars().take(500).collect::<String>(),
+        let message = match result {
+            TurnResult::Done { message, .. } => message.chars().take(500).collect::<String>(),
             TurnResult::Permissions => "needs permissions approval".to_string(),
             TurnResult::Clarify { .. } => "paused for clarification".to_string(),
             TurnResult::Inform { .. } => "paused to inform user".to_string(),
@@ -59,7 +59,7 @@ impl HarnessBackend for NativeHarnessBackend {
         let event = AnyEvent::AgentUpdate {
             session_id: session_id.to_string(),
             status: status.to_string(),
-            summary,
+            summary: message,
             items: None,
             ts: now_ms(),
         };
@@ -121,7 +121,7 @@ mod tests {
     #[tokio::test]
     async fn noop_harness_always_succeeds() {
         let h = NoopHarnessBackend;
-        h.after_turn("s1", None, &TurnResult::Done { summary: "done".into(), result: None }).await.unwrap();
+        h.after_turn("s1", None, &TurnResult::Done { message: "done".into(), result: None }).await.unwrap();
         h.after_turn("s1", Some("s-parent"), &TurnResult::Permissions).await.unwrap();
     }
 
@@ -129,6 +129,6 @@ mod tests {
     async fn native_harness_with_no_assigned_by_is_noop() {
         let h = NativeHarnessBackend::new(std::path::PathBuf::from("/tmp/fake-ws"));
         // assigned_by = None → no action, returns Ok
-        h.after_turn("s1", None, &TurnResult::Done { summary: "done".into(), result: None }).await.unwrap();
+        h.after_turn("s1", None, &TurnResult::Done { message: "done".into(), result: None }).await.unwrap();
     }
 }

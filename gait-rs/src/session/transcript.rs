@@ -21,7 +21,7 @@ pub struct TurnUsage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TurnOutput {
-    pub summary: String,
+    pub message: String,
     pub result: Option<serde_json::Value>,
 }
 
@@ -465,7 +465,7 @@ mod tests {
                 usage: TurnUsage { input: 1, output: 1, cache_read: 0, cache_write: 0 },
                 codebase_hash: "a".into(),
                 codebase_dirty: false,
-                output: TurnOutput { summary: "done".into(), result: None },
+                output: TurnOutput { message: "done".into(), result: None },
                 ts: 1,
             },
             AnyEvent::UserTurn { content: "y".into(), from: None, context: None, ts: 2 },
@@ -473,7 +473,7 @@ mod tests {
                 usage: TurnUsage { input: 1, output: 1, cache_read: 0, cache_write: 0 },
                 codebase_hash: "a".into(),
                 codebase_dirty: false,
-                output: TurnOutput { summary: "done".into(), result: None },
+                output: TurnOutput { message: "done".into(), result: None },
                 ts: 3,
             },
         ];
@@ -560,7 +560,7 @@ mod tests {
             AnyEvent::Error { message: "e".into(), phase: "llm".into(), ts: 0 },
             AnyEvent::Permissions { items: vec![], ts: 0 },
             AnyEvent::PermissionsReply { from: "user".into(), items: vec![], ts: 0 },
-            AnyEvent::TurnComplete { usage: TurnUsage { input:1,output:1,cache_read:0,cache_write:0 }, codebase_hash:"h".into(), codebase_dirty:false, output: TurnOutput{summary:"s".into(),result:None}, ts:0 },
+            AnyEvent::TurnComplete { usage: TurnUsage { input:1,output:1,cache_read:0,cache_write:0 }, codebase_hash:"h".into(), codebase_dirty:false, output: TurnOutput{message:"s".into(),result:None}, ts:0 },
         ];
         for e in &events {
             let json = serde_json::to_string(e).unwrap();

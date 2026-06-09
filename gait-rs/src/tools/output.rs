@@ -5,8 +5,8 @@ use serde_json::Value;
 
 #[derive(Deserialize, JsonSchema)]
 struct OutputParams {
-    /// One-sentence summary of what was accomplished
-    summary: String,
+    /// What the user reads. Markdown OK, multi-paragraph OK, no length cap. Required, non-empty.
+    message: String,
     /// Structured JSON result — readable by workflow nodes ($node.output.field) or parent agents
     result: Option<Value>,
 }
@@ -50,7 +50,7 @@ mod tests {
     async fn execute_returns_recorded() {
         let tool = OutputTool::new();
         let result = tool.execute(serde_json::json!({
-            "summary": "added health endpoint"
+            "message": "added health endpoint"
         })).await.unwrap();
         assert_eq!(result, Value::String("recorded".into()));
     }
@@ -59,7 +59,7 @@ mod tests {
     async fn execute_with_result_still_returns_recorded() {
         let tool = OutputTool::new();
         let result = tool.execute(serde_json::json!({
-            "summary": "done",
+            "message": "done",
             "result": { "files_changed": ["a.rs"] }
         })).await.unwrap();
         assert_eq!(result, Value::String("recorded".into()));
@@ -76,7 +76,7 @@ mod tests {
         let tool = OutputTool::new();
         let schema = tool.parameters();
         let props = schema["properties"].as_object().unwrap();
-        assert!(props.contains_key("summary"), "schema missing summary field");
+        assert!(props.contains_key("message"), "schema missing summary field");
     }
 
     #[test]

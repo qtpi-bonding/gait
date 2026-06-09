@@ -79,8 +79,8 @@ pub async fn exec_prompt_node(
     }, provider, tools).await?;
 
     match result {
-        TurnResult::Done { summary, result } => Ok(NodeOutput {
-            text: summary, exit_code: None, json: result, routed_to: None,
+        TurnResult::Done { message, result } => Ok(NodeOutput {
+            text: message, exit_code: None, json: result, routed_to: None,
         }),
         TurnResult::Permissions => Ok(NodeOutput {
             text: "(permissions required)".into(), exit_code: None, json: None, routed_to: None,

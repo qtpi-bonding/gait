@@ -33,7 +33,7 @@ impl Provider for EchoProvider {
             yield Ok(StreamChunk::ToolCallComplete {
                 tool_call_id: "tc1".into(),
                 tool_name: "output".into(),
-                args: serde_json::json!({ "summary": "shell workflow done" }),
+                args: serde_json::json!({ "message": "shell workflow done" }),
             });
             yield Ok(StreamChunk::Done);
         }))
