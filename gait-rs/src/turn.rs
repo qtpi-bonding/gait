@@ -290,6 +290,62 @@ fn apply_parse_filter(raw: &str, ops: &serde_json::Value) -> String {
     current
 }
 
+const CURATE_SYSTEM_PROMPT: &str = "You are a curator. You have been given content and a curation task. Call annotate() exactly once with the relevant and irrelevant items. Do not call any other tool. Do not respond with text.";
+
+async fn apply_curate_filter(
+    raw: &str,
+    curate_prompt: &str,
+    workspace: &std::path::Path,
+    codebase_path: &std::path::Path,
+    model: &str,
+    provider: std::sync::Arc<dyn crate::provider::Provider>,
+) -> serde_json::Value {
+    use crate::tools::annotate::AnnotateTool;
+    use crate::session::transcript::read_events;
+
+    let session_id = crate::chat::new_session_id();
+    let task = format!(
+        "Content to curate:\n{}\n\n---\nCuration task: {}",
+        raw, curate_prompt
+    );
+
+    let _ = run_turn(
+        TurnOpts {
+            session_id: session_id.clone(),
+            task: Some(task),
+            auto: true,
+            workspace: workspace.to_path_buf(),
+            codebase_path: codebase_path.to_path_buf(),
+            allow: vec![],
+            deny: vec![],
+            system_prompt: CURATE_SYSTEM_PROMPT.to_string(),
+            model: model.to_string(),
+            mcp_registry: vec![],
+            mcp_clients: std::collections::HashMap::new(),
+            skill_registry: vec![],
+            config_enabled: std::collections::HashSet::new(),
+            max_iter: Some(1),
+            hooks: vec![],
+        },
+        provider,
+        vec![AnnotateTool::new().boxed()],
+    ).await;
+
+    let tx_path = workspace.join("sessions").join(&session_id).join("transcript.jsonl");
+    read_events(&tx_path)
+        .ok()
+        .and_then(|events| {
+            events.into_iter().rev().find_map(|e| {
+                if let crate::session::transcript::AnyEvent::ToolCall { name, input, .. } = e {
+                    if name == "annotate" { Some(input) } else { None }
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or_else(|| serde_json::json!({"relevant": [], "irrelevant": []}))
+}
+
 pub async fn run_turn(
     opts: TurnOpts,
     provider: Arc<dyn Provider>,
