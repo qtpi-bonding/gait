@@ -488,6 +488,12 @@ fn cmd_finish(argv: &[String]) {
         eprintln!("[gait] error: {}", e);
         std::process::exit(1);
     }
+    {
+        use gait_ai::git::rewind::{RewindRepo, GitRewindRepo};
+        if let Err(e) = GitRewindRepo.remove(&workspace, &session_id) {
+            eprintln!("warning: failed to remove rewind db for {}: {}", session_id, e);
+        }
+    }
     eprintln!("[gait] session {} merged into main", session_id);
 }
 
