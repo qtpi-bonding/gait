@@ -13,6 +13,7 @@ use crate::session::transcript::{
 use crate::session::context::reconstruct_messages_from_events;
 use crate::config::{McpToolDef, SkillDef};
 use crate::git;
+use crate::git::workspace::{WorkspaceRepo, GitWorkspaceRepo};
 use crate::mcp_client::McpClient;
 use crate::permission::{is_request_approved, find_matched_allow_pattern, is_request_denied, find_matched_deny_pattern};
 use grep_regex::RegexMatcher;
@@ -354,7 +355,7 @@ pub async fn run_turn(
     provider: Arc<dyn Provider>,
     tools: Vec<Box<dyn Tool>>,
 ) -> anyhow::Result<TurnResult> {
-    git::create_session_worktree(&opts.workspace, &opts.session_id)?;
+    GitWorkspaceRepo.create_session_worktree(&opts.workspace, &opts.session_id)?;
 
     let session_dir = opts.workspace.join("sessions").join(&opts.session_id);
     let tx_path = session_dir.join("transcript.jsonl");
@@ -645,7 +646,7 @@ pub async fn run_turn(
                 output: TurnOutput { message: message.clone(), result: None },
                 ts: now_ms(),
             })?;
-            git::commit_session(&opts.workspace, &opts.session_id,
+            GitWorkspaceRepo.commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): turn {}", opts.session_id, turn_n))?;
             for h in &opts.hooks { h.post_turn(); }
             return Ok(TurnResult::Done { message, result: None });
@@ -967,7 +968,7 @@ pub async fn run_turn(
                             output: TurnOutput { message: message.clone(), result: result.clone() },
                             ts: now_ms(),
                         })?;
-                        git::commit_session(&opts.workspace, &opts.session_id,
+                        GitWorkspaceRepo.commit_session(&opts.workspace, &opts.session_id,
                             &format!("session({}): turn {}", opts.session_id, turn_n))?;
                         for h in &opts.hooks { h.post_turn(); }
                         return Ok(TurnResult::Done { message, result });
@@ -1034,7 +1035,7 @@ pub async fn run_turn(
                 items: pending_permissions,
                 ts: now_ms(),
             })?;
-            git::commit_session(&opts.workspace, &opts.session_id,
+            GitWorkspaceRepo.commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): permissions", opts.session_id))?;
             for h in &opts.hooks { h.post_turn(); }
             return Ok(TurnResult::Permissions);
@@ -1042,13 +1043,13 @@ pub async fn run_turn(
 
         // Exit turn for clarify/inform — event already in transcript+stdout via emit_event
         if let Some(items) = clarify_signal.take() {
-            git::commit_session(&opts.workspace, &opts.session_id,
+            GitWorkspaceRepo.commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): clarify", opts.session_id))?;
             for h in &opts.hooks { h.post_turn(); }
             return Ok(TurnResult::Clarify { items });
         }
         if let Some(items) = inform_signal.take() {
-            git::commit_session(&opts.workspace, &opts.session_id,
+            GitWorkspaceRepo.commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): inform", opts.session_id))?;
             for h in &opts.hooks { h.post_turn(); }
             return Ok(TurnResult::Inform { items });
@@ -1717,7 +1718,7 @@ mod tests {
         let codebase = TempDir::new().unwrap();
         let session_id = "resume-exec-test";
         // Initialize the session worktree (creates the session dir + branch)
-        crate::git::create_session_worktree(ws.path(), session_id).unwrap();
+        GitWorkspaceRepo.create_session_worktree(ws.path(), session_id).unwrap();
         let session_dir = ws.path().join("sessions").join(session_id);
         let tx_path = session_dir.join("transcript.jsonl");
 
@@ -1800,7 +1801,7 @@ mod tests {
         let codebase = TempDir::new().unwrap();
         let session_id = "resume-deny-test";
         // Initialize the session worktree (creates the session dir + branch)
-        crate::git::create_session_worktree(ws.path(), session_id).unwrap();
+        GitWorkspaceRepo.create_session_worktree(ws.path(), session_id).unwrap();
         let session_dir = ws.path().join("sessions").join(session_id);
         let tx_path = session_dir.join("transcript.jsonl");
 
@@ -1902,7 +1903,7 @@ mod tests {
         init_git_repo(ws.path());
         let session_id = "sscope001";
         // Initialize the session worktree (creates the session dir + branch)
-        crate::git::create_session_worktree(ws.path(), session_id).unwrap();
+        GitWorkspaceRepo.create_session_worktree(ws.path(), session_id).unwrap();
         let tx_path = ws.path().join("sessions").join(session_id).join("transcript.jsonl");
 
         // Pre-write a transcript with a Permissions+PermissionsReply already in it,

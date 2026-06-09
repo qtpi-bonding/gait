@@ -7,6 +7,7 @@ use crate::session::transcript::{AnyEvent, InitSessionOpts, append_event, init_s
 use crate::session::session_json::{SessionJson, TokenTotals, write_session_json};
 use crate::git;
 use crate::git::codebase::CodebaseRepo;
+use crate::git::workspace::{WorkspaceRepo, GitWorkspaceRepo};
 use crate::config::load_config;
 use crate::tools::make_schema;
 
@@ -51,7 +52,7 @@ impl Tool for SpawnAgentTool {
 
         let new_id = crate::chat::new_session_id();
 
-        git::create_session_worktree(&self.workspace, &new_id)?;
+        GitWorkspaceRepo.create_session_worktree(&self.workspace, &new_id)?;
 
         let sj = SessionJson {
             id: new_id.clone(),
@@ -84,7 +85,7 @@ impl Tool for SpawnAgentTool {
             ts: now_ms(),
         })?;
 
-        git::commit_session(
+        GitWorkspaceRepo.commit_session(
             &self.workspace,
             &new_id,
             &format!("session({}): spawn from {}", new_id, self.current_session_id),

@@ -3,14 +3,13 @@ use std::sync::Arc;
 use gait_ai::{
     config::load_config,
     auth::resolve_api_key,
-    git,
     factory::load_provider,
     tools::builtin_tools,
     turn::{TurnOpts, run_turn},
     workflow::runner::{run_workflow, WorkflowRunOpts},
     HarnessBackend,
-    types::Tool,
 };
+use gait_ai::git::workspace::{WorkspaceRepo, GitWorkspaceRepo};
 
 fn extract_path_arg(args: &[String], flag: &str) -> Option<std::path::PathBuf> {
     args.windows(2)
@@ -387,7 +386,7 @@ fn cmd_init(argv: &[String]) {
     let repo_url = argv.first().filter(|a| !a.starts_with('-')).cloned();
     let workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
-    if let Err(e) = git::init_workspace(&workspace) {
+    if let Err(e) = GitWorkspaceRepo.init_workspace(&workspace) {
         eprintln!("[gait] git init failed: {}", e);
         std::process::exit(1);
     }
@@ -484,7 +483,7 @@ fn cmd_finish(argv: &[String]) {
             std::process::exit(1);
         }
     };
-    if let Err(e) = git::finish_session(&workspace, &session_id) {
+    if let Err(e) = GitWorkspaceRepo.finish_session(&workspace, &session_id) {
         eprintln!("[gait] error: {}", e);
         std::process::exit(1);
     }
@@ -498,7 +497,7 @@ fn cmd_sessions(argv: &[String]) {
         if argv[i] == "--workspace" { i += 1; if let Some(p) = argv.get(i) { workspace = std::path::PathBuf::from(p); } }
         i += 1;
     }
-    match git::list_active_sessions(&workspace) {
+    match GitWorkspaceRepo.list_active_sessions(&workspace) {
         Ok(sessions) if sessions.is_empty() => println!("No active sessions."),
         Ok(sessions) => { for id in sessions { println!("{}", id); } }
         Err(e) => { eprintln!("[gait] error: {}", e); std::process::exit(1); }
@@ -631,7 +630,7 @@ async fn cmd_workflow_run(argv: &[String], workspace: PathBuf) {
 }
 
 fn cmd_workflow_list(_argv: &[String], workspace: PathBuf) {
-    let sessions = gait_ai::git::list_active_sessions(&workspace).unwrap_or_default();
+    let sessions = gait_ai::git::workspace::GitWorkspaceRepo.list_active_sessions(&workspace).unwrap_or_default();
     let mut found = false;
     for session_id in &sessions {
         if let Some(progress) = gait_ai::workflow::progress::read_progress(&workspace, session_id) {
@@ -707,7 +706,7 @@ fn cmd_workflow_abort(argv: &[String], workspace: PathBuf) {
         error: "user aborted".into(),
         ts: gait_ai::session::transcript::now_ms(),
     });
-    let _ = gait_ai::git::commit_session(&workspace, &workflow_id, "workflow: aborted");
+    let _ = gait_ai::git::workspace::GitWorkspaceRepo.commit_session(&workspace, &workflow_id, "workflow: aborted");
     println!("[gait workflow] aborted {}", workflow_id);
 }
 

@@ -1,0 +1,349 @@
+use std::path::Path;
+use git2::{Repository, BranchType, IndexAddOption, Signature};
+use super::{with_gait_trailer};
+
+pub trait WorkspaceRepo: Send + Sync {
+    fn init_workspace(&self, workspace: &Path) -> anyhow::Result<()>;
+    fn create_session_worktree(&self, workspace: &Path, session_id: &str) -> anyhow::Result<()>;
+    fn commit_session(&self, workspace: &Path, session_id: &str, message: &str) -> anyhow::Result<()>;
+    fn list_active_sessions(&self, workspace: &Path) -> anyhow::Result<Vec<String>>;
+    fn finish_session(&self, workspace: &Path, session_id: &str) -> anyhow::Result<()>;
+    fn create_branch_worktree(&self, workspace: &Path, base_branch: &str, new_branch: &str, worktree_path: &Path) -> anyhow::Result<()>;
+    fn remove_branch_worktree(&self, workspace: &Path, worktree_path: &Path) -> anyhow::Result<()>;
+    fn merge_branch_ff(&self, workspace: &Path, target_branch: &str, source_branch: &str) -> anyhow::Result<()>;
+}
+
+pub struct GitWorkspaceRepo;
+
+impl WorkspaceRepo for GitWorkspaceRepo {
+    fn init_workspace(&self, workspace: &Path) -> anyhow::Result<()> {
+        // git init — no-op if already a repo
+        match Repository::init(workspace) {
+            Ok(_) | Err(_) => {}
+        }
+        Ok(())
+    }
+
+    fn create_session_worktree(&self, workspace: &Path, session_id: &str) -> anyhow::Result<()> {
+        let sessions_dir = workspace.join("sessions");
+        let session_dir = sessions_dir.join(session_id);
+
+        // Already a worktree — idempotent
+        if session_dir.join(".git").exists() {
+            return Ok(());
+        }
+
+        // Create sessions directory (ignore error if it already exists)
+        let _ = std::fs::create_dir_all(&sessions_dir);
+
+        let repo = Repository::open(workspace)?;
+
+        let branch_name = format!("session/{}", session_id);
+
+        // Re-attach if branch exists but dir was cleaned
+        if let Ok(branch) = repo.find_branch(&branch_name, BranchType::Local) {
+            let reference = branch.into_reference();
+            let mut opts = git2::WorktreeAddOptions::new();
+            opts.reference(Some(&reference));
+            repo.worktree(session_id, &session_dir, Some(&opts))?;
+            return Ok(());
+        }
+
+        // Fresh: create branch from HEAD, add worktree
+        let head_commit = repo.head()?.peel_to_commit()?;
+        let branch = repo.branch(&branch_name, &head_commit, false)?;
+        let reference = branch.into_reference();
+        let mut opts = git2::WorktreeAddOptions::new();
+        opts.reference(Some(&reference));
+        repo.worktree(session_id, &session_dir, Some(&opts))?;
+
+        // Initial commit: .gitignore with "lock" and "codebase.git/"
+        let wt_repo = Repository::open(&session_dir)?;
+        std::fs::write(session_dir.join(".gitignore"), "lock\ncodebase.git/\n")?;
+        let sig = wt_repo.signature()
+            .or_else(|_| Signature::now("gait", "gait@localhost"))?;
+        let mut index = wt_repo.index()?;
+        index.add_path(Path::new(".gitignore"))?;
+        index.write()?;
+        let tree_id = index.write_tree()?;
+        let tree = wt_repo.find_tree(tree_id)?;
+        let parent = wt_repo.head()?.peel_to_commit()?;
+        wt_repo.commit(Some("HEAD"), &sig, &sig,
+            &format!("session({}): init", session_id), &tree, &[&parent])?;
+
+        Ok(())
+    }
+
+    fn commit_session(&self, workspace: &Path, session_id: &str, message: &str) -> anyhow::Result<()> {
+        let session_dir = workspace.join("sessions").join(session_id);
+        let repo = Repository::open(&session_dir)?;
+        let sig = repo.signature()
+            .or_else(|_| Signature::now("gait", "gait@localhost"))?;
+        let mut index = repo.index()?;
+        index.add_all(["."].iter(), IndexAddOption::DEFAULT, None)?;
+        index.write()?;
+        let tree_id = index.write_tree()?;
+        // Nothing to commit if tree matches HEAD
+        let head_commit = repo.head()?.peel_to_commit()?;
+        if head_commit.tree_id() == tree_id {
+            return Ok(());
+        }
+        let tree = repo.find_tree(tree_id)?;
+        repo.commit(Some("HEAD"), &sig, &sig, &with_gait_trailer(message), &tree, &[&head_commit])?;
+        Ok(())
+    }
+
+    fn list_active_sessions(&self, workspace: &Path) -> anyhow::Result<Vec<String>> {
+        let repo = Repository::open(workspace)?;
+        let main_oid = repo.find_branch("main", BranchType::Local)
+            .or_else(|_| repo.find_branch("master", BranchType::Local))?
+            .get().peel_to_commit()?.id();
+        let mut sessions = vec![];
+        for item in repo.branches(Some(BranchType::Local))? {
+            let (branch, _) = item?;
+            let name = branch.name()?.unwrap_or("").to_string();
+            let Some(id) = name.strip_prefix("session/") else { continue };
+            let branch_oid = branch.get().peel_to_commit()?.id();
+            // Not merged = main is NOT a descendant of branch
+            let is_merged = repo.graph_descendant_of(main_oid, branch_oid).unwrap_or(false);
+            if !is_merged {
+                sessions.push(id.to_string());
+            }
+        }
+        Ok(sessions)
+    }
+
+    fn finish_session(&self, workspace: &Path, session_id: &str) -> anyhow::Result<()> {
+        let repo = Repository::open(workspace)?;
+        let branch_name = format!("session/{}", session_id);
+
+        // If no such branch, nothing to do
+        if repo.find_branch(&branch_name, BranchType::Local).is_err() {
+            return Ok(());
+        }
+
+        // Remove the worktree directory if it exists (required before branch ops).
+        // Prune worktree registration first (while dir still exists), then remove the dir.
+        let session_dir = workspace.join("sessions").join(session_id);
+        if session_dir.exists() {
+            if let Ok(wt) = repo.find_worktree(session_dir.to_str().unwrap_or("")) {
+                let mut o = git2::WorktreePruneOptions::new();
+                o.valid(true);
+                let _ = wt.prune(Some(&mut o));
+            }
+            let _ = std::fs::remove_dir_all(&session_dir);
+        }
+
+        // Merge session branch into HEAD
+        let branch_ref = repo.find_branch(&branch_name, BranchType::Local)?
+            .into_reference();
+        let branch_commit = branch_ref.peel_to_commit()?;
+        let annotated = repo.find_annotated_commit(branch_commit.id())?;
+
+        let mut merge_opts = git2::MergeOptions::new();
+        let mut checkout_opts = git2::build::CheckoutBuilder::new();
+        repo.merge(&[&annotated], Some(&mut merge_opts), Some(&mut checkout_opts))?;
+
+        // Commit the merge
+        let sig = repo.signature()
+            .or_else(|_| Signature::now("gait", "gait@localhost"))?;
+        let mut index = repo.index()?;
+        if index.has_conflicts() {
+            repo.cleanup_state()?;
+            anyhow::bail!("session {} has merge conflicts with main; resolve manually", session_id);
+        }
+        index.write()?;
+        let tree_id = index.write_tree()?;
+        let tree = repo.find_tree(tree_id)?;
+        let head_commit = repo.head()?.peel_to_commit()?;
+        repo.commit(
+            Some("HEAD"),
+            &sig, &sig,
+            &with_gait_trailer(&format!("session({}): finish", session_id)),
+            &tree,
+            &[&head_commit, &branch_commit],
+        )?;
+        repo.cleanup_state()?;
+
+        // Delete the session branch
+        let mut b = repo.find_branch(&branch_name, BranchType::Local)?;
+        b.delete()?;
+
+        Ok(())
+    }
+
+    fn create_branch_worktree(&self, workspace: &Path, base_branch: &str, new_branch: &str, worktree_path: &Path) -> anyhow::Result<()> {
+        let repo = Repository::open(workspace)?;
+        let base = repo.find_branch(base_branch, BranchType::Local)?;
+        let base_commit = base.into_reference().peel_to_commit()?;
+        let branch = repo.branch(new_branch, &base_commit, false)?;
+        let reference = branch.into_reference();
+        let mut opts = git2::WorktreeAddOptions::new();
+        opts.reference(Some(&reference));
+        let wt_name = new_branch.replace('/', "-");
+        repo.worktree(&wt_name, worktree_path, Some(&opts))?;
+        Ok(())
+    }
+
+    fn remove_branch_worktree(&self, workspace: &Path, worktree_path: &Path) -> anyhow::Result<()> {
+        if worktree_path.exists() {
+            std::fs::remove_dir_all(worktree_path)?;
+        }
+        let repo = Repository::open(workspace)?;
+        let mut prune_opts = git2::WorktreePruneOptions::new();
+        prune_opts.valid(true);
+        let canonical = worktree_path.canonicalize().unwrap_or_else(|_| worktree_path.to_path_buf());
+        for name in repo.worktrees()?.iter().flatten() {
+            if let Ok(wt) = repo.find_worktree(name) {
+                let wt_canonical = wt.path().canonicalize().unwrap_or_else(|_| wt.path().to_path_buf());
+                if wt_canonical == canonical {
+                    wt.prune(Some(&mut prune_opts))?;
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn merge_branch_ff(&self, workspace: &Path, target_branch: &str, source_branch: &str) -> anyhow::Result<()> {
+        let repo = Repository::open(workspace)?;
+        let source = repo.find_branch(source_branch, BranchType::Local)?;
+        let source_oid = source.into_reference().peel_to_commit()?.id();
+        let target_ref = format!("refs/heads/{}", target_branch);
+        repo.reference(&target_ref, source_oid, true, "workflow ff-merge")?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn init_repo(dir: &Path) -> git2::Repository {
+        let repo = git2::Repository::init(dir).unwrap();
+        // git2 needs user config for commits; set locally
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "test").unwrap();
+        cfg.set_str("user.email", "test@test.com").unwrap();
+        // Create initial commit on main so branch ops work
+        let sig = git2::Signature::now("test", "test@test.com").unwrap();
+        let tree_id = {
+            let mut index = repo.index().unwrap();
+            index.write_tree().unwrap()
+        };
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        drop(tree);
+        // Rename branch to main
+        let _ = repo.find_branch("master", git2::BranchType::Local)
+            .or_else(|_| repo.find_branch("main", git2::BranchType::Local))
+            .and_then(|mut b| { b.rename("main", false)?; Ok(()) });
+        repo
+    }
+
+    #[test]
+    fn create_session_worktree_creates_dir_and_branch() {
+        let ws = TempDir::new().unwrap();
+        init_repo(ws.path());
+        let git_ws = GitWorkspaceRepo;
+        git_ws.create_session_worktree(ws.path(), "sabc1234").unwrap();
+        assert!(ws.path().join("sessions/sabc1234").exists());
+        assert!(ws.path().join("sessions/sabc1234/.git").exists());
+    }
+
+    #[test]
+    fn create_session_worktree_idempotent() {
+        let ws = TempDir::new().unwrap();
+        init_repo(ws.path());
+        let git_ws = GitWorkspaceRepo;
+        git_ws.create_session_worktree(ws.path(), "sabc1234").unwrap();
+        git_ws.create_session_worktree(ws.path(), "sabc1234").unwrap(); // no error
+    }
+
+    #[test]
+    fn commit_session_creates_commit() {
+        let ws = TempDir::new().unwrap();
+        init_repo(ws.path());
+        let git_ws = GitWorkspaceRepo;
+        git_ws.create_session_worktree(ws.path(), "sabc1234").unwrap();
+        let tx = ws.path().join("sessions/sabc1234/transcript.jsonl");
+        std::fs::write(&tx, "{\"type\":\"session_start\"}\n").unwrap();
+        git_ws.commit_session(ws.path(), "sabc1234", "session(sabc1234): turn 1").unwrap();
+        // Verify: repo in session dir has 2+ commits (init + our commit)
+        let repo = git2::Repository::open(ws.path().join("sessions/sabc1234")).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(head.message().unwrap(), "session(sabc1234): turn 1\n\nCo-Authored-By: gait <gait@localhost>");
+    }
+
+    #[test]
+    fn list_active_sessions_returns_unmerged() {
+        let ws = TempDir::new().unwrap();
+        init_repo(ws.path());
+        let git_ws = GitWorkspaceRepo;
+        git_ws.create_session_worktree(ws.path(), "sabc1234").unwrap();
+        let sessions = git_ws.list_active_sessions(ws.path()).unwrap();
+        assert!(sessions.contains(&"sabc1234".to_string()), "got: {:?}", sessions);
+    }
+
+    #[test]
+    fn finish_session_merges_into_main() {
+        let ws = TempDir::new().unwrap();
+        init_repo(ws.path());
+        let git_ws = GitWorkspaceRepo;
+        git_ws.create_session_worktree(ws.path(), "sfin001").unwrap();
+        // Write a file in the session so there's something to merge
+        std::fs::write(ws.path().join("sessions/sfin001/result.txt"), "done").unwrap();
+        git_ws.commit_session(ws.path(), "sfin001", "session(sfin001): turn 1").unwrap();
+        git_ws.finish_session(ws.path(), "sfin001").unwrap();
+        // After finish: session branch should be merged into main
+        let repo = git2::Repository::open(ws.path()).unwrap();
+        let sessions = git_ws.list_active_sessions(ws.path()).unwrap();
+        assert!(!sessions.contains(&"sfin001".to_string()), "should be merged: {:?}", sessions);
+        // The merge commit should mention the session id
+        let msg = repo.head().unwrap().peel_to_commit().unwrap().message().unwrap().to_string();
+        assert!(msg.contains("sfin001"), "expected merge commit msg to contain session id, got: {msg}");
+    }
+
+    #[test]
+    fn init_workspace_creates_git_repo() {
+        let dir = TempDir::new().unwrap();
+        let git_ws = GitWorkspaceRepo;
+        git_ws.init_workspace(dir.path()).unwrap();
+        assert!(dir.path().join(".git").exists());
+        // Idempotent — calling again does not error
+        git_ws.init_workspace(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn finish_session_noop_when_not_found() {
+        let ws = TempDir::new().unwrap();
+        init_repo(ws.path());
+        let git_ws = GitWorkspaceRepo;
+        // Should not error for a non-existent session
+        git_ws.finish_session(ws.path(), "snonexistent").unwrap();
+    }
+
+    #[test]
+    fn create_and_remove_branch_worktree_works() {
+        let ws = TempDir::new().unwrap();
+        let repo = Repository::init(ws.path()).unwrap();
+        let sig = git2::Signature::now("t", "t@t.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        // Rename to main
+        repo.find_branch("master", BranchType::Local)
+            .and_then(|mut b| { b.rename("main", false)?; Ok(()) }).ok();
+
+        let git_ws = GitWorkspaceRepo;
+        let wt_path = ws.path().join("branches").join("feat");
+        // Create the parent directory — git2 worktree creates only the final component
+        std::fs::create_dir_all(wt_path.parent().unwrap()).unwrap();
+        git_ws.create_branch_worktree(ws.path(), "main", "branch/feat", &wt_path).unwrap();
+        assert!(wt_path.join(".git").exists());
+
+        git_ws.remove_branch_worktree(ws.path(), &wt_path).unwrap();
+        assert!(!wt_path.join(".git").exists());
+    }
+}
