@@ -69,6 +69,8 @@ pub struct GaitConfig {
     #[serde(default)]
     pub allow: Vec<String>,
     #[serde(default)]
+    pub deny: Vec<String>,
+    #[serde(default)]
     pub tools: Vec<ConfigTool>,
     #[serde(default = "default_compaction_threshold")]
     pub compaction_threshold: f64,
@@ -90,6 +92,7 @@ impl Default for GaitConfig {
                 "read".into(), "glob".into(), "grep".into(), "ls".into(),
                 "clarify".into(), "inform".into(),
             ],
+            deny: vec![],
             tools: vec![],
             compaction_threshold: 0.8,
             mcp_servers: vec![],
@@ -148,6 +151,33 @@ pub fn append_allow_pattern(workspace: &Path, pattern: &str) -> anyhow::Result<(
         .ok_or_else(|| anyhow::anyhow!("allow field is not an array"))?;
     if !allow.iter().any(|v| v.as_str() == Some(pattern)) {
         allow.push(serde_json::Value::String(pattern.to_string()));
+    }
+    let pretty = serde_json::to_string_pretty(&serde_json::Value::Object(obj))?;
+    std::fs::write(&path, pretty + "\n")?;
+    Ok(())
+}
+
+pub fn append_deny_pattern(workspace: &Path, pattern: &str) -> anyhow::Result<()> {
+    let path = workspace.join("gait.jsonc");
+    let mut obj: serde_json::Map<String, serde_json::Value> = if path.exists() {
+        let raw = std::fs::read_to_string(&path)?;
+        let stripped = strip_jsonc_comments(&raw);
+        match serde_json::from_str::<serde_json::Value>(&stripped) {
+            Ok(serde_json::Value::Object(m)) => m,
+            Ok(_) => anyhow::bail!("gait.jsonc root is not a JSON object"),
+            Err(e) => anyhow::bail!("gait.jsonc parse error: {e}"),
+        }
+    } else {
+        let mut m = serde_json::Map::new();
+        m.insert("model".into(), serde_json::Value::String(DEFAULT_MODEL.into()));
+        m
+    };
+    let deny = obj.entry("deny")
+        .or_insert_with(|| serde_json::Value::Array(vec![]))
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("deny field is not an array"))?;
+    if !deny.iter().any(|v| v.as_str() == Some(pattern)) {
+        deny.push(serde_json::Value::String(pattern.to_string()));
     }
     let pretty = serde_json::to_string_pretty(&serde_json::Value::Object(obj))?;
     std::fs::write(&path, pretty + "\n")?;
@@ -337,5 +367,45 @@ mod tests {
         assert_eq!(cfg.mcp_servers[0].name, "slack");
         assert_eq!(cfg.mcp_servers[0].spawn.as_deref(), Some("node mcp-slack.js"));
         assert_eq!(cfg.skills.len(), 1);
+    }
+
+    #[test]
+    fn parses_deny_list() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("gait.jsonc"), r#"
+{
+  "model": "minimax/MiniMax-M1",
+  "allow": ["read"],
+  "deny": ["shell:rm *", "shell:git push *"]
+}
+"#).unwrap();
+        let cfg = load_config(dir.path());
+        assert_eq!(cfg.deny, vec!["shell:rm *", "shell:git push *"]);
+    }
+
+    #[test]
+    fn deny_defaults_to_empty() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M1","allow":[]}"#).unwrap();
+        let cfg = load_config(dir.path());
+        assert!(cfg.deny.is_empty());
+    }
+
+    #[test]
+    fn append_deny_pattern_adds_to_deny() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M1","allow":[],"deny":[]}"#).unwrap();
+        append_deny_pattern(dir.path(), "shell:rm *").unwrap();
+        let cfg = load_config(dir.path());
+        assert!(cfg.deny.contains(&"shell:rm *".to_string()));
+    }
+
+    #[test]
+    fn append_deny_pattern_deduplicates() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M1","allow":[],"deny":["shell:rm *"]}"#).unwrap();
+        append_deny_pattern(dir.path(), "shell:rm *").unwrap();
+        let cfg = load_config(dir.path());
+        assert_eq!(cfg.deny.iter().filter(|p| p.as_str() == "shell:rm *").count(), 1);
     }
 }
