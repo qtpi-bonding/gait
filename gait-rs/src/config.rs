@@ -80,9 +80,15 @@ pub struct GaitConfig {
     pub skills: Vec<SkillDef>,
     #[serde(default)]
     pub wasm_plugins: Vec<WasmPluginDef>,
+    /// Max retries when an LLM result fails output_schema validation.
+    /// The retry loop is a future feature; this just plumbs the knob from gait.jsonc.
+    #[serde(default = "default_output_schema_retries")]
+    pub output_schema_retries: u8,
 }
 
 fn default_compaction_threshold() -> f64 { 0.8 }
+
+fn default_output_schema_retries() -> u8 { 3 }
 
 impl Default for GaitConfig {
     fn default() -> Self {
@@ -98,6 +104,7 @@ impl Default for GaitConfig {
             mcp_servers: vec![],
             skills: vec![],
             wasm_plugins: vec![],
+            output_schema_retries: 3,
         }
     }
 }
@@ -407,5 +414,18 @@ mod tests {
         append_deny_pattern(dir.path(), "shell:rm *").unwrap();
         let cfg = load_config(dir.path());
         assert_eq!(cfg.deny.iter().filter(|p| p.as_str() == "shell:rm *").count(), 1);
+    }
+
+    #[test]
+    fn output_schema_retries_defaults_to_3() {
+        let cfg = GaitConfig::default();
+        assert_eq!(cfg.output_schema_retries, 3);
+    }
+
+    #[test]
+    fn output_schema_retries_parses_from_json() {
+        let json = r#"{"model":"test","output_schema_retries":5}"#;
+        let cfg: GaitConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.output_schema_retries, 5);
     }
 }

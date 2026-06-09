@@ -368,6 +368,7 @@ async fn cmd_run(argv: &[String]) {
             max_iter: None,
             hooks: vec![],
             repos,
+            output_schema_retries: config.output_schema_retries,
         },
         provider,
         tools,

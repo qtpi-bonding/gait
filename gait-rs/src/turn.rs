@@ -41,6 +41,33 @@ pub struct TurnOpts {
     pub hooks: Vec<Box<dyn Hook>>,
     /// Injected git repos (codebase/workspace/rewind).
     pub repos: crate::git::Repos,
+    /// Max retries when result fails output_schema validation. Default 3 (from gait.jsonc).
+    /// Stub — actual retry loop is a future feature.
+    pub output_schema_retries: u8,
+}
+
+impl Default for TurnOpts {
+    fn default() -> Self {
+        Self {
+            session_id: String::new(),
+            task: None,
+            auto: false,
+            workspace: PathBuf::new(),
+            codebase_path: PathBuf::new(),
+            allow: Vec::new(),
+            deny: Vec::new(),
+            system_prompt: String::new(),
+            model: String::new(),
+            mcp_registry: Vec::new(),
+            mcp_clients: HashMap::new(),
+            skill_registry: Vec::new(),
+            config_enabled: std::collections::HashSet::new(),
+            max_iter: None,
+            hooks: Vec::new(),
+            repos: crate::git::Repos::production(),
+            output_schema_retries: 3,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -355,6 +382,7 @@ async fn apply_curate_filter(
             max_iter: Some(1),
             hooks: vec![],
             repos: repos.clone(),
+            ..TurnOpts::default()
         },
         provider,
         vec![AnnotateTool::new().boxed()],
@@ -1212,7 +1240,8 @@ mod tests {
                 max_iter: None,
                 hooks: vec![],
                 repos: crate::git::Repos::production(),
-            },
+            ..TurnOpts::default()
+        },
             provider,
             vec![Box::new(read_tool)],
         ).await.unwrap();
@@ -1282,7 +1311,8 @@ mod tests {
                 max_iter: None,
                 hooks: vec![],
                 repos: crate::git::Repos::production(),
-            },
+            ..TurnOpts::default()
+        },
             provider,
             vec![output_tool.boxed()],
         ).await.unwrap();
@@ -1338,7 +1368,8 @@ mod tests {
                 max_iter: None,
                 hooks: vec![],
                 repos: crate::git::Repos::production(),
-            },
+            ..TurnOpts::default()
+        },
             provider,
             vec![output_tool.boxed()],
         ).await.unwrap();
@@ -1388,7 +1419,8 @@ mod tests {
                 max_iter: None,
                 hooks: vec![],
                 repos: crate::git::Repos::production(),
-            },
+            ..TurnOpts::default()
+        },
             provider,
             vec![],
         ).await.unwrap();
@@ -1480,7 +1512,8 @@ mod tests {
                 max_iter: None,
                 hooks: vec![],
                 repos: crate::git::Repos::production(),
-            },
+            ..TurnOpts::default()
+        },
             provider,
             vec![],
         ).await.unwrap();
@@ -1528,7 +1561,8 @@ mod tests {
                 max_iter: None,
                 hooks: vec![],
                 repos: crate::git::Repos::production(),
-            },
+            ..TurnOpts::default()
+        },
             provider,
             vec![],
         ).await.unwrap();
@@ -1570,7 +1604,8 @@ mod tests {
                 max_iter: None,
                 hooks: vec![],
                 repos: crate::git::Repos::production(),
-            },
+            ..TurnOpts::default()
+        },
             provider,
             vec![],
         ).await.unwrap();
@@ -1638,7 +1673,8 @@ mod tests {
                 max_iter: None,
                 hooks: vec![],
                 repos: crate::git::Repos::production(),
-            },
+            ..TurnOpts::default()
+        },
             provider,
             vec![shell_tool.boxed(), output_tool.boxed()],
         ).await.unwrap();
@@ -1708,7 +1744,8 @@ mod tests {
                 max_iter: None,
                 hooks: vec![],
                 repos: crate::git::Repos::production(),
-            },
+            ..TurnOpts::default()
+        },
             provider,
             vec![shell_tool.boxed(), output_tool.boxed()],
         ).await.unwrap();
@@ -1837,7 +1874,8 @@ mod tests {
                 max_iter: None,
                 hooks: vec![],
                 repos: crate::git::Repos::production(),
-            },
+            ..TurnOpts::default()
+        },
             provider,
             vec![Box::new(shell_tool)],
         ).await.unwrap();
@@ -1917,7 +1955,8 @@ mod tests {
                 max_iter: None,
                 hooks: vec![],
                 repos: crate::git::Repos::production(),
-            },
+            ..TurnOpts::default()
+        },
             provider,
             vec![Box::new(shell_tool)],
         ).await.unwrap();
@@ -2033,7 +2072,8 @@ mod tests {
                 max_iter: None,
                 hooks: vec![],
                 repos: crate::git::Repos::production(),
-            },
+            ..TurnOpts::default()
+        },
             provider,
             vec![Box::new(shell_tool)],
         ).await.unwrap();
@@ -2170,7 +2210,8 @@ mod tests {
                 max_iter: None,
                 hooks: vec![],
                 repos: crate::git::Repos::production(),
-            },
+            ..TurnOpts::default()
+        },
             provider,
             vec![],
         ).await.unwrap();
@@ -2237,7 +2278,8 @@ mod tests {
                 max_iter: None,
                 hooks: vec![],
                 repos: crate::git::Repos::production(),
-            },
+            ..TurnOpts::default()
+        },
             provider,
             vec![],
         ).await.unwrap();
@@ -2311,7 +2353,8 @@ mod tests {
                 max_iter: None,
                 hooks: vec![],
                 repos,
-            },
+            ..TurnOpts::default()
+        },
             provider,
             vec![],
         ).await.unwrap();

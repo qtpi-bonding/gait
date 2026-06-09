@@ -78,6 +78,7 @@ pub async fn exec_prompt_node(
         max_iter: None,
         hooks: vec![],
         repos,
+        output_schema_retries: config.output_schema_retries,
     }, provider, tools).await?;
 
     match result {

@@ -93,6 +93,7 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
             max_iter: None,
             hooks: vec![],
             repos: gait_ai::git::Repos::production(),
+            ..TurnOpts::default()
         },
         provider,
         tools,
@@ -170,6 +171,7 @@ async fn run_turn_permissions_result_integration() {
             max_iter: None,
             hooks: vec![],
             repos: gait_ai::git::Repos::production(),
+            ..TurnOpts::default()
         },
         provider,
         vec![],
