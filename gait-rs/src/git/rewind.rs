@@ -54,8 +54,36 @@ impl RewindRepo for GitRewindRepo {
         Ok(())
     }
 
-    fn checkpoint(&self, _workspace: &Path, _session_id: &str, _codebase: &Path, _turn: u32) -> anyhow::Result<String> {
-        unimplemented!("Task 5")
+    fn checkpoint(&self, workspace: &Path, session_id: &str, codebase: &Path, turn: u32) -> anyhow::Result<String> {
+        let git_dir = rewind_git_dir(workspace, session_id);
+        if !git_dir.join("HEAD").exists() {
+            return Ok(String::new()); // no shadow (non-git codebase) — rewind unavailable
+        }
+
+        let shadow = Repository::open_bare(&git_dir)?;
+        shadow.set_workdir(codebase, false)?;
+
+        let mut index = shadow.index()?;
+        // Equivalent of `git add -A`. libgit2 always skips a `.git` dir at the
+        // worktree root; info/exclude `/.git/` is extra insurance.
+        index.add_all(["."].iter(), IndexAddOption::DEFAULT, None)?;
+        index.write()?;
+        let tree_id = index.write_tree()?;
+
+        // Clean check: if the tree matches HEAD's tree, make no new commit.
+        let parent = shadow.head().ok().and_then(|h| h.peel_to_commit().ok());
+        if let Some(ref p) = parent {
+            if p.tree_id() == tree_id {
+                return Ok(p.id().to_string());
+            }
+        }
+
+        let tree = shadow.find_tree(tree_id)?;
+        let sig = signature_or_default(&shadow)?;
+        let msg = format!("rewind({}): turn {}", session_id, turn);
+        let parents: Vec<&git2::Commit> = parent.iter().collect();
+        let oid = shadow.commit(Some("HEAD"), &sig, &sig, &msg, &tree, &parents)?;
+        Ok(oid.to_string())
     }
     fn rewind_to(&self, _workspace: &Path, _session_id: &str, _codebase: &Path, _sha: &str) -> anyhow::Result<()> {
         unimplemented!("Task 6")
@@ -132,5 +160,52 @@ mod tests {
         let cb = TempDir::new().unwrap(); // not a git repo
         GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
         assert!(!rewind_git_dir(ws.path(), &id).join("HEAD").exists());
+    }
+
+    #[test]
+    fn checkpoint_after_edit_returns_fresh_sha() {
+        let (ws, cb, id) = fixture();
+        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
+        std::fs::write(cb.path().join("a.txt"), "two\n").unwrap();
+        let sha = GitRewindRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
+        assert_eq!(sha.len(), 40);
+    }
+
+    #[test]
+    fn checkpoint_no_change_returns_same_sha() {
+        let (ws, cb, id) = fixture();
+        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
+        std::fs::write(cb.path().join("a.txt"), "two\n").unwrap();
+        let first = GitRewindRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
+        let second = GitRewindRepo.checkpoint(ws.path(), &id, cb.path(), 2).unwrap();
+        assert_eq!(first, second, "no change -> no new commit");
+    }
+
+    #[test]
+    fn checkpoint_captures_shell_style_changes_and_ignores_dotgit() {
+        let (ws, cb, id) = fixture();
+        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
+        std::fs::write(cb.path().join("created.txt"), "x\n").unwrap();
+        std::fs::remove_file(cb.path().join("a.txt")).unwrap();
+        let sha = GitRewindRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
+
+        let git_dir = rewind_git_dir(ws.path(), &id);
+        let shadow = Repository::open_bare(&git_dir).unwrap();
+        let oid = Oid::from_str(&sha).unwrap();
+        let tree = shadow.find_commit(oid).unwrap().tree().unwrap();
+        assert!(tree.get_name("created.txt").is_some(), "created file should be captured");
+        assert!(tree.get_name("a.txt").is_none(), "deleted file should be gone");
+        assert!(tree.get_name(".git").is_none(), "codebase .git must never be tracked");
+    }
+
+    #[test]
+    fn checkpoint_noop_when_no_shadow() {
+        let ws = TempDir::new().unwrap();
+        let id = "snogit2".to_string();
+        std::fs::create_dir_all(ws.path().join("sessions").join(&id)).unwrap();
+        let cb = TempDir::new().unwrap();
+        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
+        let sha = GitRewindRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
+        assert!(sha.is_empty());
     }
 }
