@@ -6,6 +6,7 @@ use crate::types::Tool;
 use crate::session::transcript::{AnyEvent, InitSessionOpts, append_event, init_session, now_ms};
 use crate::session::session_json::{SessionJson, TokenTotals, write_session_json};
 use crate::git;
+use crate::git::codebase::CodebaseRepo;
 use crate::config::load_config;
 use crate::tools::make_schema;
 
@@ -64,7 +65,8 @@ impl Tool for SpawnAgentTool {
         write_session_json(&self.workspace, &sj)?;
 
         let config = load_config(&self.workspace);
-        let codebase_hash = git::get_codebase_hash(&self.codebase_path);
+        let codebase_hash = crate::git::codebase::GitCodebaseRepo
+            .head_hash(&self.codebase_path);
         let tx_path = self.workspace.join("sessions").join(&new_id).join("transcript.jsonl");
 
         init_session(InitSessionOpts {

@@ -361,8 +361,9 @@ pub async fn run_turn(
 
     let _lock = SessionLock::acquire(&session_dir)?;
 
-    let codebase_hash = git::get_codebase_hash(&opts.codebase_path);
-    let dirty_files = git::get_dirty_files(&opts.codebase_path);
+    use crate::git::codebase::{CodebaseRepo, GitCodebaseRepo};
+    let codebase_hash = GitCodebaseRepo.head_hash(&opts.codebase_path);
+    let dirty_files = GitCodebaseRepo.dirty_files(&opts.codebase_path);
     let codebase_dirty = !dirty_files.is_empty();
 
     // Init transcript on first turn

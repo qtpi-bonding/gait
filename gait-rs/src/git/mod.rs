@@ -22,34 +22,6 @@ pub(crate) fn rewind_git_dir(workspace: &Path, session_id: &str) -> PathBuf {
     workspace.join("sessions").join(session_id).join("codebase.git")
 }
 
-pub fn get_codebase_hash(codebase: &Path) -> String {
-    match Repository::open(codebase) {
-        Ok(repo) => {
-            match repo.head() {
-                Ok(head) => {
-                    match head.peel_to_commit() {
-                        Ok(commit) => commit.id().to_string(),
-                        Err(_) => "none".to_string(),
-                    }
-                }
-                Err(_) => "none".to_string(),
-            }
-        }
-        Err(_) => "none".to_string(),
-    }
-}
-
-pub fn get_dirty_files(codebase: &Path) -> Vec<String> {
-    let Ok(repo) = Repository::open(codebase) else { return vec![] };
-    let Ok(statuses) = repo.statuses(None) else { return vec![] };
-    statuses.iter()
-        .filter_map(|e| {
-            let s = e.status();
-            if s.is_empty() || s == git2::Status::CURRENT { return None; }
-            e.path().map(|p| p.to_string())
-        })
-        .collect()
-}
 
 pub fn create_session_worktree(workspace: &Path, session_id: &str) -> anyhow::Result<()> {
     let sessions_dir = workspace.join("sessions");
@@ -281,32 +253,7 @@ mod tests {
         repo
     }
 
-    #[test]
-    fn get_codebase_hash_returns_hex() {
-        let dir = TempDir::new().unwrap();
-        init_repo(dir.path());
-        let hash = get_codebase_hash(dir.path());
-        assert_eq!(hash.len(), 40, "expected 40-char SHA1, got: {hash}");
-        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()), "not hex: {hash}");
-    }
-
-    #[test]
-    fn get_dirty_files_empty_on_clean_repo() {
-        let dir = TempDir::new().unwrap();
-        init_repo(dir.path());
-        assert!(get_dirty_files(dir.path()).is_empty());
-    }
-
-    #[test]
-    fn get_dirty_files_lists_untracked() {
-        let dir = TempDir::new().unwrap();
-        init_repo(dir.path());
-        std::fs::write(dir.path().join("new.txt"), "hello").unwrap();
-        let dirty = get_dirty_files(dir.path());
-        assert!(!dirty.is_empty(), "expected dirty files");
-    }
-
-    #[test]
+#[test]
     fn create_session_worktree_creates_dir_and_branch() {
         let ws = TempDir::new().unwrap();
         init_repo(ws.path());
