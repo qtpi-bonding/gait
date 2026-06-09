@@ -35,7 +35,10 @@ pub struct WebfetchTool {
 
 impl WebfetchTool {
     pub fn new() -> Self {
-        let parameters = crate::tools::make_schema::<WebfetchParams>();
+        let parameters = crate::tools::inject_filter(
+            crate::tools::make_schema::<WebfetchParams>(),
+            crate::types::OutputFilter::Curate,
+        );
         Self { parameters }
     }
 }
@@ -149,6 +152,10 @@ impl Tool for WebfetchTool {
     }
     fn parameters(&self) -> &Value { &self.parameters }
     fn execution_mode(&self) -> ExecutionMode { ExecutionMode::Parallel }
+
+    fn output_filter(&self) -> crate::types::OutputFilter {
+        crate::types::OutputFilter::Curate
+    }
 
     async fn execute(&self, args: Value) -> anyhow::Result<Value> {
         let params: WebfetchParams = serde_json::from_value(args)?;
@@ -321,5 +328,12 @@ mod tests {
     fn name_is_webfetch() {
         let tool = WebfetchTool::new();
         assert_eq!(tool.name(), "webfetch");
+    }
+
+    #[test]
+    fn schema_has_curate_prompt_field() {
+        let tool = WebfetchTool::new();
+        let params = tool.parameters();
+        assert_eq!(params["properties"]["curate_prompt"]["type"].as_str().unwrap(), "string");
     }
 }
