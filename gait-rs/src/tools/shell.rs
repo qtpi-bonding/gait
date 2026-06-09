@@ -16,11 +16,6 @@ struct ShellParams {
     reason: String,
     /// Timeout in milliseconds (default 30000)
     timeout_ms: Option<u64>,
-    /// Optional pipeline to filter the full output (e.g. "grep FAILED | head -20").
-    /// Use this when you expect large output (test runs, build logs) to avoid flooding
-    /// context. The full output is always written to a tmp file whose path is returned,
-    /// so you can grep/read it later without re-running the command.
-    parse: Option<String>,
 }
 
 pub struct ShellTool {
@@ -31,7 +26,10 @@ pub struct ShellTool {
 
 impl ShellTool {
     pub fn new(codebase_path: PathBuf, workspace: PathBuf) -> Self {
-        let parameters = crate::tools::make_schema::<ShellParams>();
+        let parameters = crate::tools::inject_filter(
+            crate::tools::make_schema::<ShellParams>(),
+            crate::types::OutputFilter::Parse,
+        );
         Self {
             codebase_path: Arc::new(codebase_path),
             workspace: Arc::new(workspace),
@@ -45,13 +43,17 @@ impl Tool for ShellTool {
     fn name(&self) -> &str { "shell" }
     fn description(&self) -> &str {
         "Run a shell command in the codebase directory. Full output is always written to a \
-        workspace tmp file and its path is included in the result. For commands that produce \
-        large output (cargo test, build logs, grep over large trees) use the `parse` field \
-        (e.g. \"grep FAILED | head -30\") to return only relevant lines and keep context small. \
-        You can then grep/read the tmp file for more detail without re-running. \
-        All shell commands require permission approval unless pre-allowed."
+         workspace tmp file and its path is included in the result. For commands that produce \
+         large output (cargo test, build logs, grep over large trees) use the `parse` field \
+         (e.g. \"grep FAILED | head -30\") to return only relevant lines and keep context small. \
+         You can then grep/read the tmp file for more detail without re-running. \
+         All shell commands require permission approval unless pre-allowed."
     }
     fn parameters(&self) -> &Value { &self.parameters }
+
+    fn output_filter(&self) -> crate::types::OutputFilter {
+        crate::types::OutputFilter::Parse
+    }
 
     fn permission(&self, args: &serde_json::Value) -> ToolPermission {
         let cmd = args.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
@@ -111,22 +113,7 @@ impl Tool for ShellTool {
         let _ = std::fs::write(&out_path, &combined);
         let file_note = format!("[full output: {} ({} bytes)]", out_path.display(), combined.len());
 
-        let display = if let Some(parse_cmd) = params.parse {
-            let piped = format!("cat {} | {}", out_path.display(), parse_cmd);
-            let parse_out = tokio::process::Command::new("sh")
-                .args(["-c", &piped])
-                .output()
-                .await
-                .map(|o| {
-                    let stdout = String::from_utf8_lossy(&o.stdout).into_owned();
-                    let stderr = String::from_utf8_lossy(&o.stderr).into_owned();
-                    format!("{}{}", stdout, stderr)
-                })
-                .unwrap_or_else(|e| format!("[parse error: {}]\n", e));
-            format!("{}\n{}", parse_out.trim_end(), file_note)
-        } else {
-            format!("{}\n{}", combined.trim_end(), file_note)
-        };
+        let display = format!("{}\n{}", combined.trim_end(), file_note);
 
         Ok(Value::String(format!("exit {} ({}ms)\n{}", exit_code, duration_ms, display)))
     }
@@ -211,21 +198,6 @@ mod tests {
         assert!(!files.is_empty(), "no tmp file written");
     }
 
-    #[tokio::test]
-    async fn parse_filters_output() {
-        let dir = TempDir::new().unwrap();
-        let tool = make_tool(&dir);
-        let result = tool.execute(serde_json::json!({
-            "cmd": "printf 'line1\nFAILED: test_foo\nline3\n'",
-            "reason": "test",
-            "parse": "grep FAILED"
-        })).await.unwrap();
-        let text = result.as_str().unwrap();
-        assert!(text.contains("FAILED: test_foo"), "got: {text}");
-        assert!(!text.contains("line1"), "got: {text}");
-        assert!(text.contains("full output:"), "got: {text}");
-    }
-
     #[test]
     fn shell_permission_single_command() {
         let tool = ShellTool::new(
@@ -272,6 +244,17 @@ mod tests {
                 assert!(pat.starts_with("shell:"), "pattern missing shell: prefix: {pat}");
             }
         }
+    }
+
+    #[test]
+    fn schema_has_parse_array_field() {
+        let tool = ShellTool::new(
+            std::path::PathBuf::from("/tmp"),
+            std::path::PathBuf::from("/tmp"),
+        );
+        let params = tool.parameters();
+        assert_eq!(params["properties"]["parse"]["type"].as_str().unwrap(), "array",
+            "parse should be array type: {}", params);
     }
 
 }
