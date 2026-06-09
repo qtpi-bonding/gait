@@ -156,10 +156,10 @@ impl Renderer {
                             eprintln!("{}     {}{}", DIM_FG, lines[0], RESET);
                             eprintln!("{}     {}{}", DIM_FG, lines[1], RESET);
                         }
-                        _ => {
+                        n => {
                             eprintln!("{}     {}{}", DIM_FG, lines[0], RESET);
-                            eprintln!("{}     \u{2026}{}", DIM_FG, RESET);
-                            eprintln!("{}     {}{}", DIM_FG, lines[lines.len() - 1], RESET);
+                            eprintln!("{}     \u{2026} ({} lines){}", DIM_FG, n - 2, RESET);
+                            eprintln!("{}     {}{}", DIM_FG, lines[n - 1], RESET);
                         }
                     }
                 }
