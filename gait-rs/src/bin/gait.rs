@@ -286,12 +286,6 @@ async fn cmd_run(argv: &[String]) {
         mcp_registry.clone(),
         config.skills.clone(),
     );
-    tools.push(gait_ai::tools::CurateTool::new(
-        provider.clone(),
-        workspace.clone(),
-        codebase_path.clone(),
-        model.clone(),
-    ).boxed());
     for ct in &config.tools {
         let cmd = ct.cmd.clone();
         let cwd = if ct.cwd == "workspace" {

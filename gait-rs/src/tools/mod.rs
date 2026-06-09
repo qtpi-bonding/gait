@@ -14,7 +14,6 @@ pub mod list_agents;
 pub mod clarify;
 pub mod inform;
 pub mod annotate;
-pub mod curate;
 
 pub use read::ReadTool;
 pub use write::WriteTool;
@@ -32,7 +31,6 @@ pub use list_agents::ListAgentsTool;
 pub use clarify::ClarifyTool;
 pub use inform::InformTool;
 pub use annotate::AnnotateTool;
-pub use curate::CurateTool;
 
 use std::path::PathBuf;
 use crate::types::Tool;
