@@ -114,8 +114,12 @@ impl RewindRepo for GitRewindRepo {
         }
         Ok(())
     }
-    fn remove(&self, _workspace: &Path, _session_id: &str) -> anyhow::Result<()> {
-        unimplemented!("Task 7")
+    fn remove(&self, workspace: &Path, session_id: &str) -> anyhow::Result<()> {
+        let git_dir = rewind_git_dir(workspace, session_id);
+        if git_dir.exists() {
+            std::fs::remove_dir_all(&git_dir)?;
+        }
+        Ok(())
     }
 }
 
@@ -272,5 +276,28 @@ mod tests {
         let after = Repository::open(cb.path()).unwrap()
             .head().unwrap().peel_to_commit().unwrap().id();
         assert_eq!(before, after, "user's real git HEAD must be unchanged");
+    }
+
+    #[test]
+    fn remove_deletes_shadow_db() {
+        let (ws, cb, id) = fixture();
+        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
+        assert!(rewind_git_dir(ws.path(), &id).exists());
+        GitRewindRepo.remove(ws.path(), &id).unwrap();
+        assert!(!rewind_git_dir(ws.path(), &id).exists());
+    }
+
+    #[test]
+    fn remove_leaves_codebase_intact() {
+        let (ws, cb, id) = fixture();
+        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
+        GitRewindRepo.remove(ws.path(), &id).unwrap();
+        assert!(cb.path().join("a.txt").exists(), "codebase files must remain");
+    }
+
+    #[test]
+    fn remove_safe_when_absent() {
+        let ws = TempDir::new().unwrap();
+        GitRewindRepo.remove(ws.path(), "never-existed").unwrap(); // must not error
     }
 }
