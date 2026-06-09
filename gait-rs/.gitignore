@@ -1,4 +1,5 @@
 sessions/
 .gait-ws.lock
+agents/
 AGENTS.md
 CLAUDE.md

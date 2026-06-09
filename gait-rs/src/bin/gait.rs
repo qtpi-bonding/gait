@@ -150,17 +150,17 @@ async fn main() {
     }
 }
 
-/// Compose the system prompt from the built-in harness description and the
-/// workspace AGENTS.md (if present). Each source is attributed with a hash so
-/// both the model and humans reviewing transcripts can see exactly what was used.
+/// Compose the system prompt from the built-in harness description and an optional
+/// agent file body. Each source is attributed with a hash so both the model and
+/// humans reviewing transcripts can see exactly what was used.
 ///
 /// Format:
-///   <!-- gait-agent.md @ <git-hash-of-gait-binary> -->
+///   <!-- gait-agent.md @ <git-hash> -->
 ///   <harness content>
 ///
-///   <!-- AGENTS.md @ <content-hash> -->
-///   <workspace agent content>
-fn compose_system_prompt(workspace: &std::path::Path) -> String {
+///   <!-- agents/coder.md @ <content-hash> -->
+///   <agent body>
+fn compose_system_prompt(agent_path: Option<&std::path::Path>) -> String {
     let gait_hash = &gait_ai::GAIT_BUILD_GIT_HASH[..gait_ai::GAIT_BUILD_GIT_HASH.len().min(7)];
     let mut prompt = format!(
         "<!-- gait-agent.md @ {} -->\n{}",
@@ -168,14 +168,16 @@ fn compose_system_prompt(workspace: &std::path::Path) -> String {
         gait_ai::GAIT_AGENT_PROMPT.trim_end(),
     );
 
-    let agents_md = workspace.join("AGENTS.md");
-    if let Ok(content) = std::fs::read_to_string(&agents_md) {
-        if !content.trim().is_empty() {
-            let hash = content_hash_short(&content);
+    if let Some(path) = agent_path {
+        let body = gait_ai::agent_frontmatter::read_agent_body(path);
+        if !body.is_empty() {
+            let label = path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("agent.md");
+            let hash = content_hash_short(&body);
             prompt.push_str(&format!(
-                "\n\n<!-- AGENTS.md @ {} -->\n{}",
-                hash,
-                content.trim_end(),
+                "\n\n<!-- {} @ {} -->\n{}",
+                label, hash, body,
             ));
         }
     }
@@ -222,8 +224,20 @@ async fn cmd_run(argv: &[String]) {
     });
 
     let config = load_config(&workspace);
-    let model = model_override.as_deref().unwrap_or(&config.model).to_string();
     let codebase_path = codebase_path.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    // Resolve agent file: explicit --agent name, or fallback to agents/default.md
+    let agent_path: Option<PathBuf> = if let Some(ref name) = agent_name {
+        Some(gait_ai::agent_frontmatter::resolve_agent_path(&workspace, name))
+    } else {
+        let default = workspace.join("agents").join("default.md");
+        if default.exists() { Some(default) } else { None }
+    };
+
+    // Agent frontmatter model overrides config model; --model flag overrides both
+    let model = model_override
+        .or_else(|| agent_path.as_deref().and_then(gait_ai::agent_frontmatter::read_agent_model))
+        .unwrap_or_else(|| config.model.clone());
 
     let provider_name = match model.split_once('/') {
         Some((p, _)) => p,
@@ -242,7 +256,7 @@ async fn cmd_run(argv: &[String]) {
         }
     };
 
-    let system_prompt = compose_system_prompt(&workspace);
+    let system_prompt = compose_system_prompt(agent_path.as_deref());
 
     // Discover tools from all configured MCP servers
     let mut mcp_registry: Vec<gait_ai::config::McpToolDef> = vec![];
@@ -310,21 +324,16 @@ async fn cmd_run(argv: &[String]) {
         }) as Box<dyn gait_ai::types::Tool>);
     }
 
-    // Agent-scoped allow (frontmatter) supersedes workspace allow when present.
-    // Workspace allow is the fallback for agents with no frontmatter allow list.
-    let effective_allow = if let Some(ref name) = agent_name {
-        let agent_path = gait_ai::agent_frontmatter::resolve_agent_path(&workspace, name);
-        match gait_ai::agent_frontmatter::read_agent_allow(agent_path) {
-            Ok(patterns) if !patterns.is_empty() => patterns,
-            Ok(_) => config.allow,
-            Err(e) => {
-                eprintln!("[gait] warning: could not read agent allow list: {}", e);
-                config.allow
-            }
-        }
-    } else {
-        config.allow
-    };
+    // Agent-scoped allow/deny (frontmatter) supersede workspace config when present.
+    let effective_allow = agent_path.as_deref()
+        .and_then(|p| gait_ai::agent_frontmatter::read_agent_allow(p.to_path_buf()).ok())
+        .filter(|v| !v.is_empty())
+        .unwrap_or(config.allow);
+
+    let effective_deny = agent_path.as_deref()
+        .and_then(|p| gait_ai::agent_frontmatter::read_agent_deny(p.to_path_buf()).ok())
+        .filter(|v| !v.is_empty())
+        .unwrap_or(config.deny);
 
     let turn_result = match run_turn(
         TurnOpts {
@@ -334,7 +343,7 @@ async fn cmd_run(argv: &[String]) {
             workspace: workspace.clone(),
             codebase_path,
             allow: effective_allow,
-            deny: config.deny.clone(),
+            deny: effective_deny,
             system_prompt,
             model: model.clone(),
             mcp_registry,
@@ -393,11 +402,14 @@ fn cmd_init(argv: &[String]) {
         let _ = std::fs::write(&config_path, "{\n  // gait configuration\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  // Allow list: tools that run without approval. Default empty = everything gated.\n  \"allow\": [],\n  // Tier 1 config-defined tools: shell commands the LLM can call by name\n  \"tools\": []\n}\n");
     }
 
-    // AGENTS.md — workspace-local additive prompt layer (not tracked in git).
+    // agents/ — workspace-local agent definitions (not tracked in git).
+    // Each file: YAML frontmatter (model, allow, deny) + markdown body (additive system prompt).
     // gait-agent.md (built-in harness description) is always prepended automatically.
-    let agents_path = workspace.join("AGENTS.md");
-    if !agents_path.exists() {
-        let _ = std::fs::write(&agents_path, "# Agent instructions\n\nAdd project-specific context here. This is appended to the built-in gait harness description.\n");
+    let agents_dir = workspace.join("agents");
+    let _ = std::fs::create_dir_all(&agents_dir);
+    let default_agent = agents_dir.join("default.md");
+    if !default_agent.exists() {
+        let _ = std::fs::write(&default_agent, "# Default agent\n\nAdd project-specific instructions here. Appended to the built-in gait harness description.\n\nFrontmatter fields (optional):\n  model: anthropic/claude-sonnet-4-6\n  allow: [read, shell:git *]\n  deny: [shell:rm *]\n");
     }
 
     // Stage and initial commit
