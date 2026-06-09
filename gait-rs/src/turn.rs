@@ -643,6 +643,7 @@ pub async fn run_turn(
                 },
                 codebase_hash: codebase_hash.clone(),
                 codebase_dirty,
+                code_checkpoint: None,
                 output: TurnOutput { message: message.clone(), result: None },
                 ts: now_ms(),
             })?;
@@ -965,6 +966,7 @@ pub async fn run_turn(
                             },
                             codebase_hash: codebase_hash.clone(),
                             codebase_dirty,
+                            code_checkpoint: None,
                             output: TurnOutput { message: message.clone(), result: result.clone() },
                             ts: now_ms(),
                         })?;

@@ -199,6 +199,10 @@ pub enum AnyEvent {
         usage: TurnUsage,
         codebase_hash: String,
         codebase_dirty: bool,
+        /// Shadow-git checkpoint SHA for this turn (internal; powers `gait rewind`).
+        /// None for legacy transcripts and non-git codebases.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code_checkpoint: Option<String>,
         output: TurnOutput,
         ts: u64,
     },
@@ -465,6 +469,7 @@ mod tests {
                 usage: TurnUsage { input: 1, output: 1, cache_read: 0, cache_write: 0 },
                 codebase_hash: "a".into(),
                 codebase_dirty: false,
+                code_checkpoint: None,
                 output: TurnOutput { message: "done".into(), result: None },
                 ts: 1,
             },
@@ -473,6 +478,7 @@ mod tests {
                 usage: TurnUsage { input: 1, output: 1, cache_read: 0, cache_write: 0 },
                 codebase_hash: "a".into(),
                 codebase_dirty: false,
+                code_checkpoint: None,
                 output: TurnOutput { message: "done".into(), result: None },
                 ts: 3,
             },
@@ -560,7 +566,7 @@ mod tests {
             AnyEvent::Error { message: "e".into(), phase: "llm".into(), ts: 0 },
             AnyEvent::Permissions { items: vec![], ts: 0 },
             AnyEvent::PermissionsReply { from: "user".into(), items: vec![], ts: 0 },
-            AnyEvent::TurnComplete { usage: TurnUsage { input:1,output:1,cache_read:0,cache_write:0 }, codebase_hash:"h".into(), codebase_dirty:false, output: TurnOutput{message:"s".into(),result:None}, ts:0 },
+            AnyEvent::TurnComplete { usage: TurnUsage { input:1,output:1,cache_read:0,cache_write:0 }, codebase_hash:"h".into(), codebase_dirty:false, code_checkpoint: None, output: TurnOutput{message:"s".into(),result:None}, ts:0 },
         ];
         for e in &events {
             let json = serde_json::to_string(e).unwrap();

@@ -175,6 +175,7 @@ mod tests {
             usage: TurnUsage { input: 1, output: 1, cache_read: 0, cache_write: 0 },
             codebase_hash: "abc".into(),
             codebase_dirty: false,
+            code_checkpoint: None,
             output: TurnOutput { message: "done".into(), result: None },
             ts: 200,
         }).unwrap();

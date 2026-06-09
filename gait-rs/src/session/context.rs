@@ -250,7 +250,7 @@ mod tests {
         let path = write_events(dir.path(), &[
             AnyEvent::UserTurn { content: "old".into(), from: None, context: None, ts: 0 },
             AnyEvent::AssistantText { content: "old response".into(), ts: 1 },
-            AnyEvent::TurnComplete { usage: TurnUsage{input:1,output:1,cache_read:0,cache_write:0}, codebase_hash:"h".into(), codebase_dirty:false, output: TurnOutput{message:"s".into(),result:None}, ts:2 },
+            AnyEvent::TurnComplete { usage: TurnUsage{input:1,output:1,cache_read:0,cache_write:0}, codebase_hash:"h".into(), codebase_dirty:false, code_checkpoint: None, output: TurnOutput{message:"s".into(),result:None}, ts:2 },
             AnyEvent::Compaction { summary: "summary of old stuff".into(), turns_covered: 1, from_ts: 0, to_ts: 2, usage: CompactionUsage{input:10,output:5}, ts: 3 },
             AnyEvent::UserTurn { content: "new".into(), from: None, context: None, ts: 4 },
         ]);
