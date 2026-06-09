@@ -15,6 +15,8 @@ use crate::config::{McpToolDef, SkillDef};
 use crate::git;
 use crate::mcp_client::McpClient;
 use crate::permission::{is_request_approved, find_matched_allow_pattern, is_request_denied, find_matched_deny_pattern};
+use grep_regex::RegexMatcher;
+use grep_searcher::{Searcher, Sink, SinkMatch};
 
 pub struct TurnOpts {
     pub session_id: String,
@@ -221,6 +223,71 @@ fn error_tool_result(tc: &ToolCall, e: anyhow::Error) -> (AssistantPart, ToolRes
             result: serde_json::Value::String(output),
         },
     )
+}
+
+/// Run a pipeline of rg (grep) and sd-style (find/replace) operations on `raw` in-process.
+/// `ops` is a JSON array of {"rg": "<pattern>"} and/or {"sd": ["<from>", "<to>"]} items.
+/// No subprocess, no shell injection surface — pure in-process regex, linear time, no backtracking.
+fn apply_parse_filter(raw: &str, ops: &serde_json::Value) -> String {
+    let ops = match ops.as_array() {
+        Some(a) => a,
+        None => return raw.to_string(),
+    };
+    if ops.is_empty() {
+        return raw.to_string();
+    }
+
+    let mut current = raw.to_string();
+
+    for op in ops {
+        if let Some(pattern) = op.get("rg").and_then(|v| v.as_str()) {
+            struct LineCollector(Vec<String>);
+            impl Sink for LineCollector {
+                type Error = std::io::Error;
+                fn matched(
+                    &mut self,
+                    _searcher: &Searcher,
+                    mat: &SinkMatch<'_>,
+                ) -> Result<bool, Self::Error> {
+                    let line = String::from_utf8_lossy(mat.bytes()).into_owned();
+                    self.0.push(line.trim_end_matches('\n').to_string());
+                    Ok(true)
+                }
+            }
+            current = match RegexMatcher::new(pattern) {
+                Ok(matcher) => {
+                    let mut collector = LineCollector(vec![]);
+                    let _ = Searcher::new().search_slice(
+                        &matcher,
+                        current.as_bytes(),
+                        &mut collector,
+                    );
+                    if collector.0.is_empty() {
+                        "(no matches)".to_string()
+                    } else {
+                        collector.0.join("\n")
+                    }
+                }
+                Err(e) => format!("[rg error: invalid pattern {:?}: {}]", pattern, e),
+            };
+        } else if let Some(sd_args) = op.get("sd").and_then(|v| v.as_array()) {
+            // Use regex::bytes directly — the `sd` CLI crate is binary-only and has no lib API.
+            let from = sd_args.first().and_then(|v| v.as_str()).unwrap_or("");
+            let to   = sd_args.get(1).and_then(|v| v.as_str()).unwrap_or("");
+            current = match regex::bytes::RegexBuilder::new(from)
+                .multi_line(true)
+                .build()
+            {
+                Ok(re) => {
+                    let replaced = re.replace_all(current.as_bytes(), to.as_bytes());
+                    String::from_utf8_lossy(&replaced).into_owned()
+                }
+                Err(e) => format!("[sd error: invalid pattern {:?}: {}]", from, e),
+            };
+        }
+    }
+
+    current
 }
 
 pub async fn run_turn(
@@ -1805,4 +1872,51 @@ mod tests {
         assert!(whitelist_result, "agent-scope approval should show whitelist prefix; events: {:?}", events);
     }
 
+    // ── apply_parse_filter: in-process rg + sd-style regex pipeline ──────────
+
+    #[test]
+    fn apply_parse_filter_rg_keeps_matching_lines() {
+        let raw = "line1\nFAILED: test_foo\nline3\n";
+        let ops = serde_json::json!([{"rg": "FAILED"}]);
+        let result = apply_parse_filter(raw, &ops);
+        assert!(result.contains("FAILED: test_foo"), "got: {result}");
+        assert!(!result.contains("line1"), "got: {result}");
+        assert!(!result.contains("line3"), "got: {result}");
+    }
+
+    #[test]
+    fn apply_parse_filter_sd_replaces_text() {
+        let raw = "error: something went wrong\nerror: another thing\n";
+        let ops = serde_json::json!([{"sd": ["error: ", "ERR: "]}]);
+        let result = apply_parse_filter(raw, &ops);
+        assert!(result.contains("ERR: something"), "got: {result}");
+        assert!(!result.contains("error: "), "got: {result}");
+    }
+
+    #[test]
+    fn apply_parse_filter_pipeline_rg_then_sd() {
+        let raw = "ok\nFAILED: test_foo\nFAILED: test_bar\n";
+        let ops = serde_json::json!([{"rg": "FAILED"}, {"sd": ["FAILED: ", ""]}]);
+        let result = apply_parse_filter(raw, &ops);
+        assert!(result.contains("test_foo"), "got: {result}");
+        assert!(result.contains("test_bar"), "got: {result}");
+        assert!(!result.contains("ok"), "got: {result}");
+        assert!(!result.contains("FAILED: "), "got: {result}");
+    }
+
+    #[test]
+    fn apply_parse_filter_rg_no_match_returns_sentinel() {
+        let raw = "line1\nline2\n";
+        let ops = serde_json::json!([{"rg": "NOTFOUND"}]);
+        let result = apply_parse_filter(raw, &ops);
+        assert!(result.trim() == "(no matches)" || result.trim().is_empty(), "got: {result}");
+    }
+
+    #[test]
+    fn apply_parse_filter_empty_ops_returns_raw() {
+        let raw = "hello world";
+        let ops = serde_json::json!([]);
+        let result = apply_parse_filter(raw, &ops);
+        assert_eq!(result, raw);
+    }
 }
