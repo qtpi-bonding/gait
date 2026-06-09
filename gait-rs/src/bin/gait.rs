@@ -365,6 +365,7 @@ async fn cmd_run(argv: &[String]) {
                 .collect(),
             max_iter: None,
             hooks: vec![],
+            repos: gait_ai::git::Repos::production(),
         },
         provider,
         tools,

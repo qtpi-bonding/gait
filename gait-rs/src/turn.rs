@@ -13,7 +13,6 @@ use crate::session::transcript::{
 use crate::session::context::reconstruct_messages_from_events;
 use crate::config::{McpToolDef, SkillDef};
 use crate::git;
-use crate::git::workspace::{WorkspaceRepo, GitWorkspaceRepo};
 use crate::git::rewind::RewindRepo;
 use crate::mcp_client::McpClient;
 use crate::permission::{is_request_approved, find_matched_allow_pattern, is_request_denied, find_matched_deny_pattern};
@@ -40,6 +39,8 @@ pub struct TurnOpts {
     pub max_iter: Option<usize>,
     /// Lifecycle hooks fired at key points in the turn loop.
     pub hooks: Vec<Box<dyn Hook>>,
+    /// Injected git repos (codebase/workspace/rewind).
+    pub repos: crate::git::Repos,
 }
 
 #[derive(Debug, Clone)]
@@ -329,6 +330,7 @@ async fn apply_curate_filter(
     use crate::tools::annotate::AnnotateTool;
     use crate::session::transcript::read_events;
 
+    let repos = crate::git::Repos::production();
     let session_id = crate::chat::new_session_id();
     let task = format!(
         "Content to curate:\n{}\n\n---\nCuration task: {}",
@@ -352,12 +354,13 @@ async fn apply_curate_filter(
             config_enabled: std::collections::HashSet::new(),
             max_iter: Some(1),
             hooks: vec![],
+            repos: repos.clone(),
         },
         provider,
         vec![AnnotateTool::new().boxed()],
     ).await;
 
-    let _ = crate::git::rewind::GitRewindRepo.remove(workspace, &session_id);
+    let _ = repos.rewind.remove(workspace, &session_id);
 
     let tx_path = workspace.join("sessions").join(&session_id).join("transcript.jsonl");
     read_events(&tx_path)
@@ -379,9 +382,8 @@ pub async fn run_turn(
     provider: Arc<dyn Provider>,
     tools: Vec<Box<dyn Tool>>,
 ) -> anyhow::Result<TurnResult> {
-    GitWorkspaceRepo.create_session_worktree(&opts.workspace, &opts.session_id)?;
-    crate::git::rewind::GitRewindRepo
-        .init(&opts.workspace, &opts.session_id, &opts.codebase_path)?;
+    opts.repos.workspace.create_session_worktree(&opts.workspace, &opts.session_id)?;
+    opts.repos.rewind.init(&opts.workspace, &opts.session_id, &opts.codebase_path)?;
 
     // Persist codebase_path (write-once) so `gait rewind` can locate the codebase.
     {
@@ -400,9 +402,8 @@ pub async fn run_turn(
 
     let _lock = SessionLock::acquire(&session_dir)?;
 
-    use crate::git::codebase::{CodebaseRepo, GitCodebaseRepo};
-    let codebase_hash = GitCodebaseRepo.head_hash(&opts.codebase_path);
-    let dirty_files = GitCodebaseRepo.dirty_files(&opts.codebase_path);
+    let codebase_hash = opts.repos.codebase.head_hash(&opts.codebase_path);
+    let dirty_files = opts.repos.codebase.dirty_files(&opts.codebase_path);
     let codebase_dirty = !dirty_files.is_empty();
 
     // Init transcript on first turn
@@ -673,7 +674,7 @@ pub async fn run_turn(
             let events_now = read_events(&tx_path)?;
             let turn_n = count_turn_complete(&events_now) as u32 + 1;
             let code_checkpoint = checkpoint_codebase(
-                &crate::git::rewind::GitRewindRepo,
+                opts.repos.rewind.as_ref(),
                 &opts.workspace, &opts.session_id, &opts.codebase_path, turn_n,
             );
             emit_event(&tx_path, &AnyEvent::TurnComplete {
@@ -689,7 +690,7 @@ pub async fn run_turn(
                 output: TurnOutput { message: message.clone(), result: None },
                 ts: now_ms(),
             })?;
-            GitWorkspaceRepo.commit_session(&opts.workspace, &opts.session_id,
+            opts.repos.workspace.commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): turn {}", opts.session_id, turn_n))?;
             for h in &opts.hooks { h.post_turn(); }
             return Ok(TurnResult::Done { message, result: None });
@@ -1000,7 +1001,7 @@ pub async fn run_turn(
                         let events_now = read_events(&tx_path)?;
                         let turn_n = count_turn_complete(&events_now) as u32 + 1;
                         let code_checkpoint = checkpoint_codebase(
-                            &crate::git::rewind::GitRewindRepo,
+                            opts.repos.rewind.as_ref(),
                             &opts.workspace, &opts.session_id, &opts.codebase_path, turn_n,
                         );
                         emit_event(&tx_path, &AnyEvent::TurnComplete {
@@ -1016,7 +1017,7 @@ pub async fn run_turn(
                             output: TurnOutput { message: message.clone(), result: result.clone() },
                             ts: now_ms(),
                         })?;
-                        GitWorkspaceRepo.commit_session(&opts.workspace, &opts.session_id,
+                        opts.repos.workspace.commit_session(&opts.workspace, &opts.session_id,
                             &format!("session({}): turn {}", opts.session_id, turn_n))?;
                         for h in &opts.hooks { h.post_turn(); }
                         return Ok(TurnResult::Done { message, result });
@@ -1083,7 +1084,7 @@ pub async fn run_turn(
                 items: pending_permissions,
                 ts: now_ms(),
             })?;
-            GitWorkspaceRepo.commit_session(&opts.workspace, &opts.session_id,
+            opts.repos.workspace.commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): permissions", opts.session_id))?;
             for h in &opts.hooks { h.post_turn(); }
             return Ok(TurnResult::Permissions);
@@ -1091,13 +1092,13 @@ pub async fn run_turn(
 
         // Exit turn for clarify/inform — event already in transcript+stdout via emit_event
         if let Some(items) = clarify_signal.take() {
-            GitWorkspaceRepo.commit_session(&opts.workspace, &opts.session_id,
+            opts.repos.workspace.commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): clarify", opts.session_id))?;
             for h in &opts.hooks { h.post_turn(); }
             return Ok(TurnResult::Clarify { items });
         }
         if let Some(items) = inform_signal.take() {
-            GitWorkspaceRepo.commit_session(&opts.workspace, &opts.session_id,
+            opts.repos.workspace.commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): inform", opts.session_id))?;
             for h in &opts.hooks { h.post_turn(); }
             return Ok(TurnResult::Inform { items });
@@ -1114,6 +1115,7 @@ pub async fn run_turn(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::workspace::{GitWorkspaceRepo, WorkspaceRepo};
     use tempfile::TempDir;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -1209,6 +1211,7 @@ mod tests {
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
                 hooks: vec![],
+                repos: crate::git::Repos::production(),
             },
             provider,
             vec![Box::new(read_tool)],
@@ -1278,6 +1281,7 @@ mod tests {
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
                 hooks: vec![],
+                repos: crate::git::Repos::production(),
             },
             provider,
             vec![output_tool.boxed()],
@@ -1333,6 +1337,7 @@ mod tests {
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
                 hooks: vec![],
+                repos: crate::git::Repos::production(),
             },
             provider,
             vec![output_tool.boxed()],
@@ -1382,6 +1387,7 @@ mod tests {
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
                 hooks: vec![],
+                repos: crate::git::Repos::production(),
             },
             provider,
             vec![],
@@ -1473,6 +1479,7 @@ mod tests {
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
                 hooks: vec![],
+                repos: crate::git::Repos::production(),
             },
             provider,
             vec![],
@@ -1520,6 +1527,7 @@ mod tests {
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
                 hooks: vec![],
+                repos: crate::git::Repos::production(),
             },
             provider,
             vec![],
@@ -1561,6 +1569,7 @@ mod tests {
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
                 hooks: vec![],
+                repos: crate::git::Repos::production(),
             },
             provider,
             vec![],
@@ -1628,6 +1637,7 @@ mod tests {
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
                 hooks: vec![],
+                repos: crate::git::Repos::production(),
             },
             provider,
             vec![shell_tool.boxed(), output_tool.boxed()],
@@ -1697,6 +1707,7 @@ mod tests {
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
                 hooks: vec![],
+                repos: crate::git::Repos::production(),
             },
             provider,
             vec![shell_tool.boxed(), output_tool.boxed()],
@@ -1825,6 +1836,7 @@ mod tests {
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
                 hooks: vec![],
+                repos: crate::git::Repos::production(),
             },
             provider,
             vec![Box::new(shell_tool)],
@@ -1904,6 +1916,7 @@ mod tests {
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
                 hooks: vec![],
+                repos: crate::git::Repos::production(),
             },
             provider,
             vec![Box::new(shell_tool)],
@@ -2019,6 +2032,7 @@ mod tests {
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
                 hooks: vec![],
+                repos: crate::git::Repos::production(),
             },
             provider,
             vec![Box::new(shell_tool)],
@@ -2155,6 +2169,7 @@ mod tests {
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
                 hooks: vec![],
+                repos: crate::git::Repos::production(),
             },
             provider,
             vec![],
@@ -2221,6 +2236,7 @@ mod tests {
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
                 hooks: vec![],
+                repos: crate::git::Repos::production(),
             },
             provider,
             vec![],

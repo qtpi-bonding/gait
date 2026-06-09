@@ -76,6 +76,7 @@ pub async fn exec_prompt_node(
             .collect(),
         max_iter: None,
         hooks: vec![],
+        repos: crate::git::Repos::production(),
     }, provider, tools).await?;
 
     match result {
