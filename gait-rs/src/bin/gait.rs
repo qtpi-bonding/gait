@@ -796,6 +796,7 @@ fn cmd_reject(argv: &[String]) {
         id: it.id.clone(),
         decision: "deny".to_string(),
         text: None,
+        scope: None,
     }).collect();
 
     if let Err(e) = write_permissions_reply(&tx_path, "user", reply) {

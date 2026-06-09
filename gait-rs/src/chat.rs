@@ -30,7 +30,7 @@ fn bang_command_str(s: &str) -> &str {
 }
 
 /// Parse one line of user input into a PermissionChoice.
-/// `has_agent`: whether --agent is active (controls whether a{N} is valid).
+/// Numbers (1..N) save to agent frontmatter. `o` = once, `r` = reject.
 /// Returns None if input is invalid → caller re-prompts.
 ///
 /// Patterns are returned verbatim — they are already correctly formatted by the
@@ -39,7 +39,6 @@ fn bang_command_str(s: &str) -> &str {
 fn parse_permission_response(
     input: &str,
     patterns: &[String],
-    has_agent: bool,
 ) -> Option<crate::permission::PermissionChoice> {
     use crate::permission::PermissionChoice;
     match input.trim() {
@@ -50,20 +49,9 @@ fn parse_permission_response(
         }
         _ => {}
     }
-    if let Some(rest) = input.trim().strip_prefix('g') {
-        if let Ok(n) = rest.parse::<usize>() {
-            if n >= 1 && n <= patterns.len() {
-                return Some(PermissionChoice::Global(patterns[n - 1].clone()));
-            }
-        }
-    }
-    if has_agent {
-        if let Some(rest) = input.trim().strip_prefix('a') {
-            if let Ok(n) = rest.parse::<usize>() {
-                if n >= 1 && n <= patterns.len() {
-                    return Some(PermissionChoice::Agent(patterns[n - 1].clone()));
-                }
-            }
+    if let Ok(n) = input.trim().parse::<usize>() {
+        if n >= 1 && n <= patterns.len() {
+            return Some(PermissionChoice::Agent(patterns[n - 1].clone()));
         }
     }
     None
@@ -115,7 +103,6 @@ fn prompt_inform_items(items: &[InformItem], theme: &Theme) -> Vec<InformReplyIt
 fn prompt_single_permission(
     item: &PermissionItem,
     label: Option<&str>,
-    has_agent: bool,
     theme: &Theme,
 ) -> crate::permission::PermissionChoice {
     eprintln!();
@@ -132,11 +119,6 @@ fn prompt_single_permission(
     }
     eprintln!();
     eprintln!("  {}[o] once   [r] reject{}", DIM_FG, RESET);
-    if has_agent {
-        eprintln!("  {}scope: [a] agent  [g] global   (e.g. a2, g1, o, r){}", DIM_FG, RESET);
-    } else {
-        eprintln!("  {}g = global  (e.g. g1, g2, o, r){}", DIM_FG, RESET);
-    }
     loop {
         eprint!("  {}>{} {}", theme.accent.fg(), RESET, theme.user_msg.fg());
         let _ = std::io::stderr().flush();
@@ -145,17 +127,9 @@ fn prompt_single_permission(
             Ok(0) | Err(_) => { eprint!("{}", RESET); return crate::permission::PermissionChoice::Reject; }
             Ok(_) => { eprint!("{}", RESET); }
         }
-        match parse_permission_response(input.trim(), &item.patterns, has_agent) {
+        match parse_permission_response(input.trim(), &item.patterns) {
             Some(c) => return c,
-            None => eprintln!(
-                "  unrecognized — try {}g1..g{}, o, or r",
-                if has_agent {
-                    format!("a1..a{}, ", item.patterns.len())
-                } else {
-                    String::new()
-                },
-                item.patterns.len()
-            ),
+            None => eprintln!("  unrecognized — try 1..{}, o, or r", item.patterns.len()),
         }
     }
 }
@@ -381,8 +355,6 @@ pub fn run_chat(
     let agent_path: Option<PathBuf> = agent_name.as_deref().map(|n| {
         crate::agent_frontmatter::resolve_agent_path(&workspace, n)
     });
-    let has_agent = agent_path.is_some();
-
     let theme = Theme::detect();
 
     let mut session_id = new_session_id();
@@ -551,7 +523,7 @@ pub fn run_chat(
                     None
                 };
 
-                let choice = prompt_single_permission(item, label.as_deref(), has_agent, &theme);
+                let choice = prompt_single_permission(item, label.as_deref(), &theme);
                 // Persist the choice to its backing store (gait.jsonc / agent file / once-file).
                 // The REPL is a pure UI layer — all persistence lives in `crate::permission`.
                 if let Err(e) = crate::permission::save_choice(
@@ -563,13 +535,30 @@ pub fn run_chat(
                     eprintln!("[gait] warning: could not save permission: {e}");
                 }
                 match &choice {
-                    crate::permission::PermissionChoice::Global(pat)
-                    | crate::permission::PermissionChoice::Agent(pat)
-                    | crate::permission::PermissionChoice::Once(pat) => {
+                    crate::permission::PermissionChoice::Once(pat) => {
                         reply_items.push(PermissionsReplyItem {
                             id: item.id.clone(),
                             decision: "approve".into(),
                             text: Some(pat.clone()),
+                            scope: Some("once".into()),
+                        });
+                        any_approved = true;
+                    }
+                    crate::permission::PermissionChoice::Agent(pat) => {
+                        reply_items.push(PermissionsReplyItem {
+                            id: item.id.clone(),
+                            decision: "approve".into(),
+                            text: Some(pat.clone()),
+                            scope: Some("agent".into()),
+                        });
+                        any_approved = true;
+                    }
+                    crate::permission::PermissionChoice::Global(pat) => {
+                        reply_items.push(PermissionsReplyItem {
+                            id: item.id.clone(),
+                            decision: "approve".into(),
+                            text: Some(pat.clone()),
+                            scope: Some("global".into()),
                         });
                         any_approved = true;
                     }
@@ -578,6 +567,7 @@ pub fn run_chat(
                             id: item.id.clone(),
                             decision: "deny".into(),
                             text: None,
+                            scope: None,
                         });
                     }
                 }
@@ -658,46 +648,23 @@ mod tests {
     }
 
     #[test]
-    fn parse_permission_response_global_shell() {
-        // Patterns arrive pre-prefixed from ShellTool.permission() (e.g. "shell:cargo *").
-        // The REPL is a pure UI layer — it must not add any prefix.
+    fn parse_permission_response_number() {
         let patterns = vec!["shell:cargo *".to_string(), "shell:cargo test *".to_string()];
         assert_eq!(
-            parse_permission_response("g1", &patterns, true),
-            Some(crate::permission::PermissionChoice::Global("shell:cargo *".to_string()))
-        );
-    }
-
-    #[test]
-    fn parse_permission_response_global_non_shell() {
-        // Non-shell tools store bare tool name in allow list (no "shell:" prefix).
-        let patterns = vec!["write".to_string()];
-        assert_eq!(
-            parse_permission_response("g1", &patterns, false),
-            Some(crate::permission::PermissionChoice::Global("write".to_string()))
-        );
-    }
-
-    #[test]
-    fn parse_permission_response_agent() {
-        let patterns = vec!["shell:cargo *".to_string()];
-        assert_eq!(
-            parse_permission_response("a1", &patterns, true),
+            parse_permission_response("1", &patterns),
             Some(crate::permission::PermissionChoice::Agent("shell:cargo *".to_string()))
         );
-        // a{N} not offered when no agent active
         assert_eq!(
-            parse_permission_response("a1", &patterns, false),
-            None
+            parse_permission_response("2", &patterns),
+            Some(crate::permission::PermissionChoice::Agent("shell:cargo test *".to_string()))
         );
     }
 
     #[test]
     fn parse_permission_response_once() {
-        // Once uses the most specific (last) pattern, returned verbatim.
         let patterns = vec!["shell:cargo *".to_string(), "shell:cargo test".to_string()];
         assert_eq!(
-            parse_permission_response("o", &patterns, false),
+            parse_permission_response("o", &patterns),
             Some(crate::permission::PermissionChoice::Once("shell:cargo test".to_string()))
         );
     }
@@ -705,7 +672,7 @@ mod tests {
     #[test]
     fn parse_permission_response_reject() {
         assert_eq!(
-            parse_permission_response("r", &[], false),
+            parse_permission_response("r", &[]),
             Some(crate::permission::PermissionChoice::Reject)
         );
     }
@@ -713,9 +680,9 @@ mod tests {
     #[test]
     fn parse_permission_response_invalid() {
         let p = vec!["shell:cargo *".to_string()];
-        assert_eq!(parse_permission_response("g99", &p, false), None);
-        assert_eq!(parse_permission_response("xyz", &p, false), None);
-        assert_eq!(parse_permission_response("", &p, false), None);
+        assert_eq!(parse_permission_response("99", &p), None);
+        assert_eq!(parse_permission_response("xyz", &p), None);
+        assert_eq!(parse_permission_response("", &p), None);
     }
 
     #[test]

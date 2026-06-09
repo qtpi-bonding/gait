@@ -110,16 +110,23 @@ pub fn execute_approve(
                 ApproveScope::Once => PermissionChoice::Once(effective_pattern.clone()),
             };
             save_choice(&choice, workspace, session_id, agent_path)?;
+            let scope_str = match &params.scope {
+                ApproveScope::Global => "global",
+                ApproveScope::Agent => "agent",
+                ApproveScope::Once => "once",
+            };
             reply_items.push(crate::session::transcript::PermissionsReplyItem {
                 id: item.id.clone(),
                 decision: "approve".to_string(),
                 text: None,
+                scope: Some(scope_str.to_string()),
             });
         } else {
             reply_items.push(crate::session::transcript::PermissionsReplyItem {
                 id: item.id.clone(),
                 decision: "deny".to_string(),
                 text: None,
+                scope: None,
             });
         }
     }

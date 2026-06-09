@@ -103,6 +103,8 @@ pub struct PermissionsReplyItem {
     pub id: String,
     pub decision: String, // "approve" | "deny" | "instruct"
     pub text: Option<String>,
+    #[serde(default)]
+    pub scope: Option<String>, // "once" | "agent" | "global" — None = legacy
 }
 
 // ── Main event enum ───────────────────────────────────────────────────────────

@@ -304,7 +304,26 @@ pub async fn run_turn(
                         tool_name: items[0].tool_name.clone(),
                         args: items[0].tool_args.clone(),
                     };
-                    if let Err(e) = execute_tool_call(&tc, &tools, &tx_path, Some("[User approved.]".to_string())).await {
+                    // Build scope-aware prefix: tell the model whether the approval
+                    // was a one-shot or saved to the agent/global whitelist.
+                    let prefix = {
+                        let scope = reply_items.iter()
+                            .find(|r| r.id == *id)
+                            .and_then(|r| r.scope.as_deref());
+                        match scope {
+                            Some("once") => Some("[User approved once.]".to_string()),
+                            Some("agent") | Some("global") => {
+                                let pattern = items.iter()
+                                    .flat_map(|p| p.patterns.iter())
+                                    .next()
+                                    .cloned()
+                                    .unwrap_or_else(|| items[0].tool_name.clone());
+                                Some(format!("[User added to whitelist: {}]", pattern))
+                            }
+                            _ => Some("[User approved.]".to_string()),
+                        }
+                    };
+                    if let Err(e) = execute_tool_call(&tc, &tools, &tx_path, prefix).await {
                         // Emit error as tool result so model sees it
                         emit_event(&tx_path, &AnyEvent::ToolResult {
                             id: id.clone(),
@@ -1444,7 +1463,7 @@ mod tests {
             from: "user".into(),
             items: vec![PermissionsReplyItem {
                 id: "tc-resume-1".into(), decision: "approve".into(),
-                text: Some("shell:echo *".into()),
+                text: Some("shell:echo *".into()), scope: None,
             }],
             ts: 4,
         }).unwrap();
@@ -1521,7 +1540,7 @@ mod tests {
         append_event(&tx_path, &AnyEvent::PermissionsReply {
             from: "user".into(),
             items: vec![PermissionsReplyItem {
-                id: "tc-deny-1".into(), decision: "deny".into(), text: None,
+                id: "tc-deny-1".into(), decision: "deny".into(), text: None, scope: None,
             }],
             ts: 4,
         }).unwrap();
@@ -1592,4 +1611,93 @@ mod tests {
     fn build_permission_status_empty_returns_empty() {
         assert!(build_permission_status(&[], &[]).is_empty());
     }
+    #[tokio::test]
+    async fn resume_with_scope_agent_shows_whitelist_prefix() {
+        // When a user approved with scope="agent", the resumed tool result should
+        // show "[User added to whitelist: <pattern>]" instead of "[User approved.]"
+        let ws = TempDir::new().unwrap();
+        init_git_repo(ws.path());
+        let session_id = "sscope001";
+        // Initialize the session worktree (creates the session dir + branch)
+        crate::git::create_session_worktree(ws.path(), session_id).unwrap();
+        let tx_path = ws.path().join("sessions").join(session_id).join("transcript.jsonl");
+
+        // Pre-write a transcript with a Permissions+PermissionsReply already in it,
+        // simulating a previous turn that was interrupted mid-permission-prompt.
+        // The PermissionsReply has scope="agent" to indicate it was saved to agent config.
+        let shell_args = serde_json::json!({ "cmd": "ls", "reason": "list files" });
+        append_event(&tx_path, &AnyEvent::SessionStart {
+            schema_version: 2, id: session_id.into(),
+            model: "mock/test".into(), codebase_hash: "none".into(), codebase_dirty: false, ts: 1,
+        }).unwrap();
+        append_event(&tx_path, &AnyEvent::UserTurn {
+            content: "list files".into(), from: None, context: None, ts: 2,
+        }).unwrap();
+        append_event(&tx_path, &AnyEvent::Permissions {
+            items: vec![PermissionItem {
+                id: "tc-scope-1".into(),
+                cmd: "ls".into(),
+                reason: "shell requires permission".into(),
+                patterns: vec!["shell:ls *".to_string()],
+                tool_name: "shell".into(),
+                tool_args: shell_args.clone(),
+            }],
+            ts: 3,
+        }).unwrap();
+        append_event(&tx_path, &AnyEvent::PermissionsReply {
+            from: "user".into(),
+            items: vec![PermissionsReplyItem {
+                id: "tc-scope-1".into(),
+                decision: "approve".into(),
+                text: None,
+                scope: Some("agent".into()),
+            }],
+            ts: 4,
+        }).unwrap();
+
+        let shell_tool = ToolDef {
+            name: "shell".into(),
+            description: "run a shell command".into(),
+            parameters: serde_json::json!({ "type": "object" }),
+            execute: Box::new(|_args| Box::pin(async move {
+                Ok(serde_json::Value::String("file1\nfile2\n".into()))
+            })),
+        };
+
+        // After resuming and executing shell, agent calls output to complete
+        let provider = Arc::new(FakeProvider {
+            steps: Arc::new(vec![FakeStep::text("done")]),
+            call_idx: Arc::new(AtomicUsize::new(0)),
+        });
+
+        run_turn(
+            TurnOpts {
+                session_id: session_id.into(),
+                task: None, // resume path: no new task
+                auto: false,
+                workspace: ws.path().to_path_buf(),
+                codebase_path: ws.path().to_path_buf(),
+                allow: vec![],
+                deny: vec![],
+                system_prompt: "".into(),
+                model: "mock/test".into(),
+                mcp_registry: vec![],
+                mcp_clients: std::collections::HashMap::new(),
+                skill_registry: vec![],
+                config_enabled: std::collections::HashSet::new(),
+            },
+            provider,
+            vec![Box::new(shell_tool)],
+        ).await.unwrap();
+
+        let events = read_events(&tx_path).unwrap();
+        // The shell tool result emitted during resume should contain the whitelist prefix
+        let whitelist_result = events.iter().any(|e| {
+            if let AnyEvent::ToolResult { id, output, .. } = e {
+                id == "tc-scope-1" && output.contains("[User added to whitelist:")
+            } else { false }
+        });
+        assert!(whitelist_result, "agent-scope approval should show whitelist prefix; events: {:?}", events);
+    }
+
 }

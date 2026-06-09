@@ -234,7 +234,7 @@ mod tests {
             AnyEvent::PermissionsReply {
                 from: "user".into(),
                 items: vec![PermissionsReplyItem {
-                    id: "tc1".into(), decision: "approve".into(), text: None,
+                    id: "tc1".into(), decision: "approve".into(), text: None, scope: None,
                 }],
                 ts: 3,
             },
