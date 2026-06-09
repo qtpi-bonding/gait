@@ -85,8 +85,34 @@ impl RewindRepo for GitRewindRepo {
         let oid = shadow.commit(Some("HEAD"), &sig, &sig, &msg, &tree, &parents)?;
         Ok(oid.to_string())
     }
-    fn rewind_to(&self, _workspace: &Path, _session_id: &str, _codebase: &Path, _sha: &str) -> anyhow::Result<()> {
-        unimplemented!("Task 6")
+    fn rewind_to(&self, workspace: &Path, session_id: &str, codebase: &Path, sha: &str) -> anyhow::Result<()> {
+        let git_dir = rewind_git_dir(workspace, session_id);
+        let shadow = Repository::open_bare(&git_dir)?;
+        shadow.set_workdir(codebase, false)?;
+
+        let oid = Oid::from_str(sha)?;
+        let obj = shadow.find_object(oid, None)?;
+        shadow.reset(&obj, ResetType::Hard, None)?;
+
+        // reset --hard does not remove untracked files. Delete anything the
+        // working tree now reports as new so the codebase matches the snapshot
+        // exactly.
+        let mut so = StatusOptions::new();
+        so.include_untracked(true).recurse_untracked_dirs(true).include_ignored(false);
+        let statuses = shadow.statuses(Some(&mut so))?;
+        for e in statuses.iter() {
+            if e.status().contains(Status::WT_NEW) {
+                if let Some(rel) = e.path() {
+                    let abs = codebase.join(rel);
+                    if abs.is_dir() {
+                        let _ = std::fs::remove_dir_all(&abs);
+                    } else {
+                        let _ = std::fs::remove_file(&abs);
+                    }
+                }
+            }
+        }
+        Ok(())
     }
     fn remove(&self, _workspace: &Path, _session_id: &str) -> anyhow::Result<()> {
         unimplemented!("Task 7")
@@ -207,5 +233,44 @@ mod tests {
         GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
         let sha = GitRewindRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
         assert!(sha.is_empty());
+    }
+
+    #[test]
+    fn rewind_to_restores_file_content() {
+        let (ws, cb, id) = fixture();
+        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
+        std::fs::write(cb.path().join("a.txt"), "v1\n").unwrap();
+        let cp1 = GitRewindRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
+        std::fs::write(cb.path().join("a.txt"), "v2\n").unwrap();
+        GitRewindRepo.checkpoint(ws.path(), &id, cb.path(), 2).unwrap();
+
+        GitRewindRepo.rewind_to(ws.path(), &id, cb.path(), &cp1).unwrap();
+        assert_eq!(std::fs::read_to_string(cb.path().join("a.txt")).unwrap(), "v1\n");
+    }
+
+    #[test]
+    fn rewind_to_removes_files_created_after_checkpoint() {
+        let (ws, cb, id) = fixture();
+        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
+        let cp1 = GitRewindRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
+        std::fs::write(cb.path().join("new.txt"), "later\n").unwrap();
+        GitRewindRepo.checkpoint(ws.path(), &id, cb.path(), 2).unwrap();
+
+        GitRewindRepo.rewind_to(ws.path(), &id, cb.path(), &cp1).unwrap();
+        assert!(!cb.path().join("new.txt").exists(), "post-checkpoint file should be removed");
+    }
+
+    #[test]
+    fn rewind_to_does_not_touch_codebase_git() {
+        let (ws, cb, id) = fixture();
+        let before = Repository::open(cb.path()).unwrap()
+            .head().unwrap().peel_to_commit().unwrap().id();
+        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
+        std::fs::write(cb.path().join("a.txt"), "v2\n").unwrap();
+        let cp1 = GitRewindRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
+        GitRewindRepo.rewind_to(ws.path(), &id, cb.path(), &cp1).unwrap();
+        let after = Repository::open(cb.path()).unwrap()
+            .head().unwrap().peel_to_commit().unwrap().id();
+        assert_eq!(before, after, "user's real git HEAD must be unchanged");
     }
 }
