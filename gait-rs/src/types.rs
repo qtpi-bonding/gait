@@ -150,6 +150,30 @@ pub enum ExecutionSignal {
     LoadContext,
 }
 
+/// What a `pre_tool` hook returns.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HookAction {
+    Continue,
+    Block { reason: String },
+}
+
+/// Lifecycle hooks for the agent turn loop. All methods have no-op defaults —
+/// implement only the hooks you need.
+pub trait Hook: Send + Sync {
+    /// Once per outer turn, before the step loop. Return Some to replace the system prompt.
+    fn pre_turn(&self, _system_prompt: &str) -> Option<String> { None }
+    /// Before each inner LLM call. Return Some to replace the outgoing message history.
+    fn pre_step(&self, _messages: &[Message]) -> Option<Vec<Message>> { None }
+    /// After each inner LLM response, before tools execute.
+    fn post_step(&self, _text: &str, _tool_calls: &[ToolCall]) {}
+    /// Before a tool executes. Return Block to prevent execution.
+    fn pre_tool(&self, _tc: &ToolCall) -> HookAction { HookAction::Continue }
+    /// After a tool returns. Return Some to replace the result seen by the LLM.
+    fn post_tool(&self, _name: &str, _result: &str) -> Option<String> { None }
+    /// Once per outer turn, at every exit point (Done, Clarify, Inform, Permissions).
+    fn post_turn(&self) {}
+}
+
 /// Extensible tool interface. Implement this to define a callable tool for `stream_text`.
 /// `ToolDef` implements this for backward-compat with ad-hoc closure-based tools.
 #[async_trait::async_trait]

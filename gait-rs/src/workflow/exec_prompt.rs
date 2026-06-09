@@ -75,6 +75,7 @@ pub async fn exec_prompt_node(
             .chain(config.skills.iter().filter(|s| s.enabled).map(|s| s.name.clone()))
             .collect(),
         max_iter: None,
+        hooks: vec![],
     }, provider, tools).await?;
 
     match result {

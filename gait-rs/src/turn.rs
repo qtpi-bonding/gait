@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use futures_util::StreamExt;
 use crate::provider::{Provider, StreamChunk};
-use crate::types::{Message, MessageContent, AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind, Usage, ExecutionMode, ExecutionSignal, ToolPermission};
+use crate::types::{Message, MessageContent, AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind, Usage, ExecutionMode, ExecutionSignal, ToolPermission, Hook, HookAction};
 use crate::types::Tool;
 use crate::session::transcript::{
     AnyEvent, append_event, emit_event, read_events, init_session, count_turn_complete, now_ms,
@@ -34,6 +34,8 @@ pub struct TurnOpts {
     pub config_enabled: std::collections::HashSet<String>,
     /// Maximum agentic iterations. None → 100 (default).
     pub max_iter: Option<usize>,
+    /// Lifecycle hooks fired at key points in the turn loop.
+    pub hooks: Vec<Box<dyn Hook>>,
 }
 
 #[derive(Debug, Clone)]
@@ -452,14 +454,18 @@ pub async fn run_turn(
     }
     let loadable_idx = build_loadable_index(&entries);
     let permission_status = build_permission_status(&effective_allow, &opts.deny);
-    let system_prompt = format!("{}{}{}", opts.system_prompt, loadable_idx, permission_status);
+    let system_prompt = opts.hooks.iter().fold(
+        format!("{}{}{}", opts.system_prompt, loadable_idx, permission_status),
+        |sp, h| h.pre_turn(&sp).unwrap_or(sp),
+    );
 
     let mut total_usage = Usage::default();
     let mut clarify_signal: Option<Vec<ClarifyItem>> = None;
     let mut inform_signal: Option<Vec<InformItem>> = None;
 
     for _step in 0..opts.max_iter.unwrap_or(100) {
-        let mut chunk_stream = provider.stream(&system_prompt, &messages, &tools).await
+        let outgoing = opts.hooks.iter().fold(messages.clone(), |m, h| h.pre_step(&m).unwrap_or(m));
+        let mut chunk_stream = provider.stream(&system_prompt, &outgoing, &tools).await
             .map_err(|e| anyhow::anyhow!("provider error: {}", e))?;
 
         let mut step_text = String::new();
@@ -481,6 +487,7 @@ pub async fn run_turn(
                 _ => {}
             }
         }
+        for h in &opts.hooks { h.post_step(&step_text, &step_tool_calls); }
 
         // Flush assistant text — only as a standalone event when there are NO tool calls.
         // When tool calls are present, the text is included as AssistantPart::Text in the
@@ -513,6 +520,7 @@ pub async fn run_turn(
             })?;
             git::commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): turn {}", opts.session_id, turn_n))?;
+            for h in &opts.hooks { h.post_turn(); }
             return Ok(TurnResult::Done { summary, result: None });
         }
 
@@ -663,11 +671,22 @@ pub async fn run_turn(
             let (parallel_items, serial_items): (Vec<_>, Vec<_>) = allowed.iter()
                 .partition(|(_, tc)| is_parallel_eligible(tc));
 
-            // Parallel batch — all futures share &tools (immutable), safe to join
+            // Parallel batch — pre_tool hook may block individual items before join_all
             let par_raw = futures_util::future::join_all(
                 parallel_items.iter().map(|(_, tc)| {
+                    let block_reason = opts.hooks.iter()
+                        .find_map(|h| if let HookAction::Block { reason } = h.pre_tool(tc) { Some(reason) } else { None });
                     let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
-                    execute_tool_call(tc, &tools, &tx_path, prefix)
+                    let tc = *tc;
+                    let tools = &tools;
+                    let tx_path = &tx_path;
+                    async move {
+                        if let Some(reason) = block_reason {
+                            Err(anyhow::anyhow!("[Blocked by hook] {}", reason))
+                        } else {
+                            execute_tool_call(tc, tools, tx_path, prefix).await
+                        }
+                    }
                 })
             ).await;
 
@@ -676,10 +695,44 @@ pub async fn run_turn(
                 vec![None; step_tool_calls.len()];
 
             for ((i, tc), raw) in parallel_items.iter().zip(par_raw) {
-                all_results[*i] = Some(raw.unwrap_or_else(|e| error_tool_result(tc, e)));
+                let (part, mut result) = raw.unwrap_or_else(|e| error_tool_result(tc, e));
+                let result_str = result.result.as_str().unwrap_or("").to_string();
+                for h in &opts.hooks {
+                    if let Some(new) = h.post_tool(&tc.tool_name, &result_str) {
+                        result.result = serde_json::Value::String(new);
+                    }
+                }
+                all_results[*i] = Some((part, result));
             }
 
             for (i, tc) in &serial_items {
+                // pre_tool hook — first block wins
+                if let Some(reason) = opts.hooks.iter()
+                    .find_map(|h| if let HookAction::Block { reason } = h.pre_tool(tc) { Some(reason) } else { None })
+                {
+                    let output = format!("[Blocked by hook] {}", reason);
+                    emit_event(&tx_path, &AnyEvent::ToolCall {
+                        id: tc.tool_call_id.clone(), name: tc.tool_name.clone(),
+                        input: tc.args.clone(), ts: now_ms(),
+                    })?;
+                    emit_event(&tx_path, &AnyEvent::ToolResult {
+                        id: tc.tool_call_id.clone(), output: output.clone(), ts: now_ms(),
+                    })?;
+                    all_results[*i] = Some((
+                        AssistantPart::ToolCall(ToolCall {
+                            tool_call_id: tc.tool_call_id.clone(),
+                            tool_name: tc.tool_name.clone(),
+                            args: tc.args.clone(),
+                        }),
+                        ToolResult {
+                            kind: ToolResultKind::ToolResult,
+                            tool_call_id: tc.tool_call_id.clone(),
+                            result: serde_json::Value::String(output),
+                        },
+                    ));
+                    continue;
+                }
+
                 let signal = tools.iter()
                     .find(|t| t.name() == tc.tool_name)
                     .map(|t| t.execution_signal())
@@ -714,9 +767,15 @@ pub async fn run_turn(
                             }
                         }
                         let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
-                        let r = execute_tool_call(tc, &tools, &tx_path, prefix).await
+                        let (part, mut result) = execute_tool_call(tc, &tools, &tx_path, prefix).await
                             .unwrap_or_else(|e| error_tool_result(tc, e));
-                        all_results[*i] = Some(r);
+                        let result_str = result.result.as_str().unwrap_or("").to_string();
+                        for h in &opts.hooks {
+                            if let Some(new) = h.post_tool(&tc.tool_name, &result_str) {
+                                result.result = serde_json::Value::String(new);
+                            }
+                        }
+                        all_results[*i] = Some((part, result));
                     }
                     ExecutionSignal::TurnComplete => {
                         // Emit call+result pair for transcript auditability before ending the turn.
@@ -749,6 +808,7 @@ pub async fn run_turn(
                         })?;
                         git::commit_session(&opts.workspace, &opts.session_id,
                             &format!("session({}): turn {}", opts.session_id, turn_n))?;
+                        for h in &opts.hooks { h.post_turn(); }
                         return Ok(TurnResult::Done { summary, result });
                     }
                     ExecutionSignal::Clarify => {
@@ -768,9 +828,15 @@ pub async fn run_turn(
                     ExecutionSignal::Continue => {
                         // skill (default) and any other serial tool
                         let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
-                        let r = execute_tool_call(tc, &tools, &tx_path, prefix).await
+                        let (part, mut result) = execute_tool_call(tc, &tools, &tx_path, prefix).await
                             .unwrap_or_else(|e| error_tool_result(tc, e));
-                        all_results[*i] = Some(r);
+                        let result_str = result.result.as_str().unwrap_or("").to_string();
+                        for h in &opts.hooks {
+                            if let Some(new) = h.post_tool(&tc.tool_name, &result_str) {
+                                result.result = serde_json::Value::String(new);
+                            }
+                        }
+                        all_results[*i] = Some((part, result));
                     }
                 }
             }
@@ -792,6 +858,7 @@ pub async fn run_turn(
             })?;
             git::commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): permissions", opts.session_id))?;
+            for h in &opts.hooks { h.post_turn(); }
             return Ok(TurnResult::Permissions);
         }
 
@@ -799,11 +866,13 @@ pub async fn run_turn(
         if let Some(items) = clarify_signal.take() {
             git::commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): clarify", opts.session_id))?;
+            for h in &opts.hooks { h.post_turn(); }
             return Ok(TurnResult::Clarify { items });
         }
         if let Some(items) = inform_signal.take() {
             git::commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): inform", opts.session_id))?;
+            for h in &opts.hooks { h.post_turn(); }
             return Ok(TurnResult::Inform { items });
         }
 
@@ -912,6 +981,7 @@ mod tests {
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
+                hooks: vec![],
             },
             provider,
             vec![Box::new(read_tool)],
@@ -980,6 +1050,7 @@ mod tests {
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
+                hooks: vec![],
             },
             provider,
             vec![output_tool.boxed()],
@@ -1034,6 +1105,7 @@ mod tests {
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
+                hooks: vec![],
             },
             provider,
             vec![output_tool.boxed()],
@@ -1082,6 +1154,7 @@ mod tests {
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
+                hooks: vec![],
             },
             provider,
             vec![],
@@ -1170,6 +1243,7 @@ mod tests {
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
+                hooks: vec![],
             },
             provider,
             vec![],
@@ -1216,6 +1290,7 @@ mod tests {
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
+                hooks: vec![],
             },
             provider,
             vec![],
@@ -1256,6 +1331,7 @@ mod tests {
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
+                hooks: vec![],
             },
             provider,
             vec![],
@@ -1322,6 +1398,7 @@ mod tests {
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
+                hooks: vec![],
             },
             provider,
             vec![shell_tool.boxed(), output_tool.boxed()],
@@ -1390,6 +1467,7 @@ mod tests {
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
+                hooks: vec![],
             },
             provider,
             vec![shell_tool.boxed(), output_tool.boxed()],
@@ -1517,6 +1595,7 @@ mod tests {
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
+                hooks: vec![],
             },
             provider,
             vec![Box::new(shell_tool)],
@@ -1595,6 +1674,7 @@ mod tests {
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
+                hooks: vec![],
             },
             provider,
             vec![Box::new(shell_tool)],
@@ -1709,6 +1789,7 @@ mod tests {
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: None,
+                hooks: vec![],
             },
             provider,
             vec![Box::new(shell_tool)],

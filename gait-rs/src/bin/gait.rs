@@ -369,6 +369,7 @@ async fn cmd_run(argv: &[String]) {
                 .chain(config.skills.iter().filter(|s| s.enabled).map(|s| s.name.clone()))
                 .collect(),
             max_iter: None,
+            hooks: vec![],
         },
         provider,
         tools,

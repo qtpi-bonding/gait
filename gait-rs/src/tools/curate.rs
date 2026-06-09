@@ -90,6 +90,7 @@ impl Tool for CurateTool {
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
                 max_iter: Some(1),
+                hooks: vec![],
             },
             self.provider.clone(),
             vec![AnnotateTool::new().boxed()],
