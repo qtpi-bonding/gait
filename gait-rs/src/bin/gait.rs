@@ -75,6 +75,7 @@ fn usage() -> ! {
     eprintln!("  run      [--session <id>] [--task <text>] [--workspace <path>] [--codebase <path>] [--auto] [--model <provider/model>] [--container]");
     eprintln!("  init     [<repo-url>]");
     eprintln!("  finish   <session-id> [--workspace <path>]");
+    eprintln!("  rewind   <session-id> [--turn N | --list] [--code] [--transcript] [--workspace <path>]");
     eprintln!("  sessions [--workspace <path>]");
     eprintln!("  auth     <list|add|remove> [<provider>]");
     eprintln!("  models   [<filter>]");
@@ -561,6 +562,10 @@ fn rewind_command(
     use gait_ai::session::transcript::{read_events, AnyEvent};
     use gait_ai::git::rewind::{RewindRepo, GitRewindRepo};
 
+    if list && turn.is_some() {
+        anyhow::bail!("--list and --turn are mutually exclusive");
+    }
+
     let session_dir = workspace.join("sessions").join(session_id);
     let tx_path = session_dir.join("transcript.jsonl");
     let events = read_events(&tx_path)?;
@@ -592,16 +597,8 @@ fn rewind_command(
     let do_code = code || (!code && !transcript);
     let do_transcript = transcript || (!code && !transcript);
 
-    // Guard: refuse if a turn is in progress (lock held by a live PID).
-    let lock = session_dir.join("lock");
-    if lock.exists() {
-        let pid_str = std::fs::read_to_string(&lock).unwrap_or_default();
-        if let Ok(pid) = pid_str.trim().parse::<i32>() {
-            if unsafe { libc::kill(pid, 0) } == 0 {
-                anyhow::bail!("session {} is running (PID {}); stop it before rewinding", session_id, pid);
-            }
-        }
-    }
+    let _lock = gait_ai::turn::SessionLock::acquire(&session_dir)
+        .map_err(|e| anyhow::anyhow!("cannot rewind: {} (is a turn in progress?)", e))?;
 
     if do_code {
         let codebase = gait_ai::session::session_json::read_session_json(&workspace, session_id)

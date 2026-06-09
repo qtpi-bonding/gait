@@ -357,6 +357,8 @@ async fn apply_curate_filter(
         vec![AnnotateTool::new().boxed()],
     ).await;
 
+    let _ = crate::git::rewind::GitRewindRepo.remove(workspace, &session_id);
+
     let tx_path = workspace.join("sessions").join(&session_id).join("transcript.jsonl");
     read_events(&tx_path)
         .ok()

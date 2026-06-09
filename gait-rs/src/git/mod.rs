@@ -3,7 +3,6 @@ pub mod workspace;
 pub mod rewind;
 
 use std::path::{Path, PathBuf};
-use git2::{Repository, BranchType, IndexAddOption, Signature};
 
 pub(crate) fn with_gait_trailer(message: &str) -> String {
     format!("{}\n\nCo-Authored-By: gait <gait@localhost>", message)
