@@ -5,9 +5,9 @@ use serde_json::Value;
 
 #[derive(Deserialize, JsonSchema)]
 struct OutputParams {
-    /// One sentence summary of what was accomplished this turn
+    /// One-sentence summary of what was accomplished
     summary: String,
-    /// Structured result for workflow nodes
+    /// Structured JSON result — readable by workflow nodes ($node.output.field) or parent agents
     result: Option<Value>,
 }
 
@@ -26,7 +26,7 @@ impl OutputTool {
 impl Tool for OutputTool {
     fn name(&self) -> &str { "output" }
     fn description(&self) -> &str {
-        "Signal that your turn is complete. Always call this as your final action with a one-sentence summary of what you accomplished."
+        "Return structured output from this turn. Use when the caller needs to read specific fields — in a workflow via $node.output.field, or from a parent agent via spawn_agent. For plain-text completion, just respond — the turn ends automatically."
     }
     fn parameters(&self) -> &Value { &self.parameters }
 
