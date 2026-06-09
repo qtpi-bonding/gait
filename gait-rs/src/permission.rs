@@ -147,6 +147,70 @@ pub fn path_patterns(tool_name: &str, rel_path: &str) -> Vec<String> {
     patterns
 }
 
+/// Find the first allow-list entry that would approve this request.
+/// Returns `None` if nothing in `allow` covers the request.
+pub fn find_matched_allow_pattern(tool_name: &str, req: &PermissionRequest, allow: &[String]) -> Option<String> {
+    allow.iter().find(|entry| {
+        if !entry.contains(':') {
+            return entry.as_str() == tool_name;
+        }
+        if let Some((prefix, pat)) = entry.split_once(':') {
+            if prefix == tool_name {
+                if let Some(dir) = pat.strip_suffix("/*") {
+                    return req.display.starts_with(&format!("{}/", dir));
+                }
+                return wildcard_match(pat, &req.display);
+            }
+        }
+        false
+    }).cloned()
+}
+
+/// Find the first deny-list entry that would deny this request.
+/// Returns `None` if nothing in `deny` covers the request.
+pub fn find_matched_deny_pattern(tool_name: &str, req: &PermissionRequest, deny: &[String]) -> Option<String> {
+    deny.iter().find(|entry| {
+        if !entry.contains(':') {
+            return entry.as_str() == tool_name;
+        }
+        if let Some((prefix, pat)) = entry.split_once(':') {
+            if prefix == tool_name {
+                if let Some(dir) = pat.strip_suffix("/*") {
+                    return req.display.starts_with(&format!("{}/", dir));
+                }
+                return wildcard_match(pat, &req.display);
+            }
+        }
+        false
+    }).cloned()
+}
+
+/// Check whether a single PermissionRequest is denied by the deny list.
+///
+/// Denied if any deny-list entry is:
+///   - the bare tool name ("write" denies any write request), OR
+///   - "tool_name:pattern" where pattern wildcard-matches req.display
+///
+/// In addition to wildcard_match semantics, a pattern ending in "/*" matches
+/// anything directly under the directory prefix (e.g. "src/*" matches "src/main.rs").
+pub fn is_request_denied(tool_name: &str, req: &PermissionRequest, deny: &[String]) -> bool {
+    deny.iter().any(|entry| {
+        if !entry.contains(':') {
+            return entry == tool_name;
+        }
+        if let Some((prefix, pat)) = entry.split_once(':') {
+            if prefix == tool_name {
+                // Handle path/* directory wildcard: "src/*" matches anything under src/
+                if let Some(dir) = pat.strip_suffix("/*") {
+                    return req.display.starts_with(&format!("{}/", dir));
+                }
+                return wildcard_match(pat, &req.display);
+            }
+        }
+        false
+    })
+}
+
 /// Check whether a single PermissionRequest is covered by the allow list.
 ///
 /// Approved if any allow-list entry is:
@@ -356,5 +420,49 @@ mod tests {
         use crate::types::PermissionRequest;
         let req = PermissionRequest { display: "src/main.rs".into(), patterns: vec![] };
         assert!(!is_request_approved("read", &req, &["write".to_string()]));
+    }
+    #[test]
+    fn is_request_denied_bare_tool_name() {
+        use crate::types::PermissionRequest;
+        let req = PermissionRequest { display: "src/main.rs".into(), patterns: vec![] };
+        assert!(is_request_denied("write", &req, &["write".to_string()]));
+        assert!(!is_request_denied("read", &req, &["write".to_string()]));
+    }
+
+    #[test]
+    fn is_request_denied_shell_pattern() {
+        use crate::types::PermissionRequest;
+        let req = PermissionRequest { display: "rm -rf /".into(), patterns: vec![] };
+        assert!(is_request_denied("shell", &req, &["shell:rm *".to_string()]));
+        assert!(!is_request_denied("shell", &req, &["shell:ls *".to_string()]));
+    }
+
+    #[test]
+    fn find_matched_deny_pattern_returns_match() {
+        use crate::types::PermissionRequest;
+        let req = PermissionRequest { display: "rm -rf /".into(), patterns: vec![] };
+        let result = find_matched_deny_pattern("shell", &req, &["shell:rm *".to_string()]);
+        assert_eq!(result, Some("shell:rm *".to_string()));
+    }
+
+    #[test]
+    fn find_matched_deny_pattern_returns_none_when_no_match() {
+        use crate::types::PermissionRequest;
+        let req = PermissionRequest { display: "ls -la".into(), patterns: vec![] };
+        let result = find_matched_deny_pattern("shell", &req, &["shell:rm *".to_string()]);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn deny_wins_over_allow_building_blocks() {
+        // Verify that when a pattern appears in both allow and deny,
+        // both functions fire — the classification loop is what enforces deny-wins
+        // by checking deny before allow.
+        use crate::types::PermissionRequest;
+        let req = PermissionRequest { display: "rm -rf /".into(), patterns: vec![] };
+        let both = vec!["shell:rm *".to_string()];
+        assert!(is_request_denied("shell", &req, &both));
+        assert!(is_request_approved("shell", &req, &both));
+        // Both return true — ordering is the loop's job.
     }
 }
