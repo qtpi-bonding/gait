@@ -5,9 +5,6 @@ use serde::Deserialize;
 use crate::types::Tool;
 use crate::session::transcript::{AnyEvent, InitSessionOpts, append_event, init_session, now_ms};
 use crate::session::session_json::{SessionJson, TokenTotals, write_session_json};
-use crate::git;
-use crate::git::codebase::CodebaseRepo;
-use crate::git::workspace::{WorkspaceRepo, GitWorkspaceRepo};
 use crate::config::load_config;
 use crate::tools::make_schema;
 
@@ -23,15 +20,17 @@ pub struct SpawnAgentTool {
     current_session_id: String,
     workspace: PathBuf,
     codebase_path: PathBuf,
+    repos: crate::git::Repos,
     parameters: Value,
 }
 
 impl SpawnAgentTool {
-    pub fn new(current_session_id: String, workspace: PathBuf, codebase_path: PathBuf) -> Self {
+    pub fn new(current_session_id: String, workspace: PathBuf, codebase_path: PathBuf, repos: crate::git::Repos) -> Self {
         Self {
             current_session_id,
             workspace,
             codebase_path,
+            repos,
             parameters: make_schema::<SpawnAgentArgs>(),
         }
     }
@@ -52,7 +51,7 @@ impl Tool for SpawnAgentTool {
 
         let new_id = crate::chat::new_session_id();
 
-        GitWorkspaceRepo.create_session_worktree(&self.workspace, &new_id)?;
+        self.repos.workspace.create_session_worktree(&self.workspace, &new_id)?;
 
         let sj = SessionJson {
             id: new_id.clone(),
@@ -66,8 +65,7 @@ impl Tool for SpawnAgentTool {
         write_session_json(&self.workspace, &sj)?;
 
         let config = load_config(&self.workspace);
-        let codebase_hash = crate::git::codebase::GitCodebaseRepo
-            .head_hash(&self.codebase_path);
+        let codebase_hash = self.repos.codebase.head_hash(&self.codebase_path);
         let tx_path = self.workspace.join("sessions").join(&new_id).join("transcript.jsonl");
 
         init_session(InitSessionOpts {
@@ -85,7 +83,7 @@ impl Tool for SpawnAgentTool {
             ts: now_ms(),
         })?;
 
-        GitWorkspaceRepo.commit_session(
+        self.repos.workspace.commit_session(
             &self.workspace,
             &new_id,
             &format!("session({}): spawn from {}", new_id, self.current_session_id),
@@ -141,6 +139,7 @@ mod tests {
             "scaller001".into(),
             ws.path().to_path_buf(),
             ws.path().to_path_buf(),
+            crate::git::Repos::production(),
         );
 
         let result = tool.execute(serde_json::json!({
@@ -178,7 +177,7 @@ mod tests {
         std::fs::write(ws.path().join("gait.jsonc"),
             r#"{"model":"minimax/MiniMax-M1-80k","allow":[],"tools":[]}"#).unwrap();
 
-        let tool = SpawnAgentTool::new("scaller".into(), ws.path().to_path_buf(), ws.path().to_path_buf());
+        let tool = SpawnAgentTool::new("scaller".into(), ws.path().to_path_buf(), ws.path().to_path_buf(), crate::git::Repos::production());
         let result = tool.execute(serde_json::json!({ "task": "foo" })).await.unwrap();
         let id = result["session_id"].as_str().unwrap();
         assert_eq!(id.len(), 9);

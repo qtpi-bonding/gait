@@ -9,7 +9,6 @@ use gait_ai::{
     workflow::runner::{run_workflow, WorkflowRunOpts},
     HarnessBackend,
 };
-use gait_ai::git::workspace::{WorkspaceRepo, GitWorkspaceRepo};
 
 fn extract_path_arg(args: &[String], flag: &str) -> Option<std::path::PathBuf> {
     args.windows(2)
@@ -279,6 +278,8 @@ async fn cmd_run(argv: &[String]) {
         }
     }
 
+    let repos = gait_ai::git::Repos::production();
+
     // Append config-defined tools
     let mut tools = builtin_tools(
         codebase_path.clone(),
@@ -286,6 +287,7 @@ async fn cmd_run(argv: &[String]) {
         workspace.clone(),
         mcp_registry.clone(),
         config.skills.clone(),
+        repos.clone(),
     );
     for ct in &config.tools {
         let cmd = ct.cmd.clone();
@@ -365,7 +367,7 @@ async fn cmd_run(argv: &[String]) {
                 .collect(),
             max_iter: None,
             hooks: vec![],
-            repos: gait_ai::git::Repos::production(),
+            repos,
         },
         provider,
         tools,
@@ -389,7 +391,7 @@ fn cmd_init(argv: &[String]) {
     let repo_url = argv.first().filter(|a| !a.starts_with('-')).cloned();
     let workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
-    if let Err(e) = GitWorkspaceRepo.init_workspace(&workspace) {
+    if let Err(e) = gait_ai::git::Repos::production().workspace.init_workspace(&workspace) {
         eprintln!("[gait] git init failed: {}", e);
         std::process::exit(1);
     }
@@ -486,15 +488,13 @@ fn cmd_finish(argv: &[String]) {
             std::process::exit(1);
         }
     };
-    if let Err(e) = GitWorkspaceRepo.finish_session(&workspace, &session_id) {
+    let repos = gait_ai::git::Repos::production();
+    if let Err(e) = repos.workspace.finish_session(&workspace, &session_id) {
         eprintln!("[gait] error: {}", e);
         std::process::exit(1);
     }
-    {
-        use gait_ai::git::rewind::{RewindRepo, GitRewindRepo};
-        if let Err(e) = GitRewindRepo.remove(&workspace, &session_id) {
-            eprintln!("warning: failed to remove rewind db for {}: {}", session_id, e);
-        }
+    if let Err(e) = repos.rewind.remove(&workspace, &session_id) {
+        eprintln!("warning: failed to remove rewind db for {}: {}", session_id, e);
     }
     eprintln!("[gait] session {} merged into main", session_id);
 }
@@ -561,7 +561,6 @@ fn rewind_command(
     workspace: std::path::PathBuf,
 ) -> anyhow::Result<()> {
     use gait_ai::session::transcript::{read_events, AnyEvent};
-    use gait_ai::git::rewind::{RewindRepo, GitRewindRepo};
 
     if list && turn.is_some() {
         anyhow::bail!("--list and --turn are mutually exclusive");
@@ -606,9 +605,10 @@ fn rewind_command(
             .codebase_path
             .map(std::path::PathBuf::from)
             .ok_or_else(|| anyhow::anyhow!("session.json has no codebase_path; cannot rewind code"))?;
+        let repos = gait_ai::git::Repos::production();
         match checkpoint.as_deref() {
             Some(sha) => {
-                GitRewindRepo.rewind_to(&workspace, session_id, &codebase, sha)?;
+                repos.rewind.rewind_to(&workspace, session_id, &codebase, sha)?;
                 println!("code rewound to turn {turn} ({})", &sha[..sha.len().min(8)]);
             }
             None => println!("turn {turn} has no code checkpoint (non-git codebase); code not rewound"),
@@ -652,7 +652,7 @@ fn cmd_sessions(argv: &[String]) {
         if argv[i] == "--workspace" { i += 1; if let Some(p) = argv.get(i) { workspace = std::path::PathBuf::from(p); } }
         i += 1;
     }
-    match GitWorkspaceRepo.list_active_sessions(&workspace) {
+    match gait_ai::git::Repos::production().workspace.list_active_sessions(&workspace) {
         Ok(sessions) if sessions.is_empty() => println!("No active sessions."),
         Ok(sessions) => { for id in sessions { println!("{}", id); } }
         Err(e) => { eprintln!("[gait] error: {}", e); std::process::exit(1); }
@@ -785,7 +785,7 @@ async fn cmd_workflow_run(argv: &[String], workspace: PathBuf) {
 }
 
 fn cmd_workflow_list(_argv: &[String], workspace: PathBuf) {
-    let sessions = gait_ai::git::workspace::GitWorkspaceRepo.list_active_sessions(&workspace).unwrap_or_default();
+    let sessions = gait_ai::git::Repos::production().workspace.list_active_sessions(&workspace).unwrap_or_default();
     let mut found = false;
     for session_id in &sessions {
         if let Some(progress) = gait_ai::workflow::progress::read_progress(&workspace, session_id) {
@@ -861,7 +861,7 @@ fn cmd_workflow_abort(argv: &[String], workspace: PathBuf) {
         error: "user aborted".into(),
         ts: gait_ai::session::transcript::now_ms(),
     });
-    let _ = gait_ai::git::workspace::GitWorkspaceRepo.commit_session(&workspace, &workflow_id, "workflow: aborted");
+    let _ = gait_ai::git::Repos::production().workspace.commit_session(&workspace, &workflow_id, "workflow: aborted");
     println!("[gait workflow] aborted {}", workflow_id);
 }
 

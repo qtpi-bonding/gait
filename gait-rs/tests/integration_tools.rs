@@ -5,7 +5,7 @@ use tempfile::TempDir;
 #[tokio::test]
 async fn builtin_tools_returns_expected_tools() {
     let dir = TempDir::new().unwrap();
-    let tools = builtin_tools(dir.path().to_path_buf(), "stest".into(), dir.path().to_path_buf(), vec![], vec![]);
+    let tools = builtin_tools(dir.path().to_path_buf(), "stest".into(), dir.path().to_path_buf(), vec![], vec![], gait_ai::git::Repos::production());
     assert_eq!(tools.len(), 15);
     let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
     for expected in &["read", "write", "edit", "glob", "grep", "ls", "shell",
@@ -18,7 +18,7 @@ async fn builtin_tools_returns_expected_tools() {
 #[tokio::test]
 async fn all_tools_have_valid_json_schema_parameters() {
     let dir = TempDir::new().unwrap();
-    let tools = builtin_tools(dir.path().to_path_buf(), "stest".into(), dir.path().to_path_buf(), vec![], vec![]);
+    let tools = builtin_tools(dir.path().to_path_buf(), "stest".into(), dir.path().to_path_buf(), vec![], vec![], gait_ai::git::Repos::production());
     for tool in &tools {
         let schema = tool.parameters();
         assert!(schema.is_object(), "tool '{}' has non-object schema", tool.name());
@@ -34,7 +34,7 @@ async fn all_tools_have_valid_json_schema_parameters() {
 #[tokio::test]
 async fn read_write_roundtrip_via_builtin_tools() {
     let dir = TempDir::new().unwrap();
-    let tools = builtin_tools(dir.path().to_path_buf(), "stest".into(), dir.path().to_path_buf(), vec![], vec![]);
+    let tools = builtin_tools(dir.path().to_path_buf(), "stest".into(), dir.path().to_path_buf(), vec![], vec![], gait_ai::git::Repos::production());
     let write_tool = tools.iter().find(|t| t.name() == "write").unwrap();
     let read_tool  = tools.iter().find(|t| t.name() == "read").unwrap();
 
@@ -56,7 +56,7 @@ async fn read_write_roundtrip_via_builtin_tools() {
 #[tokio::test]
 async fn write_then_edit_then_read() {
     let dir = TempDir::new().unwrap();
-    let tools = builtin_tools(dir.path().to_path_buf(), "stest".into(), dir.path().to_path_buf(), vec![], vec![]);
+    let tools = builtin_tools(dir.path().to_path_buf(), "stest".into(), dir.path().to_path_buf(), vec![], vec![], gait_ai::git::Repos::production());
     let write = tools.iter().find(|t| t.name() == "write").unwrap();
     let edit  = tools.iter().find(|t| t.name() == "edit").unwrap();
     let read  = tools.iter().find(|t| t.name() == "read").unwrap();
@@ -91,7 +91,7 @@ async fn write_then_edit_then_read() {
 #[tokio::test]
 async fn glob_finds_written_files() {
     let dir = TempDir::new().unwrap();
-    let tools = builtin_tools(dir.path().to_path_buf(), "stest".into(), dir.path().to_path_buf(), vec![], vec![]);
+    let tools = builtin_tools(dir.path().to_path_buf(), "stest".into(), dir.path().to_path_buf(), vec![], vec![], gait_ai::git::Repos::production());
     let write = tools.iter().find(|t| t.name() == "write").unwrap();
     let glob  = tools.iter().find(|t| t.name() == "glob").unwrap();
 

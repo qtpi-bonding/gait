@@ -101,6 +101,7 @@ pub fn builtin_tools(
     workspace: PathBuf,
     mcp_tools: Vec<McpToolDef>,
     skills: Vec<SkillDef>,
+    repos: crate::git::Repos,
 ) -> Vec<Box<dyn Tool>> {
     vec![
         ReadTool::new(codebase_path.clone()).boxed(),
@@ -114,7 +115,7 @@ pub fn builtin_tools(
         CodesearchTool::new(codebase_path.clone()).boxed(),
         WebfetchTool::new().boxed(),
         LoadTool::new(mcp_tools, skills).boxed(),
-        SpawnAgentTool::new(session_id.clone(), workspace.clone(), codebase_path.clone()).boxed(),
+        SpawnAgentTool::new(session_id.clone(), workspace.clone(), codebase_path.clone(), repos.clone()).boxed(),
         ListAgentsTool::new(workspace.clone()).boxed(),
         ClarifyTool::new().boxed(),
         InformTool::new().boxed(),
@@ -133,6 +134,7 @@ mod tests {
             "stest".into(),
             PathBuf::from("/tmp"),
             vec![], vec![],
+            crate::git::Repos::production(),
         );
         assert_eq!(tools.len(), 15);
     }
@@ -141,6 +143,7 @@ mod tests {
     fn all_tool_names_unique() {
         let tools = builtin_tools(
             PathBuf::from("/tmp"), "stest".into(), PathBuf::from("/tmp"), vec![], vec![],
+            crate::git::Repos::production(),
         );
         let mut names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         let original_len = names.len();
@@ -153,6 +156,7 @@ mod tests {
     fn spawn_agent_and_list_agents_present() {
         let tools = builtin_tools(
             PathBuf::from("/tmp"), "stest".into(), PathBuf::from("/tmp"), vec![], vec![],
+            crate::git::Repos::production(),
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"spawn_agent"), "missing spawn_agent: {:?}", names);
@@ -163,6 +167,7 @@ mod tests {
     fn load_meta_tool_present() {
         let tools = builtin_tools(
             PathBuf::from("/tmp"), "stest".into(), PathBuf::from("/tmp"), vec![], vec![],
+            crate::git::Repos::production(),
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"load"), "missing load: {:?}", names);

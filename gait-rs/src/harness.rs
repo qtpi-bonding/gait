@@ -1,8 +1,6 @@
 use std::path::PathBuf;
 use crate::turn::{TurnResult, SessionLock};
 use crate::session::transcript::{append_event, AnyEvent, now_ms};
-use crate::git;
-use crate::git::workspace::{WorkspaceRepo, GitWorkspaceRepo};
 
 #[async_trait::async_trait]
 pub trait HarnessBackend: Send + Sync {
@@ -88,7 +86,8 @@ impl HarnessBackend for NativeHarnessBackend {
         })?;
 
         append_event(&tx_path, &event)?;
-        GitWorkspaceRepo.commit_session(
+        let repos = crate::git::Repos::production();
+        repos.workspace.commit_session(
             &self.workspace,
             assigner_id,
             &format!("session({}): agent_update from {}", assigner_id, session_id),

@@ -72,6 +72,7 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
         "sparent001".into(),
         ws.path().to_path_buf(),
         vec![], vec![],
+        gait_ai::git::Repos::production(),
     );
 
     let result = run_turn(

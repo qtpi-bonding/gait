@@ -51,9 +51,10 @@ pub async fn exec_prompt_node(
         }
     }
 
+    let repos = crate::git::Repos::production();
     let tools = crate::tools::builtin_tools(
         codebase.clone(), ctx.session_id.to_string(), ctx.workspace.to_path_buf(),
-        mcp_registry.clone(), config.skills.clone(),
+        mcp_registry.clone(), config.skills.clone(), repos.clone(),
     );
 
     let result = run_turn(TurnOpts {
@@ -76,7 +77,7 @@ pub async fn exec_prompt_node(
             .collect(),
         max_iter: None,
         hooks: vec![],
-        repos: crate::git::Repos::production(),
+        repos,
     }, provider, tools).await?;
 
     match result {
