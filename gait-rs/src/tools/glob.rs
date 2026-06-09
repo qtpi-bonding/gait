@@ -22,7 +22,10 @@ pub struct GlobTool {
 
 impl GlobTool {
     pub fn new(codebase_path: PathBuf) -> Self {
-        let parameters = crate::tools::make_schema::<GlobParams>();
+        let parameters = crate::tools::inject_filter(
+            crate::tools::make_schema::<GlobParams>(),
+            crate::types::OutputFilter::Parse,
+        );
         Self { codebase_path: Arc::new(codebase_path), parameters }
     }
 }
@@ -35,6 +38,10 @@ impl Tool for GlobTool {
     }
     fn parameters(&self) -> &Value { &self.parameters }
     fn execution_mode(&self) -> ExecutionMode { ExecutionMode::Parallel }
+
+    fn output_filter(&self) -> crate::types::OutputFilter {
+        crate::types::OutputFilter::Parse
+    }
 
     async fn execute(&self, args: Value) -> anyhow::Result<Value> {
         let params: GlobParams = serde_json::from_value(args)?;
@@ -141,5 +148,13 @@ mod tests {
         let text = result.as_str().unwrap();
         assert!(text.contains("deep.rs"), "got: {text}");
         assert!(!text.contains("root.rs"), "got: {text}");
+    }
+
+    #[test]
+    fn schema_has_parse_array_field() {
+        let tool = GlobTool::new(std::path::PathBuf::from("/tmp"));
+        let params = tool.parameters();
+        assert_eq!(params["properties"]["parse"]["type"].as_str().unwrap(), "array",
+            "parse should be array type: {}", params);
     }
 }

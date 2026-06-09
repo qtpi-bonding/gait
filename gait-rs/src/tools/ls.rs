@@ -29,7 +29,10 @@ pub struct LsTool {
 
 impl LsTool {
     pub fn new(codebase_path: PathBuf) -> Self {
-        let parameters = crate::tools::make_schema::<LsParams>();
+        let parameters = crate::tools::inject_filter(
+            crate::tools::make_schema::<LsParams>(),
+            crate::types::OutputFilter::Parse,
+        );
         Self { codebase_path: Arc::new(codebase_path), parameters }
     }
 }
@@ -163,6 +166,10 @@ impl Tool for LsTool {
     fn parameters(&self) -> &Value { &self.parameters }
     fn execution_mode(&self) -> ExecutionMode { ExecutionMode::Parallel }
 
+    fn output_filter(&self) -> crate::types::OutputFilter {
+        crate::types::OutputFilter::Parse
+    }
+
     async fn execute(&self, args: Value) -> anyhow::Result<Value> {
         let params: LsParams = serde_json::from_value(args)?;
         let extra_ignore = params.ignore.unwrap_or_default();
@@ -234,5 +241,13 @@ mod tests {
         let text = result.as_str().unwrap();
         assert!(text.contains("file.rs"), "got: {text}");
         assert!(!text.contains("root.rs"), "got: {text}");
+    }
+
+    #[test]
+    fn schema_has_parse_array_field() {
+        let tool = LsTool::new(std::path::PathBuf::from("/tmp"));
+        let params = tool.parameters();
+        assert_eq!(params["properties"]["parse"]["type"].as_str().unwrap(), "array",
+            "parse should be array type: {}", params);
     }
 }
