@@ -150,6 +150,14 @@ pub enum ExecutionSignal {
     LoadContext,
 }
 
+/// How a tool's output should be post-processed before reaching the LLM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputFilter {
+    None,
+    Parse,
+    Curate,
+}
+
 /// What a `pre_tool` hook returns.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HookAction {
@@ -201,6 +209,12 @@ pub trait Tool: Send + Sync {
     /// Default: execute normally and continue the inner loop.
     fn execution_signal(&self) -> ExecutionSignal {
         ExecutionSignal::Continue
+    }
+
+    /// How this tool's output should be post-processed before reaching the LLM.
+    /// Default: no filtering.
+    fn output_filter(&self) -> OutputFilter {
+        OutputFilter::None
     }
 
     /// Convenience: box self into `Box<dyn Tool>`.
@@ -354,5 +368,12 @@ mod tests {
         assert_eq!(LoadableKind::Mcp.as_str(), "mcp");
         assert_eq!(LoadableKind::Skill.as_str(), "skill");
         assert_eq!(LoadableKind::WasmPlugin.as_str(), "plugin");
+    }
+
+    #[test]
+    fn output_filter_variants_are_distinct() {
+        assert_ne!(OutputFilter::None, OutputFilter::Parse);
+        assert_ne!(OutputFilter::None, OutputFilter::Curate);
+        assert_ne!(OutputFilter::Parse, OutputFilter::Curate);
     }
 }
