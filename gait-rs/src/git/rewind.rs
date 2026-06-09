@@ -1,6 +1,7 @@
 #[allow(unused_imports)]
 use git2::{Repository, IndexAddOption, ResetType, Oid, Status, StatusOptions};
 use std::path::Path;
+use std::sync::Mutex;
 use super::{signature_or_default, rewind_git_dir};
 
 pub trait RewindRepo: Send + Sync {
@@ -119,6 +120,60 @@ impl RewindRepo for GitRewindRepo {
         if git_dir.exists() {
             std::fs::remove_dir_all(&git_dir)?;
         }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct MockState {
+    init_calls: Vec<String>,
+    checkpoint_calls: Vec<(String, u32)>,
+    rewind_calls: Vec<(String, String)>,
+    remove_calls: Vec<String>,
+    checkpoint_error: Option<String>,
+    next_sha: u32,
+}
+
+/// In-memory RewindRepo for orchestration tests. Records calls, no filesystem.
+pub struct MockRewindRepo {
+    state: Mutex<MockState>,
+}
+
+impl MockRewindRepo {
+    pub fn new() -> Self { Self { state: Mutex::new(MockState::default()) } }
+    pub fn inject_checkpoint_error(&self, msg: &str) {
+        self.state.lock().unwrap().checkpoint_error = Some(msg.to_string());
+    }
+    pub fn init_calls(&self) -> Vec<String> { self.state.lock().unwrap().init_calls.clone() }
+    pub fn checkpoint_calls(&self) -> Vec<(String, u32)> { self.state.lock().unwrap().checkpoint_calls.clone() }
+    pub fn rewind_calls(&self) -> Vec<(String, String)> { self.state.lock().unwrap().rewind_calls.clone() }
+    pub fn remove_calls(&self) -> Vec<String> { self.state.lock().unwrap().remove_calls.clone() }
+}
+
+impl Default for MockRewindRepo {
+    fn default() -> Self { Self::new() }
+}
+
+impl RewindRepo for MockRewindRepo {
+    fn init(&self, _ws: &Path, session_id: &str, _cb: &Path) -> anyhow::Result<()> {
+        self.state.lock().unwrap().init_calls.push(session_id.to_string());
+        Ok(())
+    }
+    fn checkpoint(&self, _ws: &Path, session_id: &str, _cb: &Path, turn: u32) -> anyhow::Result<String> {
+        let mut s = self.state.lock().unwrap();
+        s.checkpoint_calls.push((session_id.to_string(), turn));
+        if let Some(msg) = s.checkpoint_error.clone() {
+            return Err(anyhow::anyhow!(msg));
+        }
+        s.next_sha += 1;
+        Ok(format!("mock-sha-{}", s.next_sha))
+    }
+    fn rewind_to(&self, _ws: &Path, session_id: &str, _cb: &Path, sha: &str) -> anyhow::Result<()> {
+        self.state.lock().unwrap().rewind_calls.push((session_id.to_string(), sha.to_string()));
+        Ok(())
+    }
+    fn remove(&self, _ws: &Path, session_id: &str) -> anyhow::Result<()> {
+        self.state.lock().unwrap().remove_calls.push(session_id.to_string());
         Ok(())
     }
 }
@@ -299,5 +354,32 @@ mod tests {
     fn remove_safe_when_absent() {
         let ws = TempDir::new().unwrap();
         GitRewindRepo.remove(ws.path(), "never-existed").unwrap(); // must not error
+    }
+}
+
+#[cfg(test)]
+mod mock_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn records_calls_and_injects_error() {
+        let mock = MockRewindRepo::new();
+        let ws = PathBuf::from("/ws");
+        let cb = PathBuf::from("/cb");
+
+        mock.init(&ws, "s1", &cb).unwrap();
+        let sha = mock.checkpoint(&ws, "s1", &cb, 1).unwrap();
+        assert_eq!(sha, "mock-sha-1");
+        assert_eq!(mock.init_calls(), vec!["s1".to_string()]);
+        assert_eq!(mock.checkpoint_calls(), vec![("s1".to_string(), 1u32)]);
+
+        mock.inject_checkpoint_error("boom");
+        let err = mock.checkpoint(&ws, "s1", &cb, 2).unwrap_err();
+        assert!(err.to_string().contains("boom"));
+        assert_eq!(mock.checkpoint_calls().len(), 2);
+
+        mock.remove(&ws, "s1").unwrap();
+        assert_eq!(mock.remove_calls(), vec!["s1".to_string()]);
     }
 }
