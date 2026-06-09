@@ -274,11 +274,33 @@ Rewind requires no in-progress turn for the session (same constraint as
 
 ## Testing
 
-Mirror archebuild's git test style (real temp repos via `tempfile`, git2 for
-assertions):
+Two tiers, following archebuild's split (`git/mock.rs` vs `git/worktree.rs`
+tests). The line: **mocks test orchestration; real-repo tests test the git
+impl.** Never use a mock to test git semantics, never stand up a real repo to
+test wiring.
 
-- `init` creates `codebase.git` borrowing objects via alternates; does not write
-  to the codebase `.git`.
+### Tier 1 — mock impls (orchestration / wiring)
+
+`MockRewindRepo` (and `MockWorkspaceRepo`) are in-memory: they record every call
+in order and let tests inject errors, with no filesystem or git2. Same shape as
+archebuild's `MockWorktreeManager` — `init_calls()`, `checkpoint_calls()`,
+`inject_checkpoint_error(...)`, etc. Used to assert `turn.rs` behavior:
+
+- `run_turn` calls `rewind.init` at session start, once, with the resolved
+  codebase path.
+- `run_turn` calls `rewind.checkpoint` **after** the transcript commit, with the
+  correct turn number, and records the returned SHA in `TurnComplete`.
+- A read-only turn (no edits) still calls `checkpoint` (which no-ops internally).
+- `gait finish` calls `rewind.remove` for the session.
+- Injected checkpoint error degrades gracefully (turn still completes; rewind
+  for that turn marked unavailable) rather than failing the turn.
+
+### Tier 2 — real-repo tests (the `GitRewindRepo` impl)
+
+Real temp repos via `tempfile`, git2 for assertions:
+
+- `init` creates `codebase.git` borrowing objects via alternates; does **not**
+  write to the codebase `.git`.
 - `checkpoint` after a file edit returns a fresh SHA; a second checkpoint with no
   change returns the same SHA (no empty commit).
 - `rewind_to` an earlier SHA restores file content **and** removes files created
