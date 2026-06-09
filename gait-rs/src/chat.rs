@@ -262,8 +262,8 @@ fn expand_paren_marker(
         if n >= 1 {
             return match crate::shell_history::recall(history_path, n) {
                 Ok(Some(entry)) => format!("[shell: {}]\n{}", entry.cmd, entry.output.trim_end()),
-                Ok(None) => format!("[history @({n}) — no entry]"),
-                Err(e) => format!("[history @({n}) — error: {e}]"),
+                Ok(None) => format!("[no shell history entry @({n}): use !cmd in the REPL to run commands and build history]"),
+                Err(e) => format!("[shell history @({n}) error: {e}]"),
             };
         }
     }
@@ -427,14 +427,6 @@ pub fn run_chat(
 
         let _ = rl.add_history_entry(&line);
 
-        let task: String = match expand_at_markers(&line, &shell_history_path, &codebase) {
-            Ok(expanded) => expanded,
-            Err(e) => {
-                eprintln!("[!] @ expand error: {e}");
-                continue;
-            }
-        };
-
         'spawn: loop {
             let mut cmd = Command::new(&gait_bin);
             cmd.args([
@@ -442,7 +434,7 @@ pub fn run_chat(
                 "--session",
                 &session_id,
                 "--task",
-                &task,
+                &line,
                 "--workspace",
                 workspace.to_str().unwrap_or("."),
                 "--codebase",
