@@ -51,6 +51,45 @@ pub fn make_schema<T: schemars::JsonSchema>() -> serde_json::Value {
     v
 }
 
+/// Inject an optional filter field into an existing JSON Schema `properties` map.
+/// `Parse` adds a structured `parse` array field (rg/sd pipeline, applied in-process).
+/// `Curate` adds a `curate_prompt` string field (LLM annotation subagent).
+/// `None` returns the schema unchanged.
+pub fn inject_filter(mut schema: serde_json::Value, filter: crate::types::OutputFilter) -> serde_json::Value {
+    use crate::types::OutputFilter;
+    match filter {
+        OutputFilter::None => return schema,
+        OutputFilter::Parse => {
+            if let Some(props) = schema.get_mut("properties").and_then(|p| p.as_object_mut()) {
+                props.insert("parse".into(), serde_json::json!({
+                    "type": "array",
+                    "description": "Optional pipeline of filter operations applied in-process before \
+                                    the result reaches the model. Operations run in order. \
+                                    {\"rg\": \"<pattern>\"} keeps only lines matching the regex \
+                                    (linear-time finite automaton, no backtracking, no ReDoS). \
+                                    {\"sd\": [\"<from>\", \"<to>\"]} replaces all regex matches of \
+                                    <from> with <to> (multiline mode).",
+                    "items": {
+                        "type": "object",
+                        "description": "One operation: {\"rg\": \"pattern\"} or {\"sd\": [\"from\", \"to\"]}"
+                    }
+                }));
+            }
+        }
+        OutputFilter::Curate => {
+            if let Some(props) = schema.get_mut("properties").and_then(|p| p.as_object_mut()) {
+                props.insert("curate_prompt".into(), serde_json::json!({
+                    "type": "string",
+                    "description": "Route this tool's output through a 1-turn annotation subagent \
+                                    before the model sees it. Describe what counts as relevant. \
+                                    Returns {relevant: [...], irrelevant: [...]}."
+                }));
+            }
+        }
+    }
+    schema
+}
+
 /// Names of all built-in tools. Used for allow-list validation without constructing tool instances.
 pub fn builtin_tool_names() -> &'static [&'static str] {
     &["read", "write", "edit", "glob", "grep", "ls", "shell", "output",
@@ -129,5 +168,37 @@ mod tests {
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"load"), "missing load: {:?}", names);
+    }
+
+    #[test]
+    fn inject_filter_parse_adds_array_field() {
+        use crate::types::OutputFilter;
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "cmd": { "type": "string" } }
+        });
+        let result = inject_filter(schema, OutputFilter::Parse);
+        let parse_field = &result["properties"]["parse"];
+        assert!(parse_field.is_object(), "parse field missing: {result}");
+        assert_eq!(parse_field["type"].as_str().unwrap(), "array");
+    }
+
+    #[test]
+    fn inject_filter_curate_adds_curate_prompt_field() {
+        use crate::types::OutputFilter;
+        let schema = serde_json::json!({ "type": "object", "properties": {} });
+        let result = inject_filter(schema, OutputFilter::Curate);
+        assert!(result["properties"]["curate_prompt"].is_object());
+        assert_eq!(result["properties"]["curate_prompt"]["type"].as_str().unwrap(), "string");
+    }
+
+    #[test]
+    fn inject_filter_none_is_noop() {
+        use crate::types::OutputFilter;
+        let schema = serde_json::json!({ "type": "object", "properties": {} });
+        let result = inject_filter(schema, OutputFilter::None);
+        let props = result["properties"].as_object().unwrap();
+        assert!(!props.contains_key("parse"));
+        assert!(!props.contains_key("curate_prompt"));
     }
 }
