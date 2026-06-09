@@ -29,6 +29,8 @@ termimad  = "0.23"
 rustyline = "14"
 rmcp = { version = "1", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 portable-pty = "0.8"
+grep-regex = "0.1.14"
+grep-searcher = "0.1.16"
 
 [dev-dependencies]
 tokio-test = "0.4"
