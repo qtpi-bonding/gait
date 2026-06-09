@@ -273,11 +273,11 @@ git commit -m "refactor: CodebaseRepo trait (read-only) replaces codebase git fr
 - Modify: `src/git/mod.rs` (remove the migrated free functions)
 - Modify callers: `src/turn.rs`, `src/harness.rs`, `src/tools/spawn_agent.rs`, `src/workflow/runner.rs`, `src/bin/gait.rs`, `src/tools/list_agents.rs`
 
-Owns the workspace `.git`. Methods: `init_workspace`, `create_session_worktree`, `commit_session`, `remove_session_worktree`, `finish_session`, `create_branch_worktree`, `remove_branch_worktree`.
+Owns the workspace `.git`. The real `git.rs` has exactly these 8 workspace functions (verified — there is **no** `remove_session_worktree`): `init_workspace`, `create_session_worktree`, `commit_session`, `list_active_sessions`, `finish_session`, `create_branch_worktree`, `remove_branch_worktree`, `merge_branch_ff`.
 
 - [ ] **Step 1: Define the trait + impl in `src/git/workspace.rs`**
 
-Move the bodies of those functions verbatim from `mod.rs` into trait methods. Use the shared `with_gait_trailer` / `signature_or_default` from `mod.rs` (`use super::{with_gait_trailer, signature_or_default};`). One behavior change: in `create_session_worktree`, the initial `.gitignore` must also exclude the shadow db so it is never committed into transcript history:
+Move the bodies of those 8 functions verbatim from `mod.rs` into trait methods. Use the shared `with_gait_trailer` / `signature_or_default` from `mod.rs` (`use super::{with_gait_trailer, signature_or_default};`). One behavior change: in `create_session_worktree`, the initial `.gitignore` must also exclude the shadow db so it is never committed into transcript history:
 
 ```rust
 use std::path::Path;
@@ -288,10 +288,11 @@ pub trait WorkspaceRepo: Send + Sync {
     fn init_workspace(&self, workspace: &Path) -> anyhow::Result<()>;
     fn create_session_worktree(&self, workspace: &Path, session_id: &str) -> anyhow::Result<()>;
     fn commit_session(&self, workspace: &Path, session_id: &str, message: &str) -> anyhow::Result<()>;
-    fn remove_session_worktree(&self, workspace: &Path, session_id: &str) -> anyhow::Result<()>;
+    fn list_active_sessions(&self, workspace: &Path) -> anyhow::Result<Vec<String>>;
     fn finish_session(&self, workspace: &Path, session_id: &str) -> anyhow::Result<()>;
     fn create_branch_worktree(&self, workspace: &Path, base_branch: &str, new_branch: &str, worktree_path: &Path) -> anyhow::Result<()>;
     fn remove_branch_worktree(&self, workspace: &Path, worktree_path: &Path) -> anyhow::Result<()>;
+    fn merge_branch_ff(&self, workspace: &Path, target_branch: &str, source_branch: &str) -> anyhow::Result<()>;
 }
 
 pub struct GitWorkspaceRepo;
@@ -313,7 +314,7 @@ In the migrated `create_session_worktree`, change the `.gitignore` write so it r
 
 - [ ] **Step 2: Remove the migrated free functions from `src/git/mod.rs`**
 
-Delete `init_workspace`, `create_session_worktree`, `commit_session`, `remove_session_worktree`, `finish_session`, `create_branch_worktree`, `remove_branch_worktree` from `mod.rs`. Keep the `#[cfg(test)]` module in `mod.rs` only if its tests still reference symbols that remain; otherwise move those tests into `workspace.rs`'s test module (they exercise worktree/commit behavior).
+Delete all 8: `init_workspace`, `create_session_worktree`, `commit_session`, `list_active_sessions`, `finish_session`, `create_branch_worktree`, `remove_branch_worktree`, `merge_branch_ff` from `mod.rs`. Move the `#[cfg(test)]` tests in `mod.rs` that exercise these (e.g. the `list_active_sessions` tests at git.rs:328,343) into `workspace.rs`'s test module, converting calls to `GitWorkspaceRepo.method(...)` form. After this step, `mod.rs` contains only the shared helpers + submodule declarations.
 
 - [ ] **Step 3: Migrate production callers**
 
@@ -328,7 +329,11 @@ Replace each call. The argument lists are unchanged — only the prefix changes 
 | `src/workflow/runner.rs:31,57,94,152,197,217,222` | `git::create_session_worktree(…)` / `git::commit_session(…)` | `GitWorkspaceRepo.create_session_worktree(…)` / `.commit_session(…)` |
 | `src/bin/gait.rs:390` | `git::init_workspace(&workspace)` | `GitWorkspaceRepo.init_workspace(&workspace)` |
 | `src/bin/gait.rs:487` | `git::finish_session(&workspace, &session_id)` | `GitWorkspaceRepo.finish_session(&workspace, &session_id)` |
+| `src/bin/gait.rs:501` | `git::list_active_sessions(&workspace)` | `GitWorkspaceRepo.list_active_sessions(&workspace)` |
+| `src/bin/gait.rs:634` | `gait_ai::git::list_active_sessions(&workspace)` | `gait_ai::git::workspace::GitWorkspaceRepo.list_active_sessions(&workspace)` (trait in scope) |
 | `src/bin/gait.rs:710` | `gait_ai::git::commit_session(…)` | `gait_ai::git::workspace::GitWorkspaceRepo.commit_session(…)` (with the trait in scope) |
+
+(If `merge_branch_ff` has any caller the compiler flags, migrate it the same way: `GitWorkspaceRepo.merge_branch_ff(…)`.)
 
 - [ ] **Step 4: Migrate test callers**
 
@@ -984,84 +989,73 @@ git commit -m "feat(transcript): add internal code_checkpoint field to TurnCompl
 - Modify: `src/turn.rs`
 - Test: `src/turn.rs` (`#[cfg(test)]`)
 
-A single helper performs the workspace commit + codebase checkpoint together, so the two production `TurnComplete` sites stay DRY and the ordering is testable with `MockRewindRepo`.
+**CRITICAL ordering constraint (verified against the live code):** the two production `TurnComplete` sites today **emit the event FIRST, then call `commit_session`** (turn.rs:635-648 and 957-970). That order is load-bearing: `commit_session` git-commits `transcript.jsonl` *after* the `TurnComplete` line has been appended, so each turn's event lands in its own commit. If you commit *before* emit, the turn's `TurnComplete` is only committed on the next turn — and the **last turn's event is never committed**. So we must NOT introduce a "commit then emit" helper.
+
+Instead the helper does **checkpoint only** (no commit). We call it *before* emit to obtain the SHA for the event, and leave the existing `commit_session` call *after* emit exactly where it is.
+
+Also note the real field names (do not invent): the event uses `output: TurnOutput { message, result }` where `TurnOutput.message: String` (transcript.rs:23-25). `count_turn_complete` returns `usize` (transcript.rs:315).
 
 - [ ] **Step 1: Write the failing orchestration test (append to turn.rs test module)**
 
 ```rust
     #[test]
-    fn persist_turn_commits_then_checkpoints_in_order() {
-        use crate::git::rewind::{RewindRepo, MockRewindRepo};
-        use crate::git::workspace::{WorkspaceRepo, GitWorkspaceRepo};
+    fn checkpoint_codebase_returns_sha_and_records_call() {
+        use crate::git::rewind::MockRewindRepo;
         let ws = tempfile::TempDir::new().unwrap();
-        let session_id = "spersist1";
-        GitWorkspaceRepo.init_workspace(ws.path()).unwrap();
-        GitWorkspaceRepo.create_session_worktree(ws.path(), session_id).unwrap();
-        let codebase = ws.path().to_path_buf(); // any path; mock ignores it
-
+        let codebase = ws.path().to_path_buf(); // mock ignores the path
         let rewind = MockRewindRepo::new();
-        let sha = persist_turn(&GitWorkspaceRepo, &rewind, ws.path(), session_id, &codebase, 1).unwrap();
+
+        let sha = checkpoint_codebase(&rewind, ws.path(), "scp1", &codebase, 1);
 
         assert_eq!(sha.as_deref(), Some("mock-sha-1"));
-        assert_eq!(rewind.checkpoint_calls(), vec![(session_id.to_string(), 1u32)]);
+        assert_eq!(rewind.checkpoint_calls(), vec![("scp1".to_string(), 1u32)]);
     }
 
     #[test]
-    fn persist_turn_tolerates_checkpoint_error() {
-        use crate::git::rewind::{RewindRepo, MockRewindRepo};
-        use crate::git::workspace::{WorkspaceRepo, GitWorkspaceRepo};
+    fn checkpoint_codebase_tolerates_error() {
+        use crate::git::rewind::MockRewindRepo;
         let ws = tempfile::TempDir::new().unwrap();
-        let session_id = "spersist2";
-        GitWorkspaceRepo.init_workspace(ws.path()).unwrap();
-        GitWorkspaceRepo.create_session_worktree(ws.path(), session_id).unwrap();
         let codebase = ws.path().to_path_buf();
-
         let rewind = MockRewindRepo::new();
         rewind.inject_checkpoint_error("disk full");
-        // A checkpoint failure must NOT fail the turn — it returns None.
-        let sha = persist_turn(&GitWorkspaceRepo, &rewind, ws.path(), session_id, &codebase, 1).unwrap();
+
+        // A checkpoint failure must NOT panic or propagate — it yields None.
+        let sha = checkpoint_codebase(&rewind, ws.path(), "scp2", &codebase, 1);
         assert!(sha.is_none());
     }
 ```
 
 - [ ] **Step 2: Run to confirm failure**
 
-Run: `cargo test --lib turn::tests::persist_turn 2>&1 | tail -15`
-Expected: FAIL — `persist_turn` not defined.
+Run: `cargo test --lib turn::tests::checkpoint_codebase 2>&1 | tail -15`
+Expected: FAIL — `checkpoint_codebase` not defined.
 
-- [ ] **Step 3: Implement the `persist_turn` helper in `src/turn.rs`**
+- [ ] **Step 3: Implement the `checkpoint_codebase` helper in `src/turn.rs`**
 
-Add near the other free helpers (e.g. below `build_turn_context`):
+Add near the other free helpers (e.g. below `build_turn_context`). It does **not** commit — it only snapshots the codebase and returns the SHA:
 
 ```rust
-use crate::git::workspace::WorkspaceRepo;
 use crate::git::rewind::RewindRepo;
 
-/// End-of-turn persistence: commit the workspace transcript, then checkpoint
-/// the codebase into the shadow db. Returns the checkpoint SHA (None if the
-/// codebase is not a git repo or the checkpoint failed — never fails the turn).
-fn persist_turn(
-    workspace_repo: &dyn WorkspaceRepo,
+/// Snapshot the codebase into the shadow db for this turn. Returns the
+/// checkpoint SHA, or None if the codebase is not a git repo or the checkpoint
+/// failed — a checkpoint failure must never fail the turn. Does NOT commit the
+/// transcript; the caller's existing `commit_session` runs after emit.
+fn checkpoint_codebase(
     rewind: &dyn RewindRepo,
     workspace: &Path,
     session_id: &str,
     codebase: &Path,
     turn: u32,
-) -> anyhow::Result<Option<String>> {
-    workspace_repo.commit_session(
-        workspace,
-        session_id,
-        &format!("session({}): turn {}", session_id, turn),
-    )?;
-    let checkpoint = match rewind.checkpoint(workspace, session_id, codebase, turn) {
+) -> Option<String> {
+    match rewind.checkpoint(workspace, session_id, codebase, turn) {
         Ok(sha) if !sha.is_empty() => Some(sha),
         Ok(_) => None, // non-git codebase
         Err(e) => {
             tracing::warn!(error = %e, session = session_id, "rewind checkpoint failed; rewind unavailable for this turn");
             None
         }
-    };
-    Ok(checkpoint)
+    }
 }
 ```
 
@@ -1074,75 +1068,82 @@ After `src/turn.rs:357` (`GitWorkspaceRepo.create_session_worktree(...)` from Ta
         .init(&opts.workspace, &opts.session_id, &opts.codebase_path)?;
 ```
 
-- [ ] **Step 5: Replace the two production TurnComplete+commit sites with `persist_turn`**
+- [ ] **Step 5: Insert the checkpoint at the implicit-output site (turn.rs:631-650)**
 
-At `src/turn.rs:635-648` (implicit-output path), replace the `emit_event(TurnComplete …)` + `git/commit_session` block with: compute the checkpoint first via `persist_turn`, then emit the event carrying the SHA. The block becomes:
+Make THREE surgical changes to this block — do not rewrite the rest of it:
+
+(a) Change the `turn_n` line to cast `usize → u32`:
 
 ```rust
-        if step_tool_calls.is_empty() {
-            let summary = step_text.lines().next().unwrap_or("").to_string();
-            let events_now = read_events(&tx_path)?;
             let turn_n = count_turn_complete(&events_now) as u32 + 1;
-            let code_checkpoint = persist_turn(
-                &crate::git::workspace::GitWorkspaceRepo,
-                &crate::git::rewind::GitRewindRepo,
-                &opts.workspace, &opts.session_id, &opts.codebase_path, turn_n,
-            )?;
-            emit_event(&tx_path, &AnyEvent::TurnComplete {
-                usage: TurnUsage {
-                    input: total_usage.input_tokens as u64,
-                    output: total_usage.output_tokens as u64,
-                    cache_read: total_usage.cache_read_tokens as u64,
-                    cache_write: total_usage.cache_write_tokens as u64,
-                },
-                codebase_hash: codebase_hash.clone(),
-                codebase_dirty,
-                code_checkpoint,
-                output: TurnOutput { summary: summary.clone(), result: None },
-                ts: now_ms(),
-            })?;
-            for h in &opts.hooks { h.post_turn(); }
-            return Ok(TurnResult::Done { summary, result: None });
-        }
 ```
 
-Note: `persist_turn` runs **before** `emit_event` so the committed transcript does not yet contain this turn's `TurnComplete` — preserving the existing `count_turn_complete + 1` numbering. The commit at the next idle point already captured prior events; the new TurnComplete is committed by the *following* turn's `persist_turn` (matching today's behavior where `commit_session` runs after emit — verify the test in Step 6 still shows the event persisted). If the existing code committed *after* emit on purpose, instead emit first, then call a checkpoint-only helper; see Step 6.
+(b) Immediately after that `turn_n` line and **before** `emit_event(...)`, add:
 
-Apply the same replacement at the explicit `output()` tool TurnComplete site, `src/turn.rs:957` (the structure there mirrors this; reuse `persist_turn`, set `result` from the output payload, keep `code_checkpoint`).
+```rust
+            let code_checkpoint = checkpoint_codebase(
+                &crate::git::rewind::GitRewindRepo,
+                &opts.workspace, &opts.session_id, &opts.codebase_path, turn_n,
+            );
+```
 
-- [ ] **Step 6: Verify event-ordering behavior is preserved**
+(c) Change the placeholder `code_checkpoint: None,` (added in Task 9 Step 3) in the `TurnComplete { … }` literal to `code_checkpoint,` so it uses the local computed in (b). Leave `output: TurnOutput { message: message.clone(), result: None }`, the `commit_session` call, the hooks loop, and the `return Ok(TurnResult::Done { message, result: None })` all unchanged.
 
-Run: `cargo test --lib turn:: 2>&1 | tail -20`
-Expected: PASS, including the existing tests that assert a `TurnComplete` event is written (e.g. the `has_turn_complete` / `tc_event` tests around turn.rs:1238-1343). If any of those now fail because the commit/emit order changed, restore the original order (emit `TurnComplete` first, then call a `checkpoint_only` helper that does just `commit_session` + `rewind.checkpoint`), and have the `TurnComplete` carry the SHA by computing the checkpoint *before* emit but committing *after*. The invariant to preserve: the SHA in the event is the checkpoint of the files as they stand at turn end.
+The `commit_session` call at turn.rs:647-648 stays exactly where it is (after emit). The `&format!("session({}): turn {}", opts.session_id, turn_n)` argument now passes a `u32`, which formats identically.
 
-- [ ] **Step 7: Add a real-repo integration test (append to turn.rs test module)**
+- [ ] **Step 6: Insert the checkpoint at the explicit `output()` site (turn.rs:953-972)**
+
+Same three changes to that block:
+
+(a) `let turn_n = count_turn_complete(&events_now) as u32 + 1;`
+
+(b) After `turn_n`, before `emit_event`:
+
+```rust
+                        let code_checkpoint = checkpoint_codebase(
+                            &crate::git::rewind::GitRewindRepo,
+                            &opts.workspace, &opts.session_id, &opts.codebase_path, turn_n,
+                        );
+```
+
+(c) Change the placeholder `code_checkpoint: None,` (added in Task 9 Step 3) in that `TurnComplete { … }` literal to `code_checkpoint,`. Leave `output: TurnOutput { message: message.clone(), result: result.clone() }`, the `commit_session` call (turn.rs:969), the hooks loop, and `return Ok(TurnResult::Done { message, result })` unchanged.
+
+- [ ] **Step 7: Build + verify existing turn tests still pass (ordering preserved)**
+
+Run: `cargo build 2>&1 | tail -10 && cargo test --lib turn:: 2>&1 | tail -20`
+Expected: PASS — including `tc_event` / `has_turn_complete` tests (turn.rs:1238-1343). Because emit-then-commit order is unchanged, these must not regress. If any fail, you changed the order — revert to: cast `turn_n`, compute `code_checkpoint` before emit, emit, then the original `commit_session`.
+
+- [ ] **Step 8: Add a real-repo integration test (append to turn.rs test module)**
+
+Most existing `run_turn` tests set `codebase_path: ws.path()` (the workspace, which is itself a git repo) — that degenerate case still works but checkpoints the whole workspace. This new test uses a **separate** git codebase so the assertion is meaningful:
 
 ```rust
     #[tokio::test]
     async fn run_turn_records_code_checkpoint_for_git_codebase() {
-        // Uses the existing test harness pattern in this module (mock provider).
-        // After one completed turn against a git codebase, the TurnComplete
-        // event carries a non-empty code_checkpoint and the shadow db exists.
-        // Model this on the nearest existing run_turn test (e.g. turn.rs:1145),
-        // pointing codebase_path at a freshly-initialized git repo with one commit.
-        // Assertions:
-        //   let events = read_events(&tx_path).unwrap();
-        //   let tc = events.iter().rev().find_map(|e| match e {
-        //       AnyEvent::TurnComplete { code_checkpoint, .. } => Some(code_checkpoint.clone()),
-        //       _ => None }).flatten();
-        //   assert!(tc.is_some());
-        //   assert!(crate::git::rewind_git_dir(ws.path(), session_id).exists());
+        // Copy the closest existing run_turn test in this file (e.g. the one at
+        // ~turn.rs:1145) for provider/tool setup. The ONLY differences:
+        //   1. Create a separate codebase dir that is its own git repo with one
+        //      commit, and set TurnOpts.codebase_path to it (NOT ws.path()):
+        //        let cb = tempfile::TempDir::new().unwrap();
+        //        let repo = git2::Repository::init(cb.path()).unwrap();
+        //        // configure user, write a file, add, commit "init" (see Task 4 fixture)
+        //   2. After the turn completes, assert the event carries a checkpoint
+        //      and the shadow db exists:
+        //        let events = read_events(&tx_path).unwrap();
+        //        let cp = events.iter().rev().find_map(|e| match e {
+        //            AnyEvent::TurnComplete { code_checkpoint, .. } => Some(code_checkpoint.clone()),
+        //            _ => None }).flatten();
+        //        assert!(cp.is_some(), "expected a code checkpoint SHA");
+        //        assert!(crate::git::rewind_git_dir(ws.path(), session_id).exists());
     }
 ```
 
-Implement the body by copying the closest existing `run_turn` test in the file and adding a git-initialized codebase + the two assertions above.
-
-- [ ] **Step 8: Build + full test**
+- [ ] **Step 9: Build + full test**
 
 Run: `cargo build 2>&1 | tail -10 && cargo test 2>&1 | tail -15`
 Expected: all pass.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add src/turn.rs
@@ -1163,16 +1164,55 @@ gait rewind <session-id> --list   [--workspace <path>]
 
 `--list` prints each turn with its summary + checkpoint. A rewind with neither `--code` nor `--transcript` does both. Requires no in-progress turn (acquire the session lock first).
 
-- [ ] **Step 1: Read the existing CLI dispatch to match its style**
+- [ ] **Step 1: Read the existing CLI dispatch to confirm the pattern**
 
-Run: `grep -n "\"finish\"\|\"sessions\"\|fn .*command\|match .*subcommand\|Commands::" src/bin/gait.rs | head -30`
-Identify how subcommands are declared (clap derive vs manual match) and follow that exact pattern for `rewind`.
+Run: `grep -n "=> cmd_\|fn cmd_\|match args" src/bin/gait.rs | head -40`
+Confirmed pattern (do not assume — verify): dispatch is a **manual** `match args[1].as_str()` (~bin/gait.rs:107), and each subcommand is a `"name" => cmd_name(&args[2..]),` arm whose `cmd_name(argv: &[String])` wrapper parses its own flags (see `cmd_finish` at ~:478). Follow this exactly — there is no clap derive.
 
-- [ ] **Step 2: Add the `Rewind` subcommand variant**
+- [ ] **Step 2: Add the dispatch arm + the `cmd_rewind` arg-parser wrapper**
 
-Following the file's existing pattern, add a subcommand with fields: `session_id: String`, `turn: Option<u32>`, `code: bool`, `transcript: bool`, `list: bool`, `workspace: Option<PathBuf>`. (If clap derive: a new enum variant with `#[arg(long)]` flags. If manual: a new match arm + arg parsing mirroring `finish`.)
+In the `match args[1].as_str()` block (~:107), add:
 
-- [ ] **Step 3: Implement the handler**
+```rust
+        "rewind" => cmd_rewind(&args[2..]),
+```
+
+Then add the wrapper that parses argv and calls the typed handler (model it on `cmd_finish`):
+
+```rust
+fn cmd_rewind(argv: &[String]) -> anyhow::Result<()> {
+    let mut session_id: Option<String> = None;
+    let mut turn: Option<u32> = None;
+    let mut code = false;
+    let mut transcript = false;
+    let mut list = false;
+    let mut workspace: Option<PathBuf> = None;
+
+    let mut i = 0;
+    while i < argv.len() {
+        match argv[i].as_str() {
+            "--turn" => { i += 1; turn = Some(argv.get(i)
+                .ok_or_else(|| anyhow::anyhow!("--turn needs a value"))?.parse()?); }
+            "--code" => code = true,
+            "--transcript" => transcript = true,
+            "--list" => list = true,
+            "--workspace" => { i += 1; workspace = Some(PathBuf::from(argv.get(i)
+                .ok_or_else(|| anyhow::anyhow!("--workspace needs a value"))?)); }
+            other if !other.starts_with("--") && session_id.is_none() => {
+                session_id = Some(other.to_string());
+            }
+            other => anyhow::bail!("unexpected argument: {}", other),
+        }
+        i += 1;
+    }
+
+    let session_id = session_id.ok_or_else(|| anyhow::anyhow!("usage: gait rewind <session-id> [--turn N | --list] [--code] [--transcript]"))?;
+    let workspace = workspace.unwrap_or_else(|| std::env::current_dir().unwrap());
+    rewind_command(&session_id, turn, code, transcript, list, workspace)
+}
+```
+
+- [ ] **Step 3: Implement the typed handler**
 
 ```rust
 fn rewind_command(
@@ -1251,25 +1291,27 @@ fn rewind_command(
 
 - [ ] **Step 4: Implement `rewind_transcript_to_turn`**
 
-Reset the workspace `session/<id>` branch so its committed transcript no longer contains turns after `turn`. Since each turn is one commit (`session(<id>): turn N`), find the commit whose message ends with `turn <turn>` and hard-reset the session worktree to it:
+Reset the workspace `session/<id>` branch so its committed transcript no longer contains turns after `turn`. The exact commit summary is `session(<id>): turn N` (turn.rs:648,970; a gait `Co-Authored-By` trailer follows on later lines, but `commit.summary()` returns only the first line). Match the **full** summary — not a `"turn N"` suffix — to avoid matching workflow commits (`workflow: …`) or the `session(<id>): init` commit, and to avoid any ambiguity:
 
 ```rust
 fn rewind_transcript_to_turn(workspace: &Path, session_id: &str, turn: u32) -> anyhow::Result<()> {
     let session_dir = workspace.join("sessions").join(session_id);
     let repo = git2::Repository::open(&session_dir)?;
-    let needle = format!("turn {}", turn);
+    let needle = format!("session({}): turn {}", session_id, turn);
     let mut walk = repo.revwalk()?;
     walk.push_head()?;
     let mut target: Option<git2::Oid> = None;
     for oid in walk {
         let oid = oid?;
         let commit = repo.find_commit(oid)?;
-        if commit.summary().map(|s| s.ends_with(&needle)).unwrap_or(false) {
+        if commit.summary() == Some(needle.as_str()) {
             target = Some(oid);
             break;
         }
     }
-    let oid = target.ok_or_else(|| anyhow::anyhow!("no commit for turn {} in session {}", turn, session_id))?;
+    let oid = target.ok_or_else(|| anyhow::anyhow!(
+        "no commit for turn {} in session {} (transcript rewind applies to interactive turn sessions, not workflows)",
+        turn, session_id))?;
     let obj = repo.find_object(oid, None)?;
     repo.reset(&obj, git2::ResetType::Hard, None)?;
     Ok(())
@@ -1348,7 +1390,7 @@ Expected: all tests pass (original 188 + new codebase/workspace/rewind/turn test
 
 - [ ] **No leftover free-fn references**
 
-Run: `grep -rn "git::get_codebase_hash\|git::get_dirty_files\|git::create_session_worktree\|git::commit_session\|git::finish_session\|git::init_workspace\|git::remove_session_worktree\|git::create_branch_worktree\|git::remove_branch_worktree" src/`
+Run: `grep -rn "git::get_codebase_hash\|git::get_dirty_files\|git::create_session_worktree\|git::commit_session\|git::list_active_sessions\|git::finish_session\|git::init_workspace\|git::create_branch_worktree\|git::remove_branch_worktree\|git::merge_branch_ff" src/`
 Expected: no matches — every caller migrated to a trait method.
 
 - [ ] **Clippy clean**
