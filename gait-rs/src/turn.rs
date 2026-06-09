@@ -825,6 +825,23 @@ pub async fn run_turn(
                         result.result = serde_json::Value::String(new);
                     }
                 }
+                // Apply output filter — in-memory only; transcript keeps raw result.
+                let result_str = result.result.as_str().map(|s| s.to_string())
+                    .unwrap_or_else(|| result.result.to_string());
+                if let Some(parse_ops) = tc.args.get("parse") {
+                    result.result = serde_json::Value::String(apply_parse_filter(&result_str, parse_ops));
+                } else if let Some(curate_prompt) = tc.args.get("curate_prompt").and_then(|v| v.as_str()) {
+                    let workspace = opts.workspace.clone();
+                    let codebase_path = opts.codebase_path.clone();
+                    let model = opts.model.clone();
+                    let provider_clone = provider.clone();
+                    result.result = Box::pin(async move {
+                        apply_curate_filter(
+                            &result_str, curate_prompt,
+                            &workspace, &codebase_path, &model, provider_clone,
+                        ).await
+                    }).await;
+                }
                 all_results[*i] = Some((part, result));
             }
 
@@ -898,6 +915,23 @@ pub async fn run_turn(
                                 result.result = serde_json::Value::String(new);
                             }
                         }
+                        // Apply output filter — in-memory only; transcript keeps raw result.
+                        let result_str = result.result.as_str().map(|s| s.to_string())
+                            .unwrap_or_else(|| result.result.to_string());
+                        if let Some(parse_ops) = tc.args.get("parse") {
+                            result.result = serde_json::Value::String(apply_parse_filter(&result_str, parse_ops));
+                        } else if let Some(curate_prompt) = tc.args.get("curate_prompt").and_then(|v| v.as_str()) {
+                            let workspace = opts.workspace.clone();
+                            let codebase_path = opts.codebase_path.clone();
+                            let model = opts.model.clone();
+                            let provider_clone = provider.clone();
+                            result.result = Box::pin(async move {
+                                apply_curate_filter(
+                                    &result_str, curate_prompt,
+                                    &workspace, &codebase_path, &model, provider_clone,
+                                ).await
+                            }).await;
+                        }
                         all_results[*i] = Some((part, result));
                     }
                     ExecutionSignal::TurnComplete => {
@@ -958,6 +992,23 @@ pub async fn run_turn(
                             if let Some(new) = h.post_tool(&tc.tool_name, &result_str) {
                                 result.result = serde_json::Value::String(new);
                             }
+                        }
+                        // Apply output filter — in-memory only; transcript keeps raw result.
+                        let result_str = result.result.as_str().map(|s| s.to_string())
+                            .unwrap_or_else(|| result.result.to_string());
+                        if let Some(parse_ops) = tc.args.get("parse") {
+                            result.result = serde_json::Value::String(apply_parse_filter(&result_str, parse_ops));
+                        } else if let Some(curate_prompt) = tc.args.get("curate_prompt").and_then(|v| v.as_str()) {
+                            let workspace = opts.workspace.clone();
+                            let codebase_path = opts.codebase_path.clone();
+                            let model = opts.model.clone();
+                            let provider_clone = provider.clone();
+                            result.result = Box::pin(async move {
+                                apply_curate_filter(
+                                    &result_str, curate_prompt,
+                                    &workspace, &codebase_path, &model, provider_clone,
+                                ).await
+                            }).await;
                         }
                         all_results[*i] = Some((part, result));
                     }
