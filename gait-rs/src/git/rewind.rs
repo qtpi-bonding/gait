@@ -33,7 +33,27 @@ impl RewindRepo for GitRewindRepo {
         let shadow = Repository::init_bare(&git_dir)?;
 
         // Borrow the codebase's object store instead of copying it.
-        let cb_objects = codebase.join(".git").join("objects");
+        // Use commondir (not `<codebase>/.git`) so this works when the codebase
+        // is a linked git worktree, and canonicalize so the alternates entry is
+        // absolute (git resolves relative entries against the shadow's objects/info dir).
+        //
+        // git2 0.19 has no `commondir()` method, so we implement the same logic
+        // manually: a linked worktree's git dir contains a `commondir` file with a
+        // relative path back to the main `.git/`. Normal repos don't have that file.
+        let git_path = cb.path(); // e.g. <root>/.git/ or <main>/.git/worktrees/wt/
+        let cb_objects_raw = {
+            let commondir_file = git_path.join("commondir");
+            if commondir_file.exists() {
+                // linked worktree: read the relative commondir and resolve it
+                let rel = std::fs::read_to_string(&commondir_file)
+                    .unwrap_or_default();
+                let rel = rel.trim();
+                git_path.join(rel).join("objects")
+            } else {
+                git_path.join("objects")
+            }
+        };
+        let cb_objects = std::fs::canonicalize(&cb_objects_raw).unwrap_or(cb_objects_raw);
         let info_dir = git_dir.join("objects").join("info");
         std::fs::create_dir_all(&info_dir)?;
         std::fs::write(info_dir.join("alternates"), format!("{}\n", cb_objects.display()))?;
@@ -217,6 +237,7 @@ mod tests {
         assert!(alt.exists(), "alternates file missing");
         let content = std::fs::read_to_string(&alt).unwrap();
         assert!(content.contains(".git/objects"), "alternates should point at codebase objects");
+        assert!(std::path::Path::new(content.trim()).is_absolute(), "alternates entry must be absolute, got: {content}");
     }
 
     #[test]
@@ -354,6 +375,41 @@ mod tests {
     fn remove_safe_when_absent() {
         let ws = TempDir::new().unwrap();
         GitRewindRepo.remove(ws.path(), "never-existed").unwrap(); // must not error
+    }
+
+    #[test]
+    fn init_works_for_worktree_codebase() {
+        use git2::WorktreeAddOptions;
+        let ws = TempDir::new().unwrap();
+        let id = "swt001".to_string();
+        std::fs::create_dir_all(ws.path().join("sessions").join(&id)).unwrap();
+
+        // main codebase repo with one commit
+        let main = TempDir::new().unwrap();
+        let repo = Repository::init(main.path()).unwrap();
+        { let mut c = repo.config().unwrap(); c.set_str("user.email","t@t.com").unwrap(); c.set_str("user.name","T").unwrap(); }
+        std::fs::write(main.path().join("a.txt"), "one\n").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(Path::new("a.txt")).unwrap();
+        idx.write().unwrap();
+        let tree = repo.find_tree(idx.write_tree().unwrap()).unwrap();
+        let sig = repo.signature().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+
+        // linked worktree
+        let wt_dir = TempDir::new().unwrap();
+        let wt_path = wt_dir.path().join("wt");
+        repo.worktree("wt", &wt_path, Some(&WorktreeAddOptions::new())).unwrap();
+
+        // init shadow db pointing at the WORKTREE
+        GitRewindRepo.init(ws.path(), &id, &wt_path).unwrap();
+
+        let git_dir = rewind_git_dir(ws.path(), &id);
+        assert!(git_dir.join("HEAD").exists(), "shadow HEAD missing for worktree codebase");
+        let alt = std::fs::read_to_string(git_dir.join("objects").join("info").join("alternates")).unwrap();
+        assert!(std::path::Path::new(alt.trim()).is_absolute());
+        // alternates must point at the MAIN repo's objects (commondir), which actually exists
+        assert!(std::path::Path::new(alt.trim()).exists(), "alternates objects dir must exist: {alt}");
     }
 }
 
