@@ -279,7 +279,43 @@ pub struct HashlineEditOp {
     /// End line reference for a replace range (e.g. "44#XQ"). Omit for single-line replace.
     pub end: Option<String>,
     /// Replacement or insertion lines (do NOT include the old lines — only the new content)
+    #[serde(deserialize_with = "de_lines")]
     pub lines: Vec<String>,
+}
+
+/// Tolerant deserializer for `lines`. Weak models (notably MiniMax) emit the
+/// array in non-canonical shapes; accept all of them so a valid edit isn't
+/// rejected with "invalid type: map, expected a sequence":
+///   - `["a","b"]`            → as-is (canonical)
+///   - `"a\nb"`               → split on newlines
+///   - `{"item":["a","b"]}`   → unwrapped (MiniMax wraps arrays under item/items/lines/value)
+fn de_lines<'de, D>(d: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Lines {
+        Vec(Vec<String>),
+        Str(String),
+        Wrapped(std::collections::BTreeMap<String, Vec<String>>),
+    }
+    match Lines::deserialize(d)? {
+        Lines::Vec(v) => Ok(v),
+        Lines::Str(s) => Ok(s.split('\n').map(|x| x.to_string()).collect()),
+        Lines::Wrapped(mut m) => {
+            for k in ["item", "items", "lines", "value", "values"] {
+                if let Some(v) = m.remove(k) {
+                    return Ok(v);
+                }
+            }
+            // Any single wrapped array key.
+            m.into_values()
+                .next()
+                .ok_or_else(|| serde::de::Error::custom("`lines` object had no array value"))
+        }
+    }
 }
 
 // ── Deduplication & ordering ─────────────────────────────────────────────────

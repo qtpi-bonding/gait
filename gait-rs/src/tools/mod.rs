@@ -40,11 +40,19 @@ use crate::config::{McpToolDef, SkillDef};
 /// that schemars adds by default. Anthropic's `input_schema` field accepts a plain
 /// JSON Schema object — the extra meta-keys cause 400 errors against the live API.
 pub fn make_schema<T: schemars::JsonSchema>() -> serde_json::Value {
-    let schema = schemars::schema_for!(T);
+    // Inline subschemas so the emitted schema is fully self-contained — no
+    // `$ref`/`definitions` indirection. Weak OpenAI-compatible models (e.g.
+    // MiniMax) mis-handle `$ref` and emit malformed tool arguments for nested
+    // types (the `edit` tool — our only `$ref` schema — was the only tool that
+    // broke). Inlining is strictly more compatible; the only cost is a slightly
+    // larger schema. (Safe for our tool param types — none are recursive.)
+    let settings = schemars::gen::SchemaSettings::draft07().with(|s| s.inline_subschemas = true);
+    let schema = settings.into_generator().into_root_schema_for::<T>();
     let mut v = serde_json::to_value(&schema).expect("schema serialization");
     if let Some(obj) = v.as_object_mut() {
         obj.remove("$schema");
         obj.remove("title");
+        obj.remove("definitions");
     }
     v
 }

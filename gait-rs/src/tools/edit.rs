@@ -98,6 +98,40 @@ mod tests {
     use crate::hashline::compute_line_hash;
     use tempfile::TempDir;
 
+    // Regression for the weak-model (MiniMax) `edit` failures: the schema must be
+    // self-contained (no $ref/definitions, which weak OpenAI-compatible models
+    // mis-handle), and `lines` must tolerate the {item:[...]} array-wrapping those
+    // models emit instead of erroring "invalid type: map, expected a sequence".
+    #[test]
+    fn edit_schema_is_inlined_no_ref() {
+        let s = crate::tools::make_schema::<HashlineEditParams>();
+        let txt = serde_json::to_string(&s).unwrap();
+        assert!(!txt.contains("$ref"), "edit schema must be inlined (no $ref) for weak-model compatibility: {txt}");
+    }
+
+    #[test]
+    fn lines_accepts_minimax_wrapped_array() {
+        let payload = serde_json::json!({
+            "file_path": "f.rs",
+            "edits": [{"op":"replace","pos":"1#AB","lines":{"item":["x","y"]}}]
+        });
+        let parsed: HashlineEditParams = serde_json::from_value(payload)
+            .expect("wrapped {item:[...]} lines must parse");
+        assert_eq!(parsed.edits[0].lines, vec!["x".to_string(), "y".to_string()]);
+    }
+
+    #[test]
+    fn lines_accepts_plain_array_and_bare_string() {
+        let p1: HashlineEditParams = serde_json::from_value(serde_json::json!({
+            "file_path":"f","edits":[{"op":"append","lines":["a","b"]}]
+        })).unwrap();
+        assert_eq!(p1.edits[0].lines, vec!["a".to_string(), "b".to_string()]);
+        let p2: HashlineEditParams = serde_json::from_value(serde_json::json!({
+            "file_path":"f","edits":[{"op":"append","lines":"a\nb"}]
+        })).unwrap();
+        assert_eq!(p2.edits[0].lines, vec!["a".to_string(), "b".to_string()]);
+    }
+
     #[tokio::test]
     async fn replaces_single_line() {
         let dir = TempDir::new().unwrap();
