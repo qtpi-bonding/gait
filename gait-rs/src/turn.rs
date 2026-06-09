@@ -2249,4 +2249,75 @@ mod tests {
         assert_eq!(sj.codebase_path.as_deref(), Some(codebase_dir.path().to_string_lossy().as_ref()),
             "codebase_path value should match the input");
     }
+
+    #[tokio::test]
+    async fn run_turn_calls_rewind_init_and_checkpoint_via_injected_repo() {
+        use crate::git::rewind::MockRewindRepo;
+
+        let ws = TempDir::new().unwrap();
+        init_git_repo(ws.path());
+
+        // Build a SEPARATE codebase dir that is its own git repo with one commit
+        let codebase_dir = TempDir::new().unwrap();
+        {
+            let repo = git2::Repository::init(codebase_dir.path()).unwrap();
+            let mut cfg = repo.config().unwrap();
+            cfg.set_str("user.name", "test").unwrap();
+            cfg.set_str("user.email", "test@test.com").unwrap();
+            std::fs::write(codebase_dir.path().join("hello.txt"), "hello\n").unwrap();
+            let mut idx = repo.index().unwrap();
+            idx.add_path(std::path::Path::new("hello.txt")).unwrap();
+            idx.write().unwrap();
+            let tree_id = idx.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let sig = git2::Signature::now("test", "test@test.com").unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[]).unwrap();
+        }
+
+        let session_id = "rewindinject001";
+
+        let provider = Arc::new(MockProvider {
+            responses: Arc::new(vec![
+                vec![
+                    StreamChunk::Text("done".into()),
+                    StreamChunk::Done,
+                ],
+            ]),
+            call_idx: Arc::new(AtomicUsize::new(0)),
+        });
+
+        let mock = Arc::new(MockRewindRepo::new());
+        let repos = crate::git::Repos {
+            codebase: Arc::new(crate::git::codebase::GitCodebaseRepo),
+            workspace: Arc::new(crate::git::workspace::GitWorkspaceRepo),
+            rewind: mock.clone(),
+        };
+
+        run_turn(
+            TurnOpts {
+                session_id: session_id.into(),
+                task: Some("checkpoint test".into()),
+                auto: true,
+                workspace: ws.path().to_path_buf(),
+                codebase_path: codebase_dir.path().to_path_buf(),
+                allow: vec![],
+                deny: vec![],
+                system_prompt: "".into(),
+                model: "mock/test".into(),
+                mcp_registry: vec![],
+                mcp_clients: std::collections::HashMap::new(),
+                skill_registry: vec![],
+                config_enabled: std::collections::HashSet::new(),
+                max_iter: None,
+                hooks: vec![],
+                repos,
+            },
+            provider,
+            vec![],
+        ).await.unwrap();
+
+        assert_eq!(mock.init_calls().len(), 1, "rewind.init should be called exactly once at session start");
+        assert_eq!(mock.checkpoint_calls(), vec![(session_id.to_string(), 1u32)],
+                   "rewind.checkpoint should be called for turn 1");
+    }
 }
