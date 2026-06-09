@@ -32,6 +32,8 @@ pub struct TurnOpts {
     /// Names of loadables (MCP server names + skill names) seeded as enabled
     /// from `gait.jsonc` (those with `enabled=true`).
     pub config_enabled: std::collections::HashSet<String>,
+    /// Maximum agentic iterations. None → 100 (default).
+    pub max_iter: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -456,7 +458,7 @@ pub async fn run_turn(
     let mut clarify_signal: Option<Vec<ClarifyItem>> = None;
     let mut inform_signal: Option<Vec<InformItem>> = None;
 
-    for _step in 0..100 {
+    for _step in 0..opts.max_iter.unwrap_or(100) {
         let mut chunk_stream = provider.stream(&system_prompt, &messages, &tools).await
             .map_err(|e| anyhow::anyhow!("provider error: {}", e))?;
 
@@ -717,8 +719,18 @@ pub async fn run_turn(
                         all_results[*i] = Some(r);
                     }
                     ExecutionSignal::TurnComplete => {
-                        // output: exit the inner loop immediately — emit TurnComplete, return Done.
-                        // No tool result is sent back to the model.
+                        // Emit call+result pair for transcript auditability before ending the turn.
+                        emit_event(&tx_path, &AnyEvent::ToolCall {
+                            id: tc.tool_call_id.clone(),
+                            name: tc.tool_name.clone(),
+                            input: tc.args.clone(),
+                            ts: now_ms(),
+                        })?;
+                        emit_event(&tx_path, &AnyEvent::ToolResult {
+                            id: tc.tool_call_id.clone(),
+                            output: "recorded".to_string(),
+                            ts: now_ms(),
+                        })?;
                         let summary = tc.args.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
                         let result = tc.args.get("result").cloned();
                         let events_now = read_events(&tx_path)?;
@@ -899,6 +911,7 @@ mod tests {
                 mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
+                max_iter: None,
             },
             provider,
             vec![Box::new(read_tool)],
@@ -966,6 +979,7 @@ mod tests {
                 mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
+                max_iter: None,
             },
             provider,
             vec![output_tool.boxed()],
@@ -1019,6 +1033,7 @@ mod tests {
                 mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
+                max_iter: None,
             },
             provider,
             vec![output_tool.boxed()],
@@ -1066,6 +1081,7 @@ mod tests {
                 mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
+                max_iter: None,
             },
             provider,
             vec![],
@@ -1153,6 +1169,7 @@ mod tests {
                 mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
+                max_iter: None,
             },
             provider,
             vec![],
@@ -1198,6 +1215,7 @@ mod tests {
                 mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
+                max_iter: None,
             },
             provider,
             vec![],
@@ -1237,6 +1255,7 @@ mod tests {
                 mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
+                max_iter: None,
             },
             provider,
             vec![],
@@ -1302,6 +1321,7 @@ mod tests {
                 mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
+                max_iter: None,
             },
             provider,
             vec![shell_tool.boxed(), output_tool.boxed()],
@@ -1369,6 +1389,7 @@ mod tests {
                 mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
+                max_iter: None,
             },
             provider,
             vec![shell_tool.boxed(), output_tool.boxed()],
@@ -1495,6 +1516,7 @@ mod tests {
                 mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
+                max_iter: None,
             },
             provider,
             vec![Box::new(shell_tool)],
@@ -1572,6 +1594,7 @@ mod tests {
                 mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
+                max_iter: None,
             },
             provider,
             vec![Box::new(shell_tool)],
@@ -1685,6 +1708,7 @@ mod tests {
                 mcp_clients: std::collections::HashMap::new(),
                 skill_registry: vec![],
                 config_enabled: std::collections::HashSet::new(),
+                max_iter: None,
             },
             provider,
             vec![Box::new(shell_tool)],

@@ -86,6 +86,7 @@ async fn full_turn_creates_transcript_and_git_commit() {
             mcp_clients: std::collections::HashMap::new(),
             skill_registry: vec![],
             config_enabled: std::collections::HashSet::new(),
+            max_iter: None,
         },
         provider,
         vec![Box::new(ls_tool)],
@@ -142,7 +143,7 @@ async fn second_turn_resumes_session() {
         workspace: ws.path().to_path_buf(), codebase_path: ws.path().to_path_buf(),
         allow: vec![], deny: vec![], system_prompt: "".into(), model: "mock/test".into(),
         mcp_registry: vec![], mcp_clients: std::collections::HashMap::new(), skill_registry: vec![],
-        config_enabled: std::collections::HashSet::new(),
+        config_enabled: std::collections::HashSet::new(), max_iter: None,
     }, provider.clone(), vec![]).await.unwrap();
 
     run_turn(TurnOpts {
@@ -150,7 +151,7 @@ async fn second_turn_resumes_session() {
         workspace: ws.path().to_path_buf(), codebase_path: ws.path().to_path_buf(),
         allow: vec![], deny: vec![], system_prompt: "".into(), model: "mock/test".into(),
         mcp_registry: vec![], mcp_clients: std::collections::HashMap::new(), skill_registry: vec![],
-        config_enabled: std::collections::HashSet::new(),
+        config_enabled: std::collections::HashSet::new(), max_iter: None,
     }, provider, vec![]).await.unwrap();
 
     let tx = ws.path().join("sessions/sint002/transcript.jsonl");

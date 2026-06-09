@@ -74,6 +74,7 @@ pub async fn exec_prompt_node(
             .map(|s| s.name.clone())           // server name, not tool names
             .chain(config.skills.iter().filter(|s| s.enabled).map(|s| s.name.clone()))
             .collect(),
+        max_iter: None,
     }, provider, tools).await?;
 
     match result {

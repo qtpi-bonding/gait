@@ -13,6 +13,8 @@ pub mod spawn_agent;
 pub mod list_agents;
 pub mod clarify;
 pub mod inform;
+pub mod annotate;
+pub mod curate;
 
 pub use read::ReadTool;
 pub use write::WriteTool;
@@ -29,6 +31,8 @@ pub use spawn_agent::SpawnAgentTool;
 pub use list_agents::ListAgentsTool;
 pub use clarify::ClarifyTool;
 pub use inform::InformTool;
+pub use annotate::AnnotateTool;
+pub use curate::CurateTool;
 
 use std::path::PathBuf;
 use crate::types::Tool;
@@ -45,6 +49,12 @@ pub fn make_schema<T: schemars::JsonSchema>() -> serde_json::Value {
         obj.remove("title");
     }
     v
+}
+
+/// Names of all built-in tools. Used for allow-list validation without constructing tool instances.
+pub fn builtin_tool_names() -> &'static [&'static str] {
+    &["read", "write", "edit", "glob", "grep", "ls", "shell", "output",
+      "codesearch", "webfetch", "load", "spawn_agent", "list_agents", "clarify", "inform"]
 }
 
 /// Returns all built-in tools.

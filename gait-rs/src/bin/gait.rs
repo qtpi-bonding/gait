@@ -9,6 +9,7 @@ use gait_ai::{
     turn::{TurnOpts, run_turn},
     workflow::runner::{run_workflow, WorkflowRunOpts},
     HarnessBackend,
+    types::Tool,
 };
 
 fn extract_path_arg(args: &[String], flag: &str) -> Option<std::path::PathBuf> {
@@ -248,7 +249,7 @@ async fn cmd_run(argv: &[String]) {
     };
     let api_key = resolve_api_key(provider_name);
 
-    let provider = match load_provider(&model, api_key) {
+    let provider: Arc<dyn gait_ai::provider::Provider> = match load_provider(&model, api_key) {
         Ok(p) => Arc::from(p),
         Err(e) => {
             eprintln!("[gait] error: could not load provider for '{}': {}", model, e);
@@ -285,6 +286,12 @@ async fn cmd_run(argv: &[String]) {
         mcp_registry.clone(),
         config.skills.clone(),
     );
+    tools.push(gait_ai::tools::CurateTool::new(
+        provider.clone(),
+        workspace.clone(),
+        codebase_path.clone(),
+        model.clone(),
+    ).boxed());
     for ct in &config.tools {
         let cmd = ct.cmd.clone();
         let cwd = if ct.cwd == "workspace" {
@@ -361,6 +368,7 @@ async fn cmd_run(argv: &[String]) {
                 .map(|s| s.name.clone())           // server name, not tool names
                 .chain(config.skills.iter().filter(|s| s.enabled).map(|s| s.name.clone()))
                 .collect(),
+            max_iter: None,
         },
         provider,
         tools,
