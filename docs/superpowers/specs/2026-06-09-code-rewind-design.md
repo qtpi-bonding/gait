@@ -127,24 +127,60 @@ workspace/
 `codebase.git/` is gitignored from the transcript git — it is never committed
 into transcript history.
 
-### Component: `ShadowRepo` trait
+### Ownership: one trait per git database
 
-Following archebuild's trait + mock pattern (`WorktreeManager`,
-`VersionControlOps`) so the codebase-git capability is injectable and testable.
+The current `git.rs` is a bag of free functions that conflate three distinct
+git contexts. We split it into clearly-bounded traits so it is impossible to
+write to the wrong database by accident. **The invariant: each trait may write
+to exactly one git database.**
+
+| Trait | Git database it owns | May write? | Responsibilities |
+|---|---|---|---|
+| `WorkspaceRepo` | `workspace/.git` (+ session worktrees) | yes | session worktrees, transcript commits, finish/merge |
+| `RewindRepo` | `workspace/sessions/<id>/codebase.git` (work-tree = codebase) | yes | per-turn codebase snapshots + rewind |
+| `CodebaseRepo` | `/user/repo/.git` | **no — read-only** | real HEAD + dirty files for agent context |
+
+`CodebaseRepo` is read-only by contract: gait never writes the user's real git.
+That is the whole composition guarantee, enforced at the type level by giving it
+no write methods.
+
+### Module layout
+
+```
+git/
+  mod.rs        re-exports + shared helpers (signature fallback, gait trailer,
+                strict open-by-git-dir helper — never Repository::discover)
+  workspace.rs  WorkspaceRepo trait + GitWorkspaceRepo  [migrates existing fns]
+  rewind.rs     RewindRepo trait + GitRewindRepo + MockRewindRepo  [NEW]
+  codebase.rs   CodebaseRepo trait + GitCodebaseRepo (read-only)  [migrates 2 fns]
+```
+
+Migration of today's free functions:
+
+| Existing `git.rs` fn | Moves to |
+|---|---|
+| `init_workspace`, `create_session_worktree`, `commit_session`, `remove_session_worktree`, `finish_session`, `create_branch_worktree`, `remove_branch_worktree` | `WorkspaceRepo` |
+| `get_codebase_hash`, `get_dirty_files` | `CodebaseRepo` (read-only) |
+| `with_gait_trailer`, signature fallback | `mod.rs` shared helpers |
+
+### Component: `RewindRepo` trait
+
+Follows archebuild's trait + mock pattern (`WorktreeManager`,
+`VersionControlOps`) so the capability is injectable and testable.
 
 ```rust
 /// Disposable, workspace-side git database that snapshots a borrowed
 /// working tree (the codebase) for per-turn rewind. Never writes to the
-/// codebase's own .git.
-pub trait ShadowRepo: Send + Sync {
-    /// Create sessions/<id>/codebase.git as a shadow of `codebase_path`,
+/// codebase's own .git — that is CodebaseRepo's (read-only) territory.
+pub trait RewindRepo: Send + Sync {
+    /// Create sessions/<id>/codebase.git shadowing `codebase_path`,
     /// borrowing its object store via alternates. Idempotent — attaches if
     /// already present. No-op if the codebase is not a git repo (rewind
     /// simply unavailable; logged).
     fn init(&self, workspace: &Path, session_id: &str, codebase_path: &Path)
         -> Result<()>;
 
-    /// Stage all of the codebase working tree and commit into the shadow.
+    /// Stage all of the codebase working tree and commit into the rewind db.
     /// Returns the checkpoint SHA. No-op (returns current HEAD) if nothing
     /// changed since last checkpoint.
     fn checkpoint(&self, workspace: &Path, session_id: &str, codebase_path: &Path,
@@ -159,28 +195,29 @@ pub trait ShadowRepo: Send + Sync {
     fn remove(&self, workspace: &Path, session_id: &str) -> Result<()>;
 }
 
-pub struct GitShadowRepo; // git2-backed
-// pub struct MockShadowRepo; // tests
+pub struct GitRewindRepo;  // git2-backed
+// pub struct MockRewindRepo; // tests
 ```
 
 Implementation notes (from archebuild's hard-won lessons):
-- Use git2 with `tokio::task::spawn_blocking` if the call sites are async; gait's
-  `git.rs` is currently synchronous, so plain git2 is fine.
-- Open the shadow strictly by its git-dir (do **not** use
-  `Repository::discover`, which can walk up into the codebase's real `.git` —
-  archebuild hit cross-worktree `index.lock` corruption from exactly this).
+- gait's `git.rs` is currently synchronous, so plain git2 is fine (no
+  `spawn_blocking` needed unless call sites become async later).
+- Open the rewind db strictly by its git-dir via the shared `mod.rs` helper — do
+  **not** use `Repository::discover`, which can walk up into the codebase's real
+  `.git`; archebuild hit cross-worktree `index.lock` corruption from exactly
+  this. `set_workdir(codebase_path, false)` binds the work tree.
 - `checkpoint` detects "nothing staged" by diffing tree-to-index and returns the
   existing HEAD SHA rather than creating an empty commit.
 
 ### Wiring into the turn loop (`turn.rs`)
 
-`run_turn` already computes `codebase_hash` (real HEAD) and writes a
-`TurnComplete` event. Add:
+`run_turn` already computes `codebase_hash` (real HEAD, via `CodebaseRepo`) and
+writes a `TurnComplete` event. Add:
 
-1. **Session start:** `shadow.init(workspace, session_id, codebase_path)` —
-   alongside `create_session_worktree`.
+1. **Session start:** `rewind.init(workspace, session_id, codebase_path)` —
+   alongside `WorkspaceRepo::create_session_worktree`.
 2. **End of turn**, after the existing transcript commit:
-   `let checkpoint = shadow.checkpoint(workspace, session_id, codebase_path, turn)`.
+   `let checkpoint = rewind.checkpoint(workspace, session_id, codebase_path, turn)`.
 3. **Record the checkpoint** in the `TurnComplete` event (new field, internal).
 
 ### Transcript event change
@@ -209,7 +246,7 @@ This is the rewind index: turn N → `code_checkpoint` SHA.
 gait rewind <session-id> --turn <n> [--code] [--transcript] [--workspace <path>]
 ```
 
-- `--code` only → `shadow.rewind_to(... sha_from_turn_n)`. Transcript untouched.
+- `--code` only → `rewind.rewind_to(... sha_from_turn_n)`. Transcript untouched.
 - `--transcript` only → reset workspace `session/<id>` branch to turn N's commit.
   Codebase files untouched.
 - both (default if neither flag given) → both resets, to the same turn.
@@ -223,7 +260,7 @@ Rewind requires no in-progress turn for the session (same constraint as
 
 ## Lifecycle & cleanup
 
-- **`gait finish <id>`** — after merging the transcript branch, `shadow.remove`
+- **`gait finish <id>`** — after merging the transcript branch, `rewind.remove`
   deletes `codebase.git/`. The codebase files are left exactly as the last turn
   produced them; the user commits to their real repo whenever they choose.
 - **Crash safety** — the shadow is reconstructable-irrelevant: it is scratch. If
