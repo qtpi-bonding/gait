@@ -335,6 +335,13 @@ async fn cmd_run(argv: &[String]) {
         .filter(|v| !v.is_empty())
         .unwrap_or(config.deny);
 
+    // Expand @(cmd) and @path markers in the task string before the turn runs.
+    let task = task.map(|t| {
+        let hist = workspace.join("tmp").join(format!("shell-{}.jsonl", &session_id));
+        gait_ai::chat::expand_at_markers(&t, &hist, &codebase_path)
+            .unwrap_or_else(|e| { eprintln!("[!] @ expand error: {e}"); t })
+    });
+
     let turn_result = match run_turn(
         TurnOpts {
             session_id: session_id.clone(),
