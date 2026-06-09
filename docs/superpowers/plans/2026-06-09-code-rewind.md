@@ -1052,7 +1052,8 @@ fn checkpoint_codebase(
         Ok(sha) if !sha.is_empty() => Some(sha),
         Ok(_) => None, // non-git codebase
         Err(e) => {
-            tracing::warn!(error = %e, session = session_id, "rewind checkpoint failed; rewind unavailable for this turn");
+            // NOTE: `tracing` is NOT a dependency in this project — use eprintln!.
+            eprintln!("rewind checkpoint failed for session {}: {}; rewind unavailable for this turn", session_id, e);
             None
         }
     }
