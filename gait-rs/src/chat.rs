@@ -577,7 +577,7 @@ pub fn run_chat(
             } else {
                 eprintln!("[gait] permission denied");
                 println!();
-                break 'spawn;
+                continue 'spawn;
             }
         }
     }
