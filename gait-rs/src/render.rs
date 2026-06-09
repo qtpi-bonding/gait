@@ -18,6 +18,7 @@ pub struct Renderer {
     skin: MadSkin,
     pub theme: Theme,
     pending_tool: Option<String>,
+    pending_ts: Option<u64>,
 }
 
 fn to_ccolor(r: u8, g: u8, b: u8) -> CColor {
@@ -65,6 +66,7 @@ impl Renderer {
             skin,
             theme,
             pending_tool: None,
+            pending_ts: None,
         }
     }
 
@@ -121,6 +123,7 @@ impl Renderer {
                 let name = v["name"].as_str().unwrap_or("?").to_string();
                 eprintln!("{}  \u{27f3} {}(\u{2026}){}", DIM_FG, name, RESET);
                 self.pending_tool = Some(name);
+                self.pending_ts = v["ts"].as_u64();
                 RenderAction::Continue
             }
             Some("tool_result") => {
@@ -129,14 +132,36 @@ impl Renderer {
                     .or_else(|| v["name"].as_str().map(str::to_string))
                     .unwrap_or_else(|| "?".to_string());
                 let ok = v["ok"].as_bool().unwrap_or(true);
+                let elapsed = self.pending_ts.take()
+                    .zip(v["ts"].as_u64())
+                    .map(|(start, end)| end.saturating_sub(start));
                 if had_pending {
-                    // Overwrite the ⟳ pending line in-place
                     eprint!("\x1b[1A\x1b[2K");
                 }
-                if ok {
-                    eprintln!("{}  \u{2713} {}{}", self.theme.success.fg(), name, RESET);
+                let (color, mark) = if ok {
+                    (self.theme.success.fg(), '\u{2713}')
                 } else {
-                    eprintln!("{}  \u{2717} {}{}", self.theme.danger.fg(), name, RESET);
+                    (self.theme.danger.fg(), '\u{2717}')
+                };
+                let timing = elapsed.map(|ms| format!(" \u{b7} {}ms", ms)).unwrap_or_default();
+                eprintln!("{}  {} {}{}{}", color, mark, name, timing, RESET);
+                if let Some(output) = v["output"].as_str() {
+                    let lines: Vec<&str> = output.lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .collect();
+                    match lines.len() {
+                        0 => {}
+                        1 => eprintln!("{}     {}{}", DIM_FG, lines[0], RESET),
+                        2 => {
+                            eprintln!("{}     {}{}", DIM_FG, lines[0], RESET);
+                            eprintln!("{}     {}{}", DIM_FG, lines[1], RESET);
+                        }
+                        _ => {
+                            eprintln!("{}     {}{}", DIM_FG, lines[0], RESET);
+                            eprintln!("{}     \u{2026}{}", DIM_FG, RESET);
+                            eprintln!("{}     {}{}", DIM_FG, lines[lines.len() - 1], RESET);
+                        }
+                    }
                 }
                 RenderAction::Continue
             }
