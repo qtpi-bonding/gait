@@ -1170,6 +1170,30 @@ mod tests {
     use crate::types::ToolDef;
     use crate::tools::OutputTool;
     use async_stream::stream;
+    /// Bridges old per-field test call sites to the new run_turn(&Session, ResolvedProfile, TurnInput).
+    async fn run_turn_test_call(
+        workspace: std::path::PathBuf,
+        codebase_path: std::path::PathBuf,
+        session_id: String,
+        provider: std::sync::Arc<dyn Provider>,
+        tools: Vec<Box<dyn Tool>>,
+        allow: Vec<String>,
+        deny: Vec<String>,
+        input: TurnInput,
+        repos: crate::git::Repos,
+    ) -> anyhow::Result<TurnResult> {
+        let session = crate::session::Session {
+            id: session_id,
+            workspace,
+            codebase_path,
+            model: "test/model".into(),
+            assigned_by: None,
+            repos,
+        };
+        let caps = crate::profile::ResolvedProfile::for_test(provider, tools, allow, deny);
+        run_turn(&session, caps, input).await
+    }
+
 
     fn init_git_repo(dir: &Path) {
         let repo = git2::Repository::init(dir).unwrap();
@@ -1241,28 +1265,12 @@ mod tests {
             })),
         };
 
-        run_turn(
-            TurnOpts {
-                session_id: "stest001".into(),
-                task: Some("do the thing".into()),
-                auto: true,
-                workspace: ws.path().to_path_buf(),
-                codebase_path: codebase,
-                allow: vec!["read".into()],
-                deny: vec![],
-                system_prompt: "you are a helpful assistant".into(),
-                model: "mock/test".into(),
-                mcp_registry: vec![],
-                mcp_clients: std::collections::HashMap::new(),
-                skill_registry: vec![],
-                config_enabled: std::collections::HashSet::new(),
-                max_iter: None,
-                hooks: vec![],
-                repos: crate::git::Repos::production(),
-            ..TurnOpts::default()
-        },
-            provider,
-            vec![Box::new(read_tool)],
+        run_turn_test_call(
+            ws.path().to_path_buf(), codebase, "stest001".into(),
+            provider, vec![Box::new(read_tool)],
+            vec!["read".into()], vec![],
+            TurnInput { task: Some("do the thing".into()), auto: true, max_iter: None },
+            crate::git::Repos::production(),
         ).await.unwrap();
 
         // Verify transcript has expected events
@@ -1312,28 +1320,12 @@ mod tests {
 
         let output_tool = OutputTool::new();
 
-        run_turn(
-            TurnOpts {
-                session_id: "stest_out".into(),
-                task: Some("fix a bug".into()),
-                auto: true,
-                workspace: ws.path().to_path_buf(),
-                codebase_path: ws.path().to_path_buf(),
-                allow: vec![],
-                deny: vec![],
-                system_prompt: "".into(),
-                model: "mock/test".into(),
-                mcp_registry: vec![],
-                mcp_clients: std::collections::HashMap::new(),
-                skill_registry: vec![],
-                config_enabled: std::collections::HashSet::new(),
-                max_iter: None,
-                hooks: vec![],
-                repos: crate::git::Repos::production(),
-            ..TurnOpts::default()
-        },
-            provider,
-            vec![output_tool.boxed()],
+        run_turn_test_call(
+            ws.path().to_path_buf(), ws.path().to_path_buf(), "stest_out".into(),
+            provider, vec![output_tool.boxed()],
+            vec![], vec![],
+            TurnInput { task: Some("fix a bug".into()), auto: true, max_iter: None },
+            crate::git::Repos::production(),
         ).await.unwrap();
 
         let tx_path = ws.path().join("sessions/stest_out/transcript.jsonl");
@@ -1369,28 +1361,12 @@ mod tests {
 
         let output_tool = OutputTool::new();
 
-        run_turn(
-            TurnOpts {
-                session_id: "stest_out2".into(),
-                task: Some("do it".into()),
-                auto: false,
-                workspace: ws.path().to_path_buf(),
-                codebase_path: ws.path().to_path_buf(),
-                allow: vec![],
-                deny: vec![],
-                system_prompt: "".into(),
-                model: "mock/test".into(),
-                mcp_registry: vec![],
-                mcp_clients: std::collections::HashMap::new(),
-                skill_registry: vec![],
-                config_enabled: std::collections::HashSet::new(),
-                max_iter: None,
-                hooks: vec![],
-                repos: crate::git::Repos::production(),
-            ..TurnOpts::default()
-        },
-            provider,
-            vec![output_tool.boxed()],
+        run_turn_test_call(
+            ws.path().to_path_buf(), ws.path().to_path_buf(), "stest_out2".into(),
+            provider, vec![output_tool.boxed()],
+            vec![], vec![],
+            TurnInput { task: Some("do it".into()), auto: false, max_iter: None },
+            crate::git::Repos::production(),
         ).await.unwrap();
 
         let tx_path = ws.path().join("sessions/stest_out2/transcript.jsonl");
@@ -1420,28 +1396,12 @@ mod tests {
             call_idx: Arc::new(AtomicUsize::new(0)),
         });
 
-        run_turn(
-            TurnOpts {
-                session_id: "stest002".into(),
-                task: Some("do something dangerous".into()),
-                auto: false, // non-auto
-                workspace: ws.path().to_path_buf(),
-                codebase_path: ws.path().to_path_buf(),
-                allow: vec!["read".into()],
-                deny: vec![],
-                system_prompt: "".into(),
-                model: "mock/test".into(),
-                mcp_registry: vec![],
-                mcp_clients: std::collections::HashMap::new(),
-                skill_registry: vec![],
-                config_enabled: std::collections::HashSet::new(),
-                max_iter: None,
-                hooks: vec![],
-                repos: crate::git::Repos::production(),
-            ..TurnOpts::default()
-        },
-            provider,
-            vec![],
+        run_turn_test_call(
+            ws.path().to_path_buf(), ws.path().to_path_buf(), "stest002".into(),
+            provider, vec![],
+            vec!["read".into()], vec![],
+            TurnInput { task: Some("do something dangerous".into()), auto: false, max_iter: None },
+            crate::git::Repos::production(),
         ).await.unwrap();
 
         let tx_path = ws.path().join("sessions/stest002/transcript.jsonl");
@@ -1494,28 +1454,12 @@ mod tests {
             call_idx: Arc::new(AtomicUsize::new(0)),
         });
 
-        let result = run_turn(
-            TurnOpts {
-                session_id: "sdone001".into(),
-                task: Some("do something".into()),
-                auto: true,
-                workspace: ws.path().to_path_buf(),
-                codebase_path: ws.path().to_path_buf(),
-                allow: vec![],
-                deny: vec![],
-                system_prompt: "".into(),
-                model: "mock/test".into(),
-                mcp_registry: vec![],
-                mcp_clients: std::collections::HashMap::new(),
-                skill_registry: vec![],
-                config_enabled: std::collections::HashSet::new(),
-                max_iter: None,
-                hooks: vec![],
-                repos: crate::git::Repos::production(),
-            ..TurnOpts::default()
-        },
-            provider,
-            vec![],
+        let result = run_turn_test_call(
+            ws.path().to_path_buf(), ws.path().to_path_buf(), "sdone001".into(),
+            provider, vec![],
+            vec![], vec![],
+            TurnInput { task: Some("do something".into()), auto: true, max_iter: None },
+            crate::git::Repos::production(),
         ).await.unwrap();
 
         assert!(matches!(result, TurnResult::Done { .. }), "expected Done, got: {:?}", result);
@@ -1543,28 +1487,12 @@ mod tests {
             call_idx: Arc::new(AtomicUsize::new(0)),
         });
 
-        let result = run_turn(
-            TurnOpts {
-                session_id: "sperm001".into(),
-                task: Some("list files".into()),
-                auto: false,
-                workspace: ws.path().to_path_buf(),
-                codebase_path: ws.path().to_path_buf(),
-                allow: vec![],
-                deny: vec![],
-                system_prompt: "".into(),
-                model: "mock/test".into(),
-                mcp_registry: vec![],
-                mcp_clients: std::collections::HashMap::new(),
-                skill_registry: vec![],
-                config_enabled: std::collections::HashSet::new(),
-                max_iter: None,
-                hooks: vec![],
-                repos: crate::git::Repos::production(),
-            ..TurnOpts::default()
-        },
-            provider,
-            vec![],
+        let result = run_turn_test_call(
+            ws.path().to_path_buf(), ws.path().to_path_buf(), "sperm001".into(),
+            provider, vec![],
+            vec![], vec![],
+            TurnInput { task: Some("list files".into()), auto: false, max_iter: None },
+            crate::git::Repos::production(),
         ).await.unwrap();
 
         assert!(matches!(result, TurnResult::Permissions), "expected Permissions, got: {:?}", result);
@@ -1586,28 +1514,12 @@ mod tests {
             call_idx: Arc::new(AtomicUsize::new(0)),
         });
 
-        run_turn(
-            TurnOpts {
-                session_id: "sdelta01".into(),
-                task: Some("say hello".into()),
-                auto: true,
-                workspace: ws.path().to_path_buf(),
-                codebase_path: ws.path().to_path_buf(),
-                allow: vec![],
-                deny: vec![],
-                system_prompt: "".into(),
-                model: "mock/test".into(),
-                mcp_registry: vec![],
-                mcp_clients: std::collections::HashMap::new(),
-                skill_registry: vec![],
-                config_enabled: std::collections::HashSet::new(),
-                max_iter: None,
-                hooks: vec![],
-                repos: crate::git::Repos::production(),
-            ..TurnOpts::default()
-        },
-            provider,
-            vec![],
+        run_turn_test_call(
+            ws.path().to_path_buf(), ws.path().to_path_buf(), "sdelta01".into(),
+            provider, vec![],
+            vec![], vec![],
+            TurnInput { task: Some("say hello".into()), auto: true, max_iter: None },
+            crate::git::Repos::production(),
         ).await.unwrap();
 
         let tx_path = ws.path().join("sessions/sdelta01/transcript.jsonl");
@@ -1655,28 +1567,12 @@ mod tests {
         );
         let output_tool = OutputTool::new();
 
-        run_turn(
-            TurnOpts {
-                session_id: "sdeny001".into(),
-                task: Some("try to destroy".into()),
-                auto: false,
-                workspace: ws.path().to_path_buf(),
-                codebase_path: ws.path().to_path_buf(),
-                allow: vec![],
-                deny: vec!["shell:rm *".to_string()],
-                system_prompt: "".into(),
-                model: "mock/test".into(),
-                mcp_registry: vec![],
-                mcp_clients: std::collections::HashMap::new(),
-                skill_registry: vec![],
-                config_enabled: std::collections::HashSet::new(),
-                max_iter: None,
-                hooks: vec![],
-                repos: crate::git::Repos::production(),
-            ..TurnOpts::default()
-        },
-            provider,
-            vec![shell_tool.boxed(), output_tool.boxed()],
+        run_turn_test_call(
+            ws.path().to_path_buf(), ws.path().to_path_buf(), "sdeny001".into(),
+            provider, vec![shell_tool.boxed(), output_tool.boxed()],
+            vec![], vec!["shell:rm *".to_string()],
+            TurnInput { task: Some("try to destroy".into()), auto: false, max_iter: None },
+            crate::git::Repos::production(),
         ).await.unwrap();
 
         let tx_path = ws.path().join("sessions/sdeny001/transcript.jsonl");
@@ -1725,29 +1621,12 @@ mod tests {
         );
         let output_tool = OutputTool::new();
 
-        run_turn(
-            TurnOpts {
-                session_id: "sdeny002".into(),
-                task: Some("try to destroy".into()),
-                auto: false,
-                workspace: ws.path().to_path_buf(),
-                codebase_path: ws.path().to_path_buf(),
-                // Same pattern in BOTH allow and deny — deny must win.
-                allow: vec!["shell:rm *".to_string()],
-                deny: vec!["shell:rm *".to_string()],
-                system_prompt: "".into(),
-                model: "mock/test".into(),
-                mcp_registry: vec![],
-                mcp_clients: std::collections::HashMap::new(),
-                skill_registry: vec![],
-                config_enabled: std::collections::HashSet::new(),
-                max_iter: None,
-                hooks: vec![],
-                repos: crate::git::Repos::production(),
-            ..TurnOpts::default()
-        },
-            provider,
-            vec![shell_tool.boxed(), output_tool.boxed()],
+        run_turn_test_call(
+            ws.path().to_path_buf(), ws.path().to_path_buf(), "sdeny002".into(),
+            provider, vec![shell_tool.boxed(), output_tool.boxed()],
+            vec!["shell:rm *".to_string()], vec!["shell:rm *".to_string()],
+            TurnInput { task: Some("try to destroy".into()), auto: false, max_iter: None },
+            crate::git::Repos::production(),
         ).await.unwrap();
 
         let tx_path = ws.path().join("sessions/sdeny002/transcript.jsonl");
@@ -1856,29 +1735,14 @@ mod tests {
             steps: Arc::new(vec![FakeStep::text("done")]),
             call_idx: Arc::new(AtomicUsize::new(0)),
         });
-        let result = run_turn(
-            TurnOpts {
-                session_id: session_id.into(),
-                task: None, // resume path: no new task
-                auto: false,
-                workspace: ws.path().to_path_buf(),
-                codebase_path: codebase.path().to_path_buf(),
-                allow: vec!["shell:echo *".into()],
-                deny: vec![],
-                system_prompt: "".into(),
-                model: "test".into(),
-                mcp_registry: vec![],
-                mcp_clients: std::collections::HashMap::new(),
-                skill_registry: vec![],
-                config_enabled: std::collections::HashSet::new(),
-                max_iter: None,
-                hooks: vec![],
-                repos: crate::git::Repos::production(),
-            ..TurnOpts::default()
-        },
-            provider,
-            vec![Box::new(shell_tool)],
+        let result = run_turn_test_call(
+            ws.path().to_path_buf(), codebase.path().to_path_buf(), session_id.into(),
+            provider, vec![Box::new(shell_tool)],
+            vec!["shell:echo *".into()], vec![],
+            TurnInput { task: None, auto: false, max_iter: None },
+            crate::git::Repos::production(),
         ).await.unwrap();
+
         assert!(matches!(result, TurnResult::Done { .. }), "expected Done, got: {:?}", result);
 
         let events = read_events(&tx_path).unwrap();
@@ -1937,29 +1801,14 @@ mod tests {
             steps: Arc::new(vec![FakeStep::text("ok I won't do that")]),
             call_idx: Arc::new(AtomicUsize::new(0)),
         });
-        let result = run_turn(
-            TurnOpts {
-                session_id: session_id.into(),
-                task: None, // resume path: no new task
-                auto: false,
-                workspace: ws.path().to_path_buf(),
-                codebase_path: codebase.path().to_path_buf(),
-                allow: vec![],
-                deny: vec![],
-                system_prompt: "".into(),
-                model: "test".into(),
-                mcp_registry: vec![],
-                mcp_clients: std::collections::HashMap::new(),
-                skill_registry: vec![],
-                config_enabled: std::collections::HashSet::new(),
-                max_iter: None,
-                hooks: vec![],
-                repos: crate::git::Repos::production(),
-            ..TurnOpts::default()
-        },
-            provider,
-            vec![Box::new(shell_tool)],
+        let result = run_turn_test_call(
+            ws.path().to_path_buf(), codebase.path().to_path_buf(), session_id.into(),
+            provider, vec![Box::new(shell_tool)],
+            vec![], vec![],
+            TurnInput { task: None, auto: false, max_iter: None },
+            crate::git::Repos::production(),
         ).await.unwrap();
+
         assert!(matches!(result, TurnResult::Done { .. }), "expected Done, got: {:?}", result);
 
         // Must have a ToolResult for the denied call (API invariant)
@@ -2054,28 +1903,12 @@ mod tests {
             call_idx: Arc::new(AtomicUsize::new(0)),
         });
 
-        run_turn(
-            TurnOpts {
-                session_id: session_id.into(),
-                task: None, // resume path: no new task
-                auto: false,
-                workspace: ws.path().to_path_buf(),
-                codebase_path: ws.path().to_path_buf(),
-                allow: vec![],
-                deny: vec![],
-                system_prompt: "".into(),
-                model: "mock/test".into(),
-                mcp_registry: vec![],
-                mcp_clients: std::collections::HashMap::new(),
-                skill_registry: vec![],
-                config_enabled: std::collections::HashSet::new(),
-                max_iter: None,
-                hooks: vec![],
-                repos: crate::git::Repos::production(),
-            ..TurnOpts::default()
-        },
-            provider,
-            vec![Box::new(shell_tool)],
+        run_turn_test_call(
+            ws.path().to_path_buf(), ws.path().to_path_buf(), session_id.into(),
+            provider, vec![Box::new(shell_tool)],
+            vec![], vec![],
+            TurnInput { task: None, auto: false, max_iter: None },
+            crate::git::Repos::production(),
         ).await.unwrap();
 
         let events = read_events(&tx_path).unwrap();
@@ -2192,28 +2025,12 @@ mod tests {
             call_idx: Arc::new(AtomicUsize::new(0)),
         });
 
-        run_turn(
-            TurnOpts {
-                session_id: session_id.into(),
-                task: Some("checkpoint test".into()),
-                auto: true,
-                workspace: ws.path().to_path_buf(),
-                codebase_path: codebase_dir.path().to_path_buf(),
-                allow: vec![],
-                deny: vec![],
-                system_prompt: "".into(),
-                model: "mock/test".into(),
-                mcp_registry: vec![],
-                mcp_clients: std::collections::HashMap::new(),
-                skill_registry: vec![],
-                config_enabled: std::collections::HashSet::new(),
-                max_iter: None,
-                hooks: vec![],
-                repos: crate::git::Repos::production(),
-            ..TurnOpts::default()
-        },
-            provider,
-            vec![],
+        run_turn_test_call(
+            ws.path().to_path_buf(), codebase_dir.path().to_path_buf(), session_id.into(),
+            provider, vec![],
+            vec![], vec![],
+            TurnInput { task: Some("checkpoint test".into()), auto: true, max_iter: None },
+            crate::git::Repos::production(),
         ).await.unwrap();
 
         let tx_path = ws.path().join("sessions").join(session_id).join("transcript.jsonl");
@@ -2260,28 +2077,12 @@ mod tests {
             call_idx: Arc::new(AtomicUsize::new(0)),
         });
 
-        run_turn(
-            TurnOpts {
-                session_id: session_id.into(),
-                task: Some("test codebase_path persistence".into()),
-                auto: true,
-                workspace: ws.path().to_path_buf(),
-                codebase_path: codebase_dir.path().to_path_buf(),
-                allow: vec![],
-                deny: vec![],
-                system_prompt: "".into(),
-                model: "mock/test".into(),
-                mcp_registry: vec![],
-                mcp_clients: std::collections::HashMap::new(),
-                skill_registry: vec![],
-                config_enabled: std::collections::HashSet::new(),
-                max_iter: None,
-                hooks: vec![],
-                repos: crate::git::Repos::production(),
-            ..TurnOpts::default()
-        },
-            provider,
-            vec![],
+        run_turn_test_call(
+            ws.path().to_path_buf(), codebase_dir.path().to_path_buf(), session_id.into(),
+            provider, vec![],
+            vec![], vec![],
+            TurnInput { task: Some("test codebase_path persistence".into()), auto: true, max_iter: None },
+            crate::git::Repos::production(),
         ).await.unwrap();
 
         // After the turn, session.json should have codebase_path persisted
@@ -2335,28 +2136,12 @@ mod tests {
             checkpoints: mock.clone(),
         };
 
-        run_turn(
-            TurnOpts {
-                session_id: session_id.into(),
-                task: Some("checkpoint test".into()),
-                auto: true,
-                workspace: ws.path().to_path_buf(),
-                codebase_path: codebase_dir.path().to_path_buf(),
-                allow: vec![],
-                deny: vec![],
-                system_prompt: "".into(),
-                model: "mock/test".into(),
-                mcp_registry: vec![],
-                mcp_clients: std::collections::HashMap::new(),
-                skill_registry: vec![],
-                config_enabled: std::collections::HashSet::new(),
-                max_iter: None,
-                hooks: vec![],
-                repos,
-            ..TurnOpts::default()
-        },
-            provider,
-            vec![],
+        run_turn_test_call(
+            ws.path().to_path_buf(), codebase_dir.path().to_path_buf(), session_id.into(),
+            provider, vec![],
+            vec![], vec![],
+            TurnInput { task: Some("checkpoint test".into()), auto: true, max_iter: None },
+            repos,
         ).await.unwrap();
 
         assert_eq!(mock.init_calls().len(), 1, "rewind.init should be called exactly once at session start");
