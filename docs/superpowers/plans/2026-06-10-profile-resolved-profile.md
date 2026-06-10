@@ -471,7 +471,9 @@ let resolved = profile.resolve(
 ).await?;
 ```
 
-Then build the workflow's `TurnOpts` from `resolved` exactly as in Task 4 Step 2, but pass the workflow's existing `provider` (the runner supplies it) instead of `resolved.provider` if the workflow must reuse the injected provider — otherwise use `resolved.provider`. Confirm which during implementation; the workflow runner currently constructs and threads its own provider, so prefer that one for behavior parity:
+**Parity fix (re-grounded):** the OLD `exec_prompt` builds **builtins only** — it has NO config-tool loop. But `from_config_and_agent` populates `config_tools` from `config.tools`, and `resolve()` appends them. To preserve behavior, set `profile.config_tools = vec![];` before resolving (so resolve adds no config shell-tools). Also resolve the api_key via `crate::auth::resolve_api_key(model.split_once('/').map(|(p,_)| p).unwrap_or(""))` — it reads env or `~/.local/share/gait/auth.json`, the same source the runner's injected provider used, so it succeeds at workflow runtime.
+
+Then build the workflow's `TurnOpts` from `resolved` exactly as in Task 4 Step 2, but pass the workflow's **injected** `provider` (the runner threads it) and `resolved.tools`. The runner constructs its own provider from the same model+key, so reusing it preserves behavior (resolve's own `resolved.provider` is built but unused here):
 
 ```rust
 run_turn(TurnOpts { /* fields from resolved, as Task 4 */ }, provider, resolved.tools).await?
