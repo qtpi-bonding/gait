@@ -32,7 +32,7 @@ pub struct Profile {
     pub deny: Vec<String>,
     pub mcp_servers: Vec<crate::config::McpServerDef>,
     pub skills: Vec<crate::config::SkillDef>,
-    pub config_tools: Vec<crate::config::ToolDef>,   // shell-command tool descriptors from gait.jsonc
+    pub config_tools: Vec<crate::config::ConfigTool>,   // shell-command tool descriptors from gait.jsonc (config.tools: Vec<ConfigTool>)
     pub config_enabled: std::collections::HashSet<String>,
     pub output_schema_retries: u8,
 }
@@ -52,7 +52,7 @@ pub struct ResolvedProfile {
 }
 ```
 
-> Note: confirm the exact type names `config.tools` deserializes to (the investigator saw `config.tools` iterated as shell-command descriptors). Use whatever the real `GaitConfig::tools` element type is for `Profile::config_tools`. The just-in-time re-ground before implementing this plan will pin it.
+> **Pinned (re-ground):** `config.tools` is `Vec<crate::config::ConfigTool>` (struct `ConfigTool` at `config.rs:7`, fields `name/description/cmd/cwd`). Use `ConfigTool` for `Profile::config_tools` and for the `build_config_tool` param. Do NOT use `types::ToolDef` — that is the *boxed tool* the loop constructs from a `ConfigTool`.
 
 ---
 
@@ -65,7 +65,7 @@ pub struct ResolvedProfile {
 
 - [ ] **Step 1: Create `prompt.rs` with the two functions moved verbatim**
 
-Create `gait-rs/src/prompt.rs`. Move `compose_system_prompt` (currently `bin/gait.rs:164-187`) and its helper `content_hash_short` (also in `bin/gait.rs`) verbatim, changing the crate-internal references from `gait_ai::` to `crate::`:
+Create `gait-rs/src/prompt.rs`. Move `compose_system_prompt` (currently `bin/gait.rs:165-188`) and its helper `content_hash_short` (`bin/gait.rs:190-196`) verbatim, changing the crate-internal references from `gait_ai::` to `crate::`:
 
 ```rust
 //! Prompt composition: the harness preamble + an optional agent body become the
@@ -95,17 +95,17 @@ pub fn content_hash_short(s: &str) -> String {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     s.hash(&mut h);
-    format!("{:x}", h.finish())[..7].to_string()
+    format!("{:016x}", std::hash::Hasher::finish(&h))[..7].to_string()
 }
 ```
 
-> Verify the real `content_hash_short` body against `bin/gait.rs` during implementation and copy it exactly (the version above is the standard `DefaultHasher` shape; match the real one).
+> **Re-grounded:** this is the exact current body from `bin/gait.rs:191-196`. The `{:016x}` width matters — `[..7]` would panic on a short hash from `{:x}`. Keep it verbatim.
 
 Add `pub mod prompt;` to `gait-rs/src/lib.rs`.
 
 - [ ] **Step 2: Delete the two functions from `bin/gait.rs` and update the call site**
 
-In `gait-rs/src/bin/gait.rs`: delete `compose_system_prompt` and `content_hash_short`; change line ~260 `let system_prompt = compose_system_prompt(agent_path.as_deref());` → `let system_prompt = gait_ai::prompt::compose_system_prompt(agent_path.as_deref());`. Remove the now-unused `use std::hash::{Hash, Hasher};` import flagged at `bin/gait.rs:191`.
+In `gait-rs/src/bin/gait.rs`: delete `compose_system_prompt` (165-188) and `content_hash_short` (190-196); change the call site at line **261** `let system_prompt = compose_system_prompt(agent_path.as_deref());` → `let system_prompt = gait_ai::prompt::compose_system_prompt(agent_path.as_deref());`. (No separate import to remove — the `use std::hash::{Hash, Hasher};` is *function-local* inside `content_hash_short`, so it leaves with the deleted function.)
 
 - [ ] **Step 3: Write a test for `compose_system_prompt`**
 
@@ -289,7 +289,7 @@ Expected: FAIL — `no method named 'resolve'`.
 
 - [ ] **Step 3: Implement `resolve`**
 
-Add the `ResolvedProfile` struct (from File Structure) and this method to `profile.rs`. The MCP loop is moved verbatim from `bin/gait.rs:263-279`; the `builtin_tools` call from `bin/gait.rs:284`; the config-tool loop from `bin/gait.rs:~290-329`:
+Add the `ResolvedProfile` struct (from File Structure) and this method to `profile.rs`. **Re-grounded line numbers:** the MCP loop is moved verbatim from `bin/gait.rs:263-280` (include its three `eprintln!("[gait] mcp …")` / warning log lines for behavior parity); the `builtin_tools` call from `bin/gait.rs:285-292`; the config-tool loop from `bin/gait.rs:293-330`:
 
 ```rust
 use std::sync::Arc;
@@ -333,7 +333,7 @@ impl Profile {
         );
         for ct in &self.config_tools {
             // MOVE the exact config-tool → Box<dyn Tool> construction currently at
-            // bin/gait.rs ~290-329 here, verbatim. (It builds a ToolDef whose
+            // bin/gait.rs:293-330 here, verbatim. (It builds a types::ToolDef whose
             // `execute` shells out the configured command.)
             tools.push(build_config_tool(ct));
         }
@@ -355,7 +355,7 @@ impl Profile {
 }
 ```
 
-Implement `build_config_tool(ct: &crate::config::ToolDef) -> Box<dyn crate::types::Tool>` by moving the exact body of the `for ct in &config.tools { ... }` loop from `bin/gait.rs` (lines ~290-329) into this helper. Do not paraphrase — copy the real construction so behavior is identical.
+Implement `build_config_tool(ct: &crate::config::ConfigTool) -> Box<dyn crate::types::Tool>` by moving the exact body of the `for ct in &config.tools { ... }` loop from `bin/gait.rs:293-330` into this helper. Note the param type is `ConfigTool` (the input descriptor); the body constructs a `crate::types::ToolDef` (the boxed tool). Do not paraphrase — copy the real construction so behavior is identical.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
@@ -381,7 +381,7 @@ git commit -m "feat: add ResolvedProfile + Profile::resolve (provider + MCP + to
 
 - [ ] **Step 1: Replace the inline assembly**
 
-In `cmd_run`, after `config` is loaded and `agent_path` resolved, replace the inline model resolution (lines 239-241), provider construction (243-258), MCP loop (263-279), tools build (284-329), and allow/deny resolution (332-340) with:
+In `cmd_run`, after `config` is loaded and `agent_path` resolved, replace the inline assembly — **re-grounded line ranges:** model resolution (240-242), provider construction (244-259), MCP loop (263-280), `let repos = Repos::production()` stays (it's at 282, between the MCP loop and tools — keep/reuse it), tools build (285-330), and allow/deny resolution (332-341) — with:
 
 ```rust
 let api_key = resolve_api_key(model.split_once('/').map(|(p,_)| p).unwrap_or(""));
@@ -396,7 +396,7 @@ let resolved = match profile.resolve(
 };
 ```
 
-(Resolve the `api_key` using the existing `resolve_api_key` helper, keyed on the provider prefix of `profile.model`. Keep `system_prompt = profile.instructions` available via `resolved.instructions`.)
+(Resolve the `api_key` using the existing `auth::resolve_api_key(provider_name)` helper, keyed on the provider prefix of `profile.model`. **Behavior parity:** the current code at 244-250 validates `model.split_once('/')` and exits with a "model must be 'provider/model'" error if there's no `/` — preserve that explicit validation/exit before resolving, rather than silently `unwrap_or("")`. Keep `system_prompt = profile.instructions` available via `resolved.instructions`.)
 
 - [ ] **Step 2: Build `TurnOpts` from the `ResolvedProfile` (bridge)**
 
