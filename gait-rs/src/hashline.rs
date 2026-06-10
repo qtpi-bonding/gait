@@ -276,9 +276,12 @@ pub struct HashlineEditOp {
     /// Line reference (e.g. "42#NB") for the target line.
     /// Required for replace and positional append/prepend. Omit for append/prepend to file end/start.
     pub pos: Option<String>,
-    /// End line reference for a replace range (e.g. "44#XQ"). Omit for single-line replace.
+    /// End line reference for a replace range (e.g. "44#XQ"). Omit ONLY when replacing exactly
+    /// one line. To replace multiple lines you MUST set this to the last line's ref — otherwise
+    /// only the single `pos` line is swapped and the rest of your block is duplicated below it.
     pub end: Option<String>,
-    /// Replacement or insertion lines (do NOT include the old lines — only the new content)
+    /// Replacement or insertion lines — ONLY the new content. Do NOT include the old lines, the
+    /// anchored line itself, or surrounding context lines (they are already in the file).
     #[serde(deserialize_with = "de_lines")]
     pub lines: Vec<String>,
 }
@@ -301,21 +304,37 @@ where
         Str(String),
         Wrapped(std::collections::BTreeMap<String, Vec<String>>),
     }
-    match Lines::deserialize(d)? {
-        Lines::Vec(v) => Ok(v),
-        Lines::Str(s) => Ok(s.split('\n').map(|x| x.to_string()).collect()),
+    // Split any element that carries embedded newlines into separate lines. Weak models
+    // (MiniMax) emit a whole multi-line block as a *single* array element ("a\nb\nc"); left
+    // un-split it defeats every per-line autocorrect below (which see one giant element where
+    // first == last) and is the substrate of the duplication bug.
+    fn flatten(v: Vec<String>) -> Vec<String> {
+        v.into_iter()
+            .flat_map(|s| s.split('\n').map(str::to_string).collect::<Vec<_>>())
+            .collect()
+    }
+    let v = match Lines::deserialize(d)? {
+        Lines::Vec(v) => v,
+        Lines::Str(s) => s.split('\n').map(|x| x.to_string()).collect(),
         Lines::Wrapped(mut m) => {
+            let mut found = None;
             for k in ["item", "items", "lines", "value", "values"] {
                 if let Some(v) = m.remove(k) {
-                    return Ok(v);
+                    found = Some(v);
+                    break;
                 }
             }
-            // Any single wrapped array key.
-            m.into_values()
-                .next()
-                .ok_or_else(|| serde::de::Error::custom("`lines` object had no array value"))
+            match found {
+                Some(v) => v,
+                // Any single wrapped array key.
+                None => m
+                    .into_values()
+                    .next()
+                    .ok_or_else(|| serde::de::Error::custom("`lines` object had no array value"))?,
+            }
         }
-    }
+    };
+    Ok(flatten(v))
 }
 
 // ── Deduplication & ordering ─────────────────────────────────────────────────
@@ -525,6 +544,26 @@ pub fn apply_hashline_edits(content: &str, ops: &[HashlineEditOp]) -> anyhow::Re
                 let new_lines = strip_line_prefixes(op.lines.clone());
                 let new_lines = strip_range_boundary_echo(&owned, start, end, new_lines);
                 let new_lines = autocorrect_replacement_lines(&original_lines, new_lines);
+                // Guard: a single-line replace (no `end`) whose payload reproduces the anchored
+                // line as its first line is a botched region-rewrite — only line `start` is
+                // swapped, so the lines below it that the model meant to replace survive as
+                // duplicates (the MiniMax snowball, e.g. chat.rs 463#NY quadrupling a match arm).
+                // Reject with guidance instead of silently corrupting the file.
+                if op.end.is_none() && new_lines.len() > 1 {
+                    let anchor = owned[start - 1].trim();
+                    if !anchor.is_empty() && new_lines.first().map(|l| l.trim()) == Some(anchor) {
+                        anyhow::bail!(
+                            "edit at {}: the replacement repeats the anchored line `{}` and then \
+                             adds {} more line(s), but with no `end` ref a replace swaps only that \
+                             single line — every line below it would be duplicated. Either set \
+                             `end` to the last line's N#XY ref to replace the whole block, or use \
+                             `append` to insert after the anchor without repeating it.",
+                            op.pos.as_deref().unwrap_or("?"),
+                            anchor,
+                            new_lines.len() - 1
+                        );
+                    }
+                }
                 owned.splice((start - 1)..end, new_lines.into_iter());
             }
             "append" => {
@@ -823,6 +862,73 @@ mod tests {
         ).unwrap();
         assert!(result.contains("    baz();"), "got: {result}");
         assert!(!result.contains('#'), "prefix should have been stripped: {result}");
+    }
+
+    #[test]
+    fn de_lines_splits_embedded_newlines_in_array() {
+        // MiniMax sends the whole block as a single array element with embedded \n.
+        // It must be normalised into a true line array so per-line autocorrects work.
+        let op: HashlineEditOp = serde_json::from_value(serde_json::json!({
+            "op": "replace", "pos": "1#NB", "lines": ["a\nb\nc"]
+        })).unwrap();
+        assert_eq!(op.lines, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn de_lines_splits_embedded_newlines_in_wrapped() {
+        let op: HashlineEditOp = serde_json::from_value(serde_json::json!({
+            "op": "replace", "pos": "1#NB", "lines": {"item": ["a\nb", "c"]}
+        })).unwrap();
+        assert_eq!(op.lines, vec!["a", "b", "c"]);
+    }
+
+    // Regression for the MiniMax duplication snowball (session s60ec2202, chat.rs 463#NY):
+    // a single-line replace (end=None) whose replacement *reproduces the anchor line* as its
+    // first line is a botched region-rewrite — only line N is swapped, so every line below the
+    // anchor that the model meant to replace survives as a duplicate. Reject it with guidance.
+    #[test]
+    fn apply_rejects_single_anchor_region_echo() {
+        let content = "        match line.as_str() {\n            \"/x\" => {}\n        }";
+        let file_lines: Vec<&str> = content.split('\n').collect();
+        let h1 = compute_line_hash(1, file_lines[0]);
+        let err = apply_hashline_edits(
+            content,
+            &[HashlineEditOp {
+                op: "replace".into(),
+                pos: Some(format!("1#{}", h1)),
+                end: None, // no end → single-line replace
+                // payload repeats the anchored line, then adds more — the snowball shape
+                lines: vec![
+                    "        match line.as_str() {".into(),
+                    "            \"/u\" => {}".into(),
+                    "            \"/x\" => {}".into(),
+                    "        }".into(),
+                ],
+            }],
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("end"), "error must steer the model to `end`: {msg}");
+    }
+
+    #[test]
+    fn apply_allows_single_line_expansion_without_echo() {
+        // Legit 1→N expansion: replace one line with a multi-line block that does NOT
+        // reproduce the anchor. This must keep working (e.g. wrapping a stmt in an `if`).
+        let content = "a\nfoo();\nb";
+        let file_lines: Vec<&str> = content.split('\n').collect();
+        let h2 = compute_line_hash(2, file_lines[1]);
+        let result = apply_hashline_edits(
+            content,
+            &[HashlineEditOp {
+                op: "replace".into(),
+                pos: Some(format!("2#{}", h2)),
+                end: None,
+                lines: vec!["if cond {".into(), "    foo();".into(), "}".into()],
+            }],
+        )
+        .unwrap();
+        assert_eq!(result, "a\nif cond {\n    foo();\n}\nb");
     }
 
     #[test]
