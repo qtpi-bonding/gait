@@ -4,7 +4,6 @@ use gait_ai::{
     config::load_config,
     auth::resolve_api_key,
     factory::load_provider,
-    tools::builtin_tools,
     turn::{TurnOpts, run_turn},
     workflow::runner::{run_workflow, WorkflowRunOpts},
     Scheduler,
@@ -193,10 +192,11 @@ async fn cmd_run(argv: &[String]) {
         if default.exists() { Some(default) } else { None }
     };
 
-    // Agent frontmatter model overrides config model; --model flag overrides both
-    let model = model_override
-        .or_else(|| agent_path.as_deref().and_then(gait_ai::agent_frontmatter::read_agent_model))
-        .unwrap_or_else(|| config.model.clone());
+    // Build the declarative profile (model precedence: --model > agent frontmatter > config),
+    // then resolve it into a live provider + tools + MCP clients in one place.
+    let profile = gait_ai::profile::Profile::from_config_and_agent(
+        &config, agent_path.as_deref(), model_override.clone());
+    let model = profile.model.clone();
 
     let provider_name = match model.split_once('/') {
         Some((p, _)) => p,
@@ -207,95 +207,21 @@ async fn cmd_run(argv: &[String]) {
     };
     let api_key = resolve_api_key(provider_name);
 
-    let provider: Arc<dyn gait_ai::provider::Provider> = match load_provider(&model, api_key) {
-        Ok(p) => Arc::from(p),
-        Err(e) => {
-            eprintln!("[gait] error: could not load provider for '{}': {}", model, e);
-            std::process::exit(1);
-        }
-    };
-
-    let system_prompt = gait_ai::prompt::compose_system_prompt(agent_path.as_deref());
-
-    // Discover tools from all configured MCP servers
-    let mut mcp_registry: Vec<gait_ai::config::McpToolDef> = vec![];
-    let mut mcp_clients: std::collections::HashMap<String, std::sync::Arc<gait_ai::mcp_client::McpClient>> = std::collections::HashMap::new();
-    for server_def in &config.mcp_servers {
-        match gait_ai::mcp_client::McpClient::connect(server_def).await {
-            Ok(client) => {
-                match client.discover_tools().await {
-                    Ok(tools) => {
-                        eprintln!("[gait] mcp {}: {} tool(s)", server_def.name, tools.len());
-                        mcp_registry.extend(tools);
-                        mcp_clients.insert(server_def.name.clone(), std::sync::Arc::new(client));
-                    }
-                    Err(e) => eprintln!("[gait] warning: mcp {} tools/list: {e}", server_def.name),
-                }
-            }
-            Err(e) => eprintln!("[gait] warning: mcp {} connect: {e}", server_def.name),
-        }
-    }
-
     let repos = gait_ai::git::Repos::production();
 
-    // Append config-defined tools
-    let mut tools = builtin_tools(
+    let resolved = match profile.resolve(
         codebase_path.clone(),
         session_id.clone(),
         workspace.clone(),
-        mcp_registry.clone(),
-        config.skills.clone(),
         repos.clone(),
-    );
-    for ct in &config.tools {
-        let cmd = ct.cmd.clone();
-        let cwd = if ct.cwd == "workspace" {
-            workspace.clone()
-        } else {
-            codebase_path.clone()
-        };
-        let name = ct.name.clone();
-        let description = ct.description.clone();
-        // Note: config-defined tools receive no arguments from the model — they are fixed shell
-        // commands. The empty parameters schema tells the model to call them with no input.
-        tools.push(Box::new(gait_ai::types::ToolDef {
-            name,
-            description,
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            }),
-            execute: Box::new(move |_args| {
-                let cmd = cmd.clone();
-                let cwd = cwd.clone();
-                Box::pin(async move {
-                    let output = tokio::process::Command::new("sh")
-                        .arg("-c")
-                        .arg(&cmd)
-                        .current_dir(&cwd)
-                        .output()
-                        .await
-                        .map_err(|e| anyhow::anyhow!("{}", e))?;
-                    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                    let combined = if stderr.is_empty() { stdout } else { format!("{}\nstderr:\n{}", stdout, stderr) };
-                    Ok(serde_json::Value::String(combined))
-                })
-            }),
-        }) as Box<dyn gait_ai::types::Tool>);
-    }
-
-    // Agent-scoped allow/deny (frontmatter) supersede workspace config when present.
-    let effective_allow = agent_path.as_deref()
-        .and_then(|p| gait_ai::agent_frontmatter::read_agent_allow(p.to_path_buf()).ok())
-        .filter(|v| !v.is_empty())
-        .unwrap_or(config.allow);
-
-    let effective_deny = agent_path.as_deref()
-        .and_then(|p| gait_ai::agent_frontmatter::read_agent_deny(p.to_path_buf()).ok())
-        .filter(|v| !v.is_empty())
-        .unwrap_or(config.deny);
+        api_key,
+    ).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[gait] error: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     // Expand $(cmd) and @path markers in the task string before the turn runs.
     let task = task.map(|t| {
@@ -311,25 +237,21 @@ async fn cmd_run(argv: &[String]) {
             auto,
             workspace: workspace.clone(),
             codebase_path,
-            allow: effective_allow,
-            deny: effective_deny,
-            system_prompt,
-            model: model.clone(),
-            mcp_registry,
-            mcp_clients,
-            skill_registry: config.skills.clone(),
-            config_enabled: config.mcp_servers.iter()
-                .filter(|s| s.enabled)
-                .map(|s| s.name.clone())           // server name, not tool names
-                .chain(config.skills.iter().filter(|s| s.enabled).map(|s| s.name.clone()))
-                .collect(),
+            allow: resolved.allow.clone(),
+            deny: resolved.deny.clone(),
+            system_prompt: resolved.instructions.clone(),
+            model: resolved.model.clone(),
+            mcp_registry: resolved.mcp_registry.clone(),
+            mcp_clients: resolved.mcp_clients.clone(),
+            skill_registry: resolved.skill_registry.clone(),
+            config_enabled: resolved.config_enabled.clone(),
             max_iter: None,
             hooks: vec![],
             repos,
-            output_schema_retries: config.output_schema_retries,
+            output_schema_retries: resolved.output_schema_retries,
         },
-        provider,
-        tools,
+        resolved.provider.clone(),
+        resolved.tools,
     ).await {
         Ok(r) => r,
         Err(e) => {
