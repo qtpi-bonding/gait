@@ -475,22 +475,29 @@ pub fn run_chat(
             _ => {}
         }
 
-        // /u [N]: list checkpoints or restore to turn N.
-        let line: String = if line.starts_with("/u") {
-            let arg = line[2..].trim().to_owned();
+        // /u [N], /uc [N], /ut [N]: undo both axes, code-only, or transcript-only.
+        // Check longest prefix first so /uc and /ut are not consumed by /u.
+        let line: String = if line.starts_with("/uc") || line.starts_with("/ut") || line.starts_with("/u") {
+            let (flags, label, arg_start) = if line.starts_with("/uc") {
+                (["--code"].as_slice(), "code", 3usize)
+            } else if line.starts_with("/ut") {
+                (["--transcript"].as_slice(), "transcript", 3usize)
+            } else {
+                (["--code", "--transcript"].as_slice(), "both", 2usize)
+            };
+            let arg = line[arg_start..].trim().to_owned();
             if arg.is_empty() {
-                // /u — list checkpoints for this session
                 let _ = Command::new(&gait_bin)
                     .args(["undo", &session_id, "--list",
                            "--workspace", workspace.to_str().unwrap_or(".")])
                     .status();
                 continue;
             } else if let Ok(n) = arg.parse::<u32>() {
-                // /u N — restore codebase + transcript to turn N
+                let mut cmd_args = vec!["undo", &session_id, "--turn", &arg];
+                cmd_args.extend_from_slice(flags);
+                cmd_args.extend_from_slice(&["--workspace", workspace.to_str().unwrap_or(".")]);
                 let ok = Command::new(&gait_bin)
-                    .args(["undo", &session_id, "--turn", &arg,
-                           "--code", "--transcript",
-                           "--workspace", workspace.to_str().unwrap_or(".")])
+                    .args(&cmd_args)
                     .status()
                     .map(|s| s.success())
                     .unwrap_or(false);
@@ -498,9 +505,11 @@ pub fn run_chat(
                     eprintln!("[undo] failed — is there a turn {n} for this session?");
                     continue;
                 }
-                format!("[undo] restored to turn {n}")
+                format!("[undo] restored {label} to turn {n}")
             } else {
-                eprintln!("usage: /u        list checkpoints\n       /u N      restore to turn N");
+                eprintln!("usage: /u [N]   undo both code+transcript to turn N (list if no N)");
+                eprintln!("       /uc [N]  undo code only");
+                eprintln!("       /ut [N]  undo transcript only");
                 continue;
             }
         } else {
