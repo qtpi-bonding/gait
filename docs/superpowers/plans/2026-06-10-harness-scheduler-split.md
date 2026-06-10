@@ -253,11 +253,11 @@ impl HarnessBackend for NativeHarnessBackend {
 }
 ```
 
-Keep the `NativeHarnessBackend { workspace }` struct and its `new()` unchanged. Remove the now-unused `use` of `TurnResult` from `harness.rs` (the result mapping moved to the scheduler).
+Keep the `NativeHarnessBackend { workspace }` struct and its `new()` unchanged. Fix the now-stale top-of-file import at `harness.rs:2`: change `use crate::turn::{TurnResult, SessionLock};` to `use crate::turn::SessionLock;` (keep `SessionLock` — `execute` still uses it; drop `TurnResult` — the result mapping moved to the scheduler).
 
 - [ ] **Step 2: Update the harness unit tests in `harness.rs`**
 
-Replace the two existing tests (`noop_harness_always_succeeds`, `native_harness_with_no_assigned_by_is_noop`) with mechanism-level tests:
+Replace the two existing tests (`noop_harness_always_succeeds`, `native_harness_with_no_assigned_by_is_noop`) with mechanism-level tests. **Also delete the now-unused `use crate::turn::TurnResult;` at the top of the `#[cfg(test)] mod tests` block (harness.rs:119)** — the new test below only needs `Action` (already in scope via `use super::*;`):
 
 ```rust
     #[tokio::test]
