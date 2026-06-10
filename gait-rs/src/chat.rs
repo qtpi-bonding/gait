@@ -17,6 +17,16 @@ use crate::session::transcript::{
 };
 use crate::theme::{Theme, RESET, DIM_FG};
 
+/// All user-visible hint strings for the REPL, centralised here for easy editing.
+mod hints {
+    pub const STARTUP: &str =
+        "ctrl+d or /q to exit  \u{2022}  /n new session  \u{2022}  /u [N] undo  \u{2022}  !cmd shell";
+    pub const UNDO_USAGE: &str =
+        "/u [N]   undo code+transcript  (list turns if no N)\n\
+         /uc [N]  undo code only\n\
+         /ut [N]  undo transcript only";
+}
+
 pub fn new_session_id() -> String {
     format!("s{}", &uuid::Uuid::new_v4().to_string().replace('-', "")[..8])
 }
@@ -408,10 +418,10 @@ pub fn run_chat(
     let mut session_id = new_session_id();
     let mut shell_history_path = workspace.join("tmp").join(format!("shell-{}.jsonl", session_id));
     eprintln!(
-        "{}gait{}  {}session {}{}  {}(ctrl+d to exit, /new for fresh session){}",
+        "{}gait{}  {}session {}{}  {}{}{}",
         theme.accent.fg(), RESET,
         DIM_FG, session_id, RESET,
-        DIM_FG, RESET,
+        DIM_FG, hints::STARTUP, RESET,
     );
 
     let nav = Arc::new(Mutex::new(ShellNavState {
@@ -507,9 +517,7 @@ pub fn run_chat(
                 }
                 format!("[undo] restored {label} to turn {n}")
             } else {
-                eprintln!("usage: /u [N]   undo both code+transcript to turn N (list if no N)");
-                eprintln!("       /uc [N]  undo code only");
-                eprintln!("       /ut [N]  undo transcript only");
+                eprintln!("{}", hints::UNDO_USAGE);
                 continue;
             }
         } else {
