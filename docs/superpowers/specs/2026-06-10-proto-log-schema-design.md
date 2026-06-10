@@ -194,16 +194,27 @@ See [`proto/log.proto`](../../../proto/log.proto). Vocabulary:
   on append/resume also lands there (no caller until emit is rewired).
 
 ### Phase 2 — Generated types replace `AnyEvent`; emit rewire; `Session.model` factor-out
-- Delete the hand-written `AnyEvent`, `*Item` structs, and dead types
-  (`CommandResult`, `LinkRef`, `relation`). Move methods (`session_state`, etc.)
-  to free fns / ext traits over generated types.
-- Convert the ~70 `AnyEvent` call sites to build `Payload`; rewire
-  `emit_event`/`append_event` to `mint` + write generated `Event` JSON lines
-  (read the Log tail for `seq`/`parents` on append/resume).
-- Drop `Session.model`; live model stays on `ResolvedProfile`. Add the
+Decomposed into green sub-units (the format flip is atomic, so it was split into
+a converter + a coordinated read-side flip rather than one big-bang):
+- **2.1 ✅ (fbca17d):** `proto::wire` — `emit`/`append`/`read_events`/`last_event`
+  over `Event` (mint off the tail) + `body(kind)` / `raw(type, json)`.
+- **2.2a ✅ (c0a7d2a):** `proto::convert::any_to_body` — the single tested place
+  encoding the restructuring (SessionStart→identity, enum-strings→enums, Value→
+  Struct, workflow/CommandResult→RawEvent). Migration scaffolding.
+- **2.2b ✅ (3ed4866):** on-disk format flipped to proto. `emit_event`/`append_event`
+  convert + write via wire (the ~53 write call sites stay untouched); ALL readers
+  (retrace, session_state, count/last_compaction, list_agents, workflow/state via
+  RawEvent, turn, chat, bin, integration tests) rewritten over `Event`. `AnyEvent`
+  + `convert.rs` retained as write scaffolding.
+- **2.2c ⏳:** migrate the ~53 write call sites to build `Payload` directly (via
+  new ergonomic constructors), then DELETE `AnyEvent`, the `*Item` structs,
+  `CommandResult`/`LinkRef`/`relation`, `convert.rs`, and the old emit shims.
+  Incrementally green (each site flips independently; deletion lands once all do).
+- **2.3 ⏳:** Drop `Session.model` (live model stays on `ResolvedProfile`); add the
   `Resolution` event + "emit on accepted drift at run start" logic.
-- `shell.rs`: populate `ProcessResult` + generic `duration`; stop stringifying
-  exit/time into `output`.
+- **2.4 ⏳:** `shell.rs` — populate `ProcessResult` + generic `duration`; stop
+  stringifying exit/time into `output` (forces the ToolResult write sites onto
+  proto, so it composes with 2.2c).
 
 ### Phase 3 — Unified Retrace (five projections)
 The Retrace folds the Log (sorted by `(seq, id)`) into:
