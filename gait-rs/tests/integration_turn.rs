@@ -1,5 +1,5 @@
 use gait_ai::{
-    turn::{TurnOpts, run_turn},
+    turn::run_turn,
     session::transcript::{read_events, AnyEvent},
 };
 use gait_ai::provider::{Provider, StreamChunk, ProviderError};
@@ -72,29 +72,17 @@ async fn full_turn_creates_transcript_and_git_commit() {
     };
 
     run_turn(
-        TurnOpts {
-            session_id: "sint001".into(),
-            task: Some("list the files".into()),
-            auto: true,
+        &gait_ai::session::Session {
+            id: "sint001".into(),
             workspace: ws.path().to_path_buf(),
             codebase_path: ws.path().to_path_buf(),
-            allow: vec!["ls".into()],
-            deny: vec![],
-            system_prompt: "you are helpful".into(),
             model: "mock/test".into(),
-            mcp_registry: vec![],
-            mcp_clients: std::collections::HashMap::new(),
-            skill_registry: vec![],
-            config_enabled: std::collections::HashSet::new(),
-            max_iter: None,
-            hooks: vec![],
+            assigned_by: None,
             repos: gait_ai::git::Repos::production(),
-            ..TurnOpts::default()
         },
-        provider,
-        vec![Box::new(ls_tool)],
+        gait_ai::profile::ResolvedProfile::for_test(provider, vec![Box::new(ls_tool)], vec!["ls".into()], vec![]),
+        gait_ai::turn::TurnInput { task: Some("list the files".into()), auto: true, max_iter: None },
     ).await.unwrap();
-
     // Verify transcript
     let tx = ws.path().join("sessions/sint001/transcript.jsonl");
     let events = read_events(&tx).unwrap();
@@ -141,23 +129,31 @@ async fn second_turn_resumes_session() {
         idx: Arc::new(AtomicUsize::new(0)),
     });
 
-    run_turn(TurnOpts {
-        session_id: "sint002".into(), task: Some("task 1".into()), auto: true,
-        workspace: ws.path().to_path_buf(), codebase_path: ws.path().to_path_buf(),
-        allow: vec![], deny: vec![], system_prompt: "".into(), model: "mock/test".into(),
-        mcp_registry: vec![], mcp_clients: std::collections::HashMap::new(), skill_registry: vec![],
-        config_enabled: std::collections::HashSet::new(), max_iter: None, hooks: vec![],
-        repos: gait_ai::git::Repos::production(), ..TurnOpts::default()
-    }, provider.clone(), vec![]).await.unwrap();
+    run_turn(
+        &gait_ai::session::Session {
+            id: "sint002".into(),
+            workspace: ws.path().to_path_buf(),
+            codebase_path: ws.path().to_path_buf(),
+            model: "mock/test".into(),
+            assigned_by: None,
+            repos: gait_ai::git::Repos::production(),
+        },
+        gait_ai::profile::ResolvedProfile::for_test(provider.clone(), vec![], vec![], vec![]),
+        gait_ai::turn::TurnInput { task: Some("task 1".into()), auto: true, max_iter: None },
+    ).await.unwrap();
 
-    run_turn(TurnOpts {
-        session_id: "sint002".into(), task: Some("task 2".into()), auto: true,
-        workspace: ws.path().to_path_buf(), codebase_path: ws.path().to_path_buf(),
-        allow: vec![], deny: vec![], system_prompt: "".into(), model: "mock/test".into(),
-        mcp_registry: vec![], mcp_clients: std::collections::HashMap::new(), skill_registry: vec![],
-        config_enabled: std::collections::HashSet::new(), max_iter: None, hooks: vec![],
-        repos: gait_ai::git::Repos::production(), ..TurnOpts::default()
-    }, provider, vec![]).await.unwrap();
+    run_turn(
+        &gait_ai::session::Session {
+            id: "sint002".into(),
+            workspace: ws.path().to_path_buf(),
+            codebase_path: ws.path().to_path_buf(),
+            model: "mock/test".into(),
+            assigned_by: None,
+            repos: gait_ai::git::Repos::production(),
+        },
+        gait_ai::profile::ResolvedProfile::for_test(provider, vec![], vec![], vec![]),
+        gait_ai::turn::TurnInput { task: Some("task 2".into()), auto: true, max_iter: None },
+    ).await.unwrap();
 
     let tx = ws.path().join("sessions/sint002/transcript.jsonl");
     let events = read_events(&tx).unwrap();

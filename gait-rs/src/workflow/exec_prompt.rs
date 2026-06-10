@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::workflow::schema::{NodeDef, WorkflowDef};
 use crate::workflow::vars::{NodeOutput, substitute};
 use crate::workflow::exec_shell::NodeContext;
-use crate::turn::{TurnInput, TurnResult, run_turn};
+use crate::turn::{TurnResult, run_turn};
 use crate::provider::Provider;
 
 pub async fn exec_prompt_node(

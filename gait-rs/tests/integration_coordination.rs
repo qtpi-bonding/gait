@@ -1,5 +1,5 @@
 use gait_ai::{
-    turn::{TurnOpts, TurnResult, run_turn},
+    turn::{TurnResult, run_turn},
     session::transcript::{read_events, AnyEvent},
     session::session_json::read_session_json,
     tools::builtin_tools,
@@ -76,27 +76,16 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
     );
 
     let result = run_turn(
-        TurnOpts {
-            session_id: "sparent001".into(),
-            task: Some("coordinate agents".into()),
-            auto: true,
+        &gait_ai::session::Session {
+            id: "sparent001".into(),
             workspace: ws.path().to_path_buf(),
             codebase_path: ws.path().to_path_buf(),
-            allow: vec!["spawn_agent".into()],
-            deny: vec![],
-            system_prompt: "you are helpful".into(),
             model: "mock/test".into(),
-            mcp_registry: vec![],
-            mcp_clients: std::collections::HashMap::new(),
-            skill_registry: vec![],
-            config_enabled: std::collections::HashSet::new(),
-            max_iter: None,
-            hooks: vec![],
+            assigned_by: None,
             repos: gait_ai::git::Repos::production(),
-            ..TurnOpts::default()
         },
-        provider,
-        tools,
+        gait_ai::profile::ResolvedProfile::for_test(provider, tools, vec!["spawn_agent".into()], vec![]),
+        gait_ai::turn::TurnInput { task: Some("coordinate agents".into()), auto: true, max_iter: None },
     ).await.unwrap();
 
     assert!(matches!(result, TurnResult::Done { .. }));
@@ -154,27 +143,16 @@ async fn run_turn_permissions_result_integration() {
     });
 
     let result = run_turn(
-        TurnOpts {
-            session_id: "spermint".into(),
-            task: Some("destroy everything".into()),
-            auto: false,
+        &gait_ai::session::Session {
+            id: "spermint".into(),
             workspace: ws.path().to_path_buf(),
             codebase_path: ws.path().to_path_buf(),
-            allow: vec![],
-            deny: vec![],
-            system_prompt: "".into(),
             model: "mock/test".into(),
-            mcp_registry: vec![],
-            mcp_clients: std::collections::HashMap::new(),
-            skill_registry: vec![],
-            config_enabled: std::collections::HashSet::new(),
-            max_iter: None,
-            hooks: vec![],
+            assigned_by: None,
             repos: gait_ai::git::Repos::production(),
-            ..TurnOpts::default()
         },
-        provider,
-        vec![],
+        gait_ai::profile::ResolvedProfile::for_test(provider, vec![], vec![], vec![]),
+        gait_ai::turn::TurnInput { task: Some("destroy everything".into()), auto: false, max_iter: None },
     ).await.unwrap();
 
     assert!(matches!(result, TurnResult::Permissions),
