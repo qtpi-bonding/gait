@@ -25,6 +25,7 @@ pub mod agent_frontmatter;
 pub mod mcp_client;
 pub mod repl_helper;
 pub mod hashline;
+pub mod prompt;
 
 pub use types::*;
 pub use stream::stream_text;

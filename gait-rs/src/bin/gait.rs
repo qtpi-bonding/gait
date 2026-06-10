@@ -152,49 +152,6 @@ async fn main() {
     }
 }
 
-/// Compose the system prompt from the built-in harness description and an optional
-/// agent file body. Each source is attributed with a hash so both the model and
-/// humans reviewing transcripts can see exactly what was used.
-///
-/// Format:
-///   <!-- gait-agent.md @ <git-hash> -->
-///   <harness content>
-///
-///   <!-- agents/coder.md @ <content-hash> -->
-///   <agent body>
-fn compose_system_prompt(agent_path: Option<&std::path::Path>) -> String {
-    let gait_hash = &gait_ai::GAIT_BUILD_GIT_HASH[..gait_ai::GAIT_BUILD_GIT_HASH.len().min(7)];
-    let mut prompt = format!(
-        "<!-- gait-agent.md @ {} -->\n{}",
-        gait_hash,
-        gait_ai::GAIT_AGENT_PROMPT.trim_end(),
-    );
-
-    if let Some(path) = agent_path {
-        let body = gait_ai::agent_frontmatter::read_agent_body(path);
-        if !body.is_empty() {
-            let label = path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("agent.md");
-            let hash = content_hash_short(&body);
-            prompt.push_str(&format!(
-                "\n\n<!-- {} @ {} -->\n{}",
-                label, hash, body,
-            ));
-        }
-    }
-
-    prompt
-}
-
-/// First 7 hex chars of a simple content hash — used for attribution only, not security.
-fn content_hash_short(s: &str) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    s.hash(&mut h);
-    format!("{:016x}", std::hash::Hasher::finish(&h))[..7].to_string()
-}
-
 async fn cmd_run(argv: &[String]) {
     let mut session_id: Option<String> = None;
     let mut task: Option<String> = None;
@@ -258,7 +215,7 @@ async fn cmd_run(argv: &[String]) {
         }
     };
 
-    let system_prompt = compose_system_prompt(agent_path.as_deref());
+    let system_prompt = gait_ai::prompt::compose_system_prompt(agent_path.as_deref());
 
     // Discover tools from all configured MCP servers
     let mut mcp_registry: Vec<gait_ai::config::McpToolDef> = vec![];
