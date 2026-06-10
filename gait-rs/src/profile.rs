@@ -34,6 +34,17 @@ pub struct ResolvedProfile {
     pub output_schema_retries: u8,
     pub hooks: Vec<Box<dyn crate::types::Hook>>,
 }
+
+/// Deny is monotonic: every layer's deny is final. Union config-deny with the
+/// agent's deny (dedup, config order first). Only `allow` is innermost-wins.
+pub(crate) fn merge_deny(config_deny: &[String], agent_deny: &[String]) -> Vec<String> {
+    let mut out = config_deny.to_vec();
+    for d in agent_deny {
+        if !out.contains(d) { out.push(d.clone()); }
+    }
+    out
+}
+
 impl Profile {
     /// Build the declarative profile from workspace config + an optional agent .md.
     /// Model precedence: explicit override > agent frontmatter > config.
@@ -53,10 +64,10 @@ impl Profile {
             .and_then(|p| crate::agent_frontmatter::read_agent_allow(p.to_path_buf()).ok())
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| config.allow.clone());
-        let deny = agent_path
+        let agent_deny = agent_path
             .and_then(|p| crate::agent_frontmatter::read_agent_deny(p.to_path_buf()).ok())
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| config.deny.clone());
+            .unwrap_or_default();
+        let deny = merge_deny(&config.deny, &agent_deny);
 
         let config_enabled: HashSet<String> = config.mcp_servers.iter()
             .filter(|s| s.enabled).map(|s| s.name.clone())
@@ -256,5 +267,12 @@ mod tests {
         assert_eq!(resolved.provider.model_id(), "claude-x");
         assert!(resolved.tools.len() >= 15, "expected the builtin tools");
         assert_eq!(resolved.allow, vec!["read".to_string()]);
+    }
+    #[test]
+    fn merge_deny_unions_and_dedups() {
+        let d = merge_deny(&["shell:rm *".into(), "shell:curl *".into()],
+                           &["shell:curl *".into(), "edit:secrets/*".into()]);
+        // config denies survive; agent denies are added; no duplicates
+        assert_eq!(d, vec!["shell:rm *", "shell:curl *", "edit:secrets/*"]);
     }
 }
