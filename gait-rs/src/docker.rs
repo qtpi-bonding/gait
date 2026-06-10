@@ -126,7 +126,7 @@ fn rewrite_inner_args(args: &[String], mounts: &MountMap) -> Vec<String> {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--workspace" | "--codebase" => {
+            "--gait-dir" | "--codebase" => {
                 i += 2;
             }
             "--container" => {
@@ -138,7 +138,7 @@ fn rewrite_inner_args(args: &[String], mounts: &MountMap) -> Vec<String> {
             }
         }
     }
-    out.push("--workspace".to_string());
+    out.push("--gait-dir".to_string());
     out.push(mounts.workspace_container.to_string_lossy().to_string());
     out.push("--codebase".to_string());
     out.push(mounts.codebase_container.to_string_lossy().to_string());
@@ -176,12 +176,12 @@ mod tests {
         );
         let orig = vec![
             "run".to_string(),
-            "--workspace".to_string(), "/host/ws".to_string(),
+            "--gait-dir".to_string(), "/host/ws".to_string(),
             "--codebase".to_string(), "/host/cb".to_string(),
             "--task".to_string(), "do stuff".to_string(),
         ];
         let args = build_docker_args("gaitai/gait:latest", &mounts, None, &orig, false);
-        let ws_idx = args.iter().rposition(|a| a == "--workspace").unwrap();
+        let ws_idx = args.iter().rposition(|a| a == "--gait-dir").unwrap();
         assert_eq!(args[ws_idx + 1], "/gait-workspace");
         let cb_idx = args.iter().rposition(|a| a == "--codebase").unwrap();
         assert_eq!(args[cb_idx + 1], "/gait-codebase");
@@ -195,7 +195,7 @@ mod tests {
         );
         let orig = vec!["run".to_string(), "--task".to_string(), "hello".to_string()];
         let args = build_docker_args("gaitai/gait:latest", &mounts, None, &orig, false);
-        assert!(args.iter().any(|a| a == "--workspace"));
+        assert!(args.iter().any(|a| a == "--gait-dir"));
         assert!(args.iter().any(|a| a == "--codebase"));
     }
 

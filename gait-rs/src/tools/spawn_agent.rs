@@ -96,7 +96,7 @@ impl Tool for SpawnAgentTool {
             .args([
                 "run",
                 "--session", &new_id,
-                "--workspace", self.workspace.to_str().unwrap_or("."),
+                "--gait-dir", self.workspace.to_str().unwrap_or("."),
                 "--auto",
             ])
             .stdin(std::process::Stdio::null())

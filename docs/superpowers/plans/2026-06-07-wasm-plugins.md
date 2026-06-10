@@ -22,17 +22,37 @@ The security story is the main win: WASM runs in a capability-based sandbox with
 extism = "1"
 ```
 
-A plugin implements three exports:
+---
+
+## Unified `Loadable` Trait
+
+MCP servers, WASM plugins, and skills all follow the same load/unload mechanic. Rather than separate code paths, they should all implement a common trait:
 
 ```rust
-// guest side (any language that compiles to WASM)
+pub trait Loadable: Send + Sync {
+    fn name(&self) -> &str;
+    fn kind(&self) -> LoadableKind;   // Mcp | WasmPlugin | Skill
+    fn tools(&self) -> Vec<Box<dyn Tool>>;
+    fn hooks(&self) -> Vec<Box<dyn Hook>>;
+}
+```
+
+The existing `mcp(name, context=true/false)` toggle tool works on anything `Loadable`. The index lists all three kinds together. No new toggle surface — just a new kind in the registry.
+
+---
+
+## Tool Interface
+
+A plugin implements required exports (guest side, any language that compiles to WASM):
+
+```rust
 fn name() -> String
 fn description() -> String
 fn schema() -> String      // JSON Schema for the args
 fn execute(args: String) -> String  // JSON in, JSON out
 ```
 
-The host (gait) loads it like any other `Box<dyn Tool>`:
+The host loads it as `Box<dyn Tool>`:
 
 ```rust
 let plugin = extism::Plugin::new(&wasm_bytes, [], true)?;
@@ -42,7 +62,112 @@ let plugin = extism::Plugin::new(&wasm_bytes, [], true)?;
 
 ---
 
+## Lifecycle Hooks
+
+Beyond registering tools, plugins can export optional hook functions. gait calls them at key points in the agent loop. All hooks take JSON strings and return JSON strings. Missing exports are silently skipped — all hooks are optional.
+
+Multiple plugins' hooks run in config order. **First block wins**: if a plugin blocks a `hook_tool_call`, later plugins don't run for that call.
+
+### `hook_before_turn(context: String) -> String`
+
+Called once per turn before the LLM call. Input:
+
+```json
+{ "system_prompt": "You are...", "cwd": "/path/to/project" }
+```
+
+Return to modify the system prompt for this turn:
+
+```json
+{ "system_prompt": "You are... [plugin appended text]" }
+```
+
+Return `{}` to pass through unchanged.
+
+**Use cases:** inject project-specific context, append skill instructions, add per-turn state.
+
+### `hook_tool_call(event: String) -> String`
+
+Called before any tool executes. Input:
+
+```json
+{ "tool_call_id": "tc_abc", "tool_name": "shell", "args": { "cmd": "rm -rf /tmp/foo" } }
+```
+
+Return to block or mutate:
+
+```json
+{ "block": true, "reason": "blocked by policy plugin" }
+// or
+{ "args": { "cmd": "rm -rf /tmp/foo_safe" } }
+// or
+{}  // pass through unchanged
+```
+
+**Use cases:** policy enforcement, argument sanitisation, audit logging.
+
+### `hook_tool_result(event: String) -> String`
+
+Called after a tool finishes, before the result is returned to the LLM. Input:
+
+```json
+{ "tool_call_id": "tc_abc", "tool_name": "read", "result": "...file contents...", "is_error": false }
+```
+
+Return to replace the result:
+
+```json
+{ "result": "...redacted...", "is_error": false }
+// or
+{}  // pass through unchanged
+```
+
+**Use cases:** redact secrets in file reads, truncate large results, inject metadata.
+
+### `hook_message_end(message: String) -> String`
+
+Called after the LLM finishes generating an assistant message, before it is stored in the transcript. Input:
+
+```json
+{ "role": "assistant", "content": "Here is my answer..." }
+```
+
+Return to replace the message:
+
+```json
+{ "content": "Here is my answer... [post-processed]" }
+// or
+{}  // pass through unchanged
+```
+
+**Use cases:** content filtering, appending structured tags, telemetry/logging, output format transformation.
+
+### `hook_outgoing_context(messages: String) -> String`
+
+Called before the message payload is sent to the LLM this turn. This is the **outgoing payload only** — modifying it does not touch the stored transcript. Input is the message array about to be sent:
+
+```json
+[
+  { "role": "user", "content": "..." },
+  { "role": "assistant", "content": "..." }
+]
+```
+
+Return a replacement array, or `null`/`{}` to pass through unchanged.
+
+**Use cases:** inject retrieved documents, trim stale tool results for this call, add a per-turn "remember X" note. Safer than full history rewrite — a bug affects one LLM call, not the transcript.
+
+---
+
+## Host Callbacks
+
+Plugins do not get host callbacks into gait internals. If a plugin needs to read a file or run a command during execution, it shells out to the `gait` CLI (e.g. `gait read path/to/file`) using its granted exec capability. This keeps the host/guest boundary clean and avoids re-entrant execution.
+
+---
+
 ## Config shape
+
+Follows the same pattern as `mcp_servers` — explicit list in `gait.jsonc`, no auto-scan:
 
 ```jsonc
 // gait.jsonc
@@ -55,26 +180,38 @@ let plugin = extism::Plugin::new(&wasm_bytes, [], true)?;
 }
 ```
 
+**Capability grants** default to zero — no filesystem, no network, no exec. Grants are explicit per-plugin. When a plugin is installed (added to config), gait should prompt for which capabilities to allow.
+
 ---
 
 ## Architecture fit
 
-- **Separate from MCP** — MCP = connect to existing servers. WASM = native gait extensions.
-- **Same toggle mechanic** — WASM tools participate in the same `mcp(name, context=true/false)` load/unload system and appear in the `<mcp-index>` (or a separate `<plugin-index>`).
-- **Run-and-done friendly** — plugins load at startup, live for the session, drop at exit. No server lifecycle to manage.
-- **Distribution** — a plugin is a single `.wasm` file. Users check it in or download it. No npm, no cargo, no runtime deps.
+- **Unified with MCP/skills** — all three implement `Loadable`; same toggle machinery, same index.
+- **Config-only discovery** — explicit list like `mcp_servers`; no auto-scan of directories.
+- **Run-and-done friendly** — plugins load at startup, live for the session, drop at exit. No server lifecycle.
+- **Distribution** — a plugin is a single `.wasm` file. Check it in or download it. No npm, no cargo, no runtime deps.
+- **Hook ordering** — plugins run in config order; first block wins on `hook_tool_call`.
+
+---
+
+## Mapping from pi's extension system
+
+| pi (TypeScript) | gait WASM equivalent |
+|---|---|
+| `registerTool(def)` | guest exports `name/description/schema/execute` |
+| `on("before_agent_start")` → replace system prompt | `hook_before_turn` |
+| `on("tool_call")` → block or mutate args | `hook_tool_call` |
+| `on("tool_result")` → replace result | `hook_tool_result` |
+| `on("message_end")` → replace assistant message | `hook_message_end` |
+| `on("context")` → replace message history | `hook_outgoing_context` (per-turn payload only) |
+| `ctx.reload()` | n/a — plugins load once per session |
+| host function callbacks | shell out to `gait` CLI instead |
+| UI hooks, TUI renderers | not applicable (headless agent) |
 
 ---
 
 ## Open questions before planning
 
-1. Should WASM plugins share the same toggle tool as MCP (`mcp(name, context=true)`) or get their own (`plugin(name, context=true)`)? Probably separate to keep the index clean.
-2. Capability grants — filesystem paths? Network hosts? Or keep it zero-capability by default and document that limitation?
-3. Plugin discovery — explicit list in config only, or also scan a `plugins/` directory automatically?
-4. Should plugins be able to call back into gait (e.g. read a file via gait's own tools)? Probably not in v1.
-
----
-
-## When to plan
-
-When there's a concrete use case — a tool someone actually wants to write as a plugin that doesn't fit as a shell command or MCP server.
+1. Capability grants UX — prompt at `gait config add-plugin` time, or list in a separate `gait plugin install` command?
+2. Should `hook_outgoing_context` be v1 or v2? Lower risk than full history rewrite but still broad.
+3. Plugin versioning — should the `.wasm` file embed a version, and should gait enforce a minimum API version?

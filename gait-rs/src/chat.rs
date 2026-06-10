@@ -511,13 +511,13 @@ pub fn run_chat(
             if arg.is_empty() {
                 let _ = Command::new(&gait_bin)
                     .args(["undo", &session_id, "--list",
-                           "--workspace", workspace.to_str().unwrap_or(".")])
+                           "--gait-dir", workspace.to_str().unwrap_or(".")])
                     .status();
                 continue;
             } else if let Ok(n) = arg.parse::<u32>() {
                 let mut cmd_args = vec!["undo", &session_id, "--turn", &arg];
                 cmd_args.extend_from_slice(flags);
-                cmd_args.extend_from_slice(&["--workspace", workspace.to_str().unwrap_or(".")]);
+                cmd_args.extend_from_slice(&["--gait-dir", workspace.to_str().unwrap_or(".")]);
                 let ok = Command::new(&gait_bin)
                     .args(&cmd_args)
                     .status()
@@ -549,7 +549,7 @@ pub fn run_chat(
                 &session_id,
                 "--task",
                 &line,
-                "--workspace",
+                "--gait-dir",
                 workspace.to_str().unwrap_or("."),
                 "--codebase",
                 codebase.to_str().unwrap_or("."),

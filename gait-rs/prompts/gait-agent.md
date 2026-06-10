@@ -2,7 +2,7 @@
 
 **Gait** is a git-backed, turn-based coding agent harness. Session history lives
 in git — each turn commits its transcript (NDJSON events) so context is fully
-replayable. The **codebase** is the external repo you work on; the **workspace**
+replayable. The **codebase** is the external repo you work on; the **gait-dir**
 holds session history and config. Each `gait run` is one turn.
 
 Each turn = (optional tool calls) + `output(message=..., result=...)`.

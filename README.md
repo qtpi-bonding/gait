@@ -58,7 +58,7 @@ Runs one turn of the agent.
 
 ```
 gait run [--session <id>] [--task "..."] [--workspace <path>] [--codebase <path>]
-         [--auto] [--model <provider/model>]
+         [--auto] [--model <provider/model>] [--container]
 ```
 
 | Flag | Description |
@@ -69,6 +69,7 @@ gait run [--session <id>] [--task "..."] [--workspace <path>] [--codebase <path>
 | `--codebase <path>` | Codebase directory. Defaults to `<workspace>/codebase`. |
 | `--model <id>` | Override the model for this turn. |
 | `--auto` | Auto-approve all permission requests (non-interactive). |
+| `--container` | Run the turn inside Docker (pulls the gait image if needed). |
 
 Each completed turn is committed to the session's git branch. Interrupted turns (permissions, questions) are also committed — state is never lost.
 
@@ -91,6 +92,93 @@ Merges a session branch into `main` and removes the worktree.
 ```bash
 gait finish s1a2b3c4 --workspace /path/to/workspace
 ```
+
+### `gait undo <session-id>`
+
+Restores a session to a past turn — code, transcript, or both.
+
+```
+gait undo <session-id> [--turn N | --list] [--code] [--transcript] [--workspace <path>]
+```
+
+| Flag | Description |
+|---|---|
+| `--list` | Print all turns with their checkpoint SHAs. |
+| `--turn N` | Target turn number. Required with `--code` or `--transcript`. |
+| `--code` | Restore the codebase working tree to what it was after turn N. |
+| `--transcript` | Truncate the transcript back to turn N (removes later turns from git history). |
+
+Omitting both `--code` and `--transcript` restores both. The codebase's own git history is never touched — only the shadow checkpoint is used.
+
+### `gait chat`
+
+Interactive REPL for conversational use. Starts a new session (or resumes one) and lets you iterate turn-by-turn without invoking `gait run` each time.
+
+```bash
+gait chat [--workspace <path>] [--codebase <path>] [--agent <name>]
+```
+
+**REPL commands and syntax**
+
+| Input | What it does |
+|---|---|
+| `/n` or `/new` | Start a fresh session. |
+| `/q` or `/exit` | Quit. |
+| `/u [N]` | Undo both code and transcript to turn N (or list turns if N omitted). |
+| `/uc [N]` | Undo code only. |
+| `/ut [N]` | Undo transcript only. |
+| `!cmd` | Run a shell command locally; output is captured into shell history. |
+| `$(N)` | Paste shell history entry N into your message. |
+| `$(cmd)` | Run `cmd` and inline its output into your message before sending. |
+| `>(N)` | Quote line N from the last agent response (supports ranges `>(N-M)`). |
+
+### `gait status <session-id>`
+
+Prints the current state of a session: `running`, `awaiting_permission`, `awaiting_clarify`, `done`, etc.
+
+```bash
+gait status s1a2b3c4 [--workspace <path>] [--json]
+```
+
+### `gait approve / gait reject`
+
+Approve or reject a pending permission request from outside the session (useful in headless or scripted pipelines).
+
+```bash
+gait approve <session-id> [--pattern <pat>] [--scope <global|agent|once>] [--workspace <path>] [--agent <name>]
+gait reject  <session-id> [--workspace <path>]
+```
+
+`--scope` controls how broadly the approval is saved:
+
+| Scope | Effect |
+|---|---|
+| `once` (default) | Approves this single tool call only. |
+| `agent` | Adds the pattern to the named agent file's `allow` list. |
+| `global` | Adds the pattern to `gait.jsonc`. |
+
+### `gait load / unload / enable / disable`
+
+Register and toggle MCP servers and skills in `gait.jsonc`.
+
+```bash
+# MCP servers
+gait load mcp <name> --spawn <cmd>       # register a stdio MCP server (added disabled)
+gait load mcp <name> --connect <url>     # register a network MCP server (added disabled)
+
+# Skills (inline prompt fragments)
+gait load skill <name> --description <text> --path <file>
+gait load skill <name> --description <text> --content <text>
+
+# Activate / deactivate (toggles the `enabled` flag in gait.jsonc)
+gait enable  <mcp|skill> <name>
+gait disable <mcp|skill> <name>
+
+# Remove entirely
+gait unload <mcp|skill> <name>
+```
+
+`gait load` always adds entries with `enabled: false`. Run `gait enable` to activate.
 
 ### `gait sessions`
 
@@ -128,6 +216,14 @@ JSONC (JSON with `//` and `/* */` comments).
   // Empty = everything requires approval. Add tools you trust.
   "allow": ["read", "glob", "grep", "ls"],
 
+  // Tool calls matching these patterns are always blocked (never prompted).
+  // Patterns are matched against "<tool>:<cmd>" e.g. "shell:rm *", "shell:git push *".
+  "deny": ["shell:git push *"],
+
+  // How many times to retry a turn when the model returns invalid structured output.
+  // Default: 3.
+  "output_schema_retries": 3,
+
   // Custom shell tools exposed to the agent as callable functions.
   "tools": [
     {
@@ -135,6 +231,22 @@ JSONC (JSON with `//` and `/* */` comments).
       "description": "Run the test suite",
       "cmd": "cargo test",
       "cwd": "codebase"   // "codebase" or "workspace"
+    }
+  ],
+
+  // MCP servers. Add entries with `gait load mcp`, toggle with `gait enable/disable`.
+  "mcp_servers": [
+    { "name": "my-server", "spawn": "npx my-mcp-server", "enabled": true }
+  ],
+
+  // Inline skill fragments injected into the agent's system prompt.
+  // Add with `gait load skill`, toggle with `gait enable/disable`.
+  "skills": [
+    {
+      "name": "conventions",
+      "description": "Project coding conventions",
+      "content": "Always use 2-space indentation.",
+      "enabled": true
     }
   ]
 }
@@ -175,7 +287,7 @@ Save a `.yaml` file in `workflows/` and run it with `gait workflow run <name>`.
 ```yaml
 # workflows/ci.yaml
 name: ci-pipeline
-model: minimax/MiniMax-M1-80k
+model: minimax/<model>
 auto: true
 allow: [read, shell]
 
@@ -260,7 +372,7 @@ Every node supports:
     after: "echo done"
     error: "echo failed"
   # prompt/loop nodes also accept:
-  model: minimax/MiniMax-M1-80k
+  model: minimax/<model>
   auto: true
   allow: [read, shell]
   agent: my-agent             # load system prompt from agents/my-agent.md
@@ -299,11 +411,43 @@ When a child completes, it writes an `agent_update` event to the parent's transc
 
 ---
 
+## Agents
+
+The `agents/` folder holds per-agent `.md` files. Each file has optional YAML frontmatter that overrides config for sessions using that agent, followed by a markdown body that is appended to the system prompt.
+
+```markdown
+---
+model: minimax/<model>
+allow: [read, glob, shell]
+deny: ["shell:git push *"]
+---
+
+You are a code reviewer. Focus on correctness and security.
+```
+
+| Frontmatter field | Effect |
+|---|---|
+| `model` | Override the model for this agent. |
+| `allow` | Additional tools this agent may use without prompting. |
+| `deny` | Additional patterns this agent can never call. |
+
+Reference an agent with `--agent <name>` in `gait chat`, `gait approve`, or the `agent:` field in workflow nodes.
+
+---
+
 ## Permissions
 
 Tools not in `allow` are blocked and queued as a permission request. gait prints each pending tool call and waits for approval before continuing.
 
 With `--auto`, all permission requests are approved without prompting. Useful in scripted or trusted environments.
+
+Three tiers apply in order:
+
+| Tier | How set | Effect |
+|---|---|---|
+| **Deny** | `deny` in `gait.jsonc` or agent frontmatter | Always blocked — never prompted. |
+| **Allow** | `allow` in `gait.jsonc` or agent frontmatter | Runs immediately without prompting. |
+| **Ask** | Everything else | Queued and presented to the user (or auto-approved with `--auto`). |
 
 ---
 
@@ -315,7 +459,7 @@ Format: `provider/model-id`
 |---|---|
 | `anthropic` | `anthropic/claude-sonnet-4-6` |
 | `openai` | `openai/gpt-4o` |
-| `minimax` | `minimax/MiniMax-M1-80k` |
+| `minimax` | `minimax/<model>` |
 | `openrouter` | `openrouter/anthropic/claude-3-5-sonnet` |
 
 Any OpenAI-compatible endpoint works via the `openai` provider with a custom base URL.
@@ -323,6 +467,18 @@ Any OpenAI-compatible endpoint works via the `openai` provider with a custom bas
 ---
 
 ## How It Works
+
+### Three repos
+
+gait manages three distinct git repositories at runtime:
+
+| Repo | Where | What it is |
+|---|---|---|
+| **Trace repo** | `<workspace>/` | The workspace git. Session history lives here as branches. Never touches your code. |
+| **Code repo** | `<codebase>/` | Your project. gait reads it (HEAD hash, dirty files) but never commits to it. |
+| **Checkpoint repo** | `<workspace>/sessions/<id>/codebase.git/` | A per-session bare shadow repo. Snapshots the codebase after every turn so the agent can rewind. Borrows objects from the code repo via git alternates — no duplication. |
+
+The trace repo records *what the agent did* (transcripts, permissions, turn history). The checkpoint repo records *what the codebase looked like* at each point. The code repo is yours — gait leaves its git history untouched.
 
 ### Workspace vs codebase
 

@@ -34,7 +34,7 @@ fn try_docker_route(orig_args: &[String]) {
     }
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let workspace = extract_path_arg(orig_args, "--workspace")
+    let workspace = extract_path_arg(orig_args, "--gait-dir")
         .unwrap_or_else(|| cwd.clone())
         .canonicalize()
         .unwrap_or_else(|_| cwd.clone());
@@ -100,7 +100,7 @@ async fn main() {
     }
 
     // Resolve workspace once for subcommands that need a config path (load/unload).
-    let workspace: PathBuf = extract_path_arg(&args[2..], "--workspace")
+    let workspace: PathBuf = extract_path_arg(&args[2..], "--gait-dir")
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
     match args[1].as_str() {
@@ -208,7 +208,7 @@ async fn cmd_run(argv: &[String]) {
         match argv[i].as_str() {
             "--session"   => { i += 1; session_id = argv.get(i).cloned(); }
             "--task"      => { i += 1; task = argv.get(i).cloned(); }
-            "--workspace" => { i += 1; workspace = argv.get(i).map(PathBuf::from).unwrap_or(workspace); }
+            "--gait-dir" => { i += 1; workspace = argv.get(i).map(PathBuf::from).unwrap_or(workspace); }
             "--codebase"  => { i += 1; codebase_path = argv.get(i).map(PathBuf::from); }
             "--model"     => { i += 1; model_override = argv.get(i).cloned(); }
             "--auto"      => { auto = true; }
@@ -476,7 +476,7 @@ fn cmd_finish(argv: &[String]) {
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
-            "--workspace" => { i += 1; if let Some(p) = argv.get(i) { workspace = std::path::PathBuf::from(p); } }
+            "--gait-dir" => { i += 1; if let Some(p) = argv.get(i) { workspace = std::path::PathBuf::from(p); } }
             other if !other.starts_with('-') => { session_id = Some(other.to_string()); }
             _ => {}
         }
@@ -524,7 +524,7 @@ fn cmd_undo(argv: &[String]) {
             "--code" => code = true,
             "--transcript" => transcript = true,
             "--list" => list = true,
-            "--workspace" => {
+            "--gait-dir" => {
                 i += 1;
                 workspace = match argv.get(i) {
                     Some(p) => std::path::PathBuf::from(p),
@@ -650,7 +650,7 @@ fn cmd_sessions(argv: &[String]) {
     let mut workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let mut i = 0;
     while i < argv.len() {
-        if argv[i] == "--workspace" { i += 1; if let Some(p) = argv.get(i) { workspace = std::path::PathBuf::from(p); } }
+        if argv[i] == "--gait-dir" { i += 1; if let Some(p) = argv.get(i) { workspace = std::path::PathBuf::from(p); } }
         i += 1;
     }
     match gait_ai::git::Repos::production().traces.list_active_sessions(&workspace) {
@@ -886,7 +886,7 @@ fn cmd_chat(argv: &[String]) {
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
-            "--workspace" => { i += 1; workspace = argv.get(i).map(PathBuf::from).unwrap_or(workspace); }
+            "--gait-dir" => { i += 1; workspace = argv.get(i).map(PathBuf::from).unwrap_or(workspace); }
             "--codebase"  => { i += 1; codebase_path = argv.get(i).map(PathBuf::from); }
             "--agent"     => { i += 1; agent_name = argv.get(i).cloned(); }
             _ => {}
@@ -921,7 +921,7 @@ fn cmd_approve(argv: &[String]) {
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
-            "--workspace" => { i += 1; if let Some(p) = argv.get(i) { workspace = PathBuf::from(p); } }
+            "--gait-dir" => { i += 1; if let Some(p) = argv.get(i) { workspace = PathBuf::from(p); } }
             "--pattern"   => { i += 1; pattern = argv.get(i).cloned(); }
             "--scope"     => {
                 i += 1;
@@ -975,7 +975,7 @@ fn cmd_reject(argv: &[String]) {
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
-            "--workspace" => { i += 1; if let Some(p) = argv.get(i) { workspace = PathBuf::from(p); } }
+            "--gait-dir" => { i += 1; if let Some(p) = argv.get(i) { workspace = PathBuf::from(p); } }
             other if !other.starts_with('-') => { session_id = Some(other.to_string()); }
             _ => {}
         }
@@ -1033,7 +1033,7 @@ fn cmd_status(argv: &[String]) {
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
-            "--workspace" => { i += 1; if let Some(p) = argv.get(i) { workspace = PathBuf::from(p); } }
+            "--gait-dir" => { i += 1; if let Some(p) = argv.get(i) { workspace = PathBuf::from(p); } }
             "--json"      => { json = true; }
             other if !other.starts_with('-') => { session_id = Some(other.to_string()); }
             _ => {}
@@ -1300,11 +1300,11 @@ mod tests {
     fn extract_path_arg_finds_value() {
         let args = vec![
             "run".to_string(),
-            "--workspace".to_string(),
+            "--gait-dir".to_string(),
             "/foo/bar".to_string(),
         ];
         assert_eq!(
-            extract_path_arg(&args, "--workspace"),
+            extract_path_arg(&args, "--gait-dir"),
             Some(std::path::PathBuf::from("/foo/bar"))
         );
     }
@@ -1312,12 +1312,12 @@ mod tests {
     #[test]
     fn extract_path_arg_returns_none_when_missing() {
         let args = vec!["run".to_string(), "--task".to_string(), "hi".to_string()];
-        assert_eq!(extract_path_arg(&args, "--workspace"), None);
+        assert_eq!(extract_path_arg(&args, "--gait-dir"), None);
     }
 
     #[test]
     fn extract_path_arg_returns_none_for_empty() {
-        assert_eq!(extract_path_arg(&[], "--workspace"), None);
+        assert_eq!(extract_path_arg(&[], "--gait-dir"), None);
     }
 
     #[test]
