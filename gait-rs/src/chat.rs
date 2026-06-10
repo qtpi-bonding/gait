@@ -10,6 +10,9 @@ use crate::repl_helper::{ReplHelper, ShellNavHandler, ShellNavState};
 use rustyline::error::ReadlineError;
 use rustyline::{EventHandler, KeyCode, KeyEvent, Modifiers};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::Duration;
 
 use crate::session::transcript::{
     self, AnyEvent, PermissionItem, PermissionsReplyItem,
@@ -570,7 +573,29 @@ pub fn run_chat(
             let mut pending_inform: Vec<InformItem> = vec![];
 
             let mut turn_complete_blocks: Option<Vec<String>> = None;
+            let spinning = Arc::new(AtomicBool::new(true));
+            let spin_flag = spinning.clone();
+            let spin_thread = thread::spawn(move || {
+                let frames = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
+                let mut i = 0usize;
+                while spin_flag.load(Ordering::Relaxed) {
+                    eprint!("\r  {} thinking…", frames[i % frames.len()]);
+                    let _ = std::io::stderr().flush();
+                    thread::sleep(Duration::from_millis(80));
+                    i += 1;
+                }
+                eprint!("\r\x1b[2K");
+                let _ = std::io::stderr().flush();
+            });
+
+            let mut spinner_cleared = false;
             for json_line in reader.lines() {
+                if !spinner_cleared {
+                    spinning.store(false, Ordering::Relaxed);
+                    eprint!("\r\x1b[2K");
+                    let _ = std::io::stderr().flush();
+                    spinner_cleared = true;
+                }
                 match renderer.handle_line(&json_line?) {
                     crate::render::RenderAction::PermissionNeeded(items) => pending_permissions = items,
                     crate::render::RenderAction::ClarifyNeeded(items) => pending_clarify = items,
@@ -580,6 +605,8 @@ pub fn run_chat(
                 }
             }
             renderer.flush();
+            spinning.store(false, Ordering::Relaxed);
+            spin_thread.join().ok();
             child.wait()?;
             current_turn_blocks.extend(
                 turn_complete_blocks.unwrap_or_else(|| renderer.turn_blocks.drain(..).collect())
