@@ -1,6 +1,8 @@
 # Repo Dependency Injection Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
+**Status: DONE** (all 5 tasks complete — verified 2026-06-10)
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax.
 
 **Goal:** Make the three git repos (`CodebaseRepo`, `WorkspaceRepo`, `RewindRepo`) injectable via a single `Repos` bundle, threaded from composition roots (CLI commands, workflow runner) through `TurnOpts`/`run_turn` and the tool layer (`spawn_agent`), instead of hardcoding the concrete `Git*Repo` structs at call sites.
 
@@ -35,7 +37,7 @@
 
 **Files:** `src/git/mod.rs`
 
-- [ ] **Step 1: Add the bundle to `src/git/mod.rs`**
+- [x] **Step 1: Add the bundle to `src/git/mod.rs`**
 
 Append (the helper trait imports are needed for the `Arc<dyn ...>` types):
 
@@ -66,16 +68,16 @@ impl Repos {
 }
 ```
 
-- [ ] **Step 2: Confirm it's exported**
+- [x] **Step 2: Confirm it's exported**
 
 `git` is already `pub mod git;` in `lib.rs`, and `mod.rs` items are public, so `crate::git::Repos` is reachable. Verify there's no `lib.rs` re-export needed by building in Step 3.
 
-- [ ] **Step 3: Build**
+- [x] **Step 3: Build**
 
 Run: `cargo build 2>&1 | tail -15`
 Expected: compiles (the `use` of the trait/impl paths resolves; `Repos` is unused so far — a dead_code warning is acceptable, or add `#[allow(dead_code)]` on `Repos` and `production` if the build denies warnings).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/git/mod.rs
@@ -88,7 +90,7 @@ git commit -m "feat(git): Repos bundle (codebase/workspace/rewind) with producti
 
 **Files:** `src/turn.rs`
 
-- [ ] **Step 1: Add the field to `TurnOpts`**
+- [x] **Step 1: Add the field to `TurnOpts`**
 
 In `pub struct TurnOpts { ... }`, add (anywhere in the struct):
 
@@ -97,7 +99,7 @@ In `pub struct TurnOpts { ... }`, add (anywhere in the struct):
     pub repos: crate::git::Repos,
 ```
 
-- [ ] **Step 2: Use `opts.repos` in `run_turn` — replace the hardcoded structs**
+- [x] **Step 2: Use `opts.repos` in `run_turn` — replace the hardcoded structs**
 
 Make these substitutions inside `run_turn` (the bodies, not tests):
 
@@ -118,7 +120,7 @@ The `checkpoint_codebase` helper signature already takes `rewind: &dyn RewindRep
 
 Remove the now-unused `use crate::git::workspace::{WorkspaceRepo, GitWorkspaceRepo};` / `GitCodebaseRepo` imports IF they become unused — but the trait imports (`WorkspaceRepo`, `CodebaseRepo`, `RewindRepo`) must stay in scope for the method calls to resolve. Keep `use crate::git::workspace::WorkspaceRepo;`, `use crate::git::codebase::CodebaseRepo;`, `use crate::git::rewind::RewindRepo;` (trait imports); drop the concrete `Git*Repo` imports only if the compiler flags them unused.
 
-- [ ] **Step 3: Fix `apply_curate_filter` (the internal `run_turn` caller at ~turn.rs:339)**
+- [x] **Step 3: Fix `apply_curate_filter` (the internal `run_turn` caller at ~turn.rs:339)**
 
 It constructs a `TurnOpts` and (post-T15) calls `GitRewindRepo.remove(...)`. Build a local production bundle and use it:
 
@@ -128,21 +130,21 @@ At the top of the function body add:
 ```
 Add `repos: repos.clone(),` to its `TurnOpts { ... }` literal. Change the cleanup line `let _ = crate::git::rewind::GitRewindRepo.remove(workspace, &session_id);` to `let _ = repos.rewind.remove(workspace, &session_id);`.
 
-- [ ] **Step 4: Build to list every `TurnOpts` literal missing `repos`**
+- [x] **Step 4: Build to list every `TurnOpts` literal missing `repos`**
 
 Run: `cargo build 2>&1 | tail -40`
 Expected: "missing field `repos`" at each `TurnOpts { ... }` in `src/turn.rs` tests (~14 sites at lines 1196, 1265, 1320, 1369, 1460, 1507, 1548, 1615, 1683, 1812, 1891, 2006, 2142, 2208 — the compiler is authoritative).
 
-- [ ] **Step 5: Add `repos: crate::git::Repos::production(),` to every test `TurnOpts` literal the compiler flags**
+- [x] **Step 5: Add `repos: crate::git::Repos::production(),` to every test `TurnOpts` literal the compiler flags**
 
 For each flagged test-module `TurnOpts { ... }`, add `repos: crate::git::Repos::production(),`. (Tests use real temp git repos, so production repos are correct here.)
 
-- [ ] **Step 6: Build + test**
+- [x] **Step 6: Build + test**
 
 Run: `cargo build 2>&1 | tail -10 && cargo test --lib turn:: 2>&1 | tail -15 && cargo test 2>&1 | tail -8`
 Expected: compiles; all pass (baseline 384; same count — no tests added/removed yet).
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/turn.rs
@@ -155,7 +157,7 @@ git commit -m "refactor(turn): inject Repos via TurnOpts; run_turn uses opts.rep
 
 **Files:** `src/tools/spawn_agent.rs`, `src/tools/mod.rs`
 
-- [ ] **Step 1: Add a `repos` field to `SpawnAgentTool`**
+- [x] **Step 1: Add a `repos` field to `SpawnAgentTool`**
 
 In `src/tools/spawn_agent.rs`, add `repos: crate::git::Repos` to the `struct SpawnAgentTool { ... }` and to `SpawnAgentTool::new(...)`. Update `new`'s signature to accept it last:
 
@@ -166,7 +168,7 @@ In `src/tools/spawn_agent.rs`, add `repos: crate::git::Repos` to the `struct Spa
 ```
 (Match the actual existing field set; just add `repos`.)
 
-- [ ] **Step 2: Use `self.repos` in `execute`**
+- [x] **Step 2: Use `self.repos` in `execute`**
 
 Replace in `execute`:
 - `GitWorkspaceRepo.create_session_worktree(&self.workspace, &new_id)?;` → `self.repos.workspace.create_session_worktree(&self.workspace, &new_id)?;`
@@ -176,7 +178,7 @@ Replace in `execute`:
 
 Keep trait imports (`WorkspaceRepo`, `CodebaseRepo`) in scope; drop concrete `Git*Repo` imports if unused.
 
-- [ ] **Step 3: `builtin_tools` takes and forwards `repos`**
+- [x] **Step 3: `builtin_tools` takes and forwards `repos`**
 
 In `src/tools/mod.rs`, change the signature of `builtin_tools` to accept `repos: crate::git::Repos` (add as the last param):
 
@@ -195,11 +197,11 @@ and update the `SpawnAgentTool::new(...)` line inside to pass `repos.clone()`:
         SpawnAgentTool::new(session_id.clone(), workspace.clone(), codebase_path.clone(), repos.clone()).boxed(),
 ```
 
-- [ ] **Step 4: Fix `spawn_agent.rs` tests + the `builtin_tools` test**
+- [x] **Step 4: Fix `spawn_agent.rs` tests + the `builtin_tools` test**
 
 `SpawnAgentTool::new(...)` test calls (spawn_agent.rs:140, 181) and the `builtin_tools_returns_fifteen` test (tools/mod.rs:~130) now need a `repos` argument — pass `crate::git::Repos::production()`.
 
-- [ ] **Step 5: Build**
+- [x] **Step 5: Build**
 
 Run: `cargo build 2>&1 | tail -25`
 Expected: errors ONLY at the external `builtin_tools(...)` call sites (exec_prompt.rs, bin/gait.rs) — those are fixed in Task 4. Within `tools/`, it compiles. (You may temporarily see the two external call-site errors; that's expected — proceed to Task 4. If you want a green commit here, do Task 4 before committing; otherwise commit tools + the call-site fixes together. To keep tasks atomic, DEFER the commit: do Steps 1-4, confirm `cargo build` shows only the two expected external-call-site errors, then move to Task 4 and commit both together at Task 4 Step 6.)
@@ -212,15 +214,15 @@ Expected: errors ONLY at the external `builtin_tools(...)` call sites (exec_prom
 
 **Files:** `src/bin/gait.rs`, `src/workflow/exec_prompt.rs`, `src/workflow/runner.rs`, `src/harness.rs`
 
-- [ ] **Step 1: `src/workflow/exec_prompt.rs`**
+- [x] **Step 1: `src/workflow/exec_prompt.rs`**
 
 Before the `builtin_tools(...)` call (line ~54) and the `TurnOpts { ... }` (line ~59), add `let repos = crate::git::Repos::production();`. Pass `repos.clone()` as the new last arg to `builtin_tools(...)`, and add `repos,` (or `repos: repos,`) to the `TurnOpts { ... }` literal.
 
-- [ ] **Step 2: `src/bin/gait.rs` — `cmd_run` (and `cmd_chat` if it builds tools/TurnOpts)**
+- [x] **Step 2: `src/bin/gait.rs` — `cmd_run` (and `cmd_chat` if it builds tools/TurnOpts)**
 
 At the `builtin_tools(...)` call site and the `TurnOpts { ... }` (line ~348), add `let repos = gait_ai::git::Repos::production();` and pass `repos.clone()` to `builtin_tools(...)` and `repos,` to `TurnOpts { ... }`. (If `cmd_chat` separately constructs tools/TurnOpts, do the same there. Grep `builtin_tools(` and `TurnOpts {` in bin/gait.rs to find all.)
 
-- [ ] **Step 3: `src/bin/gait.rs` — `cmd_finish`, `cmd_rewind`, `init`**
+- [x] **Step 3: `src/bin/gait.rs` — `cmd_finish`, `cmd_rewind`, `init`**
 
 These call repos directly:
 - `init` handler: `GitWorkspaceRepo.init_workspace(&workspace)` → build `let repos = gait_ai::git::Repos::production();` then `repos.workspace.init_workspace(&workspace)`.
@@ -228,15 +230,15 @@ These call repos directly:
 - `cmd_rewind`: the `GitRewindRepo.rewind_to(...)` call → `repos.rewind.rewind_to(...)`; if it lists sessions via `GitWorkspaceRepo.list_active_sessions`, route through `repos.workspace`.
 Build `let repos = gait_ai::git::Repos::production();` once near the top of each handler. Keep the trait imports (`use gait_ai::git::workspace::WorkspaceRepo; use gait_ai::git::rewind::RewindRepo;`) in scope; drop now-unused concrete `Git*Repo` imports if the compiler flags them.
 
-- [ ] **Step 4: `src/workflow/runner.rs`**
+- [x] **Step 4: `src/workflow/runner.rs`**
 
 Near the top of the function(s) doing git ops, add `let repos = crate::git::Repos::production();`. Replace the `GitWorkspaceRepo.create_session_worktree(...)` and all 6 `GitWorkspaceRepo.commit_session(...)` with `repos.workspace.create_session_worktree(...)` / `repos.workspace.commit_session(...)`. If `repos` would be moved into a closure/loop, `.clone()` it as needed (it's cheap — `Arc`s).
 
-- [ ] **Step 5: `src/harness.rs`**
+- [x] **Step 5: `src/harness.rs`**
 
 `harness.rs:91` does `GitWorkspaceRepo.commit_session(...)`. Add `let repos = crate::git::Repos::production();` in scope (or, if the harness struct is long-lived and constructed at a composition root, give it a `repos: Repos` field — but a local `production()` is acceptable here since harness is itself near the entry point). Replace with `repos.workspace.commit_session(...)`. Keep `use crate::git::workspace::WorkspaceRepo;`.
 
-- [ ] **Step 6: Build, test, commit (tools/ + roots together)**
+- [x] **Step 6: Build, test, commit (tools/ + roots together)**
 
 Run: `cargo build 2>&1 | tail -25`
 Fix any remaining `builtin_tools`/`TurnOpts`/`Git*Repo` errors the compiler reports (there should be none beyond the sites above). Then:
@@ -254,7 +256,7 @@ git commit -m "refactor: thread Repos through tool layer and composition roots (
 
 **Files:** `src/turn.rs` (test module)
 
-- [ ] **Step 1: Write the run_turn wiring test with an injected `MockRewindRepo`**
+- [x] **Step 1: Write the run_turn wiring test with an injected `MockRewindRepo`**
 
 Append to `src/turn.rs`'s `#[cfg(test)] mod tests`. Model the turn-driving setup on `run_turn_records_code_checkpoint_for_git_codebase` (separate git codebase + mock provider). The difference: build `Repos` with a `MockRewindRepo` you keep a handle to, and after the turn assert it was called. (Workspace/codebase stay real `Git*` so the worktree + transcript actually work.)
 
@@ -286,19 +288,19 @@ Append to `src/turn.rs`'s `#[cfg(test)] mod tests`. Model the turn-driving setup
 
 Note: `Arc<MockRewindRepo>` coerces to `Arc<dyn RewindRepo>` in the struct field; keep the `mock` clone to read `init_calls()`/`checkpoint_calls()` after the turn. Adapt `session_id` to the actual value used.
 
-- [ ] **Step 2: Run the new test + full suite**
+- [x] **Step 2: Run the new test + full suite**
 
 Run: `cargo test --lib turn::tests::run_turn_calls_rewind 2>&1 | tail -15`
 Expected: PASS — proving init/checkpoint are invoked through the injected repo (S2 closed). Then `cargo test 2>&1 | tail -8` (baseline 384 + 1 = 385).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/turn.rs
 git commit -m "test(turn): mock-inject RewindRepo to verify run_turn wiring (closes review S2)"
 ```
 
-- [ ] **Step 4: Final verification**
+- [x] **Step 4: Final verification**
 
 (a) No direct `Git*Repo` usage left in production (non-test, non-impl, non-`production()`) code paths that should be injected. Run:
 ```
@@ -317,3 +319,55 @@ Expected: only the bodies of `Repos::production()` reference the `Git*Repo` cons
 - `MockCodebaseRepo` / `MockWorkspaceRepo` — not added unless a future test needs them (existing tests use real temp repos).
 - Changing the trait method signatures — pure injection refactor, behavior-preserving.
 - Any non-git dependency injection.
+
+---
+
+## Implementation Status (verified 2026-06-10)
+
+**Overall: DONE — all tasks fully implemented.**
+
+### Naming Divergence (plan vs. code)
+
+The plan used three trait names that do not match the code. The actual implementation chose different names at every level:
+
+| Plan name | Code name | Notes |
+|---|---|---|
+| `WorkspaceRepo` | `TraceRepo` | trait in `git/trace.rs`; concrete `GitTraceRepo` |
+| `RewindRepo` | `CheckpointRepo` | trait in `git/checkpoint.rs`; concrete `GitCheckpointRepo` |
+| `CodebaseRepo` | `CodebaseRepo` | unchanged |
+| `Repos.workspace` | `Repos.traces` | bundle field name |
+| `Repos.rewind` | `Repos.checkpoints` | bundle field name |
+| `git/workspace.rs` | `git/trace.rs` | source file |
+| `git/rewind.rs` | `git/checkpoint.rs` | source file |
+| `MockRewindRepo` | `MockCheckpointRepo` | mock type name |
+
+The plan's spec context (`WorkspaceRepo`/`RewindRepo`) was superseded before or during implementation; the code consistently uses `TraceRepo`/`CheckpointRepo` throughout.
+
+### Per-Task Checklist
+
+- [x] **Task 1 — `Repos` bundle in `git/mod.rs`**
+  Evidence: `gait-rs/src/git/mod.rs:31–46` — `Repos { codebase: Arc<dyn CodebaseRepo>, traces: Arc<dyn TraceRepo>, checkpoints: Arc<dyn CheckpointRepo> }` with `Repos::production()` returning `GitCodebaseRepo`/`GitTraceRepo`/`GitCheckpointRepo`. Exported as `pub struct Repos` (reachable as `crate::git::Repos`).
+
+- [x] **Task 2 — Inject `Repos` into `TurnOpts` / `run_turn`**
+  Evidence: `turn.rs:43` — `pub repos: crate::git::Repos` field on `TurnOpts`; `turn.rs:67` — `Default` impl sets `repos: Repos::production()`. `run_turn` uses `opts.repos.traces.create_session_worktree` (line 413), `opts.repos.checkpoints.init` (line 414), `opts.repos.codebase.head_hash/dirty_files` (lines 433–434), `opts.repos.traces.commit_session` (lines 721, 1048, 1115, 1123, 1129), `opts.repos.checkpoints.as_ref()` at checkpoint call sites (lines 705, 1032). `apply_curate_filter` builds a local `Repos::production()` (line 360) and uses `repos.checkpoints.remove` (line 391) and sets `repos: repos.clone()` on its `TurnOpts` (line 384). All ~14 test `TurnOpts` literals pass `repos: crate::git::Repos::production()`.
+
+- [x] **Task 3 — Thread `Repos` into `SpawnAgentTool` / `builtin_tools`**
+  Evidence: `tools/spawn_agent.rs:23` — `repos: crate::git::Repos` field; `spawn_agent.rs:28` — `new(...)` accepts it; `spawn_agent.rs:54,68,86` — uses `self.repos.traces.*` / `self.repos.codebase.*`. `tools/mod.rs:112` — `builtin_tools` signature includes `repos: crate::git::Repos`; line 126 passes `repos.clone()` to `SpawnAgentTool::new`. Note: `spawn_agent.rs` spawns a child process (not a child `TurnOpts`), so the plan's "forward to child `TurnOpts`" step was inapplicable — the implementation correctly uses `repos` only for the parent-side git ops before spawning.
+
+- [x] **Task 4 — Composition roots build and pass `Repos`**
+  Evidence:
+  - `workflow/exec_prompt.rs:54–80` — `let repos = Repos::production()`, passed to `builtin_tools` (line 57) and `TurnOpts { repos, ... }` (line 80).
+  - `workflow/runner.rs:30–222` — `let repos = Repos::production()`, used for `repos.traces.create_session_worktree` (line 31) and all 6 `repos.traces.commit_session` calls (lines 57, 94, 152, 197, 217, 222).
+  - `bin/gait.rs:281–370` — `let repos = gait_ai::git::Repos::production()`, passed to `builtin_tools` (line 284+) and `TurnOpts { repos, ... }` (line 370). `init` handler: `Repos::production().traces.init_workspace` (line 395). `cmd_finish`: `repos.traces.finish_session` + `repos.checkpoints.remove` (lines 493, 497). `cmd_rewind`: `repos.checkpoints.restore_to` (line 612). `list_active_sessions` calls: `Repos::production().traces.list_active_sessions` (lines 656, 789).
+  - `harness.rs:89–91` — `let repos = Repos::production()`, uses `repos.traces.commit_session`.
+
+- [x] **Task 5 — Mock-inject wiring test (closes S2)**
+  Evidence: `turn.rs:2295–2365` — `run_turn_calls_rewind_init_and_checkpoint_via_injected_repo` test uses `MockCheckpointRepo` (not `MockRewindRepo` — name changed with the trait rename), builds `Repos { codebase: GitCodebaseRepo, traces: GitTraceRepo, checkpoints: mock.clone() }`, runs one turn, then asserts `mock.init_calls().len() == 1` and `mock.checkpoint_calls() == [(session_id, 1u32)]`. This closes S2.
+
+### Final Verification grep (production non-test non-impl sites)
+
+All remaining `Git*Repo` direct references in production code are either:
+- Inside `Repos::production()` bodies (the composition root — intentional)
+- Inside `#[cfg(test)]` blocks or impl bodies of the concrete types themselves
+
+No direct `Git*Repo.method(...)` calls remain outside tests/impls in production paths.

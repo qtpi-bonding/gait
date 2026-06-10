@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status: DONE** (verified 2026-06-10 — all 10 tasks complete)
+
 **Goal:** Lift `parse` (structured rg+regex pipeline) and `curate_prompt` (LLM annotation filter) from `ShellTool`/`CurateTool` onto the `Tool` trait as an `OutputFilter` enum, so any tool can opt in; remove `CurateTool` entirely.
 
 **Architecture:** Add `OutputFilter { None, Parse, Curate }` to `types.rs` and `fn output_filter()` to the `Tool` trait (default `None`). A helper `inject_filter()` in `tools/mod.rs` decorates a tool's JSON schema with the appropriate optional field. `Parse` injects a structured `parse` field — an array of `{"rg": "<pattern>"}` and/or `{"sd": ["<from>", "<to>"]}` operations applied in sequence using the `grep-regex`/`grep-searcher` crates (rg step) and `regex::bytes::Regex::replace_all` (sd step, already a transitive dep) — **no subprocess, no shell injection surface, linear-time regex with no backtracking**. `Curate` injects `curate_prompt` routed through an annotate subagent. Each opt-in tool overrides `output_filter()` and calls `inject_filter()` in `new()`. `turn.rs` extracts the filter field from args after `execute_tool_call()` returns (in-memory only — transcript keeps raw result, consistent with `post_tool` hooks). `CurateTool` is deleted.
@@ -984,3 +986,41 @@ Neither can execute shell commands. The attack surface of read-only tools (`read
 - `apply_curate_filter` creates a full git session worktree per call — acceptable for now; add `no_persist` to `TurnOpts` if this becomes a burden
 - `awk`-style field selection / arithmetic not supported — add `awk-rs` crate later if needed
 - Resume path (`PermissionsReply` branch in `turn.rs`) does not apply output filters — tool calls that were permission-gated and then approved on resume reach the model unfiltered; acceptable for now, document with a `// TODO: apply_parse/curate_filter` comment at the resume site
+
+---
+
+## Implementation Status (verified 2026-06-10)
+
+**Overall: DONE — all 10 tasks complete.**
+
+- [x] **Task 1: Cargo dependencies** — `grep-regex = "0.1.14"` and `grep-searcher = "0.1.16"` present in `gait-rs/Cargo.toml` lines 32–33.
+
+- [x] **Task 2: `OutputFilter` enum + `Tool::output_filter()`** — `types.rs:153–159`: `pub enum OutputFilter { None, Parse, Curate }` with `#[derive(Debug, Clone, Copy, PartialEq, Eq)]`. `Tool` trait method at `types.rs:214–218`: `fn output_filter(&self) -> OutputFilter { OutputFilter::None }`. Tests present at `types.rs:374–377`.
+
+- [x] **Task 3: `inject_filter` helper in `tools/mod.rs`** — `mod.rs:62–99`: `pub fn inject_filter(mut schema, filter) -> Value`. `Parse` branch injects `parse` array field; `Curate` branch injects `curate_prompt` string field; `None` is a no-op. Three unit tests at `mod.rs:185–214`.
+
+- [x] **Task 4: `apply_parse_filter` in `turn.rs`** — `turn.rs:285`: `fn apply_parse_filter(raw: &str, ops: &serde_json::Value) -> String`. Uses `grep_regex::RegexMatcher` + `grep_searcher::{Searcher, Sink, SinkMatch}` for `rg` ops and `regex::bytes::RegexBuilder` for `sd` ops. Five unit tests at `turn.rs:2091–2137`.
+
+- [x] **Task 5: `apply_curate_filter` in `turn.rs`** — `turn.rs:349`: `async fn apply_curate_filter(raw, curate_prompt, workspace, codebase_path, model, provider) -> serde_json::Value`. Runs 1-iter `run_turn` with only `AnnotateTool`, reads transcript for annotate call result.
+
+- [x] **Task 6: Filters wired into all three execution loops** — Three wiring sites confirmed:
+  - Parallel batch loop: `turn.rs:905–921`
+  - Serial `LoadContext` branch: `turn.rs:995–1011`
+  - Serial `Continue` branch: `turn.rs:1078–1094`
+  - All sites apply `parse` or `curate_prompt` filter in-memory after `post_tool` hooks; transcript keeps raw result as specified.
+
+- [x] **Task 7: `shell.rs` — internal parse removed, opts into `OutputFilter::Parse`** — `shell.rs:29–31`: `inject_filter(..., OutputFilter::Parse)` in `new()`. `shell.rs:54–55`: `fn output_filter() -> OutputFilter::Parse`. No `parse: Option<String>` in params struct; internal `sh -c` pipe logic gone.
+
+- [x] **Task 8: `read`, `glob`, `grep`, `ls` opt into `Parse`** — All four confirmed:
+  - `read.rs:62–64`, `85–86`
+  - `glob.rs:25–27`, `42–43`
+  - `grep.rs:35–37`, `124–125`
+  - `ls.rs:32–34`, `169–170`
+
+- [x] **Task 9: `webfetch`, `codesearch` opt into `Curate`** — Both confirmed:
+  - `webfetch.rs:38–40`, `156–157`; schema test at `webfetch.rs:334–337`
+  - `codesearch.rs:27–29`, `70–71`; schema test at `codesearch.rs:254–257`
+
+- [x] **Task 10: `CurateTool` removed** — `gait-rs/src/tools/curate.rs` does not exist. No `pub mod curate` or `pub use curate::CurateTool` in `mod.rs`. No `CurateTool` push in `gait-rs/src/bin/gait.rs` (grep returns 0 matches).
+
+**Nothing remaining.** The `PermissionsReply` resume path intentionally does not apply filters (noted as acceptable in plan's Known Limitations).

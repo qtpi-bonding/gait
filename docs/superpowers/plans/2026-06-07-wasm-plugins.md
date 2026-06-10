@@ -1,6 +1,6 @@
 # WASM Plugin System — Idea
 
-**Status:** Idea only. Not planned for implementation yet.
+**Status:** Not started — idea stage only. Config stub (`WasmPluginDef`) and `LoadableKind::WasmPlugin` variant exist as scaffolding; no runtime, executor, or lifecycle hooks are wired in.
 
 **Goal:** Let users extend gait with native tools written in any language that compiles to WASM — without gait owning or trusting the plugin code.
 
@@ -215,3 +215,37 @@ Follows the same pattern as `mcp_servers` — explicit list in `gait.jsonc`, no 
 1. Capability grants UX — prompt at `gait config add-plugin` time, or list in a separate `gait plugin install` command?
 2. Should `hook_outgoing_context` be v1 or v2? Lower risk than full history rewrite but still broad.
 3. Plugin versioning — should the `.wasm` file embed a version, and should gait enforce a minimum API version?
+4. Should plugins be able to call back into gait (e.g. read a file via gait's own tools)? Probably not in v1.
+
+---
+
+## When to plan
+
+When there's a concrete use case — a tool someone actually wants to write as a plugin that doesn't fit as a shell command or MCP server.
+
+---
+
+## Implementation Status (verified 2026-06-10)
+
+**Verdict: Not started. Idea-stage scaffolding only.**
+
+### What exists
+
+| Artifact | Location | Notes |
+|---|---|---|
+| `WasmPluginDef` config struct | `gait-rs/src/config.rs:55` | Parses `name`, `path`, `enabled`, `allow_exec`, `allow_fs`. Marked `/// Stub for future WASM plugin support.` |
+| `GaitConfig::wasm_plugins` field | `gait-rs/src/config.rs:82` | Defaults to empty `vec![]`. Parsed from config but never consumed. |
+| `LoadableKind::WasmPlugin` variant | `gait-rs/src/types.rs:244` | Present in the `LoadableKind` enum alongside `Mcp` and `Skill`; maps to the string `"plugin"`. |
+| Config parse test | `gait-rs/src/config.rs:354` | Verifies `WasmPluginDef` deserializes correctly. |
+
+### What does NOT exist
+
+- No WASM runtime or executor (`extism`, `wasmtime`, `wasmer` — none in `Cargo.toml`).
+- No code that reads `config.wasm_plugins` at startup or loads `.wasm` files.
+- No `Loadable` trait.
+- No lifecycle hooks (`hook_before_turn`, `hook_tool_call`, `hook_tool_result`).
+- No `LoadableEntry` instances of kind `WasmPlugin` are ever constructed (only `Mcp` and `Skill` are used in `turn.rs`).
+
+### Summary
+
+The config surface (struct + field + `LoadableKind` variant) was scaffolded in anticipation of this idea, but nothing beyond deserialization exists. The plan remains at idea stage with no implementation work started.

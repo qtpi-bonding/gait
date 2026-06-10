@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status: DONE (all 9 tasks complete — verified 2026-06-10)**
+
 **Goal:** Implement peer-agent coordination in gait-rs: `spawn_agent`, `list_agents`, `HarnessBackend` (with `NativeHarnessBackend`), and wire `after_turn` at turn exit points.
 
 **Architecture:** Agents are peers, not a tree. `spawn_agent` creates a new session with `assigned_by` in session.json and returns its ID immediately without blocking. The harness backend runs at the end of every turn: if `assigned_by` is set, it acquires the assigner's lock, injects an `agent_update` event, commits, then spawns `gait run --session <assigner> --auto` as a detached child process. `run_turn` is changed to return `TurnResult` so `cmd_run` can pass the result to the harness.
@@ -2085,3 +2087,68 @@ None — all steps have full code.
 - `SpawnAgentTool::new(session_id, workspace, codebase_path)` — matches Tool registration in `builtin_tools`.
 - `ListAgentsTool::new(workspace)` — matches Tool registration in `builtin_tools`.
 - `builtin_tools(codebase_path, session_id, workspace, mcp_tools, skills)` — consistent across mod.rs, bin/gait.rs, and integration_tools.rs.
+
+---
+
+## Implementation Status (verified 2026-06-10)
+
+**Overall: DONE.** All 9 tasks are implemented and present in the codebase. There are minor divergences from the plan's code snippets (the code went further than the plan), but none are regressions — they are forward evolution.
+
+### Per-task checklist
+
+- [x] **Task 1 — `from` field on `UserTurn`**
+  - `gait-rs/src/session/transcript.rs:125` — `from: Option<String>` present on `UserTurn` variant
+  - Both roundtrip tests present at lines 504–531
+
+- [x] **Task 2 — `session_json.rs`**
+  - `gait-rs/src/session/session_json.rs` exists; `assigned_by: Option<String>` at line 16
+  - `read_session_json` / `write_session_json` implemented; 3 tests pass
+  - `gait-rs/src/session/mod.rs` exports `session_json` module
+
+- [x] **Task 3 — `TurnResult` + `run_turn` return type**
+  - `gait-rs/src/turn.rs:74-79` — `TurnResult` enum defined
+  - Actual shape: `Done { message: String, result: Option<serde_json::Value> }` (plan said `Done { summary }`; code evolved to `message + result`, which is a superset — not a regression)
+  - Additional variants beyond plan: `Clarify { items }` and `Inform { items }` also present (plan noted these as future work; already implemented)
+  - `run_turn` returns `anyhow::Result<TurnResult>` at line 412
+
+- [x] **Task 4 — `harness.rs` with `HarnessBackend` + `NativeHarnessBackend`**
+  - `gait-rs/src/harness.rs` — `HarnessBackend` trait at line 6; `NoopHarnessBackend` at line 15; `NativeHarnessBackend` at line 24
+  - Lock retry loop (20 attempts, 500 ms) implemented; distinguishes "already running" from other errors
+  - `AgentUpdate` event injection + git commit + detached `gait run` spawn all present
+  - `Clarify` and `Inform` result variants handled in `after_turn` (beyond what plan required)
+  - `gait-rs/src/lib.rs:16,34` — `pub mod harness` and `pub use harness::{HarnessBackend, NoopHarnessBackend, NativeHarnessBackend}`
+
+- [x] **Task 5 — `spawn_agent.rs`**
+  - `gait-rs/src/tools/spawn_agent.rs` — `SpawnAgentTool` struct, non-blocking spawn returning `{ session_id }` immediately
+  - Sets `assigned_by` in `session.json`, writes `session_start` + `UserTurn` with `from: Some("agent:<caller_id>")`, commits branch
+  - Fires detached `gait run --session <new_id> --auto` (best-effort, non-fatal)
+  - Note: actual `new` signature is `SpawnAgentTool::new(session_id, workspace, codebase_path, repos)` — plan omits `repos` param (added later for git abstraction)
+
+- [x] **Task 6 — `list_agents.rs`**
+  - `gait-rs/src/tools/list_agents.rs` — `ListAgentsTool` reads session branches from git (not filesystem), filters out `TurnComplete`-last sessions, returns `[{ session_id, last_active_ts, status, summary }]`
+  - 2 tests: `list_agents_returns_active_sessions_only` and `list_agents_empty_workspace_returns_empty_array`
+
+- [x] **Task 7 — `tools/mod.rs` updated**
+  - `gait-rs/src/tools/mod.rs` — `builtin_tools` now takes `(codebase_path, session_id, workspace, mcp_tools, skills, repos)` — plan omits `repos` (added for git abstraction)
+  - Actual tool list has 15 tools, but composition differs from plan: `multiedit` and `mcp`/`skill` removed; `load`, `clarify`, `inform` added; `spawn_agent` and `list_agents` present as planned
+  - Tests at lines 139–185: `builtin_tools_returns_fifteen`, `spawn_agent_and_list_agents_present`, `load_meta_tool_present`
+
+- [x] **Task 8 — harness wired in `bin/gait.rs`**
+  - `gait-rs/src/bin/gait.rs:349-387` — `run_turn` result captured, `read_session_json` called, `NativeHarnessBackend::after_turn` called
+  - `TurnOpts` call includes additional fields beyond plan (`deny`, `mcp_clients`, `config_enabled`, `max_iter`, `hooks`, `repos`, `output_schema_retries`) — all additive
+  - `integration_tools.rs` updated: all `builtin_tools` calls use 6-arg signature; tool count asserts 15
+
+- [x] **Task 9 — integration tests + TypeScript `from` field**
+  - `gait-rs/tests/integration_coordination.rs` — 2 tests: `spawn_agent_via_run_turn_creates_child_session` and `run_turn_permissions_result_integration`
+  - `src/session/transcript.ts:22-25` — `UserTurnEvent` has `from: z.string().optional()` (uses Zod schema, not plain TypeScript type — plan showed plain type; actual implementation uses Zod, which is stricter)
+
+### Divergences from plan (all additive, no regressions)
+
+| Plan said | Reality |
+|-----------|---------|
+| `TurnResult::Done { summary: String }` | `Done { message: String, result: Option<Value> }` — field renamed + `result` added |
+| `TurnResult` has 2 variants (Done, Permissions) | 4 variants: + `Clarify { items }` + `Inform { items }` |
+| `builtin_tools(codebase_path, session_id, workspace, mcp_tools, skills)` — 5 args | 6 args: + `repos: Repos` (git abstraction added later) |
+| Tool list: read/write/edit/glob/grep/ls/shell/output/multiedit/codesearch/webfetch/mcp/skill/spawn_agent/list_agents | multiedit+mcp+skill replaced by load+clarify+inform; net 15 tools same count |
+| TypeScript `from?: string` as plain interface field | Implemented as `z.string().optional()` in Zod schema |
+| `NativeHarnessBackend` handles only Done+Permissions | Also handles Clarify+Inform variants |

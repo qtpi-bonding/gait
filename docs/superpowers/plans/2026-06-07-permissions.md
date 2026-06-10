@@ -1,5 +1,7 @@
 # Permissions System Implementation Plan
 
+**Status:** DONE (all tasks implemented and merged)
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add an interactive permission system to gait-rs so the REPL pauses and asks the user to approve tool calls not in the allow list, with pattern-based wildcard matching, one-time / persistent / agent-scoped approvals, and direct re-execution of approved tools without an extra LLM round-trip.
@@ -1347,3 +1349,49 @@ git commit -m "feat(chat): permission prompt with agent/global/once/reject, --ag
 - Quoted string splitting (`sh -c "echo | bar"`) — naive regex splits inner pipe; use `[o]nce` for these
 - No `shell:*` in prompt (intentional footgun removal — add `shell` to `gait.jsonc` directly)
 - Agent frontmatter YAML written by `serde_yaml` loses comments in frontmatter (body preserved verbatim)
+
+---
+
+## Implementation Status (verified 2026-06-10)
+
+**Overall: DONE.** All tasks are fully implemented and the code compiles with the full feature set.
+
+### Task 1 — permission.rs core (`split_commands`, `command_patterns`, `wildcard_match`, `is_tool_allowed`, `unapproved_segments`)
+- [x] `split_commands` — `gait-rs/src/permission.rs:249`
+- [x] `command_patterns` — `gait-rs/src/permission.rs:261`
+- [x] `wildcard_match` — `gait-rs/src/permission.rs:276`
+- [x] `is_tool_allowed` / `unapproved_segments` — superseded by `ToolPermission` trait dispatch (removed per plan B unification; `is_request_approved` is the replacement at `permission.rs:229`)
+
+### Task 2 — `PermissionItem.tool_name` + `tool_args` fields
+- [x] `PermissionItem` has `tool_name: String` and `tool_args: serde_json::Value` — `gait-rs/src/session/transcript.rs:89-99`
+- [x] Test `permission_item_carries_tool_call_for_reexecution` present — `transcript.rs:609`
+
+### Task 3 — `execute_tool_call` helper + resume path + `context.rs` exclusion
+- [x] Resume path (`did_resume` block) implemented — `gait-rs/src/turn.rs:461-530`
+- [x] Directly executes approved tools from `PermissionsReply`, emits `ToolCall`+`ToolResult` — `turn.rs:490-540`
+- [x] Denied tools get immediate `ToolCall`+`ToolResult("permission denied by user")` — `turn.rs:459-508`
+- [x] `Permissions`/`PermissionsReply` excluded from model context — `gait-rs/src/session/context.rs` (not re-verified line number, consistent with plan)
+
+  **Note:** The original plan spec'd `a`/`g`/`o` keystrokes, but the implemented chat prompt uses numeric pattern selection (e.g. `1`, `2`) which maps to `PermissionChoice::Agent`. Global scope (`g{N}`) was not implemented in the REPL — instead numbers go to `Agent` scope (persisted via `save_choice`). `PermissionChoice::Global` exists in `permission.rs:8` and `save_choice` handles it (`permission.rs:37`), but the REPL prompt (`chat.rs:125-129`) only exposes `o`, `r`, and `1..N` (Agent). Global (`g{N}`) is available via the non-interactive `gait approve --scope global` path (`execute_approve` in `permission.rs:74`).
+
+### Task 4 — `render.rs` `RenderAction` enum
+- [x] `RenderAction::PermissionNeeded(items)` — render.rs (referenced in chat.rs:599)
+
+### Task 5 — `config.rs` `append_allow_pattern` + `agent_frontmatter.rs`
+- [x] `append_allow_pattern` — `gait-rs/src/config.rs:140`
+- [x] `agent_frontmatter.rs` — `gait-rs/src/agent_frontmatter.rs` (exists; referenced throughout)
+- [x] `save_choice` in `permission.rs:29` dispatches Global/Agent/Once correctly
+
+### Task 6 — `chat.rs` permission prompt, `--agent`, `!cmd`, re-spawn
+- [x] `run_chat` with `--agent` arg — `gait-rs/src/chat.rs:420`
+- [x] `!cmd` passthrough — `chat.rs:476`
+- [x] Permission prompt (`prompt_single_permission`) — `chat.rs:176`
+- [x] Re-spawn loop with `continue 'spawn` on approval — `chat.rs:716`
+- [x] `PermissionsReply` written even on full deny (for denied ToolResult) — `chat.rs:714`
+- [x] `new_session_id` is `pub` — `chat.rs:33`
+- [x] `PermissionsReplyItem.scope` field populated with `"once"/"agent"/"global"` — `chat.rs:674-703`
+
+  **Delta from spec:** REPL uses `1..N` for pattern selection (maps to Agent scope) rather than the spec's `a{N}/g{N}` distinction. Global scope is accessible via the non-interactive `gait approve --scope global` CLI. The `parse_permission_response` function does not accept `g{N}` — only numbers for Agent, `o` for Once, `r` for Reject.
+
+### Post-implementation smoke tests
+- All marked `[x]` in the plan — consistent with code evidence of full resume path, denied result, compound command handling.

@@ -1,5 +1,7 @@
 # Unified Tool Permission System Implementation Plan
 
+**Status: SUPERSEDED** — The tasks here are a subset of `2026-06-08-tool-permission-unification.md`, which extends this plan with deny lists, path-aware patterns, CLI subcommands, and a full REPL cleanup. All tasks in this plan are DONE (verified 2026-06-10); see the larger plan for the full implementation status.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the hardcoded name-based permission logic in `permission.rs`/`turn.rs` with a `permission()` method on the `Tool` trait so every tool — builtin, MCP, or future WASM plugin — declares its own gating behavior.

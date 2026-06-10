@@ -1,5 +1,7 @@
 # Real MCP Client Implementation Plan
 
+**Status: DONE** — all four implementation tasks are fully complete as of 2026-06-10.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the static/stub MCP tool execution with a real MCP protocol client using the `rmcp` v1.x crate, supporting both spawn (gait owns the subprocess, stdio transport) and connect (HTTP streamable transport) modes.
@@ -629,3 +631,49 @@ git commit -m "feat: real MCP client integration complete"
 - `CallToolRequestParams::new` takes `impl Into<Cow<'static, str>>` — `name.to_string()` may need `.into()` or `Cow::Owned(name.to_string())`. Adjust if compile error.
 - `RawContent::Text(t)` — `t.text` field name: verified as `String` in `RawTextContent`. If it's `Cow`, use `.as_ref()`.
 - Subprocess lifetime: `RunningService` holds the child process; when it drops, rmcp should kill it. If zombie processes appear, call `client.handle.cancel().await` explicitly in a Drop impl.
+
+---
+
+## Implementation Status (verified 2026-06-10)
+
+**Overall: DONE** — all tasks implemented and code is present in main.
+
+### Task 1: Update config types — DONE
+
+- [x] `McpServerDef` struct with `name`, `spawn`, `connect`, `enabled`, `description` fields — `gait-rs/src/config.rs:21-32`
+- [x] `McpToolDef` runtime struct with `server_name`, `name`, `description`, `schema` — `gait-rs/src/config.rs:36-42`
+- [x] `GaitConfig.mcp_servers: Vec<McpServerDef>` (replaces old `mcp_tools`) — `gait-rs/src/config.rs:78`
+- [x] `GaitConfig::default()` uses `mcp_servers: vec![]` — `gait-rs/src/config.rs:104`
+- [x] Tests: `parses_mcp_servers_spawn_and_connect`, `parses_mcp_servers_and_skills`, `enabled_defaults_to_true_for_backward_compat`, `enabled_false_is_respected` — `gait-rs/src/config.rs:298-377`
+- [x] `McpServerDef` has two extra fields beyond the plan (`enabled`, `description`) — additive, not breaking
+
+### Task 2: Implement McpClient — DONE
+
+- [x] `gait-rs/src/mcp_client.rs` created
+- [x] `McpClient { server_name, handle: RunningService<RoleClient, ()> }` — `mcp_client.rs:8-11`
+- [x] `connect()` — spawn branch uses `TokioChildProcess` + `ConfigureCommandExt`; connect branch uses `StreamableHttpClientTransport` — `mcp_client.rs:14-33`
+- [x] `discover_tools()` — calls `list_all_tools()`, maps to `McpToolDef` — `mcp_client.rs:35-44`
+- [x] `call_tool()` — builds `CallToolRequestParams`, collects `RawContent::Text` — `mcp_client.rs:46-71`
+- [x] `pub mod mcp_client;` in `lib.rs:24`
+- [x] Three error-path tests (`connect_fails_gracefully_when_binary_missing`, `connect_fails_gracefully_when_url_unreachable`, `connect_fails_when_neither_spawn_nor_connect`) — `mcp_client.rs:78-113`
+- [x] `rmcp = { version = "1", features = [...] }` in `Cargo.toml:30`
+
+### Task 3: Wire discovery at startup — DONE
+
+- [x] `mcp_registry` and `mcp_clients` built at startup in `bin/gait.rs:263-279`
+- [x] Iterates `config.mcp_servers`, calls `McpClient::connect`, then `discover_tools` — `bin/gait.rs:265-278`
+- [x] `eprintln!("[gait] mcp {}: {} tool(s)", ...)` logged on success — `bin/gait.rs:270`
+- [x] Both maps passed into `TurnOpts` — `bin/gait.rs:360-361`
+- [x] `builtin_tools` receives `mcp_registry.clone()` — `bin/gait.rs:288`
+
+### Task 4: Wire call_tool into turn.rs — DONE
+
+- [x] `TurnOpts.mcp_registry: Vec<McpToolDef>` and `TurnOpts.mcp_clients: HashMap<String, Arc<McpClient>>` — `turn.rs:32-33`
+- [x] `make_mcp_tool_def(def, client)` implemented using `ToolDef` with async `call_tool` closure — `turn.rs:208-222`
+- [x] Restore-after-compaction call site uses `opts.mcp_clients.get(&def.server_name)` — `turn.rs:595-598`
+- [x] Toggle handler (mcp load/unload) uses same client lookup — `turn.rs:968-971`
+- [x] All test `TurnOpts` constructions include `mcp_clients: std::collections::HashMap::new()` — multiple sites in `turn.rs`
+
+### Task 5: Smoke test — NOT VERIFIED
+
+- [ ] Manual end-to-end smoke test with `@modelcontextprotocol/server-filesystem` not recorded in code history. Discovery logging and toggle wiring are in place; live test outcome unknown.

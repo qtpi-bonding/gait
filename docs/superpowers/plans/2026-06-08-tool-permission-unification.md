@@ -1,5 +1,7 @@
 # Tool & Permission Unification Implementation Plan
 
+> **Status: Partially done (10 of 11 tasks substantially complete; 3 sub-items outstanding — see Implementation Status section at bottom)**
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Eliminate all hardcoded tool-name strings from `turn.rs`/`permission.rs`, give every tool a declarative `permission()` and `execution_signal()` method, add opencode-style argument-aware patterns (so `edit:src/main.rs` can be approved instead of just `edit`), and clean up the accumulated sprawl found in the audit.
@@ -2207,5 +2209,158 @@ cd gait-rs && git add src/chat.rs && git commit -m "refactor: REPL is UI-only �
 - `path_patterns(tool_name, rel_path)` defined in Task 3, called in Tasks 5–6
 - `is_request_approved(tool_name, req, allow)` defined in Task 3, called in Task 8
 - `PermissionChoice` defined in Task 3, imported in Task 9
+
+---
+
+## Implementation Status (verified 2026-06-10)
+
+**Overall: Partially done (10 of 11 tasks substantially complete).**
+
+### Task 1 — Fix config default model bug (`DEFAULT_MODEL` const)
+- [x] `DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"` — `gait-rs/src/config.rs:4`
+- [x] `GaitConfig::default()` uses `DEFAULT_MODEL` — `config.rs:96`
+- [x] `append_allow_pattern` creates file with `DEFAULT_MODEL` — `config.rs:152`
+- [x] Test `append_allow_creates_file_with_correct_default_model` present
+
+### Task 2 — Core types: `ToolPermission`, `PermissionRequest`, `ExecutionSignal`
+- [x] `PermissionRequest { display, patterns }` — `gait-rs/src/types.rs:122-125`
+- [x] `ToolPermission::Passthrough` and `RequiresApproval` — `types.rs:129-133`
+- [x] `ExecutionSignal` (Continue/TurnComplete/Clarify/Inform/LoadContext) — `types.rs:138-151`
+- [x] `Tool::permission()` default returns `RequiresApproval([name])` — `types.rs:201-206`
+- [x] `Tool::execution_signal()` default returns `Continue` — `types.rs:210-212`
+- [x] Tests for defaults in `types.rs` tests block
+
+### Task 3 — Refactor `permission.rs`
+- [x] `path_patterns(tool_name, rel_path)` — `permission.rs:144`
+- [x] `is_request_approved(tool_name, req, allow)` — `permission.rs:229`
+- [x] `is_request_denied(tool_name, req, deny)` — `permission.rs:203` (extra: not in original plan)
+- [x] `find_matched_allow_pattern` / `find_matched_deny_pattern` — `permission.rs:159/178` (extra)
+- [x] `PermissionChoice` enum — `permission.rs:8`
+- [x] `save_choice` function — `permission.rs:29`
+- [x] Old `is_tool_allowed`, `unapproved_segments`, `is_segment_allowed` removed (replaced)
+- [x] Tests for all new functions present in `permission.rs` tests block
+
+### Task 4 — Signal tools: Passthrough + ExecutionSignal
+- [x] `output.rs`: `Passthrough` + `TurnComplete` — `tools/output.rs:34-39`, tests at line ~86
+- [x] `clarify.rs`: `RequiresApproval(["clarify"])` + `Clarify` — `tools/clarify.rs:42-49`
+- [x] `inform.rs`: `RequiresApproval(["inform"])` + `Inform` — `tools/inform.rs:40-47`
+- [x] `load.rs` (replaces separate mcp.rs/skill.rs): `RequiresApproval` + `LoadContext` — `tools/load.rs:40-48`
+- [ ] Separate `mcp.rs` and `skill.rs` files not present — replaced by unified `load.rs` (architectural change, not a gap)
+- [x] Duplicate `boxed()` removed (trait provides it via default; no `pub fn boxed` in any tool file)
+
+### Task 5 — File tools: path-aware permission
+- [x] `read.rs`: path-relative `RequiresApproval` — `tools/read.rs:174-183`
+- [x] `write.rs`: path-relative `RequiresApproval` — `tools/write.rs:51-59`
+- [x] `edit.rs`: path-relative `RequiresApproval` — `tools/edit.rs:86-95`
+- [ ] `multiedit.rs` not present (file does not exist — likely folded into `edit.rs` or not yet added)
+
+### Task 6 — Shell tool: per-segment permission
+- [x] `shell.rs`: `RequiresApproval` with one request per command segment, patterns prefixed with `"shell:"` — `tools/shell.rs:58-69`
+
+### Task 7 — Mechanical cleanups
+- [x] `codesearch.rs`: no duplicate `boxed()` (uses `make_schema`) — `tools/codesearch.rs:28`
+- [x] `webfetch.rs`: no duplicate `boxed()` (uses `make_schema`) — `tools/webfetch.rs:39`
+- [x] `list_agents.rs`: uses `make_schema::<ListAgentsParams>()` — `tools/list_agents.rs:18`
+- [x] `spawn_agent.rs`: uses `crate::chat::new_session_id()` — `tools/spawn_agent.rs:52`
+- [x] `chat::new_session_id` is `pub` — `chat.rs:33`
+- [x] `once_approval_path` shared fn — `turn.rs:88`
+- [ ] `derive_loaded_context_tool` generic fn NOT implemented — `derive_loaded_mcps` and `derive_loaded_skills` are not present as named functions; the LoadContext dispatch is inline in `turn.rs:959-986`
+
+### Task 8 — Rewire turn.rs to trait-driven dispatch
+- [x] Permission gate loop dispatches on `tool.permission()` — `turn.rs:738-801`
+- [x] Deny list (Tier 1) checked first, before allow — `turn.rs:749-759`
+- [x] Allow list (Tier 2) next — `turn.rs:762-783`
+- [x] Ask / gate (Tier 3) last — `turn.rs:785-800`
+- [x] `denied_ids` tracked; blocked result emitted without a prompt — `turn.rs:812-852`
+- [x] `is_parallel_eligible` uses `execution_signal()` + `execution_mode()` — `turn.rs:861-868`
+- [x] Serial dispatch uses `execution_signal()` — `turn.rs:956-1106`
+- [x] `is_tool_allowed`, `unapproved_segments` removed from imports — confirmed (only `is_request_approved`, `is_request_denied`, etc. imported at `turn.rs:18`)
+- [x] Integration tests for deny-wins — `turn.rs:1625-1762`
+
+### Task 9 — Shared approval functions
+- [x] `save_choice` in `permission.rs:29` — handles Global/Agent/Once/Reject
+- [x] `write_permissions_reply` in `session/transcript.rs:400` — emits `PermissionsReply` event
+- [x] `session_state` in `session/transcript.rs:364` — returns `SessionState` enum
+- [x] `SessionState` enum (Idle/AwaitingPermission/AwaitingClarify/AwaitingInform) — `transcript.rs:342-357`
+- [x] `execute_approve` in `permission.rs:74` — CLI approve + scope dispatch
+
+### Task 10 — CLI subcommands: approve, reject, status
+- [x] `ApproveParams`, `ApproveScope`, `execute_approve` in `permission.rs:61-136`
+- Note: `gait approve/reject/status` CLI commands implemented via `execute_approve`; specific `cmd_approve`/`cmd_reject`/`cmd_status` in `bin/gait.rs` were not independently verified but the library plumbing is present
+
+### Task 11 — Update REPL to UI layer only (partially done)
+- [x] `chat.rs` uses `crate::permission::PermissionChoice` — `chat.rs:116`
+- [x] `chat.rs` calls `crate::permission::save_choice` — `chat.rs:661`
+- [x] `chat.rs` calls `transcript::write_permissions_reply` — `chat.rs:714`
+- [x] `PermissionsReplyItem.scope` populated with `"once"/"agent"/"global"` — `chat.rs:674-703`
+- [x] No inline `gait.jsonc` / agent frontmatter write logic in REPL
+- [ ] `parse_permission_response` uses numeric `N` (maps to `PermissionChoice::Agent`) instead of the spec's `g{N}`/`a{N}` distinction — `chat.rs:125-129`. The `g{N}` (Global) keystroke is NOT implemented in the REPL. Global approval from the REPL uses `N` which maps to Agent scope.
+- [ ] `derive_loaded_context_tool` generic helper not implemented (Task 7 gap carries here)
+
+### Summary of outstanding gaps
+
+| Gap | File | Notes |
+|-----|------|-------|
+| `g{N}` global scope keystroke in REPL | `chat.rs:112-131` | Numbers map to Agent; Global only via `gait approve --scope global` CLI |
+| `multiedit.rs` path-aware permission | N/A | File does not exist; task may have been folded into `edit.rs` or is not yet needed |
+| `derive_loaded_context_tool` generic fn | `turn.rs` | LoadContext dispatch is inline; `derive_loaded_mcps`/`derive_loaded_skills` are not present as extracted functions |
 - `once_approval_path(workspace, session_id)` defined in Task 7, called in Task 7 (chat.rs update)
 - All method signatures in later tasks match their definitions in earlier tasks ✓
+
+---
+
+## Implementation Status (verified 2026-06-10)
+
+Overall: **Partially done — 10 of 11 tasks substantially complete; 3 sub-items outstanding.**
+
+### Checklist
+
+- [x] **Task 1 — Config default model bug** DONE.
+  `DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"` at `config.rs:4`; used in `GaitConfig::default()` (line 96) and both `append_allow_pattern` branches (lines 152, 179).
+
+- [x] **Task 2 — Core types** DONE.
+  `PermissionRequest` (types.rs:121), `ToolPermission` (types.rs:128), `ExecutionSignal` (types.rs:138) all defined. `permission()` (types.rs:199) and `execution_signal()` (types.rs:210) added to `Tool` trait with defaults. Tests present (types.rs:339–364).
+
+- [x] **Task 3 — Refactor permission.rs** DONE.
+  `path_patterns` (permission.rs:144), `is_request_approved` (permission.rs:229), `PermissionChoice` (permission.rs:7), `save_choice` (permission.rs:29), `execute_approve` (permission.rs:74) all present. Old `is_tool_allowed`/`unapproved_segments`/`is_segment_allowed` are absent — correctly removed. Tests present (permission.rs:376–474).
+
+- [x] **Task 4 — Signal tools** DONE (with architectural note).
+  `output.rs`: `Passthrough` + `TurnComplete` (output.rs:34–38). `clarify.rs`: `RequiresApproval` + `Clarify` (clarify.rs:42–49). `inform.rs`: `RequiresApproval` + `Inform` (inform.rs:40–47). `mcp.rs` and `skill.rs` no longer exist — they were unified into `load.rs` which implements `permission()` → `RequiresApproval` with `load`/`load:<name>` patterns (load.rs:40–45) and `execution_signal()` → `LoadContext` (load.rs:48). Duplicate `boxed()` methods are absent from all signal tool files.
+
+- [x] **Task 5 — File tools (read, write, edit)** DONE.
+  `read.rs`: path-aware `permission()` at read.rs:174. `write.rs`: permission() at write.rs:51. `edit.rs`: permission() at edit.rs:86. All call `path_patterns` from `permission.rs`.
+  **REMAINING: `multiedit.rs` does not exist in the codebase** — the file was listed in the plan's File Map and Task 5, but `src/tools/` contains no `multiedit.rs`. Either the feature was never built or was intentionally omitted. If multi-edit support is needed, Task 5 Step 4 from this plan still applies.
+
+- [x] **Task 6 — Shell tool** DONE.
+  `shell.rs`: `permission()` at shell.rs:58 produces one `PermissionRequest` per command segment via `split_commands` + `command_patterns`. Tests present (shell.rs:208, 225, 240).
+
+- [x] **Task 7 — Mechanical cleanups** MOSTLY DONE.
+  - [x] Duplicate `boxed()` removed from `codesearch.rs` and `webfetch.rs` (neither file contains `pub fn boxed`).
+  - [x] `list_agents.rs` uses `make_schema::<ListAgentsParams>()` (list_agents.rs:18).
+  - [x] `new_session_id` is `pub` in `chat.rs` (chat.rs:33).
+  - [x] `spawn_agent.rs` uses `crate::chat::new_session_id()` (spawn_agent.rs:52).
+  - [x] `once_approval_path` is `pub` in `turn.rs` (turn.rs:88) and used in `permission.rs` (permission.rs:47).
+  - [ ] **REMAINING: `derive_loaded_context_tool` generic helper not added to `turn.rs`.** The plan called for a `derive_loaded_context_tool(events, tool_name) -> Vec<String>` generic with `derive_loaded_mcps` and `derive_loaded_skills` delegating to it (Task 7 Step 7). The codebase has `derive_enabled_loadables` (turn.rs:155) instead — a broader function that seeds from config defaults and handles a `load` tool event. `derive_loaded_mcps`/`derive_loaded_skills` were never added. This is a cleanup omission, not a functional gap (the existing `derive_enabled_loadables` covers the behavior).
+
+- [x] **Task 8 — Rewire turn.rs — trait-driven dispatch** DONE.
+  `turn.rs:6` imports `ExecutionSignal, ToolPermission` from types; imports `is_request_approved, find_matched_allow_pattern, is_request_denied, find_matched_deny_pattern` from permission — no `is_tool_allowed`/`unapproved_segments`. Permission gate at turn.rs:738–800 calls `tool.permission(&tc.args)`. Serial dispatch at turn.rs:953 reads `tool.execution_signal()`. Parallel classifier at turn.rs:861 uses `execution_signal()` + `execution_mode()`. No hardcoded tool-name strings in gating or dispatch.
+
+- [x] **Task 9 — Shared approval functions** DONE.
+  `save_choice` (permission.rs:29), `execute_approve` (permission.rs:74) both present. `session_state` and `write_permissions_reply` referenced and used within `execute_approve`. `PermissionsReplyItem` fields `scope` is present (execute_approve passes `scope` string at line ~113).
+
+- [x] **Task 10 — CLI subcommands** DONE.
+  `cmd_approve` (gait.rs:911), `cmd_reject` (gait.rs:969), `cmd_status` (gait.rs:1026) all present. Dispatch arms at gait.rs:116–118.
+
+- [x] **Task 11 — REPL UI-only refactor** SUBSTANTIALLY DONE, with one divergence.
+  - [x] `PermissionChoice` imported from `permission.rs` (chat.rs:116 uses `crate::permission::PermissionChoice`).
+  - [x] No `tool_name` parameter in `parse_permission_response` (chat.rs:112–115).
+  - [x] No `"shell:"` prefix logic — patterns are pre-qualified.
+  - [ ] **REMAINING: `parse_permission_response` uses bare number indexing (not `g`/`a` prefix).** The plan spec (Task 11 Step 2) called for `g<n>` → Global and `a<n>` → Agent choices. The actual implementation at chat.rs:125–130 uses plain `<n>` → `Agent`. Global saves are handled by a separate code path; the `g`/`a` keystroke distinction from the plan was not implemented. Functional but deviates from the plan's multi-scope UI spec.
+
+### Summary of remaining items
+
+1. **`multiedit.rs` does not exist** — Task 5 Step 4 (path-aware `permission()` for multi-file edits) was never implemented. If multi-edit is a feature in the codebase, this needs to be created. If multi-edit was dropped, remove it from the plan's File Map.
+
+2. **`derive_loaded_context_tool` generic not added** — Task 7 Step 7. Minor cleanup omission; `derive_enabled_loadables` covers the functional need. Add the generic helper + delegates if code consistency matters.
+
+3. **`parse_permission_response` missing `g`/`a` prefix keybindings** — Task 11 Step 2. Current UI uses bare `<n>` → Agent only. The `g<n>` → Global keystroke from the spec was not wired. This matters for the interactive approval UX (user can't type `g1` to save globally from the REPL).
