@@ -38,46 +38,50 @@ fn bang_command_str(s: &str) -> &str {
 /// The REPL is a pure UI layer: it must not add or strip prefixes.
 /// Expand `>(N)`, `>(N-M)`, or `>(N) message` quote-reply syntax.
 /// Returns the expanded string, or the original unchanged if no match.
+/// Inline scanner for `>(N)` / `>(N-M)` quote-reply. Works anywhere in the string.
 fn expand_quote_reply(input: &str, blocks: &[String]) -> String {
-    // Must start with >( to avoid picking up stray > usage
-    let Some(inner) = input.strip_prefix(">(") else {
-        return input.to_string();
-    };
-    let Some(close) = inner.find(')') else {
-        return input.to_string();
-    };
-    let range_part = &inner[..close];
-    let msg_part = inner[close + 1..].trim();
-
-    let selected: Vec<&str> = if let Some((s, e)) = range_part.split_once('-') {
-        let start: usize = s.trim().parse().unwrap_or(0);
-        let end: usize = e.trim().parse().unwrap_or(0);
-        if start == 0 || end < start {
-            return input.to_string();
+    let chars: Vec<char> = input.chars().collect();
+    let mut result = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '>' && chars.get(i + 1) == Some(&'(') {
+            let inner_start = i + 2;
+            if let Some(rel) = chars[inner_start..].iter().position(|&c| c == ')') {
+                let range: String = chars[inner_start..inner_start + rel].iter().collect();
+                if let Some(expanded) = resolve_quote_range(range.trim(), blocks) {
+                    result.push_str(&expanded);
+                    i = inner_start + rel + 1;
+                    continue;
+                }
+            }
         }
-        blocks.iter()
+        result.push(chars[i]);
+        i += 1;
+    }
+    result
+}
+
+fn resolve_quote_range(range: &str, blocks: &[String]) -> Option<String> {
+    let selected: Vec<&str> = if let Some((s, e)) = range.split_once('-') {
+        let start: usize = s.trim().parse().ok().filter(|&n: &usize| n > 0)?;
+        let end: usize = e.trim().parse().ok().filter(|&n: &usize| n > 0)?;
+        if end < start { return None; }
+        let v: Vec<&str> = blocks.iter()
             .enumerate()
             .filter(|(i, _)| *i + 1 >= start && *i + 1 <= end)
             .map(|(_, b)| b.as_str())
-            .collect()
-    } else if let Ok(n) = range_part.trim().parse::<usize>() {
-        if n == 0 { return input.to_string(); }
-        match blocks.get(n - 1) {
-            Some(b) => vec![b.as_str()],
-            None => return input.to_string(),
-        }
+            .collect();
+        if v.is_empty() { return None; }
+        v
     } else {
-        return input.to_string();
+        let n: usize = range.trim().parse().ok().filter(|&n: &usize| n > 0)?;
+        vec![blocks.get(n - 1)?]
     };
-
-    if selected.is_empty() {
-        return input.to_string();
-    }
     let quoted = selected.iter()
         .flat_map(|b| b.lines().map(|l| format!("> {}", l)))
         .collect::<Vec<_>>()
         .join("\n");
-    if msg_part.is_empty() { quoted } else { format!("{}\n\n{}", quoted, msg_part) }
+    Some(quoted)
 }
 
 fn parse_permission_response(
@@ -297,7 +301,7 @@ fn looks_like_path(token: &str) -> bool {
     false
 }
 
-fn expand_paren_marker(
+fn expand_shell_marker(
     inner: &str,
     history_path: &std::path::Path,
     codebase: &std::path::Path,
@@ -306,20 +310,20 @@ fn expand_paren_marker(
         if n >= 1 {
             return match crate::shell_history::recall(history_path, n) {
                 Ok(Some(entry)) => format!("[shell: {}]\n{}", entry.cmd, entry.output.trim_end()),
-                Ok(None) => format!("[no shell history entry @({n}): use !cmd in the REPL to run commands and build history]"),
-                Err(e) => format!("[shell history @({n}) error: {e}]"),
+                Ok(None) => format!("[no shell history entry $({n}): use !cmd in the REPL to run commands and build history]"),
+                Err(e) => format!("[shell history $({n}) error: {e}]"),
             };
         }
     }
     match run_and_capture_pty_raw(inner, codebase) {
         CaptureResult::Output(output, code) => {
             if code != Some(0) {
-                eprintln!("[!] @({inner}) exit {}", code.unwrap_or(1));
+                eprintln!("[!] $({inner}) exit {}", code.unwrap_or(1));
             }
             format!("[shell: {}]\n{}", inner, output.trim_end())
         }
         CaptureResult::Interactive => {
-            format!("[interactive TUI — run @({inner}) directly in your terminal]")
+            format!("[interactive TUI — run $({inner}) directly in your terminal]")
         }
     }
 }
@@ -333,58 +337,57 @@ pub fn expand_at_markers(
     let chars: Vec<char> = input.chars().collect();
     let mut i = 0;
     while i < chars.len() {
-        if chars[i] != '@' {
-            result.push(chars[i]);
-            i += 1;
-            continue;
-        }
-        let rest_start = i + 1;
-        if rest_start >= chars.len() {
-            result.push('@');
-            i += 1;
-            continue;
-        }
-        if chars[rest_start] == '(' {
-            let inner_start = rest_start + 1;
-            let close = chars[inner_start..].iter().position(|&c| c == ')');
-            if let Some(rel) = close {
-                let inner: String = chars[inner_start..inner_start + rel].iter().collect();
-                let expanded = expand_paren_marker(&inner, history_path, codebase);
-                result.push_str(&expanded);
-                i = inner_start + rel + 1;
-                continue;
-            }
-            result.push('@');
-            i += 1;
-            continue;
-        }
-        let token_end = chars[rest_start..]
-            .iter()
-            .position(|c| c.is_whitespace())
-            .map(|p| rest_start + p)
-            .unwrap_or(chars.len());
-        let token: String = chars[rest_start..token_end].iter().collect();
-        if looks_like_path(&token) {
-            let path = if token.starts_with('/') || token.starts_with('~') {
-                std::path::PathBuf::from(&token)
-            } else {
-                codebase.join(&token)
-            };
-            match std::fs::read_to_string(&path) {
-                Ok(contents) => {
-                    result.push_str(&format!("[file: {}]\n{}", token, contents.trim_end()));
-                    i = token_end;
+        match chars[i] {
+            '$' if chars.get(i + 1) == Some(&'(') => {
+                // $(cmd) or $(N) — shell execution or history recall
+                let inner_start = i + 2;
+                if let Some(rel) = chars[inner_start..].iter().position(|&c| c == ')') {
+                    let inner: String = chars[inner_start..inner_start + rel].iter().collect();
+                    result.push_str(&expand_shell_marker(&inner, history_path, codebase));
+                    i = inner_start + rel + 1;
                     continue;
                 }
-                Err(e) => {
-                    result.push_str(&format!("[file: {} — error: {}]", token, e));
-                    i = token_end;
-                    continue;
+                result.push('$');
+                i += 1;
+            }
+            '@' => {
+                // @file — file contents only (no parens)
+                let token_start = i + 1;
+                if token_start < chars.len() {
+                    let token_end = chars[token_start..]
+                        .iter()
+                        .position(|c| c.is_whitespace())
+                        .map(|p| token_start + p)
+                        .unwrap_or(chars.len());
+                    let token: String = chars[token_start..token_end].iter().collect();
+                    if looks_like_path(&token) {
+                        let path = if token.starts_with('/') || token.starts_with('~') {
+                            std::path::PathBuf::from(&token)
+                        } else {
+                            codebase.join(&token)
+                        };
+                        match std::fs::read_to_string(&path) {
+                            Ok(contents) => {
+                                result.push_str(&format!("[file: {}]\n{}", token, contents.trim_end()));
+                                i = token_end;
+                                continue;
+                            }
+                            Err(e) => {
+                                result.push_str(&format!("[file: {} — error: {}]", token, e));
+                                i = token_end;
+                                continue;
+                            }
+                        }
+                    }
                 }
+                result.push('@');
+                i += 1;
+            }
+            c => {
+                result.push(c);
+                i += 1;
             }
         }
-        result.push('@');
-        i += 1;
     }
     Ok(result)
 }
@@ -805,7 +808,7 @@ mod expand_tests {
     fn expands_command_inline() {
         let dir = TempDir::new().unwrap();
         let hist = dir.path().join("hist.jsonl");
-        let result = expand_at_markers("files: @(echo hi)", &hist, dir.path()).unwrap();
+        let result = expand_at_markers("files: $(echo hi)", &hist, dir.path()).unwrap();
         assert!(result.contains("[shell: echo hi]"), "got: {result}");
         assert!(result.contains("hi"), "got: {result}");
     }
@@ -814,7 +817,7 @@ mod expand_tests {
     fn expands_history_recall() {
         let dir = TempDir::new().unwrap();
         let hist = make_history(dir.path());
-        let result = expand_at_markers("prev: @(1)", &hist, dir.path()).unwrap();
+        let result = expand_at_markers("prev: $(1)", &hist, dir.path()).unwrap();
         assert!(result.contains("[shell: ls .]"), "got: {result}");
         assert!(result.contains("file_a"), "got: {result}");
     }
@@ -838,11 +841,20 @@ mod expand_tests {
     }
 
     #[test]
+    fn at_paren_no_longer_expands() {
+        // @(cmd) is old syntax — should pass through unchanged
+        let dir = TempDir::new().unwrap();
+        let hist = dir.path().join("hist.jsonl");
+        let result = expand_at_markers("old: @(echo hi)", &hist, dir.path()).unwrap();
+        assert!(result.contains("@(echo hi)"), "got: {result}");
+    }
+
+    #[test]
     fn multiple_expansions() {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("a.txt"), "aaa").unwrap();
         let hist = dir.path().join("hist.jsonl");
-        let result = expand_at_markers("x=@(echo x) y=@a.txt", &hist, dir.path()).unwrap();
+        let result = expand_at_markers("x=$(echo x) y=@a.txt", &hist, dir.path()).unwrap();
         assert!(result.contains("[shell: echo x]"), "got: {result}");
         assert!(result.contains("[file: a.txt]"), "got: {result}");
     }
@@ -892,9 +904,17 @@ mod quote_reply_tests {
     }
 
     #[test]
-    fn single_block_with_message() {
+    fn inline_mid_sentence() {
+        let result = expand_quote_reply("regarding >(2) — what did you mean?", &blocks());
+        assert!(result.contains("> Second paragraph here."), "got: {result}");
+        assert!(result.contains("regarding"), "got: {result}");
+        assert!(result.contains("what did you mean?"), "got: {result}");
+    }
+
+    #[test]
+    fn single_block_with_trailing_text() {
         let result = expand_quote_reply(">(1) follow up", &blocks());
-        assert_eq!(result, "> First paragraph here.\n\nfollow up");
+        assert_eq!(result, "> First paragraph here. follow up");
     }
 
     #[test]
