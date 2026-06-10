@@ -1,6 +1,6 @@
 pub mod transcript;
-pub mod context;
+pub mod retrace;
 pub mod session_json;
 pub use transcript::*;
-pub use context::reconstruct_messages;
+pub use retrace::messages_from_path;
 pub use session_json::{SessionJson, TokenTotals, read_session_json, write_session_json};

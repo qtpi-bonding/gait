@@ -2,7 +2,7 @@ use std::path::Path;
 use crate::types::{Message, MessageContent, AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind};
 use crate::session::transcript::{AnyEvent, read_events, last_compaction_index};
 
-pub fn reconstruct_messages_from_events(all_events: &[AnyEvent]) -> anyhow::Result<Vec<Message>> {
+pub fn messages(all_events: &[AnyEvent]) -> anyhow::Result<Vec<Message>> {
     if all_events.is_empty() { return Ok(vec![]); }
 
     // Start from last compaction breakpoint (or beginning)
@@ -145,9 +145,9 @@ pub fn reconstruct_messages_from_events(all_events: &[AnyEvent]) -> anyhow::Resu
     Ok(messages)
 }
 
-pub fn reconstruct_messages(path: &Path) -> anyhow::Result<Vec<Message>> {
+pub fn messages_from_path(path: &Path) -> anyhow::Result<Vec<Message>> {
     let all_events = read_events(path)?;
-    reconstruct_messages_from_events(&all_events)
+    messages(&all_events)
 }
 
 #[cfg(test)]
@@ -166,7 +166,7 @@ mod tests {
     fn empty_transcript_returns_empty() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("transcript.jsonl");
-        let msgs = reconstruct_messages(&path).unwrap();
+        let msgs = messages_from_path(&path).unwrap();
         assert!(msgs.is_empty());
     }
 
@@ -178,7 +178,7 @@ mod tests {
             AnyEvent::UserTurn { content: "hello".into(), from: None, context: None, ts: 1 },
             AnyEvent::AssistantText { content: "hi there".into(), ts: 2 },
         ]);
-        let msgs = reconstruct_messages(&path).unwrap();
+        let msgs = messages_from_path(&path).unwrap();
         assert_eq!(msgs.len(), 2); // session_start is skipped
         assert!(matches!(&msgs[0], Message::User { content: MessageContent::Text(t) } if t == "hello"));
         assert!(matches!(&msgs[1], Message::Assistant { content: AssistantContent::Text(t) } if t == "hi there"));
@@ -191,7 +191,7 @@ mod tests {
             AnyEvent::ToolCall { id: "id1".into(), name: "read".into(), input: serde_json::json!({"file_path":"a.rs"}), ts: 0 },
             AnyEvent::ToolResult { id: "id1".into(), output: "contents".into(), ts: 1 },
         ]);
-        let msgs = reconstruct_messages(&path).unwrap();
+        let msgs = messages_from_path(&path).unwrap();
         assert_eq!(msgs.len(), 2);
         if let Message::Assistant { content: AssistantContent::Parts(parts) } = &msgs[0] {
             assert_eq!(parts.len(), 1);
@@ -209,7 +209,7 @@ mod tests {
             AnyEvent::ToolResult { id: "id1".into(), output: "r1".into(), ts: 2 },
             AnyEvent::ToolResult { id: "id2".into(), output: "r2".into(), ts: 3 },
         ]);
-        let msgs = reconstruct_messages(&path).unwrap();
+        let msgs = messages_from_path(&path).unwrap();
         assert_eq!(msgs.len(), 2);
         if let Message::Assistant { content: AssistantContent::Parts(parts) } = &msgs[0] {
             assert_eq!(parts.len(), 2);
@@ -239,7 +239,7 @@ mod tests {
                 ts: 3,
             },
         ];
-        let messages = reconstruct_messages_from_events(&events).unwrap();
+        let messages = messages(&events).unwrap();
         assert_eq!(messages.len(), 1, "only UserTurn should appear; got: {} messages", messages.len());
         assert!(matches!(&messages[0], Message::User { .. }));
     }
@@ -254,7 +254,7 @@ mod tests {
             AnyEvent::Compaction { summary: "summary of old stuff".into(), turns_covered: 1, from_ts: 0, to_ts: 2, usage: CompactionUsage{input:10,output:5}, ts: 3 },
             AnyEvent::UserTurn { content: "new".into(), from: None, context: None, ts: 4 },
         ]);
-        let msgs = reconstruct_messages(&path).unwrap();
+        let msgs = messages_from_path(&path).unwrap();
         // Should have: compaction summary + "new" user turn
         assert_eq!(msgs.len(), 2, "got: {:?}", msgs.len());
         assert!(matches!(&msgs[0], Message::User { content: MessageContent::Text(t) } if t.contains("summary of old stuff")));

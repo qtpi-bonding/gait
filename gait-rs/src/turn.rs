@@ -11,7 +11,7 @@ use crate::session::transcript::{
     InitSessionOpts, PermissionItem, PermissionsReplyItem, TurnUsage, TurnOutput,
     ClarifyItem, InformItem,
 };
-use crate::session::context::reconstruct_messages_from_events;
+use crate::session::retrace;
 use crate::config::{McpToolDef, SkillDef};
 use crate::git;
 use crate::git::checkpoint::CheckpointRepo;
@@ -552,7 +552,7 @@ pub async fn run_turn(
             // Re-read events after execution and reconstruct messages.
             // This is the ONLY source of truth — do not manually push to messages.
             let events_after = read_events(&tx_path)?;
-            messages = reconstruct_messages_from_events(&events_after)?;
+            messages = retrace::messages(&events_after)?;
             // Do NOT inject UserTurn or turn_ctx — model already has context from the prior turn.
             true
         } else {
@@ -577,7 +577,7 @@ pub async fn run_turn(
             })?;
         }
         let events = read_events(&tx_path)?;
-        messages = reconstruct_messages_from_events(&events)?;
+        messages = retrace::messages(&events)?;
         let turn_ctx = build_turn_context(&codebase_hash, &dirty_files);
         messages.insert(0, Message::User { content: MessageContent::Text(turn_ctx) });
     }
@@ -1993,7 +1993,7 @@ mod tests {
         // Reconstruction must yield paired messages — not drop the orphan ToolResult.
         // Without a preceding ToolCall the ToolResult is silently skipped by context.rs,
         // so the model never sees the denial and retries the tool call in a loop.
-        let messages = reconstruct_messages_from_events(&events_after).unwrap();
+        let messages = retrace::messages(&events_after).unwrap();
         // Expect: User (UserTurn), Assistant (ToolCall), Tool (ToolResult with denial)
         let has_tool_msg = messages.iter().any(|m| matches!(m, Message::Tool { .. }));
         assert!(has_tool_msg, "reconstruction must include Tool message with denied result; got {} messages", messages.len());
