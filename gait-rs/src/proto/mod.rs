@@ -23,6 +23,7 @@ pub mod gait {
 }
 
 pub mod hash;
+pub mod envelope;
 
 #[cfg(test)]
 mod tests;

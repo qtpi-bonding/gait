@@ -4,6 +4,7 @@
 //!   2. the wire is proto3-canonical (camelCase, externally-tagged oneof);
 //!   3. `content_hash` recomputes stably and is sensitive to body + version.
 
+use super::envelope::body_json;
 use super::gait::log::v1::{event, payload, CodebaseState, Event, Payload, UserTurn};
 use super::hash::content_hash;
 use serde_json::json;
@@ -31,17 +32,8 @@ fn sample_event() -> Event {
     }
 }
 
-/// The externally-tagged body object `{"<arm>":{…}}` that `content_hash` covers.
-/// Envelope fields (incl. `content_hash` itself) are excluded by construction.
-fn body_object(ev: &Event) -> serde_json::Value {
-    let full = serde_json::to_value(ev).expect("serialize event");
-    for arm in ["payload", "redact", "replace"] {
-        if let Some(b) = full.get(arm) {
-            return json!({ arm: b });
-        }
-    }
-    panic!("event has no body arm set: {full}");
-}
+// The externally-tagged body object that `content_hash` covers lives in
+// `super::envelope::body_json` — these tests reuse it rather than duplicating.
 
 #[test]
 fn event_json_roundtrips() {
@@ -77,20 +69,20 @@ fn json_is_canonical_proto3() {
 #[test]
 fn content_hash_recomputes_stably() {
     let mut ev = sample_event();
-    let h1 = content_hash(ev.version, &body_object(&ev));
+    let h1 = content_hash(ev.version, &body_json(&ev));
     assert_eq!(h1.len(), 64, "SHA-256 lowercase hex");
 
     // Stamp it, send through a full JSON round-trip, recompute — must be identical.
     ev.content_hash = h1.clone();
     let back: Event =
         serde_json::from_str(&serde_json::to_string(&ev).unwrap()).unwrap();
-    assert_eq!(content_hash(back.version, &body_object(&back)), h1);
+    assert_eq!(content_hash(back.version, &body_json(&back)), h1);
 }
 
 #[test]
 fn content_hash_is_sensitive() {
     let base = sample_event();
-    let h = content_hash(base.version, &body_object(&base));
+    let h = content_hash(base.version, &body_json(&base));
 
     // A changed body changes the hash.
     let mut mutated = sample_event();
@@ -99,8 +91,8 @@ fn content_hash_is_sensitive() {
             ut.content = "goodbye".into();
         }
     }
-    assert_ne!(content_hash(mutated.version, &body_object(&mutated)), h);
+    assert_ne!(content_hash(mutated.version, &body_json(&mutated)), h);
 
     // A changed version changes the hash (version is bound into the input).
-    assert_ne!(content_hash(base.version + 1, &body_object(&base)), h);
+    assert_ne!(content_hash(base.version + 1, &body_json(&base)), h);
 }
