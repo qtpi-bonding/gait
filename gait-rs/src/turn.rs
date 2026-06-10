@@ -149,32 +149,6 @@ fn build_turn_context(codebase_hash: &str, dirty_files: &[String]) -> String {
     ctx
 }
 
-/// Scan transcript events to derive which MCP tools are currently loaded.
-/// Derive which loadable names are currently enabled.
-/// Seeds from config defaults (config_enabled), then replays transcript
-/// load/unload events from the `load` tool.
-pub fn derive_enabled_loadables(
-    events: &[AnyEvent],
-    config_enabled: &std::collections::HashSet<String>,
-) -> std::collections::HashSet<String> {
-    let mut enabled = config_enabled.clone();
-    for event in events {
-        if let AnyEvent::ToolCall { name, input, .. } = event {
-            if name == "load" {
-                let item_name = input.get("name")
-                    .and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let on = input.get("enabled")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                if on { enabled.insert(item_name); } else { enabled.remove(&item_name); }
-            }
-        }
-    }
-    enabled
-}
-
-
-
 /// Build the unified <loadable-index> system prompt section. Replaces the
 /// separate <mcp-index> and <skill-index>. Always emits the block so the
 /// system prompt instruction to "check <loadable-index>" is never a lie.
@@ -591,7 +565,7 @@ pub async fn run_turn(
     // Step 6: post-compaction reload loop. Server-granularity push:
     // enabled_names is a set of server names (and skill names); for each
     // enabled MCP server, push all of its tools into the active tools vec.
-    let enabled_names = derive_enabled_loadables(&post_compaction, &opts.config_enabled);
+    let enabled_names = retrace::enabled_loadables(&post_compaction, &opts.config_enabled);
     for server_name in &enabled_names {
         for def in opts.mcp_registry.iter().filter(|d| &d.server_name == server_name) {
             if let Some(client) = opts.mcp_clients.get(&def.server_name) {
@@ -1453,7 +1427,7 @@ mod tests {
         assert!(!has_turn_complete, "should NOT have turn_complete — turn was paused");
     }
 
-    // ── unified <loadable-index> + derive_enabled_loadables ─────────────────
+    // ── unified <loadable-index> + retrace::enabled_loadables ─────────────────
 
     #[test]
     fn build_loadable_index_shows_all_kinds() {
@@ -1481,25 +1455,6 @@ mod tests {
         assert!(result.contains("(none enabled)"), "got: {result}");
     }
 
-    #[test]
-    fn derive_enabled_loadables_seeds_from_config_and_replays_transcript() {
-        use crate::session::transcript::AnyEvent;
-        use std::collections::HashSet;
-
-        // config: tdd enabled, slack not
-        let config_enabled: HashSet<String> = ["tdd".into()].into();
-
-        // transcript: load(slack, enabled=true), load(tdd, enabled=false)
-        let events = vec![
-            AnyEvent::ToolCall { id: "1".into(), name: "load".into(),
-                input: serde_json::json!({"name": "slack_send", "enabled": true}), ts: 1 },
-            AnyEvent::ToolCall { id: "2".into(), name: "load".into(),
-                input: serde_json::json!({"name": "tdd", "enabled": false}), ts: 2 },
-        ];
-        let enabled = derive_enabled_loadables(&events, &config_enabled);
-        assert!(enabled.contains("slack_send"), "slack should be enabled after load");
-        assert!(!enabled.contains("tdd"), "tdd should be disabled after unload");
-    }
 
 
     #[tokio::test]

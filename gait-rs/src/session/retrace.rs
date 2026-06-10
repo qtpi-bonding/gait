@@ -150,6 +150,28 @@ pub fn messages_from_path(path: &Path) -> anyhow::Result<Vec<Message>> {
     messages(&all_events)
 }
 
+/// Derive which loadable names are currently enabled, from the Log.
+/// Seeds from config defaults (`config_enabled`), then replays the transcript's
+/// `load(name, enabled=…)` tool calls as last-write-wins toggles per entity.
+pub fn enabled_loadables(
+    events: &[AnyEvent],
+    config_enabled: &std::collections::HashSet<String>,
+) -> std::collections::HashSet<String> {
+    let mut enabled = config_enabled.clone();
+    for event in events {
+        if let AnyEvent::ToolCall { name, input, .. } = event {
+            if name == "load" {
+                let item_name = input.get("name")
+                    .and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let on = input.get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if on { enabled.insert(item_name); } else { enabled.remove(&item_name); }
+            }
+        }
+    }
+    enabled
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,5 +281,19 @@ mod tests {
         assert_eq!(msgs.len(), 2, "got: {:?}", msgs.len());
         assert!(matches!(&msgs[0], Message::User { content: MessageContent::Text(t) } if t.contains("summary of old stuff")));
         assert!(matches!(&msgs[1], Message::User { content: MessageContent::Text(t) } if t == "new"));
+    }
+    #[test]
+    fn enabled_loadables_seeds_from_config_and_replays_toggles() {
+        use std::collections::HashSet;
+        let config_enabled: HashSet<String> = ["tdd".into()].into();
+        let events = vec![
+            AnyEvent::ToolCall { id: "1".into(), name: "load".into(),
+                input: serde_json::json!({"name": "slack_send", "enabled": true}), ts: 1 },
+            AnyEvent::ToolCall { id: "2".into(), name: "load".into(),
+                input: serde_json::json!({"name": "tdd", "enabled": false}), ts: 2 },
+        ];
+        let enabled = enabled_loadables(&events, &config_enabled);
+        assert!(enabled.contains("slack_send"), "slack should be enabled after load");
+        assert!(!enabled.contains("tdd"), "tdd should be disabled after unload (LWW per entity)");
     }
 }
