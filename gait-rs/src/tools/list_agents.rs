@@ -3,7 +3,7 @@ use serde_json::Value;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use crate::types::{Tool, ExecutionMode};
-use crate::session::transcript::AnyEvent;
+use crate::proto::gait::log::v1::{event, payload, Event};
 
 #[derive(Deserialize, JsonSchema)]
 struct ListAgentsParams {}
@@ -79,42 +79,41 @@ impl Tool for ListAgentsTool {
                 None => continue,
             };
 
-            let events: Vec<AnyEvent> = blob_content.lines()
+            let events: Vec<Event> = blob_content.lines()
                 .filter(|l| !l.is_empty())
-                .filter_map(|l| serde_json::from_str::<AnyEvent>(l).ok())
+                .filter_map(|l| serde_json::from_str::<Event>(l).ok())
                 .collect();
             if events.is_empty() { continue; }
 
             let last_evt = events.last().unwrap();
-            let ts = match last_evt {
-                AnyEvent::SessionStart { ts, .. } => *ts,
-                AnyEvent::UserTurn { ts, .. } => *ts,
-                AnyEvent::AssistantText { ts, .. } => *ts,
-                AnyEvent::ToolCall { ts, .. } => *ts,
-                AnyEvent::ToolResult { ts, .. } => *ts,
-                AnyEvent::TurnComplete { ts, .. } => *ts,
-                AnyEvent::Error { ts, .. } => *ts,
-                AnyEvent::Permissions { ts, .. } => *ts,
-                AnyEvent::AgentUpdate { ts, .. } => *ts,
-                _ => 0,
-            };
+            // Env-stamp timestamp lives on the envelope now (not per-variant).
+            let ts = last_evt.ts;
 
-            let status = match last_evt {
-                AnyEvent::TurnComplete { .. } => "done",
-                AnyEvent::Error { .. } => "error",
-                AnyEvent::Clarify { .. } => "clarify",
-                AnyEvent::Inform { .. } => "inform",
-                AnyEvent::Permissions { .. } => "permissions",
+            let last_kind = |e: &Event| -> Option<payload::Kind> {
+                match &e.body {
+                    Some(event::Body::Payload(p)) => p.kind.clone(),
+                    _ => None,
+                }
+            };
+            let status = match last_kind(last_evt) {
+                Some(payload::Kind::TurnComplete(_)) => "done",
+                Some(payload::Kind::Error(_)) => "error",
+                Some(payload::Kind::Clarify(_)) => "clarify",
+                Some(payload::Kind::Inform(_)) => "inform",
+                Some(payload::Kind::Permissions(_)) => "permissions",
                 _ => "running",
             };
 
             if status == "done" { continue; }
 
             let summary = events.iter().rev()
-                .find_map(|e| if let AnyEvent::AssistantText { content, .. } = e {
-                    Some(content.chars().take(100).collect::<String>())
-                } else {
-                    None
+                .find_map(|e| match &e.body {
+                    Some(event::Body::Payload(p)) => match p.kind.as_ref() {
+                        Some(payload::Kind::AssistantText(a)) =>
+                            Some(a.content.chars().take(100).collect::<String>()),
+                        _ => None,
+                    },
+                    _ => None,
                 })
                 .unwrap_or_default();
 

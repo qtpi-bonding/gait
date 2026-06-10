@@ -14,9 +14,34 @@
 
 use std::path::Path;
 use crate::types::{Message, MessageContent, AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind};
-use crate::session::transcript::{AnyEvent, read_events, last_compaction_index};
+use crate::session::transcript::{read_events, last_compaction_index};
+use crate::proto::gait::log::v1::{event, payload, ClarifyKind, Event};
 
-pub fn messages(all_events: &[AnyEvent]) -> anyhow::Result<Vec<Message>> {
+/// The substantive payload kind for an event, if it carries one.
+fn kind(e: &Event) -> Option<&payload::Kind> {
+    match &e.body {
+        Some(event::Body::Payload(p)) => p.kind.as_ref(),
+        _ => None,
+    }
+}
+
+/// Proto `Struct` tool input → `serde_json::Value` object (or Null).
+fn struct_to_value(s: &Option<pbjson_types::Struct>) -> serde_json::Value {
+    match s {
+        Some(st) => serde_json::to_value(st).unwrap_or(serde_json::Value::Null),
+        None => serde_json::Value::Null,
+    }
+}
+
+fn clarify_kind_str(k: i32) -> &'static str {
+    match ClarifyKind::try_from(k).unwrap_or(ClarifyKind::Unspecified) {
+        ClarifyKind::Is => "is",
+        ClarifyKind::Ought => "ought",
+        ClarifyKind::Unspecified => "unspecified",
+    }
+}
+
+pub fn messages(all_events: &[Event]) -> anyhow::Result<Vec<Message>> {
     if all_events.is_empty() { return Ok(vec![]); }
 
     // Start from last compaction breakpoint (or beginning)
@@ -28,50 +53,59 @@ pub fn messages(all_events: &[AnyEvent]) -> anyhow::Result<Vec<Message>> {
     let mut i = 0;
 
     while i < events.len() {
-        match &events[i] {
-            AnyEvent::Compaction { summary, .. } => {
+        match kind(&events[i]) {
+            Some(payload::Kind::Compaction(c)) => {
                 messages.push(Message::User {
                     content: MessageContent::Text(
-                        format!("[Session history summary: {}]", summary)
+                        format!("[Session history summary: {}]", c.summary)
                     ),
                 });
                 i += 1;
             }
-            AnyEvent::SessionStart { .. } => { i += 1; }
+            Some(payload::Kind::SessionStart(_)) => { i += 1; }
 
-            AnyEvent::AgentUpdate { session_id, status, summary, items, .. } => {
-                let mut content = format!("[agent:{}] status: {}\nsummary: {}", session_id, status, summary);
-                if let Some(items) = items {
-                    content.push_str(&format!("\nitems: {}", items));
+            Some(payload::Kind::AgentUpdate(au)) => {
+                let status = crate::proto::gait::log::v1::AgentStatus::try_from(au.status)
+                    .map(|s| match s {
+                        crate::proto::gait::log::v1::AgentStatus::Done => "done",
+                        crate::proto::gait::log::v1::AgentStatus::Clarify => "clarify",
+                        crate::proto::gait::log::v1::AgentStatus::Inform => "inform",
+                        crate::proto::gait::log::v1::AgentStatus::Unspecified => "unspecified",
+                    })
+                    .unwrap_or("unspecified");
+                let mut content = format!("[agent:{}] status: {}\nsummary: {}", au.session_id, status, au.summary);
+                if let Some(items) = &au.items {
+                    let v = serde_json::to_value(items).unwrap_or(serde_json::Value::Null);
+                    content.push_str(&format!("\nitems: {}", v));
                 }
                 messages.push(Message::User { content: MessageContent::Text(content) });
                 i += 1;
             }
 
-            AnyEvent::UserTurn { content, .. } => {
-                messages.push(Message::User { content: MessageContent::Text(content.clone()) });
+            Some(payload::Kind::UserTurn(u)) => {
+                messages.push(Message::User { content: MessageContent::Text(u.content.clone()) });
                 i += 1;
             }
 
-            AnyEvent::AssistantText { content, .. } => {
-                messages.push(Message::Assistant { content: AssistantContent::Text(content.clone()) });
+            Some(payload::Kind::AssistantText(a)) => {
+                messages.push(Message::Assistant { content: AssistantContent::Text(a.content.clone()) });
                 i += 1;
             }
 
-            AnyEvent::ToolCall { .. } => {
+            Some(payload::Kind::ToolCall(_)) => {
                 // Gather all consecutive tool_call events
                 let mut calls: Vec<(String, String, serde_json::Value)> = vec![];
                 while i < events.len() {
-                    if let AnyEvent::ToolCall { id, name, input, .. } = &events[i] {
-                        calls.push((id.clone(), name.clone(), input.clone()));
+                    if let Some(payload::Kind::ToolCall(tc)) = kind(&events[i]) {
+                        calls.push((tc.call_id.clone(), tc.name.clone(), struct_to_value(&tc.input)));
                         i += 1;
                     } else { break; }
                 }
                 // Gather consecutive tool_result events
                 let mut results: Vec<(String, String)> = vec![];
                 while i < events.len() {
-                    if let AnyEvent::ToolResult { id, output, .. } = &events[i] {
-                        results.push((id.clone(), output.clone()));
+                    if let Some(payload::Kind::ToolResult(tr)) = kind(&events[i]) {
+                        results.push((tr.call_id.clone(), tr.output.clone()));
                         i += 1;
                     } else { break; }
                 }
@@ -97,18 +131,18 @@ pub fn messages(all_events: &[AnyEvent]) -> anyhow::Result<Vec<Message>> {
                 }
             }
 
-            AnyEvent::ToolResult { .. } => { i += 1; } // orphan — skip
+            Some(payload::Kind::ToolResult(_)) => { i += 1; } // orphan — skip
 
-            AnyEvent::Clarify { items, .. } => {
-                let text = items.iter().map(|q| {
-                    format!("clarify ({}): {}\nwhy: {}", q.kind, q.content, q.why)
+            Some(payload::Kind::Clarify(c)) => {
+                let text = c.items.iter().map(|q| {
+                    format!("clarify ({}): {}\nwhy: {}", clarify_kind_str(q.kind), q.content, q.why)
                 }).collect::<Vec<_>>().join("\n\n");
                 messages.push(Message::Assistant { content: AssistantContent::Text(text) });
                 i += 1;
             }
 
-            AnyEvent::ClarifyReply { items, .. } => {
-                let text = items.iter().map(|r| {
+            Some(payload::Kind::ClarifyReply(cr)) => {
+                let text = cr.items.iter().map(|r| {
                     let base = format!("{}: {}", r.id, r.content);
                     if let Some(reason) = &r.reasoning { format!("{}\nreason: {}", base, reason) }
                     else { base }
@@ -117,8 +151,8 @@ pub fn messages(all_events: &[AnyEvent]) -> anyhow::Result<Vec<Message>> {
                 i += 1;
             }
 
-            AnyEvent::ClarifyConvergence { items, .. } => {
-                for item in items {
+            Some(payload::Kind::ClarifyConvergence(cc)) => {
+                for item in &cc.items {
                     messages.push(Message::Assistant { content: AssistantContent::Text(format!("[proposal] {}", item.proposal)) });
                     if let Some(resp) = &item.response {
                         messages.push(Message::User { content: MessageContent::Text(format!("[response] {}", resp)) });
@@ -127,8 +161,8 @@ pub fn messages(all_events: &[AnyEvent]) -> anyhow::Result<Vec<Message>> {
                 i += 1;
             }
 
-            AnyEvent::Inform { items, .. } => {
-                let text = items.iter().map(|it| {
+            Some(payload::Kind::Inform(inf)) => {
+                let text = inf.items.iter().map(|it| {
                     let mut s = it.content.clone();
                     if let Some(ctx) = &it.context { s.push_str(&format!("\ncontext: {}", ctx)); }
                     s
@@ -137,21 +171,31 @@ pub fn messages(all_events: &[AnyEvent]) -> anyhow::Result<Vec<Message>> {
                 i += 1;
             }
 
-            AnyEvent::InformReply { items, .. } => {
-                let text = items.iter().map(|r| format!("{}: {}", r.id, r.content)).collect::<Vec<_>>().join("\n");
+            Some(payload::Kind::InformReply(ir)) => {
+                let text = ir.items.iter().map(|r| format!("{}: {}", r.id, r.content)).collect::<Vec<_>>().join("\n");
                 messages.push(Message::User { content: MessageContent::Text(text) });
                 i += 1;
             }
 
-            AnyEvent::Permissions { .. } => { i += 1; }    // audit event — excluded from model context
-            AnyEvent::PermissionsReply { .. } => { i += 1; } // audit event — excluded from model context
+            Some(payload::Kind::Permissions(_)) => { i += 1; }    // audit event — excluded from model context
+            Some(payload::Kind::PermissionsReply(_)) => { i += 1; } // audit event — excluded from model context
 
-            AnyEvent::Error { message, phase, .. } => {
-                messages.push(Message::User { content: MessageContent::Text(format!("error during {}: {}", phase, message)) });
+            Some(payload::Kind::Error(e)) => {
+                let phase = crate::proto::gait::log::v1::ErrorPhase::try_from(e.phase)
+                    .map(|p| match p {
+                        crate::proto::gait::log::v1::ErrorPhase::Llm => "llm",
+                        crate::proto::gait::log::v1::ErrorPhase::Tool => "tool",
+                        crate::proto::gait::log::v1::ErrorPhase::Git => "git",
+                        crate::proto::gait::log::v1::ErrorPhase::Init => "init",
+                        crate::proto::gait::log::v1::ErrorPhase::Unspecified => "unspecified",
+                    })
+                    .unwrap_or("unspecified");
+                messages.push(Message::User { content: MessageContent::Text(format!("error during {}: {}", phase, e.message)) });
                 i += 1;
             }
 
-            // Skip: TurnComplete, CommandResult, InformConvergence (not needed for LLM context)
+            // Skip: TurnComplete, Raw (workflow/etc.), InformConvergence, Resolution,
+            // mutations (Redact/Replace) — not needed for LLM context.
             _ => { i += 1; }
         }
     }
@@ -168,13 +212,14 @@ pub fn messages_from_path(path: &Path) -> anyhow::Result<Vec<Message>> {
 /// Seeds from config defaults (`config_enabled`), then replays the transcript's
 /// `load(name, enabled=…)` tool calls as last-write-wins toggles per entity.
 pub fn enabled_loadables(
-    events: &[AnyEvent],
+    events: &[Event],
     config_enabled: &std::collections::HashSet<String>,
 ) -> std::collections::HashSet<String> {
     let mut enabled = config_enabled.clone();
     for event in events {
-        if let AnyEvent::ToolCall { name, input, .. } = event {
-            if name == "load" {
+        if let Some(payload::Kind::ToolCall(tc)) = kind(event) {
+            if tc.name == "load" {
+                let input = struct_to_value(&tc.input);
                 let item_name = input.get("name")
                     .and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let on = input.get("enabled")
@@ -197,6 +242,14 @@ mod tests {
         let path = dir.join("transcript.jsonl");
         for e in events { append_event(&path, e).unwrap(); }
         path
+    }
+
+    /// Build in-memory proto events from AnyEvents (seq is irrelevant for these
+    /// assertions; each is minted as a root).
+    fn mint_events(aes: &[AnyEvent]) -> Vec<Event> {
+        aes.iter()
+            .map(|ae| crate::proto::envelope::mint(crate::proto::convert::any_to_body(ae), None))
+            .collect()
     }
 
     #[test]
@@ -276,7 +329,7 @@ mod tests {
                 ts: 3,
             },
         ];
-        let messages = messages(&events).unwrap();
+        let messages = messages(&mint_events(&events)).unwrap();
         assert_eq!(messages.len(), 1, "only UserTurn should appear; got: {} messages", messages.len());
         assert!(matches!(&messages[0], Message::User { .. }));
     }
@@ -307,7 +360,7 @@ mod tests {
             AnyEvent::ToolCall { id: "2".into(), name: "load".into(),
                 input: serde_json::json!({"name": "tdd", "enabled": false}), ts: 2 },
         ];
-        let enabled = enabled_loadables(&events, &config_enabled);
+        let enabled = enabled_loadables(&mint_events(&events), &config_enabled);
         assert!(enabled.contains("slack_send"), "slack should be enabled after load");
         assert!(!enabled.contains("tdd"), "tdd should be disabled after unload (LWW per entity)");
     }
@@ -320,9 +373,10 @@ mod tests {
             AnyEvent::ToolCall { id: "1".into(), name: "load".into(),
                 input: serde_json::json!({"name": "slack_send", "enabled": true}), ts: 1 },
         ];
-        let msgs = messages(&events).unwrap();
+        let proto_events = mint_events(&events);
+        let msgs = messages(&proto_events).unwrap();
         assert!(matches!(&msgs[0], Message::User { content: MessageContent::Text(t) } if t == "hi"));
-        let enabled = enabled_loadables(&events, &HashSet::new());
+        let enabled = enabled_loadables(&proto_events, &HashSet::new());
         assert!(enabled.contains("slack_send"));
     }
 }

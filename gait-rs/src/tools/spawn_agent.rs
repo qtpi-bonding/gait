@@ -112,7 +112,8 @@ impl Tool for SpawnAgentTool {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use crate::session::transcript::{read_events, AnyEvent};
+    use crate::session::transcript::read_events;
+    use crate::proto::gait::log::v1::{event, payload};
     use crate::session::session_json::read_session_json;
 
     fn init_git_repo(dir: &std::path::Path) {
@@ -152,19 +153,26 @@ mod tests {
         let tx = ws.path().join(format!("sessions/{}/transcript.jsonl", new_id));
         assert!(tx.exists());
         let events = read_events(&tx).unwrap();
-        let types: Vec<&str> = events.iter().map(|e| match e {
-            AnyEvent::SessionStart { .. } => "session_start",
-            AnyEvent::UserTurn { .. } => "user_turn",
+        let ek = |e: &crate::proto::gait::log::v1::Event| -> Option<payload::Kind> {
+            match &e.body {
+                Some(event::Body::Payload(p)) => p.kind.clone(),
+                _ => None,
+            }
+        };
+        let types: Vec<&str> = events.iter().map(|e| match ek(e) {
+            Some(payload::Kind::SessionStart(_)) => "session_start",
+            Some(payload::Kind::UserTurn(_)) => "user_turn",
             _ => "other",
         }).collect();
         assert!(types.contains(&"session_start"), "{:?}", types);
         assert!(types.contains(&"user_turn"), "{:?}", types);
 
-        let user_turn = events.iter().find(|e| matches!(e, AnyEvent::UserTurn { .. })).unwrap();
-        if let AnyEvent::UserTurn { content, from, .. } = user_turn {
-            assert_eq!(content, "implement feature X");
-            assert_eq!(from.as_deref(), Some("agent:scaller001"));
-        }
+        let user_turn = events.iter().find_map(|e| match ek(e) {
+            Some(payload::Kind::UserTurn(u)) => Some(u),
+            _ => None,
+        }).unwrap();
+        assert_eq!(user_turn.content, "implement feature X");
+        assert_eq!(user_turn.from.as_deref(), Some("agent:scaller001"));
 
         let sj = read_session_json(ws.path(), new_id);
         assert_eq!(sj.assigned_by.as_deref(), Some("scaller001"));

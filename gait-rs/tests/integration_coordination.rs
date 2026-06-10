@@ -1,9 +1,18 @@
 use gait_ai::{
     turn::{TurnResult, run_turn},
-    session::transcript::{read_events, AnyEvent},
+    session::transcript::read_events,
     session::session_json::read_session_json,
     tools::builtin_tools,
 };
+use gait_ai::proto::gait::log::v1::{event, payload, Event};
+
+/// The substantive payload kind for a proto event, if it carries one.
+fn event_kind(e: &Event) -> Option<&payload::Kind> {
+    match &e.body {
+        Some(event::Body::Payload(p)) => p.kind.as_ref(),
+        _ => None,
+    }
+}
 use gait_ai::provider::{Provider, StreamChunk, ProviderError};
 use gait_ai::types::{Message, Tool};
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
@@ -113,13 +122,13 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
     // Verify child transcript has user_turn with from = agent:sparent001
     let tx = ws.path().join(format!("sessions/{}/transcript.jsonl", child_id));
     let events = read_events(&tx).unwrap();
-    let user_turn = events.iter().find(|e| matches!(e, AnyEvent::UserTurn { .. }))
-        .expect("child transcript must have user_turn");
-    if let AnyEvent::UserTurn { content, from, .. } = user_turn {
-        assert_eq!(content, "fix the failing tests");
-        assert_eq!(from.as_deref(), Some("agent:sparent001"),
-            "child user_turn must have from=agent:sparent001");
-    }
+    let user_turn = events.iter().find_map(|e| match event_kind(e) {
+        Some(payload::Kind::UserTurn(u)) => Some(u),
+        _ => None,
+    }).expect("child transcript must have user_turn");
+    assert_eq!(user_turn.content, "fix the failing tests");
+    assert_eq!(user_turn.from.as_deref(), Some("agent:sparent001"),
+        "child user_turn must have from=agent:sparent001");
 }
 
 /// Verify that run_turn returns TurnResult::Permissions when a tool call is blocked in non-auto mode.

@@ -1,7 +1,16 @@
 use gait_ai::{
     turn::run_turn,
-    session::transcript::{read_events, AnyEvent},
+    session::transcript::read_events,
 };
+use gait_ai::proto::gait::log::v1::{event, payload, Event};
+
+/// The substantive payload kind for a proto event, if it carries one.
+fn event_kind(e: &Event) -> Option<&payload::Kind> {
+    match &e.body {
+        Some(event::Body::Payload(p)) => p.kind.as_ref(),
+        _ => None,
+    }
+}
 use gait_ai::provider::{Provider, StreamChunk, ProviderError};
 use gait_ai::types::{Message, Tool, ToolDef};
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
@@ -87,13 +96,13 @@ async fn full_turn_creates_transcript_and_git_commit() {
     // Verify transcript
     let tx = ws.path().join("sessions/sint001/transcript.jsonl");
     let events = read_events(&tx).unwrap();
-    let event_types: Vec<String> = events.iter().map(|e| match e {
-        AnyEvent::SessionStart { .. } => "session_start",
-        AnyEvent::UserTurn { .. } => "user_turn",
-        AnyEvent::ToolCall { .. } => "tool_call",
-        AnyEvent::ToolResult { .. } => "tool_result",
-        AnyEvent::AssistantText { .. } => "assistant_text",
-        AnyEvent::TurnComplete { .. } => "turn_complete",
+    let event_types: Vec<String> = events.iter().map(|e| match event_kind(e) {
+        Some(payload::Kind::SessionStart(_)) => "session_start",
+        Some(payload::Kind::UserTurn(_)) => "user_turn",
+        Some(payload::Kind::ToolCall(_)) => "tool_call",
+        Some(payload::Kind::ToolResult(_)) => "tool_result",
+        Some(payload::Kind::AssistantText(_)) => "assistant_text",
+        Some(payload::Kind::TurnComplete(_)) => "turn_complete",
         _ => "other",
     }.to_string()).collect();
 
@@ -158,9 +167,9 @@ async fn second_turn_resumes_session() {
 
     let tx = ws.path().join("sessions/sint002/transcript.jsonl");
     let events = read_events(&tx).unwrap();
-    let turn_count = events.iter().filter(|e| matches!(e, AnyEvent::TurnComplete { .. })).count();
+    let turn_count = events.iter().filter(|e| matches!(event_kind(e), Some(payload::Kind::TurnComplete(_)))).count();
     assert_eq!(turn_count, 2, "expected 2 turn_complete events");
 
-    let session_start_count = events.iter().filter(|e| matches!(e, AnyEvent::SessionStart { .. })).count();
+    let session_start_count = events.iter().filter(|e| matches!(event_kind(e), Some(payload::Kind::SessionStart(_)))).count();
     assert_eq!(session_start_count, 1, "session_start should appear exactly once");
 }

@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::proto::gait::log::v1::{event, payload, Event};
+
 // ── Supporting types ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -290,42 +292,39 @@ pub fn now_ms() -> u64 {
 }
 
 pub fn append_event(path: &Path, event: &AnyEvent) -> anyhow::Result<()> {
-    use std::io::Write;
-    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
-    writeln!(file, "{}", serde_json::to_string(event)?)?;
+    crate::proto::wire::append(path, crate::proto::convert::any_to_body(event))?;
     Ok(())
 }
 
 /// Writes event to transcript file AND stdout as NDJSON.
 /// Use for events in the current session. Cross-session writes use `append_event`.
 pub fn emit_event(path: &Path, event: &AnyEvent) -> anyhow::Result<()> {
-    use std::io::Write;
-    let json = serde_json::to_string(event)?;
-    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
-    writeln!(file, "{}", json)?;
-    println!("{}", json);
+    crate::proto::wire::emit(path, crate::proto::convert::any_to_body(event))?;
     Ok(())
 }
 
-pub fn read_events(path: &Path) -> anyhow::Result<Vec<AnyEvent>> {
-    if !path.exists() { return Ok(vec![]); }
-    let text = std::fs::read_to_string(path)?;
-    text.lines()
-        .filter(|l| !l.is_empty())
-        .map(|l| serde_json::from_str::<AnyEvent>(l).map_err(anyhow::Error::from))
-        .collect()
+pub fn read_events(path: &Path) -> anyhow::Result<Vec<Event>> {
+    crate::proto::wire::read_events(path)
 }
 
-pub fn last_event(path: &Path) -> anyhow::Result<Option<AnyEvent>> {
-    Ok(read_events(path)?.into_iter().last())
+pub fn last_event(path: &Path) -> anyhow::Result<Option<Event>> {
+    crate::proto::wire::last_event(path)
 }
 
-pub fn count_turn_complete(events: &[AnyEvent]) -> usize {
-    events.iter().filter(|e| matches!(e, AnyEvent::TurnComplete { .. })).count()
+/// The substantive payload kind for an event, if it carries one.
+fn kind(e: &Event) -> Option<&payload::Kind> {
+    match &e.body {
+        Some(event::Body::Payload(p)) => p.kind.as_ref(),
+        _ => None,
+    }
 }
 
-pub fn last_compaction_index(events: &[AnyEvent]) -> Option<usize> {
-    events.iter().rposition(|e| matches!(e, AnyEvent::Compaction { .. }))
+pub fn count_turn_complete(events: &[Event]) -> usize {
+    events.iter().filter(|e| matches!(kind(e), Some(payload::Kind::TurnComplete(_)))).count()
+}
+
+pub fn last_compaction_index(events: &[Event]) -> Option<usize> {
+    events.iter().rposition(|e| matches!(kind(e), Some(payload::Kind::Compaction(_))))
 }
 
 pub struct InitSessionOpts {
@@ -348,15 +347,15 @@ pub enum SessionState {
     Idle,
     /// A tool permission request is awaiting a decision.
     AwaitingPermission {
-        items: Vec<PermissionItem>,
+        items: Vec<crate::proto::gait::log::v1::PermissionItem>,
     },
     /// A clarify request is awaiting user answers.
     AwaitingClarify {
-        items: Vec<ClarifyItem>,
+        items: Vec<crate::proto::gait::log::v1::ClarifyItem>,
     },
     /// An inform request is awaiting user acknowledgement.
     AwaitingInform {
-        items: Vec<InformItem>,
+        items: Vec<crate::proto::gait::log::v1::InformItem>,
     },
 }
 
@@ -368,26 +367,26 @@ pub enum SessionState {
 pub fn session_state(tx_path: &std::path::Path) -> anyhow::Result<SessionState> {
     let events = read_events(tx_path)?;
     for event in events.iter().rev() {
-        match event {
-            AnyEvent::Permissions { items, .. } => {
-                return Ok(SessionState::AwaitingPermission { items: items.clone() });
+        match kind(event) {
+            Some(payload::Kind::Permissions(p)) => {
+                return Ok(SessionState::AwaitingPermission { items: p.items.clone() });
             }
-            AnyEvent::PermissionsReply { .. } => {
+            Some(payload::Kind::PermissionsReply(_)) => {
                 return Ok(SessionState::Idle);
             }
-            AnyEvent::Clarify { items, .. } => {
-                return Ok(SessionState::AwaitingClarify { items: items.clone() });
+            Some(payload::Kind::Clarify(c)) => {
+                return Ok(SessionState::AwaitingClarify { items: c.items.clone() });
             }
-            AnyEvent::ClarifyReply { .. } => {
+            Some(payload::Kind::ClarifyReply(_)) => {
                 return Ok(SessionState::Idle);
             }
-            AnyEvent::Inform { items, .. } => {
-                return Ok(SessionState::AwaitingInform { items: items.clone() });
+            Some(payload::Kind::Inform(i)) => {
+                return Ok(SessionState::AwaitingInform { items: i.items.clone() });
             }
-            AnyEvent::InformReply { .. } => {
+            Some(payload::Kind::InformReply(_)) => {
                 return Ok(SessionState::Idle);
             }
-            AnyEvent::TurnComplete { .. } => {
+            Some(payload::Kind::TurnComplete(_)) => {
                 return Ok(SessionState::Idle);
             }
             _ => continue,
@@ -429,6 +428,14 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// The substantive payload kind for a proto event, for test assertions.
+    fn k(e: &Event) -> &payload::Kind {
+        match &e.body {
+            Some(event::Body::Payload(p)) => p.kind.as_ref().expect("kind set"),
+            other => panic!("expected payload body, got {other:?}"),
+        }
+    }
+
     #[test]
     fn append_and_read_roundtrip() {
         let dir = TempDir::new().unwrap();
@@ -445,8 +452,8 @@ mod tests {
         }).unwrap();
         let events = read_events(&path).unwrap();
         assert_eq!(events.len(), 2);
-        assert!(matches!(&events[0], AnyEvent::UserTurn { content, .. } if content == "hello"));
-        assert!(matches!(&events[1], AnyEvent::AssistantText { content, .. } if content == "world"));
+        assert!(matches!(k(&events[0]), payload::Kind::UserTurn(u) if u.content == "hello"));
+        assert!(matches!(k(&events[1]), payload::Kind::AssistantText(a) if a.content == "world"));
     }
 
     #[test]
@@ -462,12 +469,18 @@ mod tests {
         }).unwrap();
         let events = read_events(&path).unwrap();
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], AnyEvent::SessionStart { id, .. } if id == "s1234"));
+        assert!(matches!(k(&events[0]), payload::Kind::SessionStart(s) if s.session_id == "s1234"));
+    }
+
+    fn mint_events(aes: &[AnyEvent]) -> Vec<Event> {
+        aes.iter()
+            .map(|ae| crate::proto::envelope::mint(crate::proto::convert::any_to_body(ae), None))
+            .collect()
     }
 
     #[test]
     fn count_turn_complete_counts_correctly() {
-        let events = vec![
+        let events = mint_events(&[
             AnyEvent::UserTurn { content: "x".into(), from: None, context: None, ts: 0 },
             AnyEvent::TurnComplete {
                 usage: TurnUsage { input: 1, output: 1, cache_read: 0, cache_write: 0 },
@@ -488,13 +501,13 @@ mod tests {
                 output: TurnOutput { message: "done".into(), result: None },
                 ts: 3,
             },
-        ];
+        ]);
         assert_eq!(count_turn_complete(&events), 2);
     }
 
     #[test]
     fn last_compaction_index_finds_last() {
-        let events = vec![
+        let events = mint_events(&[
             AnyEvent::UserTurn { content: "x".into(), from: None, context: None, ts: 0 },
             AnyEvent::Compaction {
                 summary: "s1".into(), turns_covered: 1,
@@ -502,7 +515,7 @@ mod tests {
                 usage: CompactionUsage { input: 10, output: 5 }, ts: 1,
             },
             AnyEvent::UserTurn { content: "y".into(), from: None, context: None, ts: 2 },
-        ];
+        ]);
         assert_eq!(last_compaction_index(&events), Some(1));
     }
 
@@ -518,9 +531,9 @@ mod tests {
         }).unwrap();
         let events = read_events(&path).unwrap();
         assert_eq!(events.len(), 1);
-        if let AnyEvent::UserTurn { from, content, .. } = &events[0] {
-            assert_eq!(content, "do the thing");
-            assert_eq!(from.as_deref(), Some("agent:s-parent123"));
+        if let payload::Kind::UserTurn(u) = k(&events[0]) {
+            assert_eq!(u.content, "do the thing");
+            assert_eq!(u.from.as_deref(), Some("agent:s-parent123"));
         } else {
             panic!("expected UserTurn");
         }
@@ -528,7 +541,8 @@ mod tests {
 
     #[test]
     fn user_turn_from_defaults_to_none_when_missing() {
-        // Old JSONL without `from` field must deserialize correctly.
+        // Legacy AnyEvent JSON without `from` must still deserialize (writers
+        // build AnyEvent before conversion).
         let json = r#"{"type":"user_turn","content":"hello","ts":1}"#;
         let event: AnyEvent = serde_json::from_str(json).unwrap();
         if let AnyEvent::UserTurn { from, .. } = event {
@@ -557,8 +571,24 @@ mod tests {
         }).unwrap();
         let events = read_events(&path).unwrap();
         assert_eq!(events.len(), 3);
-        assert!(matches!(&events[0], AnyEvent::WorkflowStart { workflow_id, .. } if workflow_id == "wf1"));
-        assert!(matches!(&events[2], AnyEvent::NodeComplete { exit_code: Some(0), .. }));
+        // Workflow events store the original tagged JSON verbatim in a RawEvent.
+        match k(&events[0]) {
+            payload::Kind::Raw(r) => {
+                assert_eq!(r.r#type, "workflow_start");
+                let v = serde_json::to_value(r.payload.as_ref().unwrap()).unwrap();
+                assert_eq!(v["workflow_id"], "wf1");
+            }
+            other => panic!("expected Raw, got {other:?}"),
+        }
+        match k(&events[2]) {
+            payload::Kind::Raw(r) => {
+                assert_eq!(r.r#type, "node_complete");
+                let v = serde_json::to_value(r.payload.as_ref().unwrap()).unwrap();
+                // pbjson Struct stores numbers as f64 → 0 round-trips as 0.0.
+                assert_eq!(v["exit_code"].as_f64(), Some(0.0));
+            }
+            other => panic!("expected Raw, got {other:?}"),
+        }
     }
 
     #[test]
@@ -574,12 +604,13 @@ mod tests {
             AnyEvent::PermissionsReply { from: "user".into(), items: vec![], ts: 0 },
             AnyEvent::TurnComplete { usage: TurnUsage { input:1,output:1,cache_read:0,cache_write:0 }, codebase_hash:"h".into(), codebase_dirty:false, code_checkpoint: None, blocks: vec![], output: TurnOutput{message:"s".into(),result:None}, ts:0 },
         ];
-        for e in &events {
-            let json = serde_json::to_string(e).unwrap();
-            let back: AnyEvent = serde_json::from_str(&json).unwrap();
-            // Verify type tag survived
-            let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-            assert!(v.get("type").is_some(), "missing type tag in: {json}");
+        // Writers still build AnyEvent; the on-disk form is now a proto Event line.
+        for ae in &events {
+            let ev = crate::proto::envelope::mint(crate::proto::convert::any_to_body(ae), None);
+            let json = serde_json::to_string(&ev).unwrap();
+            let back: Event = serde_json::from_str(&json).unwrap();
+            assert!(back.body.is_some(), "missing body in: {json}");
+            assert!(crate::proto::envelope::verify_hash(&back), "hash must verify: {json}");
         }
     }
 
@@ -593,7 +624,7 @@ mod tests {
         }).unwrap();
         let events = read_events(&path).unwrap();
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], AnyEvent::AssistantText { content, .. } if content == "hello emit"));
+        assert!(matches!(k(&events[0]), payload::Kind::AssistantText(a) if a.content == "hello emit"));
     }
 
     #[test]

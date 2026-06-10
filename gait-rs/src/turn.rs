@@ -19,6 +19,22 @@ use crate::mcp_client::McpClient;
 use crate::permission::{is_request_approved, find_matched_allow_pattern, is_request_denied, find_matched_deny_pattern};
 use grep_regex::RegexMatcher;
 use grep_searcher::{Searcher, Sink, SinkMatch};
+use crate::proto::gait::log::v1::{event, payload, Event};
+
+/// The substantive payload kind for a proto event, if it carries one.
+fn event_kind(e: &Event) -> Option<payload::Kind> {
+    match &e.body {
+        Some(event::Body::Payload(p)) => p.kind.clone(),
+        _ => None,
+    }
+}
+
+/// Proto tool-input `Struct` → `serde_json::Value` (object, or Null if unset).
+fn input_value(s: &Option<pbjson_types::Struct>) -> serde_json::Value {
+    s.as_ref()
+        .map(|st| serde_json::to_value(st).unwrap_or(serde_json::Value::Null))
+        .unwrap_or(serde_json::Value::Null)
+}
 
 #[derive(Debug, Clone)]
 pub enum TurnResult {
@@ -331,8 +347,12 @@ async fn apply_curate_filter(
         .ok()
         .and_then(|events| {
             events.into_iter().rev().find_map(|e| {
-                if let crate::session::transcript::AnyEvent::ToolCall { name, input, .. } = e {
-                    if name == "annotate" { Some(input) } else { None }
+                if let Some(crate::proto::gait::log::v1::payload::Kind::ToolCall(tc)) = event_kind(&e) {
+                    if tc.name == "annotate" {
+                        Some(tc.input.as_ref()
+                            .map(|s| serde_json::to_value(s).unwrap_or(serde_json::Value::Null))
+                            .unwrap_or(serde_json::Value::Null))
+                    } else { None }
                 } else {
                     None
                 }
@@ -421,26 +441,33 @@ pub async fn run_turn(
     let pre_events = read_events(&tx_path)?;
     let mut messages: Vec<Message> = Vec::new();
     let mut tools = tools; // take ownership so we can mutate (mcp load/unload)
-    let did_resume = if matches!(pre_events.last(), Some(AnyEvent::PermissionsReply { .. })) {
+    let did_resume = if matches!(event_kind(pre_events.last().unwrap_or(&Event::default())), Some(payload::Kind::PermissionsReply(_))) {
         // Find the Permissions event immediately preceding the reply
         let perm_event = pre_events.iter().rev()
             .skip(1) // skip PermissionsReply
-            .find(|e| matches!(e, AnyEvent::Permissions { .. }));
+            .find(|e| matches!(event_kind(e), Some(payload::Kind::Permissions(_))));
         let reply_event = pre_events.last();
 
-        if let (
-            Some(AnyEvent::Permissions { items: perm_items, .. }),
-            Some(AnyEvent::PermissionsReply { items: reply_items, .. }),
-        ) = (perm_event, reply_event) {
+        let perm_items = perm_event.and_then(|e| match event_kind(e) {
+            Some(payload::Kind::Permissions(p)) => Some(p.items),
+            _ => None,
+        });
+        let reply_items = reply_event.and_then(|e| match event_kind(e) {
+            Some(payload::Kind::PermissionsReply(r)) => Some(r.items),
+            _ => None,
+        });
+
+        if let (Some(perm_items), Some(reply_items)) = (perm_items, reply_items) {
+            use crate::proto::gait::log::v1::{Decision, Scope};
             // Build a map: id → decision
-            let decisions: std::collections::HashMap<&str, &str> = reply_items.iter()
-                .map(|r| (r.id.as_str(), r.decision.as_str()))
+            let decisions: std::collections::HashMap<&str, Decision> = reply_items.iter()
+                .map(|r| (r.id.as_str(), Decision::try_from(r.decision).unwrap_or(Decision::Unspecified)))
                 .collect();
 
             // Deduplicate by id: collect unique tool_call_ids and their items
-            let mut by_id: std::collections::BTreeMap<String, Vec<&PermissionItem>> =
+            let mut by_id: std::collections::BTreeMap<String, Vec<&crate::proto::gait::log::v1::PermissionItem>> =
                 std::collections::BTreeMap::new();
-            for item in perm_items {
+            for item in &perm_items {
                 by_id.entry(item.id.clone()).or_default().push(item);
             }
 
@@ -448,7 +475,7 @@ pub async fn run_turn(
             for (id, items) in &by_id {
                 // All-or-nothing: all segments of this tool_call_id must be approved
                 let all_approved = items.iter().all(|item| {
-                    decisions.get(item.id.as_str()).copied() == Some("approve")
+                    decisions.get(item.id.as_str()).copied() == Some(Decision::Approve)
                 });
 
                 if all_approved {
@@ -456,17 +483,17 @@ pub async fn run_turn(
                     let tc = ToolCall {
                         tool_call_id: id.clone(),
                         tool_name: items[0].tool_name.clone(),
-                        args: items[0].tool_args.clone(),
+                        args: input_value(&items[0].tool_args),
                     };
                     // Build scope-aware prefix: tell the model whether the approval
                     // was a one-shot or saved to the agent/global whitelist.
                     let prefix = {
                         let scope = reply_items.iter()
                             .find(|r| r.id == *id)
-                            .and_then(|r| r.scope.as_deref());
+                            .map(|r| Scope::try_from(r.scope).unwrap_or(Scope::Unspecified));
                         match scope {
-                            Some("once") => Some("[User approved once.]".to_string()),
-                            Some("agent") | Some("global") => {
+                            Some(Scope::Once) => Some("[User approved once.]".to_string()),
+                            Some(Scope::Agent) | Some(Scope::Global) => {
                                 let pattern = items.iter()
                                     .flat_map(|p| p.patterns.iter())
                                     .next()
@@ -492,7 +519,7 @@ pub async fn run_turn(
                     emit_event(&tx_path, &AnyEvent::ToolCall {
                         id: id.clone(),
                         name: items[0].tool_name.clone(),
-                        input: items[0].tool_args.clone(),
+                        input: input_value(&items[0].tool_args),
                         ts: now_ms(),
                     })?;
                     emit_event(&tx_path, &AnyEvent::ToolResult {
@@ -1232,13 +1259,13 @@ mod tests {
         // Verify transcript has expected events
         let tx_path = ws.path().join("sessions/stest001/transcript.jsonl");
         let events = read_events(&tx_path).unwrap();
-        let types: Vec<&str> = events.iter().map(|e| match e {
-            AnyEvent::SessionStart { .. } => "session_start",
-            AnyEvent::UserTurn { .. } => "user_turn",
-            AnyEvent::ToolCall { .. } => "tool_call",
-            AnyEvent::ToolResult { .. } => "tool_result",
-            AnyEvent::AssistantText { .. } => "assistant_text",
-            AnyEvent::TurnComplete { .. } => "turn_complete",
+        let types: Vec<&str> = events.iter().map(|e| match event_kind(e) {
+            Some(payload::Kind::SessionStart(_)) => "session_start",
+            Some(payload::Kind::UserTurn(_)) => "user_turn",
+            Some(payload::Kind::ToolCall(_)) => "tool_call",
+            Some(payload::Kind::ToolResult(_)) => "tool_result",
+            Some(payload::Kind::AssistantText(_)) => "assistant_text",
+            Some(payload::Kind::TurnComplete(_)) => "turn_complete",
             _ => "other",
         }).collect();
         assert!(types.contains(&"session_start"), "got: {:?}", types);
@@ -1286,13 +1313,13 @@ mod tests {
 
         let tx_path = ws.path().join("sessions/stest_out/transcript.jsonl");
         let events = read_events(&tx_path).unwrap();
-        let tc_event = events.iter().find(|e| matches!(e, AnyEvent::TurnComplete { .. })).unwrap();
-        if let AnyEvent::TurnComplete { output, .. } = tc_event {
-            assert_eq!(output.message, "fixed the bug");
-            assert!(output.result.is_some());
-        } else {
-            panic!("expected TurnComplete");
-        }
+        let tc = events.iter().find_map(|e| match event_kind(e) {
+            Some(payload::Kind::TurnComplete(tc)) => Some(tc),
+            _ => None,
+        }).unwrap();
+        let output = tc.output.as_ref().unwrap();
+        assert_eq!(output.message, "fixed the bug");
+        assert!(output.result.is_some());
     }
 
     #[tokio::test]
@@ -1327,8 +1354,8 @@ mod tests {
 
         let tx_path = ws.path().join("sessions/stest_out2/transcript.jsonl");
         let events = read_events(&tx_path).unwrap();
-        let has_tc = events.iter().any(|e| matches!(e, AnyEvent::TurnComplete { .. }));
-        let has_permissions = events.iter().any(|e| matches!(e, AnyEvent::Permissions { .. }));
+        let has_tc = events.iter().any(|e| matches!(event_kind(e), Some(payload::Kind::TurnComplete(_))));
+        let has_permissions = events.iter().any(|e| matches!(event_kind(e), Some(payload::Kind::Permissions(_))));
         assert!(has_tc, "output tool should complete the turn");
         assert!(!has_permissions, "output tool should not trigger permission gating");
     }
@@ -1362,8 +1389,8 @@ mod tests {
 
         let tx_path = ws.path().join("sessions/stest002/transcript.jsonl");
         let events = read_events(&tx_path).unwrap();
-        let has_permissions = events.iter().any(|e| matches!(e, AnyEvent::Permissions { .. }));
-        let has_turn_complete = events.iter().any(|e| matches!(e, AnyEvent::TurnComplete { .. }));
+        let has_permissions = events.iter().any(|e| matches!(event_kind(e), Some(payload::Kind::Permissions(_))));
+        let has_turn_complete = events.iter().any(|e| matches!(event_kind(e), Some(payload::Kind::TurnComplete(_))));
         assert!(has_permissions, "should have permissions event");
         assert!(!has_turn_complete, "should NOT have turn_complete — turn was paused");
     }
@@ -1480,11 +1507,12 @@ mod tests {
 
         let tx_path = ws.path().join("sessions/sdelta01/transcript.jsonl");
         let events = read_events(&tx_path).unwrap();
-        let text_events: Vec<_> = events.iter().filter(|e| matches!(e, AnyEvent::AssistantText { .. })).collect();
+        let text_events: Vec<_> = events.iter().filter_map(|e| match event_kind(e) {
+            Some(payload::Kind::AssistantText(a)) => Some(a),
+            _ => None,
+        }).collect();
         assert_eq!(text_events.len(), 1);
-        if let AnyEvent::AssistantText { content, .. } = text_events[0] {
-            assert_eq!(content, "hello world");
-        }
+        assert_eq!(text_events[0].content, "hello world");
     }
 
     // ── Three-tier permission model: deny tests ───────────────────────────────
@@ -1535,12 +1563,12 @@ mod tests {
         let events = read_events(&tx_path).unwrap();
 
         // Must have a ToolResult indicating blocked by config
-        let blocked_result = events.iter().any(|e| matches!(e, AnyEvent::ToolResult { id, output, .. }
-            if id == "tc1" && output.contains("Blocked by config")));
+        let blocked_result = events.iter().any(|e| matches!(event_kind(e), Some(payload::Kind::ToolResult(tr))
+            if tr.call_id == "tc1" && tr.output.contains("Blocked by config")));
         assert!(blocked_result, "expected blocked ToolResult for tc1; events: {:?}", events);
 
         // NO Permissions event should be emitted (deny is a hard floor, not a prompt)
-        let has_permissions = events.iter().any(|e| matches!(e, AnyEvent::Permissions { .. }));
+        let has_permissions = events.iter().any(|e| matches!(event_kind(e), Some(payload::Kind::Permissions(_))));
         assert!(!has_permissions, "deny should not trigger a Permissions event");
     }
 
@@ -1589,11 +1617,11 @@ mod tests {
         let events = read_events(&tx_path).unwrap();
 
         // Same assertions as the first deny test
-        let blocked_result = events.iter().any(|e| matches!(e, AnyEvent::ToolResult { id, output, .. }
-            if id == "tc1" && output.contains("Blocked by config")));
+        let blocked_result = events.iter().any(|e| matches!(event_kind(e), Some(payload::Kind::ToolResult(tr))
+            if tr.call_id == "tc1" && tr.output.contains("Blocked by config")));
         assert!(blocked_result, "expected blocked ToolResult for tc1 even with allow match; events: {:?}", events);
 
-        let has_permissions = events.iter().any(|e| matches!(e, AnyEvent::Permissions { .. }));
+        let has_permissions = events.iter().any(|e| matches!(event_kind(e), Some(payload::Kind::Permissions(_))));
         assert!(!has_permissions, "deny-wins: should not trigger Permissions event");
     }
 
@@ -1704,12 +1732,12 @@ mod tests {
 
         let events = read_events(&tx_path).unwrap();
         // ToolCall + ToolResult must appear (from direct execution, not re-request)
-        assert!(events.iter().any(|e| matches!(e, AnyEvent::ToolCall { name, .. } if name == "shell")),
+        assert!(events.iter().any(|e| matches!(event_kind(e), Some(payload::Kind::ToolCall(tc)) if tc.name == "shell")),
             "expected ToolCall from resume");
-        assert!(events.iter().any(|e| matches!(e, AnyEvent::ToolResult { .. })),
+        assert!(events.iter().any(|e| matches!(event_kind(e), Some(payload::Kind::ToolResult(_)))),
             "expected ToolResult from resume");
         // No extra Permissions event (tool was executed, not gated again)
-        let perm_count = events.iter().filter(|e| matches!(e, AnyEvent::Permissions { .. })).count();
+        let perm_count = events.iter().filter(|e| matches!(event_kind(e), Some(payload::Kind::Permissions(_)))).count();
         assert_eq!(perm_count, 1, "should have only the pre-existing Permissions event");
     }
 
@@ -1771,10 +1799,13 @@ mod tests {
 
         // Must have a ToolResult for the denied call (API invariant)
         let events_after = read_events(&tx_path).unwrap();
-        let denied_result = events_after.iter().any(|e| matches!(e, AnyEvent::ToolResult { id, .. } if id == "tc-deny-1"));
+        let denied_result = events_after.iter().any(|e| matches!(event_kind(e), Some(payload::Kind::ToolResult(tr)) if tr.call_id == "tc-deny-1"));
         assert!(denied_result, "expected ToolResult for denied call");
-        if let Some(AnyEvent::ToolResult { output, .. }) = events_after.iter().find(|e| matches!(e, AnyEvent::ToolResult { id, .. } if id == "tc-deny-1")) {
-            assert!(output.contains("denied"), "got: {output}");
+        if let Some(payload::Kind::ToolResult(tr)) = events_after.iter().find_map(|e| match event_kind(e) {
+            Some(payload::Kind::ToolResult(tr)) if tr.call_id == "tc-deny-1" => Some(payload::Kind::ToolResult(tr)),
+            _ => None,
+        }) {
+            assert!(tr.output.contains("denied"), "got: {}", tr.output);
         }
 
         // Reconstruction must yield paired messages — not drop the orphan ToolResult.
@@ -1873,8 +1904,8 @@ mod tests {
         let events = read_events(&tx_path).unwrap();
         // The shell tool result emitted during resume should contain the whitelist prefix
         let whitelist_result = events.iter().any(|e| {
-            if let AnyEvent::ToolResult { id, output, .. } = e {
-                id == "tc-scope-1" && output.contains("[User added to whitelist:")
+            if let Some(payload::Kind::ToolResult(tr)) = event_kind(e) {
+                tr.call_id == "tc-scope-1" && tr.output.contains("[User added to whitelist:")
             } else { false }
         });
         assert!(whitelist_result, "agent-scope approval should show whitelist prefix; events: {:?}", events);
@@ -1994,8 +2025,8 @@ mod tests {
 
         let tx_path = ws.path().join("sessions").join(session_id).join("transcript.jsonl");
         let events = read_events(&tx_path).unwrap();
-        let cp = events.iter().rev().find_map(|e| match e {
-            AnyEvent::TurnComplete { code_checkpoint, .. } => Some(code_checkpoint.clone()),
+        let cp = events.iter().rev().find_map(|e| match event_kind(e) {
+            Some(payload::Kind::TurnComplete(tc)) => Some(tc.checkpoint.clone()),
             _ => None,
         }).flatten();
         assert!(cp.is_some(), "expected a code checkpoint SHA");

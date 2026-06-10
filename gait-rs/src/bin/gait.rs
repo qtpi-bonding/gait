@@ -438,7 +438,8 @@ fn undo_command(
     list: bool,
     workspace: std::path::PathBuf,
 ) -> anyhow::Result<()> {
-    use gait_ai::session::transcript::{read_events, AnyEvent};
+    use gait_ai::session::transcript::read_events;
+    use gait_ai::proto::gait::log::v1::{event, payload};
 
     if list && turn.is_some() {
         anyhow::bail!("--list and --turn are mutually exclusive");
@@ -451,9 +452,12 @@ fn undo_command(
     // Collect (turn_index, summary, checkpoint) from TurnComplete events.
     let mut turns: Vec<(u32, String, Option<String>)> = Vec::new();
     for e in &events {
-        if let AnyEvent::TurnComplete { output, code_checkpoint, .. } = e {
-            let idx = turns.len() as u32 + 1;
-            turns.push((idx, output.message.clone(), code_checkpoint.clone()));
+        if let Some(event::Body::Payload(p)) = &e.body {
+            if let Some(payload::Kind::TurnComplete(tc)) = &p.kind {
+                let idx = turns.len() as u32 + 1;
+                let message = tc.output.as_ref().map(|o| o.message.clone()).unwrap_or_default();
+                turns.push((idx, message, tc.checkpoint.clone()));
+            }
         }
     }
 
@@ -686,9 +690,18 @@ async fn cmd_workflow_continue(argv: &[String], workspace: PathBuf) {
     let tx_path = workspace.join("sessions").join(&workflow_id).join("transcript.jsonl");
     let events = gait_ai::session::transcript::read_events(&tx_path).unwrap_or_default();
     let yaml_path_str = events.iter().find_map(|e| {
-        if let gait_ai::session::transcript::AnyEvent::WorkflowStart { yaml_path, .. } = e {
-            Some(yaml_path.clone())
-        } else { None }
+        use gait_ai::proto::gait::log::v1::{event, payload};
+        if let Some(event::Body::Payload(p)) = &e.body {
+            if let Some(payload::Kind::Raw(r)) = &p.kind {
+                if r.r#type == "workflow_start" {
+                    let v = r.payload.as_ref()
+                        .and_then(|s| serde_json::to_value(s).ok())
+                        .unwrap_or(serde_json::Value::Null);
+                    return v.get("yaml_path").and_then(|x| x.as_str()).map(|s| s.to_string());
+                }
+            }
+        }
+        None
     }).unwrap_or_default();
 
     if yaml_path_str.is_empty() {

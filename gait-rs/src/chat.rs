@@ -750,10 +750,13 @@ fn seed_history_from_transcripts(
     sessions.sort_by_key(|(mtime, _)| *mtime);
 
     for (_, tx_path) in &sessions {
+        use crate::proto::gait::log::v1::{event, payload};
         let Ok(events) = crate::session::transcript::read_events(tx_path) else { continue };
-        for event in events {
-            if let crate::session::transcript::AnyEvent::UserTurn { content, .. } = event {
-                let _ = rl.add_history_entry(&content);
+        for ev in events {
+            if let Some(event::Body::Payload(p)) = &ev.body {
+                if let Some(payload::Kind::UserTurn(u)) = &p.kind {
+                    let _ = rl.add_history_entry(&u.content);
+                }
             }
         }
     }
