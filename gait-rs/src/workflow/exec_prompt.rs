@@ -32,30 +32,22 @@ pub async fn exec_prompt_node(
 
     let config = crate::config::load_config(ctx.workspace);
 
-    // Discover tools from all configured MCP servers
-    let mut mcp_registry: Vec<crate::config::McpToolDef> = vec![];
-    let mut mcp_clients: std::collections::HashMap<String, std::sync::Arc<crate::mcp_client::McpClient>> = std::collections::HashMap::new();
-    for server_def in &config.mcp_servers {
-        match crate::mcp_client::McpClient::connect(server_def).await {
-            Ok(client) => {
-                match client.discover_tools().await {
-                    Ok(tools) => {
-                        eprintln!("[gait] mcp {}: {} tool(s)", server_def.name, tools.len());
-                        mcp_registry.extend(tools);
-                        mcp_clients.insert(server_def.name.clone(), std::sync::Arc::new(client));
-                    }
-                    Err(e) => eprintln!("[gait] warning: mcp {} tools/list: {e}", server_def.name),
-                }
-            }
-            Err(e) => eprintln!("[gait] warning: mcp {} connect: {e}", server_def.name),
-        }
-    }
+    // Build the declarative profile for this workflow node, then resolve tools/clients in one place.
+    let mut profile = crate::profile::Profile::from_config_and_agent(&config, None, Some(model.clone()));
+    profile.instructions = system_prompt;   // workflow body (resolve_system_prompt), not the harness preamble
+    profile.deny = vec![];                   // workflow prompt nodes carry no deny
+    profile.allow = allow;                   // workflow-resolved allow
+    profile.config_tools = vec![];           // PARITY: old exec_prompt used builtins only (no config-tool loop)
 
+    let api_key = crate::auth::resolve_api_key(model.split_once('/').map(|(p, _)| p).unwrap_or(""));
     let repos = crate::git::Repos::production();
-    let tools = crate::tools::builtin_tools(
-        codebase.clone(), ctx.session_id.to_string(), ctx.workspace.to_path_buf(),
-        mcp_registry.clone(), config.skills.clone(), repos.clone(),
-    );
+    let resolved = profile.resolve(
+        codebase.clone(),
+        ctx.session_id.to_string(),
+        ctx.workspace.to_path_buf(),
+        repos.clone(),
+        api_key,
+    ).await?;
 
     let result = run_turn(TurnOpts {
         session_id: ctx.session_id.to_string(),
@@ -63,23 +55,19 @@ pub async fn exec_prompt_node(
         auto,
         workspace: ctx.workspace.to_path_buf(),
         codebase_path: codebase,
-        allow,
-        deny: vec![],
-        system_prompt,
-        model,
-        mcp_registry,
-        mcp_clients,
-        skill_registry: config.skills.clone(),
-        config_enabled: config.mcp_servers.iter()
-            .filter(|s| s.enabled)
-            .map(|s| s.name.clone())           // server name, not tool names
-            .chain(config.skills.iter().filter(|s| s.enabled).map(|s| s.name.clone()))
-            .collect(),
+        allow: resolved.allow.clone(),
+        deny: resolved.deny.clone(),
+        system_prompt: resolved.instructions.clone(),
+        model: resolved.model.clone(),
+        mcp_registry: resolved.mcp_registry.clone(),
+        mcp_clients: resolved.mcp_clients.clone(),
+        skill_registry: resolved.skill_registry.clone(),
+        config_enabled: resolved.config_enabled.clone(),
         max_iter: None,
         hooks: vec![],
         repos,
-        output_schema_retries: config.output_schema_retries,
-    }, provider, tools).await?;
+        output_schema_retries: resolved.output_schema_retries,
+    }, provider, resolved.tools).await?;
 
     match result {
         TurnResult::Done { message, result } => Ok(NodeOutput {
