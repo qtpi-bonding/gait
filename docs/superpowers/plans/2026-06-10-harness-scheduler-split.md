@@ -239,7 +239,7 @@ impl HarnessBackend for NativeHarnessBackend {
 
                 let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gait"));
                 std::process::Command::new(&exe)
-                    .args(["run", "--session", target_session,
+                    .args(["run", "--session", target_session.as_str(),
                            "--gait-dir", self.workspace.to_str().unwrap_or("."),
                            "--auto"])
                     .stdin(std::process::Stdio::null())
