@@ -20,57 +20,6 @@ use crate::permission::{is_request_approved, find_matched_allow_pattern, is_requ
 use grep_regex::RegexMatcher;
 use grep_searcher::{Searcher, Sink, SinkMatch};
 
-pub struct TurnOpts {
-    pub session_id: String,
-    pub task: Option<String>,
-    pub auto: bool,
-    pub workspace: PathBuf,
-    pub codebase_path: PathBuf,
-    pub allow: Vec<String>,
-    pub deny: Vec<String>,
-    pub system_prompt: String,
-    pub model: String,  // stored in session_start event for wire-compat with TS gait
-    pub mcp_registry: Vec<McpToolDef>,
-    pub mcp_clients: HashMap<String, Arc<McpClient>>,
-    pub skill_registry: Vec<SkillDef>,
-    /// Names of loadables (MCP server names + skill names) seeded as enabled
-    /// from `gait.jsonc` (those with `enabled=true`).
-    pub config_enabled: std::collections::HashSet<String>,
-    /// Maximum agentic iterations. None → 100 (default).
-    pub max_iter: Option<usize>,
-    /// Lifecycle hooks fired at key points in the turn loop.
-    pub hooks: Vec<Box<dyn Hook>>,
-    /// Injected git repos (codebase/workspace/rewind).
-    pub repos: crate::git::Repos,
-    /// Max retries when result fails output_schema validation. Default 3 (from gait.jsonc).
-    /// Stub — actual retry loop is a future feature.
-    pub output_schema_retries: u8,
-}
-
-impl Default for TurnOpts {
-    fn default() -> Self {
-        Self {
-            session_id: String::new(),
-            task: None,
-            auto: false,
-            workspace: PathBuf::new(),
-            codebase_path: PathBuf::new(),
-            allow: Vec::new(),
-            deny: Vec::new(),
-            system_prompt: String::new(),
-            model: String::new(),
-            mcp_registry: Vec::new(),
-            mcp_clients: HashMap::new(),
-            skill_registry: Vec::new(),
-            config_enabled: std::collections::HashSet::new(),
-            max_iter: None,
-            hooks: Vec::new(),
-            repos: crate::git::Repos::production(),
-            output_schema_retries: 3,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub enum TurnResult {
     Done { message: String, result: Option<serde_json::Value> },
@@ -78,6 +27,7 @@ pub enum TurnResult {
     Clarify { items: Vec<ClarifyItem> },
     Inform  { items: Vec<InformItem> },
 }
+
 /// Per-call inputs for one turn (the things that vary every invocation).
 pub struct TurnInput {
     pub task: Option<String>,   // None on resume
