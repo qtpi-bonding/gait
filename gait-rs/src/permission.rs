@@ -1,7 +1,7 @@
 use regex::Regex;
 use std::path::Path;
 
-use crate::types::PermissionRequest;
+use crate::types::{PermissionRequest, ToolPermission};
 
 /// The user's decision when prompted about a pending tool call.
 #[derive(Debug, Clone, PartialEq)]
@@ -154,6 +154,19 @@ pub fn path_patterns(tool_name: &str, rel_path: &str) -> Vec<String> {
     patterns
 }
 
+/// Self-describing permission for an MCP tool: addressable by its own name,
+/// by its server (`mcp:<server>`), or by the exact tool (`mcp:<server>:<tool>`).
+pub fn mcp_permission(server: &str, tool: &str) -> ToolPermission {
+    ToolPermission::RequiresApproval(vec![PermissionRequest {
+        display: tool.to_string(),
+        patterns: vec![
+            tool.to_string(),
+            format!("mcp:{}", server),
+            format!("mcp:{}:{}", server, tool),
+        ],
+    }])
+}
+
 /// Find the first allow-list entry that would approve this request.
 /// Returns `None` if nothing in `allow` covers the request.
 pub fn find_matched_allow_pattern(tool_name: &str, req: &PermissionRequest, allow: &[String]) -> Option<String> {
@@ -202,6 +215,10 @@ pub fn find_matched_deny_pattern(tool_name: &str, req: &PermissionRequest, deny:
 /// anything directly under the directory prefix (e.g. "src/*" matches "src/main.rs").
 pub fn is_request_denied(tool_name: &str, req: &PermissionRequest, deny: &[String]) -> bool {
     deny.iter().any(|entry| {
+        // A deny entry that exactly equals one of the request's self-described
+        // patterns matches directly. Lets any Loadable classifier (e.g. MCP's
+        // `mcp:<server>`) gate without relying on the tool_name prefix.
+        if req.patterns.iter().any(|p| p == entry) { return true; }
         if !entry.contains(':') {
             return entry == tool_name;
         }
@@ -228,6 +245,7 @@ pub fn is_request_denied(tool_name: &str, req: &PermissionRequest, deny: &[Strin
 /// anything directly under the directory prefix (e.g. "src/*" matches "src/main.rs").
 pub fn is_request_approved(tool_name: &str, req: &PermissionRequest, allow: &[String]) -> bool {
     allow.iter().any(|entry| {
+        if req.patterns.iter().any(|p| p == entry) { return true; }
         if !entry.contains(':') {
             return entry == tool_name;
         }
@@ -471,5 +489,37 @@ mod tests {
         assert!(is_request_denied("shell", &req, &both));
         assert!(is_request_approved("shell", &req, &both));
         // Both return true — ordering is the loop's job.
+    }
+    #[test]
+    fn deny_matches_self_described_pattern_directly() {
+        use crate::types::PermissionRequest;
+        let req = PermissionRequest {
+            display: "list_repos".into(),
+            patterns: vec!["list_repos".into(), "mcp:github".into(), "mcp:github:list_repos".into()],
+        };
+        assert!(is_request_denied("list_repos", &req, &["mcp:github".into()]));
+        assert!(!is_request_denied("list_repos", &req, &["mcp:gitlab".into()]));
+    }
+
+    #[test]
+    fn allow_matches_self_described_pattern_directly() {
+        use crate::types::PermissionRequest;
+        let req = PermissionRequest {
+            display: "list_repos".into(),
+            patterns: vec!["list_repos".into(), "mcp:github".into(), "mcp:github:list_repos".into()],
+        };
+        assert!(is_request_approved("list_repos", &req, &["mcp:github:list_repos".into()]));
+    }
+
+    #[test]
+    fn mcp_permission_emits_server_namespaced_patterns() {
+        match mcp_permission("github", "list_repos") {
+            ToolPermission::RequiresApproval(reqs) => {
+                assert_eq!(reqs.len(), 1);
+                assert_eq!(reqs[0].patterns,
+                    vec!["list_repos".to_string(), "mcp:github".into(), "mcp:github:list_repos".into()]);
+            }
+            _ => panic!("expected RequiresApproval"),
+        }
     }
 }
