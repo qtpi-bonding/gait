@@ -14,6 +14,7 @@ pub mod generate;
 pub mod factory;
 pub mod tools;
 pub mod harness;
+pub mod scheduler;
 pub mod workflow;
 pub mod permission;
 pub mod render;
