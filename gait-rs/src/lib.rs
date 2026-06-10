@@ -33,6 +33,7 @@ pub use factory::load_provider;
 pub use tools::builtin_tools;
 pub use turn::{TurnOpts, run_turn, TurnResult};
 pub use harness::{HarnessBackend, NoopHarnessBackend, NativeHarnessBackend};
+pub use scheduler::{Action, Scheduler, NativeScheduler, TurnEnded};
 pub use workflow::runner::{run_workflow, WorkflowRunOpts};
 
 /// Default system prompt embedded from `prompts/gait-agent.md`.
