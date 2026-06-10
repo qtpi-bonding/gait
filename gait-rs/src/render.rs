@@ -108,9 +108,26 @@ impl Renderer {
             let block = std::mem::take(&mut self.block_buf);
             self.block_num += 1;
             self.turn_blocks.push(block.clone());
-            print!("{}{:>3}\u{2502}{} ", DIM_FG, self.block_num, RESET);
+            // Capture termimad's rendered output so we can prefix every line:
+            // first line gets "  N│", continuation lines get "    " (same width).
+            // No space after │ — content starts immediately.
+            let mut buf: Vec<u8> = Vec::new();
+            let _ = self.skin.write_text_on(&mut buf, &block);
+            let rendered = String::from_utf8_lossy(&buf);
+            let mut first = true;
+            for line in rendered.lines() {
+                if first {
+                    print!("{}{:>3}\u{2502}{} {}", DIM_FG, self.block_num, RESET, line);
+                    first = false;
+                } else {
+                    print!("     {}", line);
+                }
+                println!();
+            }
+            if first {
+                println!("{}{:>3}\u{2502}{}", DIM_FG, self.block_num, RESET);
+            }
             let _ = std::io::stdout().flush();
-            self.skin.print_text(&block);
         }
     }
 
