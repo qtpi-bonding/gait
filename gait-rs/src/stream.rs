@@ -171,9 +171,10 @@ mod tests {
             name: "echo".into(),
             description: "echoes msg".into(),
             parameters: serde_json::json!({ "type": "object" }),
-            execute: Box::new(|args| Box::pin(async move {
-                Ok(args["msg"].clone())
-            })),
+        execute: Box::new(|args| Box::pin(async move {
+            Ok(args["msg"].clone())
+        })),
+        permission: None,
         };
 
         let result = stream_text(

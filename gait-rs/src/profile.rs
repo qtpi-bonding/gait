@@ -221,6 +221,7 @@ fn build_config_tool(
                 Ok(serde_json::Value::String(combined))
             })
         }),
+        permission: None,
     })
 }
 

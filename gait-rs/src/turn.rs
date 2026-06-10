@@ -140,6 +140,8 @@ fn make_mcp_tool_def(def: &McpToolDef, client: Arc<McpClient>) -> Box<dyn crate:
     let name = def.name.clone();
     let description = def.description.clone();
     let schema = def.schema.clone();
+    let server = def.server_name.clone();
+    let tool_name = def.name.clone();
     Box::new(crate::types::ToolDef {
         name: name.clone(),
         description,
@@ -149,6 +151,9 @@ fn make_mcp_tool_def(def: &McpToolDef, client: Arc<McpClient>) -> Box<dyn crate:
             let name = name.clone();
             Box::pin(async move { client.call_tool(&name, args).await })
         }),
+        permission: Some(Box::new(move |_args| {
+            crate::permission::mcp_permission(&server, &tool_name)
+        })),
     })
 }
 
@@ -1213,6 +1218,7 @@ mod tests {
             execute: Box::new(|_args| Box::pin(async move {
                 Ok(serde_json::Value::String("file contents".into()))
             })),
+            permission: None,
         };
 
         run_turn_test_call(
@@ -1680,6 +1686,7 @@ mod tests {
             execute: Box::new(|_args| Box::pin(async move {
                 Ok(serde_json::Value::String("hello\n".into()))
             })),
+            permission: None,
         };
         let provider = Arc::new(FakeProvider {
             steps: Arc::new(vec![FakeStep::text("done")]),
@@ -1746,6 +1753,7 @@ mod tests {
             execute: Box::new(|_args| Box::pin(async move {
                 Ok(serde_json::Value::String("should not run".into()))
             })),
+            permission: None,
         };
         let provider = Arc::new(FakeProvider {
             steps: Arc::new(vec![FakeStep::text("ok I won't do that")]),
@@ -1845,6 +1853,7 @@ mod tests {
             execute: Box::new(|_args| Box::pin(async move {
                 Ok(serde_json::Value::String("file1\nfile2\n".into()))
             })),
+            permission: None,
         };
 
         // After resuming and executing shell, agent calls output to complete

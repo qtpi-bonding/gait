@@ -69,6 +69,7 @@ async fn full_turn_creates_transcript_and_git_commit() {
         description: "list files".into(),
         parameters: serde_json::json!({ "type": "object" }),
         execute: Box::new(|_| Box::pin(async { Ok(serde_json::Value::String("README.md".into())) })),
+        permission: None,
     };
 
     run_turn(

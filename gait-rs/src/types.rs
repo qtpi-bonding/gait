@@ -67,6 +67,7 @@ pub struct ToolDef {
     pub description: String,
     pub parameters: serde_json::Value, // JSON Schema object
     pub execute: Box<dyn Fn(serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send>> + Send + Sync>,
+    pub permission: Option<Box<dyn Fn(&serde_json::Value) -> ToolPermission + Send + Sync>>,
 }
 
 impl std::fmt::Debug for ToolDef {
@@ -235,7 +236,17 @@ impl Tool for ToolDef {
         // (self.execute) with parens = field access, not recursive method call.
         (self.execute)(args).await
     }
+    fn permission(&self, args: &serde_json::Value) -> ToolPermission {
+        match &self.permission {
+            Some(f) => f(args),
+            None => ToolPermission::RequiresApproval(vec![PermissionRequest {
+                display: self.name.clone(),
+                patterns: vec![self.name.clone()],
+            }]),
+        }
+    }
 }
+
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LoadableKind {
@@ -319,6 +330,7 @@ mod tests {
             execute: Box::new(|_args| Box::pin(async move {
                 Ok(serde_json::Value::String("hello".into()))
             })),
+            permission: None,
         };
         let result = tool.execute(serde_json::json!({})).await.unwrap();
         assert_eq!(result, serde_json::Value::String("hello".into()));
@@ -333,6 +345,7 @@ mod tests {
             execute: Box::new(|_args| Box::pin(async move {
                 Ok(serde_json::Value::Null)
             })),
+            permission: None,
         }
     }
 
