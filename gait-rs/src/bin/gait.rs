@@ -7,6 +7,7 @@ use gait_ai::{
     tools::builtin_tools,
     turn::{TurnOpts, run_turn},
     workflow::runner::{run_workflow, WorkflowRunOpts},
+    Scheduler,
     HarnessBackend,
 };
 
@@ -380,11 +381,19 @@ async fn cmd_run(argv: &[String]) {
         }
     };
 
-    // Wire harness: inject agent_update into assigner + re-trigger if assigned_by is set
+    // Drive after-turn coordination via Scheduler (policy) + Harness.execute (mechanism).
     let sj = gait_ai::session::session_json::read_session_json(&workspace, &session_id);
+    let scheduler = gait_ai::scheduler::NativeScheduler;
     let harness = gait_ai::harness::NativeHarnessBackend::new(workspace.clone());
-    if let Err(e) = harness.after_turn(&session_id, sj.assigned_by.as_deref(), &turn_result).await {
-        eprintln!("[gait] warning: harness after_turn failed: {}", e);
+    let ended = gait_ai::scheduler::TurnEnded {
+        session_id: &session_id,
+        assigned_by: sj.assigned_by.as_deref(),
+        result: &turn_result,
+    };
+    for action in scheduler.next(&ended) {
+        if let Err(e) = harness.execute(&action).await {
+            eprintln!("[gait] warning: harness execute failed: {}", e);
+        }
     }
 }
 
