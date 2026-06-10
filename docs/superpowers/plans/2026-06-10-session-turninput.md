@@ -14,6 +14,31 @@
 
 ---
 
+> ## ⚠️ RE-GROUND CORRECTIONS (2026-06-10, post-Plan-3) — these OVERRIDE the stale numbers below
+>
+> The body of this plan predates Plans 1–3. Verified against current code, apply these:
+>
+> **Counts:** `TurnOpts` has **17 fields** (not 18). There are **2 production** run_turn sites + **1 curate rebuild** (turn.rs:342) + **15 turn.rs tests** + **5 integration tests** = the full migration set. ("3 production + 17 tests" is wrong.)
+>
+> **Locations (current):** `struct TurnOpts` = `turn.rs:23-48`; `impl Default for TurnOpts` = `turn.rs:50-72`; `pub async fn run_turn(opts, provider, tools)` = `turn.rs:383-387`. lib.rs:36 = `pub use turn::{TurnOpts, run_turn, TurnResult}` (no `Session` export yet). curate `TurnOpts{}` rebuild = `turn.rs:342`.
+>
+> **Production migration is now pure DELETION (simpler than the body's "build then dissolve").** Both `bin/gait.rs:233` (cmd_run) and `exec_prompt.rs:52` already build a `resolved: ResolvedProfile` (Plan 3). Migrate by: delete the `TurnOpts{ …resolved.X.clone()… }` literal + the trailing `provider, tools` args, then call `run_turn(&Session::load(...), resolved, TurnInput{ task, auto, max_iter:None })`, moving `resolved` whole. **`exec_prompt.rs` passes an INJECTED `provider` arg, not `resolved.provider`** — so set `resolved.provider = provider;` before the move (load-bearing; keep). Ignore the body's stale "before" snippets.
+>
+> **Task 4 test table — renumber (names are correct & in order):** 1219, 1290, 1347, 1398, 1472, 1521, 1564, 1633, 1703, 1834, 1915, 2032, 2170, 2238, 2313. (Test #1 is `run_turn_writes_transcript_and_commits`.) Title "17 test sites" → **15**.
+>
+> **ADD Task 4b — integration tests (the body MISSES these; Task 5's `cargo test` will fail to build without them):** migrate 5 sites that do `run_turn(TurnOpts{ … ..TurnOpts::default() }, provider, tools)` and import `turn::TurnOpts`:
+> - `tests/integration_turn.rs:74, 144, 153`
+> - `tests/integration_coordination.rs:78, 156`
+> Replace with `Session{…}`/`Session::load` + `ResolvedProfile::for_test(provider, tools, allow, deny)` + `TurnInput{…}`; change `use turn::{TurnOpts,…}` → `use turn::{TurnInput,…}` + `session::Session` + `profile::ResolvedProfile` (all `pub`, reachable from the integration crate).
+>
+> **Task 5 grep gate — broaden** to `grep -rn "TurnOpts" gait-rs/src gait-rs/tests --include="*.rs"` (the integration tests live in `gait-rs/tests/`, outside `src`, so the body's `src`-only grep misses them).
+>
+> **profile.rs:** adding the new `hooks` field to `ResolvedProfile` requires `hooks: vec![]` in the `resolve()` literal at **profile.rs:128** (only non-test literal). `ResolvedProfile::for_test` is brand new (no collision).
+>
+> **Intentional deviations — do NOT "fix":** (a) `output_schema_retries` stays on `ResolvedProfile` (where Plan 3 put it), even though the spec lists it under TurnInput — the body never reads it. (b) No run_turn body site *moves* `opts.repos` (all are `Arc` method calls), so `session.repos.X` needs no `.clone()`.
+
+---
+
 ## File Structure
 
 | File | Responsibility after this plan |
