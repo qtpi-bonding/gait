@@ -345,29 +345,29 @@ async fn apply_curate_filter(
         raw, curate_prompt
     );
 
-    let _ = run_turn(
-        TurnOpts {
-            session_id: session_id.clone(),
-            task: Some(task),
-            auto: true,
-            workspace: workspace.to_path_buf(),
-            codebase_path: codebase_path.to_path_buf(),
-            allow: vec![],
-            deny: vec![],
-            system_prompt: CURATE_SYSTEM_PROMPT.to_string(),
-            model: model.to_string(),
-            mcp_registry: vec![],
-            mcp_clients: std::collections::HashMap::new(),
-            skill_registry: vec![],
-            config_enabled: std::collections::HashSet::new(),
-            max_iter: Some(1),
-            hooks: vec![],
-            repos: repos.clone(),
-            ..TurnOpts::default()
-        },
+    let session = crate::session::Session {
+        id: session_id.clone(),
+        workspace: workspace.to_path_buf(),
+        codebase_path: codebase_path.to_path_buf(),
+        model: model.to_string(),
+        assigned_by: None,
+        repos: repos.clone(),
+    };
+    let caps = crate::profile::ResolvedProfile {
         provider,
-        vec![AnnotateTool::new().boxed()],
-    ).await;
+        tools: vec![AnnotateTool::new().boxed()],
+        model: model.to_string(),
+        instructions: CURATE_SYSTEM_PROMPT.to_string(),
+        allow: vec![],
+        deny: vec![],
+        mcp_registry: vec![],
+        mcp_clients: std::collections::HashMap::new(),
+        skill_registry: vec![],
+        config_enabled: std::collections::HashSet::new(),
+        output_schema_retries: 3,
+        hooks: vec![],
+    };
+    let _ = run_turn(&session, caps, TurnInput { task: Some(task), auto: true, max_iter: Some(1) }).await;
 
     let _ = repos.checkpoints.remove(workspace, &session_id);
 
@@ -387,32 +387,51 @@ async fn apply_curate_filter(
 }
 
 pub async fn run_turn(
-    opts: TurnOpts,
-    provider: Arc<dyn Provider>,
-    tools: Vec<Box<dyn Tool>>,
+    session: &crate::session::Session,
+    caps: crate::profile::ResolvedProfile,
+    input: TurnInput,
 ) -> anyhow::Result<TurnResult> {
-    opts.repos.traces.create_session_worktree(&opts.workspace, &opts.session_id)?;
-    opts.repos.checkpoints.init(&opts.workspace, &opts.session_id, &opts.codebase_path)?;
+    let provider = caps.provider.clone();
+    let mut tools = caps.tools;
+    let session_id = session.id.clone();
+    let workspace = session.workspace.clone();
+    let codebase_path = session.codebase_path.clone();
+    let model = session.model.clone();
+    let repos = session.repos.clone();
+    let allow = caps.allow;
+    let deny = caps.deny;
+    let system_prompt = caps.instructions;
+    let mcp_registry = caps.mcp_registry;
+    let mcp_clients = caps.mcp_clients;
+    let skill_registry = caps.skill_registry;
+    let config_enabled = caps.config_enabled;
+    let hooks = caps.hooks;
+    let task = input.task;
+    let auto = input.auto;
+    let max_iter = input.max_iter;
+
+    repos.traces.create_session_worktree(&workspace, &session_id)?;
+    repos.checkpoints.init(&workspace, &session_id, &codebase_path)?;
 
     // Persist codebase_path (write-once) so `gait rewind` can locate the codebase.
     {
         use crate::session::session_json::{read_session_json, write_session_json};
-        let mut sj = read_session_json(&opts.workspace, &opts.session_id);
+        let mut sj = read_session_json(&workspace, &session_id);
         if sj.codebase_path.is_none() {
-            sj.id = opts.session_id.clone();
+            sj.id = session_id.clone();
             if sj.created_at == 0 { sj.created_at = now_ms(); }
-            sj.codebase_path = Some(opts.codebase_path.to_string_lossy().to_string());
-            write_session_json(&opts.workspace, &sj)?;
+            sj.codebase_path = Some(codebase_path.to_string_lossy().to_string());
+            write_session_json(&workspace, &sj)?;
         }
     }
 
-    let session_dir = opts.workspace.join("sessions").join(&opts.session_id);
+    let session_dir = workspace.join("sessions").join(&session_id);
     let tx_path = session_dir.join("transcript.jsonl");
 
     let _lock = SessionLock::acquire(&session_dir)?;
 
-    let codebase_hash = opts.repos.codebase.head_hash(&opts.codebase_path);
-    let dirty_files = opts.repos.codebase.dirty_files(&opts.codebase_path);
+    let codebase_hash = repos.codebase.head_hash(&codebase_path);
+    let dirty_files = repos.codebase.dirty_files(&codebase_path);
     let codebase_dirty = !dirty_files.is_empty();
 
     // Init transcript on first turn
@@ -420,15 +439,15 @@ pub async fn run_turn(
     if existing.trim().is_empty() {
         init_session(InitSessionOpts {
             transcript_path: tx_path.clone(),
-            id: opts.session_id.clone(),
-            model: opts.model.clone(),
+            id: session_id.clone(),
+            model: model.clone(),
             codebase_hash: codebase_hash.clone(),
             codebase_dirty,
         })?;
     }
 
     // Read and delete once-approval temp file (written by gait chat after user approval)
-    let once_path = once_approval_path(&opts.workspace, &opts.session_id);
+    let once_path = once_approval_path(&workspace, &session_id);
     let once_allow: Vec<String> = std::fs::read_to_string(&once_path)
         .unwrap_or_default()
         .lines()
@@ -436,7 +455,7 @@ pub async fn run_turn(
         .filter(|l| !l.is_empty())
         .collect();
     let _ = std::fs::remove_file(&once_path);
-    let mut effective_allow = opts.allow.clone();
+    let mut effective_allow = allow.clone();
     effective_allow.extend(once_allow);
 
     // Detect resume after permission approval: last two transcript events are
@@ -543,7 +562,7 @@ pub async fn run_turn(
     };
 
     if !did_resume {
-        if let Some(task) = &opts.task {
+        if let Some(task) = &task {
             emit_event(&tx_path, &AnyEvent::UserTurn {
                 content: task.clone(),
                 from: None,
@@ -571,10 +590,10 @@ pub async fn run_turn(
     // Step 6: post-compaction reload loop. Server-granularity push:
     // enabled_names is a set of server names (and skill names); for each
     // enabled MCP server, push all of its tools into the active tools vec.
-    let enabled_names = retrace::enabled_loadables(&post_compaction, &opts.config_enabled);
+    let enabled_names = retrace::enabled_loadables(&post_compaction, &config_enabled);
     for server_name in &enabled_names {
-        for def in opts.mcp_registry.iter().filter(|d| &d.server_name == server_name) {
-            if let Some(client) = opts.mcp_clients.get(&def.server_name) {
+        for def in mcp_registry.iter().filter(|d| &d.server_name == server_name) {
+            if let Some(client) = mcp_clients.get(&def.server_name) {
                 if !tools.iter().any(|t| t.name() == def.name) {  // duplicate guard
                     tools.push(make_mcp_tool_def(def, client.clone()));
                 }
@@ -601,7 +620,7 @@ pub async fn run_turn(
     use std::collections::HashMap;
     // Group MCP tool defs by server name so we can show one entry per server.
     let mut mcp_tools_by_server: HashMap<&str, Vec<&McpToolDef>> = HashMap::new();
-    for def in &opts.mcp_registry {
+    for def in &mcp_registry {
         mcp_tools_by_server.entry(def.server_name.as_str()).or_default().push(def);
     }
     let mut entries: Vec<LoadableEntry> = Vec::new();
@@ -620,7 +639,7 @@ pub async fn run_turn(
         });
     }
     // Skill entries — one per skill.
-    for skill in &opts.skill_registry {
+    for skill in &skill_registry {
         entries.push(LoadableEntry {
             name: skill.name.clone(),
             kind: LoadableKind::Skill,
@@ -629,9 +648,9 @@ pub async fn run_turn(
         });
     }
     let loadable_idx = build_loadable_index(&entries);
-    let permission_status = build_permission_status(&effective_allow, &opts.deny);
-    let system_prompt = opts.hooks.iter().fold(
-        format!("{}{}{}", opts.system_prompt, loadable_idx, permission_status),
+    let permission_status = build_permission_status(&effective_allow, &deny);
+    let system_prompt = hooks.iter().fold(
+        format!("{}{}{}", system_prompt, loadable_idx, permission_status),
         |sp, h| h.pre_turn(&sp).unwrap_or(sp),
     );
 
@@ -640,8 +659,8 @@ pub async fn run_turn(
     let mut inform_signal: Option<Vec<InformItem>> = None;
     let mut all_turn_text = String::new();
 
-    for _step in 0..opts.max_iter.unwrap_or(100) {
-        let outgoing = opts.hooks.iter().fold(messages.clone(), |m, h| h.pre_step(&m).unwrap_or(m));
+    for _step in 0..max_iter.unwrap_or(100) {
+        let outgoing = hooks.iter().fold(messages.clone(), |m, h| h.pre_step(&m).unwrap_or(m));
         let mut chunk_stream = provider.stream(&system_prompt, &outgoing, &tools).await
             .map_err(|e| anyhow::anyhow!("provider error: {}", e))?;
 
@@ -672,7 +691,7 @@ pub async fn run_turn(
             }
         }
         all_turn_text.push_str(&step_text);
-        for h in &opts.hooks { h.post_step(&step_text, &step_tool_calls); }
+        for h in &hooks { h.post_step(&step_text, &step_tool_calls); }
 
         // Flush assistant text — only as a standalone event when there are NO tool calls.
         // When tool calls are present, the text is included as AssistantPart::Text in the
@@ -692,8 +711,8 @@ pub async fn run_turn(
             let events_now = read_events(&tx_path)?;
             let turn_n = count_turn_complete(&events_now) as u32 + 1;
             let code_checkpoint = checkpoint_codebase(
-                opts.repos.checkpoints.as_ref(),
-                &opts.workspace, &opts.session_id, &opts.codebase_path, turn_n,
+                repos.checkpoints.as_ref(),
+                &workspace, &session_id, &codebase_path, turn_n,
             );
             emit_event(&tx_path, &AnyEvent::TurnComplete {
                 usage: TurnUsage {
@@ -709,9 +728,9 @@ pub async fn run_turn(
                 output: TurnOutput { message: message.clone(), result: None },
                 ts: now_ms(),
             })?;
-            opts.repos.traces.commit_session(&opts.workspace, &opts.session_id,
-                &format!("session({}): turn {}", opts.session_id, turn_n))?;
-            for h in &opts.hooks { h.post_turn(); }
+            repos.traces.commit_session(&workspace, &session_id,
+                &format!("session({}): turn {}", session_id, turn_n))?;
+            for h in &hooks { h.post_turn(); }
             return Ok(TurnResult::Done { message, result: None });
         }
 
@@ -741,7 +760,7 @@ pub async fn run_turn(
             let is_denied = match &perm {
                 ToolPermission::Passthrough => false,
                 ToolPermission::RequiresApproval(requests) => requests.iter()
-                    .any(|req| is_request_denied(&tc.tool_name, req, &opts.deny)),
+                    .any(|req| is_request_denied(&tc.tool_name, req, &deny)),
             };
 
             if is_denied {
@@ -750,14 +769,14 @@ pub async fn run_turn(
             }
 
             // Tier 2: check allow list
-            let is_allowed = opts.auto || match &perm {
+            let is_allowed = auto || match &perm {
                 ToolPermission::Passthrough => true,
                 ToolPermission::RequiresApproval(requests) => requests.iter()
                     .all(|req| is_request_approved(&tc.tool_name, req, &effective_allow)),
             };
 
             if is_allowed {
-                let prefix: Option<String> = if opts.auto {
+                let prefix: Option<String> = if auto {
                     Some("[Auto mode.]".to_string())
                 } else {
                     match &perm {
@@ -813,7 +832,7 @@ pub async fn run_turn(
                 ]));
             let pattern = if let ToolPermission::RequiresApproval(requests) = &perm {
                 requests.iter()
-                    .find_map(|req| find_matched_deny_pattern(&tc.tool_name, req, &opts.deny))
+                    .find_map(|req| find_matched_deny_pattern(&tc.tool_name, req, &deny))
                     .unwrap_or_else(|| tc.tool_name.clone())
             } else {
                 tc.tool_name.clone()
@@ -865,7 +884,7 @@ pub async fn run_turn(
             // Parallel batch — pre_tool hook may block individual items before join_all
             let par_raw = futures_util::future::join_all(
                 parallel_items.iter().map(|(_, tc)| {
-                    let block_reason = opts.hooks.iter()
+                    let block_reason = hooks.iter()
                         .find_map(|h| if let HookAction::Block { reason } = h.pre_tool(tc) { Some(reason) } else { None });
                     let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
                     let tc = *tc;
@@ -888,7 +907,7 @@ pub async fn run_turn(
             for ((i, tc), raw) in parallel_items.iter().zip(par_raw) {
                 let (part, mut result) = raw.unwrap_or_else(|e| error_tool_result(tc, e));
                 let result_str = result.result.as_str().unwrap_or("").to_string();
-                for h in &opts.hooks {
+                for h in &hooks {
                     if let Some(new) = h.post_tool(&tc.tool_name, &result_str) {
                         result.result = serde_json::Value::String(new);
                     }
@@ -899,9 +918,9 @@ pub async fn run_turn(
                 if let Some(parse_ops) = tc.args.get("parse") {
                     result.result = serde_json::Value::String(apply_parse_filter(&result_str, parse_ops));
                 } else if let Some(curate_prompt) = tc.args.get("curate_prompt").and_then(|v| v.as_str()) {
-                    let workspace = opts.workspace.clone();
-                    let codebase_path = opts.codebase_path.clone();
-                    let model = opts.model.clone();
+                    let workspace = workspace.clone();
+                    let codebase_path = codebase_path.clone();
+                    let model = model.clone();
                     let provider_clone = provider.clone();
                     result.result = Box::pin(async move {
                         apply_curate_filter(
@@ -915,7 +934,7 @@ pub async fn run_turn(
 
             for (i, tc) in &serial_items {
                 // pre_tool hook — first block wins
-                if let Some(reason) = opts.hooks.iter()
+                if let Some(reason) = hooks.iter()
                     .find_map(|h| if let HookAction::Block { reason } = h.pre_tool(tc) { Some(reason) } else { None })
                 {
                     let output = format!("[Blocked by hook] {}", reason);
@@ -956,8 +975,8 @@ pub async fn run_turn(
                         ) {
                             if on {
                                 // MCP: push all tools from this server (server-granularity)
-                                for def in opts.mcp_registry.iter().filter(|d| d.server_name == item_name) {
-                                    if let Some(client) = opts.mcp_clients.get(&def.server_name) {
+                                for def in mcp_registry.iter().filter(|d| d.server_name == item_name) {
+                                    if let Some(client) = mcp_clients.get(&def.server_name) {
                                         if !tools.iter().any(|t| t.name() == def.name) {  // duplicate guard
                                             tools.push(make_mcp_tool_def(def, client.clone()));
                                         }
@@ -967,7 +986,7 @@ pub async fn run_turn(
                             } else {
                                 // Remove all tools from this server
                                 tools.retain(|t| {
-                                    opts.mcp_registry.iter()
+                                    mcp_registry.iter()
                                         .find(|d| d.name == t.name())
                                         .map(|d| d.server_name != item_name)
                                         .unwrap_or(true)
@@ -978,7 +997,7 @@ pub async fn run_turn(
                         let (part, mut result) = execute_tool_call(tc, &tools, &tx_path, prefix).await
                             .unwrap_or_else(|e| error_tool_result(tc, e));
                         let result_str = result.result.as_str().unwrap_or("").to_string();
-                        for h in &opts.hooks {
+                        for h in &hooks {
                             if let Some(new) = h.post_tool(&tc.tool_name, &result_str) {
                                 result.result = serde_json::Value::String(new);
                             }
@@ -989,9 +1008,9 @@ pub async fn run_turn(
                         if let Some(parse_ops) = tc.args.get("parse") {
                             result.result = serde_json::Value::String(apply_parse_filter(&result_str, parse_ops));
                         } else if let Some(curate_prompt) = tc.args.get("curate_prompt").and_then(|v| v.as_str()) {
-                            let workspace = opts.workspace.clone();
-                            let codebase_path = opts.codebase_path.clone();
-                            let model = opts.model.clone();
+                            let workspace = workspace.clone();
+                            let codebase_path = codebase_path.clone();
+                            let model = model.clone();
                             let provider_clone = provider.clone();
                             result.result = Box::pin(async move {
                                 apply_curate_filter(
@@ -1023,8 +1042,8 @@ pub async fn run_turn(
                         let events_now = read_events(&tx_path)?;
                         let turn_n = count_turn_complete(&events_now) as u32 + 1;
                         let code_checkpoint = checkpoint_codebase(
-                            opts.repos.checkpoints.as_ref(),
-                            &opts.workspace, &opts.session_id, &opts.codebase_path, turn_n,
+                            repos.checkpoints.as_ref(),
+                            &workspace, &session_id, &codebase_path, turn_n,
                         );
                         emit_event(&tx_path, &AnyEvent::TurnComplete {
                             usage: TurnUsage {
@@ -1040,9 +1059,9 @@ pub async fn run_turn(
                             output: TurnOutput { message: message.clone(), result: result.clone() },
                             ts: now_ms(),
                         })?;
-                        opts.repos.traces.commit_session(&opts.workspace, &opts.session_id,
-                            &format!("session({}): turn {}", opts.session_id, turn_n))?;
-                        for h in &opts.hooks { h.post_turn(); }
+                        repos.traces.commit_session(&workspace, &session_id,
+                            &format!("session({}): turn {}", session_id, turn_n))?;
+                        for h in &hooks { h.post_turn(); }
                         return Ok(TurnResult::Done { message, result });
                     }
                     ExecutionSignal::Clarify => {
@@ -1065,7 +1084,7 @@ pub async fn run_turn(
                         let (part, mut result) = execute_tool_call(tc, &tools, &tx_path, prefix).await
                             .unwrap_or_else(|e| error_tool_result(tc, e));
                         let result_str = result.result.as_str().unwrap_or("").to_string();
-                        for h in &opts.hooks {
+                        for h in &hooks {
                             if let Some(new) = h.post_tool(&tc.tool_name, &result_str) {
                                 result.result = serde_json::Value::String(new);
                             }
@@ -1076,9 +1095,9 @@ pub async fn run_turn(
                         if let Some(parse_ops) = tc.args.get("parse") {
                             result.result = serde_json::Value::String(apply_parse_filter(&result_str, parse_ops));
                         } else if let Some(curate_prompt) = tc.args.get("curate_prompt").and_then(|v| v.as_str()) {
-                            let workspace = opts.workspace.clone();
-                            let codebase_path = opts.codebase_path.clone();
-                            let model = opts.model.clone();
+                            let workspace = workspace.clone();
+                            let codebase_path = codebase_path.clone();
+                            let model = model.clone();
                             let provider_clone = provider.clone();
                             result.result = Box::pin(async move {
                                 apply_curate_filter(
@@ -1112,23 +1131,23 @@ pub async fn run_turn(
                 items: pending_permissions,
                 ts: now_ms(),
             })?;
-            opts.repos.traces.commit_session(&opts.workspace, &opts.session_id,
-                &format!("session({}): permissions", opts.session_id))?;
-            for h in &opts.hooks { h.post_turn(); }
+            repos.traces.commit_session(&workspace, &session_id,
+                &format!("session({}): permissions", session_id))?;
+            for h in &hooks { h.post_turn(); }
             return Ok(TurnResult::Permissions);
         }
 
         // Exit turn for clarify/inform — event already in transcript+stdout via emit_event
         if let Some(items) = clarify_signal.take() {
-            opts.repos.traces.commit_session(&opts.workspace, &opts.session_id,
-                &format!("session({}): clarify", opts.session_id))?;
-            for h in &opts.hooks { h.post_turn(); }
+            repos.traces.commit_session(&workspace, &session_id,
+                &format!("session({}): clarify", session_id))?;
+            for h in &hooks { h.post_turn(); }
             return Ok(TurnResult::Clarify { items });
         }
         if let Some(items) = inform_signal.take() {
-            opts.repos.traces.commit_session(&opts.workspace, &opts.session_id,
-                &format!("session({}): inform", opts.session_id))?;
-            for h in &opts.hooks { h.post_turn(); }
+            repos.traces.commit_session(&workspace, &session_id,
+                &format!("session({}): inform", session_id))?;
+            for h in &hooks { h.post_turn(); }
             return Ok(TurnResult::Inform { items });
         }
 
