@@ -2,29 +2,29 @@
 use git2::{Repository, IndexAddOption, ResetType, Oid, Status, StatusOptions};
 use std::path::Path;
 use std::sync::Mutex;
-use super::{signature_or_default, rewind_git_dir};
+use super::{signature_or_default, checkpoint_git_dir};
 
-pub trait RewindRepo: Send + Sync {
+pub trait CheckpointRepo: Send + Sync {
     fn init(&self, workspace: &Path, session_id: &str, codebase: &Path) -> anyhow::Result<()>;
     fn checkpoint(&self, workspace: &Path, session_id: &str, codebase: &Path, turn: u32) -> anyhow::Result<String>;
-    fn rewind_to(&self, workspace: &Path, session_id: &str, codebase: &Path, sha: &str) -> anyhow::Result<()>;
+    fn restore_to(&self, workspace: &Path, session_id: &str, codebase: &Path, sha: &str) -> anyhow::Result<()>;
     fn remove(&self, workspace: &Path, session_id: &str) -> anyhow::Result<()>;
 }
 
-pub struct GitRewindRepo;
+pub struct GitCheckpointRepo;
 
-impl RewindRepo for GitRewindRepo {
+impl CheckpointRepo for GitCheckpointRepo {
     fn init(&self, workspace: &Path, session_id: &str, codebase: &Path) -> anyhow::Result<()> {
-        // No-op if the codebase is not a git repo — rewind simply unavailable.
+        // No-op if the codebase is not a git repo — checkpoint simply unavailable.
         let cb = match Repository::open(codebase) {
             Ok(r) => r,
             Err(_) => {
-                eprintln!("rewind: codebase {} is not a git repo; rewind unavailable", codebase.display());
+                eprintln!("checkpoint: codebase {} is not a git repo; checkpoint unavailable", codebase.display());
                 return Ok(());
             }
         };
 
-        let git_dir = rewind_git_dir(workspace, session_id);
+        let git_dir = checkpoint_git_dir(workspace, session_id);
         if git_dir.join("HEAD").exists() {
             return Ok(()); // idempotent — already initialized
         }
@@ -68,7 +68,7 @@ impl RewindRepo for GitRewindRepo {
         // HEAD unborn; the first checkpoint becomes the root commit.
         if let Ok(head) = cb.head() {
             if let Ok(commit) = head.peel_to_commit() {
-                shadow.reference("refs/heads/rewind", commit.id(), true, "init rewind")?;
+                shadow.reference("refs/heads/rewind", commit.id(), true, "init checkpoint")?;
                 shadow.set_head("refs/heads/rewind")?;
             }
         }
@@ -76,9 +76,9 @@ impl RewindRepo for GitRewindRepo {
     }
 
     fn checkpoint(&self, workspace: &Path, session_id: &str, codebase: &Path, turn: u32) -> anyhow::Result<String> {
-        let git_dir = rewind_git_dir(workspace, session_id);
+        let git_dir = checkpoint_git_dir(workspace, session_id);
         if !git_dir.join("HEAD").exists() {
-            return Ok(String::new()); // no shadow (non-git codebase) — rewind unavailable
+            return Ok(String::new()); // no shadow (non-git codebase) — checkpoint unavailable
         }
 
         let shadow = Repository::open_bare(&git_dir)?;
@@ -101,13 +101,13 @@ impl RewindRepo for GitRewindRepo {
 
         let tree = shadow.find_tree(tree_id)?;
         let sig = signature_or_default(&shadow)?;
-        let msg = format!("rewind({}): turn {}", session_id, turn);
+        let msg = format!("checkpoint({}): turn {}", session_id, turn);
         let parents: Vec<&git2::Commit> = parent.iter().collect();
         let oid = shadow.commit(Some("HEAD"), &sig, &sig, &msg, &tree, &parents)?;
         Ok(oid.to_string())
     }
-    fn rewind_to(&self, workspace: &Path, session_id: &str, codebase: &Path, sha: &str) -> anyhow::Result<()> {
-        let git_dir = rewind_git_dir(workspace, session_id);
+    fn restore_to(&self, workspace: &Path, session_id: &str, codebase: &Path, sha: &str) -> anyhow::Result<()> {
+        let git_dir = checkpoint_git_dir(workspace, session_id);
         let shadow = Repository::open_bare(&git_dir)?;
         shadow.set_workdir(codebase, false)?;
 
@@ -136,7 +136,7 @@ impl RewindRepo for GitRewindRepo {
         Ok(())
     }
     fn remove(&self, workspace: &Path, session_id: &str) -> anyhow::Result<()> {
-        let git_dir = rewind_git_dir(workspace, session_id);
+        let git_dir = checkpoint_git_dir(workspace, session_id);
         if git_dir.exists() {
             std::fs::remove_dir_all(&git_dir)?;
         }
@@ -148,33 +148,33 @@ impl RewindRepo for GitRewindRepo {
 struct MockState {
     init_calls: Vec<String>,
     checkpoint_calls: Vec<(String, u32)>,
-    rewind_calls: Vec<(String, String)>,
+    restore_calls: Vec<(String, String)>,
     remove_calls: Vec<String>,
     checkpoint_error: Option<String>,
     next_sha: u32,
 }
 
-/// In-memory RewindRepo for orchestration tests. Records calls, no filesystem.
-pub struct MockRewindRepo {
+/// In-memory CheckpointRepo for orchestration tests. Records calls, no filesystem.
+pub struct MockCheckpointRepo {
     state: Mutex<MockState>,
 }
 
-impl MockRewindRepo {
+impl MockCheckpointRepo {
     pub fn new() -> Self { Self { state: Mutex::new(MockState::default()) } }
     pub fn inject_checkpoint_error(&self, msg: &str) {
         self.state.lock().unwrap().checkpoint_error = Some(msg.to_string());
     }
     pub fn init_calls(&self) -> Vec<String> { self.state.lock().unwrap().init_calls.clone() }
     pub fn checkpoint_calls(&self) -> Vec<(String, u32)> { self.state.lock().unwrap().checkpoint_calls.clone() }
-    pub fn rewind_calls(&self) -> Vec<(String, String)> { self.state.lock().unwrap().rewind_calls.clone() }
+    pub fn restore_calls(&self) -> Vec<(String, String)> { self.state.lock().unwrap().restore_calls.clone() }
     pub fn remove_calls(&self) -> Vec<String> { self.state.lock().unwrap().remove_calls.clone() }
 }
 
-impl Default for MockRewindRepo {
+impl Default for MockCheckpointRepo {
     fn default() -> Self { Self::new() }
 }
 
-impl RewindRepo for MockRewindRepo {
+impl CheckpointRepo for MockCheckpointRepo {
     fn init(&self, _ws: &Path, session_id: &str, _cb: &Path) -> anyhow::Result<()> {
         self.state.lock().unwrap().init_calls.push(session_id.to_string());
         Ok(())
@@ -188,8 +188,8 @@ impl RewindRepo for MockRewindRepo {
         s.next_sha += 1;
         Ok(format!("mock-sha-{}", s.next_sha))
     }
-    fn rewind_to(&self, _ws: &Path, session_id: &str, _cb: &Path, sha: &str) -> anyhow::Result<()> {
-        self.state.lock().unwrap().rewind_calls.push((session_id.to_string(), sha.to_string()));
+    fn restore_to(&self, _ws: &Path, session_id: &str, _cb: &Path, sha: &str) -> anyhow::Result<()> {
+        self.state.lock().unwrap().restore_calls.push((session_id.to_string(), sha.to_string()));
         Ok(())
     }
     fn remove(&self, _ws: &Path, session_id: &str) -> anyhow::Result<()> {
@@ -229,9 +229,9 @@ mod tests {
     #[test]
     fn init_creates_shadow_db_with_alternates() {
         let (ws, cb, id) = fixture();
-        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
+        GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
 
-        let git_dir = rewind_git_dir(ws.path(), &id);
+        let git_dir = checkpoint_git_dir(ws.path(), &id);
         assert!(git_dir.join("HEAD").exists(), "shadow HEAD missing");
         let alt = git_dir.join("objects").join("info").join("alternates");
         assert!(alt.exists(), "alternates file missing");
@@ -245,7 +245,7 @@ mod tests {
         let (ws, cb, id) = fixture();
         let before = Repository::open(cb.path()).unwrap()
             .head().unwrap().peel_to_commit().unwrap().id();
-        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
+        GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
         let after = Repository::open(cb.path()).unwrap()
             .head().unwrap().peel_to_commit().unwrap().id();
         assert_eq!(before, after, "codebase HEAD must be untouched");
@@ -254,8 +254,8 @@ mod tests {
     #[test]
     fn init_idempotent() {
         let (ws, cb, id) = fixture();
-        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
-        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap(); // must not error
+        GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
+        GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap(); // must not error
     }
 
     #[test]
@@ -264,38 +264,38 @@ mod tests {
         let id = "snogit".to_string();
         std::fs::create_dir_all(ws.path().join("sessions").join(&id)).unwrap();
         let cb = TempDir::new().unwrap(); // not a git repo
-        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
-        assert!(!rewind_git_dir(ws.path(), &id).join("HEAD").exists());
+        GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
+        assert!(!checkpoint_git_dir(ws.path(), &id).join("HEAD").exists());
     }
 
     #[test]
     fn checkpoint_after_edit_returns_fresh_sha() {
         let (ws, cb, id) = fixture();
-        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
+        GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
         std::fs::write(cb.path().join("a.txt"), "two\n").unwrap();
-        let sha = GitRewindRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
+        let sha = GitCheckpointRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
         assert_eq!(sha.len(), 40);
     }
 
     #[test]
     fn checkpoint_no_change_returns_same_sha() {
         let (ws, cb, id) = fixture();
-        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
+        GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
         std::fs::write(cb.path().join("a.txt"), "two\n").unwrap();
-        let first = GitRewindRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
-        let second = GitRewindRepo.checkpoint(ws.path(), &id, cb.path(), 2).unwrap();
+        let first = GitCheckpointRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
+        let second = GitCheckpointRepo.checkpoint(ws.path(), &id, cb.path(), 2).unwrap();
         assert_eq!(first, second, "no change -> no new commit");
     }
 
     #[test]
     fn checkpoint_captures_shell_style_changes_and_ignores_dotgit() {
         let (ws, cb, id) = fixture();
-        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
+        GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
         std::fs::write(cb.path().join("created.txt"), "x\n").unwrap();
         std::fs::remove_file(cb.path().join("a.txt")).unwrap();
-        let sha = GitRewindRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
+        let sha = GitCheckpointRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
 
-        let git_dir = rewind_git_dir(ws.path(), &id);
+        let git_dir = checkpoint_git_dir(ws.path(), &id);
         let shadow = Repository::open_bare(&git_dir).unwrap();
         let oid = Oid::from_str(&sha).unwrap();
         let tree = shadow.find_commit(oid).unwrap().tree().unwrap();
@@ -310,45 +310,45 @@ mod tests {
         let id = "snogit2".to_string();
         std::fs::create_dir_all(ws.path().join("sessions").join(&id)).unwrap();
         let cb = TempDir::new().unwrap();
-        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
-        let sha = GitRewindRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
+        GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
+        let sha = GitCheckpointRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
         assert!(sha.is_empty());
     }
 
     #[test]
-    fn rewind_to_restores_file_content() {
+    fn restore_to_restores_file_content() {
         let (ws, cb, id) = fixture();
-        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
+        GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
         std::fs::write(cb.path().join("a.txt"), "v1\n").unwrap();
-        let cp1 = GitRewindRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
+        let cp1 = GitCheckpointRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
         std::fs::write(cb.path().join("a.txt"), "v2\n").unwrap();
-        GitRewindRepo.checkpoint(ws.path(), &id, cb.path(), 2).unwrap();
+        GitCheckpointRepo.checkpoint(ws.path(), &id, cb.path(), 2).unwrap();
 
-        GitRewindRepo.rewind_to(ws.path(), &id, cb.path(), &cp1).unwrap();
+        GitCheckpointRepo.restore_to(ws.path(), &id, cb.path(), &cp1).unwrap();
         assert_eq!(std::fs::read_to_string(cb.path().join("a.txt")).unwrap(), "v1\n");
     }
 
     #[test]
-    fn rewind_to_removes_files_created_after_checkpoint() {
+    fn restore_to_removes_files_created_after_checkpoint() {
         let (ws, cb, id) = fixture();
-        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
-        let cp1 = GitRewindRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
+        GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
+        let cp1 = GitCheckpointRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
         std::fs::write(cb.path().join("new.txt"), "later\n").unwrap();
-        GitRewindRepo.checkpoint(ws.path(), &id, cb.path(), 2).unwrap();
+        GitCheckpointRepo.checkpoint(ws.path(), &id, cb.path(), 2).unwrap();
 
-        GitRewindRepo.rewind_to(ws.path(), &id, cb.path(), &cp1).unwrap();
+        GitCheckpointRepo.restore_to(ws.path(), &id, cb.path(), &cp1).unwrap();
         assert!(!cb.path().join("new.txt").exists(), "post-checkpoint file should be removed");
     }
 
     #[test]
-    fn rewind_to_does_not_touch_codebase_git() {
+    fn restore_to_does_not_touch_codebase_git() {
         let (ws, cb, id) = fixture();
         let before = Repository::open(cb.path()).unwrap()
             .head().unwrap().peel_to_commit().unwrap().id();
-        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
+        GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
         std::fs::write(cb.path().join("a.txt"), "v2\n").unwrap();
-        let cp1 = GitRewindRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
-        GitRewindRepo.rewind_to(ws.path(), &id, cb.path(), &cp1).unwrap();
+        let cp1 = GitCheckpointRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
+        GitCheckpointRepo.restore_to(ws.path(), &id, cb.path(), &cp1).unwrap();
         let after = Repository::open(cb.path()).unwrap()
             .head().unwrap().peel_to_commit().unwrap().id();
         assert_eq!(before, after, "user's real git HEAD must be unchanged");
@@ -357,24 +357,24 @@ mod tests {
     #[test]
     fn remove_deletes_shadow_db() {
         let (ws, cb, id) = fixture();
-        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
-        assert!(rewind_git_dir(ws.path(), &id).exists());
-        GitRewindRepo.remove(ws.path(), &id).unwrap();
-        assert!(!rewind_git_dir(ws.path(), &id).exists());
+        GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
+        assert!(checkpoint_git_dir(ws.path(), &id).exists());
+        GitCheckpointRepo.remove(ws.path(), &id).unwrap();
+        assert!(!checkpoint_git_dir(ws.path(), &id).exists());
     }
 
     #[test]
     fn remove_leaves_codebase_intact() {
         let (ws, cb, id) = fixture();
-        GitRewindRepo.init(ws.path(), &id, cb.path()).unwrap();
-        GitRewindRepo.remove(ws.path(), &id).unwrap();
+        GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
+        GitCheckpointRepo.remove(ws.path(), &id).unwrap();
         assert!(cb.path().join("a.txt").exists(), "codebase files must remain");
     }
 
     #[test]
     fn remove_safe_when_absent() {
         let ws = TempDir::new().unwrap();
-        GitRewindRepo.remove(ws.path(), "never-existed").unwrap(); // must not error
+        GitCheckpointRepo.remove(ws.path(), "never-existed").unwrap(); // must not error
     }
 
     #[test]
@@ -402,9 +402,9 @@ mod tests {
         repo.worktree("wt", &wt_path, Some(&WorktreeAddOptions::new())).unwrap();
 
         // init shadow db pointing at the WORKTREE
-        GitRewindRepo.init(ws.path(), &id, &wt_path).unwrap();
+        GitCheckpointRepo.init(ws.path(), &id, &wt_path).unwrap();
 
-        let git_dir = rewind_git_dir(ws.path(), &id);
+        let git_dir = checkpoint_git_dir(ws.path(), &id);
         assert!(git_dir.join("HEAD").exists(), "shadow HEAD missing for worktree codebase");
         let alt = std::fs::read_to_string(git_dir.join("objects").join("info").join("alternates")).unwrap();
         assert!(std::path::Path::new(alt.trim()).is_absolute());
@@ -420,7 +420,7 @@ mod mock_tests {
 
     #[test]
     fn records_calls_and_injects_error() {
-        let mock = MockRewindRepo::new();
+        let mock = MockCheckpointRepo::new();
         let ws = PathBuf::from("/ws");
         let cb = PathBuf::from("/cb");
 

@@ -1,6 +1,6 @@
 use std::path::Path;
 use tempfile::TempDir;
-use gait_ai::git::workspace::{WorkspaceRepo, GitWorkspaceRepo};
+use gait_ai::git::session::{SessionRepo, GitSessionRepo};
 
 fn init_git_repo(dir: &Path) {
     let repo = git2::Repository::init(dir).unwrap();
@@ -19,14 +19,14 @@ fn init_git_repo(dir: &Path) {
 fn finish_session_removes_from_active() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
-    GitWorkspaceRepo.create_session_worktree(ws.path(), "sfin001").unwrap();
+    GitSessionRepo.create_session_worktree(ws.path(), "sfin001").unwrap();
 
-    let before = GitWorkspaceRepo.list_active_sessions(ws.path()).unwrap();
+    let before = GitSessionRepo.list_active_sessions(ws.path()).unwrap();
     assert!(before.contains(&"sfin001".to_string()));
 
-    GitWorkspaceRepo.finish_session(ws.path(), "sfin001").unwrap();
+    GitSessionRepo.finish_session(ws.path(), "sfin001").unwrap();
 
-    let after = GitWorkspaceRepo.list_active_sessions(ws.path()).unwrap();
+    let after = GitSessionRepo.list_active_sessions(ws.path()).unwrap();
     assert!(!after.contains(&"sfin001".to_string()), "should be merged: {:?}", after);
 }
 
@@ -34,11 +34,11 @@ fn finish_session_removes_from_active() {
 fn sessions_lists_active_only() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
-    GitWorkspaceRepo.create_session_worktree(ws.path(), "sactive").unwrap();
-    GitWorkspaceRepo.create_session_worktree(ws.path(), "sfinished").unwrap();
-    GitWorkspaceRepo.finish_session(ws.path(), "sfinished").unwrap();
+    GitSessionRepo.create_session_worktree(ws.path(), "sactive").unwrap();
+    GitSessionRepo.create_session_worktree(ws.path(), "sfinished").unwrap();
+    GitSessionRepo.finish_session(ws.path(), "sfinished").unwrap();
 
-    let active = GitWorkspaceRepo.list_active_sessions(ws.path()).unwrap();
+    let active = GitSessionRepo.list_active_sessions(ws.path()).unwrap();
     assert!(active.contains(&"sactive".to_string()), "active not listed: {:?}", active);
     assert!(!active.contains(&"sfinished".to_string()), "finished should not be listed: {:?}", active);
 }

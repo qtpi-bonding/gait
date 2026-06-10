@@ -1,12 +1,12 @@
 pub mod codebase;
-pub mod workspace;
-pub mod rewind;
+pub mod session;
+pub mod checkpoint;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use crate::git::codebase::{CodebaseRepo, GitCodebaseRepo};
-use crate::git::workspace::{WorkspaceRepo, GitWorkspaceRepo};
-use crate::git::rewind::{RewindRepo, GitRewindRepo};
+use crate::git::session::{SessionRepo, GitSessionRepo};
+use crate::git::checkpoint::{CheckpointRepo, GitCheckpointRepo};
 
 pub(crate) fn with_gait_trailer(message: &str) -> String {
     format!("{}\n\nCo-Authored-By: gait <gait@localhost>", message)
@@ -21,7 +21,7 @@ pub(crate) fn signature_or_default(repo: &git2::Repository) -> anyhow::Result<gi
 }
 
 #[allow(dead_code)]
-pub(crate) fn rewind_git_dir(workspace: &Path, session_id: &str) -> PathBuf {
+pub(crate) fn checkpoint_git_dir(workspace: &Path, session_id: &str) -> PathBuf {
     workspace.join("sessions").join(session_id).join("codebase.git")
 }
 
@@ -30,8 +30,8 @@ pub(crate) fn rewind_git_dir(workspace: &Path, session_id: &str) -> PathBuf {
 #[derive(Clone)]
 pub struct Repos {
     pub codebase: Arc<dyn CodebaseRepo>,
-    pub workspace: Arc<dyn WorkspaceRepo>,
-    pub rewind: Arc<dyn RewindRepo>,
+    pub workspace: Arc<dyn SessionRepo>,
+    pub checkpoints: Arc<dyn CheckpointRepo>,
 }
 
 impl Repos {
@@ -39,10 +39,8 @@ impl Repos {
     pub fn production() -> Self {
         Repos {
             codebase: Arc::new(GitCodebaseRepo),
-            workspace: Arc::new(GitWorkspaceRepo),
-            rewind: Arc::new(GitRewindRepo),
+            workspace: Arc::new(GitSessionRepo),
+            checkpoints: Arc::new(GitCheckpointRepo),
         }
     }
 }
-
-

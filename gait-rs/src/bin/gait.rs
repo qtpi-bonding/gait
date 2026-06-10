@@ -74,7 +74,7 @@ fn usage() -> ! {
     eprintln!("  run      [--session <id>] [--task <text>] [--workspace <path>] [--codebase <path>] [--auto] [--model <provider/model>] [--container]");
     eprintln!("  init     [<repo-url>]");
     eprintln!("  finish   <session-id> [--workspace <path>]");
-    eprintln!("  rewind   <session-id> [--turn N | --list] [--code] [--transcript] [--workspace <path>]");
+    eprintln!("  undo    <session-id> [--turn N | --list] [--code] [--transcript] [--workspace <path>]");
     eprintln!("  sessions [--workspace <path>]");
     eprintln!("  auth     <list|add|remove> [<provider>]");
     eprintln!("  models   [<filter>]");
@@ -107,7 +107,7 @@ async fn main() {
         "run"      => cmd_run(&args[2..]).await,
         "init"     => cmd_init(&args[2..]),
         "finish"   => cmd_finish(&args[2..]),
-        "rewind"   => cmd_rewind(&args[2..]),
+        "undo"   => cmd_undo(&args[2..]),
         "sessions" => cmd_sessions(&args[2..]),
         "auth"     => cmd_auth(&args[2..]),
         "models"   => cmd_models(&args[2..]).await,
@@ -494,13 +494,13 @@ fn cmd_finish(argv: &[String]) {
         eprintln!("[gait] error: {}", e);
         std::process::exit(1);
     }
-    if let Err(e) = repos.rewind.remove(&workspace, &session_id) {
-        eprintln!("warning: failed to remove rewind db for {}: {}", session_id, e);
+    if let Err(e) = repos.checkpoints.remove(&workspace, &session_id) {
+        eprintln!("warning: failed to remove checkpoint db for {}: {}", session_id, e);
     }
     eprintln!("[gait] session {} merged into main", session_id);
 }
 
-fn cmd_rewind(argv: &[String]) {
+fn cmd_undo(argv: &[String]) {
     let mut session_id: Option<String> = None;
     let mut turn: Option<u32> = None;
     let mut code = false;
@@ -542,18 +542,18 @@ fn cmd_rewind(argv: &[String]) {
     let session_id = match session_id {
         Some(id) => id,
         None => {
-            eprintln!("usage: gait rewind <session-id> [--turn N | --list] [--code] [--transcript] [--workspace <path>]");
+            eprintln!("usage: gait undo <session-id> [--turn N | --list] [--code] [--transcript] [--workspace <path>]");
             std::process::exit(1);
         }
     };
 
-    if let Err(e) = rewind_command(&session_id, turn, code, transcript, list, workspace) {
+    if let Err(e) = undo_command(&session_id, turn, code, transcript, list, workspace) {
         eprintln!("[gait] error: {}", e);
         std::process::exit(1);
     }
 }
 
-fn rewind_command(
+fn undo_command(
     session_id: &str,
     turn: Option<u32>,
     code: bool,
@@ -599,31 +599,31 @@ fn rewind_command(
     let do_transcript = transcript || (!code && !transcript);
 
     let _lock = gait_ai::turn::SessionLock::acquire(&session_dir)
-        .map_err(|e| anyhow::anyhow!("cannot rewind: {} (is a turn in progress?)", e))?;
+        .map_err(|e| anyhow::anyhow!("cannot undo: {} (is a turn in progress?)", e))?;
 
     if do_code {
         let codebase = gait_ai::session::session_json::read_session_json(&workspace, session_id)
             .codebase_path
             .map(std::path::PathBuf::from)
-            .ok_or_else(|| anyhow::anyhow!("session.json has no codebase_path; cannot rewind code"))?;
+            .ok_or_else(|| anyhow::anyhow!("session.json has no codebase_path; cannot undo code"))?;
         let repos = gait_ai::git::Repos::production();
         match checkpoint.as_deref() {
             Some(sha) => {
-                repos.rewind.rewind_to(&workspace, session_id, &codebase, sha)?;
-                println!("code rewound to turn {turn} ({})", &sha[..sha.len().min(8)]);
+                repos.checkpoints.restore_to(&workspace, session_id, &codebase, sha)?;
+                println!("code restored to turn {turn} ({})", &sha[..sha.len().min(8)]);
             }
-            None => println!("turn {turn} has no code checkpoint (non-git codebase); code not rewound"),
+            None => println!("turn {turn} has no code checkpoint (non-git codebase); code not undone"),
         }
     }
 
     if do_transcript {
-        rewind_transcript_to_turn(&workspace, session_id, turn)?;
-        println!("transcript rewound to turn {turn}");
+        undo_transcript_to_turn(&workspace, session_id, turn)?;
+        println!("transcript undone to turn {turn}");
     }
     Ok(())
 }
 
-fn rewind_transcript_to_turn(workspace: &std::path::Path, session_id: &str, turn: u32) -> anyhow::Result<()> {
+fn undo_transcript_to_turn(workspace: &std::path::Path, session_id: &str, turn: u32) -> anyhow::Result<()> {
     let session_dir = workspace.join("sessions").join(session_id);
     let repo = git2::Repository::open(&session_dir)?;
     let needle = format!("session({}): turn {}", session_id, turn);
@@ -639,7 +639,7 @@ fn rewind_transcript_to_turn(workspace: &std::path::Path, session_id: &str, turn
         }
     }
     let oid = target.ok_or_else(|| anyhow::anyhow!(
-        "no commit for turn {} in session {} (transcript rewind applies to interactive turn sessions, not workflows)",
+        "no commit for turn {} in session {} (transcript undo applies to interactive turn sessions, not workflows)",
         turn, session_id))?;
     let obj = repo.find_object(oid, None)?;
     repo.reset(&obj, git2::ResetType::Hard, None)?;

@@ -199,7 +199,7 @@ pub enum AnyEvent {
         usage: TurnUsage,
         codebase_hash: String,
         codebase_dirty: bool,
-        /// Shadow-git checkpoint SHA for this turn (internal; powers `gait rewind`).
+        /// Shadow-git checkpoint SHA for this turn (internal; powers `gait undo`).
         /// None for legacy transcripts and non-git codebases.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         code_checkpoint: Option<String>,

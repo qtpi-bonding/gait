@@ -13,7 +13,7 @@ use crate::session::transcript::{
 use crate::session::context::reconstruct_messages_from_events;
 use crate::config::{McpToolDef, SkillDef};
 use crate::git;
-use crate::git::rewind::RewindRepo;
+use crate::git::checkpoint::CheckpointRepo;
 use crate::mcp_client::McpClient;
 use crate::permission::{is_request_approved, find_matched_allow_pattern, is_request_denied, find_matched_deny_pattern};
 use grep_regex::RegexMatcher;
@@ -119,17 +119,17 @@ impl Drop for SessionLock {
 /// failed — a checkpoint failure must never fail the turn. Does NOT commit the
 /// transcript; the caller's existing commit_session runs after emit.
 fn checkpoint_codebase(
-    rewind: &dyn RewindRepo,
+    checkpoints: &dyn CheckpointRepo,
     workspace: &Path,
     session_id: &str,
     codebase: &Path,
     turn: u32,
 ) -> Option<String> {
-    match rewind.checkpoint(workspace, session_id, codebase, turn) {
+    match checkpoints.checkpoint(workspace, session_id, codebase, turn) {
         Ok(sha) if !sha.is_empty() => Some(sha),
         Ok(_) => None, // non-git codebase
         Err(e) => {
-            eprintln!("rewind checkpoint failed for session {}: {}; rewind unavailable for this turn", session_id, e);
+            eprintln!("checkpoint failed for session {}: {}; checkpoint unavailable for this turn", session_id, e);
             None
         }
     }
@@ -388,7 +388,7 @@ async fn apply_curate_filter(
         vec![AnnotateTool::new().boxed()],
     ).await;
 
-    let _ = repos.rewind.remove(workspace, &session_id);
+    let _ = repos.checkpoints.remove(workspace, &session_id);
 
     let tx_path = workspace.join("sessions").join(&session_id).join("transcript.jsonl");
     read_events(&tx_path)
@@ -411,7 +411,7 @@ pub async fn run_turn(
     tools: Vec<Box<dyn Tool>>,
 ) -> anyhow::Result<TurnResult> {
     opts.repos.workspace.create_session_worktree(&opts.workspace, &opts.session_id)?;
-    opts.repos.rewind.init(&opts.workspace, &opts.session_id, &opts.codebase_path)?;
+    opts.repos.checkpoints.init(&opts.workspace, &opts.session_id, &opts.codebase_path)?;
 
     // Persist codebase_path (write-once) so `gait rewind` can locate the codebase.
     {
@@ -702,7 +702,7 @@ pub async fn run_turn(
             let events_now = read_events(&tx_path)?;
             let turn_n = count_turn_complete(&events_now) as u32 + 1;
             let code_checkpoint = checkpoint_codebase(
-                opts.repos.rewind.as_ref(),
+                opts.repos.checkpoints.as_ref(),
                 &opts.workspace, &opts.session_id, &opts.codebase_path, turn_n,
             );
             emit_event(&tx_path, &AnyEvent::TurnComplete {
@@ -1029,7 +1029,7 @@ pub async fn run_turn(
                         let events_now = read_events(&tx_path)?;
                         let turn_n = count_turn_complete(&events_now) as u32 + 1;
                         let code_checkpoint = checkpoint_codebase(
-                            opts.repos.rewind.as_ref(),
+                            opts.repos.checkpoints.as_ref(),
                             &opts.workspace, &opts.session_id, &opts.codebase_path, turn_n,
                         );
                         emit_event(&tx_path, &AnyEvent::TurnComplete {
@@ -1143,7 +1143,7 @@ pub async fn run_turn(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::workspace::{GitWorkspaceRepo, WorkspaceRepo};
+    use crate::git::session::{GitSessionRepo, SessionRepo};
     use tempfile::TempDir;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -1814,7 +1814,7 @@ mod tests {
         let codebase = TempDir::new().unwrap();
         let session_id = "resume-exec-test";
         // Initialize the session worktree (creates the session dir + branch)
-        GitWorkspaceRepo.create_session_worktree(ws.path(), session_id).unwrap();
+        GitSessionRepo.create_session_worktree(ws.path(), session_id).unwrap();
         let session_dir = ws.path().join("sessions").join(session_id);
         let tx_path = session_dir.join("transcript.jsonl");
 
@@ -1899,7 +1899,7 @@ mod tests {
         let codebase = TempDir::new().unwrap();
         let session_id = "resume-deny-test";
         // Initialize the session worktree (creates the session dir + branch)
-        GitWorkspaceRepo.create_session_worktree(ws.path(), session_id).unwrap();
+        GitSessionRepo.create_session_worktree(ws.path(), session_id).unwrap();
         let session_dir = ws.path().join("sessions").join(session_id);
         let tx_path = session_dir.join("transcript.jsonl");
 
@@ -2003,7 +2003,7 @@ mod tests {
         init_git_repo(ws.path());
         let session_id = "sscope001";
         // Initialize the session worktree (creates the session dir + branch)
-        GitWorkspaceRepo.create_session_worktree(ws.path(), session_id).unwrap();
+        GitSessionRepo.create_session_worktree(ws.path(), session_id).unwrap();
         let tx_path = ws.path().join("sessions").join(session_id).join("transcript.jsonl");
 
         // Pre-write a transcript with a Permissions+PermissionsReply already in it,
@@ -2138,23 +2138,23 @@ mod tests {
 
     #[test]
     fn checkpoint_codebase_returns_sha_and_records_call() {
-        use crate::git::rewind::MockRewindRepo;
+        use crate::git::checkpoint::MockCheckpointRepo;
         let ws = tempfile::TempDir::new().unwrap();
         let codebase = ws.path().to_path_buf();
-        let rewind = MockRewindRepo::new();
-        let sha = checkpoint_codebase(&rewind, ws.path(), "scp1", &codebase, 1);
+        let checkpoints = MockCheckpointRepo::new();
+        let sha = checkpoint_codebase(&checkpoints, ws.path(), "scp1", &codebase, 1);
         assert_eq!(sha.as_deref(), Some("mock-sha-1"));
-        assert_eq!(rewind.checkpoint_calls(), vec![("scp1".to_string(), 1u32)]);
+        assert_eq!(checkpoints.checkpoint_calls(), vec![("scp1".to_string(), 1u32)]);
     }
 
     #[test]
     fn checkpoint_codebase_tolerates_error() {
-        use crate::git::rewind::MockRewindRepo;
+        use crate::git::checkpoint::MockCheckpointRepo;
         let ws = tempfile::TempDir::new().unwrap();
         let codebase = ws.path().to_path_buf();
-        let rewind = MockRewindRepo::new();
-        rewind.inject_checkpoint_error("disk full");
-        let sha = checkpoint_codebase(&rewind, ws.path(), "scp2", &codebase, 1);
+        let checkpoints = MockCheckpointRepo::new();
+        checkpoints.inject_checkpoint_error("disk full");
+        let sha = checkpoint_codebase(&checkpoints, ws.path(), "scp2", &codebase, 1);
         assert!(sha.is_none());
     }
 
@@ -2223,7 +2223,7 @@ mod tests {
             _ => None,
         }).flatten();
         assert!(cp.is_some(), "expected a code checkpoint SHA");
-        assert!(crate::git::rewind_git_dir(ws.path(), session_id).exists());
+        assert!(crate::git::checkpoint_git_dir(ws.path(), session_id).exists());
     }
 
     #[tokio::test]
@@ -2294,7 +2294,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_turn_calls_rewind_init_and_checkpoint_via_injected_repo() {
-        use crate::git::rewind::MockRewindRepo;
+        use crate::git::checkpoint::MockCheckpointRepo;
 
         let ws = TempDir::new().unwrap();
         init_git_repo(ws.path());
@@ -2328,11 +2328,11 @@ mod tests {
             call_idx: Arc::new(AtomicUsize::new(0)),
         });
 
-        let mock = Arc::new(MockRewindRepo::new());
+        let mock = Arc::new(MockCheckpointRepo::new());
         let repos = crate::git::Repos {
             codebase: Arc::new(crate::git::codebase::GitCodebaseRepo),
-            workspace: Arc::new(crate::git::workspace::GitWorkspaceRepo),
-            rewind: mock.clone(),
+            workspace: Arc::new(crate::git::session::GitSessionRepo),
+            checkpoints: mock.clone(),
         };
 
         run_turn(
