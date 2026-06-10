@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::workflow::schema::{NodeDef, WorkflowDef};
 use crate::workflow::vars::{NodeOutput, substitute};
 use crate::workflow::exec_shell::NodeContext;
-use crate::turn::{TurnOpts, TurnResult, run_turn};
+use crate::turn::{TurnInput, TurnResult, run_turn};
 use crate::provider::Provider;
 
 pub async fn exec_prompt_node(
@@ -41,7 +41,7 @@ pub async fn exec_prompt_node(
 
     let api_key = crate::auth::resolve_api_key(model.split_once('/').map(|(p, _)| p).unwrap_or(""));
     let repos = crate::git::Repos::production();
-    let resolved = profile.resolve(
+    let mut resolved = profile.resolve(
         codebase.clone(),
         ctx.session_id.to_string(),
         ctx.workspace.to_path_buf(),
@@ -49,25 +49,19 @@ pub async fn exec_prompt_node(
         api_key,
     ).await?;
 
-    let result = run_turn(TurnOpts {
-        session_id: ctx.session_id.to_string(),
-        task: Some(full_task),
-        auto,
-        workspace: ctx.workspace.to_path_buf(),
-        codebase_path: codebase,
-        allow: resolved.allow.clone(),
-        deny: resolved.deny.clone(),
-        system_prompt: resolved.instructions.clone(),
-        model: resolved.model.clone(),
-        mcp_registry: resolved.mcp_registry.clone(),
-        mcp_clients: resolved.mcp_clients.clone(),
-        skill_registry: resolved.skill_registry.clone(),
-        config_enabled: resolved.config_enabled.clone(),
-        max_iter: None,
-        hooks: vec![],
+    resolved.provider = provider;   // workflow reuses its injected provider, not the freshly-resolved one
+    let session = crate::session::Session::load(
+        ctx.workspace.to_path_buf(),
+        ctx.session_id.to_string(),
+        resolved.model.clone(),
+        codebase,
         repos,
-        output_schema_retries: resolved.output_schema_retries,
-    }, provider, resolved.tools).await?;
+    );
+    let result = run_turn(
+        &session,
+        resolved,
+        crate::turn::TurnInput { task: Some(full_task), auto, max_iter: None },
+    ).await?;
 
     match result {
         TurnResult::Done { message, result } => Ok(NodeOutput {

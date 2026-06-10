@@ -4,7 +4,7 @@ use gait_ai::{
     config::load_config,
     auth::resolve_api_key,
     factory::load_provider,
-    turn::{TurnOpts, run_turn},
+    turn::run_turn,
     workflow::runner::{run_workflow, WorkflowRunOpts},
     Scheduler,
     HarnessBackend,
@@ -230,28 +230,17 @@ async fn cmd_run(argv: &[String]) {
             .unwrap_or_else(|e| { eprintln!("[!] @ expand error: {e}"); t })
     });
 
+    let session = gait_ai::session::Session::load(
+        workspace.clone(),
+        session_id.clone(),
+        resolved.model.clone(),
+        codebase_path,
+        repos,
+    );
     let turn_result = match run_turn(
-        TurnOpts {
-            session_id: session_id.clone(),
-            task,
-            auto,
-            workspace: workspace.clone(),
-            codebase_path,
-            allow: resolved.allow.clone(),
-            deny: resolved.deny.clone(),
-            system_prompt: resolved.instructions.clone(),
-            model: resolved.model.clone(),
-            mcp_registry: resolved.mcp_registry.clone(),
-            mcp_clients: resolved.mcp_clients.clone(),
-            skill_registry: resolved.skill_registry.clone(),
-            config_enabled: resolved.config_enabled.clone(),
-            max_iter: None,
-            hooks: vec![],
-            repos,
-            output_schema_retries: resolved.output_schema_retries,
-        },
-        resolved.provider.clone(),
-        resolved.tools,
+        &session,
+        resolved,
+        gait_ai::turn::TurnInput { task, auto, max_iter: None },
     ).await {
         Ok(r) => r,
         Err(e) => {
