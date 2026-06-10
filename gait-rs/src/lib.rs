@@ -27,6 +27,7 @@ pub mod repl_helper;
 pub mod hashline;
 pub mod prompt;
 pub mod profile;
+pub mod proto;
 
 pub use types::*;
 pub use stream::stream_text;
