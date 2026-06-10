@@ -1,3 +1,17 @@
+//! # Retrace — the `Log → working-state` fold
+//!
+//! Rebuilds the model's working state from the immutable event `Log`. It produces
+//! two projections:
+//!
+//! - [`messages`] — the **Transcript**: the `Vec<Message>` the model reasons over.
+//!   Read-only today; its only mutation is prefix-`Compaction` (truncate-before-summary).
+//! - [`enabled_loadables`] — the active loadable set, via last-write-wins toggle
+//!   replay of `load(name, enabled=…)` events.
+//!
+//! General message-list mutation (`redact`/`replace` by event id) is a future spec;
+//! see `docs/superpowers/specs/2026-06-10-agent-architecture-design.md`. The `Log`
+//! JSONL wire format is frozen.
+
 use std::path::Path;
 use crate::types::{Message, MessageContent, AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind};
 use crate::session::transcript::{AnyEvent, read_events, last_compaction_index};
@@ -172,6 +186,7 @@ pub fn enabled_loadables(
     }
     enabled
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,5 +310,19 @@ mod tests {
         let enabled = enabled_loadables(&events, &config_enabled);
         assert!(enabled.contains("slack_send"), "slack should be enabled after load");
         assert!(!enabled.contains("tdd"), "tdd should be disabled after unload (LWW per entity)");
+    }
+
+    #[test]
+    fn both_projections_derive_from_one_event_log() {
+        use std::collections::HashSet;
+        let events = vec![
+            AnyEvent::UserTurn { content: "hi".into(), from: None, context: None, ts: 0 },
+            AnyEvent::ToolCall { id: "1".into(), name: "load".into(),
+                input: serde_json::json!({"name": "slack_send", "enabled": true}), ts: 1 },
+        ];
+        let msgs = messages(&events).unwrap();
+        assert!(matches!(&msgs[0], Message::User { content: MessageContent::Text(t) } if t == "hi"));
+        let enabled = enabled_loadables(&events, &HashSet::new());
+        assert!(enabled.contains("slack_send"));
     }
 }
