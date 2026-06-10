@@ -28,7 +28,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
     let WorkflowRunOpts { workflow_def: wf, yaml_path, session_id, workspace, codebase, provider, args } = opts;
 
     let repos = crate::git::Repos::production();
-    repos.workspace.create_session_worktree(&workspace, &session_id)?;
+    repos.traces.create_session_worktree(&workspace, &session_id)?;
     let session_dir = workspace.join("sessions").join(&session_id);
     let tx_path = session_dir.join("transcript.jsonl");
 
@@ -54,7 +54,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
         let node_ids: Vec<&str> = wf.nodes.iter().map(|n| n.id.as_str()).collect();
         let progress = init_progress(&workflow_id, &wf.name, &node_ids);
         write_progress(&workspace, &session_id, &progress)?;
-        repos.workspace.commit_session(&workspace, &session_id, "workflow: start")?;
+        repos.traces.commit_session(&workspace, &session_id, "workflow: start")?;
 
         if let Some(hooks) = &wf.hooks {
             if let Some(cmd) = &hooks.before {
@@ -91,7 +91,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
             })?;
             state.set_status(&node_id, NodeStatus::Skipped);
             update_progress(&workspace, &session_id, &workflow_id, &wf.name, &state, &wf.nodes)?;
-            repos.workspace.commit_session(&workspace, &session_id, &format!("workflow: skip {}", node_id))?;
+            repos.traces.commit_session(&workspace, &session_id, &format!("workflow: skip {}", node_id))?;
             continue;
         }
 
@@ -149,7 +149,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
                 if out.routed_to.as_deref() == Some("__gate_paused__") {
                     state.set_status(&node_id, NodeStatus::Paused);
                     update_progress(&workspace, &session_id, &workflow_id, &wf.name, &state, &wf.nodes)?;
-                    repos.workspace.commit_session(&workspace, &session_id, &format!("workflow: gate {}", node_id))?;
+                    repos.traces.commit_session(&workspace, &session_id, &format!("workflow: gate {}", node_id))?;
                     eprintln!("[gait workflow] paused at gate '{}'", node_id);
                     std::process::exit(0);
                 }
@@ -194,7 +194,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
                         error: last_error.clone(), ts: now_ms(),
                     })?;
                     update_progress(&workspace, &session_id, &workflow_id, &wf.name, &state, &wf.nodes)?;
-                    repos.workspace.commit_session(&workspace, &session_id, &format!("workflow: error at {}", node_id))?;
+                    repos.traces.commit_session(&workspace, &session_id, &format!("workflow: error at {}", node_id))?;
                     if let Some(hooks) = &wf.hooks {
                         if let Some(cmd) = &hooks.error {
                             let mut env = make_env_vars(&workflow_id, &session_id, &workspace, &codebase, &args_str, None, &state);
@@ -214,12 +214,12 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
         }
 
         update_progress(&workspace, &session_id, &workflow_id, &wf.name, &state, &wf.nodes)?;
-        repos.workspace.commit_session(&workspace, &session_id, &format!("workflow: {}", node_id))?;
+        repos.traces.commit_session(&workspace, &session_id, &format!("workflow: {}", node_id))?;
     }
 
     emit_event(&tx_path, &AnyEvent::WorkflowComplete { workflow_id: workflow_id.clone(), ts: now_ms() })?;
     update_progress_done(&workspace, &session_id, &workflow_id, &wf.name, &state, &wf.nodes)?;
-    repos.workspace.commit_session(&workspace, &session_id, "workflow: complete")?;
+    repos.traces.commit_session(&workspace, &session_id, "workflow: complete")?;
 
     if let Some(hooks) = &wf.hooks {
         if let Some(cmd) = &hooks.after {

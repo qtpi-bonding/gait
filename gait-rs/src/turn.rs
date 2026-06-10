@@ -410,7 +410,7 @@ pub async fn run_turn(
     provider: Arc<dyn Provider>,
     tools: Vec<Box<dyn Tool>>,
 ) -> anyhow::Result<TurnResult> {
-    opts.repos.workspace.create_session_worktree(&opts.workspace, &opts.session_id)?;
+    opts.repos.traces.create_session_worktree(&opts.workspace, &opts.session_id)?;
     opts.repos.checkpoints.init(&opts.workspace, &opts.session_id, &opts.codebase_path)?;
 
     // Persist codebase_path (write-once) so `gait rewind` can locate the codebase.
@@ -718,7 +718,7 @@ pub async fn run_turn(
                 output: TurnOutput { message: message.clone(), result: None },
                 ts: now_ms(),
             })?;
-            opts.repos.workspace.commit_session(&opts.workspace, &opts.session_id,
+            opts.repos.traces.commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): turn {}", opts.session_id, turn_n))?;
             for h in &opts.hooks { h.post_turn(); }
             return Ok(TurnResult::Done { message, result: None });
@@ -1045,7 +1045,7 @@ pub async fn run_turn(
                             output: TurnOutput { message: message.clone(), result: result.clone() },
                             ts: now_ms(),
                         })?;
-                        opts.repos.workspace.commit_session(&opts.workspace, &opts.session_id,
+                        opts.repos.traces.commit_session(&opts.workspace, &opts.session_id,
                             &format!("session({}): turn {}", opts.session_id, turn_n))?;
                         for h in &opts.hooks { h.post_turn(); }
                         return Ok(TurnResult::Done { message, result });
@@ -1112,7 +1112,7 @@ pub async fn run_turn(
                 items: pending_permissions,
                 ts: now_ms(),
             })?;
-            opts.repos.workspace.commit_session(&opts.workspace, &opts.session_id,
+            opts.repos.traces.commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): permissions", opts.session_id))?;
             for h in &opts.hooks { h.post_turn(); }
             return Ok(TurnResult::Permissions);
@@ -1120,13 +1120,13 @@ pub async fn run_turn(
 
         // Exit turn for clarify/inform — event already in transcript+stdout via emit_event
         if let Some(items) = clarify_signal.take() {
-            opts.repos.workspace.commit_session(&opts.workspace, &opts.session_id,
+            opts.repos.traces.commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): clarify", opts.session_id))?;
             for h in &opts.hooks { h.post_turn(); }
             return Ok(TurnResult::Clarify { items });
         }
         if let Some(items) = inform_signal.take() {
-            opts.repos.workspace.commit_session(&opts.workspace, &opts.session_id,
+            opts.repos.traces.commit_session(&opts.workspace, &opts.session_id,
                 &format!("session({}): inform", opts.session_id))?;
             for h in &opts.hooks { h.post_turn(); }
             return Ok(TurnResult::Inform { items });
@@ -1143,7 +1143,7 @@ pub async fn run_turn(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::session::{GitSessionRepo, SessionRepo};
+    use crate::git::trace::{GitTraceRepo, TraceRepo};
     use tempfile::TempDir;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -1814,7 +1814,7 @@ mod tests {
         let codebase = TempDir::new().unwrap();
         let session_id = "resume-exec-test";
         // Initialize the session worktree (creates the session dir + branch)
-        GitSessionRepo.create_session_worktree(ws.path(), session_id).unwrap();
+        GitTraceRepo.create_session_worktree(ws.path(), session_id).unwrap();
         let session_dir = ws.path().join("sessions").join(session_id);
         let tx_path = session_dir.join("transcript.jsonl");
 
@@ -1899,7 +1899,7 @@ mod tests {
         let codebase = TempDir::new().unwrap();
         let session_id = "resume-deny-test";
         // Initialize the session worktree (creates the session dir + branch)
-        GitSessionRepo.create_session_worktree(ws.path(), session_id).unwrap();
+        GitTraceRepo.create_session_worktree(ws.path(), session_id).unwrap();
         let session_dir = ws.path().join("sessions").join(session_id);
         let tx_path = session_dir.join("transcript.jsonl");
 
@@ -2003,7 +2003,7 @@ mod tests {
         init_git_repo(ws.path());
         let session_id = "sscope001";
         // Initialize the session worktree (creates the session dir + branch)
-        GitSessionRepo.create_session_worktree(ws.path(), session_id).unwrap();
+        GitTraceRepo.create_session_worktree(ws.path(), session_id).unwrap();
         let tx_path = ws.path().join("sessions").join(session_id).join("transcript.jsonl");
 
         // Pre-write a transcript with a Permissions+PermissionsReply already in it,
@@ -2331,7 +2331,7 @@ mod tests {
         let mock = Arc::new(MockCheckpointRepo::new());
         let repos = crate::git::Repos {
             codebase: Arc::new(crate::git::codebase::GitCodebaseRepo),
-            workspace: Arc::new(crate::git::session::GitSessionRepo),
+            traces: Arc::new(crate::git::trace::GitTraceRepo),
             checkpoints: mock.clone(),
         };
 

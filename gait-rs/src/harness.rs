@@ -87,7 +87,7 @@ impl HarnessBackend for NativeHarnessBackend {
 
         append_event(&tx_path, &event)?;
         let repos = crate::git::Repos::production();
-        repos.workspace.commit_session(
+        repos.traces.commit_session(
             &self.workspace,
             assigner_id,
             &format!("session({}): agent_update from {}", assigner_id, session_id),

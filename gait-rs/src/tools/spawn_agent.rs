@@ -51,7 +51,7 @@ impl Tool for SpawnAgentTool {
 
         let new_id = crate::chat::new_session_id();
 
-        self.repos.workspace.create_session_worktree(&self.workspace, &new_id)?;
+        self.repos.traces.create_session_worktree(&self.workspace, &new_id)?;
 
         let sj = SessionJson {
             id: new_id.clone(),
@@ -83,7 +83,7 @@ impl Tool for SpawnAgentTool {
             ts: now_ms(),
         })?;
 
-        self.repos.workspace.commit_session(
+        self.repos.traces.commit_session(
             &self.workspace,
             &new_id,
             &format!("session({}): spawn from {}", new_id, self.current_session_id),

@@ -142,7 +142,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
     use crate::session::transcript::{AnyEvent, append_event, TurnUsage, TurnOutput};
-    use crate::git::session::{SessionRepo, GitSessionRepo};
+    use crate::git::trace::{TraceRepo, GitTraceRepo};
 
     fn init_git_repo(dir: &std::path::Path) {
         let repo = git2::Repository::init(dir).unwrap();
@@ -162,14 +162,14 @@ mod tests {
         let ws = TempDir::new().unwrap();
         init_git_repo(ws.path());
 
-        GitSessionRepo.create_session_worktree(ws.path(), "srunning1").unwrap();
+        GitTraceRepo.create_session_worktree(ws.path(), "srunning1").unwrap();
         let tx1 = ws.path().join("sessions/srunning1/transcript.jsonl");
         append_event(&tx1, &AnyEvent::UserTurn {
             content: "task".into(), from: None, context: None, ts: 100,
         }).unwrap();
-        GitSessionRepo.commit_session(ws.path(), "srunning1", "session(srunning1): init").unwrap();
+        GitTraceRepo.commit_session(ws.path(), "srunning1", "session(srunning1): init").unwrap();
 
-        GitSessionRepo.create_session_worktree(ws.path(), "sdone1").unwrap();
+        GitTraceRepo.create_session_worktree(ws.path(), "sdone1").unwrap();
         let tx2 = ws.path().join("sessions/sdone1/transcript.jsonl");
         append_event(&tx2, &AnyEvent::TurnComplete {
             usage: TurnUsage { input: 1, output: 1, cache_read: 0, cache_write: 0 },
@@ -179,7 +179,7 @@ mod tests {
             output: TurnOutput { message: "done".into(), result: None },
             ts: 200,
         }).unwrap();
-        GitSessionRepo.commit_session(ws.path(), "sdone1", "session(sdone1): done").unwrap();
+        GitTraceRepo.commit_session(ws.path(), "sdone1", "session(sdone1): done").unwrap();
 
         let tool = ListAgentsTool::new(ws.path().to_path_buf());
         let result = tool.execute(serde_json::json!({})).await.unwrap();

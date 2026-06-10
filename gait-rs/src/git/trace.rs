@@ -2,7 +2,7 @@ use std::path::Path;
 use git2::{Repository, BranchType, IndexAddOption, Signature};
 use super::{with_gait_trailer};
 
-pub trait SessionRepo: Send + Sync {
+pub trait TraceRepo: Send + Sync {
     fn init_workspace(&self, workspace: &Path) -> anyhow::Result<()>;
     fn create_session_worktree(&self, workspace: &Path, session_id: &str) -> anyhow::Result<()>;
     fn commit_session(&self, workspace: &Path, session_id: &str, message: &str) -> anyhow::Result<()>;
@@ -13,9 +13,9 @@ pub trait SessionRepo: Send + Sync {
     fn merge_branch_ff(&self, workspace: &Path, target_branch: &str, source_branch: &str) -> anyhow::Result<()>;
 }
 
-pub struct GitSessionRepo;
+pub struct GitTraceRepo;
 
-impl SessionRepo for GitSessionRepo {
+impl TraceRepo for GitTraceRepo {
     fn init_workspace(&self, workspace: &Path) -> anyhow::Result<()> {
         // git init — no-op if already a repo
         match Repository::init(workspace) {
@@ -246,7 +246,7 @@ mod tests {
     fn create_session_worktree_creates_dir_and_branch() {
         let ws = TempDir::new().unwrap();
         init_repo(ws.path());
-        let git_ws = GitSessionRepo;
+        let git_ws = GitTraceRepo;
         git_ws.create_session_worktree(ws.path(), "sabc1234").unwrap();
         assert!(ws.path().join("sessions/sabc1234").exists());
         assert!(ws.path().join("sessions/sabc1234/.git").exists());
@@ -256,7 +256,7 @@ mod tests {
     fn create_session_worktree_idempotent() {
         let ws = TempDir::new().unwrap();
         init_repo(ws.path());
-        let git_ws = GitSessionRepo;
+        let git_ws = GitTraceRepo;
         git_ws.create_session_worktree(ws.path(), "sabc1234").unwrap();
         git_ws.create_session_worktree(ws.path(), "sabc1234").unwrap(); // no error
     }
@@ -265,7 +265,7 @@ mod tests {
     fn commit_session_creates_commit() {
         let ws = TempDir::new().unwrap();
         init_repo(ws.path());
-        let git_ws = GitSessionRepo;
+        let git_ws = GitTraceRepo;
         git_ws.create_session_worktree(ws.path(), "sabc1234").unwrap();
         let tx = ws.path().join("sessions/sabc1234/transcript.jsonl");
         std::fs::write(&tx, "{\"type\":\"session_start\"}\n").unwrap();
@@ -280,7 +280,7 @@ mod tests {
     fn list_active_sessions_returns_unmerged() {
         let ws = TempDir::new().unwrap();
         init_repo(ws.path());
-        let git_ws = GitSessionRepo;
+        let git_ws = GitTraceRepo;
         git_ws.create_session_worktree(ws.path(), "sabc1234").unwrap();
         let sessions = git_ws.list_active_sessions(ws.path()).unwrap();
         assert!(sessions.contains(&"sabc1234".to_string()), "got: {:?}", sessions);
@@ -290,7 +290,7 @@ mod tests {
     fn finish_session_merges_into_main() {
         let ws = TempDir::new().unwrap();
         init_repo(ws.path());
-        let git_ws = GitSessionRepo;
+        let git_ws = GitTraceRepo;
         git_ws.create_session_worktree(ws.path(), "sfin001").unwrap();
         // Write a file in the session so there's something to merge
         std::fs::write(ws.path().join("sessions/sfin001/result.txt"), "done").unwrap();
@@ -308,7 +308,7 @@ mod tests {
     #[test]
     fn init_workspace_creates_git_repo() {
         let dir = TempDir::new().unwrap();
-        let git_ws = GitSessionRepo;
+        let git_ws = GitTraceRepo;
         git_ws.init_workspace(dir.path()).unwrap();
         assert!(dir.path().join(".git").exists());
         // Idempotent — calling again does not error
@@ -319,7 +319,7 @@ mod tests {
     fn finish_session_noop_when_not_found() {
         let ws = TempDir::new().unwrap();
         init_repo(ws.path());
-        let git_ws = GitSessionRepo;
+        let git_ws = GitTraceRepo;
         // Should not error for a non-existent session
         git_ws.finish_session(ws.path(), "snonexistent").unwrap();
     }
@@ -336,7 +336,7 @@ mod tests {
         repo.find_branch("master", BranchType::Local)
             .and_then(|mut b| { b.rename("main", false)?; Ok(()) }).ok();
 
-        let git_ws = GitSessionRepo;
+        let git_ws = GitTraceRepo;
         let wt_path = ws.path().join("branches").join("feat");
         // Create the parent directory — git2 worktree creates only the final component
         std::fs::create_dir_all(wt_path.parent().unwrap()).unwrap();

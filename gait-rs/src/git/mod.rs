@@ -1,11 +1,11 @@
 pub mod codebase;
-pub mod session;
+pub mod trace;
 pub mod checkpoint;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use crate::git::codebase::{CodebaseRepo, GitCodebaseRepo};
-use crate::git::session::{SessionRepo, GitSessionRepo};
+use crate::git::trace::{TraceRepo, GitTraceRepo};
 use crate::git::checkpoint::{CheckpointRepo, GitCheckpointRepo};
 
 pub(crate) fn with_gait_trailer(message: &str) -> String {
@@ -30,7 +30,7 @@ pub(crate) fn checkpoint_git_dir(workspace: &Path, session_id: &str) -> PathBuf 
 #[derive(Clone)]
 pub struct Repos {
     pub codebase: Arc<dyn CodebaseRepo>,
-    pub workspace: Arc<dyn SessionRepo>,
+    pub traces: Arc<dyn TraceRepo>,
     pub checkpoints: Arc<dyn CheckpointRepo>,
 }
 
@@ -39,7 +39,7 @@ impl Repos {
     pub fn production() -> Self {
         Repos {
             codebase: Arc::new(GitCodebaseRepo),
-            workspace: Arc::new(GitSessionRepo),
+            traces: Arc::new(GitTraceRepo),
             checkpoints: Arc::new(GitCheckpointRepo),
         }
     }
