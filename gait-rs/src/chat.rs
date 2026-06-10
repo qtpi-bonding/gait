@@ -569,17 +569,21 @@ pub fn run_chat(
             let mut pending_clarify: Vec<ClarifyItem> = vec![];
             let mut pending_inform: Vec<InformItem> = vec![];
 
+            let mut turn_complete_blocks: Option<Vec<String>> = None;
             for json_line in reader.lines() {
                 match renderer.handle_line(&json_line?) {
                     crate::render::RenderAction::PermissionNeeded(items) => pending_permissions = items,
                     crate::render::RenderAction::ClarifyNeeded(items) => pending_clarify = items,
                     crate::render::RenderAction::InformNeeded(items) => pending_inform = items,
+                    crate::render::RenderAction::TurnComplete(blocks) => turn_complete_blocks = Some(blocks),
                     _ => {}
                 }
             }
             renderer.flush();
             child.wait()?;
-            current_turn_blocks.extend(renderer.turn_blocks.drain(..));
+            current_turn_blocks.extend(
+                turn_complete_blocks.unwrap_or_else(|| renderer.turn_blocks.drain(..).collect())
+            );
 
             // Handle clarify: prompt user for each question, write ClarifyReply, re-spawn
             if !pending_clarify.is_empty() {

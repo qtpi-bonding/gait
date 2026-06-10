@@ -176,6 +176,7 @@ mod tests {
             codebase_hash: "abc".into(),
             codebase_dirty: false,
             code_checkpoint: None,
+            blocks: vec![],
             output: TurnOutput { message: "done".into(), result: None },
             ts: 200,
         }).unwrap();

@@ -203,6 +203,10 @@ pub enum AnyEvent {
         /// None for legacy transcripts and non-git codebases.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         code_checkpoint: Option<String>,
+        /// Rendered text split into numbered blocks (paragraphs / fenced code chunks).
+        /// Powers `>(N)` quote-reply in the REPL and any other UI built on this stream.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        blocks: Vec<String>,
         output: TurnOutput,
         ts: u64,
     },
@@ -470,6 +474,7 @@ mod tests {
                 codebase_hash: "a".into(),
                 codebase_dirty: false,
                 code_checkpoint: None,
+                blocks: vec![],
                 output: TurnOutput { message: "done".into(), result: None },
                 ts: 1,
             },
@@ -479,6 +484,7 @@ mod tests {
                 codebase_hash: "a".into(),
                 codebase_dirty: false,
                 code_checkpoint: None,
+                blocks: vec![],
                 output: TurnOutput { message: "done".into(), result: None },
                 ts: 3,
             },
@@ -566,7 +572,7 @@ mod tests {
             AnyEvent::Error { message: "e".into(), phase: "llm".into(), ts: 0 },
             AnyEvent::Permissions { items: vec![], ts: 0 },
             AnyEvent::PermissionsReply { from: "user".into(), items: vec![], ts: 0 },
-            AnyEvent::TurnComplete { usage: TurnUsage { input:1,output:1,cache_read:0,cache_write:0 }, codebase_hash:"h".into(), codebase_dirty:false, code_checkpoint: None, output: TurnOutput{message:"s".into(),result:None}, ts:0 },
+            AnyEvent::TurnComplete { usage: TurnUsage { input:1,output:1,cache_read:0,cache_write:0 }, codebase_hash:"h".into(), codebase_dirty:false, code_checkpoint: None, blocks: vec![], output: TurnOutput{message:"s".into(),result:None}, ts:0 },
         ];
         for e in &events {
             let json = serde_json::to_string(e).unwrap();

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use futures_util::StreamExt;
 use crate::provider::{Provider, StreamChunk};
+use crate::render::split_into_blocks;
 use crate::types::{Message, MessageContent, AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind, Usage, ExecutionMode, ExecutionSignal, ToolPermission, Hook, HookAction};
 use crate::types::Tool;
 use crate::session::transcript::{
@@ -657,6 +658,7 @@ pub async fn run_turn(
     let mut total_usage = Usage::default();
     let mut clarify_signal: Option<Vec<ClarifyItem>> = None;
     let mut inform_signal: Option<Vec<InformItem>> = None;
+    let mut all_turn_text = String::new();
 
     for _step in 0..opts.max_iter.unwrap_or(100) {
         let outgoing = opts.hooks.iter().fold(messages.clone(), |m, h| h.pre_step(&m).unwrap_or(m));
@@ -665,14 +667,21 @@ pub async fn run_turn(
 
         let mut step_text = String::new();
         let mut step_tool_calls: Vec<ToolCall> = vec![];
+        let mut post_tool_text: Vec<String> = vec![];
+        let mut seen_tool_complete = false;
 
         while let Some(chunk) = chunk_stream.next().await {
             match chunk.map_err(|e| anyhow::anyhow!("stream error: {}", e))? {
                 StreamChunk::Text(t) => {
-                    println!("{}", serde_json::json!({"type": "text_delta", "content": t, "ts": now_ms()}));
+                    if seen_tool_complete {
+                        post_tool_text.push(t.clone());
+                    } else {
+                        println!("{}", serde_json::json!({"type": "text_delta", "content": t, "ts": now_ms()}));
+                    }
                     step_text.push_str(&t);
                 }
                 StreamChunk::ToolCallComplete { tool_call_id, tool_name, args } => {
+                    seen_tool_complete = true;
                     step_tool_calls.push(ToolCall { tool_call_id, tool_name, args });
                 }
                 StreamChunk::StepUsage(u) => {
@@ -682,6 +691,7 @@ pub async fn run_turn(
                 _ => {}
             }
         }
+        all_turn_text.push_str(&step_text);
         for h in &opts.hooks { h.post_step(&step_text, &step_tool_calls); }
 
         // Flush assistant text — only as a standalone event when there are NO tool calls.
@@ -715,6 +725,7 @@ pub async fn run_turn(
                 codebase_hash: codebase_hash.clone(),
                 codebase_dirty,
                 code_checkpoint,
+                blocks: split_into_blocks(&all_turn_text),
                 output: TurnOutput { message: message.clone(), result: None },
                 ts: now_ms(),
             })?;
@@ -1026,6 +1037,9 @@ pub async fn run_turn(
                         })?;
                         let message = tc.args.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
                         let result = tc.args.get("result").cloned();
+                        for t in post_tool_text.drain(..) {
+                            println!("{}", serde_json::json!({"type": "text_delta", "content": t, "ts": now_ms()}));
+                        }
                         let events_now = read_events(&tx_path)?;
                         let turn_n = count_turn_complete(&events_now) as u32 + 1;
                         let code_checkpoint = checkpoint_codebase(
@@ -1042,6 +1056,7 @@ pub async fn run_turn(
                             codebase_hash: codebase_hash.clone(),
                             codebase_dirty,
                             code_checkpoint,
+                            blocks: split_into_blocks(&all_turn_text),
                             output: TurnOutput { message: message.clone(), result: result.clone() },
                             ts: now_ms(),
                         })?;
@@ -1103,6 +1118,11 @@ pub async fn run_turn(
                     tool_results.push(result);
                 }
             }
+        }
+
+        // Emit any model text that arrived after tool calls in this step.
+        for t in post_tool_text.drain(..) {
+            println!("{}", serde_json::json!({"type": "text_delta", "content": t, "ts": now_ms()}));
         }
 
         // Gated tools: emit Permissions and exit so the user can decide.

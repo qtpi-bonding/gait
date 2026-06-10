@@ -9,7 +9,36 @@ pub enum RenderAction {
     PermissionNeeded(Vec<PermissionItem>),
     ClarifyNeeded(Vec<ClarifyItem>),
     InformNeeded(Vec<InformItem>),
-    TurnComplete,
+    TurnComplete(Vec<String>),
+}
+
+/// Split markdown text into numbered blocks using the same paragraph/fence logic as Renderer.
+/// An empty line terminates a block; a fenced code section is treated as one block.
+pub fn split_into_blocks(text: &str) -> Vec<String> {
+    let mut blocks: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut in_fence = false;
+    for line in text.lines() {
+        let is_fence = line.trim_start().starts_with("```");
+        if in_fence {
+            if !current.is_empty() { current.push('\n'); }
+            current.push_str(line);
+            if is_fence {
+                in_fence = false;
+                let block = std::mem::take(&mut current);
+                if !block.is_empty() { blocks.push(block); }
+            }
+        } else if line.is_empty() {
+            let block = std::mem::take(&mut current);
+            if !block.is_empty() { blocks.push(block); }
+        } else {
+            if !current.is_empty() { current.push('\n'); }
+            current.push_str(line);
+            if is_fence { in_fence = true; }
+        }
+    }
+    if !current.is_empty() { blocks.push(current); }
+    blocks
 }
 
 pub struct Renderer {
@@ -111,9 +140,12 @@ impl Renderer {
             // Capture termimad's rendered output so we can prefix every line:
             // first line gets "  N│", continuation lines get "    " (same width).
             // No space after │ — content starts immediately.
-            let mut buf: Vec<u8> = Vec::new();
-            let _ = self.skin.write_text_on(&mut buf, &block);
-            let rendered = String::from_utf8_lossy(&buf);
+            // Subtract gutter width (5: "  N│ ") so termimad wraps at word boundaries
+            // before the gutter is added, preventing mid-word terminal wraps.
+            let term_w = termimad::terminal_size().0 as usize;
+            let content_w = term_w.saturating_sub(6); // 5-char gutter + 1 space
+            let fmt = self.skin.text(&block, Some(content_w));
+            let rendered = format!("{}", fmt);
             let mut first = true;
             for line in rendered.lines() {
                 if first {
@@ -224,7 +256,11 @@ impl Renderer {
             }
             Some("turn_complete") => {
                 self.flush();
-                RenderAction::TurnComplete
+                let blocks: Vec<String> = v["blocks"]
+                    .as_array()
+                    .map(|arr| arr.iter().filter_map(|b| b.as_str().map(str::to_string)).collect())
+                    .unwrap_or_else(|| self.turn_blocks.clone());
+                RenderAction::TurnComplete(blocks)
             }
             Some("error") => {
                 self.flush();
@@ -315,7 +351,7 @@ mod tests {
     fn turn_complete_returns_turn_complete_action() {
         let mut r = renderer();
         let action = r.handle_line(r#"{"type":"turn_complete","ts":2}"#);
-        assert!(matches!(action, RenderAction::TurnComplete));
+        assert!(matches!(action, RenderAction::TurnComplete(_)));
     }
 
     #[test]
