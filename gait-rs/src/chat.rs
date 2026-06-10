@@ -464,14 +464,14 @@ pub fn run_chat(
         }
 
         match line.as_str() {
-            "/new" => {
+            "/n" | "/new" => {
                 session_id = new_session_id();
                 shell_history_path = workspace.join("tmp").join(format!("shell-{}.jsonl", session_id));
                 nav.lock().unwrap().path = shell_history_path.clone();
                 eprintln!("new session {}", session_id);
                 continue;
             }
-            "/exit" | "exit" | "quit" => break,
+            "/q" | "/exit" | "exit" | "quit" => break,
             _ => {}
         }
 
