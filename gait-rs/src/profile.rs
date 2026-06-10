@@ -32,8 +32,8 @@ pub struct ResolvedProfile {
     pub skill_registry: Vec<crate::config::SkillDef>,
     pub config_enabled: std::collections::HashSet<String>,
     pub output_schema_retries: u8,
+    pub hooks: Vec<Box<dyn crate::types::Hook>>,
 }
-
 impl Profile {
     /// Build the declarative profile from workspace config + an optional agent .md.
     /// Model precedence: explicit override > agent frontmatter > config.
@@ -137,7 +137,31 @@ impl Profile {
             skill_registry: self.skills,
             config_enabled: self.config_enabled,
             output_schema_retries: self.output_schema_retries,
+            hooks: vec![],
         })
+    }
+}
+
+impl ResolvedProfile {
+    /// Minimal constructor for tests: caller supplies provider + tools + allow/deny;
+    /// everything else is empty/default.
+    pub fn for_test(
+        provider: std::sync::Arc<dyn crate::provider::Provider>,
+        tools: Vec<Box<dyn crate::types::Tool>>,
+        allow: Vec<String>,
+        deny: Vec<String>,
+    ) -> Self {
+        ResolvedProfile {
+            provider, tools, allow, deny,
+            model: "test/model".into(),
+            instructions: String::new(),
+            mcp_registry: vec![],
+            mcp_clients: std::collections::HashMap::new(),
+            skill_registry: vec![],
+            config_enabled: std::collections::HashSet::new(),
+            output_schema_retries: 3,
+            hooks: vec![],
+        }
     }
 }
 

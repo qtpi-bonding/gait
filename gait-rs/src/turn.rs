@@ -78,6 +78,12 @@ pub enum TurnResult {
     Clarify { items: Vec<ClarifyItem> },
     Inform  { items: Vec<InformItem> },
 }
+/// Per-call inputs for one turn (the things that vary every invocation).
+pub struct TurnInput {
+    pub task: Option<String>,   // None on resume
+    pub auto: bool,
+    pub max_iter: Option<usize>,
+}
 
 // ── Session lock (RAII PID file) ─────────────────────────────────────────────
 

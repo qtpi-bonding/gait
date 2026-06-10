@@ -33,12 +33,11 @@ pub use stream::stream_text;
 pub use generate::generate_text;
 pub use factory::load_provider;
 pub use tools::builtin_tools;
-pub use turn::{TurnOpts, run_turn, TurnResult};
+pub use turn::{TurnOpts, run_turn, TurnResult, TurnInput};
 pub use profile::{Profile, ResolvedProfile};
 pub use harness::{HarnessBackend, NoopHarnessBackend, NativeHarnessBackend};
 pub use scheduler::{Action, Scheduler, NativeScheduler, TurnEnded};
 pub use workflow::runner::{run_workflow, WorkflowRunOpts};
-
 /// Default system prompt embedded from `prompts/gait-agent.md`.
 /// Always prepended to the composed system prompt; additive with workspace AGENTS.md.
 pub const GAIT_AGENT_PROMPT: &str = include_str!("../prompts/gait-agent.md");
