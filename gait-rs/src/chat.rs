@@ -58,10 +58,22 @@ fn expand_quote_reply(input: &str, blocks: &[String]) -> String {
             let inner_start = i + 2;
             if let Some(rel) = chars[inner_start..].iter().position(|&c| c == ')') {
                 let range: String = chars[inner_start..inner_start + rel].iter().collect();
-                if let Some(expanded) = resolve_quote_range(range.trim(), blocks) {
-                    result.push_str(&expanded);
-                    i = inner_start + rel + 1;
-                    continue;
+                let range_str = range.trim();
+                // Only attempt expansion if the range looks numeric (not arbitrary text).
+                let looks_numeric = range_str.chars().all(|c| c.is_ascii_digit() || c == '-');
+                if looks_numeric {
+                    match resolve_quote_range(range_str, blocks) {
+                        Some(expanded) => {
+                            result.push_str(&expanded);
+                            i = inner_start + rel + 1;
+                            continue;
+                        }
+                        None => {
+                            eprintln!("[gait] >({}): block out of range (last response had {} block{})",
+                                range_str, blocks.len(),
+                                if blocks.len() == 1 { "" } else { "s" });
+                        }
+                    }
                 }
             }
         }

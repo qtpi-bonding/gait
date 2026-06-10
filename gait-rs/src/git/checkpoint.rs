@@ -61,7 +61,10 @@ impl CheckpointRepo for GitCheckpointRepo {
         // Belt-and-suspenders: never track the codebase's own .git directory.
         let exclude_dir = git_dir.join("info");
         std::fs::create_dir_all(&exclude_dir)?;
-        std::fs::write(exclude_dir.join("exclude"), "/.git/\n")?;
+        // Exclude any .git file or directory anywhere in the tree.
+        // Bare `/.git/` only covers the root dir; `.git` (no slash) also covers
+        // linked-worktree .git FILES nested under dirs like .claude/worktrees/.
+        std::fs::write(exclude_dir.join("exclude"), ".git\n")?;
 
         // Seed the shadow HEAD at the codebase's current commit (if any), so the
         // first checkpoint is a child of the real HEAD. Empty/unborn repo -> leave
