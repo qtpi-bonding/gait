@@ -88,9 +88,13 @@ impl CheckpointRepo for GitCheckpointRepo {
         shadow.set_workdir(codebase, false)?;
 
         let mut index = shadow.index()?;
-        // Equivalent of `git add -A`. libgit2 always skips a `.git` dir at the
-        // worktree root; info/exclude `/.git/` is extra insurance.
-        index.add_all(["."].iter(), IndexAddOption::DEFAULT, None)?;
+        // Equivalent of `git add -A`, but skip nested git repos (linked worktrees
+        // and submodules). libgit2 validates directory paths as gitlink entries
+        // before consulting gitignore rules, so a directory containing a `.git`
+        // file would cause "invalid path" errors without this callback guard.
+        index.add_all(["."].iter(), IndexAddOption::DEFAULT, Some(&mut |path: &std::path::Path, _: &[u8]| -> i32 {
+            if codebase.join(path).join(".git").exists() { 1 } else { 0 }
+        }))?;
         index.write()?;
         let tree_id = index.write_tree()?;
 
