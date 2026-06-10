@@ -169,25 +169,37 @@ See [`proto/log.proto`](../../../proto/log.proto). Vocabulary:
 > green (`cargo test`) before the next. Dogfood gait/M3 as implementer per the
 > established loop.
 
-### Phase 0 — Build wiring
-- Add `prost`, `prost-build`, `pbjson`, `pbjson-build`, `prost-types` deps;
-  vendored `protoc` (e.g. `protoc-bin-vendored`) so the build stays zero-config.
-- `build.rs`: compile `proto/log.proto` → Rust, with pbjson serde impls
-  (camelCase canonical JSON). Emit into a generated module (e.g. `log::v1`).
-- Verify the generated `Event`/`Payload` types compile and round-trip a hand-
-  written JSON sample.
+### Phase 0 — Build wiring ✅ DONE (commit 539a361)
+- Added `prost`/`prost-types`/`pbjson`/`pbjson-types` + build deps
+  `prost-build`/`pbjson-build`/`protoc-bin-vendored` (vendored `protoc`,
+  zero-config). `sha2`/`serde_jcs`/`hex` for the hash.
+- `build.rs` compiles **both** `proto/{log,state}.proto`; WKTs map to
+  `pbjson-types` (camelCase canonical JSON). Generated types land under
+  `proto::gait::{log,state}::v1` (module tree mirrors package paths so state's
+  cross-package refs resolve).
+- `proto::hash::content_hash` = SHA-256 over `"v"+version+"."+JCS(body)` (the
+  pinned pipeline). 4-test gate: round-trip lossless · wire is canonical proto3
+  (camelCase, externally-tagged, default-omission) · hash recomputes stably + is
+  body/version sensitive.
 
-### Phase 1 — Envelope, identity, hashing
-- Helper to build an `Event`: assign `id` (UUIDv4), `seq` (= `max(parents.seq)+1`,
-  read from the current Log tail on append/resume), `ts`, `parents` (= `[prev_id]`
-  / `[]` for root), `content_hash` (= hash over JCS of the body), `version`.
-- JCS canonicalization + hash util (recompute-to-verify in tests).
-- Replace `emit_event`/`append_event` to write generated `Event` JSON lines.
+### Phase 1 — Envelope, identity, hashing ✅ DONE (commit 15b50a2)
+- `proto::envelope::mint` builds an `Event`: `id` (UUIDv4), `seq` (`prev.seq+1`;
+  `1` for root, `0` reserved as unset/malformed), `ts`, `parents` (`[prev_id]` /
+  `[]`), `version`, `content_hash` stamped last. `verify_hash` recomputes the body
+  hash and rejects an unset body. Pure functions, fully unit-tested.
+- **NOTE (phasing correction):** the emit-path rewire originally listed here moved
+  to **Phase 2** — `emit_event`/`append_event` take `&AnyEvent` and have ~70 call
+  sites, so they can't write generated `Event` lines until those call sites are
+  converted off `AnyEvent`, which IS the Phase 2 work. Reading the tail for `seq`
+  on append/resume also lands there (no caller until emit is rewired).
 
-### Phase 2 — Generated types replace `AnyEvent`; `Session.model` factor-out
+### Phase 2 — Generated types replace `AnyEvent`; emit rewire; `Session.model` factor-out
 - Delete the hand-written `AnyEvent`, `*Item` structs, and dead types
   (`CommandResult`, `LinkRef`, `relation`). Move methods (`session_state`, etc.)
   to free fns / ext traits over generated types.
+- Convert the ~70 `AnyEvent` call sites to build `Payload`; rewire
+  `emit_event`/`append_event` to `mint` + write generated `Event` JSON lines
+  (read the Log tail for `seq`/`parents` on append/resume).
 - Drop `Session.model`; live model stays on `ResolvedProfile`. Add the
   `Resolution` event + "emit on accepted drift at run start" logic.
 - `shell.rs`: populate `ProcessResult` + generic `duration`; stop stringifying
