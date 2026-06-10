@@ -12,6 +12,21 @@
 
 ---
 
+> ## ⚠️ RE-GROUND CORRECTIONS (2026-06-10, post-Plans-1–4) — these OVERRIDE the body below
+>
+> Verified against current code. The plan is sound; apply these two fixes:
+>
+> **Task A** — `from_config_and_agent` deny resolution is at `profile.rs:56-59` and matches the body's "OLD" verbatim (`.filter(|v| !v.is_empty()).unwrap_or_else(|| config.deny.clone())`). Clean swap. `allow` (52-55) stays unchanged.
+>
+> **Task B1 import** — `permission.rs:4` already has `use crate::types::PermissionRequest;` but NOT `ToolPermission`. Do NOT add the body's duplicate `use crate::types::{ToolPermission, PermissionRequest};`. Instead **change line 4** to `use crate::types::{PermissionRequest, ToolPermission};`. Matchers are `is_request_denied` (`permission.rs:203`) and `is_request_approved` (`permission.rs:229`); insert the direct-match `if req.patterns.iter().any(|p| p == entry) { return true; }` as the first line inside each `.iter().any(|entry| { … })` closure.
+>
+> **Task B2 — `ToolDef.permission` field & override:** `ToolDef` (`types.rs:65`) has exactly 4 fields (name, description, parameters, execute). The `permission()` at `types.rs:201` is the **trait `Tool` default** (NOT an impl on `ToolDef`); `impl Tool for ToolDef` (`types.rs:230-238`) currently has NO `permission` override, so adding one per the body is correct. The default test `tool_def_permission_default_is_tool_name` (`types.rs:340`) exists.
+>
+> **Task B2 Step 3 — the body names only 2 literals; there are 8 that need `permission: None`** (plus `make_mcp_tool_def` at `turn.rs:143`, which gets the closure — NOT `None`). Full list to add `permission: None,` to:
+> `src/stream.rs:170`, `src/profile.rs:188` (build_config_tool), `src/types.rs:315` (test), `src/types.rs:329` (`make_test_tool_def`), `src/turn.rs:1209`, `src/turn.rs:1676`, `src/turn.rs:1742`, `src/turn.rs:1841` (the four test tool literals). The `grep "ToolDef {"` gate + compile errors guarantee completeness.
+
+---
+
 ## File Structure
 
 | File | Change |
