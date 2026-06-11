@@ -16,6 +16,25 @@ fn extract_path_arg(args: &[String], flag: &str) -> Option<std::path::PathBuf> {
         .map(|w| std::path::PathBuf::from(&w[1]))
 }
 
+/// Resolve gait dir: --gait-dir arg > $GAIT_DIR env var > error.
+fn resolve_gait_dir(args: &[String]) -> anyhow::Result<std::path::PathBuf> {
+    if let Some(p) = extract_path_arg(args, "--gait-dir") {
+        return Ok(p);
+    }
+    if let Ok(v) = std::env::var("GAIT_DIR") {
+        if !v.is_empty() {
+            return Ok(std::path::PathBuf::from(v));
+        }
+    }
+    anyhow::bail!("no gait dir: pass --gait-dir <path> or set $GAIT_DIR")
+}
+
+/// Resolve codebase: --codebase arg > current working directory.
+fn resolve_codebase(args: &[String]) -> std::path::PathBuf {
+    extract_path_arg(args, "--codebase")
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")))
+}
+
 fn try_docker_route(orig_args: &[String]) {
     use std::io::IsTerminal;
     const IMAGE: &str = "gaitai/gait:latest";
@@ -70,21 +89,21 @@ fn try_docker_route(orig_args: &[String]) {
 
 fn usage() -> ! {
     eprintln!("usage: gait <command> [options]");
-    eprintln!("commands:");
-    eprintln!("  run      [--session <id>] [--task <text>] [--workspace <path>] [--codebase <path>] [--auto] [--model <provider/model>] [--container]");
+    eprintln!("  run      [--session <id>] [--task <text>] [--gait-dir <path>] [--codebase <path>] [--auto] [--model <provider/model>] [--container]");
     eprintln!("  init     [<repo-url>]");
-    eprintln!("  finish   <session-id> [--workspace <path>]");
-    eprintln!("  undo    <session-id> [--turn N | --list] [--code] [--transcript] [--workspace <path>]");
-    eprintln!("  sessions [--workspace <path>]");
+    eprintln!("  finish   <session-id> [--gait-dir <path>]");
+    eprintln!("  undo    <session-id> [--turn N | --list] [--code] [--transcript] [--gait-dir <path>]");
+    eprintln!("  sessions [--gait-dir <path>]");
     eprintln!("  auth     <list|add|remove> [<provider>]");
     eprintln!("  models   [<filter>]");
     eprintln!("  workflow <run|list|continue|abort|log> [args...]");
-    eprintln!("  chat     [--workspace <path>] [--codebase <path>] [--agent <name>]");
-    eprintln!("  approve  <session-id> [--pattern <pat>] [--scope <global|agent|once>] [--workspace <path>] [--agent <name>]");
-    eprintln!("  reject   <session-id> [--workspace <path>]");
-    eprintln!("  status   <session-id> [--workspace <path>] [--json]");
+    eprintln!("  chat     [--gait-dir <path>] [--codebase <path>] [--agent <name>]");
+    eprintln!("  approve  <session-id> [--pattern <pat>] [--scope <global|agent|once>] [--gait-dir <path>] [--agent <name>]");
+    eprintln!("  reject   <session-id> [--gait-dir <path>]");
+    eprintln!("  status   <session-id> [--gait-dir <path>] [--json]");
     eprintln!("  load     <mcp|skill> <name> [flags] [--yes]");
     eprintln!("  unload   <mcp|skill> <name>");
+
     std::process::exit(1);
 }
 
@@ -154,8 +173,11 @@ async fn main() {
 async fn cmd_run(argv: &[String]) {
     let mut session_id: Option<String> = None;
     let mut task: Option<String> = None;
-    let mut gait_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let mut codebase_path: Option<PathBuf> = None;
+    let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
+        eprintln!("[gait] {e}");
+        std::process::exit(1);
+    });
+    let codebase_path = resolve_codebase(argv);
     let mut auto = false;
     let mut model_override: Option<String> = None;
     let mut agent_name: Option<String> = None;
@@ -165,8 +187,8 @@ async fn cmd_run(argv: &[String]) {
         match argv[i].as_str() {
             "--session"   => { i += 1; session_id = argv.get(i).cloned(); }
             "--task"      => { i += 1; task = argv.get(i).cloned(); }
-            "--gait-dir" => { i += 1; gait_dir = argv.get(i).map(PathBuf::from).unwrap_or(gait_dir); }
-            "--codebase"  => { i += 1; codebase_path = argv.get(i).map(PathBuf::from); }
+            "--gait-dir" => { i += 1; }
+            "--codebase"  => { i += 1; }
             "--model"     => { i += 1; model_override = argv.get(i).cloned(); }
             "--auto"      => { auto = true; }
             "--agent"     => { i += 1; agent_name = argv.get(i).cloned(); }
@@ -182,7 +204,6 @@ async fn cmd_run(argv: &[String]) {
     });
 
     let config = load_config(&gait_dir);
-    let codebase_path = codebase_path.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
     // Resolve agent file: explicit --agent name, or fallback to agents/default.md
     let agent_path: Option<PathBuf> = if let Some(ref name) = agent_name {
@@ -345,14 +366,16 @@ fn cmd_init(argv: &[String]) {
         eprintln!("[gait] start an agent turn: gait run --task \"...\"");
     }
 }
-
 fn cmd_finish(argv: &[String]) {
     let mut session_id: Option<String> = None;
-    let mut gait_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
+        eprintln!("[gait] {e}");
+        std::process::exit(1);
+    });
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
-            "--gait-dir" => { i += 1; if let Some(p) = argv.get(i) { gait_dir = std::path::PathBuf::from(p); } }
+            "--gait-dir" => { i += 1; }
             other if !other.starts_with('-') => { session_id = Some(other.to_string()); }
             _ => {}
         }
@@ -361,7 +384,7 @@ fn cmd_finish(argv: &[String]) {
     let session_id = match session_id {
         Some(id) => id,
         None => {
-            eprintln!("usage: gait finish <session-id> [--workspace <path>]");
+            eprintln!("usage: gait finish <session-id> [--gait-dir <path>]");
             std::process::exit(1);
         }
     };
@@ -375,14 +398,16 @@ fn cmd_finish(argv: &[String]) {
     }
     eprintln!("[gait] session {} merged into main", session_id);
 }
-
 fn cmd_undo(argv: &[String]) {
     let mut session_id: Option<String> = None;
     let mut turn: Option<u32> = None;
     let mut code = false;
     let mut transcript = false;
     let mut list = false;
-    let mut gait_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
+        eprintln!("[gait] {e}");
+        std::process::exit(1);
+    });
 
     let mut i = 0;
     while i < argv.len() {
@@ -400,13 +425,7 @@ fn cmd_undo(argv: &[String]) {
             "--code" => code = true,
             "--transcript" => transcript = true,
             "--list" => list = true,
-            "--gait-dir" => {
-                i += 1;
-                gait_dir = match argv.get(i) {
-                    Some(p) => std::path::PathBuf::from(p),
-                    None => { eprintln!("[gait] error: --workspace needs a value"); std::process::exit(1); }
-                };
-            }
+            "--gait-dir" => { i += 1; }
             other if !other.starts_with("--") && session_id.is_none() => {
                 session_id = Some(other.to_string());
             }
@@ -418,7 +437,7 @@ fn cmd_undo(argv: &[String]) {
     let session_id = match session_id {
         Some(id) => id,
         None => {
-            eprintln!("usage: gait undo <session-id> [--turn N | --list] [--code] [--transcript] [--workspace <path>]");
+            eprintln!("usage: gait undo <session-id> [--turn N | --list] [--code] [--transcript] [--gait-dir <path>]");
             std::process::exit(1);
         }
     };
@@ -525,14 +544,11 @@ fn undo_transcript_to_turn(gait_dir: &std::path::Path, session_id: &str, turn: u
     repo.reset(&obj, git2::ResetType::Hard, None)?;
     Ok(())
 }
-
 fn cmd_sessions(argv: &[String]) {
-    let mut gait_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let mut i = 0;
-    while i < argv.len() {
-        if argv[i] == "--gait-dir" { i += 1; if let Some(p) = argv.get(i) { gait_dir = std::path::PathBuf::from(p); } }
-        i += 1;
-    }
+    let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
+        eprintln!("[gait] {e}");
+        std::process::exit(1);
+    });
     match gait_ai::git::Repos::production().traces.list_active_sessions(&gait_dir) {
         Ok(sessions) if sessions.is_empty() => println!("No active sessions."),
         Ok(sessions) => { for id in sessions { println!("{}", id); } }
@@ -606,9 +622,11 @@ async fn cmd_models(argv: &[String]) {
         Err(e) => { eprintln!("Error fetching models: {}", e); std::process::exit(1); }
     }
 }
-
 async fn cmd_workflow(argv: &[String]) {
-    let gait_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
+        eprintln!("[gait] {e}");
+        std::process::exit(1);
+    });
     let sub = argv.first().map(|s| s.as_str()).unwrap_or("");
     match sub {
         "run" => cmd_workflow_run(&argv[1..], gait_dir).await,
@@ -795,21 +813,23 @@ fn cmd_chat(argv: &[String]) {
         std::process::exit(1);
     }
 }
-
 fn cmd_approve(argv: &[String]) {
     use gait_ai::permission::{execute_approve, ApproveParams, ApproveScope};
     use gait_ai::agent_frontmatter::resolve_agent_path;
 
-    let mut gait_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut session_id: Option<String> = None;
     let mut pattern: Option<String> = None;
     let mut scope: Option<ApproveScope> = None;
     let mut agent_name: Option<String> = None;
+    let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
+        eprintln!("[gait] {e}");
+        std::process::exit(1);
+    });
 
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
-            "--gait-dir" => { i += 1; if let Some(p) = argv.get(i) { gait_dir = PathBuf::from(p); } }
+            "--gait-dir" => { i += 1; }
             "--pattern"   => { i += 1; pattern = argv.get(i).cloned(); }
             "--scope"     => {
                 i += 1;
@@ -837,7 +857,7 @@ fn cmd_approve(argv: &[String]) {
     let session_id = match session_id {
         Some(id) => id,
         None => {
-            eprintln!("usage: gait approve <session-id> [--pattern <pat>] [--scope <global|agent|once>] [--workspace <path>] [--agent <name>]");
+            eprintln!("usage: gait approve <session-id> [--pattern <pat>] [--scope <global|agent|once>] [--gait-dir <path>] [--agent <name>]");
             std::process::exit(1);
         }
     };
@@ -853,17 +873,19 @@ fn cmd_approve(argv: &[String]) {
     }
     eprintln!("[gait] approved {} (scope: {:?})", session_id, params.scope);
 }
-
 fn cmd_reject(argv: &[String]) {
     use gait_ai::session::transcript::{session_state, write_permissions_reply, PermissionsReplyItem, SessionState};
 
-    let mut gait_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut session_id: Option<String> = None;
+    let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
+        eprintln!("[gait] {e}");
+        std::process::exit(1);
+    });
 
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
-            "--gait-dir" => { i += 1; if let Some(p) = argv.get(i) { gait_dir = PathBuf::from(p); } }
+            "--gait-dir" => { i += 1; }
             other if !other.starts_with('-') => { session_id = Some(other.to_string()); }
             _ => {}
         }
@@ -873,7 +895,7 @@ fn cmd_reject(argv: &[String]) {
     let session_id = match session_id {
         Some(id) => id,
         None => {
-            eprintln!("usage: gait reject <session-id> [--workspace <path>]");
+            eprintln!("usage: gait reject <session-id> [--gait-dir <path>]");
             std::process::exit(1);
         }
     };
@@ -910,18 +932,20 @@ fn cmd_reject(argv: &[String]) {
     }
     eprintln!("[gait] rejected {} pending permission(s) for session {}", items.len(), session_id);
 }
-
 fn cmd_status(argv: &[String]) {
     use gait_ai::session::transcript::{session_state, SessionState};
 
-    let mut gait_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut session_id: Option<String> = None;
     let mut json = false;
+    let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
+        eprintln!("[gait] {e}");
+        std::process::exit(1);
+    });
 
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
-            "--gait-dir" => { i += 1; if let Some(p) = argv.get(i) { gait_dir = PathBuf::from(p); } }
+            "--gait-dir" => { i += 1; }
             "--json"      => { json = true; }
             other if !other.starts_with('-') => { session_id = Some(other.to_string()); }
             _ => {}
@@ -932,7 +956,7 @@ fn cmd_status(argv: &[String]) {
     let session_id = match session_id {
         Some(id) => id,
         None => {
-            eprintln!("usage: gait status <session-id> [--workspace <path>] [--json]");
+            eprintln!("usage: gait status <session-id> [--gait-dir <path>] [--json]");
             std::process::exit(1);
         }
     };
@@ -1275,5 +1299,50 @@ mod tests {
         std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"x"}"#).unwrap();
         let args: Vec<String> = ["plugin", "foo"].iter().map(|s| s.to_string()).collect();
         assert!(cmd_load(dir.path(), &args).is_err());
+    }
+
+    mod resolution_tests {
+        use super::*;
+        use serial_test::serial;
+
+        #[test]
+        #[serial]
+        fn resolve_gait_dir_uses_env_var_when_no_arg() {
+            std::env::set_var("GAIT_DIR", "/tmp/test-gait");
+            let result = resolve_gait_dir(&[]);
+            std::env::remove_var("GAIT_DIR");
+            assert_eq!(result.unwrap(), std::path::PathBuf::from("/tmp/test-gait"));
+        }
+
+        #[test]
+        #[serial]
+        fn resolve_gait_dir_arg_overrides_env_var() {
+            std::env::set_var("GAIT_DIR", "/tmp/env-gait");
+            let args = vec!["--gait-dir".to_string(), "/tmp/arg-gait".to_string()];
+            let result = resolve_gait_dir(&args);
+            std::env::remove_var("GAIT_DIR");
+            assert_eq!(result.unwrap(), std::path::PathBuf::from("/tmp/arg-gait"));
+        }
+
+        #[test]
+        #[serial]
+        fn resolve_gait_dir_errors_when_nothing_set() {
+            std::env::remove_var("GAIT_DIR");
+            let result = resolve_gait_dir(&[]);
+            assert!(result.is_err(), "should error when no --gait-dir and no $GAIT_DIR");
+        }
+
+        #[test]
+        fn resolve_codebase_defaults_to_pwd() {
+            let result = resolve_codebase(&[]);
+            assert_eq!(result, std::env::current_dir().unwrap());
+        }
+
+        #[test]
+        fn resolve_codebase_uses_arg() {
+            let args = vec!["--codebase".to_string(), "/tmp/mycode".to_string()];
+            let result = resolve_codebase(&args);
+            assert_eq!(result, std::path::PathBuf::from("/tmp/mycode"));
+        }
     }
 }
