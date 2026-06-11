@@ -28,6 +28,7 @@ pub mod hashline;
 pub mod prompt;
 pub mod profile;
 pub mod proto;
+pub mod sandbox;
 
 pub use types::*;
 pub use stream::stream_text;

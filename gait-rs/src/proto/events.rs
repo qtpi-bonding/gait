@@ -265,6 +265,20 @@ pub fn resolution(resolved: &crate::profile::ResolvedProfile) -> pb::event::Body
     wire::body(pb::payload::Kind::Resolution(resolution_msg(resolved)))
 }
 
+/// `SandboxApplied` — kernel enforcement status at process start.
+/// `enforcement` is one of "active" | "unavailable" | "noop".
+pub fn sandbox_applied(
+    enforcement: &str,
+    scope_paths: Vec<String>,
+    reason: Option<String>,
+) -> pb::event::Body {
+    wire::body(pb::payload::Kind::SandboxApplied(pb::SandboxApplied {
+        enforcement: sandbox_enforcement(enforcement),
+        scope_paths,
+        reason,
+    }))
+}
+
 /// `Compaction` — through_seq unset (no seq in legacy data).
 pub fn compaction(
     summary: String,
@@ -342,6 +356,16 @@ fn decision(s: &str) -> i32 {
         _ => pb::Decision::Unspecified,
     };
     d as i32
+}
+
+fn sandbox_enforcement(s: &str) -> i32 {
+    let e = match s {
+        "active" => pb::SandboxEnforcement::Active,
+        "unavailable" => pb::SandboxEnforcement::Unavailable,
+        "noop" => pb::SandboxEnforcement::Noop,
+        _ => pb::SandboxEnforcement::Unspecified,
+    };
+    e as i32
 }
 
 fn scope(s: &Option<String>) -> i32 {

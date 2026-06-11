@@ -70,6 +70,7 @@ message Payload {
     Compaction         compaction          = 17;
     Error              error               = 18;
     RawEvent           raw                 = 19;  // opaque holder: legacy / not-yet-modeled events (incl. workflow today)
+    SandboxApplied     sandbox_applied     = 50;
   }
   reserved 20 to 49;  // workflow family (WorkflowStart / Node* / HookRun …) — deferred to the workflow-subsystem redo
 }
@@ -229,6 +230,20 @@ enum Decision { DECISION_UNSPECIFIED = 0; DECISION_APPROVE = 1; DECISION_DENY = 
 enum Scope    { SCOPE_UNSPECIFIED = 0; SCOPE_ONCE = 1; SCOPE_AGENT = 2; SCOPE_GLOBAL = 3; }
 message Permissions      { repeated PermissionItem items = 1; }
 message PermissionsReply { string from = 1; repeated PermissionsReplyItem items = 2; }  // from = replier id
+
+
+// ── Sandbox ──────────────────────────────────────────────────────────────────
+message SandboxApplied {
+  SandboxEnforcement enforcement = 1;  // active kernel enforcement or fallback
+  repeated string scope_paths    = 2;  // the enforcement scope paths
+  optional string reason         = 3;  // why enforcement is unavailable (enforcement=UNAVAILABLE)
+}
+enum SandboxEnforcement {
+  SANDBOX_ENFORCEMENT_UNSPECIFIED = 0;
+  SANDBOX_ENFORCEMENT_ACTIVE      = 1;  // Landlock (Linux) or Seatbelt (macOS) applied
+  SANDBOX_ENFORCEMENT_UNAVAILABLE = 2;  // kernel enforcement unavailable; tier-0 gate still active
+  SANDBOX_ENFORCEMENT_NOOP        = 3;  // no scope declared or explicitly disabled (tests/unscoped)
+}
 
 
 // ── Projections live in their own contract ───────────────────────────────────
