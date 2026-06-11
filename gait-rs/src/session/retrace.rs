@@ -15,7 +15,7 @@
 use std::path::Path;
 use crate::types::{Message, MessageContent, AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind};
 use crate::session::transcript::{read_events, last_compaction_index};
-use crate::proto::gait::log::v1::{event, payload, ClarifyKind, Event};
+use crate::proto::gait::log::v1::{self as pb, event, payload, ClarifyKind, Event};
 
 /// The substantive payload kind for an event, if it carries one.
 fn kind(e: &Event) -> Option<&payload::Kind> {
@@ -232,6 +232,54 @@ pub fn enabled_loadables(
     enabled
 }
 
+/// Result of folding the full event log through all Retrace projections.
+pub struct RetraceResult {
+    /// The Transcript: Vec<Message> for the model context window.
+    pub messages: Vec<Message>,
+    /// Active loadable names (seeds from config, LWW-toggled by `load` tool calls).
+    pub enabled_loadables: std::collections::HashSet<String>,
+    /// The most recent `Resolution` payload, if any (LWW-Register).
+    pub active_resolution: Option<pb::Resolution>,
+}
+
+/// Fold the full event log into all three projections in a single pass.
+///
+/// `config_enabled` is the baseline set of loadable names from config (used by
+/// `enabled_loadables`). Pass `&HashSet::new()` if not relevant.
+pub fn fold(
+    all_events: &[Event],
+    config_enabled: &std::collections::HashSet<String>,
+) -> anyhow::Result<RetraceResult> {
+    let messages = messages(all_events)?;
+
+    // enabled_loadables uses the post-compaction slice (pre-compaction loads are
+    // intentionally forgotten — the spec says the model reloads after compaction).
+    let compaction_start = last_compaction_index(all_events).unwrap_or(0);
+    let post_compaction = &all_events[compaction_start..];
+    let enabled_loadables = enabled_loadables(post_compaction, config_enabled);
+
+    // LWW-Register: last Resolution event wins.
+    let active_resolution = active_resolution(all_events);
+
+    Ok(RetraceResult { messages, enabled_loadables, active_resolution })
+}
+
+/// The most recent `Resolution` payload in `events`, if any. LWW-Register over
+/// `Resolution` events. Used by `run_turn` as the drift-guard baseline: skip
+/// emitting a new `Resolution` if the live profile already matches the most
+/// recent one.
+pub fn active_resolution(events: &[Event]) -> Option<pb::Resolution> {
+    events.iter().rev().find_map(|e| {
+        if let Some(event::Body::Payload(p)) = &e.body {
+            if let Some(payload::Kind::Resolution(r)) = &p.kind {
+                return Some(r.clone());
+            }
+        }
+        None
+    })
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,6 +419,67 @@ mod tests {
         let msgs = messages(&proto_events).unwrap();
         assert!(matches!(&msgs[0], Message::User { content: MessageContent::Text(t) } if t == "hi"));
         let enabled = enabled_loadables(&proto_events, &HashSet::new());
+
         assert!(enabled.contains("slack_send"));
+    }
+
+    #[test]
+    fn active_resolution_returns_last_resolution() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("tx.jsonl");
+
+        // Write two Resolution events — active_resolution should return the second.
+        wire::append(&path, wire::body(pb::payload::Kind::Resolution(pb::Resolution {
+            model: "model-a".into(),
+            tools: vec![], mcp_servers: vec![], skills: vec![],
+            permissions: Some(pb::PermissionPolicy { allow: vec![], deny: vec![] }),
+            instructions: String::new(), output_schema_retries: None,
+        }))).unwrap();
+        wire::append(&path, wire::body(pb::payload::Kind::Resolution(pb::Resolution {
+            model: "model-b".into(),
+            tools: vec![], mcp_servers: vec![], skills: vec![],
+            permissions: Some(pb::PermissionPolicy { allow: vec![], deny: vec![] }),
+            instructions: String::new(), output_schema_retries: None,
+        }))).unwrap();
+
+        let all_events = read_events(&path).unwrap();
+        let r = active_resolution(&all_events).expect("a resolution");
+        assert_eq!(r.model, "model-b");
+    }
+
+    #[test]
+    fn active_resolution_returns_none_for_no_resolution() {
+        let bodies = vec![
+            events::user_turn("hi".into(), None, None),
+            events::assistant_text("hello".into()),
+        ];
+        let proto_events = mint_events(bodies);
+        assert!(active_resolution(&proto_events).is_none());
+    }
+
+    #[test]
+    fn fold_returns_all_three_projections() {
+        use std::collections::HashSet;
+        let dir = TempDir::new().unwrap();
+        let path = write_events(dir.path(), vec![
+            wire::body(pb::payload::Kind::Resolution(pb::Resolution {
+                model: "gpt-fold".into(),
+                tools: vec![], mcp_servers: vec![], skills: vec![],
+                permissions: Some(pb::PermissionPolicy { allow: vec![], deny: vec![] }),
+                instructions: String::new(), output_schema_retries: None,
+            })),
+            events::user_turn("hi".into(), None, None),
+            events::tool_call("1".into(), "load".into(), &serde_json::json!({"name": "tdd", "enabled": true})),
+        ]);
+        let all_events = read_events(&path).unwrap();
+        let config: HashSet<String> = HashSet::new();
+        let result = fold(&all_events, &config).unwrap();
+
+        // messages: user turn (compaction_start == 0, no resolution-only, user_turn becomes a Message)
+        assert!(!result.messages.is_empty());
+        // active_resolution: the one we wrote
+        assert_eq!(result.active_resolution.as_ref().map(|r| r.model.as_str()), Some("gpt-fold"));
+        // enabled_loadables: tdd was toggled on
+        assert!(result.enabled_loadables.contains("tdd"));
     }
 }

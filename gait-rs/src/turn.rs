@@ -583,7 +583,8 @@ pub async fn run_turn(
     // the working state projection for the turn.
     {
         let events_for_guard = read_events(&tx_path)?;
-        if events::last_resolution(&events_for_guard) != Some(resolution.clone()) {
+        if retrace::active_resolution(&events_for_guard) != Some(resolution.clone()) {
+
             wire::emit(&tx_path, wire::body(payload::Kind::Resolution(resolution)))?;
         }
     }
