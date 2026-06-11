@@ -238,13 +238,14 @@ The Retrace folds the Log (sorted by `(seq, id)`) into:
 4. **redact/replace** working-transcript mutations (new LWW-per-target, §1.9);
 5. **`SessionState`** (the tail-scan projection).
 
-### Phase 4 — Mutations + migration
-- `Redact`/`Replace` fold + cascade + LWW (Phase 3.4), with the
-  converged-state precedence rule for cascade × orphan-Replace.
-- `RawEvent` round-trips unknown/legacy lines.
-- **Migration: hard cut.** Bump `version`; regenerate/discard test transcripts; no
-  dual-read of the old serde format.
-- `SessionStateReport` for `gait state` (drop `pending`).
+### Phase 4 — Mutations + migration ✅ DONE (commit 683dc40)
+- `MutationState` enum + `active_mutations()` LWW fold over `Redact`/`Replace` event bodies.
+- `apply_cascade()` — ToolCall↔ToolResult atomic cascade; cascade Redact overrides orphan Replace.
+- `messages_applying()` private fn applies mutations; `messages()` delegates with empty map.
+- `fold()` computes mutations + cascade before building messages; `RetraceResult.mutations` added.
+- `gait state --json` now serializes `SessionStateReport` proto (camelCase; no `pending` array).
+- Deleted `events::last_resolution` (dead since Phase 3) + its test.
+- 6 new retrace mutation tests; `cargo test --lib` → 420 passed.
 
 ### Out of scope (this effort)
 - Branching **fold** (parents populated + reserved, not walked).
