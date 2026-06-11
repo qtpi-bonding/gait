@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use futures_util::StreamExt;
 use crate::provider::{Provider, StreamChunk};
-use crate::render::split_into_blocks;
+use crate::ui::split_into_blocks;
 use crate::types::{Message, MessageContent, AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind, Usage, ExecutionMode, ExecutionSignal, ToolPermission, Hook, HookAction};
 use crate::types::Tool;
 use crate::session::transcript::{

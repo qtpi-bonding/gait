@@ -17,7 +17,6 @@ pub mod harness;
 pub mod scheduler;
 pub mod workflow;
 pub mod permission;
-pub mod render;
 pub mod ui;
 pub mod repl_input;
 pub mod chat;

@@ -247,7 +247,7 @@ async fn cmd_run(argv: &[String]) {
     // Expand $(cmd) and @path markers in the task string before the turn runs.
     let task = task.map(|t| {
         let hist = gait_dir.join("tmp").join(format!("shell-{}.jsonl", &session_id));
-        gait_ai::chat::expand_at_markers(&t, &hist, &codebase_path)
+        gait_ai::repl_input::expand_at_markers(&t, &hist, &codebase_path)
             .unwrap_or_else(|e| { eprintln!("[!] @ expand error: {e}"); t })
     });
 
