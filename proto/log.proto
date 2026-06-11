@@ -71,8 +71,9 @@ message Payload {
     Error              error               = 18;
     RawEvent           raw                 = 19;  // opaque holder: legacy / not-yet-modeled events (incl. workflow today)
     SandboxApplied     sandbox_applied     = 50;
+    HookRun         hook_run            = 51;
   }
-  reserved 20 to 49;  // workflow family (WorkflowStart / Node* / HookRun …) — deferred to the workflow-subsystem redo
+  reserved 20 to 49;  // workflow family (WorkflowHook* / WorkflowNode* / WorkflowStart …) — deferred to the workflow-subsystem redo
 }
 
 
@@ -244,6 +245,26 @@ enum SandboxEnforcement {
   SANDBOX_ENFORCEMENT_UNAVAILABLE = 2;  // kernel enforcement unavailable; tier-0 gate still active
   SANDBOX_ENFORCEMENT_NOOP        = 3;  // no scope declared or explicitly disabled (tests/unscoped)
 }
+
+
+// ── Hooks ────────────────────────────────────────────────────────────────────
+// Emitted by config-driven hooks (gait.jsonc "hooks": [...]).
+// Workflow-subsystem hook events are WorkflowHook* in the reserved 20-49 range.
+message HookRun {
+  HookPhase phase      = 1;  // lifecycle point where this hook fired
+  string    command    = 2;  // the shell command string
+  int32     exit_code  = 3;  // 0 = pass; non-zero = hook reported failure
+  string    output     = 4;  // combined stdout+stderr from the command
+  optional string call_id = 5;  // ToolCall correlation (post_tool / pre_tool only)
+}
+enum HookPhase {
+  HOOK_PHASE_UNSPECIFIED = 0;
+  HOOK_PHASE_POST_TOOL   = 1;
+  HOOK_PHASE_PRE_TOOL    = 2;
+  HOOK_PHASE_POST_TURN   = 3;
+  HOOK_PHASE_PRE_TURN    = 4;
+}
+
 
 
 // ── Projections live in their own contract ───────────────────────────────────
