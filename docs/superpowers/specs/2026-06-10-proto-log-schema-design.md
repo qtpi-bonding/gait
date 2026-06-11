@@ -210,8 +210,10 @@ a converter + a coordinated read-side flip rather than one big-bang):
   new ergonomic constructors), then DELETE `AnyEvent`, the `*Item` structs,
   `CommandResult`/`LinkRef`/`relation`, `convert.rs`, and the old emit shims.
   Incrementally green (each site flips independently; deletion lands once all do).
-- **2.3 ⏳:** Drop `Session.model` (live model stays on `ResolvedProfile`); add the
-  `Resolution` event + "emit on accepted drift at run start" logic.
+- **2.3 ✅ (4704a2e):** Dropped `Session.model` (live model on `ResolvedProfile`);
+  added `events::resolution_msg`/`resolution`/`last_resolution`; `run_turn` emits a
+  `Resolution` at run start under a drift guard (skip if identical to the last
+  logged one). Write-only; the retrace LWW projection is Phase 3.
 - **2.4 ⏳:** `shell.rs` — populate `ProcessResult` + generic `duration`; stop
   stringifying exit/time into `output` (forces the ToolResult write sites onto
   proto, so it composes with 2.2c).
