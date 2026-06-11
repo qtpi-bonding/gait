@@ -183,11 +183,11 @@ fn make_mcp_tool_def(def: &McpToolDef, client: Arc<McpClient>) -> Box<dyn crate:
 async fn execute_tool_call(
     tc: &ToolCall,
     tools: &[Box<dyn Tool>],
-    tx_path: &std::path::Path,
+    emitter: &crate::proto::Emitter,
     approval_prefix: Option<String>,
 ) -> anyhow::Result<(AssistantPart, ToolResult)> {
     let id = tc.tool_call_id.clone();
-    wire::emit(tx_path, events::tool_call(id.clone(), tc.tool_name.clone(), &tc.args))?;
+    emitter.emit(events::tool_call(id.clone(), tc.tool_name.clone(), &tc.args))?;
     let assistant_part = AssistantPart::ToolCall(ToolCall {
         tool_call_id: id.clone(),
         tool_name: tc.tool_name.clone(),
@@ -239,7 +239,7 @@ async fn execute_tool_call(
         Some(prefix) => format!("{}\n{}", prefix, raw),
         None => raw,
     };
-    wire::emit(tx_path, events::tool_result(id.clone(), output.clone(), duration, process))?;
+    emitter.emit(events::tool_result(id.clone(), output.clone(), duration, process))?;
     let tool_result = ToolResult {
         kind: ToolResultKind::ToolResult,
         tool_call_id: id,
@@ -546,7 +546,7 @@ pub async fn run_turn(
                             _ => Some("[User approved.]".to_string()),
                         }
                     };
-                    if let Err(e) = execute_tool_call(&tc, &tools, &emitter.tx_path, prefix).await {
+                    if let Err(e) = execute_tool_call(&tc, &tools, emitter, prefix).await {
                         // Emit error as tool result so model sees it
                         emitter.emit(events::tool_result(
                             id.clone(),
@@ -912,12 +912,11 @@ pub async fn run_turn(
                     let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
                     let tc = *tc;
                     let tools = &tools;
-                    let tx_path = &emitter.tx_path;
                     async move {
                         if let Some(reason) = block_reason {
                             Err(anyhow::anyhow!("[Blocked by hook] {}", reason))
                         } else {
-                            execute_tool_call(tc, tools, tx_path, prefix).await
+                            execute_tool_call(tc, tools, emitter, prefix).await
                         }
                     }
                 })
@@ -1016,7 +1015,7 @@ pub async fn run_turn(
                             }
                         }
                         let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
-                        let (part, mut result) = execute_tool_call(tc, &tools, &emitter.tx_path, prefix).await
+                        let (part, mut result) = execute_tool_call(tc, &tools, emitter, prefix).await
                             .unwrap_or_else(|e| error_tool_result(tc, e));
                         let result_str = result.result.as_str().unwrap_or("").to_string();
                         for h in &hooks {
@@ -1095,7 +1094,7 @@ pub async fn run_turn(
                     ExecutionSignal::Continue => {
                         // skill (default) and any other serial tool
                         let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
-                        let (part, mut result) = execute_tool_call(tc, &tools, &emitter.tx_path, prefix).await
+                        let (part, mut result) = execute_tool_call(tc, &tools, emitter, prefix).await
                             .unwrap_or_else(|e| error_tool_result(tc, e));
                         let result_str = result.result.as_str().unwrap_or("").to_string();
                         for h in &hooks {
@@ -1174,6 +1173,7 @@ pub async fn run_turn(
 mod tests {
     use super::*;
     use crate::git::trace::{GitTraceRepo, TraceRepo};
+    use crate::session::transcript::read_events;
     use tempfile::TempDir;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
