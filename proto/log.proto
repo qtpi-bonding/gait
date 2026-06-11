@@ -45,6 +45,23 @@ message Event {
 }
 
 
+// ── Live-stream types (ephemeral, never persisted) ───────────────────────────
+
+// Ephemeral live-typing fragment. NOT a log event — no envelope, never persisted.
+message TextDelta {
+  string content = 1;
+}
+
+// Live-stream envelope. Carries either a durable log Event or an ephemeral
+// TextDelta. Never persisted; produced+consumed within a single session.
+message StreamItem {
+  oneof item {
+    Event     event = 1;
+    TextDelta delta = 2;
+  }
+}
+
+
 // ── Payload: the substantive worldline events ────────────────────────────────
 // Reused by Event.body AND by Replace.replacement, so a Replace is fully typed.
 // Contains ONLY substantive events (no mutations) — that prevents Replace-of-a-
