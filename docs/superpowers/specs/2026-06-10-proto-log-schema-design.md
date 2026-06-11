@@ -223,7 +223,13 @@ a converter + a coordinated read-side flip rather than one big-bang):
 disk). Remaining original scope: Phase 3 (unified Retrace projections incl. the
 `Resolution` LWW-Register) and Phase 4 (Redact/Replace mutations + migration cut-over).
 
-### Phase 3 — Unified Retrace (five projections)
+### Phase 3 — Unified Retrace (five projections) ✅ DONE (commit df57198)
+- `retrace::RetraceResult { messages, enabled_loadables, active_resolution }` + `fold(events, config_enabled)`.
+- `retrace::active_resolution` — LWW-Register over `Resolution` events; replaces `events::last_resolution` at the `run_turn` drift-guard call site.
+- Three new tests: LWW correctness (last of two wins), None case, unified fold.
+- `events::last_resolution` retained (only called from its own test); production call site now uses `retrace::active_resolution`. Cleanup deferred to Phase 4.
+- **Not done yet** (Phase 4 scope): redact/replace fold (projection 4), `SessionState` integration (projection 5), `events::last_resolution` removal.
+
 The Retrace folds the Log (sorted by `(seq, id)`) into:
 1. **message list** (Transcript) — honoring Compaction `through_seq` + the pairing
    cascade;
