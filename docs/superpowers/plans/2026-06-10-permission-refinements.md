@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 
 # Permission Refinements (Deny-Monotonic + Loadable Classifier) — Implementation Plan

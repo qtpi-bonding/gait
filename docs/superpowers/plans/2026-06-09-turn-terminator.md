@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 
 # Turn terminator implementation plan
