@@ -1,11 +1,75 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::hashline::{format_hash_lines, apply_hashline_edits, HashlineEditOp};
+use crate::hashline::{format_hash_line, apply_hashline_edits, HashlineEditOp, parse_line_ref};
 use crate::types::{Tool, ToolPermission, PermissionRequest};
 use crate::permission::path_patterns;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
+
+/// Compute the approximate region [start, end] (1-indexed, inclusive) that `op`
+/// produces in the new file.  Exact for the bottom-most op in a multi-edit call
+/// (since bottom-up application leaves its position unchanged); slightly off for
+/// ops higher in the file if other ops shifted lines, but good enough for a ±N
+/// context snippet.
+fn op_new_region(op: &HashlineEditOp) -> Option<(usize, usize)> {
+    match op.op.as_str() {
+        "replace" => {
+            let start = parse_line_ref(op.pos.as_deref()?).ok()?.line;
+            let count = op.lines.len().max(1);
+            Some((start, start + count - 1))
+        }
+        "append" => {
+            let pos = parse_line_ref(op.pos.as_deref()?).ok()?.line;
+            let count = op.lines.len().max(1);
+            Some((pos + 1, pos + count))
+        }
+        "prepend" => {
+            let pos = parse_line_ref(op.pos.as_deref()?).ok()?.line;
+            let count = op.lines.len().max(1);
+            Some((pos, pos + count - 1))
+        }
+        _ => None,
+    }
+}
+
+/// Format a focused post-edit snippet (changed region ± `context` lines) with
+/// fresh hashline annotations — analogous to Claude Code's `cat -n` snippet.
+/// The model sees the new state around each change; if a delimiter was dropped
+/// it is absent from the snippet and immediately visible.
+fn format_edit_snippet(new: &str, ops: &[HashlineEditOp], context: usize) -> String {
+    let new_lines: Vec<&str> = if new.is_empty() { vec![] } else { new.split('\n').collect() };
+    let n = new_lines.len();
+
+    // Union all op regions to find the overall changed window.
+    let mut region_lo: Option<usize> = None;
+    let mut region_hi: Option<usize> = None;
+    for op in ops {
+        if let Some((s, e)) = op_new_region(op) {
+            region_lo = Some(region_lo.map_or(s, |lo: usize| lo.min(s)));
+            region_hi = Some(region_hi.map_or(e, |hi: usize| hi.max(e)));
+        }
+    }
+
+    let mut out = String::new();
+
+    if let (Some(lo), Some(hi)) = (region_lo, region_hi) {
+        let lo = lo.saturating_sub(context).max(1);
+        let hi = (hi + context).min(n);
+
+        if lo > 1 { out.push_str("    ...\n"); }
+        for i in lo..=hi {
+            if let Some(&line) = new_lines.get(i - 1) {
+                out.push_str(&format_hash_line(i, line));
+                out.push('\n');
+            }
+        }
+        if hi < n { out.push_str("    ...\n"); }
+    }
+
+    let trimmed = out.trim_end().to_string();
+    if trimmed.is_empty() { "(no visible changes)".to_string() } else { trimmed }
+}
 
 #[derive(Deserialize, JsonSchema)]
 struct HashlineEditParams {
@@ -45,7 +109,8 @@ impl Tool for EditTool {
         with only `pos` swaps exactly that single line, so any extra lines you supply land below \
         the original ones (duplication). Put ONLY the new content in `lines`; never repeat the \
         anchored line or surrounding context. To add code without removing anything, use `append`. \
-        Returns the updated file with fresh anchors so you can chain edits without re-reading."
+        Returns the changed region (±2 context lines) with fresh anchors. \
+        Re-read the file if you need refs outside the returned region."
     }
 
     fn parameters(&self) -> &Value { &self.parameters }
@@ -65,21 +130,18 @@ impl Tool for EditTool {
 
         let old_content = std::fs::read_to_string(&resolved)?;
         let new_content = apply_hashline_edits(&old_content, &params.edits)?;
-
         std::fs::write(&resolved, &new_content)?;
 
         let lines_changed = (new_content.split('\n').count() as i64
             - old_content.split('\n').count() as i64)
             .unsigned_abs() as usize;
 
-        // Return the updated file with fresh hashline annotations so the model
-        // can immediately issue follow-up edits without a separate read call.
-        let annotated = format_hash_lines(&new_content);
+        let snippet = format_edit_snippet(&new_content, &params.edits, 2);
         Ok(Value::String(format!(
-            "Edited {} ({} line(s) net change). Updated refs:\n{}",
+            "Edited {} ({} line(s) net change).\n{}",
             resolved.display(),
             lines_changed,
-            annotated
+            snippet
         )))
     }
 
@@ -205,11 +267,60 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains(">>>"));
     }
 
+    // Response is a ±2-line context snippet (not the full file) with fresh hashline refs.
     #[tokio::test]
-    async fn returns_annotated_output_for_follow_up_edits() {
+    async fn returns_snippet_not_full_file() {
+        let dir = TempDir::new().unwrap();
+        // 10-line file; edit line 5
+        let content = (1..=10).map(|i| format!("line{}", i)).collect::<Vec<_>>().join("\n");
+        std::fs::write(dir.path().join("f.txt"), &content).unwrap();
+        let lines: Vec<&str> = content.split('\n').collect();
+        let hash = compute_line_hash(5, lines[4]);
+
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let result = tool.execute(serde_json::json!({
+            "file_path": "f.txt",
+            "edits": [{"op": "replace", "pos": format!("5#{}", hash), "lines": ["REPLACED"]}]
+        })).await.unwrap();
+
+        let text = result.as_str().unwrap();
+        // Must show the changed line and ±2 context
+        assert!(text.contains("|REPLACED"), "should show new content: {text}");
+        assert!(text.contains("|line3"), "should show 2 lines before: {text}");
+        assert!(text.contains("|line7"), "should show 2 lines after: {text}");
+        // Must NOT show lines far from the change
+        assert!(!text.contains("|line1"), "should not show lines outside ±2 context: {text}");
+        assert!(!text.contains("|line10"), "should not show lines outside ±2 context: {text}");
+        // Should contain fresh hashline refs
+        assert!(text.contains('#'), "should contain hash refs: {text}");
+    }
+
+    // Range-replace: snippet shows the new state; if a brace was dropped it is absent.
+    #[tokio::test]
+    async fn range_replace_shows_result_snippet() {
+        let dir = TempDir::new().unwrap();
+        let content = "fn foo() {\n    let x = 1;\n    let y = 2;\n    x + y\n}";
+        std::fs::write(dir.path().join("f.rs"), content).unwrap();
+        let lines: Vec<&str> = content.split('\n').collect();
+        let h2 = compute_line_hash(2, lines[1]);
+        let h4 = compute_line_hash(4, lines[3]);
+
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let result = tool.execute(serde_json::json!({
+            "file_path": "f.rs",
+            "edits": [{"op": "replace", "pos": format!("2#{}", h2), "end": format!("4#{}", h4), "lines": ["    let z = 3;"]}]
+        })).await.unwrap();
+
+        let text = result.as_str().unwrap();
+        assert!(text.contains("let z = 3"), "should show replacement: {text}");
+        assert!(text.contains('#'), "should have fresh refs: {text}");
+        assert!(!text.contains("let x = 1"), "removed lines should not appear: {text}");
+    }
+
+#[tokio::test]
+    async fn returns_error_on_stale_ref_via_snippet_path() {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("f.txt"), "hello\nworld").unwrap();
-
         let content = "hello\nworld";
         let lines: Vec<&str> = content.split('\n').collect();
         let hash = compute_line_hash(1, lines[0]);
@@ -221,8 +332,7 @@ mod tests {
         })).await.unwrap();
 
         let text = result.as_str().unwrap();
-        // Should contain fresh hashline-annotated content
-        assert!(text.contains("#"), "should contain hash refs: {text}");
+        assert!(text.contains('#'), "should contain hash refs: {text}");
         assert!(text.contains("|goodbye"), "should show new content: {text}");
     }
 }
