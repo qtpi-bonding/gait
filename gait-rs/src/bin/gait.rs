@@ -944,45 +944,33 @@ fn cmd_status(argv: &[String]) {
     };
 
     if json {
-        // Build a JSON object that includes the session id and the SessionState
-        // (which already serializes with a `state` tag via serde).
-        let mut value = serde_json::json!({
-            "session_id": session_id,
-            "state": state,
-        });
-        // For awaiting states, attach the human-readable details from the items.
-        match &state {
-            SessionState::AwaitingPermission { items } => {
-                let pending: Vec<serde_json::Value> = items.iter().map(|it| serde_json::json!({
-                    "id": it.id,
-                    "cmd": it.cmd,
-                    "reason": it.reason,
-                    "tool_name": it.tool_name,
-                    "patterns": it.patterns,
-                })).collect();
-                value["pending"] = serde_json::Value::Array(pending);
-            }
-            SessionState::AwaitingClarify { items } => {
-                let pending: Vec<serde_json::Value> = items.iter().map(|it| serde_json::json!({
-                    "id": it.id,
-                    "content": it.content,
-                    "why": it.why,
-                    "kind": it.kind,
-                })).collect();
-                value["pending"] = serde_json::Value::Array(pending);
-            }
-            SessionState::AwaitingInform { items } => {
-                let pending: Vec<serde_json::Value> = items.iter().map(|it| serde_json::json!({
-                    "id": it.id,
-                    "content": it.content,
-                    "context": it.context,
-                })).collect();
-                value["pending"] = serde_json::Value::Array(pending);
-            }
-            SessionState::Idle => {}
-        }
-        println!("{}", serde_json::to_string_pretty(&value).unwrap_or_else(|e| {
-            eprintln!("[gait] error serializing status: {}", e);
+        use gait_ai::proto::gait::state::v1 as sv1;
+        let proto_state = sv1::SessionState {
+            state: Some(match &state {
+                SessionState::Idle => sv1::session_state::State::Idle(sv1::Idle {}),
+                SessionState::AwaitingPermission { items } => {
+                    sv1::session_state::State::AwaitingPermission(sv1::AwaitingPermission {
+                        items: items.clone(),
+                    })
+                }
+                SessionState::AwaitingClarify { items } => {
+                    sv1::session_state::State::AwaitingClarify(sv1::AwaitingClarify {
+                        items: items.clone(),
+                    })
+                }
+                SessionState::AwaitingInform { items } => {
+                    sv1::session_state::State::AwaitingInform(sv1::AwaitingInform {
+                        items: items.clone(),
+                    })
+                }
+            }),
+        };
+        let report = sv1::SessionStateReport {
+            session_id: session_id.clone(),
+            state: Some(proto_state),
+        };
+        println!("{}", serde_json::to_string_pretty(&report).unwrap_or_else(|e| {
+            eprintln!("[gait] error serializing state: {}", e);
             std::process::exit(1);
         }));
         return;

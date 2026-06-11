@@ -265,20 +265,6 @@ pub fn resolution(resolved: &crate::profile::ResolvedProfile) -> pb::event::Body
     wire::body(pb::payload::Kind::Resolution(resolution_msg(resolved)))
 }
 
-/// The most recent `Resolution` payload in `events`, if any. Used by `run_turn`
-/// as the drift-guard baseline: skip emitting a new `Resolution` if the live
-/// profile already matches the most recent one.
-pub fn last_resolution(events: &[crate::proto::gait::log::v1::Event]) -> Option<pb::Resolution> {
-    for e in events.iter().rev() {
-        if let Some(crate::proto::gait::log::v1::event::Body::Payload(p)) = &e.body {
-            if let Some(pb::payload::Kind::Resolution(r)) = &p.kind {
-                return Some(r.clone());
-            }
-        }
-    }
-    None
-}
-
 /// `Compaction` — through_seq unset (no seq in legacy data).
 pub fn compaction(
     summary: String,
@@ -478,30 +464,6 @@ mod tests {
             ..r1.clone()
         };
         assert_ne!(r1, r2, "resolution equality is sensitive to mcp_servers order");
-    }
-
-    #[test]
-    fn last_resolution_returns_most_recent_resolution() {
-        use crate::proto::wire;
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        let path = dir.path().join("tx.jsonl");
-        wire::append(&path, resolution_body("model-a")).unwrap();
-        wire::append(&path, resolution_body("model-b")).unwrap();
-        let events = wire::read_events(&path).unwrap();
-        let r = last_resolution(&events).expect("a resolution");
-        assert_eq!(r.model, "model-b");
-    }
-
-    fn resolution_body(model: &str) -> pb::event::Body {
-        wire::body(pb::payload::Kind::Resolution(pb::Resolution {
-            model: model.into(),
-            tools: vec![],
-            mcp_servers: vec![],
-            skills: vec![],
-            permissions: Some(pb::PermissionPolicy { allow: vec![], deny: vec![] }),
-            instructions: String::new(),
-            output_schema_retries: None,
-        }))
     }
 
     // ── Dummy provider for the mapping test (we never call into it) ──────────

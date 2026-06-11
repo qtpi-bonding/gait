@@ -1,17 +1,16 @@
 //! # Retrace — the `Log → working-state` fold
 //!
-//! Rebuilds the model's working state from the immutable event `Log`. It produces
-//! two projections:
+//! Folds the immutable event `Log` into working state via [`fold`] (all projections)
+//! or individual projection functions:
 //!
-//! - [`messages`] — the **Transcript**: the `Vec<Message>` the model reasons over.
-//!   Read-only today; its only mutation is prefix-`Compaction` (truncate-before-summary).
-//! - [`enabled_loadables`] — the active loadable set, via last-write-wins toggle
-//!   replay of `load(name, enabled=…)` events.
-//!
-//! General message-list mutation (`redact`/`replace` by event id) is a future spec;
-//! see `docs/superpowers/specs/2026-06-10-agent-architecture-design.md`. The `Log`
-//! JSONL wire format is frozen.
+//! - [`messages`] / [`messages_from_path`] — the **Transcript** (`Vec<Message>`).
+//!   Honours `Compaction` breakpoints and `Redact`/`Replace` mutations.
+//! - [`enabled_loadables`] — active loadable set (LWW-Map over `load` tool calls).
+//! - [`active_resolution`] — last `Resolution` payload (LWW-Register).
+//! - [`active_mutations`] + [`apply_cascade`] — `Redact`/`Replace` LWW fold with
+//!   ToolCall↔ToolResult cascade.
 
+use std::collections::HashMap;
 use std::path::Path;
 use crate::types::{Message, MessageContent, AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind};
 use crate::session::transcript::{read_events, last_compaction_index};
@@ -41,19 +40,57 @@ fn clarify_kind_str(k: i32) -> &'static str {
     }
 }
 
+/// The converged mutation state for a single target event (LWW winner).
+#[derive(Debug, Clone)]
+pub enum MutationState {
+    Redacted { reason: Option<String> },
+    Replaced { payload: pb::Payload, reason: Option<String> },
+}
+
 pub fn messages(all_events: &[Event]) -> anyhow::Result<Vec<Message>> {
+    messages_applying(all_events, &HashMap::new())
+}
+
+pub fn messages_from_path(path: &Path) -> anyhow::Result<Vec<Message>> {
+    let all_events = read_events(path)?;
+    messages_applying(&all_events, &HashMap::new())
+}
+
+/// Get the effective payload kind, applying Redact/Replace mutations.
+/// Returns None if the event is Redacted.
+fn effective_kind<'a>(
+    e: &'a Event,
+    mutations: &'a HashMap<String, MutationState>,
+) -> Option<&'a payload::Kind> {
+    match mutations.get(&e.id) {
+        Some(MutationState::Redacted { .. }) => None,
+        Some(MutationState::Replaced { payload, .. }) => payload.kind.as_ref(),
+        None => kind(e),
+    }
+}
+
+/// Build messages, applying the given mutations map.
+/// This is the internal implementation that both `messages` and `fold` use.
+fn messages_applying(
+    all_events: &[Event],
+    mutations: &HashMap<String, MutationState>,
+) -> anyhow::Result<Vec<Message>> {
     if all_events.is_empty() { return Ok(vec![]); }
 
-    // Start from last compaction breakpoint (or beginning)
     let start = last_compaction_index(all_events).unwrap_or(0);
-    // If there IS a compaction at `start`, include it (it provides the summary message)
     let events = &all_events[start..];
 
     let mut messages: Vec<Message> = vec![];
     let mut i = 0;
 
     while i < events.len() {
-        match kind(&events[i]) {
+        // Skip Redacted events (check before calling effective_kind).
+        if matches!(mutations.get(&events[i].id), Some(MutationState::Redacted { .. })) {
+            i += 1;
+            continue;
+        }
+
+        match effective_kind(&events[i], mutations) {
             Some(payload::Kind::Compaction(c)) => {
                 messages.push(Message::User {
                     content: MessageContent::Text(
@@ -96,7 +133,11 @@ pub fn messages(all_events: &[Event]) -> anyhow::Result<Vec<Message>> {
                 // Gather all consecutive tool_call events
                 let mut calls: Vec<(String, String, serde_json::Value)> = vec![];
                 while i < events.len() {
-                    if let Some(payload::Kind::ToolCall(tc)) = kind(&events[i]) {
+                    if matches!(mutations.get(&events[i].id), Some(MutationState::Redacted { .. })) {
+                        i += 1;
+                        continue;
+                    }
+                    if let Some(payload::Kind::ToolCall(tc)) = effective_kind(&events[i], mutations) {
                         calls.push((tc.call_id.clone(), tc.name.clone(), struct_to_value(&tc.input)));
                         i += 1;
                     } else { break; }
@@ -104,7 +145,11 @@ pub fn messages(all_events: &[Event]) -> anyhow::Result<Vec<Message>> {
                 // Gather consecutive tool_result events
                 let mut results: Vec<(String, String)> = vec![];
                 while i < events.len() {
-                    if let Some(payload::Kind::ToolResult(tr)) = kind(&events[i]) {
+                    if matches!(mutations.get(&events[i].id), Some(MutationState::Redacted { .. })) {
+                        i += 1;
+                        continue;
+                    }
+                    if let Some(payload::Kind::ToolResult(tr)) = effective_kind(&events[i], mutations) {
                         results.push((tr.call_id.clone(), tr.output.clone()));
                         i += 1;
                     } else { break; }
@@ -203,9 +248,90 @@ pub fn messages(all_events: &[Event]) -> anyhow::Result<Vec<Message>> {
     Ok(messages)
 }
 
-pub fn messages_from_path(path: &Path) -> anyhow::Result<Vec<Message>> {
-    let all_events = read_events(path)?;
-    messages(&all_events)
+/// Fold all Redact/Replace event bodies into a LWW map keyed by target id.
+/// For each target, the mutation with the highest `(seq, id)` wins.
+/// Events that are not Redact/Replace bodies are ignored.
+pub fn active_mutations(events: &[Event]) -> HashMap<String, MutationState> {
+    // key: target id, value: (winner_seq, winner_id, MutationState)
+    let mut map: HashMap<String, (u64, String, MutationState)> = HashMap::new();
+
+    for e in events {
+        let (target, state) = match &e.body {
+            Some(event::Body::Redact(r)) => (
+                r.target.clone(),
+                MutationState::Redacted { reason: r.reason.clone() },
+            ),
+            Some(event::Body::Replace(r)) => {
+                if let Some(payload) = r.replacement.clone() {
+                    (r.target.clone(), MutationState::Replaced { payload, reason: r.reason.clone() })
+                } else {
+                    continue;
+                }
+            }
+            _ => continue,
+        };
+
+        let entry = map.entry(target).or_insert_with(|| (0, String::new(), state.clone()));
+        // LWW: (seq, id) total order — higher seq wins; equal seq → lex-higher id wins.
+        if (e.seq, e.id.as_str()) > (entry.0, entry.1.as_str()) {
+            *entry = (e.seq, e.id.clone(), state);
+        }
+    }
+
+    map.into_iter().map(|(k, (_, _, v))| (k, v)).collect()
+}
+
+/// Apply the ToolCall↔ToolResult cascade: if either member of a pair is
+/// Redacted, also Redact the other (overriding any existing Replace on it).
+/// Mutates `mutations` in-place.
+pub fn apply_cascade(
+    mutations: &mut HashMap<String, MutationState>,
+    events: &[Event],
+) {
+    // Build call_id → [(event_id, is_tool_call)] for original payloads.
+    let mut by_call_id: HashMap<String, Vec<(String, bool)>> = HashMap::new();
+    for e in events {
+        match kind(e) {
+            Some(payload::Kind::ToolCall(tc)) => {
+                by_call_id.entry(tc.call_id.clone()).or_default().push((e.id.clone(), true));
+            }
+            Some(payload::Kind::ToolResult(tr)) => {
+                by_call_id.entry(tr.call_id.clone()).or_default().push((e.id.clone(), false));
+            }
+            _ => {}
+        }
+    }
+
+    // For each Redacted event that is a ToolCall or ToolResult, cascade-Redact the pair.
+    // Collect cascade targets first to avoid borrow issues.
+    let cascade_targets: Vec<String> = mutations
+        .iter()
+        .filter_map(|(id, m)| {
+            if matches!(m, MutationState::Redacted { .. }) {
+                // Look up the original event to determine if it's a ToolCall/ToolResult.
+                let e = events.iter().find(|e| &e.id == id)?;
+                let call_id = match kind(e) {
+                    Some(payload::Kind::ToolCall(tc)) => tc.call_id.clone(),
+                    Some(payload::Kind::ToolResult(tr)) => tr.call_id.clone(),
+                    _ => return None,
+                };
+                Some(call_id)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    for call_id in cascade_targets {
+        if let Some(peers) = by_call_id.get(&call_id) {
+            for (peer_id, _) in peers {
+                // Cascade Redact overrides any existing mutation (including Replace).
+                if !matches!(mutations.get(peer_id), Some(MutationState::Redacted { .. })) {
+                    mutations.insert(peer_id.clone(), MutationState::Redacted { reason: None });
+                }
+            }
+        }
+    }
 }
 
 /// Derive which loadable names are currently enabled, from the Log.
@@ -240,6 +366,9 @@ pub struct RetraceResult {
     pub enabled_loadables: std::collections::HashSet<String>,
     /// The most recent `Resolution` payload, if any (LWW-Register).
     pub active_resolution: Option<pb::Resolution>,
+    /// LWW-converged mutations (Redact/Replace) keyed by target event id,
+    /// with ToolCall↔ToolResult cascade applied.
+    pub mutations: HashMap<String, MutationState>,
 }
 
 /// Fold the full event log into all three projections in a single pass.
@@ -250,18 +379,19 @@ pub fn fold(
     all_events: &[Event],
     config_enabled: &std::collections::HashSet<String>,
 ) -> anyhow::Result<RetraceResult> {
-    let messages = messages(all_events)?;
+    // Compute mutations (LWW + cascade) before building messages.
+    let mut mutations = active_mutations(all_events);
+    apply_cascade(&mut mutations, all_events);
 
-    // enabled_loadables uses the post-compaction slice (pre-compaction loads are
-    // intentionally forgotten — the spec says the model reloads after compaction).
+    let messages = messages_applying(all_events, &mutations)?;
+
     let compaction_start = last_compaction_index(all_events).unwrap_or(0);
     let post_compaction = &all_events[compaction_start..];
     let enabled_loadables = enabled_loadables(post_compaction, config_enabled);
 
-    // LWW-Register: last Resolution event wins.
     let active_resolution = active_resolution(all_events);
 
-    Ok(RetraceResult { messages, enabled_loadables, active_resolution })
+    Ok(RetraceResult { messages, enabled_loadables, active_resolution, mutations })
 }
 
 /// The most recent `Resolution` payload in `events`, if any. LWW-Register over
@@ -395,6 +525,7 @@ mod tests {
         assert!(matches!(&msgs[0], Message::User { content: MessageContent::Text(t) } if t.contains("summary of old stuff")));
         assert!(matches!(&msgs[1], Message::User { content: MessageContent::Text(t) } if t == "new"));
     }
+
     #[test]
     fn enabled_loadables_seeds_from_config_and_replays_toggles() {
         use std::collections::HashSet;
@@ -481,5 +612,150 @@ mod tests {
         assert_eq!(result.active_resolution.as_ref().map(|r| r.model.as_str()), Some("gpt-fold"));
         // enabled_loadables: tdd was toggled on
         assert!(result.enabled_loadables.contains("tdd"));
+    }
+
+    // --- Phase 4 mutation tests ---
+
+    use crate::proto::gait::log::v1::{Redact, Replace};
+
+    fn redact_body(target: &str) -> event::Body {
+        event::Body::Redact(Redact { target: target.into(), reason: None })
+    }
+
+    fn replace_body(target: &str, new_payload: pb::Payload) -> event::Body {
+        event::Body::Replace(Replace {
+            target: target.into(),
+            replacement: Some(new_payload),
+            reason: None,
+        })
+    }
+
+    #[test]
+    fn redact_removes_event_from_messages() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("tx.jsonl");
+
+        // Write a UserTurn, then a Redact targeting it.
+        let user_event = wire::append(&path, events::user_turn("hello".into(), None, None)).unwrap();
+        wire::append(&path, redact_body(&user_event.id)).unwrap();
+
+        let all = read_events(&path).unwrap();
+        let mut muts = active_mutations(&all);
+        apply_cascade(&mut muts, &all);
+        let msgs = messages_applying(&all, &muts).unwrap();
+
+        assert!(msgs.is_empty(), "redacted UserTurn should not appear in messages");
+    }
+
+    #[test]
+    fn replace_substitutes_payload_in_messages() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("tx.jsonl");
+
+        let user_event = wire::append(&path, events::user_turn("old text".into(), None, None)).unwrap();
+        let new_payload = pb::Payload {
+            kind: Some(payload::Kind::UserTurn(pb::UserTurn {
+                content: "new text".into(),
+                ..Default::default()
+            })),
+        };
+        wire::append(&path, replace_body(&user_event.id, new_payload)).unwrap();
+
+        let all = read_events(&path).unwrap();
+        let mut muts = active_mutations(&all);
+        apply_cascade(&mut muts, &all);
+        let msgs = messages_applying(&all, &muts).unwrap();
+
+        assert_eq!(msgs.len(), 1);
+        assert!(matches!(&msgs[0], Message::User { content: MessageContent::Text(t) } if t == "new text"),
+            "replacement payload should be used");
+    }
+
+    #[test]
+    fn later_redact_overrides_replace() {
+        // Replace first, then Redact on same target — Redact has higher seq so it wins.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("tx.jsonl");
+
+        let user_event = wire::append(&path, events::user_turn("original".into(), None, None)).unwrap();
+        let new_payload = pb::Payload {
+            kind: Some(payload::Kind::UserTurn(pb::UserTurn {
+                content: "replaced".into(),
+                ..Default::default()
+            })),
+        };
+        wire::append(&path, replace_body(&user_event.id, new_payload)).unwrap();
+        wire::append(&path, redact_body(&user_event.id)).unwrap(); // later → wins
+
+        let all = read_events(&path).unwrap();
+        let muts = active_mutations(&all);
+        // LWW winner for user_event.id should be Redacted.
+        assert!(matches!(muts.get(&user_event.id), Some(MutationState::Redacted { .. })),
+            "Redact (higher seq) must win over earlier Replace");
+    }
+
+    #[test]
+    fn cascade_redact_tool_call_removes_paired_result() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("tx.jsonl");
+
+        let tc_event = wire::append(&path, events::tool_call("cid1".into(), "read".into(), &serde_json::json!({}))).unwrap();
+        wire::append(&path, events::tool_result("cid1".into(), "output".into(), None, None)).unwrap();
+        wire::append(&path, redact_body(&tc_event.id)).unwrap(); // Redact the ToolCall
+
+        let all = read_events(&path).unwrap();
+        let mut muts = active_mutations(&all);
+        apply_cascade(&mut muts, &all);
+
+        // Both ToolCall and ToolResult should be Redacted.
+        assert_eq!(muts.len(), 2, "cascade should produce 2 Redacts");
+        assert!(muts.values().all(|m| matches!(m, MutationState::Redacted { .. })));
+
+        let msgs = messages_applying(&all, &muts).unwrap();
+        assert!(msgs.is_empty(), "both paired events redacted → no messages");
+    }
+
+    #[test]
+    fn cascade_redact_overrides_orphan_replace() {
+        // Redact ToolCall, Replace ToolResult — cascade Redact should win over the Replace.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("tx.jsonl");
+
+        let tc_event = wire::append(&path, events::tool_call("cid2".into(), "shell".into(), &serde_json::json!({}))).unwrap();
+        let tr_event = wire::append(&path, events::tool_result("cid2".into(), "output".into(), None, None)).unwrap();
+        wire::append(&path, redact_body(&tc_event.id)).unwrap();     // Redact ToolCall
+        // Replace ToolResult (same seq-space, but cascade must override).
+        let new_tr = pb::Payload {
+            kind: Some(payload::Kind::ToolResult(pb::ToolResult {
+                call_id: "cid2".into(),
+                output: "new output".into(),
+                ..Default::default()
+            })),
+        };
+        wire::append(&path, replace_body(&tr_event.id, new_tr)).unwrap();
+
+        let all = read_events(&path).unwrap();
+        let mut muts = active_mutations(&all);
+        // Before cascade: ToolCall=Redacted, ToolResult=Replaced.
+        apply_cascade(&mut muts, &all);
+        // After cascade: ToolResult must become Redacted (cascade overrides Replace).
+        assert!(matches!(muts.get(&tr_event.id), Some(MutationState::Redacted { .. })),
+            "cascade Redact must override orphan Replace on ToolResult");
+    }
+
+    #[test]
+    fn fold_mutations_included_in_result() {
+        use std::collections::HashSet;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("tx.jsonl");
+
+        let e = wire::append(&path, events::user_turn("hi".into(), None, None)).unwrap();
+        wire::append(&path, redact_body(&e.id)).unwrap();
+
+        let all = read_events(&path).unwrap();
+        let result = fold(&all, &HashSet::new()).unwrap();
+
+        assert!(!result.mutations.is_empty(), "fold must populate mutations");
+        assert!(result.messages.is_empty(), "redacted event must not appear in fold messages");
     }
 }
