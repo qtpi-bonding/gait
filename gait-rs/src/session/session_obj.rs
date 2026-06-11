@@ -7,7 +7,7 @@ use crate::session::session_json::read_session_json;
 /// The live model lives on `ResolvedProfile.model`.
 pub struct Session {
     pub id: String,
-    pub workspace: PathBuf,
+    pub gait_dir: PathBuf,
     pub codebase_path: PathBuf,
     pub assigned_by: Option<String>,
     pub repos: Repos,
@@ -17,16 +17,16 @@ impl Session {
     /// Load identity/bindings from `sessions/<id>/session.json` (defaults if absent).
     /// `codebase_path` falls back to the provided default when the json has none.
     pub fn load(
-        workspace: PathBuf,
+        gait_dir: PathBuf,
         id: String,
         default_codebase: PathBuf,
         repos: Repos,
     ) -> Self {
-        let sj = read_session_json(&workspace, &id);
+        let sj = read_session_json(&gait_dir, &id);
         let codebase_path = sj.codebase_path
             .map(PathBuf::from)
             .unwrap_or(default_codebase);
-        Session { id, workspace, codebase_path, assigned_by: sj.assigned_by, repos }
+        Session { id, gait_dir, codebase_path, assigned_by: sj.assigned_by, repos }
     }
 }
 

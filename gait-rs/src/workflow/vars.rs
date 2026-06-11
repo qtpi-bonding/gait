@@ -14,7 +14,7 @@ pub struct NodeOutput {
 pub struct VarContext {
     pub workflow_id: String,
     pub session_id: String,
-    pub workspace: PathBuf,
+    pub gait_dir: PathBuf,
     pub codebase: PathBuf,
     pub args: String,
     pub node_id: String,
@@ -66,7 +66,7 @@ pub fn substitute(template: &str, ctx: &VarContext) -> String {
         ("$WORKFLOW_ID",  ctx.workflow_id.clone()),
         ("$SESSION_ID",   ctx.session_id.clone()),
         ("$NODE_ID",      ctx.node_id.clone()),
-        ("$WORKSPACE",    ctx.workspace.to_string_lossy().to_string()),
+        ("$WORKSPACE",    ctx.gait_dir.to_string_lossy().to_string()),
         ("$CODEBASE",     ctx.codebase.to_string_lossy().to_string()),
         ("$ARGS",         ctx.args.clone()),
         ("$NODE_EXIT",    ctx.node_exit.map(|e| e.to_string()).unwrap_or_default()),
@@ -138,7 +138,7 @@ mod tests {
         VarContext {
             workflow_id: "wf1".into(),
             session_id: "s1".into(),
-            workspace: std::path::PathBuf::from("/ws"),
+            gait_dir: std::path::PathBuf::from("/ws"),
             codebase: std::path::PathBuf::from("/cb"),
             args: "arg1".into(),
             node_id: "n1".into(),

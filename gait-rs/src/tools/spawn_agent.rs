@@ -19,17 +19,17 @@ struct SpawnAgentArgs {
 
 pub struct SpawnAgentTool {
     current_session_id: String,
-    workspace: PathBuf,
+    gait_dir: PathBuf,
     codebase_path: PathBuf,
     repos: crate::git::Repos,
     parameters: Value,
 }
 
 impl SpawnAgentTool {
-    pub fn new(current_session_id: String, workspace: PathBuf, codebase_path: PathBuf, repos: crate::git::Repos) -> Self {
+    pub fn new(current_session_id: String, gait_dir: PathBuf, codebase_path: PathBuf, repos: crate::git::Repos) -> Self {
         Self {
             current_session_id,
-            workspace,
+            gait_dir,
             codebase_path,
             repos,
             parameters: make_schema::<SpawnAgentArgs>(),
@@ -52,7 +52,7 @@ impl Tool for SpawnAgentTool {
 
         let new_id = crate::chat::new_session_id();
 
-        self.repos.traces.create_session_worktree(&self.workspace, &new_id)?;
+        self.repos.traces.create_session_worktree(&self.gait_dir, &new_id)?;
 
         let sj = SessionJson {
             id: new_id.clone(),
@@ -63,11 +63,11 @@ impl Tool for SpawnAgentTool {
             agent_name: None,
             system_prompt: None,
         };
-        write_session_json(&self.workspace, &sj)?;
+        write_session_json(&self.gait_dir, &sj)?;
 
-        let config = load_config(&self.workspace);
+        let config = load_config(&self.gait_dir);
         let codebase_hash = self.repos.codebase.head_hash(&self.codebase_path);
-        let tx_path = self.workspace.join("sessions").join(&new_id).join("transcript.jsonl");
+        let tx_path = self.gait_dir.join("sessions").join(&new_id).join("transcript.jsonl");
 
         init_session(InitSessionOpts {
             transcript_path: tx_path.clone(),
@@ -84,7 +84,7 @@ impl Tool for SpawnAgentTool {
         ))?;
 
         self.repos.traces.commit_session(
-            &self.workspace,
+            &self.gait_dir,
             &new_id,
             &format!("session({}): spawn from {}", new_id, self.current_session_id),
         )?;
@@ -96,7 +96,7 @@ impl Tool for SpawnAgentTool {
             .args([
                 "run",
                 "--session", &new_id,
-                "--gait-dir", self.workspace.to_str().unwrap_or("."),
+                "--gait-dir", self.gait_dir.to_str().unwrap_or("."),
                 "--auto",
             ])
             .stdin(std::process::Stdio::null())

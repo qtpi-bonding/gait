@@ -5,7 +5,7 @@ use crate::workflow::vars::{NodeOutput, VarContext, substitute};
 pub struct NodeContext<'a> {
     pub workflow_id: &'a str,
     pub session_id: &'a str,
-    pub workspace: &'a Path,
+    pub gait_dir: &'a Path,
     pub codebase: &'a Path,
     pub vars: VarContext,
 }
@@ -13,7 +13,7 @@ pub struct NodeContext<'a> {
 pub async fn exec_shell_node(shell: &ShellConfig, ctx: &NodeContext<'_>) -> anyhow::Result<NodeOutput> {
     let cmd = substitute(shell.run(), &ctx.vars);
     let timeout_ms = shell.timeout_ms();
-    let cwd = if shell.cwd() == "workspace" { ctx.workspace } else { ctx.codebase };
+    let cwd = if shell.cwd() == "workspace" { ctx.gait_dir } else { ctx.codebase };
 
     let result = tokio::time::timeout(
         std::time::Duration::from_millis(timeout_ms),
@@ -63,11 +63,11 @@ mod tests {
         NodeContext {
             workflow_id: "wf1",
             session_id: "s1",
-            workspace: ws,
+            gait_dir: ws,
             codebase: ws,
             vars: crate::workflow::vars::VarContext {
                 workflow_id: "wf1".into(), session_id: "s1".into(),
-                workspace: ws.clone(), codebase: ws.clone(),
+                gait_dir: ws.clone(), codebase: ws.clone(),
                 args: "".into(), node_id: "n".into(),
                 node_outputs: Default::default(), loop_iter: None, loop_max: None,
                 loop_output: None, loop_signal: None, node_exit: None, failed_node: None,

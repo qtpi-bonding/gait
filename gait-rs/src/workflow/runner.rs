@@ -19,18 +19,18 @@ pub struct WorkflowRunOpts {
     pub workflow_def: WorkflowDef,
     pub yaml_path: String,
     pub session_id: String,
-    pub workspace: PathBuf,
+    pub gait_dir: PathBuf,
     pub codebase: PathBuf,
     pub provider: Arc<dyn Provider>,
     pub args: Vec<String>,
 }
 
 pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
-    let WorkflowRunOpts { workflow_def: wf, yaml_path, session_id, workspace, codebase, provider, args } = opts;
+    let WorkflowRunOpts { workflow_def: wf, yaml_path, session_id, gait_dir, codebase, provider, args } = opts;
 
     let repos = crate::git::Repos::production();
-    repos.traces.create_session_worktree(&workspace, &session_id)?;
-    let session_dir = workspace.join("sessions").join(&session_id);
+    repos.traces.create_session_worktree(&gait_dir, &session_id)?;
+    let session_dir = gait_dir.join("sessions").join(&session_id);
     let tx_path = session_dir.join("transcript.jsonl");
 
     let existing_events = read_events(&tx_path).unwrap_or_default();
@@ -53,12 +53,12 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
         })))?;
         let node_ids: Vec<&str> = wf.nodes.iter().map(|n| n.id.as_str()).collect();
         let progress = init_progress(&workflow_id, &wf.name, &node_ids);
-        write_progress(&workspace, &session_id, &progress)?;
-        repos.traces.commit_session(&workspace, &session_id, "workflow: start")?;
+        write_progress(&gait_dir, &session_id, &progress)?;
+        repos.traces.commit_session(&gait_dir, &session_id, "workflow: start")?;
 
         if let Some(hooks) = &wf.hooks {
             if let Some(cmd) = &hooks.before {
-                let env = make_env_vars(&workflow_id, &session_id, &workspace, &codebase, &args_str, None, &state);
+                let env = make_env_vars(&workflow_id, &session_id, &gait_dir, &codebase, &args_str, None, &state);
                 let (exit, _) = run_hook(cmd, &env).await;
                 wire::emit(&tx_path, wire::raw("hook_run", serde_json::json!({
                     "workflow_id": workflow_id.clone(), "node_id": null,
@@ -90,12 +90,12 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
                 "reason": "inactive branch path",
             })))?;
             state.set_status(&node_id, NodeStatus::Skipped);
-            update_progress(&workspace, &session_id, &workflow_id, &wf.name, &state, &wf.nodes)?;
-            repos.traces.commit_session(&workspace, &session_id, &format!("workflow: skip {}", node_id))?;
+            update_progress(&gait_dir, &session_id, &workflow_id, &wf.name, &state, &wf.nodes)?;
+            repos.traces.commit_session(&gait_dir, &session_id, &format!("workflow: skip {}", node_id))?;
             continue;
         }
 
-        let env = make_env_vars(&workflow_id, &session_id, &workspace, &codebase, &args_str, Some(&node_id), &state);
+        let env = make_env_vars(&workflow_id, &session_id, &gait_dir, &codebase, &args_str, Some(&node_id), &state);
         if let Some(hooks) = &node.hooks {
             if let Some(cmd) = &hooks.before {
                 let (exit, _) = run_hook(cmd, &env).await;
@@ -114,13 +114,13 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
 
         let vars = VarContext {
             workflow_id: workflow_id.clone(), session_id: session_id.clone(),
-            workspace: workspace.clone(), codebase: codebase.clone(),
+            gait_dir: gait_dir.clone(), codebase: codebase.clone(),
             args: args_str.clone(), node_id: node_id.clone(),
             node_outputs: state.node_outputs.clone(),
             loop_iter: None, loop_max: None, loop_output: None,
             loop_signal: None, node_exit: None, failed_node: state.failed_node.clone(),
         };
-        let ctx = NodeContext { workflow_id: &workflow_id, session_id: &session_id, workspace: &workspace, codebase: &codebase, vars };
+        let ctx = NodeContext { workflow_id: &workflow_id, session_id: &session_id, gait_dir: &gait_dir, codebase: &codebase, vars };
 
         let retry_max = node.retry.as_ref().map(|r| r.max).unwrap_or(1);
         let retry_delay = node.retry.as_ref().map(|r| r.delay).unwrap_or(0);
@@ -131,7 +131,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
             if attempt > 1 {
                 tokio::time::sleep(std::time::Duration::from_millis(retry_delay)).await;
             }
-            let result = execute_node(node, &ctx, &wf, provider.clone(), &tx_path, &workflow_id, &session_id, &workspace).await;
+            let result = execute_node(node, &ctx, &wf, provider.clone(), &tx_path, &workflow_id, &session_id, &gait_dir).await;
             match result {
                 Ok(out) => { node_result = Some(out); break; }
                 Err(e) => {
@@ -148,8 +148,8 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
             Some(out) => {
                 if out.routed_to.as_deref() == Some("__gate_paused__") {
                     state.set_status(&node_id, NodeStatus::Paused);
-                    update_progress(&workspace, &session_id, &workflow_id, &wf.name, &state, &wf.nodes)?;
-                    repos.traces.commit_session(&workspace, &session_id, &format!("workflow: gate {}", node_id))?;
+                    update_progress(&gait_dir, &session_id, &workflow_id, &wf.name, &state, &wf.nodes)?;
+                    repos.traces.commit_session(&gait_dir, &session_id, &format!("workflow: gate {}", node_id))?;
                     eprintln!("[gait workflow] paused at gate '{}'", node_id);
                     std::process::exit(0);
                 }
@@ -169,7 +169,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
 
                 if let Some(hooks) = &node.hooks {
                     if let Some(cmd) = &hooks.after {
-                        let env = make_env_vars(&workflow_id, &session_id, &workspace, &codebase, &args_str, Some(&node_id), &state);
+                        let env = make_env_vars(&workflow_id, &session_id, &gait_dir, &codebase, &args_str, Some(&node_id), &state);
                         let (exit, _) = run_hook(cmd, &env).await;
                         wire::emit(&tx_path, wire::raw("hook_run", serde_json::json!({
                             "workflow_id": workflow_id.clone(), "node_id": Some(node_id.clone()),
@@ -181,7 +181,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
             None => {
                 if let Some(hooks) = &node.hooks {
                     if let Some(cmd) = &hooks.error {
-                        let env = make_env_vars(&workflow_id, &session_id, &workspace, &codebase, &args_str, Some(&node_id), &state);
+                        let env = make_env_vars(&workflow_id, &session_id, &gait_dir, &codebase, &args_str, Some(&node_id), &state);
                         run_hook(cmd, &env).await;
                     }
                 }
@@ -193,11 +193,11 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
                         "workflow_id": workflow_id.clone(), "failed_node": node_id.clone(),
                         "error": last_error.clone(),
                     })))?;
-                    update_progress(&workspace, &session_id, &workflow_id, &wf.name, &state, &wf.nodes)?;
-                    repos.traces.commit_session(&workspace, &session_id, &format!("workflow: error at {}", node_id))?;
+                    update_progress(&gait_dir, &session_id, &workflow_id, &wf.name, &state, &wf.nodes)?;
+                    repos.traces.commit_session(&gait_dir, &session_id, &format!("workflow: error at {}", node_id))?;
                     if let Some(hooks) = &wf.hooks {
                         if let Some(cmd) = &hooks.error {
-                            let mut env = make_env_vars(&workflow_id, &session_id, &workspace, &codebase, &args_str, None, &state);
+                            let mut env = make_env_vars(&workflow_id, &session_id, &gait_dir, &codebase, &args_str, None, &state);
                             env.insert("FAILED_NODE".into(), node_id.clone());
                             run_hook(cmd, &env).await;
                         }
@@ -213,19 +213,19 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
             }
         }
 
-        update_progress(&workspace, &session_id, &workflow_id, &wf.name, &state, &wf.nodes)?;
-        repos.traces.commit_session(&workspace, &session_id, &format!("workflow: {}", node_id))?;
+        update_progress(&gait_dir, &session_id, &workflow_id, &wf.name, &state, &wf.nodes)?;
+        repos.traces.commit_session(&gait_dir, &session_id, &format!("workflow: {}", node_id))?;
     }
 
     wire::emit(&tx_path, wire::raw("workflow_complete", serde_json::json!({
         "workflow_id": workflow_id.clone(),
     })))?;
-    update_progress_done(&workspace, &session_id, &workflow_id, &wf.name, &state, &wf.nodes)?;
-    repos.traces.commit_session(&workspace, &session_id, "workflow: complete")?;
+    update_progress_done(&gait_dir, &session_id, &workflow_id, &wf.name, &state, &wf.nodes)?;
+    repos.traces.commit_session(&gait_dir, &session_id, "workflow: complete")?;
 
     if let Some(hooks) = &wf.hooks {
         if let Some(cmd) = &hooks.after {
-            let env = make_env_vars(&workflow_id, &session_id, &workspace, &codebase, &args_str, None, &state);
+        let env = make_env_vars(&workflow_id, &session_id, &gait_dir, &codebase, &args_str, None, &state);
             run_hook(cmd, &env).await;
         }
     }
@@ -242,7 +242,7 @@ async fn execute_node(
     tx_path: &Path,
     workflow_id: &str,
     session_id: &str,
-    workspace: &Path,
+    gait_dir: &Path,
 ) -> anyhow::Result<NodeOutput> {
     if let Some(shell) = &node.shell {
         return exec_shell_node(shell, ctx).await;
@@ -310,14 +310,14 @@ fn propagate_branch_skips(
     Ok(())
 }
 
-fn update_progress(workspace: &Path, session_id: &str, workflow_id: &str, name: &str, state: &WorkflowState, nodes: &[NodeDef]) -> anyhow::Result<()> {
+fn update_progress(gait_dir: &Path, session_id: &str, workflow_id: &str, name: &str, state: &WorkflowState, nodes: &[NodeDef]) -> anyhow::Result<()> {
     let pf = build_progress(workflow_id, name, "running", state, nodes);
-    write_progress(workspace, session_id, &pf)
+    write_progress(gait_dir, session_id, &pf)
 }
 
-fn update_progress_done(workspace: &Path, session_id: &str, workflow_id: &str, name: &str, state: &WorkflowState, nodes: &[NodeDef]) -> anyhow::Result<()> {
+fn update_progress_done(gait_dir: &Path, session_id: &str, workflow_id: &str, name: &str, state: &WorkflowState, nodes: &[NodeDef]) -> anyhow::Result<()> {
     let pf = build_progress(workflow_id, name, "done", state, nodes);
-    write_progress(workspace, session_id, &pf)
+    write_progress(gait_dir, session_id, &pf)
 }
 
 fn build_progress(workflow_id: &str, name: &str, wf_status: &str, state: &WorkflowState, nodes: &[NodeDef]) -> ProgressFile {
@@ -345,11 +345,11 @@ fn build_progress(workflow_id: &str, name: &str, wf_status: &str, state: &Workfl
     }
 }
 
-fn make_env_vars(workflow_id: &str, session_id: &str, workspace: &Path, codebase: &Path, args: &str, node_id: Option<&str>, state: &WorkflowState) -> HashMap<String, String> {
+fn make_env_vars(workflow_id: &str, session_id: &str, gait_dir: &Path, codebase: &Path, args: &str, node_id: Option<&str>, state: &WorkflowState) -> HashMap<String, String> {
     let mut env = HashMap::new();
     env.insert("WORKFLOW_ID".into(), workflow_id.to_string());
     env.insert("SESSION_ID".into(), session_id.to_string());
-    env.insert("WORKSPACE".into(), workspace.to_string_lossy().to_string());
+    env.insert("WORKSPACE".into(), gait_dir.to_string_lossy().to_string());
     env.insert("CODEBASE".into(), codebase.to_string_lossy().to_string());
     env.insert("ARGS".into(), args.to_string());
     if let Some(id) = node_id { env.insert("NODE_ID".into(), id.to_string()); }

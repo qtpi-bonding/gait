@@ -20,19 +20,19 @@ struct ShellParams {
 
 pub struct ShellTool {
     codebase_path: Arc<PathBuf>,
-    workspace: Arc<PathBuf>,
+    gait_dir: Arc<PathBuf>,
     parameters: Value,
 }
 
 impl ShellTool {
-    pub fn new(codebase_path: PathBuf, workspace: PathBuf) -> Self {
+    pub fn new(codebase_path: PathBuf, gait_dir: PathBuf) -> Self {
         let parameters = crate::tools::inject_filter(
             crate::tools::make_schema::<ShellParams>(),
             crate::types::OutputFilter::Parse,
         );
         Self {
             codebase_path: Arc::new(codebase_path),
-            workspace: Arc::new(workspace),
+            gait_dir: Arc::new(gait_dir),
             parameters,
         }
     }
@@ -74,7 +74,7 @@ impl Tool for ShellTool {
         let timeout_ms = params.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
         let cwd = (*self.codebase_path).clone();
 
-        let tmp_dir = self.workspace.join("tmp");
+        let tmp_dir = self.gait_dir.join("tmp");
         let _ = std::fs::create_dir_all(&tmp_dir);
 
         let run_id = {

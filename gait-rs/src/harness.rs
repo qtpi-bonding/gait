@@ -17,12 +17,12 @@ impl HarnessBackend for NoopHarnessBackend {
 }
 
 pub struct NativeHarnessBackend {
-    workspace: PathBuf,
+    gait_dir: PathBuf,
 }
 
 impl NativeHarnessBackend {
-    pub fn new(workspace: PathBuf) -> Self {
-        Self { workspace }
+    pub fn new(gait_dir: PathBuf) -> Self {
+        Self { gait_dir }
     }
 }
 
@@ -38,7 +38,7 @@ impl HarnessBackend for NativeHarnessBackend {
                     None,
                 );
 
-                let target_dir = self.workspace.join("sessions").join(target_session);
+                let target_dir = self.gait_dir.join("sessions").join(target_session);
                 let tx_path = target_dir.join("transcript.jsonl");
 
                 // Only retry on "already running" — fail fast on I/O errors.
@@ -61,7 +61,7 @@ impl HarnessBackend for NativeHarnessBackend {
                 wire::append(&tx_path, event)?;
                 let repos = crate::git::Repos::production();
                 repos.traces.commit_session(
-                    &self.workspace,
+                    &self.gait_dir,
                     target_session,
                     &format!("session({}): agent_update from {}", target_session, from_session),
                 )?;
@@ -70,7 +70,7 @@ impl HarnessBackend for NativeHarnessBackend {
                 let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gait"));
                 std::process::Command::new(&exe)
                     .args(["run", "--session", target_session.as_str(),
-                           "--gait-dir", self.workspace.to_str().unwrap_or("."),
+                           "--gait-dir", self.gait_dir.to_str().unwrap_or("."),
                            "--auto"])
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())

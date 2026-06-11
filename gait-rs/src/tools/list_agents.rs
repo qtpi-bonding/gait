@@ -9,15 +9,15 @@ use crate::proto::gait::log::v1::{event, payload, Event};
 struct ListAgentsParams {}
 
 pub struct ListAgentsTool {
-    workspace: PathBuf,
+    gait_dir: PathBuf,
     parameters: Value,
 }
 
 impl ListAgentsTool {
-    pub fn new(workspace: PathBuf) -> Self {
+    pub fn new(gait_dir: PathBuf) -> Self {
         let parameters = crate::tools::make_schema::<ListAgentsParams>();
         Self {
-            workspace,
+            gait_dir,
             parameters,
         }
     }
@@ -35,7 +35,7 @@ impl Tool for ListAgentsTool {
     async fn execute(&self, _args: Value) -> anyhow::Result<Value> {
         // C1 fix: read transcript from the branch's committed git tree, NOT from the filesystem
         // working copy. Worktree dirs may be cleaned up after finish_session; the branch remains.
-        let repo = match git2::Repository::open(&self.workspace) {
+        let repo = match git2::Repository::open(&self.gait_dir) {
             Ok(r) => r,
             Err(_) => return Ok(serde_json::json!([])),
         };
