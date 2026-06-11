@@ -41,6 +41,7 @@ pub use turn::{run_turn, TurnResult, TurnInput};
 pub use profile::{Profile, ResolvedProfile};
 pub use session::Session;
 pub use session::Ingestor;
+pub use proto::Emitter;
 pub use harness::{HarnessBackend, NoopHarnessBackend, NativeHarnessBackend};
 pub use scheduler::{Action, Scheduler, NativeScheduler, TurnEnded};
 pub use workflow::runner::{run_workflow, WorkflowRunOpts};
