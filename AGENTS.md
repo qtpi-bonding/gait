@@ -51,4 +51,6 @@ When given a plan file, follow it task-by-task:
 6. Commit
 7. Move to the next task
 
+When all tasks in a plan are complete, update the plan file's frontmatter from `status: draft` or `status: partial` to `status: done` before calling `output()`.
+
 Call `output()` when the entire plan is complete with a summary of what was implemented.
