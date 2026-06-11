@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 
 # Inline `@(cmd)` / `@file` Substitution
