@@ -236,19 +236,20 @@ pub fn enabled_loadables(
 mod tests {
     use super::*;
     use crate::session::transcript::*;
+    use crate::proto::{events, wire};
     use tempfile::TempDir;
 
-    fn write_events(dir: &std::path::Path, events: &[AnyEvent]) -> std::path::PathBuf {
+    fn write_events(dir: &std::path::Path, bodies: Vec<event::Body>) -> std::path::PathBuf {
         let path = dir.join("transcript.jsonl");
-        for e in events { append_event(&path, e).unwrap(); }
+        for b in bodies { wire::append(&path, b).unwrap(); }
         path
     }
 
-    /// Build in-memory proto events from AnyEvents (seq is irrelevant for these
+    /// Build in-memory proto events from bodies (seq is irrelevant for these
     /// assertions; each is minted as a root).
-    fn mint_events(aes: &[AnyEvent]) -> Vec<Event> {
-        aes.iter()
-            .map(|ae| crate::proto::envelope::mint(crate::proto::convert::any_to_body(ae), None))
+    fn mint_events(bodies: Vec<event::Body>) -> Vec<Event> {
+        bodies.into_iter()
+            .map(|b| crate::proto::envelope::mint(b, None))
             .collect()
     }
 
@@ -263,10 +264,10 @@ mod tests {
     #[test]
     fn user_and_assistant_text_reconstructed() {
         let dir = TempDir::new().unwrap();
-        let path = write_events(dir.path(), &[
-            AnyEvent::SessionStart { schema_version: 2, id: "s1".into(), model: "m".into(), codebase_hash: "h".into(), codebase_dirty: false, ts: 0 },
-            AnyEvent::UserTurn { content: "hello".into(), from: None, context: None, ts: 1 },
-            AnyEvent::AssistantText { content: "hi there".into(), ts: 2 },
+        let path = write_events(dir.path(), vec![
+            events::session_start("s1".into(), None),
+            events::user_turn("hello".into(), None, None),
+            events::assistant_text("hi there".into()),
         ]);
         let msgs = messages_from_path(&path).unwrap();
         assert_eq!(msgs.len(), 2); // session_start is skipped
@@ -277,9 +278,9 @@ mod tests {
     #[test]
     fn tool_call_and_result_paired() {
         let dir = TempDir::new().unwrap();
-        let path = write_events(dir.path(), &[
-            AnyEvent::ToolCall { id: "id1".into(), name: "read".into(), input: serde_json::json!({"file_path":"a.rs"}), ts: 0 },
-            AnyEvent::ToolResult { id: "id1".into(), output: "contents".into(), ts: 1 },
+        let path = write_events(dir.path(), vec![
+            events::tool_call("id1".into(), "read".into(), &serde_json::json!({"file_path":"a.rs"})),
+            events::tool_result("id1".into(), "contents".into()),
         ]);
         let msgs = messages_from_path(&path).unwrap();
         assert_eq!(msgs.len(), 2);
@@ -293,11 +294,11 @@ mod tests {
     #[test]
     fn parallel_tool_calls_grouped() {
         let dir = TempDir::new().unwrap();
-        let path = write_events(dir.path(), &[
-            AnyEvent::ToolCall { id: "id1".into(), name: "read".into(), input: serde_json::json!({}), ts: 0 },
-            AnyEvent::ToolCall { id: "id2".into(), name: "ls".into(), input: serde_json::json!({}), ts: 1 },
-            AnyEvent::ToolResult { id: "id1".into(), output: "r1".into(), ts: 2 },
-            AnyEvent::ToolResult { id: "id2".into(), output: "r2".into(), ts: 3 },
+        let path = write_events(dir.path(), vec![
+            events::tool_call("id1".into(), "read".into(), &serde_json::json!({})),
+            events::tool_call("id2".into(), "ls".into(), &serde_json::json!({})),
+            events::tool_result("id1".into(), "r1".into()),
+            events::tool_result("id2".into(), "r2".into()),
         ]);
         let msgs = messages_from_path(&path).unwrap();
         assert_eq!(msgs.len(), 2);
@@ -311,25 +312,18 @@ mod tests {
 
     #[test]
     fn permissions_excluded_from_context_reconstruction() {
-        let events = vec![
-            AnyEvent::UserTurn { content: "do x".into(), from: None, context: None, ts: 1 },
-            AnyEvent::Permissions {
-                items: vec![PermissionItem {
-                    id: "tc1".into(), cmd: "shell".into(), reason: "test".into(),
-                    patterns: vec![], tool_name: "shell".into(),
-                    tool_args: serde_json::Value::Null,
-                }],
-                ts: 2,
-            },
-            AnyEvent::PermissionsReply {
-                from: "user".into(),
-                items: vec![PermissionsReplyItem {
-                    id: "tc1".into(), decision: "approve".into(), text: None, scope: None,
-                }],
-                ts: 3,
-            },
+        let bodies = vec![
+            events::user_turn("do x".into(), None, None),
+            events::permissions(&[PermissionItem {
+                id: "tc1".into(), cmd: "shell".into(), reason: "test".into(),
+                patterns: vec![], tool_name: "shell".into(),
+                tool_args: serde_json::Value::Null,
+            }]),
+            events::permissions_reply("user".into(), &[PermissionsReplyItem {
+                id: "tc1".into(), decision: "approve".into(), text: None, scope: None,
+            }]),
         ];
-        let messages = messages(&mint_events(&events)).unwrap();
+        let messages = messages(&mint_events(bodies)).unwrap();
         assert_eq!(messages.len(), 1, "only UserTurn should appear; got: {} messages", messages.len());
         assert!(matches!(&messages[0], Message::User { .. }));
     }
@@ -337,12 +331,15 @@ mod tests {
     #[test]
     fn compaction_breakpoint_discards_earlier_events() {
         let dir = TempDir::new().unwrap();
-        let path = write_events(dir.path(), &[
-            AnyEvent::UserTurn { content: "old".into(), from: None, context: None, ts: 0 },
-            AnyEvent::AssistantText { content: "old response".into(), ts: 1 },
-            AnyEvent::TurnComplete { usage: TurnUsage{input:1,output:1,cache_read:0,cache_write:0}, codebase_hash:"h".into(), codebase_dirty:false, code_checkpoint: None, blocks: vec![], output: TurnOutput{message:"s".into(),result:None}, ts:2 },
-            AnyEvent::Compaction { summary: "summary of old stuff".into(), turns_covered: 1, from_ts: 0, to_ts: 2, usage: CompactionUsage{input:10,output:5}, ts: 3 },
-            AnyEvent::UserTurn { content: "new".into(), from: None, context: None, ts: 4 },
+        let usage = TurnUsage{input:1,output:1,cache_read:0,cache_write:0};
+        let output = TurnOutput{message:"s".into(),result:None};
+        let cu = CompactionUsage{input:10,output:5};
+        let path = write_events(dir.path(), vec![
+            events::user_turn("old".into(), None, None),
+            events::assistant_text("old response".into()),
+            events::turn_complete(&usage, "h".into(), false, None, vec![], &output),
+            events::compaction("summary of old stuff".into(), 1, &cu),
+            events::user_turn("new".into(), None, None),
         ]);
         let msgs = messages_from_path(&path).unwrap();
         // Should have: compaction summary + "new" user turn
@@ -354,13 +351,11 @@ mod tests {
     fn enabled_loadables_seeds_from_config_and_replays_toggles() {
         use std::collections::HashSet;
         let config_enabled: HashSet<String> = ["tdd".into()].into();
-        let events = vec![
-            AnyEvent::ToolCall { id: "1".into(), name: "load".into(),
-                input: serde_json::json!({"name": "slack_send", "enabled": true}), ts: 1 },
-            AnyEvent::ToolCall { id: "2".into(), name: "load".into(),
-                input: serde_json::json!({"name": "tdd", "enabled": false}), ts: 2 },
+        let bodies = vec![
+            events::tool_call("1".into(), "load".into(), &serde_json::json!({"name": "slack_send", "enabled": true})),
+            events::tool_call("2".into(), "load".into(), &serde_json::json!({"name": "tdd", "enabled": false})),
         ];
-        let enabled = enabled_loadables(&mint_events(&events), &config_enabled);
+        let enabled = enabled_loadables(&mint_events(bodies), &config_enabled);
         assert!(enabled.contains("slack_send"), "slack should be enabled after load");
         assert!(!enabled.contains("tdd"), "tdd should be disabled after unload (LWW per entity)");
     }
@@ -368,12 +363,11 @@ mod tests {
     #[test]
     fn both_projections_derive_from_one_event_log() {
         use std::collections::HashSet;
-        let events = vec![
-            AnyEvent::UserTurn { content: "hi".into(), from: None, context: None, ts: 0 },
-            AnyEvent::ToolCall { id: "1".into(), name: "load".into(),
-                input: serde_json::json!({"name": "slack_send", "enabled": true}), ts: 1 },
+        let bodies = vec![
+            events::user_turn("hi".into(), None, None),
+            events::tool_call("1".into(), "load".into(), &serde_json::json!({"name": "slack_send", "enabled": true})),
         ];
-        let proto_events = mint_events(&events);
+        let proto_events = mint_events(bodies);
         let msgs = messages(&proto_events).unwrap();
         assert!(matches!(&msgs[0], Message::User { content: MessageContent::Text(t) } if t == "hi"));
         let enabled = enabled_loadables(&proto_events, &HashSet::new());

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use crate::turn::SessionLock;
-use crate::session::transcript::{append_event, AnyEvent, now_ms};
+use crate::proto::{events, wire};
 use crate::scheduler::Action;
 
 #[async_trait::async_trait]
@@ -31,13 +31,12 @@ impl HarnessBackend for NativeHarnessBackend {
     async fn execute(&self, action: &Action) -> anyhow::Result<()> {
         match action {
             Action::NotifyAndResume { target_session, from_session, status, summary } => {
-                let event = AnyEvent::AgentUpdate {
-                    session_id: from_session.clone(),
-                    status: status.clone(),
-                    summary: summary.clone(),
-                    items: None,
-                    ts: now_ms(),
-                };
+                let event = events::agent_update(
+                    from_session.clone(),
+                    status,
+                    summary.clone(),
+                    None,
+                );
 
                 let target_dir = self.workspace.join("sessions").join(target_session);
                 let tx_path = target_dir.join("transcript.jsonl");
@@ -59,7 +58,7 @@ impl HarnessBackend for NativeHarnessBackend {
                 let _lock = lock.ok_or_else(|| anyhow::anyhow!(
                     "failed to acquire lock on session {} after 20 attempts", target_session))?;
 
-                append_event(&tx_path, &event)?;
+                wire::append(&tx_path, event)?;
                 let repos = crate::git::Repos::production();
                 repos.traces.commit_session(
                     &self.workspace,

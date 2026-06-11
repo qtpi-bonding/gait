@@ -125,22 +125,20 @@ pub fn reconstruct_state(events: &[Event]) -> WorkflowState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::transcript::AnyEvent;
+    use crate::proto::wire;
 
-    fn mint_events(aes: &[AnyEvent]) -> Vec<Event> {
-        aes.iter()
-            .map(|ae| crate::proto::envelope::mint(crate::proto::convert::any_to_body(ae), None))
-            .collect()
+    fn mint_raw(tag: &str, payload: serde_json::Value) -> Event {
+        crate::proto::envelope::mint(wire::raw(tag, payload), None)
     }
 
     #[test]
     fn reconstruct_from_events() {
-        let events = mint_events(&[
-            AnyEvent::WorkflowStart { workflow_id: "wf1".into(), name: "t".into(), yaml_path: "".into(), args: vec![], ts: 1 },
-            AnyEvent::NodeStart { workflow_id: "wf1".into(), node_id: "n1".into(), node_type: "shell".into(), attempt: 1, ts: 2 },
-            AnyEvent::NodeComplete { workflow_id: "wf1".into(), node_id: "n1".into(), output: "ok".into(), exit_code: Some(0), json_output: None, routed_to: None, ts: 3 },
-            AnyEvent::NodeSkip { workflow_id: "wf1".into(), node_id: "n2".into(), reason: "inactive branch".into(), ts: 4 },
-        ]);
+        let events = vec![
+            mint_raw("workflow_start", serde_json::json!({"workflow_id": "wf1", "name": "t", "yaml_path": "", "args": []})),
+            mint_raw("node_start", serde_json::json!({"workflow_id": "wf1", "node_id": "n1", "node_type": "shell", "attempt": 1})),
+            mint_raw("node_complete", serde_json::json!({"workflow_id": "wf1", "node_id": "n1", "output": "ok", "exit_code": 0, "json_output": null, "routed_to": null})),
+            mint_raw("node_skip", serde_json::json!({"workflow_id": "wf1", "node_id": "n2", "reason": "inactive branch"})),
+        ];
         let state = reconstruct_state(&events);
         assert_eq!(state.workflow_id, "wf1");
         assert_eq!(state.node_status("n1"), NodeStatus::Done);

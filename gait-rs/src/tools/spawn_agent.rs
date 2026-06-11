@@ -3,7 +3,8 @@ use serde_json::Value;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use crate::types::Tool;
-use crate::session::transcript::{AnyEvent, InitSessionOpts, append_event, init_session, now_ms};
+use crate::session::transcript::{InitSessionOpts, init_session, now_ms};
+use crate::proto::{events, wire};
 use crate::session::session_json::{SessionJson, TokenTotals, write_session_json};
 use crate::config::load_config;
 use crate::tools::make_schema;
@@ -76,12 +77,11 @@ impl Tool for SpawnAgentTool {
             codebase_dirty: false,
         })?;
 
-        append_event(&tx_path, &AnyEvent::UserTurn {
-            content: task,
-            from: Some(format!("agent:{}", self.current_session_id)),
-            context: None,
-            ts: now_ms(),
-        })?;
+        wire::append(&tx_path, events::user_turn(
+            task,
+            Some(format!("agent:{}", self.current_session_id)),
+            None,
+        ))?;
 
         self.repos.traces.commit_session(
             &self.workspace,

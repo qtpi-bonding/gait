@@ -7,10 +7,11 @@ use crate::render::split_into_blocks;
 use crate::types::{Message, MessageContent, AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind, Usage, ExecutionMode, ExecutionSignal, ToolPermission, Hook, HookAction};
 use crate::types::Tool;
 use crate::session::transcript::{
-    AnyEvent, append_event, emit_event, read_events, init_session, count_turn_complete, now_ms,
+    read_events, init_session, count_turn_complete, now_ms,
     InitSessionOpts, PermissionItem, PermissionsReplyItem, TurnUsage, TurnOutput,
     ClarifyItem, InformItem,
 };
+use crate::proto::{events, wire};
 use crate::session::retrace;
 use crate::config::{McpToolDef, SkillDef};
 use crate::git;
@@ -183,12 +184,7 @@ async fn execute_tool_call(
     approval_prefix: Option<String>,
 ) -> anyhow::Result<(AssistantPart, ToolResult)> {
     let id = tc.tool_call_id.clone();
-    emit_event(tx_path, &AnyEvent::ToolCall {
-        id: id.clone(),
-        name: tc.tool_name.clone(),
-        input: tc.args.clone(),
-        ts: now_ms(),
-    })?;
+    wire::emit(tx_path, events::tool_call(id.clone(), tc.tool_name.clone(), &tc.args))?;
     let assistant_part = AssistantPart::ToolCall(ToolCall {
         tool_call_id: id.clone(),
         tool_name: tc.tool_name.clone(),
@@ -205,9 +201,7 @@ async fn execute_tool_call(
         Some(prefix) => format!("{}\n{}", prefix, raw),
         None => raw,
     };
-    emit_event(tx_path, &AnyEvent::ToolResult {
-        id: id.clone(), output: output.clone(), ts: now_ms(),
-    })?;
+    wire::emit(tx_path, events::tool_result(id.clone(), output.clone()))?;
     let tool_result = ToolResult {
         kind: ToolResultKind::ToolResult,
         tool_call_id: id,
@@ -506,27 +500,24 @@ pub async fn run_turn(
                     };
                     if let Err(e) = execute_tool_call(&tc, &tools, &tx_path, prefix).await {
                         // Emit error as tool result so model sees it
-                        emit_event(&tx_path, &AnyEvent::ToolResult {
-                            id: id.clone(),
-                            output: format!("error executing approved tool: {e}"),
-                            ts: now_ms(),
-                        })?;
+                        wire::emit(&tx_path, events::tool_result(
+                            id.clone(),
+                            format!("error executing approved tool: {e}"),
+                        ))?;
                     }
                 } else {
                     // At least one segment denied — emit ToolCall FIRST, then ToolResult.
                     // Without a preceding ToolCall, context.rs silently drops the orphan
                     // ToolResult during reconstruction, and the model retries forever (gate loop).
-                    emit_event(&tx_path, &AnyEvent::ToolCall {
-                        id: id.clone(),
-                        name: items[0].tool_name.clone(),
-                        input: input_value(&items[0].tool_args),
-                        ts: now_ms(),
-                    })?;
-                    emit_event(&tx_path, &AnyEvent::ToolResult {
-                        id: id.clone(),
-                        output: "permission denied by user".into(),
-                        ts: now_ms(),
-                    })?;
+                    wire::emit(&tx_path, events::tool_call(
+                        id.clone(),
+                        items[0].tool_name.clone(),
+                        &input_value(&items[0].tool_args),
+                    ))?;
+                    wire::emit(&tx_path, events::tool_result(
+                        id.clone(),
+                        "permission denied by user".into(),
+                    ))?;
                 }
             }
 
@@ -545,17 +536,13 @@ pub async fn run_turn(
 
     if !did_resume {
         if let Some(task) = &task {
-            emit_event(&tx_path, &AnyEvent::UserTurn {
-                content: task.clone(),
-                from: None,
-                context: Some(crate::session::transcript::UserTurnContext {
-                    codebase_hash: Some(codebase_hash.clone()),
-                    codebase_dirty: Some(codebase_dirty),
-                    dirty_files: if dirty_files.is_empty() { None } else { Some(dirty_files.clone()) },
-                    injected_files: None,
-                }),
-                ts: now_ms(),
-            })?;
+            let ctx = crate::session::transcript::UserTurnContext {
+                codebase_hash: Some(codebase_hash.clone()),
+                codebase_dirty: Some(codebase_dirty),
+                dirty_files: if dirty_files.is_empty() { None } else { Some(dirty_files.clone()) },
+                injected_files: None,
+            };
+            wire::emit(&tx_path, events::user_turn(task.clone(), None, Some(&ctx)))?;
         }
         let events = read_events(&tx_path)?;
         messages = retrace::messages(&events)?;
@@ -680,10 +667,7 @@ pub async fn run_turn(
         // Parts message below. Writing a separate AssistantText event here would produce
         // two consecutive assistant messages in context reconstruction, which Anthropic rejects.
         if !step_text.is_empty() && step_tool_calls.is_empty() {
-            emit_event(&tx_path, &AnyEvent::AssistantText {
-                content: step_text.clone(),
-                ts: now_ms(),
-            })?;
+            wire::emit(&tx_path, events::assistant_text(step_text.clone()))?;
         }
 
         // No tool calls → auto-wrap the text as an implicit output() call.
@@ -696,20 +680,17 @@ pub async fn run_turn(
                 repos.checkpoints.as_ref(),
                 &workspace, &session_id, &codebase_path, turn_n,
             );
-            emit_event(&tx_path, &AnyEvent::TurnComplete {
-                usage: TurnUsage {
-                    input: total_usage.input_tokens as u64,
-                    output: total_usage.output_tokens as u64,
-                    cache_read: total_usage.cache_read_tokens as u64,
-                    cache_write: total_usage.cache_write_tokens as u64,
-                },
-                codebase_hash: codebase_hash.clone(),
-                codebase_dirty,
-                code_checkpoint,
-                blocks: split_into_blocks(&all_turn_text),
-                output: TurnOutput { message: message.clone(), result: None },
-                ts: now_ms(),
-            })?;
+            let usage = TurnUsage {
+                input: total_usage.input_tokens as u64,
+                output: total_usage.output_tokens as u64,
+                cache_read: total_usage.cache_read_tokens as u64,
+                cache_write: total_usage.cache_write_tokens as u64,
+            };
+            let output = TurnOutput { message: message.clone(), result: None };
+            wire::emit(&tx_path, events::turn_complete(
+                &usage, codebase_hash.clone(), codebase_dirty, code_checkpoint,
+                split_into_blocks(&all_turn_text), &output,
+            ))?;
             repos.traces.commit_session(&workspace, &session_id,
                 &format!("session({}): turn {}", session_id, turn_n))?;
             for h in &hooks { h.post_turn(); }
@@ -820,17 +801,12 @@ pub async fn run_turn(
                 tc.tool_name.clone()
             };
             let output = format!("[Blocked by config: {}] permission denied", pattern);
-            emit_event(&tx_path, &AnyEvent::ToolCall {
-                id: tc.tool_call_id.clone(),
-                name: tc.tool_name.clone(),
-                input: tc.args.clone(),
-                ts: now_ms(),
-            })?;
-            emit_event(&tx_path, &AnyEvent::ToolResult {
-                id: tc.tool_call_id.clone(),
-                output: output.clone(),
-                ts: now_ms(),
-            })?;
+            wire::emit(&tx_path, events::tool_call(
+                tc.tool_call_id.clone(), tc.tool_name.clone(), &tc.args,
+            ))?;
+            wire::emit(&tx_path, events::tool_result(
+                tc.tool_call_id.clone(), output.clone(),
+            ))?;
             assistant_parts.push(AssistantPart::ToolCall(ToolCall {
                 tool_call_id: tc.tool_call_id.clone(),
                 tool_name: tc.tool_name.clone(),
@@ -920,13 +896,12 @@ pub async fn run_turn(
                     .find_map(|h| if let HookAction::Block { reason } = h.pre_tool(tc) { Some(reason) } else { None })
                 {
                     let output = format!("[Blocked by hook] {}", reason);
-                    emit_event(&tx_path, &AnyEvent::ToolCall {
-                        id: tc.tool_call_id.clone(), name: tc.tool_name.clone(),
-                        input: tc.args.clone(), ts: now_ms(),
-                    })?;
-                    emit_event(&tx_path, &AnyEvent::ToolResult {
-                        id: tc.tool_call_id.clone(), output: output.clone(), ts: now_ms(),
-                    })?;
+                    wire::emit(&tx_path, events::tool_call(
+                        tc.tool_call_id.clone(), tc.tool_name.clone(), &tc.args,
+                    ))?;
+                    wire::emit(&tx_path, events::tool_result(
+                        tc.tool_call_id.clone(), output.clone(),
+                    ))?;
                     all_results[*i] = Some((
                         AssistantPart::ToolCall(ToolCall {
                             tool_call_id: tc.tool_call_id.clone(),
@@ -1005,17 +980,12 @@ pub async fn run_turn(
                     }
                     ExecutionSignal::TurnComplete => {
                         // Emit call+result pair for transcript auditability before ending the turn.
-                        emit_event(&tx_path, &AnyEvent::ToolCall {
-                            id: tc.tool_call_id.clone(),
-                            name: tc.tool_name.clone(),
-                            input: tc.args.clone(),
-                            ts: now_ms(),
-                        })?;
-                        emit_event(&tx_path, &AnyEvent::ToolResult {
-                            id: tc.tool_call_id.clone(),
-                            output: "recorded".to_string(),
-                            ts: now_ms(),
-                        })?;
+                        wire::emit(&tx_path, events::tool_call(
+                            tc.tool_call_id.clone(), tc.tool_name.clone(), &tc.args,
+                        ))?;
+                        wire::emit(&tx_path, events::tool_result(
+                            tc.tool_call_id.clone(), "recorded".to_string(),
+                        ))?;
                         let message = tc.args.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
                         let result = tc.args.get("result").cloned();
                         for t in post_tool_text.drain(..) {
@@ -1027,20 +997,17 @@ pub async fn run_turn(
                             repos.checkpoints.as_ref(),
                             &workspace, &session_id, &codebase_path, turn_n,
                         );
-                        emit_event(&tx_path, &AnyEvent::TurnComplete {
-                            usage: TurnUsage {
-                                input: total_usage.input_tokens as u64,
-                                output: total_usage.output_tokens as u64,
-                                cache_read: total_usage.cache_read_tokens as u64,
-                                cache_write: total_usage.cache_write_tokens as u64,
-                            },
-                            codebase_hash: codebase_hash.clone(),
-                            codebase_dirty,
-                            code_checkpoint,
-                            blocks: split_into_blocks(&all_turn_text),
-                            output: TurnOutput { message: message.clone(), result: result.clone() },
-                            ts: now_ms(),
-                        })?;
+                        let usage = TurnUsage {
+                            input: total_usage.input_tokens as u64,
+                            output: total_usage.output_tokens as u64,
+                            cache_read: total_usage.cache_read_tokens as u64,
+                            cache_write: total_usage.cache_write_tokens as u64,
+                        };
+                        let turn_output = TurnOutput { message: message.clone(), result: result.clone() };
+                        wire::emit(&tx_path, events::turn_complete(
+                            &usage, codebase_hash.clone(), codebase_dirty, code_checkpoint,
+                            split_into_blocks(&all_turn_text), &turn_output,
+                        ))?;
                         repos.traces.commit_session(&workspace, &session_id,
                             &format!("session({}): turn {}", session_id, turn_n))?;
                         for h in &hooks { h.post_turn(); }
@@ -1050,14 +1017,14 @@ pub async fn run_turn(
                         let items: Vec<ClarifyItem> = tc.args.get("items")
                             .and_then(|v| serde_json::from_value(v.clone()).ok())
                             .unwrap_or_default();
-                        emit_event(&tx_path, &AnyEvent::Clarify { items: items.clone(), ts: now_ms() })?;
+                        wire::emit(&tx_path, events::clarify(&items))?;
                         clarify_signal = Some(items);
                     }
                     ExecutionSignal::Inform => {
                         let items: Vec<InformItem> = tc.args.get("items")
                             .and_then(|v| serde_json::from_value(v.clone()).ok())
                             .unwrap_or_default();
-                        emit_event(&tx_path, &AnyEvent::Inform { items: items.clone(), ts: now_ms() })?;
+                        wire::emit(&tx_path, events::inform(&items))?;
                         inform_signal = Some(items);
                     }
                     ExecutionSignal::Continue => {
@@ -1109,10 +1076,7 @@ pub async fn run_turn(
         // Gated tools: emit Permissions and exit so the user can decide.
         // (In auto mode gated_ids is always empty — this block is never reached.)
         if !pending_permissions.is_empty() {
-            emit_event(&tx_path, &AnyEvent::Permissions {
-                items: pending_permissions,
-                ts: now_ms(),
-            })?;
+            wire::emit(&tx_path, events::permissions(&pending_permissions))?;
             repos.traces.commit_session(&workspace, &session_id,
                 &format!("session({}): permissions", session_id))?;
             for h in &hooks { h.post_turn(); }
@@ -1690,22 +1654,13 @@ mod tests {
             tool_name: "shell".into(),
             tool_args: serde_json::json!({"cmd": "echo hello", "reason": "test"}),
         };
-        append_event(&tx_path, &AnyEvent::SessionStart {
-            schema_version: 1, id: session_id.into(),
-            model: "test".into(), codebase_hash: "".into(), codebase_dirty: false, ts: 1,
-        }).unwrap();
-        append_event(&tx_path, &AnyEvent::UserTurn {
-            content: "run echo".into(), from: None, context: None, ts: 2,
-        }).unwrap();
-        append_event(&tx_path, &AnyEvent::Permissions { items: vec![perm_item], ts: 3 }).unwrap();
-        append_event(&tx_path, &AnyEvent::PermissionsReply {
-            from: "user".into(),
-            items: vec![PermissionsReplyItem {
-                id: "tc-resume-1".into(), decision: "approve".into(),
-                text: Some("shell:echo *".into()), scope: None,
-            }],
-            ts: 4,
-        }).unwrap();
+        wire::append(&tx_path, events::session_start(session_id.into(), None)).unwrap();
+        wire::append(&tx_path, events::user_turn("run echo".into(), None, None)).unwrap();
+        wire::append(&tx_path, events::permissions(&[perm_item])).unwrap();
+        wire::append(&tx_path, events::permissions_reply("user".into(), &[PermissionsReplyItem {
+            id: "tc-resume-1".into(), decision: "approve".into(),
+            text: Some("shell:echo *".into()), scope: None,
+        }])).unwrap();
 
         let shell_tool = ToolDef {
             name: "shell".into(),
@@ -1758,21 +1713,12 @@ mod tests {
             tool_name: "shell".into(),
             tool_args: serde_json::json!({"cmd": "rm -rf /", "reason": "cleanup"}),
         };
-        append_event(&tx_path, &AnyEvent::SessionStart {
-            schema_version: 1, id: session_id.into(),
-            model: "test".into(), codebase_hash: "".into(), codebase_dirty: false, ts: 1,
-        }).unwrap();
-        append_event(&tx_path, &AnyEvent::UserTurn {
-            content: "clean up".into(), from: None, context: None, ts: 2,
-        }).unwrap();
-        append_event(&tx_path, &AnyEvent::Permissions { items: vec![perm_item], ts: 3 }).unwrap();
-        append_event(&tx_path, &AnyEvent::PermissionsReply {
-            from: "user".into(),
-            items: vec![PermissionsReplyItem {
-                id: "tc-deny-1".into(), decision: "deny".into(), text: None, scope: None,
-            }],
-            ts: 4,
-        }).unwrap();
+        wire::append(&tx_path, events::session_start(session_id.into(), None)).unwrap();
+        wire::append(&tx_path, events::user_turn("clean up".into(), None, None)).unwrap();
+        wire::append(&tx_path, events::permissions(&[perm_item])).unwrap();
+        wire::append(&tx_path, events::permissions_reply("user".into(), &[PermissionsReplyItem {
+            id: "tc-deny-1".into(), decision: "deny".into(), text: None, scope: None,
+        }])).unwrap();
 
         let shell_tool = ToolDef {
             name: "shell".into(),
@@ -1848,34 +1794,22 @@ mod tests {
         // simulating a previous turn that was interrupted mid-permission-prompt.
         // The PermissionsReply has scope="agent" to indicate it was saved to agent config.
         let shell_args = serde_json::json!({ "cmd": "ls", "reason": "list files" });
-        append_event(&tx_path, &AnyEvent::SessionStart {
-            schema_version: 2, id: session_id.into(),
-            model: "mock/test".into(), codebase_hash: "none".into(), codebase_dirty: false, ts: 1,
-        }).unwrap();
-        append_event(&tx_path, &AnyEvent::UserTurn {
-            content: "list files".into(), from: None, context: None, ts: 2,
-        }).unwrap();
-        append_event(&tx_path, &AnyEvent::Permissions {
-            items: vec![PermissionItem {
-                id: "tc-scope-1".into(),
-                cmd: "ls".into(),
-                reason: "shell requires permission".into(),
-                patterns: vec!["shell:ls *".to_string()],
-                tool_name: "shell".into(),
-                tool_args: shell_args.clone(),
-            }],
-            ts: 3,
-        }).unwrap();
-        append_event(&tx_path, &AnyEvent::PermissionsReply {
-            from: "user".into(),
-            items: vec![PermissionsReplyItem {
-                id: "tc-scope-1".into(),
-                decision: "approve".into(),
-                text: None,
-                scope: Some("agent".into()),
-            }],
-            ts: 4,
-        }).unwrap();
+        wire::append(&tx_path, events::session_start(session_id.into(), None)).unwrap();
+        wire::append(&tx_path, events::user_turn("list files".into(), None, None)).unwrap();
+        wire::append(&tx_path, events::permissions(&[PermissionItem {
+            id: "tc-scope-1".into(),
+            cmd: "ls".into(),
+            reason: "shell requires permission".into(),
+            patterns: vec!["shell:ls *".to_string()],
+            tool_name: "shell".into(),
+            tool_args: shell_args.clone(),
+        }])).unwrap();
+        wire::append(&tx_path, events::permissions_reply("user".into(), &[PermissionsReplyItem {
+            id: "tc-scope-1".into(),
+            decision: "approve".into(),
+            text: None,
+            scope: Some("agent".into()),
+        }])).unwrap();
 
         let shell_tool = ToolDef {
             name: "shell".into(),

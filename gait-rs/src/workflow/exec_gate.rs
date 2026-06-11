@@ -1,7 +1,7 @@
 use std::path::Path;
 use crate::workflow::schema::GateConfig;
 use crate::workflow::vars::{NodeOutput, VarContext, substitute};
-use crate::session::transcript::{AnyEvent, emit_event, now_ms};
+use crate::proto::wire;
 
 pub fn exec_gate_node(
     workflow_id: &str,
@@ -12,12 +12,11 @@ pub fn exec_gate_node(
 ) -> anyhow::Result<NodeOutput> {
     let message = substitute(gate_cfg.message(), vars);
 
-    emit_event(tx_path, &AnyEvent::WorkflowGate {
-        workflow_id: workflow_id.to_string(),
-        node_id: node_id.to_string(),
-        message: message.clone(),
-        ts: now_ms(),
-    })?;
+    wire::emit(tx_path, wire::raw("workflow_gate", serde_json::json!({
+        "workflow_id": workflow_id.to_string(),
+        "node_id": node_id.to_string(),
+        "message": message.clone(),
+    })))?;
 
     Ok(NodeOutput {
         text: message,

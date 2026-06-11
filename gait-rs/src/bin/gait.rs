@@ -746,12 +746,11 @@ fn cmd_workflow_abort(argv: &[String], workspace: PathBuf) {
         None => { eprintln!("[gait] usage: gait workflow abort <workflow-id>"); std::process::exit(1); }
     };
     let tx_path = workspace.join("sessions").join(&workflow_id).join("transcript.jsonl");
-    let _ = gait_ai::session::transcript::emit_event(&tx_path, &gait_ai::session::transcript::AnyEvent::WorkflowError {
-        workflow_id: workflow_id.clone(),
-        failed_node: "(aborted)".into(),
-        error: "user aborted".into(),
-        ts: gait_ai::session::transcript::now_ms(),
-    });
+    let _ = gait_ai::proto::wire::emit(&tx_path, gait_ai::proto::wire::raw("workflow_error", serde_json::json!({
+        "workflow_id": workflow_id.clone(),
+        "failed_node": "(aborted)",
+        "error": "user aborted",
+    })));
     let _ = gait_ai::git::Repos::production().traces.commit_session(&workspace, &workflow_id, "workflow: aborted");
     println!("[gait workflow] aborted {}", workflow_id);
 }

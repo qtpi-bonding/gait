@@ -12,7 +12,8 @@ use crate::workflow::exec_prompt::exec_prompt_node;
 use crate::workflow::exec_loop::exec_loop_node;
 use crate::workflow::exec_branch::resolve_branch;
 use crate::workflow::exec_gate::exec_gate_node;
-use crate::session::transcript::{AnyEvent, emit_event, read_events, now_ms};
+use crate::session::transcript::{read_events, now_ms};
+use crate::proto::wire;
 
 pub struct WorkflowRunOpts {
     pub workflow_def: WorkflowDef,
@@ -44,13 +45,12 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
     let args_str = args.join(" ");
 
     if existing_events.is_empty() {
-        emit_event(&tx_path, &AnyEvent::WorkflowStart {
-            workflow_id: workflow_id.clone(),
-            name: wf.name.clone(),
-            yaml_path: yaml_path.clone(),
-            args: args.clone(),
-            ts: now_ms(),
-        })?;
+        wire::emit(&tx_path, wire::raw("workflow_start", serde_json::json!({
+            "workflow_id": workflow_id.clone(),
+            "name": wf.name.clone(),
+            "yaml_path": yaml_path.clone(),
+            "args": args.clone(),
+        })))?;
         let node_ids: Vec<&str> = wf.nodes.iter().map(|n| n.id.as_str()).collect();
         let progress = init_progress(&workflow_id, &wf.name, &node_ids);
         write_progress(&workspace, &session_id, &progress)?;
@@ -60,10 +60,10 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
             if let Some(cmd) = &hooks.before {
                 let env = make_env_vars(&workflow_id, &session_id, &workspace, &codebase, &args_str, None, &state);
                 let (exit, _) = run_hook(cmd, &env).await;
-                emit_event(&tx_path, &AnyEvent::HookRun {
-                    workflow_id: workflow_id.clone(), node_id: None,
-                    hook_type: "before".into(), cmd: cmd.clone(), exit_code: exit, ts: now_ms(),
-                })?;
+                wire::emit(&tx_path, wire::raw("hook_run", serde_json::json!({
+                    "workflow_id": workflow_id.clone(), "node_id": null,
+                    "hook_type": "before", "cmd": cmd.clone(), "exit_code": exit,
+                })))?;
             }
         }
     }
@@ -85,10 +85,10 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
         }
 
         if should_skip_node(node, &state) {
-            emit_event(&tx_path, &AnyEvent::NodeSkip {
-                workflow_id: workflow_id.clone(), node_id: node_id.clone(),
-                reason: "inactive branch path".into(), ts: now_ms(),
-            })?;
+            wire::emit(&tx_path, wire::raw("node_skip", serde_json::json!({
+                "workflow_id": workflow_id.clone(), "node_id": node_id.clone(),
+                "reason": "inactive branch path",
+            })))?;
             state.set_status(&node_id, NodeStatus::Skipped);
             update_progress(&workspace, &session_id, &workflow_id, &wf.name, &state, &wf.nodes)?;
             repos.traces.commit_session(&workspace, &session_id, &format!("workflow: skip {}", node_id))?;
@@ -99,17 +99,17 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
         if let Some(hooks) = &node.hooks {
             if let Some(cmd) = &hooks.before {
                 let (exit, _) = run_hook(cmd, &env).await;
-                emit_event(&tx_path, &AnyEvent::HookRun {
-                    workflow_id: workflow_id.clone(), node_id: Some(node_id.clone()),
-                    hook_type: "before".into(), cmd: cmd.clone(), exit_code: exit, ts: now_ms(),
-                })?;
+                wire::emit(&tx_path, wire::raw("hook_run", serde_json::json!({
+                    "workflow_id": workflow_id.clone(), "node_id": Some(node_id.clone()),
+                    "hook_type": "before", "cmd": cmd.clone(), "exit_code": exit,
+                })))?;
             }
         }
 
-        emit_event(&tx_path, &AnyEvent::NodeStart {
-            workflow_id: workflow_id.clone(), node_id: node_id.clone(),
-            node_type: node.node_type_name().into(), attempt: 1, ts: now_ms(),
-        })?;
+        wire::emit(&tx_path, wire::raw("node_start", serde_json::json!({
+            "workflow_id": workflow_id.clone(), "node_id": node_id.clone(),
+            "node_type": node.node_type_name(), "attempt": 1,
+        })))?;
         state.set_status(&node_id, NodeStatus::Running);
 
         let vars = VarContext {
@@ -136,10 +136,10 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
                 Ok(out) => { node_result = Some(out); break; }
                 Err(e) => {
                     last_error = e.to_string();
-                    emit_event(&tx_path, &AnyEvent::NodeError {
-                        workflow_id: workflow_id.clone(), node_id: node_id.clone(),
-                        error: last_error.clone(), attempt: attempt as u32, ts: now_ms(),
-                    })?;
+                    wire::emit(&tx_path, wire::raw("node_error", serde_json::json!({
+                        "workflow_id": workflow_id.clone(), "node_id": node_id.clone(),
+                        "error": last_error.clone(), "attempt": attempt as u32,
+                    })))?;
                 }
             }
         }
@@ -159,11 +159,11 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
                     propagate_branch_skips(node, &routed, &wf.nodes, &mut state, &tx_path, &workflow_id)?;
                 }
 
-                emit_event(&tx_path, &AnyEvent::NodeComplete {
-                    workflow_id: workflow_id.clone(), node_id: node_id.clone(),
-                    output: out.text.clone(), exit_code: out.exit_code,
-                    json_output: out.json.clone(), routed_to: out.routed_to.clone(), ts: now_ms(),
-                })?;
+                wire::emit(&tx_path, wire::raw("node_complete", serde_json::json!({
+                    "workflow_id": workflow_id.clone(), "node_id": node_id.clone(),
+                    "output": out.text.clone(), "exit_code": out.exit_code,
+                    "json_output": out.json.clone(), "routed_to": out.routed_to.clone(),
+                })))?;
                 state.set_status(&node_id, NodeStatus::Done);
                 state.node_outputs.insert(node_id.clone(), out);
 
@@ -171,10 +171,10 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
                     if let Some(cmd) = &hooks.after {
                         let env = make_env_vars(&workflow_id, &session_id, &workspace, &codebase, &args_str, Some(&node_id), &state);
                         let (exit, _) = run_hook(cmd, &env).await;
-                        emit_event(&tx_path, &AnyEvent::HookRun {
-                            workflow_id: workflow_id.clone(), node_id: Some(node_id.clone()),
-                            hook_type: "after".into(), cmd: cmd.clone(), exit_code: exit, ts: now_ms(),
-                        })?;
+                        wire::emit(&tx_path, wire::raw("hook_run", serde_json::json!({
+                            "workflow_id": workflow_id.clone(), "node_id": Some(node_id.clone()),
+                            "hook_type": "after", "cmd": cmd.clone(), "exit_code": exit,
+                        })))?;
                     }
                 }
             }
@@ -189,10 +189,10 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
 
                 let on_error = &node.on_error;
                 if on_error.is_abort() {
-                    emit_event(&tx_path, &AnyEvent::WorkflowError {
-                        workflow_id: workflow_id.clone(), failed_node: node_id.clone(),
-                        error: last_error.clone(), ts: now_ms(),
-                    })?;
+                    wire::emit(&tx_path, wire::raw("workflow_error", serde_json::json!({
+                        "workflow_id": workflow_id.clone(), "failed_node": node_id.clone(),
+                        "error": last_error.clone(),
+                    })))?;
                     update_progress(&workspace, &session_id, &workflow_id, &wf.name, &state, &wf.nodes)?;
                     repos.traces.commit_session(&workspace, &session_id, &format!("workflow: error at {}", node_id))?;
                     if let Some(hooks) = &wf.hooks {
@@ -217,7 +217,9 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
         repos.traces.commit_session(&workspace, &session_id, &format!("workflow: {}", node_id))?;
     }
 
-    emit_event(&tx_path, &AnyEvent::WorkflowComplete { workflow_id: workflow_id.clone(), ts: now_ms() })?;
+    wire::emit(&tx_path, wire::raw("workflow_complete", serde_json::json!({
+        "workflow_id": workflow_id.clone(),
+    })))?;
     update_progress_done(&workspace, &session_id, &workflow_id, &wf.name, &state, &wf.nodes)?;
     repos.traces.commit_session(&workspace, &session_id, "workflow: complete")?;
 
@@ -298,10 +300,10 @@ fn propagate_branch_skips(
     for id in &inactive {
         if !state.is_done(id) && !state.is_skipped(id) {
             state.set_status(id, NodeStatus::Skipped);
-            emit_event(tx_path, &AnyEvent::NodeSkip {
-                workflow_id: workflow_id.to_string(), node_id: id.clone(),
-                reason: format!("inactive branch (routed to {})", routed_to), ts: now_ms(),
-            })?;
+            wire::emit(tx_path, wire::raw("node_skip", serde_json::json!({
+                "workflow_id": workflow_id.to_string(), "node_id": id.clone(),
+                "reason": format!("inactive branch (routed to {})", routed_to),
+            })))?;
         }
     }
     let _ = all_nodes;

@@ -25,7 +25,7 @@ pub mod gait {
 pub mod hash;
 pub mod envelope;
 pub mod wire;
-pub mod convert;
+pub mod events;
 
 #[cfg(test)]
 mod tests;

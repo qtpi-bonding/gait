@@ -15,9 +15,10 @@ use std::thread;
 use std::time::Duration;
 
 use crate::session::transcript::{
-    self, AnyEvent, PermissionItem, PermissionsReplyItem,
+    self, PermissionItem, PermissionsReplyItem,
     ClarifyItem, ClarifyReplyItem, InformItem, InformReplyItem,
 };
+use crate::proto::{events, wire};
 use crate::theme::{Theme, RESET, DIM_FG};
 
 /// All user-visible hint strings for the REPL, centralised here for easy editing.
@@ -616,10 +617,7 @@ pub fn run_chat(
             if !pending_clarify.is_empty() {
                 let tx_path = workspace.join("sessions").join(&session_id).join("transcript.jsonl");
                 let reply_items = prompt_clarify_items(&pending_clarify, &theme);
-                let _ = transcript::append_event(&tx_path, &AnyEvent::ClarifyReply {
-                    items: reply_items,
-                    ts: transcript::now_ms(),
-                });
+                let _ = wire::append(&tx_path, events::clarify_reply(&reply_items));
                 continue 'spawn;
             }
 
@@ -627,10 +625,7 @@ pub fn run_chat(
             if !pending_inform.is_empty() {
                 let tx_path = workspace.join("sessions").join(&session_id).join("transcript.jsonl");
                 let reply_items = prompt_inform_items(&pending_inform, &theme);
-                let _ = transcript::append_event(&tx_path, &AnyEvent::InformReply {
-                    items: reply_items,
-                    ts: transcript::now_ms(),
-                });
+                let _ = wire::append(&tx_path, events::inform_reply(&reply_items));
                 continue 'spawn;
             }
 
