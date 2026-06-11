@@ -29,6 +29,7 @@ pub mod prompt;
 pub mod profile;
 pub mod proto;
 pub mod sandbox;
+pub mod config_hook;
 
 pub use types::*;
 pub use stream::stream_text;

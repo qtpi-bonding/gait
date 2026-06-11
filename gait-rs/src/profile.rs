@@ -138,6 +138,13 @@ impl Profile {
             tools.push(build_config_tool(ct, &workspace, &codebase_path));
         }
 
+        let tx_path = workspace.join("sessions").join(&session_id).join("transcript.jsonl");
+        let hooks: Vec<Box<dyn crate::types::Hook>> = self.hooks
+            .iter()
+            .map(|def| -> Box<dyn crate::types::Hook> {
+                Box::new(crate::config_hook::ConfigHook::new(def.clone(), tx_path.clone()))
+            })
+            .collect();
         Ok(ResolvedProfile {
             provider,
             tools,
@@ -150,7 +157,7 @@ impl Profile {
             skill_registry: self.skills,
             config_enabled: self.config_enabled,
             output_schema_retries: self.output_schema_retries,
-            hooks: vec![],
+            hooks,
         })
     }
 }
