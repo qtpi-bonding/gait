@@ -38,16 +38,16 @@ pub fn pull_image(image: &str) -> anyhow::Result<()> {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MountMap {
-    pub workspace_host: PathBuf,
-    pub workspace_container: PathBuf,
+    pub gait_dir_host: PathBuf,
+    pub gait_dir_container: PathBuf,
     pub codebase_host: PathBuf,
     pub codebase_container: PathBuf,
 }
 
 pub fn build_mount_map(gait_dir: &Path, codebase: &Path) -> MountMap {
     MountMap {
-        workspace_host: gait_dir.to_path_buf(),
-        workspace_container: PathBuf::from("/gait-workspace"),
+        gait_dir_host: gait_dir.to_path_buf(),
+        gait_dir_container: PathBuf::from("/gait-workspace"),
         codebase_host: codebase.to_path_buf(),
         codebase_container: PathBuf::from("/gait-codebase"),
     }
@@ -97,10 +97,10 @@ pub fn build_docker_args(
 
     args.extend([
         "-v".to_string(),
-        format!("{}:{}", mounts.workspace_host.display(), mounts.workspace_container.display()),
+        format!("{}:{}", mounts.gait_dir_host.display(), mounts.gait_dir_container.display()),
     ]);
 
-    if mounts.codebase_host != mounts.workspace_host {
+    if mounts.codebase_host != mounts.gait_dir_host {
         args.extend([
             "-v".to_string(),
             format!("{}:{}", mounts.codebase_host.display(), mounts.codebase_container.display()),
@@ -139,7 +139,7 @@ fn rewrite_inner_args(args: &[String], mounts: &MountMap) -> Vec<String> {
         }
     }
     out.push("--gait-dir".to_string());
-    out.push(mounts.workspace_container.to_string_lossy().to_string());
+    out.push(mounts.gait_dir_container.to_string_lossy().to_string());
     out.push("--codebase".to_string());
     out.push(mounts.codebase_container.to_string_lossy().to_string());
     out
@@ -162,8 +162,8 @@ mod tests {
         let ws = PathBuf::from("/host/myproject");
         let cb = PathBuf::from("/host/myproject/src");
         let m = build_mount_map(&ws, &cb);
-        assert_eq!(m.workspace_host, PathBuf::from("/host/myproject"));
-        assert_eq!(m.workspace_container, PathBuf::from("/gait-workspace"));
+        assert_eq!(m.gait_dir_host, PathBuf::from("/host/myproject"));
+        assert_eq!(m.gait_dir_container, PathBuf::from("/gait-workspace"));
         assert_eq!(m.codebase_host, PathBuf::from("/host/myproject/src"));
         assert_eq!(m.codebase_container, PathBuf::from("/gait-codebase"));
     }
