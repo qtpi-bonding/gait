@@ -231,6 +231,48 @@ pub fn turn_complete(
     }))
 }
 
+/// Build the proto `Resolution` message from the live resolved profile.
+/// Mapped field-by-field from the in-memory `ResolvedProfile`. The `mcp_servers`
+/// list is sorted because the source `mcp_clients` is a `HashMap` whose
+/// iteration order is nondeterministic; sorting makes the emitted event stable
+/// so the drift check in `run_turn` doesn't thrash on otherwise-identical
+/// resolutions.
+pub fn resolution_msg(resolved: &crate::profile::ResolvedProfile) -> pb::Resolution {
+    let mut mcp_servers: Vec<String> = resolved.mcp_clients.keys().cloned().collect();
+    mcp_servers.sort();
+    pb::Resolution {
+        model: resolved.model.clone(),
+        tools: resolved.tools.iter().map(|t| t.name().to_string()).collect(),
+        mcp_servers,
+        skills: resolved.skill_registry.iter().map(|s| s.name.clone()).collect(),
+        permissions: Some(pb::PermissionPolicy {
+            allow: resolved.allow.clone(),
+            deny: resolved.deny.clone(),
+        }),
+        instructions: resolved.instructions.clone(),
+        output_schema_retries: Some(resolved.output_schema_retries as u32),
+    }
+}
+
+/// The `Resolution` event body.
+pub fn resolution(resolved: &crate::profile::ResolvedProfile) -> pb::event::Body {
+    wire::body(pb::payload::Kind::Resolution(resolution_msg(resolved)))
+}
+
+/// The most recent `Resolution` payload in `events`, if any. Used by `run_turn`
+/// as the drift-guard baseline: skip emitting a new `Resolution` if the live
+/// profile already matches the most recent one.
+pub fn last_resolution(events: &[crate::proto::gait::log::v1::Event]) -> Option<pb::Resolution> {
+    for e in events.iter().rev() {
+        if let Some(crate::proto::gait::log::v1::event::Body::Payload(p)) = &e.body {
+            if let Some(pb::payload::Kind::Resolution(r)) = &p.kind {
+                return Some(r.clone());
+            }
+        }
+    }
+    None
+}
+
 /// `Compaction` — through_seq unset (no seq in legacy data).
 pub fn compaction(
     summary: String,
@@ -371,6 +413,107 @@ mod tests {
                 assert_eq!(u.injected_files, vec!["README.md".to_string()]);
             }
             other => panic!("expected UserTurn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolution_maps_fields_from_resolved_profile() {
+        use crate::profile::ResolvedProfile;
+        use crate::tools::OutputTool;
+        use std::sync::Arc;
+
+        // Build a ResolvedProfile with everything populated, via for_test
+        // (which gives a stub provider + empty allow/deny/skills) and then
+        // override the fields the mapping reads. We pass a real Tool (Output)
+        // so the Vec<Box<dyn Tool>> is constructable in for_test.
+        let mut profile = ResolvedProfile::for_test(
+            Arc::new(DummyProvider) as Arc<dyn crate::provider::Provider>,
+            vec![Box::new(OutputTool::new())],
+            vec!["read".into()],
+            vec!["shell:rm *".into()],
+        );
+        profile.model = "anthropic/x".into();
+        profile.instructions = "be terse".into();
+        profile.output_schema_retries = 7;
+
+        let body = resolution(&profile);
+        let r = match kind_of(&body) {
+            pb::payload::Kind::Resolution(r) => r.clone(),
+            other => panic!("expected Resolution, got {other:?}"),
+        };
+        assert_eq!(r.model, "anthropic/x");
+        let perms = r.permissions.as_ref().expect("permissions");
+        assert_eq!(perms.allow, vec!["read".to_string()]);
+        assert_eq!(perms.deny, vec!["shell:rm *".to_string()]);
+        assert_eq!(r.output_schema_retries, Some(7));
+        // mcp_servers is empty in for_test (no MCP clients); trivially sorted.
+        assert!(r.mcp_servers.is_empty());
+        // skills is empty in for_test default.
+        assert!(r.skills.is_empty());
+    }
+
+    #[test]
+    fn resolution_equality_is_mcp_server_order_sensitive() {
+        // The drift-guard relies on equality of `pb::Resolution` being
+        // order-sensitive for mcp_servers, so a `HashMap` iteration-order
+        // change does not falsely appear as a content change after we sort
+        // the vec on emit.
+        let r1 = pb::Resolution {
+            model: "m".into(),
+            tools: vec![],
+            mcp_servers: vec!["zeta".into(), "alpha".into()],
+            skills: vec![],
+            permissions: Some(pb::PermissionPolicy { allow: vec![], deny: vec![] }),
+            instructions: String::new(),
+            output_schema_retries: None,
+        };
+        let r2 = pb::Resolution {
+            mcp_servers: vec!["alpha".into(), "zeta".into()],
+            ..r1.clone()
+        };
+        assert_ne!(r1, r2, "resolution equality is sensitive to mcp_servers order");
+    }
+
+    #[test]
+    fn last_resolution_returns_most_recent_resolution() {
+        use crate::proto::wire;
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("tx.jsonl");
+        wire::append(&path, resolution_body("model-a")).unwrap();
+        wire::append(&path, resolution_body("model-b")).unwrap();
+        let events = wire::read_events(&path).unwrap();
+        let r = last_resolution(&events).expect("a resolution");
+        assert_eq!(r.model, "model-b");
+    }
+
+    fn resolution_body(model: &str) -> pb::event::Body {
+        wire::body(pb::payload::Kind::Resolution(pb::Resolution {
+            model: model.into(),
+            tools: vec![],
+            mcp_servers: vec![],
+            skills: vec![],
+            permissions: Some(pb::PermissionPolicy { allow: vec![], deny: vec![] }),
+            instructions: String::new(),
+            output_schema_retries: None,
+        }))
+    }
+
+    // ── Dummy provider for the mapping test (we never call into it) ──────────
+    use async_trait::async_trait;
+    use crate::provider::{Provider, ProviderError, StreamChunk};
+    use crate::types::{Message, Tool};
+
+    pub struct DummyProvider;
+    #[async_trait]
+    impl Provider for DummyProvider {
+        fn model_id(&self) -> &str { "dummy" }
+        async fn stream(
+            &self,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Box<dyn Tool>],
+        ) -> Result<std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, ProviderError>> + Send>>, ProviderError> {
+            Err(ProviderError::Other("dummy".into()))
         }
     }
 }

@@ -314,7 +314,6 @@ async fn apply_curate_filter(
         id: session_id.clone(),
         workspace: workspace.to_path_buf(),
         codebase_path: codebase_path.to_path_buf(),
-        model: model.to_string(),
         assigned_by: None,
         repos: repos.clone(),
     };
@@ -360,12 +359,16 @@ pub async fn run_turn(
     caps: crate::profile::ResolvedProfile,
     input: TurnInput,
 ) -> anyhow::Result<TurnResult> {
+    // Build the live Resolution from the whole profile BEFORE `caps` is
+    // destructured, so `events::resolution_msg` stays the single source of truth
+    // (incl. output_schema_retries). Emitted later, under the drift guard.
+    let resolution = crate::proto::events::resolution_msg(&caps);
     let provider = caps.provider.clone();
     let mut tools = caps.tools;
     let session_id = session.id.clone();
     let workspace = session.workspace.clone();
     let codebase_path = session.codebase_path.clone();
-    let model = session.model.clone();
+    let model = caps.model.clone();
     let repos = session.repos.clone();
     let allow = caps.allow;
     let deny = caps.deny;
@@ -533,6 +536,19 @@ pub async fn run_turn(
     } else {
         false
     };
+
+    // Emit the live Resolution iff it differs from the last one in the log
+    // (drift guard). First run of a session has no prior Resolution → emit.
+    // Identical resumes skip the write; a real change (e.g. model swap, new
+    // MCP load) is recorded. Placed AFTER init_session + resume setup, BEFORE
+    // the first UserTurn is appended, so the Resolution opens (or refreshes)
+    // the working state projection for the turn.
+    {
+        let events_for_guard = read_events(&tx_path)?;
+        if events::last_resolution(&events_for_guard) != Some(resolution.clone()) {
+            wire::emit(&tx_path, wire::body(payload::Kind::Resolution(resolution)))?;
+        }
+    }
 
     if !did_resume {
         if let Some(task) = &task {
@@ -1132,7 +1148,6 @@ mod tests {
             id: session_id,
             workspace,
             codebase_path,
-            model: "test/model".into(),
             assigned_by: None,
             repos,
         };

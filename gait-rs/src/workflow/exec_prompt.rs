@@ -53,7 +53,6 @@ pub async fn exec_prompt_node(
     let session = crate::session::Session::load(
         ctx.workspace.to_path_buf(),
         ctx.session_id.to_string(),
-        resolved.model.clone(),
         codebase,
         repos,
     );

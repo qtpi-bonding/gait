@@ -233,7 +233,6 @@ async fn cmd_run(argv: &[String]) {
     let session = gait_ai::session::Session::load(
         workspace.clone(),
         session_id.clone(),
-        resolved.model.clone(),
         codebase_path,
         repos,
     );

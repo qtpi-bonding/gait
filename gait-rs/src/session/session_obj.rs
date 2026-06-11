@@ -4,11 +4,11 @@ use crate::session::session_json::read_session_json;
 
 /// The durable runtime instance: identity + bindings + injected repos.
 /// Not the live provider/tools — those are `ResolvedProfile`.
+/// The live model lives on `ResolvedProfile.model`.
 pub struct Session {
     pub id: String,
     pub workspace: PathBuf,
     pub codebase_path: PathBuf,
-    pub model: String,
     pub assigned_by: Option<String>,
     pub repos: Repos,
 }
@@ -19,7 +19,6 @@ impl Session {
     pub fn load(
         workspace: PathBuf,
         id: String,
-        model: String,
         default_codebase: PathBuf,
         repos: Repos,
     ) -> Self {
@@ -27,7 +26,7 @@ impl Session {
         let codebase_path = sj.codebase_path
             .map(PathBuf::from)
             .unwrap_or(default_codebase);
-        Session { id, workspace, codebase_path, model, assigned_by: sj.assigned_by, repos }
+        Session { id, workspace, codebase_path, assigned_by: sj.assigned_by, repos }
     }
 }
 
@@ -40,7 +39,7 @@ mod tests {
     fn load_defaults_when_no_session_json() {
         let dir = TempDir::new().unwrap();
         let s = Session::load(
-            dir.path().to_path_buf(), "s1".into(), "anthropic/x".into(),
+            dir.path().to_path_buf(), "s1".into(),
             std::path::PathBuf::from("/code"), Repos::production());
         assert_eq!(s.id, "s1");
         assert_eq!(s.codebase_path, std::path::PathBuf::from("/code"));
