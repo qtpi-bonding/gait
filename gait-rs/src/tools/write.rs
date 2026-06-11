@@ -1,7 +1,7 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use crate::types::{Tool, ToolPermission, PermissionRequest};
 use crate::permission::path_patterns;
+use crate::tools::ToolCtx;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -15,14 +15,14 @@ struct WriteParams {
 }
 
 pub struct WriteTool {
-    codebase_path: Arc<PathBuf>,
+    ctx: ToolCtx,
     parameters: Value,
 }
 
 impl WriteTool {
-    pub fn new(codebase_path: PathBuf) -> Self {
+    pub fn new(ctx: ToolCtx) -> Self {
         let parameters = crate::tools::make_schema::<WriteParams>();
-        Self { codebase_path: Arc::new(codebase_path), parameters }
+        Self { ctx, parameters }
     }
 }
 
@@ -38,7 +38,7 @@ impl Tool for WriteTool {
         let resolved = if std::path::Path::new(&params.file_path).is_absolute() {
             PathBuf::from(&params.file_path)
         } else {
-            self.codebase_path.join(&params.file_path)
+            self.ctx.codebase_path.join(&params.file_path)
         };
         if let Some(parent) = resolved.parent() {
             std::fs::create_dir_all(parent)?;
@@ -51,7 +51,7 @@ impl Tool for WriteTool {
     fn permission(&self, args: &serde_json::Value) -> ToolPermission {
         let raw = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("*");
         let rel = std::path::Path::new(raw)
-            .strip_prefix(&*self.codebase_path)
+            .strip_prefix(&*self.ctx.codebase_path)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| raw.to_string());
         ToolPermission::RequiresApproval(vec![PermissionRequest {
@@ -65,11 +65,17 @@ impl Tool for WriteTool {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use std::path::PathBuf;
+    use crate::tools::ToolCtx;
+
+    fn make_ctx(dir: &TempDir) -> ToolCtx {
+        ToolCtx::new(dir.path().to_path_buf(), dir.path().to_path_buf(), "test".into())
+    }
 
     #[tokio::test]
     async fn writes_file_content() {
         let dir = TempDir::new().unwrap();
-        let tool = WriteTool::new(dir.path().to_path_buf());
+        let tool = WriteTool::new(make_ctx(&dir));
         tool.execute(serde_json::json!({
             "file_path": "output.txt",
             "content": "hello world"
@@ -81,7 +87,7 @@ mod tests {
     #[tokio::test]
     async fn creates_parent_directories() {
         let dir = TempDir::new().unwrap();
-        let tool = WriteTool::new(dir.path().to_path_buf());
+        let tool = WriteTool::new(make_ctx(&dir));
         tool.execute(serde_json::json!({
             "file_path": "sub/nested/file.txt",
             "content": "deep"
@@ -94,7 +100,7 @@ mod tests {
     async fn overwrites_existing_file() {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("existing.txt"), "old").unwrap();
-        let tool = WriteTool::new(dir.path().to_path_buf());
+        let tool = WriteTool::new(make_ctx(&dir));
         tool.execute(serde_json::json!({
             "file_path": "existing.txt",
             "content": "new"
@@ -105,8 +111,7 @@ mod tests {
 
     #[test]
     fn write_permission_relative_path() {
-        let codebase = std::path::PathBuf::from("/project");
-        let tool = WriteTool::new(codebase);
+        let tool = WriteTool::new(ToolCtx::new(PathBuf::from("/project"), PathBuf::from("/tmp"), "test".into()));
         match tool.permission(&serde_json::json!({"file_path": "/project/src/main.rs"})) {
             crate::types::ToolPermission::RequiresApproval(reqs) => {
                 assert_eq!(reqs[0].display, "src/main.rs");

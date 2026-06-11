@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use crate::types::{Tool, ExecutionMode};
+use crate::tools::ToolCtx;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -26,17 +26,17 @@ struct MatchEntry {
 }
 
 pub struct GrepTool {
-    codebase_path: Arc<PathBuf>,
+    ctx: ToolCtx,
     parameters: Value,
 }
 
 impl GrepTool {
-    pub fn new(codebase_path: PathBuf) -> Self {
+    pub fn new(ctx: ToolCtx) -> Self {
         let parameters = crate::tools::inject_filter(
             crate::tools::make_schema::<GrepParams>(),
             crate::types::OutputFilter::Parse,
         );
-        Self { codebase_path: Arc::new(codebase_path), parameters }
+        Self { ctx, parameters }
     }
 }
 
@@ -48,6 +48,7 @@ fn rg_search(pattern: &str, search_path: &str, include: Option<&str>) -> anyhow:
     cmd.args(["-nH", "--hidden", "--no-heading", "--no-messages", "--regexp", pattern]);
     if let Some(inc) = include { cmd.args(["--glob", inc]); }
     cmd.arg(search_path);
+    cmd.current_dir(std::path::Path::new(search_path));
 
     let output = match cmd.output() {
         Ok(o) => o,
@@ -130,8 +131,8 @@ impl Tool for GrepTool {
 
         let resolved = match &params.path {
             Some(p) if std::path::Path::new(p).is_absolute() => PathBuf::from(p),
-            Some(p) => self.codebase_path.join(p),
-            None => (*self.codebase_path).clone(),
+            Some(p) => self.ctx.codebase_path.join(p),
+            None => self.ctx.codebase_path.clone(),
         };
 
         let mut matches = match rg_search(&params.pattern, &resolved.display().to_string(), params.include.as_deref())? {
@@ -174,6 +175,12 @@ impl Tool for GrepTool {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use std::path::PathBuf;
+    use crate::tools::ToolCtx;
+
+    fn make_ctx(dir: &TempDir) -> ToolCtx {
+        ToolCtx::new(dir.path().to_path_buf(), dir.path().to_path_buf(), "test".into())
+    }
 
     #[tokio::test]
     async fn finds_pattern_in_files() {
@@ -181,7 +188,7 @@ mod tests {
         std::fs::write(dir.path().join("foo.rs"),
             "fn main() {\n    println!(\"hello world\");\n}").unwrap();
 
-        let tool = GrepTool::new(dir.path().to_path_buf());
+        let tool = GrepTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({ "pattern": "println" })).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(text.contains("foo.rs"), "got: {text}");
@@ -192,7 +199,7 @@ mod tests {
     async fn returns_no_files_found_when_no_match() {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
-        let tool = GrepTool::new(dir.path().to_path_buf());
+        let tool = GrepTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({ "pattern": "zzz_not_present" })).await.unwrap();
         assert_eq!(result.as_str().unwrap(), "No files found");
     }
@@ -204,7 +211,7 @@ mod tests {
         std::fs::write(dir.path().join("sub/a.txt"), "needle").unwrap();
         std::fs::write(dir.path().join("b.txt"), "needle").unwrap();
 
-        let tool = GrepTool::new(dir.path().to_path_buf());
+        let tool = GrepTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({
             "pattern": "needle",
             "path": "sub"
@@ -216,7 +223,7 @@ mod tests {
 
     #[test]
     fn schema_has_parse_array_field() {
-        let tool = GrepTool::new(std::path::PathBuf::from("/tmp"));
+        let tool = GrepTool::new(ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "test".into()));
         let params = tool.parameters();
         assert_eq!(params["properties"]["parse"]["type"].as_str().unwrap(), "array",
             "parse should be array type: {}", params);

@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use serde_json::Value;
+use crate::tools::ToolCtx;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use crate::types::{Tool, ExecutionMode};
@@ -9,17 +9,14 @@ use crate::proto::gait::log::v1::{event, payload, Event};
 struct ListAgentsParams {}
 
 pub struct ListAgentsTool {
-    gait_dir: PathBuf,
+    ctx: ToolCtx,
     parameters: Value,
 }
 
 impl ListAgentsTool {
-    pub fn new(gait_dir: PathBuf) -> Self {
+    pub fn new(ctx: ToolCtx) -> Self {
         let parameters = crate::tools::make_schema::<ListAgentsParams>();
-        Self {
-            gait_dir,
-            parameters,
-        }
+        Self { ctx, parameters }
     }
 }
 
@@ -35,7 +32,7 @@ impl Tool for ListAgentsTool {
     async fn execute(&self, _args: Value) -> anyhow::Result<Value> {
         // C1 fix: read transcript from the branch's committed git tree, NOT from the filesystem
         // working copy. Worktree dirs may be cleaned up after finish_session; the branch remains.
-        let repo = match git2::Repository::open(&self.gait_dir) {
+        let repo = match git2::Repository::open(&self.ctx.gait_dir) {
             Ok(r) => r,
             Err(_) => return Ok(serde_json::json!([])),
         };
@@ -176,7 +173,7 @@ mod tests {
         )).unwrap();
         GitTraceRepo.commit_session(ws.path(), "sdone1", "session(sdone1): done").unwrap();
 
-        let tool = ListAgentsTool::new(ws.path().to_path_buf());
+        let tool = ListAgentsTool::new(ToolCtx::new(ws.path().to_path_buf(), ws.path().to_path_buf(), "test".into()));
         let result = tool.execute(serde_json::json!({})).await.unwrap();
 
         let sessions: Vec<serde_json::Value> = serde_json::from_value(result).unwrap();
@@ -191,7 +188,7 @@ mod tests {
     async fn list_agents_empty_workspace_returns_empty_array() {
         let ws = TempDir::new().unwrap();
         init_git_repo(ws.path());
-        let tool = ListAgentsTool::new(ws.path().to_path_buf());
+        let tool = ListAgentsTool::new(ToolCtx::new(ws.path().to_path_buf(), ws.path().to_path_buf(), "test".into()));
         let result = tool.execute(serde_json::json!({})).await.unwrap();
         let sessions: Vec<serde_json::Value> = serde_json::from_value(result).unwrap();
         assert!(sessions.is_empty());

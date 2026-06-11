@@ -1,6 +1,5 @@
-use std::path::PathBuf;
-use std::sync::Arc;
 use crate::types::{Tool, ToolPermission, PermissionRequest};
+use crate::tools::ToolCtx;
 use crate::permission::{split_commands, command_patterns};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -19,22 +18,17 @@ struct ShellParams {
 }
 
 pub struct ShellTool {
-    codebase_path: Arc<PathBuf>,
-    gait_dir: Arc<PathBuf>,
+    ctx: ToolCtx,
     parameters: Value,
 }
 
 impl ShellTool {
-    pub fn new(codebase_path: PathBuf, gait_dir: PathBuf) -> Self {
+    pub fn new(ctx: ToolCtx) -> Self {
         let parameters = crate::tools::inject_filter(
             crate::tools::make_schema::<ShellParams>(),
             crate::types::OutputFilter::Parse,
         );
-        Self {
-            codebase_path: Arc::new(codebase_path),
-            gait_dir: Arc::new(gait_dir),
-            parameters,
-        }
+        Self { ctx, parameters }
     }
 }
 
@@ -72,9 +66,9 @@ impl Tool for ShellTool {
     async fn execute(&self, args: Value) -> anyhow::Result<Value> {
         let params: ShellParams = serde_json::from_value(args)?;
         let timeout_ms = params.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
-        let cwd = (*self.codebase_path).clone();
+        let cwd = self.ctx.codebase_path.clone();
 
-        let tmp_dir = self.gait_dir.join("tmp");
+        let tmp_dir = self.ctx.gait_dir.join("tmp");
         let _ = std::fs::create_dir_all(&tmp_dir);
 
         let run_id = {
@@ -134,7 +128,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn make_tool(dir: &TempDir) -> ShellTool {
-        ShellTool::new(dir.path().to_path_buf(), dir.path().to_path_buf())
+        ShellTool::new(ToolCtx::new(dir.path().to_path_buf(), dir.path().to_path_buf(), "test".into()))
     }
 
     #[tokio::test]
@@ -222,10 +216,11 @@ mod tests {
 
     #[test]
     fn shell_permission_single_command() {
-        let tool = ShellTool::new(
+        let tool = ShellTool::new(ToolCtx::new(
             std::path::PathBuf::from("/tmp"),
             std::path::PathBuf::from("/tmp"),
-        );
+            "test".into(),
+        ));
         match tool.permission(&serde_json::json!({"cmd": "cargo test", "reason": ""})) {
             crate::types::ToolPermission::RequiresApproval(reqs) => {
                 assert_eq!(reqs.len(), 1);
@@ -239,10 +234,11 @@ mod tests {
 
     #[test]
     fn shell_permission_compound_command() {
-        let tool = ShellTool::new(
+        let tool = ShellTool::new(ToolCtx::new(
             std::path::PathBuf::from("/tmp"),
             std::path::PathBuf::from("/tmp"),
-        );
+            "test".into(),
+        ));
         match tool.permission(&serde_json::json!({"cmd": "cargo build && git push", "reason": ""})) {
             crate::types::ToolPermission::RequiresApproval(reqs) => {
                 assert_eq!(reqs.len(), 2);
@@ -255,10 +251,11 @@ mod tests {
 
     #[test]
     fn shell_permission_patterns_prefixed_with_shell() {
-        let tool = ShellTool::new(
+        let tool = ShellTool::new(ToolCtx::new(
             std::path::PathBuf::from("/tmp"),
             std::path::PathBuf::from("/tmp"),
-        );
+            "test".into(),
+        ));
         if let crate::types::ToolPermission::RequiresApproval(reqs) =
             tool.permission(&serde_json::json!({"cmd": "cargo test --verbose", "reason": ""}))
         {
@@ -270,10 +267,11 @@ mod tests {
 
     #[test]
     fn schema_has_parse_array_field() {
-        let tool = ShellTool::new(
+        let tool = ShellTool::new(ToolCtx::new(
             std::path::PathBuf::from("/tmp"),
             std::path::PathBuf::from("/tmp"),
-        );
+            "test".into(),
+        ));
         let params = tool.parameters();
         assert_eq!(params["properties"]["parse"]["type"].as_str().unwrap(), "array",
             "parse should be array type: {}", params);

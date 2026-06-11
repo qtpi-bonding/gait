@@ -1,3 +1,4 @@
+pub mod ctx;
 pub mod read;
 pub mod write;
 pub mod edit;
@@ -15,6 +16,7 @@ pub mod clarify;
 pub mod inform;
 pub mod annotate;
 
+pub use ctx::ToolCtx;
 pub use read::ReadTool;
 pub use write::WriteTool;
 pub use edit::EditTool;
@@ -32,7 +34,6 @@ pub use clarify::ClarifyTool;
 pub use inform::InformTool;
 pub use annotate::AnnotateTool;
 
-use std::path::PathBuf;
 use crate::types::Tool;
 use crate::config::{McpToolDef, SkillDef};
 
@@ -104,27 +105,25 @@ pub fn builtin_tool_names() -> &'static [&'static str] {
 
 /// Returns all built-in tools.
 pub fn builtin_tools(
-    codebase_path: PathBuf,
-    session_id: String,
-    gait_dir: PathBuf,
+    ctx: ToolCtx,
     mcp_tools: Vec<McpToolDef>,
     skills: Vec<SkillDef>,
     repos: crate::git::Repos,
 ) -> Vec<Box<dyn Tool>> {
     vec![
-        ReadTool::new(codebase_path.clone()).boxed(),
-        WriteTool::new(codebase_path.clone()).boxed(),
-        EditTool::new(codebase_path.clone()).boxed(),
-        GlobTool::new(codebase_path.clone()).boxed(),
-        GrepTool::new(codebase_path.clone()).boxed(),
-        LsTool::new(codebase_path.clone()).boxed(),
-        ShellTool::new(codebase_path.clone(), gait_dir.clone()).boxed(),
+        ReadTool::new(ctx.clone()).boxed(),
+        WriteTool::new(ctx.clone()).boxed(),
+        EditTool::new(ctx.clone()).boxed(),
+        GlobTool::new(ctx.clone()).boxed(),
+        GrepTool::new(ctx.clone()).boxed(),
+        LsTool::new(ctx.clone()).boxed(),
+        ShellTool::new(ctx.clone()).boxed(),
         OutputTool::new().boxed(),
-        CodesearchTool::new(codebase_path.clone()).boxed(),
+        CodesearchTool::new(ctx.clone()).boxed(),
         WebfetchTool::new().boxed(),
         LoadTool::new(mcp_tools, skills).boxed(),
-        SpawnAgentTool::new(session_id.clone(), gait_dir.clone(), codebase_path.clone(), repos.clone()).boxed(),
-        ListAgentsTool::new(gait_dir.clone()).boxed(),
+        SpawnAgentTool::new(ctx.clone(), repos.clone()).boxed(),
+        ListAgentsTool::new(ctx.clone()).boxed(),
         ClarifyTool::new().boxed(),
         InformTool::new().boxed(),
     ]
@@ -134,13 +133,12 @@ pub fn builtin_tools(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use crate::tools::ToolCtx;
 
     #[test]
     fn builtin_tools_returns_fifteen() {
         let tools = builtin_tools(
-            PathBuf::from("/tmp"),
-            "stest".into(),
-            PathBuf::from("/tmp"),
+            ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "stest".into()),
             vec![], vec![],
             crate::git::Repos::production(),
         );
@@ -150,7 +148,8 @@ mod tests {
     #[test]
     fn all_tool_names_unique() {
         let tools = builtin_tools(
-            PathBuf::from("/tmp"), "stest".into(), PathBuf::from("/tmp"), vec![], vec![],
+            ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "stest".into()),
+            vec![], vec![],
             crate::git::Repos::production(),
         );
         let mut names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
@@ -163,7 +162,8 @@ mod tests {
     #[test]
     fn spawn_agent_and_list_agents_present() {
         let tools = builtin_tools(
-            PathBuf::from("/tmp"), "stest".into(), PathBuf::from("/tmp"), vec![], vec![],
+            ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "stest".into()),
+            vec![], vec![],
             crate::git::Repos::production(),
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
@@ -174,7 +174,8 @@ mod tests {
     #[test]
     fn load_meta_tool_present() {
         let tools = builtin_tools(
-            PathBuf::from("/tmp"), "stest".into(), PathBuf::from("/tmp"), vec![], vec![],
+            ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "stest".into()),
+            vec![], vec![],
             crate::git::Repos::production(),
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();

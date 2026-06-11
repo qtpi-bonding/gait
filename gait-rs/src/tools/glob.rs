@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use crate::types::{Tool, ExecutionMode};
+use crate::tools::ToolCtx;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -16,17 +16,17 @@ struct GlobParams {
 }
 
 pub struct GlobTool {
-    codebase_path: Arc<PathBuf>,
+    ctx: ToolCtx,
     parameters: Value,
 }
 
 impl GlobTool {
-    pub fn new(codebase_path: PathBuf) -> Self {
+    pub fn new(ctx: ToolCtx) -> Self {
         let parameters = crate::tools::inject_filter(
             crate::tools::make_schema::<GlobParams>(),
             crate::types::OutputFilter::Parse,
         );
-        Self { codebase_path: Arc::new(codebase_path), parameters }
+        Self { ctx, parameters }
     }
 }
 
@@ -48,8 +48,8 @@ impl Tool for GlobTool {
 
         let search_dir = match &params.path {
             Some(p) if std::path::Path::new(p).is_absolute() => PathBuf::from(p),
-            Some(p) => self.codebase_path.join(p),
-            None => (*self.codebase_path).clone(),
+            Some(p) => self.ctx.codebase_path.join(p),
+            None => self.ctx.codebase_path.clone(),
         };
 
         if !search_dir.exists() {
@@ -95,6 +95,12 @@ impl Tool for GlobTool {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use std::path::PathBuf;
+    use crate::tools::ToolCtx;
+
+    fn make_ctx(dir: &TempDir) -> ToolCtx {
+        ToolCtx::new(dir.path().to_path_buf(), dir.path().to_path_buf(), "test".into())
+    }
 
     #[tokio::test]
     async fn finds_files_by_extension() {
@@ -103,7 +109,7 @@ mod tests {
         std::fs::write(dir.path().join("b.ts"), "").unwrap();
         std::fs::write(dir.path().join("c.rs"), "").unwrap();
 
-        let tool = GlobTool::new(dir.path().to_path_buf());
+        let tool = GlobTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({ "pattern": "*.rs" })).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(text.contains("a.rs"), "got: {text}");
@@ -118,7 +124,7 @@ mod tests {
         std::fs::write(dir.path().join("src/main.rs"), "").unwrap();
         std::fs::write(dir.path().join("README.md"), "").unwrap();
 
-        let tool = GlobTool::new(dir.path().to_path_buf());
+        let tool = GlobTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({ "pattern": "**/*.rs" })).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(text.contains("main.rs"), "got: {text}");
@@ -128,7 +134,7 @@ mod tests {
     #[tokio::test]
     async fn returns_no_files_found_when_empty() {
         let dir = TempDir::new().unwrap();
-        let tool = GlobTool::new(dir.path().to_path_buf());
+        let tool = GlobTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({ "pattern": "*.xyz" })).await.unwrap();
         assert_eq!(result.as_str().unwrap(), "No files found");
     }
@@ -140,7 +146,7 @@ mod tests {
         std::fs::write(dir.path().join("sub/deep.rs"), "").unwrap();
         std::fs::write(dir.path().join("root.rs"), "").unwrap();
 
-        let tool = GlobTool::new(dir.path().to_path_buf());
+        let tool = GlobTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({
             "pattern": "*.rs",
             "path": "sub"
@@ -152,7 +158,7 @@ mod tests {
 
     #[test]
     fn schema_has_parse_array_field() {
-        let tool = GlobTool::new(std::path::PathBuf::from("/tmp"));
+        let tool = GlobTool::new(ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "test".into()));
         let params = tool.parameters();
         assert_eq!(params["properties"]["parse"]["type"].as_str().unwrap(), "array",
             "parse should be array type: {}", params);

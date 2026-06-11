@@ -1,8 +1,8 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use crate::hashline::{compute_line_hash};
 use crate::types::{Tool, ExecutionMode, ToolPermission, PermissionRequest};
 use crate::permission::path_patterns;
+use crate::tools::ToolCtx;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -53,20 +53,17 @@ struct ReadParams {
 }
 
 pub struct ReadTool {
-    codebase_path: Arc<PathBuf>,
+    ctx: ToolCtx,
     parameters: Value,
 }
 
 impl ReadTool {
-    pub fn new(codebase_path: PathBuf) -> Self {
+    pub fn new(ctx: ToolCtx) -> Self {
         let parameters = crate::tools::inject_filter(
             crate::tools::make_schema::<ReadParams>(),
             crate::types::OutputFilter::Parse,
         );
-        Self {
-            codebase_path: Arc::new(codebase_path),
-            parameters,
-        }
+        Self { ctx, parameters }
     }
 }
 
@@ -94,7 +91,7 @@ impl Tool for ReadTool {
         let resolved = if std::path::Path::new(&params.file_path).is_absolute() {
             PathBuf::from(&params.file_path)
         } else {
-            self.codebase_path.join(&params.file_path)
+            self.ctx.codebase_path.join(&params.file_path)
         };
 
         if !resolved.exists() {
@@ -174,7 +171,7 @@ impl Tool for ReadTool {
     fn permission(&self, args: &serde_json::Value) -> ToolPermission {
         let raw = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("*");
         let rel = std::path::Path::new(raw)
-            .strip_prefix(&*self.codebase_path)
+            .strip_prefix(&*self.ctx.codebase_path)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| raw.to_string());
         ToolPermission::RequiresApproval(vec![PermissionRequest {
@@ -188,13 +185,19 @@ impl Tool for ReadTool {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use std::path::PathBuf;
+    use crate::tools::ToolCtx;
+
+    fn make_ctx(dir: &TempDir) -> ToolCtx {
+        ToolCtx::new(dir.path().to_path_buf(), dir.path().to_path_buf(), "test".into())
+    }
 
     #[tokio::test]
     async fn reads_file_with_line_numbers() {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("test.txt"), "line1\nline2\nline3").unwrap();
 
-        let tool = ReadTool::new(dir.path().to_path_buf());
+        let tool = ReadTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({ "file_path": "test.txt" })).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(text.contains("|line1"), "got: {text}");
@@ -207,7 +210,7 @@ mod tests {
     #[tokio::test]
     async fn returns_error_for_missing_file() {
         let dir = TempDir::new().unwrap();
-        let tool = ReadTool::new(dir.path().to_path_buf());
+        let tool = ReadTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({ "file_path": "nonexistent.txt" })).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
@@ -218,7 +221,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("test.txt"), "a\nb\nc\nd\ne").unwrap();
 
-        let tool = ReadTool::new(dir.path().to_path_buf());
+        let tool = ReadTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({
             "file_path": "test.txt", "offset": 1, "limit": 2
         })).await.unwrap();
@@ -232,15 +235,14 @@ mod tests {
     async fn rejects_binary_files() {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("img.png"), b"\x89PNG\r\n\x1a\n\x00\x00").unwrap();
-        let tool = ReadTool::new(dir.path().to_path_buf());
+        let tool = ReadTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({ "file_path": "img.png" })).await;
         assert!(result.is_err());
     }
 
     #[test]
     fn read_permission_relative_path() {
-        let codebase = std::path::PathBuf::from("/project");
-        let tool = ReadTool::new(codebase);
+        let tool = ReadTool::new(ToolCtx::new(PathBuf::from("/project"), PathBuf::from("/tmp"), "test".into()));
         match tool.permission(&serde_json::json!({"file_path": "/project/src/main.rs"})) {
             crate::types::ToolPermission::RequiresApproval(reqs) => {
                 assert_eq!(reqs[0].display, "src/main.rs");
@@ -253,7 +255,7 @@ mod tests {
 
     #[test]
     fn schema_has_parse_array_field() {
-        let tool = ReadTool::new(std::path::PathBuf::from("/tmp"));
+        let tool = ReadTool::new(ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "test".into()));
         let params = tool.parameters();
         assert_eq!(params["properties"]["parse"]["type"].as_str().unwrap(), "array",
             "parse should be array type: {}", params);

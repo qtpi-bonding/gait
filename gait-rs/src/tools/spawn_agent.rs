@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use serde_json::Value;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -7,7 +6,7 @@ use crate::session::transcript::{InitSessionOpts, init_session, now_ms};
 use crate::proto::{events, wire};
 use crate::session::session_json::{SessionJson, TokenTotals, write_session_json};
 use crate::config::load_config;
-use crate::tools::make_schema;
+use crate::tools::{make_schema, ToolCtx};
 
 #[derive(Deserialize, JsonSchema)]
 struct SpawnAgentArgs {
@@ -18,22 +17,14 @@ struct SpawnAgentArgs {
 }
 
 pub struct SpawnAgentTool {
-    current_session_id: String,
-    gait_dir: PathBuf,
-    codebase_path: PathBuf,
+    ctx: ToolCtx,
     repos: crate::git::Repos,
     parameters: Value,
 }
 
 impl SpawnAgentTool {
-    pub fn new(current_session_id: String, gait_dir: PathBuf, codebase_path: PathBuf, repos: crate::git::Repos) -> Self {
-        Self {
-            current_session_id,
-            gait_dir,
-            codebase_path,
-            repos,
-            parameters: make_schema::<SpawnAgentArgs>(),
-        }
+    pub fn new(ctx: ToolCtx, repos: crate::git::Repos) -> Self {
+        Self { ctx, repos, parameters: make_schema::<SpawnAgentArgs>() }
     }
 }
 
@@ -52,22 +43,22 @@ impl Tool for SpawnAgentTool {
 
         let new_id = crate::chat::new_session_id();
 
-        self.repos.traces.create_session_worktree(&self.gait_dir, &new_id)?;
+        self.repos.traces.create_session_worktree(&self.ctx.gait_dir, &new_id)?;
 
         let sj = SessionJson {
             id: new_id.clone(),
-            assigned_by: Some(self.current_session_id.clone()),
+            assigned_by: Some(self.ctx.session_id.clone()),
             created_at: now_ms(),
             token_totals: TokenTotals::default(),
-            codebase_path: Some(self.codebase_path.to_string_lossy().to_string()),
+            codebase_path: Some(self.ctx.codebase_path.to_string_lossy().to_string()),
             agent_name: None,
             system_prompt: None,
         };
-        write_session_json(&self.gait_dir, &sj)?;
+        write_session_json(&self.ctx.gait_dir, &sj)?;
 
-        let config = load_config(&self.gait_dir);
-        let codebase_hash = self.repos.codebase.head_hash(&self.codebase_path);
-        let tx_path = self.gait_dir.join("sessions").join(&new_id).join("transcript.jsonl");
+        let config = load_config(&self.ctx.gait_dir);
+        let codebase_hash = self.repos.codebase.head_hash(&self.ctx.codebase_path);
+        let tx_path = self.ctx.gait_dir.join("sessions").join(&new_id).join("transcript.jsonl");
 
         init_session(InitSessionOpts {
             transcript_path: tx_path.clone(),
@@ -79,14 +70,14 @@ impl Tool for SpawnAgentTool {
 
         wire::append(&tx_path, events::user_turn(
             task,
-            Some(format!("agent:{}", self.current_session_id)),
+            Some(format!("agent:{}", self.ctx.session_id)),
             None,
         ))?;
 
         self.repos.traces.commit_session(
-            &self.gait_dir,
+            &self.ctx.gait_dir,
             &new_id,
-            &format!("session({}): spawn from {}", new_id, self.current_session_id),
+            &format!("session({}): spawn from {}", new_id, self.ctx.session_id),
         )?;
 
         // I1 fix: immediately schedule the child for execution (detached, fire-and-forget).
@@ -96,7 +87,7 @@ impl Tool for SpawnAgentTool {
             .args([
                 "run",
                 "--session", &new_id,
-                "--gait-dir", self.gait_dir.to_str().unwrap_or("."),
+                "--gait-dir", self.ctx.gait_dir.to_str().unwrap_or("."),
                 "--auto",
             ])
             .stdin(std::process::Stdio::null())
@@ -137,9 +128,7 @@ mod tests {
             r#"{"model":"minimax/MiniMax-M3","allow":[],"tools":[]}"#).unwrap();
 
         let tool = SpawnAgentTool::new(
-            "scaller001".into(),
-            ws.path().to_path_buf(),
-            ws.path().to_path_buf(),
+            ToolCtx::new(ws.path().to_path_buf(), ws.path().to_path_buf(), "scaller001".into()),
             crate::git::Repos::production(),
         );
 
@@ -185,7 +174,10 @@ mod tests {
         std::fs::write(ws.path().join("gait.jsonc"),
             r#"{"model":"minimax/MiniMax-M3","allow":[],"tools":[]}"#).unwrap();
 
-        let tool = SpawnAgentTool::new("scaller".into(), ws.path().to_path_buf(), ws.path().to_path_buf(), crate::git::Repos::production());
+        let tool = SpawnAgentTool::new(
+            ToolCtx::new(ws.path().to_path_buf(), ws.path().to_path_buf(), "scaller".into()),
+            crate::git::Repos::production(),
+        );
         let result = tool.execute(serde_json::json!({ "task": "foo" })).await.unwrap();
         let id = result["session_id"].as_str().unwrap();
         assert_eq!(id.len(), 9);

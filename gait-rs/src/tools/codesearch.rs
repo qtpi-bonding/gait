@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use crate::types::{Tool, ExecutionMode};
+use crate::tools::ToolCtx;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -18,17 +18,17 @@ struct CodesearchParams {
 }
 
 pub struct CodesearchTool {
-    codebase_path: Arc<PathBuf>,
+    ctx: ToolCtx,
     parameters: Value,
 }
 
 impl CodesearchTool {
-    pub fn new(codebase_path: PathBuf) -> Self {
+    pub fn new(ctx: ToolCtx) -> Self {
         let parameters = crate::tools::inject_filter(
             crate::tools::make_schema::<CodesearchParams>(),
             crate::types::OutputFilter::Curate,
         );
-        Self { codebase_path: Arc::new(codebase_path), parameters }
+        Self { ctx, parameters }
     }
 }
 
@@ -76,8 +76,8 @@ impl Tool for CodesearchTool {
         let case_sensitive = params.case_sensitive.unwrap_or(false);
 
         let search_dir = match &params.path {
-            Some(p) => self.codebase_path.join(p),
-            None => (*self.codebase_path).clone(),
+            Some(p) => self.ctx.codebase_path.join(p),
+            None => self.ctx.codebase_path.clone(),
         };
 
         // Try ripgrep first (exit 0 = matches, exit 1 = no matches, other = not installed)
@@ -127,6 +127,12 @@ impl Tool for CodesearchTool {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use std::path::PathBuf;
+    use crate::tools::ToolCtx;
+
+    fn make_ctx(dir: &TempDir) -> ToolCtx {
+        ToolCtx::new(dir.path().to_path_buf(), dir.path().to_path_buf(), "test".into())
+    }
 
     // Direct unit tests for walk_and_search (exercises fallback path independently of rg)
 
@@ -172,7 +178,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("main.rs"), "fn hello_world() {\n    println!(\"hi\");\n}").unwrap();
 
-        let tool = CodesearchTool::new(dir.path().to_path_buf());
+        let tool = CodesearchTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({ "query": "hello_world" })).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(text.contains("main.rs"), "got: {}", text);
@@ -184,7 +190,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("code.rs"), "struct MyStruct {}").unwrap();
 
-        let tool = CodesearchTool::new(dir.path().to_path_buf());
+        let tool = CodesearchTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({ "query": "mystruct" })).await.unwrap();
         assert!(result.as_str().unwrap().contains("MyStruct"));
     }
@@ -194,7 +200,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("code.rs"), "struct MyStruct {}").unwrap();
 
-        let tool = CodesearchTool::new(dir.path().to_path_buf());
+        let tool = CodesearchTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({ "query": "mystruct", "case_sensitive": true })).await.unwrap();
         assert_eq!(result.as_str().unwrap(), "No matches found.");
     }
@@ -204,7 +210,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("a.txt"), "hello world").unwrap();
 
-        let tool = CodesearchTool::new(dir.path().to_path_buf());
+        let tool = CodesearchTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({ "query": "totally_nonexistent_xyz" })).await.unwrap();
         assert_eq!(result.as_str().unwrap(), "No matches found.");
     }
@@ -216,7 +222,7 @@ mod tests {
             std::fs::write(dir.path().join(format!("file_{}.txt", i)), "target_match").unwrap();
         }
 
-        let tool = CodesearchTool::new(dir.path().to_path_buf());
+        let tool = CodesearchTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({ "query": "target_match" })).await.unwrap();
         let text = result.as_str().unwrap();
         let match_lines = text.lines().filter(|l| l.contains("target_match")).count();
@@ -227,7 +233,7 @@ mod tests {
     async fn invalid_regex_returns_graceful_message() {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("a.txt"), "test").unwrap();
-        let tool = CodesearchTool::new(dir.path().to_path_buf());
+        let tool = CodesearchTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({ "query": "[invalid_unclosed" })).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(
@@ -243,7 +249,7 @@ mod tests {
         std::fs::write(dir.path().join("sub/inside.txt"), "find_me").unwrap();
         std::fs::write(dir.path().join("outside.txt"), "find_me").unwrap();
 
-        let tool = CodesearchTool::new(dir.path().to_path_buf());
+        let tool = CodesearchTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({ "query": "find_me", "path": "sub" })).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(text.contains("inside.txt"), "got: {}", text);
@@ -252,7 +258,7 @@ mod tests {
 
     #[test]
     fn schema_has_curate_prompt_field() {
-        let tool = CodesearchTool::new(std::path::PathBuf::from("/tmp"));
+        let tool = CodesearchTool::new(ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "test".into()));
         let params = tool.parameters();
         assert_eq!(params["properties"]["curate_prompt"]["type"].as_str().unwrap(), "string");
     }

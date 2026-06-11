@@ -127,9 +127,7 @@ impl Profile {
 
         // Tools: builtins (moved from bin/gait.rs:242-249) + config tools (moved from bin/gait.rs:250-287).
         let mut tools = crate::tools::builtin_tools(
-            codebase_path.clone(),
-            session_id.clone(),
-            gait_dir.clone(),
+            crate::tools::ToolCtx::new(codebase_path.clone(), gait_dir.clone(), session_id.clone()),
             mcp_registry.clone(),
             self.skills.clone(),
             repos,

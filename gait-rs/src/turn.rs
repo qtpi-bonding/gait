@@ -1565,8 +1565,7 @@ mod tests {
         });
 
         let shell_tool = crate::tools::ShellTool::new(
-            ws.path().to_path_buf(),
-            ws.path().to_path_buf(),
+            crate::tools::ToolCtx::new(ws.path().to_path_buf(), ws.path().to_path_buf(), "test".into()),
         );
         let output_tool = OutputTool::new();
 
@@ -1619,8 +1618,7 @@ mod tests {
         });
 
         let shell_tool = crate::tools::ShellTool::new(
-            ws.path().to_path_buf(),
-            ws.path().to_path_buf(),
+            crate::tools::ToolCtx::new(ws.path().to_path_buf(), ws.path().to_path_buf(), "test".into()),
         );
         let output_tool = OutputTool::new();
 

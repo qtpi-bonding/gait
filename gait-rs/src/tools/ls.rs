@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use crate::types::{Tool, ExecutionMode};
+use crate::tools::ToolCtx;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -23,17 +23,17 @@ struct LsParams {
 }
 
 pub struct LsTool {
-    codebase_path: Arc<PathBuf>,
+    ctx: ToolCtx,
     parameters: Value,
 }
 
 impl LsTool {
-    pub fn new(codebase_path: PathBuf) -> Self {
+    pub fn new(ctx: ToolCtx) -> Self {
         let parameters = crate::tools::inject_filter(
             crate::tools::make_schema::<LsParams>(),
             crate::types::OutputFilter::Parse,
         );
-        Self { codebase_path: Arc::new(codebase_path), parameters }
+        Self { ctx, parameters }
     }
 }
 
@@ -73,6 +73,7 @@ fn collect_files_rg(dir: &std::path::Path, extra_ignore: &[String]) -> anyhow::R
         cmd.arg(format!("--glob=!{}/**", name));
     }
     cmd.arg(dir);
+    cmd.current_dir(dir);
 
     let output = match cmd.output() {
         Ok(o) => o,
@@ -176,8 +177,8 @@ impl Tool for LsTool {
 
         let search_dir = match &params.path {
             Some(p) if std::path::Path::new(p).is_absolute() => PathBuf::from(p),
-            Some(p) => self.codebase_path.join(p),
-            None => (*self.codebase_path).clone(),
+            Some(p) => self.ctx.codebase_path.join(p),
+            None => self.ctx.codebase_path.clone(),
         };
 
         if !search_dir.exists() {
@@ -200,6 +201,12 @@ impl Tool for LsTool {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use std::path::PathBuf;
+    use crate::tools::ToolCtx;
+
+    fn make_ctx(dir: &TempDir) -> ToolCtx {
+        ToolCtx::new(dir.path().to_path_buf(), dir.path().to_path_buf(), "test".into())
+    }
 
     #[tokio::test]
     async fn lists_root_as_tree() {
@@ -208,7 +215,7 @@ mod tests {
         std::fs::write(dir.path().join("src/main.rs"), "").unwrap();
         std::fs::write(dir.path().join("Cargo.toml"), "").unwrap();
 
-        let tool = LsTool::new(dir.path().to_path_buf());
+        let tool = LsTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({})).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(text.contains("main.rs"), "got: {text}");
@@ -222,7 +229,7 @@ mod tests {
         std::fs::write(dir.path().join("node_modules/pkg.js"), "").unwrap();
         std::fs::write(dir.path().join("index.js"), "").unwrap();
 
-        let tool = LsTool::new(dir.path().to_path_buf());
+        let tool = LsTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({})).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(text.contains("index.js"), "got: {text}");
@@ -236,7 +243,7 @@ mod tests {
         std::fs::write(dir.path().join("sub/file.rs"), "").unwrap();
         std::fs::write(dir.path().join("root.rs"), "").unwrap();
 
-        let tool = LsTool::new(dir.path().to_path_buf());
+        let tool = LsTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({ "path": "sub" })).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(text.contains("file.rs"), "got: {text}");
@@ -245,7 +252,7 @@ mod tests {
 
     #[test]
     fn schema_has_parse_array_field() {
-        let tool = LsTool::new(std::path::PathBuf::from("/tmp"));
+        let tool = LsTool::new(ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "test".into()));
         let params = tool.parameters();
         assert_eq!(params["properties"]["parse"]["type"].as_str().unwrap(), "array",
             "parse should be array type: {}", params);

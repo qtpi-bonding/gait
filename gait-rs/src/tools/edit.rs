@@ -1,8 +1,8 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use crate::hashline::{format_hash_line, apply_hashline_edits, HashlineEditOp, parse_line_ref};
 use crate::types::{Tool, ToolPermission, PermissionRequest};
 use crate::permission::path_patterns;
+use crate::tools::ToolCtx;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -82,14 +82,14 @@ struct HashlineEditParams {
 }
 
 pub struct EditTool {
-    codebase_path: Arc<PathBuf>,
+    ctx: ToolCtx,
     parameters: Value,
 }
 
 impl EditTool {
-    pub fn new(codebase_path: PathBuf) -> Self {
+    pub fn new(ctx: ToolCtx) -> Self {
         let parameters = crate::tools::make_schema::<HashlineEditParams>();
-        Self { codebase_path: Arc::new(codebase_path), parameters }
+        Self { ctx, parameters }
     }
 }
 
@@ -121,7 +121,7 @@ impl Tool for EditTool {
         let resolved = if std::path::Path::new(&params.file_path).is_absolute() {
             PathBuf::from(&params.file_path)
         } else {
-            self.codebase_path.join(&params.file_path)
+            self.ctx.codebase_path.join(&params.file_path)
         };
 
         if !resolved.exists() {
@@ -148,7 +148,7 @@ impl Tool for EditTool {
     fn permission(&self, args: &Value) -> ToolPermission {
         let raw = args.get("file_path").and_then(|v| v.as_str()).unwrap_or("*");
         let rel = std::path::Path::new(raw)
-            .strip_prefix(&*self.codebase_path)
+            .strip_prefix(&*self.ctx.codebase_path)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| raw.to_string());
         ToolPermission::RequiresApproval(vec![PermissionRequest {
@@ -163,6 +163,12 @@ mod tests {
     use super::*;
     use crate::hashline::compute_line_hash;
     use tempfile::TempDir;
+    use std::path::PathBuf;
+    use crate::tools::ToolCtx;
+
+    fn make_ctx(dir: &TempDir) -> ToolCtx {
+        ToolCtx::new(dir.path().to_path_buf(), dir.path().to_path_buf(), "test".into())
+    }
 
     // Regression for the weak-model (MiniMax) `edit` failures: the schema must be
     // self-contained (no $ref/definitions, which weak OpenAI-compatible models
@@ -208,7 +214,7 @@ mod tests {
         let lines: Vec<&str> = content.split('\n').collect();
         let hash = compute_line_hash(2, lines[1]);
 
-        let tool = EditTool::new(dir.path().to_path_buf());
+        let tool = EditTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({
             "file_path": "f.rs",
             "edits": [{"op": "replace", "pos": format!("2#{}", hash), "lines": ["    baz();"]}]
@@ -234,7 +240,7 @@ mod tests {
         let lines: Vec<&str> = content.split('\n').collect();
         let hash = compute_line_hash(2, lines[1]); // anchor "    match line {"
 
-        let tool = EditTool::new(dir.path().to_path_buf());
+        let tool = EditTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({
             "file_path": "chat.rs",
             "edits": [{
@@ -257,7 +263,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("f.rs"), "fn foo() {}").unwrap();
 
-        let tool = EditTool::new(dir.path().to_path_buf());
+        let tool = EditTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({
             "file_path": "f.rs",
             "edits": [{"op": "replace", "pos": "1#ZZ", "lines": ["fn bar() {}"]}]
@@ -277,7 +283,7 @@ mod tests {
         let lines: Vec<&str> = content.split('\n').collect();
         let hash = compute_line_hash(5, lines[4]);
 
-        let tool = EditTool::new(dir.path().to_path_buf());
+        let tool = EditTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({
             "file_path": "f.txt",
             "edits": [{"op": "replace", "pos": format!("5#{}", hash), "lines": ["REPLACED"]}]
@@ -305,7 +311,7 @@ mod tests {
         let h2 = compute_line_hash(2, lines[1]);
         let h4 = compute_line_hash(4, lines[3]);
 
-        let tool = EditTool::new(dir.path().to_path_buf());
+        let tool = EditTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({
             "file_path": "f.rs",
             "edits": [{"op": "replace", "pos": format!("2#{}", h2), "end": format!("4#{}", h4), "lines": ["    let z = 3;"]}]
@@ -325,7 +331,7 @@ mod tests {
         let lines: Vec<&str> = content.split('\n').collect();
         let hash = compute_line_hash(1, lines[0]);
 
-        let tool = EditTool::new(dir.path().to_path_buf());
+        let tool = EditTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({
             "file_path": "f.txt",
             "edits": [{"op": "replace", "pos": format!("1#{}", hash), "lines": ["goodbye"]}]
