@@ -3,5 +3,10 @@
   "model": "minimax/MiniMax-M3",
   // Allow list: tools that run without approval in non-auto mode
   "allow": ["read", "glob", "grep", "ls", "codesearch", "webfetch", "output", "load", "spawn_agent", "list_agents", "clarify", "inform", "write"],
-  "tools": []
+  "tools": [],
+  "hooks": [
+    // After each edit, check the file parses as valid Rust. Non-zero exit appends
+    // the error to the tool result so the model sees the syntax problem immediately.
+    { "event": "post_tool", "tool": "edit", "run": "rustfmt --check \"$GAIT_ARG_FILE_PATH\" 2>&1" }
+  ]
 }
