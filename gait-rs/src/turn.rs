@@ -7,11 +7,13 @@ use crate::ui::split_into_blocks;
 use crate::types::{Message, MessageContent, AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind, Usage, ExecutionMode, ExecutionSignal, ToolPermission, Hook, HookAction};
 use crate::types::Tool;
 use crate::session::transcript::{
-    read_events, init_session, count_turn_complete, now_ms,
+    init_session, count_turn_complete, now_ms,
     InitSessionOpts, PermissionItem, PermissionsReplyItem, TurnUsage, TurnOutput,
     ClarifyItem, InformItem,
 };
 use crate::proto::{events, wire};
+use crate::proto::Emitter;
+use crate::session::Ingestor;
 use crate::session::retrace;
 use crate::config::{McpToolDef, SkillDef};
 use crate::git;
@@ -367,7 +369,12 @@ async fn apply_curate_filter(
         output_schema_retries: 3,
         hooks: vec![],
     };
-    let _ = run_turn(&session, caps, TurnInput { task: Some(task), auto: true, max_iter: Some(1) }).await;
+    // curate is a side turn — transcript only, no live stream consumer.
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
+    let curate_emitter = Emitter::new(
+        session.gait_dir.join("sessions").join(&session.id).join("transcript.jsonl"), tx);
+    let _ = run_turn(&session, &curate_emitter, caps,
+        TurnInput { task: Some(task), auto: true, max_iter: Some(1) }).await;
 
     let _ = repos.checkpoints.remove(gait_dir, &session_id);
 
@@ -392,6 +399,7 @@ async fn apply_curate_filter(
 
 pub async fn run_turn(
     session: &crate::session::Session,
+    emitter: &Emitter,
     caps: crate::profile::ResolvedProfile,
     input: TurnInput,
 ) -> anyhow::Result<TurnResult> {
@@ -435,6 +443,7 @@ pub async fn run_turn(
 
     let session_dir = gait_dir.join("sessions").join(&session_id);
     let tx_path = session_dir.join("transcript.jsonl");
+    let ingestor = Ingestor::from_session(&gait_dir, &session_id);
 
     let _lock = SessionLock::acquire(&session_dir)?;
 
@@ -471,7 +480,7 @@ pub async fn run_turn(
     // approved tools (or emit denied ToolCall/ToolResult for rejected ones),
     // re-read the transcript, and reconstruct messages — all without an
     // extra LLM round-trip.
-    let pre_events = read_events(&tx_path)?;
+    let pre_events = ingestor.events()?;
     let mut messages: Vec<Message> = Vec::new();
     let mut tools = tools; // take ownership so we can mutate (mcp load/unload)
     let did_resume = if matches!(event_kind(pre_events.last().unwrap_or(&Event::default())), Some(payload::Kind::PermissionsReply(_))) {
@@ -537,9 +546,9 @@ pub async fn run_turn(
                             _ => Some("[User approved.]".to_string()),
                         }
                     };
-                    if let Err(e) = execute_tool_call(&tc, &tools, &tx_path, prefix).await {
+                    if let Err(e) = execute_tool_call(&tc, &tools, &emitter.tx_path, prefix).await {
                         // Emit error as tool result so model sees it
-                        wire::emit(&tx_path, events::tool_result(
+                        emitter.emit(events::tool_result(
                             id.clone(),
                             format!("error executing approved tool: {e}"),
                             None, None,
@@ -549,12 +558,12 @@ pub async fn run_turn(
                     // At least one segment denied — emit ToolCall FIRST, then ToolResult.
                     // Without a preceding ToolCall, context.rs silently drops the orphan
                     // ToolResult during reconstruction, and the model retries forever (gate loop).
-                    wire::emit(&tx_path, events::tool_call(
+                    emitter.emit(events::tool_call(
                         id.clone(),
                         items[0].tool_name.clone(),
                         &input_value(&items[0].tool_args),
                     ))?;
-                    wire::emit(&tx_path, events::tool_result(
+                    emitter.emit(events::tool_result(
                         id.clone(),
                         "permission denied by user".into(),
                         None, None,
@@ -564,7 +573,7 @@ pub async fn run_turn(
 
             // Re-read events after execution and reconstruct messages.
             // This is the ONLY source of truth — do not manually push to messages.
-            let events_after = read_events(&tx_path)?;
+            let events_after = ingestor.events()?;
             messages = retrace::messages(&events_after)?;
             // Do NOT inject UserTurn or turn_ctx — model already has context from the prior turn.
             true
@@ -582,10 +591,10 @@ pub async fn run_turn(
     // the first UserTurn is appended, so the Resolution opens (or refreshes)
     // the working state projection for the turn.
     {
-        let events_for_guard = read_events(&tx_path)?;
+        let events_for_guard = ingestor.events()?;
         if retrace::active_resolution(&events_for_guard) != Some(resolution.clone()) {
 
-            wire::emit(&tx_path, wire::body(payload::Kind::Resolution(resolution)))?;
+            emitter.emit(wire::body(payload::Kind::Resolution(resolution)))?;
         }
     }
 
@@ -597,9 +606,9 @@ pub async fn run_turn(
                 dirty_files: if dirty_files.is_empty() { None } else { Some(dirty_files.clone()) },
                 injected_files: None,
             };
-            wire::emit(&tx_path, events::user_turn(task.clone(), None, Some(&ctx)))?;
+            emitter.emit(events::user_turn(task.clone(), None, Some(&ctx)))?;
         }
-        let events = read_events(&tx_path)?;
+        let events = ingestor.events()?;
         messages = retrace::messages(&events)?;
         let turn_ctx = build_turn_context(&codebase_hash, &dirty_files);
         messages.insert(0, Message::User { content: MessageContent::Text(turn_ctx) });
@@ -607,7 +616,7 @@ pub async fn run_turn(
 
     // Derive loaded MCP tools from the POST-COMPACTION slice only.
     // Pre-compaction loads are intentionally forgotten (spec: model reloads after compaction).
-    let events = read_events(&tx_path)?;
+    let events = ingestor.events()?;
     let compaction_start = crate::session::transcript::last_compaction_index(&events).unwrap_or(0);
     let post_compaction = &events[compaction_start..];
 
@@ -699,7 +708,7 @@ pub async fn run_turn(
                     if seen_tool_complete {
                         post_tool_text.push(t.clone());
                     } else {
-                        println!("{}", serde_json::json!({"type": "text_delta", "content": t, "ts": now_ms()}));
+                        emitter.delta(t.clone());
                     }
                     step_text.push_str(&t);
                 }
@@ -722,14 +731,14 @@ pub async fn run_turn(
         // Parts message below. Writing a separate AssistantText event here would produce
         // two consecutive assistant messages in context reconstruction, which Anthropic rejects.
         if !step_text.is_empty() && step_tool_calls.is_empty() {
-            wire::emit(&tx_path, events::assistant_text(step_text.clone()))?;
+            emitter.emit(events::assistant_text(step_text.clone()))?;
         }
 
         // No tool calls → auto-wrap the text as an implicit output() call.
         // output() is always the turn-completion path; plain text is just a short-hand.
         if step_tool_calls.is_empty() {
             let message = step_text.clone();
-            let events_now = read_events(&tx_path)?;
+            let events_now = ingestor.events()?;
             let turn_n = count_turn_complete(&events_now) as u32 + 1;
             let code_checkpoint = checkpoint_codebase(
                 repos.checkpoints.as_ref(),
@@ -742,7 +751,7 @@ pub async fn run_turn(
                 cache_write: total_usage.cache_write_tokens as u64,
             };
             let output = TurnOutput { message: message.clone(), result: None };
-            wire::emit(&tx_path, events::turn_complete(
+            emitter.emit(events::turn_complete(
                 &usage, codebase_hash.clone(), codebase_dirty, code_checkpoint,
                 split_into_blocks(&all_turn_text), &output,
             ))?;
@@ -856,10 +865,10 @@ pub async fn run_turn(
                 tc.tool_name.clone()
             };
             let output = format!("[Blocked by config: {}] permission denied", pattern);
-            wire::emit(&tx_path, events::tool_call(
+            emitter.emit(events::tool_call(
                 tc.tool_call_id.clone(), tc.tool_name.clone(), &tc.args,
             ))?;
-            wire::emit(&tx_path, events::tool_result(
+            emitter.emit(events::tool_result(
                 tc.tool_call_id.clone(), output.clone(),
                 None, None,
             ))?;
@@ -903,7 +912,7 @@ pub async fn run_turn(
                     let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
                     let tc = *tc;
                     let tools = &tools;
-                    let tx_path = &tx_path;
+                    let tx_path = &emitter.tx_path;
                     async move {
                         if let Some(reason) = block_reason {
                             Err(anyhow::anyhow!("[Blocked by hook] {}", reason))
@@ -952,10 +961,10 @@ pub async fn run_turn(
                     .find_map(|h| if let HookAction::Block { reason } = h.pre_tool(tc) { Some(reason) } else { None })
                 {
                     let output = format!("[Blocked by hook] {}", reason);
-                    wire::emit(&tx_path, events::tool_call(
+                    emitter.emit(events::tool_call(
                         tc.tool_call_id.clone(), tc.tool_name.clone(), &tc.args,
                     ))?;
-                    wire::emit(&tx_path, events::tool_result(
+                    emitter.emit(events::tool_result(
                         tc.tool_call_id.clone(), output.clone(), None, None,
                     ))?;
                     all_results[*i] = Some((
@@ -1007,7 +1016,7 @@ pub async fn run_turn(
                             }
                         }
                         let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
-                        let (part, mut result) = execute_tool_call(tc, &tools, &tx_path, prefix).await
+                        let (part, mut result) = execute_tool_call(tc, &tools, &emitter.tx_path, prefix).await
                             .unwrap_or_else(|e| error_tool_result(tc, e));
                         let result_str = result.result.as_str().unwrap_or("").to_string();
                         for h in &hooks {
@@ -1036,18 +1045,18 @@ pub async fn run_turn(
                     }
                     ExecutionSignal::TurnComplete => {
                         // Emit call+result pair for transcript auditability before ending the turn.
-                        wire::emit(&tx_path, events::tool_call(
+                        emitter.emit(events::tool_call(
                             tc.tool_call_id.clone(), tc.tool_name.clone(), &tc.args,
                         ))?;
-                        wire::emit(&tx_path, events::tool_result(
+                        emitter.emit(events::tool_result(
                             tc.tool_call_id.clone(), "recorded".to_string(), None, None,
                         ))?;
                         let message = tc.args.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
                         let result = tc.args.get("result").cloned();
                         for t in post_tool_text.drain(..) {
-                            println!("{}", serde_json::json!({"type": "text_delta", "content": t, "ts": now_ms()}));
+                            emitter.delta(t);
                         }
-                        let events_now = read_events(&tx_path)?;
+                        let events_now = ingestor.events()?;
                         let turn_n = count_turn_complete(&events_now) as u32 + 1;
                         let code_checkpoint = checkpoint_codebase(
                             repos.checkpoints.as_ref(),
@@ -1060,7 +1069,7 @@ pub async fn run_turn(
                             cache_write: total_usage.cache_write_tokens as u64,
                         };
                         let turn_output = TurnOutput { message: message.clone(), result: result.clone() };
-                        wire::emit(&tx_path, events::turn_complete(
+                        emitter.emit(events::turn_complete(
                             &usage, codebase_hash.clone(), codebase_dirty, code_checkpoint,
                             split_into_blocks(&all_turn_text), &turn_output,
                         ))?;
@@ -1073,20 +1082,20 @@ pub async fn run_turn(
                         let items: Vec<ClarifyItem> = tc.args.get("items")
                             .and_then(|v| serde_json::from_value(v.clone()).ok())
                             .unwrap_or_default();
-                        wire::emit(&tx_path, events::clarify(&items))?;
+                        emitter.emit(events::clarify(&items))?;
                         clarify_signal = Some(items);
                     }
                     ExecutionSignal::Inform => {
                         let items: Vec<InformItem> = tc.args.get("items")
                             .and_then(|v| serde_json::from_value(v.clone()).ok())
                             .unwrap_or_default();
-                        wire::emit(&tx_path, events::inform(&items))?;
+                        emitter.emit(events::inform(&items))?;
                         inform_signal = Some(items);
                     }
                     ExecutionSignal::Continue => {
                         // skill (default) and any other serial tool
                         let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
-                        let (part, mut result) = execute_tool_call(tc, &tools, &tx_path, prefix).await
+                        let (part, mut result) = execute_tool_call(tc, &tools, &emitter.tx_path, prefix).await
                             .unwrap_or_else(|e| error_tool_result(tc, e));
                         let result_str = result.result.as_str().unwrap_or("").to_string();
                         for h in &hooks {
@@ -1126,13 +1135,13 @@ pub async fn run_turn(
 
         // Emit any model text that arrived after tool calls in this step.
         for t in post_tool_text.drain(..) {
-            println!("{}", serde_json::json!({"type": "text_delta", "content": t, "ts": now_ms()}));
+            emitter.delta(t);
         }
 
         // Gated tools: emit Permissions and exit so the user can decide.
         // (In auto mode gated_ids is always empty — this block is never reached.)
         if !pending_permissions.is_empty() {
-            wire::emit(&tx_path, events::permissions(&pending_permissions))?;
+            emitter.emit(events::permissions(&pending_permissions))?;
             repos.traces.commit_session(&gait_dir, &session_id,
                 &format!("session({}): permissions", session_id))?;
             for h in &hooks { h.post_turn(); }
@@ -1192,7 +1201,10 @@ mod tests {
             repos,
         };
         let caps = crate::profile::ResolvedProfile::for_test(provider, tools, allow, deny);
-        run_turn(&session, caps, input).await
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
+        let emitter = Emitter::new(
+            session.gait_dir.join("sessions").join(&session.id).join("transcript.jsonl"), tx);
+        run_turn(&session, &emitter, caps, input).await
     }
 
 
