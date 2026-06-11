@@ -95,9 +95,11 @@ pub struct GaitConfig {
     #[serde(default)]
     pub hooks: Vec<HookDef>,
     /// Max retries when an LLM result fails output_schema validation.
-    /// The retry loop is a future feature; this just plumbs the knob from gait.jsonc.
     #[serde(default = "default_output_schema_retries")]
     pub output_schema_retries: u8,
+    /// Max turn iterations before giving up. Defaults to 100 when absent.
+    #[serde(default)]
+    pub max_iter: Option<usize>,
 }
 
 fn default_compaction_threshold() -> f64 { 0.8 }
@@ -120,6 +122,7 @@ impl Default for GaitConfig {
             wasm_plugins: vec![],
             hooks: vec![],
             output_schema_retries: 3,
+            max_iter: None,
         }
     }
 }

@@ -260,7 +260,7 @@ async fn cmd_run(argv: &[String]) {
     let turn_result = match run_turn(
         &session,
         resolved,
-        gait_ai::turn::TurnInput { task, auto, max_iter: None },
+        gait_ai::turn::TurnInput { task, auto, max_iter: config.max_iter },
     ).await {
         Ok(r) => r,
         Err(e) => {

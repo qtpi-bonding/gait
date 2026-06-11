@@ -683,7 +683,7 @@ pub async fn run_turn(
     let mut inform_signal: Option<Vec<InformItem>> = None;
     let mut all_turn_text = String::new();
 
-    for _step in 0..max_iter.unwrap_or(150) {
+    for _step in 0..max_iter.unwrap_or(100) {
         let outgoing = hooks.iter().fold(messages.clone(), |m, h| h.pre_step(&m).unwrap_or(m));
         let mut chunk_stream = provider.stream(&system_prompt, &outgoing, &tools).await
             .map_err(|e| anyhow::anyhow!("provider error: {}", e))?;
@@ -1158,7 +1158,7 @@ pub async fn run_turn(
         messages.push(Message::Tool { content: tool_results });
     }
 
-    anyhow::bail!("reached max steps (150) without turn_complete")
+    anyhow::bail!("reached max steps ({}) without turn_complete", max_iter.unwrap_or(100))
 }
 
 #[cfg(test)]
