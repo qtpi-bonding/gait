@@ -1,5 +1,5 @@
 ---
-status: partial
+status: done
 ---
 
 # Harness / Scheduler Split — Implementation Plan

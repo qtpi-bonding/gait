@@ -1,5 +1,5 @@
 ---
-status: partial
+status: done
 ---
 
 # Profile + ResolvedProfile (Resolution Layer) — Implementation Plan

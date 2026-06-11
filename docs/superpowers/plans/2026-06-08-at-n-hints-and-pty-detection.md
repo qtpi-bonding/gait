@@ -1,5 +1,5 @@
 ---
-status: partial
+status: done
 ---
 
 # @(N) Ghost-Text Hints + PTY Interactive Command Detection — Implementation Plan

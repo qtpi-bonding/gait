@@ -1,5 +1,5 @@
 ---
-status: partial
+status: done
 ---
 
 # Retrace + Log/Transcript Naming — Implementation Plan

@@ -1,5 +1,5 @@
 ---
-status: partial
+status: done
 ---
 
 # Session Worktrees, System Prompt + Init Decoupling — Implementation Plan

@@ -1,5 +1,5 @@
 ---
-status: partial
+status: done
 ---
 
 # Tool & Permission Unification Implementation Plan
