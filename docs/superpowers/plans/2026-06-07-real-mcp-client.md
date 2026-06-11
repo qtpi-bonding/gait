@@ -160,7 +160,7 @@ fn parses_mcp_servers_and_skills() {
     let content_str = "# TDD\n1. Write failing test\n2. Make it pass\n3. Refactor";
     let content_json = serde_json::to_string(content_str).unwrap();
     let jsonc = format!(
-        "{{\n  \"model\": \"minimax/MiniMax-M1\",\n  \"mcp_servers\": [\n    {{ \"name\": \"slack\", \"spawn\": \"node mcp-slack.js\" }}\n  ],\n  \"skills\": [\n    {{ \"name\": \"tdd\", \"description\": \"test-driven development workflow\", \"content\": {content_json} }}\n  ]\n}}\n"
+        "{{\n  \"model\": \"minimax/MiniMax-M3\",\n  \"mcp_servers\": [\n    {{ \"name\": \"slack\", \"spawn\": \"node mcp-slack.js\" }}\n  ],\n  \"skills\": [\n    {{ \"name\": \"tdd\", \"description\": \"test-driven development workflow\", \"content\": {content_json} }}\n  ]\n}}\n"
     );
     std::fs::write(dir.path().join("gait.jsonc"), jsonc).unwrap();
     let cfg = load_config(dir.path());

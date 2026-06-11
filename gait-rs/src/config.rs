@@ -208,12 +208,12 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("gait.jsonc"), r#"
 {
-  "model": "minimax/MiniMax-M1",
+  "model": "minimax/MiniMax-M3",
   "allow": ["read", "write", "shell"]
 }
 "#).unwrap();
         let cfg = load_config(dir.path());
-        assert_eq!(cfg.model, "minimax/MiniMax-M1");
+        assert_eq!(cfg.model, "minimax/MiniMax-M3");
         assert_eq!(cfg.allow, vec!["read", "write", "shell"]);
     }
 
@@ -256,7 +256,7 @@ mod tests {
     #[test]
     fn append_allow_pattern_adds_to_existing_allow() {
         let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M1-80k","allow":["read"]}"#).unwrap();
+        std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M3","allow":["read"]}"#).unwrap();
         append_allow_pattern(dir.path(), "shell:cargo *").unwrap();
         let cfg = load_config(dir.path());
         assert!(cfg.allow.contains(&"shell:cargo *".to_string()));
@@ -265,9 +265,9 @@ mod tests {
     #[test]
     fn append_allow_pattern_preserves_model_field() {
         let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M1-80k","allow":[]}"#).unwrap();
+        std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M3","allow":[]}"#).unwrap();
         append_allow_pattern(dir.path(), "shell:git *").unwrap();
-        assert_eq!(load_config(dir.path()).model, "minimax/MiniMax-M1-80k");
+        assert_eq!(load_config(dir.path()).model, "minimax/MiniMax-M3");
     }
 
     #[test]
@@ -280,7 +280,7 @@ mod tests {
     #[test]
     fn append_allow_pattern_deduplicates() {
         let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M1-80k","allow":["shell:cargo *"]}"#).unwrap();
+        std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M3","allow":["shell:cargo *"]}"#).unwrap();
         append_allow_pattern(dir.path(), "shell:cargo *").unwrap();
         assert_eq!(load_config(dir.path()).allow.iter().filter(|p| p.as_str() == "shell:cargo *").count(), 1);
     }
@@ -366,7 +366,7 @@ mod tests {
         let content_str = "# TDD\n1. Write failing test\n2. Make it pass\n3. Refactor";
         let content_json = serde_json::to_string(content_str).unwrap();
         let jsonc = format!(
-            "{{\n  \"model\": \"minimax/MiniMax-M1\",\n  \"mcp_servers\": [\n    {{ \"name\": \"slack\", \"spawn\": \"node mcp-slack.js\" }}\n  ],\n  \"skills\": [\n    {{ \"name\": \"tdd\", \"description\": \"test-driven development workflow\", \"content\": {content_json} }}\n  ]\n}}\n"
+            "{{\n  \"model\": \"minimax/MiniMax-M3\",\n  \"mcp_servers\": [\n    {{ \"name\": \"slack\", \"spawn\": \"node mcp-slack.js\" }}\n  ],\n  \"skills\": [\n    {{ \"name\": \"tdd\", \"description\": \"test-driven development workflow\", \"content\": {content_json} }}\n  ]\n}}\n"
         );
         std::fs::write(dir.path().join("gait.jsonc"), jsonc).unwrap();
         let cfg = load_config(dir.path());
@@ -381,7 +381,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("gait.jsonc"), r#"
 {
-  "model": "minimax/MiniMax-M1",
+  "model": "minimax/MiniMax-M3",
   "allow": ["read"],
   "deny": ["shell:rm *", "shell:git push *"]
 }
@@ -393,7 +393,7 @@ mod tests {
     #[test]
     fn deny_defaults_to_empty() {
         let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M1","allow":[]}"#).unwrap();
+        std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M3","allow":[]}"#).unwrap();
         let cfg = load_config(dir.path());
         assert!(cfg.deny.is_empty());
     }
@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn append_deny_pattern_adds_to_deny() {
         let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M1","allow":[],"deny":[]}"#).unwrap();
+        std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M3","allow":[],"deny":[]}"#).unwrap();
         append_deny_pattern(dir.path(), "shell:rm *").unwrap();
         let cfg = load_config(dir.path());
         assert!(cfg.deny.contains(&"shell:rm *".to_string()));
@@ -410,7 +410,7 @@ mod tests {
     #[test]
     fn append_deny_pattern_deduplicates() {
         let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M1","allow":[],"deny":["shell:rm *"]}"#).unwrap();
+        std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M3","allow":[],"deny":["shell:rm *"]}"#).unwrap();
         append_deny_pattern(dir.path(), "shell:rm *").unwrap();
         let cfg = load_config(dir.path());
         assert_eq!(cfg.deny.iter().filter(|p| p.as_str() == "shell:rm *").count(), 1);

@@ -40,7 +40,7 @@ fn parses_mcp_tools_and_skills() {
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("gait.jsonc"), r#"
 {
-  "model": "minimax/MiniMax-M1",
+  "model": "minimax/MiniMax-M3",
   "mcp_tools": [
     {
       "name": "slack_send",
@@ -1343,7 +1343,7 @@ mkdir -p /tmp/gait-ptl-test && cd /tmp/gait-ptl-test && git init && git commit -
 mkdir sessions
 cat > gait.jsonc << 'EOF'
 {
-  "model": "minimax/MiniMax-M1-80k",
+  "model": "minimax/MiniMax-M3",
   "allow": ["read", "glob", "grep", "ls", "mcp", "skill", "output"],
   "mcp_tools": [
     {

@@ -884,7 +884,7 @@ mod tests {
         init_git_repo(ws.path());
         // Write a minimal gait.jsonc so load_config works
         std::fs::write(ws.path().join("gait.jsonc"),
-            r#"{"model":"minimax/MiniMax-M1-80k","allow":[],"tools":[]}"#).unwrap();
+            r#"{"model":"minimax/MiniMax-M3","allow":[],"tools":[]}"#).unwrap();
 
         let tool = SpawnAgentTool::new(
             "scaller001".into(),
@@ -930,7 +930,7 @@ mod tests {
         let ws = TempDir::new().unwrap();
         init_git_repo(ws.path());
         std::fs::write(ws.path().join("gait.jsonc"),
-            r#"{"model":"minimax/MiniMax-M1-80k","allow":[],"tools":[]}"#).unwrap();
+            r#"{"model":"minimax/MiniMax-M3","allow":[],"tools":[]}"#).unwrap();
 
         let tool = SpawnAgentTool::new("scaller".into(), ws.path().to_path_buf(), ws.path().to_path_buf());
         let result = tool.execute(serde_json::json!({ "task": "foo" })).await.unwrap();
@@ -1090,7 +1090,7 @@ mod tests {
         let ws = TempDir::new().unwrap();
         init_git_repo(ws.path());
         std::fs::write(ws.path().join("gait.jsonc"),
-            r#"{"model":"minimax/MiniMax-M1-80k","allow":[],"tools":[]}"#).unwrap();
+            r#"{"model":"minimax/MiniMax-M3","allow":[],"tools":[]}"#).unwrap();
 
         let tool = SpawnAgentTool::new(
             "scaller001".into(),
@@ -1128,7 +1128,7 @@ mod tests {
         let ws = TempDir::new().unwrap();
         init_git_repo(ws.path());
         std::fs::write(ws.path().join("gait.jsonc"),
-            r#"{"model":"minimax/MiniMax-M1-80k","allow":[],"tools":[]}"#).unwrap();
+            r#"{"model":"minimax/MiniMax-M3","allow":[],"tools":[]}"#).unwrap();
 
         let tool = SpawnAgentTool::new("scaller".into(), ws.path().to_path_buf(), ws.path().to_path_buf());
         let result = tool.execute(serde_json::json!({ "task": "foo" })).await.unwrap();
@@ -1862,7 +1862,7 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
     std::fs::write(ws.path().join("gait.jsonc"),
-        r#"{"model":"minimax/MiniMax-M1-80k","allow":["spawn_agent"],"tools":[]}"#).unwrap();
+        r#"{"model":"minimax/MiniMax-M3","allow":["spawn_agent"],"tools":[]}"#).unwrap();
 
     let provider = Arc::new(ScriptedProvider {
         calls: Arc::new(vec![

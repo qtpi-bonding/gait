@@ -38,7 +38,7 @@ The codebase root is the `rs-port/` directory (not `gait-rs/`). All file paths f
 - Always run `cargo test` after completing each task to verify no regressions
 - Never skip steps in the plan — follow TDD order exactly
 - Commit after each task with a meaningful message
-- Do not modify `gait.jsonc` model field — it must always be `minimax/MiniMax-M1-80k`
+- Do not modify `gait.jsonc` model field — it must always be `minimax/MiniMax-M3`
 
 ## Working on a plan
 

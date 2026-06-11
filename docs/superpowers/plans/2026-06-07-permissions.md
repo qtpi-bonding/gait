@@ -599,7 +599,7 @@ Operates on raw `serde_json::Value` — never `GaitConfig`. Bails (returns Err, 
 #[test]
 fn append_allow_pattern_adds_to_existing_allow() {
     let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M1-80k","allow":["read"]}"#).unwrap();
+    std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M3","allow":["read"]}"#).unwrap();
     append_allow_pattern(dir.path(), "shell:cargo *").unwrap();
     let cfg = load_config(dir.path());
     assert!(cfg.allow.contains(&"shell:cargo *".to_string()));
@@ -608,9 +608,9 @@ fn append_allow_pattern_adds_to_existing_allow() {
 #[test]
 fn append_allow_pattern_preserves_model_field() {
     let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M1-80k","allow":[]}"#).unwrap();
+    std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M3","allow":[]}"#).unwrap();
     append_allow_pattern(dir.path(), "shell:git *").unwrap();
-    assert_eq!(load_config(dir.path()).model, "minimax/MiniMax-M1-80k");
+    assert_eq!(load_config(dir.path()).model, "minimax/MiniMax-M3");
 }
 
 #[test]
@@ -623,7 +623,7 @@ fn append_allow_pattern_creates_file_when_missing() {
 #[test]
 fn append_allow_pattern_deduplicates() {
     let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M1-80k","allow":["shell:cargo *"]}"#).unwrap();
+    std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M3","allow":["shell:cargo *"]}"#).unwrap();
     append_allow_pattern(dir.path(), "shell:cargo *").unwrap();
     assert_eq!(load_config(dir.path()).allow.iter().filter(|p| p.as_str() == "shell:cargo *").count(), 1);
 }
@@ -655,7 +655,7 @@ pub fn append_allow_pattern(workspace: &Path, pattern: &str) -> anyhow::Result<(
         }
     } else {
         let mut m = serde_json::Map::new();
-        m.insert("model".into(), serde_json::Value::String("minimax/MiniMax-M1-80k".into()));
+        m.insert("model".into(), serde_json::Value::String("minimax/MiniMax-M3".into()));
         m
     };
     let allow = obj.entry("allow")

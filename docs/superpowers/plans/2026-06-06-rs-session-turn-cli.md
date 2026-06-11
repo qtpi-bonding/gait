@@ -1065,12 +1065,12 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("gait.jsonc"), r#"
 {
-  "model": "minimax/MiniMax-M1",
+  "model": "minimax/MiniMax-M3",
   "allow": ["read", "write", "shell"]
 }
 "#).unwrap();
         let cfg = load_config(dir.path());
-        assert_eq!(cfg.model, "minimax/MiniMax-M1");
+        assert_eq!(cfg.model, "minimax/MiniMax-M3");
         assert_eq!(cfg.allow, vec!["read", "write", "shell"]);
     }
 

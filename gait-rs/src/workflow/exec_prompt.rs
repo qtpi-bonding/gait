@@ -21,7 +21,7 @@ pub async fn exec_prompt_node(
 
     let model = node.model.clone()
         .or_else(|| workflow_def.model.clone())
-        .unwrap_or_else(|| "minimax/MiniMax-M1-80k".into());
+        .unwrap_or_else(|| "minimax/MiniMax-M3".into());
     let allow = node.allow.clone().unwrap_or_else(|| workflow_def.allow.clone());
     let auto = node.auto.unwrap_or(workflow_def.auto);
 

@@ -35,7 +35,7 @@ fn parses_deny_list() {
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("gait.jsonc"), r#"
 {
-  "model": "minimax/MiniMax-M1",
+  "model": "minimax/MiniMax-M3",
   "allow": ["read"],
   "deny": ["shell:rm *", "shell:git push *"]
 }
@@ -47,7 +47,7 @@ fn parses_deny_list() {
 #[test]
 fn deny_defaults_to_empty() {
     let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M1","allow":[]}"#).unwrap();
+    std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M3","allow":[]}"#).unwrap();
     let cfg = load_config(dir.path());
     assert!(cfg.deny.is_empty());
 }
@@ -55,7 +55,7 @@ fn deny_defaults_to_empty() {
 #[test]
 fn append_deny_pattern_adds_to_deny() {
     let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M1","allow":[],"deny":[]}"#).unwrap();
+    std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M3","allow":[],"deny":[]}"#).unwrap();
     append_deny_pattern(dir.path(), "shell:rm *").unwrap();
     let cfg = load_config(dir.path());
     assert!(cfg.deny.contains(&"shell:rm *".to_string()));
@@ -64,7 +64,7 @@ fn append_deny_pattern_adds_to_deny() {
 #[test]
 fn append_deny_pattern_deduplicates() {
     let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M1","allow":[],"deny":["shell:rm *"]}"#).unwrap();
+    std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"minimax/MiniMax-M3","allow":[],"deny":["shell:rm *"]}"#).unwrap();
     append_deny_pattern(dir.path(), "shell:rm *").unwrap();
     let cfg = load_config(dir.path());
     assert_eq!(cfg.deny.iter().filter(|p| p.as_str() == "shell:rm *").count(), 1);

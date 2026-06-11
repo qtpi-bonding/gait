@@ -455,12 +455,12 @@ git commit -m "refactor: cmd_run assembles the agent via Profile::resolve (kills
 
 - [ ] **Step 1: Replace the duplicated assembly**
 
-In `exec_prompt_node`, replace the duplicated MCP discovery loop (lines 36-52) and `builtin_tools` call (55-58) with a `Profile` built from the workflow node's settings, then `resolve()`. Preserve the workflow-specific differences: system prompt from `resolve_system_prompt(node, workspace)` (not the harness-preamble composer), `deny: vec![]`, model precedence `node.model > workflow_def.model > "minimax/MiniMax-M1-80k"`, and the **passed-in** provider:
+In `exec_prompt_node`, replace the duplicated MCP discovery loop (lines 36-52) and `builtin_tools` call (55-58) with a `Profile` built from the workflow node's settings, then `resolve()`. Preserve the workflow-specific differences: system prompt from `resolve_system_prompt(node, workspace)` (not the harness-preamble composer), `deny: vec![]`, model precedence `node.model > workflow_def.model > "minimax/MiniMax-M3"`, and the **passed-in** provider:
 
 ```rust
 let model = node.model.clone()
     .or_else(|| workflow_def.model.clone())
-    .unwrap_or_else(|| "minimax/MiniMax-M1-80k".to_string());
+    .unwrap_or_else(|| "minimax/MiniMax-M3".to_string());
 let mut profile = gait_ai::profile::Profile::from_config_and_agent(&config, None, Some(model));
 profile.instructions = resolve_system_prompt(node, ctx.workspace);   // workflow body, no preamble
 profile.deny = vec![];                                               // workflow nodes: no deny

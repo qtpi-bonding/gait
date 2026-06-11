@@ -43,7 +43,7 @@
 **Files:**
 - Modify: `gait-rs/src/config.rs`
 
-The bug: `GaitConfig::default()` uses `"anthropic/claude-sonnet-4-6"` but `append_allow_pattern` creates a new `gait.jsonc` with `"minimax/MiniMax-M1-80k"`. A user whose first action triggers a Global permission approval gets silently misconfigured.
+The bug: `GaitConfig::default()` uses `"anthropic/claude-sonnet-4-6"` but `append_allow_pattern` creates a new `gait.jsonc` with `"minimax/MiniMax-M3"`. A user whose first action triggers a Global permission approval gets silently misconfigured.
 
 - [ ] **Step 1: Write a failing test**
 
@@ -71,7 +71,7 @@ fn append_allow_creates_file_with_correct_default_model() {
 cd gait-rs && cargo test config::tests::append_allow_creates_file_with_correct_default_model 2>&1 | tail -10
 ```
 
-Expected: FAIL — the created file has `"minimax/MiniMax-M1-80k"`.
+Expected: FAIL — the created file has `"minimax/MiniMax-M3"`.
 
 - [ ] **Step 3: Add `DEFAULT_MODEL` constant and fix `append_allow_pattern`**
 
@@ -101,7 +101,7 @@ impl Default for GaitConfig {
 }
 ```
 
-In `append_allow_pattern`, replace the hardcoded `"minimax/MiniMax-M1-80k"` string at line 112:
+In `append_allow_pattern`, replace the hardcoded `"minimax/MiniMax-M3"` string at line 112:
 
 ```rust
 } else {

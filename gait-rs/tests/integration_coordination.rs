@@ -56,7 +56,7 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
     std::fs::write(ws.path().join("gait.jsonc"),
-        r#"{"model":"minimax/MiniMax-M1-80k","allow":["spawn_agent"],"tools":[]}"#).unwrap();
+        r#"{"model":"minimax/MiniMax-M3","allow":["spawn_agent"],"tools":[]}"#).unwrap();
 
     let provider = Arc::new(ScriptedProvider {
         calls: Arc::new(vec![
