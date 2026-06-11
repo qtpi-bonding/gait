@@ -20,6 +20,7 @@ use crate::mcp_client::McpClient;
 use crate::permission::{is_request_approved, find_matched_allow_pattern, is_request_denied, find_matched_deny_pattern};
 use grep_regex::RegexMatcher;
 use grep_searcher::{Searcher, Sink, SinkMatch};
+use crate::proto::gait::log::v1 as pb;
 use crate::proto::gait::log::v1::{event, payload, Event};
 
 /// The substantive payload kind for a proto event, if it carries one.
@@ -190,18 +191,53 @@ async fn execute_tool_call(
         tool_name: tc.tool_name.clone(),
         args: tc.args.clone(),
     });
-    let raw = match tools.iter().find(|t| t.name() == tc.tool_name) {
-        Some(t) => match t.execute(tc.args.clone()).await {
-            Ok(v) => if v.is_string() { v.as_str().unwrap().to_owned() } else { v.to_string() },
-            Err(e) => format!("error: {e}"),
-        },
-        None => format!("unknown tool: {}", tc.tool_name),
+    // Generic timing for every tool. Shell no longer bakes "exit N (Xms)" into
+    // its output string — duration lives in the proto `ToolResult.duration` field
+    // and process exit/timed_out live in `ToolResult.process`. We measure the full
+    // tool.execute() call so the timing matches what the model observed.
+    let (raw, duration, process) = match tools.iter().find(|t| t.name() == tc.tool_name) {
+        Some(t) => {
+            let started = std::time::Instant::now();
+            let res = t.execute(tc.args.clone()).await;
+            let elapsed = started.elapsed();
+            let duration = Some(pbjson_types::Duration {
+                seconds: elapsed.as_secs() as i64,
+                nanos: elapsed.subsec_nanos() as i32,
+            });
+            match res {
+                Ok(v) => {
+                    // Process-tool shape (set by shell today): unwrap to model-facing
+                    // text and lift process metadata. The model never sees the JSON
+                    // wrapper — turn.rs is the single place that bridges Value → ToolResult.
+                    if let (Some(output), Some(exit_code), Some(timed_out)) = (
+                        v.get("output"),
+                        v.get("exit_code"),
+                        v.get("timed_out"),
+                    ) {
+                        let output = output.as_str().unwrap_or("").to_string();
+                        let exit_code = exit_code.as_i64().unwrap_or(0) as i32;
+                        let timed_out = timed_out.as_bool().unwrap_or(false);
+                        (
+                            output,
+                            duration,
+                            Some(pb::ProcessResult { exit_code, timed_out }),
+                        )
+                    } else if v.is_string() {
+                        (v.as_str().unwrap().to_owned(), duration, None)
+                    } else {
+                        (v.to_string(), duration, None)
+                    }
+                }
+                Err(e) => (format!("error: {e}"), duration, None),
+            }
+        }
+        None => (format!("unknown tool: {}", tc.tool_name), None, None),
     };
     let output = match approval_prefix {
         Some(prefix) => format!("{}\n{}", prefix, raw),
         None => raw,
     };
-    wire::emit(tx_path, events::tool_result(id.clone(), output.clone()))?;
+    wire::emit(tx_path, events::tool_result(id.clone(), output.clone(), duration, process))?;
     let tool_result = ToolResult {
         kind: ToolResultKind::ToolResult,
         tool_call_id: id,
@@ -506,6 +542,7 @@ pub async fn run_turn(
                         wire::emit(&tx_path, events::tool_result(
                             id.clone(),
                             format!("error executing approved tool: {e}"),
+                            None, None,
                         ))?;
                     }
                 } else {
@@ -520,6 +557,7 @@ pub async fn run_turn(
                     wire::emit(&tx_path, events::tool_result(
                         id.clone(),
                         "permission denied by user".into(),
+                        None, None,
                     ))?;
                 }
             }
@@ -822,6 +860,7 @@ pub async fn run_turn(
             ))?;
             wire::emit(&tx_path, events::tool_result(
                 tc.tool_call_id.clone(), output.clone(),
+                None, None,
             ))?;
             assistant_parts.push(AssistantPart::ToolCall(ToolCall {
                 tool_call_id: tc.tool_call_id.clone(),
@@ -916,7 +955,7 @@ pub async fn run_turn(
                         tc.tool_call_id.clone(), tc.tool_name.clone(), &tc.args,
                     ))?;
                     wire::emit(&tx_path, events::tool_result(
-                        tc.tool_call_id.clone(), output.clone(),
+                        tc.tool_call_id.clone(), output.clone(), None, None,
                     ))?;
                     all_results[*i] = Some((
                         AssistantPart::ToolCall(ToolCall {
@@ -1000,7 +1039,7 @@ pub async fn run_turn(
                             tc.tool_call_id.clone(), tc.tool_name.clone(), &tc.args,
                         ))?;
                         wire::emit(&tx_path, events::tool_result(
-                            tc.tool_call_id.clone(), "recorded".to_string(),
+                            tc.tool_call_id.clone(), "recorded".to_string(), None, None,
                         ))?;
                         let message = tc.args.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
                         let result = tc.args.get("result").cloned();

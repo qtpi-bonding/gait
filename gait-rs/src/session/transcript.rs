@@ -375,7 +375,7 @@ mod tests {
             events::user_turn("t".into(), None, None),
             events::assistant_text("a".into()),
             events::tool_call("i".into(), "read".into(), &serde_json::json!({})),
-            events::tool_result("i".into(), "r".into()),
+            events::tool_result("i".into(), "r".into(), None, None),
             events::error("e".into(), "llm"),
             events::permissions(&[]),
             events::permissions_reply("user".into(), &[]),

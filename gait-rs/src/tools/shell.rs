@@ -83,7 +83,6 @@ impl Tool for ShellTool {
         };
         let out_path = tmp_dir.join(format!("shell-{}.txt", run_id));
 
-        let start = std::time::Instant::now();
 
         let child = tokio::process::Command::new("sh")
             .args(["-c", &params.cmd])
@@ -97,7 +96,6 @@ impl Tool for ShellTool {
             child.wait_with_output(),
         ).await;
 
-        let duration_ms = start.elapsed().as_millis();
 
         let (exit_code, combined) = match result {
             Ok(Ok(output)) => {
@@ -107,7 +105,11 @@ impl Tool for ShellTool {
                 (code, format!("{}{}", stdout, stderr))
             }
             Ok(Err(e)) => return Err(anyhow::anyhow!("Process error: {}", e)),
-            Err(_) => return Ok(Value::String(format!("TIMED OUT after {}ms\n", timeout_ms))),
+            Err(_) => return Ok(serde_json::json!({
+                "output": format!("TIMED OUT after {}ms", timeout_ms),
+                "exit_code": 124,
+                "timed_out": true,
+            })),
         };
 
         let _ = std::fs::write(&out_path, &combined);
@@ -115,7 +117,14 @@ impl Tool for ShellTool {
 
         let display = format!("{}\n{}", combined.trim_end(), file_note);
 
-        Ok(Value::String(format!("exit {} ({}ms)\n{}", exit_code, duration_ms, display)))
+        // Structured process-tool shape: turn.rs reads `output` for the model-facing text,
+        // and lifts `exit_code`/`timed_out` into the proto `ProcessResult`. The "exit N (Xms)"
+        // prefix is gone — timing lives in the generic `ToolResult.duration`, exit in `process`.
+        Ok(serde_json::json!({
+            "output": display,
+            "exit_code": exit_code,
+            "timed_out": false,
+        }))
     }
 }
 
@@ -136,9 +145,15 @@ mod tests {
             "cmd": "echo hello",
             "reason": "test"
         })).await.unwrap();
-        let text = result.as_str().unwrap();
-        assert!(text.contains("exit 0"), "got: {text}");
-        assert!(text.contains("hello"), "got: {text}");
+        // Shell now returns a structured process-tool shape: { output, exit_code, timed_out }.
+        // The model-facing `output` carries the clean command text + file note; the model
+        // never sees the JSON wrapper or any "exit N (Xms)" prefix.
+        let output = result.get("output").and_then(|v| v.as_str()).expect("output field");
+        let exit_code = result.get("exit_code").and_then(|v| v.as_i64()).expect("exit_code field");
+        let timed_out = result.get("timed_out").and_then(|v| v.as_bool()).expect("timed_out field");
+        assert_eq!(exit_code, 0, "got: {result}");
+        assert!(!timed_out, "got: {result}");
+        assert!(output.contains("hello"), "got: {output}");
     }
 
     #[tokio::test]
@@ -149,8 +164,10 @@ mod tests {
             "cmd": "false",
             "reason": "test"
         })).await.unwrap();
-        let text = result.as_str().unwrap();
-        assert!(text.starts_with("exit 1") || text.contains("exit 1"), "got: {text}");
+        let exit_code = result.get("exit_code").and_then(|v| v.as_i64()).expect("exit_code field");
+        let timed_out = result.get("timed_out").and_then(|v| v.as_bool()).expect("timed_out field");
+        assert_eq!(exit_code, 1, "got: {result}");
+        assert!(!timed_out, "got: {result}");
     }
 
     #[tokio::test]
@@ -162,8 +179,8 @@ mod tests {
             "cmd": "cat sentinel.txt",
             "reason": "test"
         })).await.unwrap();
-        let text = result.as_str().unwrap();
-        assert!(text.contains("marker"), "got: {text}");
+        let output = result.get("output").and_then(|v| v.as_str()).expect("output field");
+        assert!(output.contains("marker"), "got: {output}");
     }
 
     #[tokio::test]
@@ -175,8 +192,13 @@ mod tests {
             "reason": "test timeout",
             "timeout_ms": 100
         })).await.unwrap();
-        let text = result.as_str().unwrap();
-        assert!(text.contains("TIMED OUT"), "got: {text}");
+        // Timeout branch: exit_code=124, timed_out=true, output carries the TIMED OUT message.
+        let exit_code = result.get("exit_code").and_then(|v| v.as_i64()).expect("exit_code field");
+        let timed_out = result.get("timed_out").and_then(|v| v.as_bool()).expect("timed_out field");
+        let output = result.get("output").and_then(|v| v.as_str()).expect("output field");
+        assert_eq!(exit_code, 124, "got: {result}");
+        assert!(timed_out, "got: {result}");
+        assert!(output.contains("TIMED OUT"), "got: {output}");
     }
 
     #[tokio::test]
@@ -187,10 +209,10 @@ mod tests {
             "cmd": "echo payload",
             "reason": "test"
         })).await.unwrap();
-        let text = result.as_str().unwrap();
-        // Result references the tmp file
-        assert!(text.contains("full output:"), "got: {text}");
-        assert!(text.contains("shell-"), "got: {text}");
+        // Result's `output` field references the tmp file (file note is part of display).
+        let output = result.get("output").and_then(|v| v.as_str()).expect("output field");
+        assert!(output.contains("full output:"), "got: {output}");
+        assert!(output.contains("shell-"), "got: {output}");
         // Tmp file actually exists with the content
         let tmp_dir = dir.path().join("tmp");
         assert!(tmp_dir.exists(), "tmp dir not created");

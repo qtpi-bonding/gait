@@ -280,7 +280,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = write_events(dir.path(), vec![
             events::tool_call("id1".into(), "read".into(), &serde_json::json!({"file_path":"a.rs"})),
-            events::tool_result("id1".into(), "contents".into()),
+            events::tool_result("id1".into(), "contents".into(), None, None),
         ]);
         let msgs = messages_from_path(&path).unwrap();
         assert_eq!(msgs.len(), 2);
@@ -297,8 +297,8 @@ mod tests {
         let path = write_events(dir.path(), vec![
             events::tool_call("id1".into(), "read".into(), &serde_json::json!({})),
             events::tool_call("id2".into(), "ls".into(), &serde_json::json!({})),
-            events::tool_result("id1".into(), "r1".into()),
-            events::tool_result("id2".into(), "r2".into()),
+            events::tool_result("id1".into(), "r1".into(), None, None),
+            events::tool_result("id2".into(), "r2".into(), None, None),
         ]);
         let msgs = messages_from_path(&path).unwrap();
         assert_eq!(msgs.len(), 2);

@@ -58,13 +58,19 @@ pub fn tool_call(call_id: String, name: String, input: &serde_json::Value) -> pb
     }))
 }
 
-/// `ToolResult` — process / duration unset (populated at the shell call site later).
-pub fn tool_result(call_id: String, output: String) -> pb::event::Body {
+/// `ToolResult` — generic `duration` (every tool) + `ProcessResult` (shell/process tools).
+/// Both are optional; the synthetic sites (denied/error/approved-fallback/recorded) pass `None, None`.
+pub fn tool_result(
+    call_id: String,
+    output: String,
+    duration: Option<pbjson_types::Duration>,
+    process: Option<pb::ProcessResult>,
+) -> pb::event::Body {
     wire::body(pb::payload::Kind::ToolResult(pb::ToolResult {
         call_id,
         output,
-        duration: None,
-        process: None,
+        duration,
+        process,
     }))
 }
 
