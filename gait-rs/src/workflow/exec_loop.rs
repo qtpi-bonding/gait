@@ -25,7 +25,7 @@ pub async fn exec_loop_node(
         let iter_ctx = NodeContext {
             workflow_id: ctx.workflow_id,
             session_id: ctx.session_id,
-            workspace: ctx.workspace,
+            gait_dir: ctx.gait_dir,
             codebase: ctx.codebase,
             vars: vars.clone(),
         };

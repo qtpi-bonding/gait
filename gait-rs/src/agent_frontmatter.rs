@@ -51,14 +51,14 @@ pub fn append_agent_deny(path: PathBuf, pattern: &str) -> anyhow::Result<()> {
     append_to_list(path, "deny", pattern)
 }
 
-/// Resolve a short agent name like "code" to its path in the workspace.
-/// "code" → "{workspace}/agents/code.md"
-pub fn resolve_agent_path(workspace: &std::path::Path, name: &str) -> PathBuf {
-    // If name already looks like a path (contains / or .md), use as-is relative to workspace
+/// Resolve a short agent name like "code" to its path in the gait_dir.
+/// "code" → "{gait_dir}/agents/code.md"
+pub fn resolve_agent_path(gait_dir: &std::path::Path, name: &str) -> PathBuf {
+    // If name already looks like a path (contains / or .md), use as-is relative to gait_dir
     if name.contains('/') || name.ends_with(".md") {
-        workspace.join(name)
+        gait_dir.join(name)
     } else {
-        workspace.join("agents").join(format!("{}.md", name))
+        gait_dir.join("agents").join(format!("{}.md", name))
     }
 }
 

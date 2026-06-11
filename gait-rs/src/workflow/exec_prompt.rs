@@ -25,12 +25,12 @@ pub async fn exec_prompt_node(
     let allow = node.allow.clone().unwrap_or_else(|| workflow_def.allow.clone());
     let auto = node.auto.unwrap_or(workflow_def.auto);
 
-    let system_prompt = resolve_system_prompt(node, ctx.workspace);
+    let system_prompt = resolve_system_prompt(node, ctx.gait_dir);
     let codebase = node.codebase.as_ref()
         .map(|cb| PathBuf::from(substitute(cb, &ctx.vars)))
         .unwrap_or_else(|| ctx.codebase.to_path_buf());
 
-    let config = crate::config::load_config(ctx.workspace);
+    let config = crate::config::load_config(ctx.gait_dir);
 
     // Build the declarative profile for this workflow node, then resolve tools/clients in one place.
     let mut profile = crate::profile::Profile::from_config_and_agent(&config, None, Some(model.clone()));
@@ -44,14 +44,14 @@ pub async fn exec_prompt_node(
     let mut resolved = profile.resolve(
         codebase.clone(),
         ctx.session_id.to_string(),
-        ctx.workspace.to_path_buf(),
+        ctx.gait_dir.to_path_buf(),
         repos.clone(),
         api_key,
     ).await?;
 
     resolved.provider = provider;   // workflow reuses its injected provider, not the freshly-resolved one
     let session = crate::session::Session::load(
-        ctx.workspace.to_path_buf(),
+        ctx.gait_dir.to_path_buf(),
         ctx.session_id.to_string(),
         codebase,
         repos,
@@ -78,12 +78,12 @@ pub async fn exec_prompt_node(
     }
 }
 
-fn resolve_system_prompt(node: &NodeDef, workspace: &Path) -> String {
+fn resolve_system_prompt(node: &NodeDef, gait_dir: &Path) -> String {
     if let Some(sp) = &node.system_prompt { return sp.clone(); }
     if let Some(name) = &node.agent {
-        let p = workspace.join("agents").join(format!("{}.md", name));
+        let p = gait_dir.join("agents").join(format!("{}.md", name));
         if let Ok(s) = std::fs::read_to_string(&p) { return s; }
     }
-    let agents_md = workspace.join("AGENTS.md");
+    let agents_md = gait_dir.join("AGENTS.md");
     std::fs::read_to_string(&agents_md).unwrap_or_default()
 }

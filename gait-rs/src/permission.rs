@@ -18,7 +18,7 @@ pub enum PermissionChoice {
 
 /// Persist a `PermissionChoice` to its backing store.
 ///
-/// * `Global(pattern)` → appends to `<workspace>/gait.jsonc`
+/// * `Global(pattern)` → appends to `<gait_dir>/gait.jsonc`
 /// * `Agent(pattern)` → appends to the agent's frontmatter at `agent_path`
 /// * `Once(pattern)`  → appends a line to the per-session temp file
 ///   (read once at the start of the next turn, then deleted)
@@ -28,13 +28,13 @@ pub enum PermissionChoice {
 /// in `turn.rs`, which consumes the file with `.lines()`.
 pub fn save_choice(
     choice: &PermissionChoice,
-    workspace: &Path,
+    gait_dir: &Path,
     session_id: &str,
     agent_path: Option<&Path>,
 ) -> anyhow::Result<()> {
     match choice {
         PermissionChoice::Global(pattern) => {
-            crate::config::append_allow_pattern(workspace, pattern)?;
+            crate::config::append_allow_pattern(gait_dir, pattern)?;
         }
         PermissionChoice::Agent(pattern) => {
             if let Some(path) = agent_path {
@@ -42,9 +42,9 @@ pub fn save_choice(
             }
         }
         PermissionChoice::Once(pattern) => {
-            let tmp_dir = workspace.join("tmp");
+            let tmp_dir = gait_dir.join("tmp");
             std::fs::create_dir_all(&tmp_dir)?;
-            let once_path = crate::turn::once_approval_path(workspace, session_id);
+            let once_path = crate::turn::once_approval_path(gait_dir, session_id);
             use std::io::Write;
             let mut f = std::fs::OpenOptions::new()
                 .create(true)
@@ -72,12 +72,12 @@ pub struct ApproveParams {
 
 /// Execute an approval against a session's pending permissions.
 pub fn execute_approve(
-    workspace: &std::path::Path,
+    gait_dir: &std::path::Path,
     session_id: &str,
     params: &ApproveParams,
     agent_path: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
-    let tx_path = workspace.join("sessions").join(session_id).join("transcript.jsonl");
+    let tx_path = gait_dir.join("sessions").join(session_id).join("transcript.jsonl");
     let state = crate::session::transcript::session_state(&tx_path)?;
 
     let items = match &state {
@@ -109,7 +109,7 @@ pub fn execute_approve(
                 ApproveScope::Agent => PermissionChoice::Agent(effective_pattern.clone()),
                 ApproveScope::Once => PermissionChoice::Once(effective_pattern.clone()),
             };
-            save_choice(&choice, workspace, session_id, agent_path)?;
+            save_choice(&choice, gait_dir, session_id, agent_path)?;
             let scope_str = match &params.scope {
                 ApproveScope::Global => "global",
                 ApproveScope::Agent => "agent",

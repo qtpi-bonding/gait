@@ -3,29 +3,29 @@ use git2::{Repository, BranchType, IndexAddOption, Signature};
 use super::{with_gait_trailer};
 
 pub trait TraceRepo: Send + Sync {
-    fn init_workspace(&self, workspace: &Path) -> anyhow::Result<()>;
-    fn create_session_worktree(&self, workspace: &Path, session_id: &str) -> anyhow::Result<()>;
-    fn commit_session(&self, workspace: &Path, session_id: &str, message: &str) -> anyhow::Result<()>;
-    fn list_active_sessions(&self, workspace: &Path) -> anyhow::Result<Vec<String>>;
-    fn finish_session(&self, workspace: &Path, session_id: &str) -> anyhow::Result<()>;
-    fn create_branch_worktree(&self, workspace: &Path, base_branch: &str, new_branch: &str, worktree_path: &Path) -> anyhow::Result<()>;
-    fn remove_branch_worktree(&self, workspace: &Path, worktree_path: &Path) -> anyhow::Result<()>;
-    fn merge_branch_ff(&self, workspace: &Path, target_branch: &str, source_branch: &str) -> anyhow::Result<()>;
+    fn init_workspace(&self, gait_dir: &Path) -> anyhow::Result<()>;
+    fn create_session_worktree(&self, gait_dir: &Path, session_id: &str) -> anyhow::Result<()>;
+    fn commit_session(&self, gait_dir: &Path, session_id: &str, message: &str) -> anyhow::Result<()>;
+    fn list_active_sessions(&self, gait_dir: &Path) -> anyhow::Result<Vec<String>>;
+    fn finish_session(&self, gait_dir: &Path, session_id: &str) -> anyhow::Result<()>;
+    fn create_branch_worktree(&self, gait_dir: &Path, base_branch: &str, new_branch: &str, worktree_path: &Path) -> anyhow::Result<()>;
+    fn remove_branch_worktree(&self, gait_dir: &Path, worktree_path: &Path) -> anyhow::Result<()>;
+    fn merge_branch_ff(&self, gait_dir: &Path, target_branch: &str, source_branch: &str) -> anyhow::Result<()>;
 }
 
 pub struct GitTraceRepo;
 
 impl TraceRepo for GitTraceRepo {
-    fn init_workspace(&self, workspace: &Path) -> anyhow::Result<()> {
+    fn init_workspace(&self, gait_dir: &Path) -> anyhow::Result<()> {
         // git init — no-op if already a repo
-        match Repository::init(workspace) {
+        match Repository::init(gait_dir) {
             Ok(_) | Err(_) => {}
         }
         Ok(())
     }
 
-    fn create_session_worktree(&self, workspace: &Path, session_id: &str) -> anyhow::Result<()> {
-        let sessions_dir = workspace.join("sessions");
+    fn create_session_worktree(&self, gait_dir: &Path, session_id: &str) -> anyhow::Result<()> {
+        let sessions_dir = gait_dir.join("sessions");
         let session_dir = sessions_dir.join(session_id);
 
         // Already a worktree — idempotent
@@ -36,7 +36,7 @@ impl TraceRepo for GitTraceRepo {
         // Create sessions directory (ignore error if it already exists)
         let _ = std::fs::create_dir_all(&sessions_dir);
 
-        let repo = Repository::open(workspace)?;
+        let repo = Repository::open(gait_dir)?;
 
         let branch_name = format!("session/{}", session_id);
 
@@ -74,8 +74,8 @@ impl TraceRepo for GitTraceRepo {
         Ok(())
     }
 
-    fn commit_session(&self, workspace: &Path, session_id: &str, message: &str) -> anyhow::Result<()> {
-        let session_dir = workspace.join("sessions").join(session_id);
+    fn commit_session(&self, gait_dir: &Path, session_id: &str, message: &str) -> anyhow::Result<()> {
+        let session_dir = gait_dir.join("sessions").join(session_id);
         let repo = Repository::open(&session_dir)?;
         let sig = repo.signature()
             .or_else(|_| Signature::now("gait", "gait@localhost"))?;
@@ -93,8 +93,8 @@ impl TraceRepo for GitTraceRepo {
         Ok(())
     }
 
-    fn list_active_sessions(&self, workspace: &Path) -> anyhow::Result<Vec<String>> {
-        let repo = Repository::open(workspace)?;
+    fn list_active_sessions(&self, gait_dir: &Path) -> anyhow::Result<Vec<String>> {
+        let repo = Repository::open(gait_dir)?;
         let main_oid = repo.find_branch("main", BranchType::Local)
             .or_else(|_| repo.find_branch("master", BranchType::Local))?
             .get().peel_to_commit()?.id();
@@ -113,8 +113,8 @@ impl TraceRepo for GitTraceRepo {
         Ok(sessions)
     }
 
-    fn finish_session(&self, workspace: &Path, session_id: &str) -> anyhow::Result<()> {
-        let repo = Repository::open(workspace)?;
+    fn finish_session(&self, gait_dir: &Path, session_id: &str) -> anyhow::Result<()> {
+        let repo = Repository::open(gait_dir)?;
         let branch_name = format!("session/{}", session_id);
 
         // If no such branch, nothing to do
@@ -124,7 +124,7 @@ impl TraceRepo for GitTraceRepo {
 
         // Remove the worktree directory if it exists (required before branch ops).
         // Prune worktree registration first (while dir still exists), then remove the dir.
-        let session_dir = workspace.join("sessions").join(session_id);
+        let session_dir = gait_dir.join("sessions").join(session_id);
         if session_dir.exists() {
             if let Ok(wt) = repo.find_worktree(session_dir.to_str().unwrap_or("")) {
                 let mut o = git2::WorktreePruneOptions::new();
@@ -172,8 +172,8 @@ impl TraceRepo for GitTraceRepo {
         Ok(())
     }
 
-    fn create_branch_worktree(&self, workspace: &Path, base_branch: &str, new_branch: &str, worktree_path: &Path) -> anyhow::Result<()> {
-        let repo = Repository::open(workspace)?;
+    fn create_branch_worktree(&self, gait_dir: &Path, base_branch: &str, new_branch: &str, worktree_path: &Path) -> anyhow::Result<()> {
+        let repo = Repository::open(gait_dir)?;
         let base = repo.find_branch(base_branch, BranchType::Local)?;
         let base_commit = base.into_reference().peel_to_commit()?;
         let branch = repo.branch(new_branch, &base_commit, false)?;
@@ -185,11 +185,11 @@ impl TraceRepo for GitTraceRepo {
         Ok(())
     }
 
-    fn remove_branch_worktree(&self, workspace: &Path, worktree_path: &Path) -> anyhow::Result<()> {
+    fn remove_branch_worktree(&self, gait_dir: &Path, worktree_path: &Path) -> anyhow::Result<()> {
         if worktree_path.exists() {
             std::fs::remove_dir_all(worktree_path)?;
         }
-        let repo = Repository::open(workspace)?;
+        let repo = Repository::open(gait_dir)?;
         let mut prune_opts = git2::WorktreePruneOptions::new();
         prune_opts.valid(true);
         let canonical = worktree_path.canonicalize().unwrap_or_else(|_| worktree_path.to_path_buf());
@@ -205,8 +205,8 @@ impl TraceRepo for GitTraceRepo {
         Ok(())
     }
 
-    fn merge_branch_ff(&self, workspace: &Path, target_branch: &str, source_branch: &str) -> anyhow::Result<()> {
-        let repo = Repository::open(workspace)?;
+    fn merge_branch_ff(&self, gait_dir: &Path, target_branch: &str, source_branch: &str) -> anyhow::Result<()> {
+        let repo = Repository::open(gait_dir)?;
         let source = repo.find_branch(source_branch, BranchType::Local)?;
         let source_oid = source.into_reference().peel_to_commit()?.id();
         let target_ref = format!("refs/heads/{}", target_branch);

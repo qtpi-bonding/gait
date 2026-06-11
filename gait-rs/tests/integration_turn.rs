@@ -84,7 +84,7 @@ async fn full_turn_creates_transcript_and_git_commit() {
     run_turn(
         &gait_ai::session::Session {
             id: "sint001".into(),
-            workspace: ws.path().to_path_buf(),
+            gait_dir: ws.path().to_path_buf(),
             codebase_path: ws.path().to_path_buf(),
             assigned_by: None,
             repos: gait_ai::git::Repos::production(),
@@ -141,7 +141,7 @@ async fn second_turn_resumes_session() {
     run_turn(
         &gait_ai::session::Session {
             id: "sint002".into(),
-            workspace: ws.path().to_path_buf(),
+            gait_dir: ws.path().to_path_buf(),
             codebase_path: ws.path().to_path_buf(),
             assigned_by: None,
             repos: gait_ai::git::Repos::production(),
@@ -153,7 +153,7 @@ async fn second_turn_resumes_session() {
     run_turn(
         &gait_ai::session::Session {
             id: "sint002".into(),
-            workspace: ws.path().to_path_buf(),
+            gait_dir: ws.path().to_path_buf(),
             codebase_path: ws.path().to_path_buf(),
             assigned_by: None,
             repos: gait_ai::git::Repos::production(),

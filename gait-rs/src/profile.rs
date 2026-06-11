@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::config::GaitConfig;
 
 /// The declarative description of an agent: 9 inputs the runner consumes,
-/// built from workspace `GaitConfig` and (optionally) an agent `.md` file.
+/// built from gait_dir `GaitConfig` and (optionally) an agent `.md` file.
 pub struct Profile {
     pub model: String,                 // "provider/model-id"
     pub instructions: String,          // composed system prompt (preamble + agent body)
@@ -47,7 +47,7 @@ pub(crate) fn merge_deny(config_deny: &[String], agent_deny: &[String]) -> Vec<S
 }
 
 impl Profile {
-    /// Build the declarative profile from workspace config + an optional agent .md.
+    /// Build the declarative profile from gait_dir config + an optional agent .md.
     /// Model precedence: explicit override > agent frontmatter > config.
     /// allow/deny: agent frontmatter (when non-empty) supersedes config.
     pub fn from_config_and_agent(
@@ -96,7 +96,7 @@ impl Profile {
         self,
         codebase_path: std::path::PathBuf,
         session_id: String,
-        workspace: std::path::PathBuf,
+        gait_dir: std::path::PathBuf,
         repos: crate::git::Repos,
         api_key: Option<String>,
     ) -> anyhow::Result<ResolvedProfile> {
@@ -129,16 +129,16 @@ impl Profile {
         let mut tools = crate::tools::builtin_tools(
             codebase_path.clone(),
             session_id.clone(),
-            workspace.clone(),
+            gait_dir.clone(),
             mcp_registry.clone(),
             self.skills.clone(),
             repos,
         );
         for ct in &self.config_tools {
-            tools.push(build_config_tool(ct, &workspace, &codebase_path));
+            tools.push(build_config_tool(ct, &gait_dir, &codebase_path));
         }
 
-        let tx_path = workspace.join("sessions").join(&session_id).join("transcript.jsonl");
+        let tx_path = gait_dir.join("sessions").join(&session_id).join("transcript.jsonl");
         let hooks: Vec<Box<dyn crate::types::Hook>> = self.hooks
             .iter()
             .map(|def| -> Box<dyn crate::types::Hook> {
@@ -188,16 +188,16 @@ impl ResolvedProfile {
 /// Build a `Box<dyn Tool>` from a `ConfigTool` (a `gait.jsonc` tool descriptor).
 /// This is the body of the `for ct in &config.tools { ... }` loop formerly in
 /// `bin/gait.rs`, moved verbatim: it constructs a `ToolDef` whose `execute`
-/// shells out the configured command. `workspace` / `codebase_path` are the
+/// shells out the configured command. `gait_dir` / `codebase_path` are the
 /// two possible cwd values for the spawned command.
 fn build_config_tool(
     ct: &crate::config::ConfigTool,
-    workspace: &std::path::Path,
+    gait_dir: &std::path::Path,
     codebase_path: &std::path::Path,
 ) -> Box<dyn crate::types::Tool> {
     let cmd = ct.cmd.clone();
     let cwd = if ct.cwd == "workspace" {
-        workspace.to_path_buf()
+        gait_dir.to_path_buf()
     } else {
         codebase_path.to_path_buf()
     };

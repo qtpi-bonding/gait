@@ -44,17 +44,17 @@ pub struct MountMap {
     pub codebase_container: PathBuf,
 }
 
-pub fn build_mount_map(workspace: &Path, codebase: &Path) -> MountMap {
+pub fn build_mount_map(gait_dir: &Path, codebase: &Path) -> MountMap {
     MountMap {
-        workspace_host: workspace.to_path_buf(),
+        workspace_host: gait_dir.to_path_buf(),
         workspace_container: PathBuf::from("/gait-workspace"),
         codebase_host: codebase.to_path_buf(),
         codebase_container: PathBuf::from("/gait-codebase"),
     }
 }
 
-pub fn write_mount_map(workspace: &Path, map: &MountMap) -> anyhow::Result<()> {
-    let tmp = workspace.join("tmp");
+pub fn write_mount_map(gait_dir: &Path, map: &MountMap) -> anyhow::Result<()> {
+    let tmp = gait_dir.join("tmp");
     std::fs::create_dir_all(&tmp)?;
     let json = serde_json::to_string_pretty(map)?;
     std::fs::write(tmp.join("docker-mounts.json"), json)?;

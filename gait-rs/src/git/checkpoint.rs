@@ -5,16 +5,16 @@ use std::sync::Mutex;
 use super::{signature_or_default, checkpoint_git_dir};
 
 pub trait CheckpointRepo: Send + Sync {
-    fn init(&self, workspace: &Path, session_id: &str, codebase: &Path) -> anyhow::Result<()>;
-    fn checkpoint(&self, workspace: &Path, session_id: &str, codebase: &Path, turn: u32) -> anyhow::Result<String>;
-    fn restore_to(&self, workspace: &Path, session_id: &str, codebase: &Path, sha: &str) -> anyhow::Result<()>;
-    fn remove(&self, workspace: &Path, session_id: &str) -> anyhow::Result<()>;
+    fn init(&self, gait_dir: &Path, session_id: &str, codebase: &Path) -> anyhow::Result<()>;
+    fn checkpoint(&self, gait_dir: &Path, session_id: &str, codebase: &Path, turn: u32) -> anyhow::Result<String>;
+    fn restore_to(&self, gait_dir: &Path, session_id: &str, codebase: &Path, sha: &str) -> anyhow::Result<()>;
+    fn remove(&self, gait_dir: &Path, session_id: &str) -> anyhow::Result<()>;
 }
 
 pub struct GitCheckpointRepo;
 
 impl CheckpointRepo for GitCheckpointRepo {
-    fn init(&self, workspace: &Path, session_id: &str, codebase: &Path) -> anyhow::Result<()> {
+    fn init(&self, gait_dir: &Path, session_id: &str, codebase: &Path) -> anyhow::Result<()> {
         // No-op if the codebase is not a git repo — checkpoint simply unavailable.
         let cb = match Repository::open(codebase) {
             Ok(r) => r,
@@ -24,7 +24,7 @@ impl CheckpointRepo for GitCheckpointRepo {
             }
         };
 
-        let git_dir = checkpoint_git_dir(workspace, session_id);
+        let git_dir = checkpoint_git_dir(gait_dir, session_id);
         if git_dir.join("HEAD").exists() {
             return Ok(()); // idempotent — already initialized
         }
@@ -78,8 +78,8 @@ impl CheckpointRepo for GitCheckpointRepo {
         Ok(())
     }
 
-    fn checkpoint(&self, workspace: &Path, session_id: &str, codebase: &Path, turn: u32) -> anyhow::Result<String> {
-        let git_dir = checkpoint_git_dir(workspace, session_id);
+    fn checkpoint(&self, gait_dir: &Path, session_id: &str, codebase: &Path, turn: u32) -> anyhow::Result<String> {
+        let git_dir = checkpoint_git_dir(gait_dir, session_id);
         if !git_dir.join("HEAD").exists() {
             return Ok(String::new()); // no shadow (non-git codebase) — checkpoint unavailable
         }
@@ -113,8 +113,8 @@ impl CheckpointRepo for GitCheckpointRepo {
         let oid = shadow.commit(Some("HEAD"), &sig, &sig, &msg, &tree, &parents)?;
         Ok(oid.to_string())
     }
-    fn restore_to(&self, workspace: &Path, session_id: &str, codebase: &Path, sha: &str) -> anyhow::Result<()> {
-        let git_dir = checkpoint_git_dir(workspace, session_id);
+    fn restore_to(&self, gait_dir: &Path, session_id: &str, codebase: &Path, sha: &str) -> anyhow::Result<()> {
+        let git_dir = checkpoint_git_dir(gait_dir, session_id);
         let shadow = Repository::open_bare(&git_dir)?;
         shadow.set_workdir(codebase, false)?;
 
@@ -142,8 +142,8 @@ impl CheckpointRepo for GitCheckpointRepo {
         }
         Ok(())
     }
-    fn remove(&self, workspace: &Path, session_id: &str) -> anyhow::Result<()> {
-        let git_dir = checkpoint_git_dir(workspace, session_id);
+    fn remove(&self, gait_dir: &Path, session_id: &str) -> anyhow::Result<()> {
+        let git_dir = checkpoint_git_dir(gait_dir, session_id);
         if git_dir.exists() {
             std::fs::remove_dir_all(&git_dir)?;
         }
@@ -210,7 +210,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    /// A workspace with sessions/<id>/ present, plus a separate codebase repo
+    /// A gait_dir with sessions/<id>/ present, plus a separate codebase repo
     /// with one commit. Returns (workspace_tmp, codebase_tmp, session_id).
     fn fixture() -> (TempDir, TempDir, String) {
         let ws = TempDir::new().unwrap();

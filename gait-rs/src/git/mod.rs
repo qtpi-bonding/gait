@@ -21,8 +21,8 @@ pub(crate) fn signature_or_default(repo: &git2::Repository) -> anyhow::Result<gi
 }
 
 #[allow(dead_code)]
-pub(crate) fn checkpoint_git_dir(workspace: &Path, session_id: &str) -> PathBuf {
-    workspace.join("sessions").join(session_id).join("codebase.git")
+pub(crate) fn checkpoint_git_dir(gait_dir: &Path, session_id: &str) -> PathBuf {
+    gait_dir.join("sessions").join(session_id).join("codebase.git")
 }
 
 /// Bundle of the three git-context repos, injected from composition roots.

@@ -141,8 +141,8 @@ pub fn strip_jsonc_comments(input: &str) -> String {
     }).collect::<Vec<_>>().join("\n")
 }
 
-pub fn load_config(workspace: &Path) -> GaitConfig {
-    let path = workspace.join("gait.jsonc");
+pub fn load_config(gait_dir: &Path) -> GaitConfig {
+    let path = gait_dir.join("gait.jsonc");
     if !path.exists() { return GaitConfig::default(); }
     let raw = std::fs::read_to_string(&path).unwrap_or_default();
     let stripped = strip_jsonc_comments(&raw);
@@ -152,8 +152,8 @@ pub fn load_config(workspace: &Path) -> GaitConfig {
     })
 }
 
-pub fn append_allow_pattern(workspace: &Path, pattern: &str) -> anyhow::Result<()> {
-    let path = workspace.join("gait.jsonc");
+pub fn append_allow_pattern(gait_dir: &Path, pattern: &str) -> anyhow::Result<()> {
+    let path = gait_dir.join("gait.jsonc");
     let mut obj: serde_json::Map<String, serde_json::Value> = if path.exists() {
         let raw = std::fs::read_to_string(&path)?;
         let stripped = strip_jsonc_comments(&raw);
@@ -179,8 +179,8 @@ pub fn append_allow_pattern(workspace: &Path, pattern: &str) -> anyhow::Result<(
     Ok(())
 }
 
-pub fn append_deny_pattern(workspace: &Path, pattern: &str) -> anyhow::Result<()> {
-    let path = workspace.join("gait.jsonc");
+pub fn append_deny_pattern(gait_dir: &Path, pattern: &str) -> anyhow::Result<()> {
+    let path = gait_dir.join("gait.jsonc");
     let mut obj: serde_json::Map<String, serde_json::Value> = if path.exists() {
         let raw = std::fs::read_to_string(&path)?;
         let stripped = strip_jsonc_comments(&raw);

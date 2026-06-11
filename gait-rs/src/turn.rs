@@ -60,8 +60,8 @@ pub struct SessionLock {
 }
 
 /// Shared path for the once-approval temp file, used by both turn.rs and chat.rs.
-pub fn once_approval_path(workspace: &std::path::Path, session_id: &str) -> std::path::PathBuf {
-    workspace.join("tmp").join(format!("gait-approve-{}", session_id))
+pub fn once_approval_path(gait_dir: &std::path::Path, session_id: &str) -> std::path::PathBuf {
+    gait_dir.join("tmp").join(format!("gait-approve-{}", session_id))
 }
 
 impl SessionLock {
@@ -95,12 +95,12 @@ impl Drop for SessionLock {
 /// transcript; the caller's existing commit_session runs after emit.
 fn checkpoint_codebase(
     checkpoints: &dyn CheckpointRepo,
-    workspace: &Path,
+    gait_dir: &Path,
     session_id: &str,
     codebase: &Path,
     turn: u32,
 ) -> Option<String> {
-    match checkpoints.checkpoint(workspace, session_id, codebase, turn) {
+    match checkpoints.checkpoint(gait_dir, session_id, codebase, turn) {
         Ok(sha) if !sha.is_empty() => Some(sha),
         Ok(_) => None, // non-git codebase
         Err(e) => {
@@ -331,7 +331,7 @@ const CURATE_SYSTEM_PROMPT: &str = "You are a curator. You have been given conte
 async fn apply_curate_filter(
     raw: &str,
     curate_prompt: &str,
-    workspace: &std::path::Path,
+    gait_dir: &std::path::Path,
     codebase_path: &std::path::Path,
     model: &str,
     provider: std::sync::Arc<dyn crate::provider::Provider>,
@@ -348,7 +348,7 @@ async fn apply_curate_filter(
 
     let session = crate::session::Session {
         id: session_id.clone(),
-        workspace: workspace.to_path_buf(),
+        gait_dir: gait_dir.to_path_buf(),
         codebase_path: codebase_path.to_path_buf(),
         assigned_by: None,
         repos: repos.clone(),
@@ -369,9 +369,9 @@ async fn apply_curate_filter(
     };
     let _ = run_turn(&session, caps, TurnInput { task: Some(task), auto: true, max_iter: Some(1) }).await;
 
-    let _ = repos.checkpoints.remove(workspace, &session_id);
+    let _ = repos.checkpoints.remove(gait_dir, &session_id);
 
-    let tx_path = workspace.join("sessions").join(&session_id).join("transcript.jsonl");
+    let tx_path = gait_dir.join("sessions").join(&session_id).join("transcript.jsonl");
     read_events(&tx_path)
         .ok()
         .and_then(|events| {
@@ -402,7 +402,7 @@ pub async fn run_turn(
     let provider = caps.provider.clone();
     let mut tools = caps.tools;
     let session_id = session.id.clone();
-    let workspace = session.workspace.clone();
+    let gait_dir = session.gait_dir.clone();
     let codebase_path = session.codebase_path.clone();
     let model = caps.model.clone();
     let repos = session.repos.clone();
@@ -418,22 +418,22 @@ pub async fn run_turn(
     let auto = input.auto;
     let max_iter = input.max_iter;
 
-    repos.traces.create_session_worktree(&workspace, &session_id)?;
-    repos.checkpoints.init(&workspace, &session_id, &codebase_path)?;
+    repos.traces.create_session_worktree(&gait_dir, &session_id)?;
+    repos.checkpoints.init(&gait_dir, &session_id, &codebase_path)?;
 
     // Persist codebase_path (write-once) so `gait rewind` can locate the codebase.
     {
         use crate::session::session_json::{read_session_json, write_session_json};
-        let mut sj = read_session_json(&workspace, &session_id);
+        let mut sj = read_session_json(&gait_dir, &session_id);
         if sj.codebase_path.is_none() {
             sj.id = session_id.clone();
             if sj.created_at == 0 { sj.created_at = now_ms(); }
             sj.codebase_path = Some(codebase_path.to_string_lossy().to_string());
-            write_session_json(&workspace, &sj)?;
+            write_session_json(&gait_dir, &sj)?;
         }
     }
 
-    let session_dir = workspace.join("sessions").join(&session_id);
+    let session_dir = gait_dir.join("sessions").join(&session_id);
     let tx_path = session_dir.join("transcript.jsonl");
 
     let _lock = SessionLock::acquire(&session_dir)?;
@@ -455,7 +455,7 @@ pub async fn run_turn(
     }
 
     // Read and delete once-approval temp file (written by gait chat after user approval)
-    let once_path = once_approval_path(&workspace, &session_id);
+    let once_path = once_approval_path(&gait_dir, &session_id);
     let once_allow: Vec<String> = std::fs::read_to_string(&once_path)
         .unwrap_or_default()
         .lines()
@@ -733,7 +733,7 @@ pub async fn run_turn(
             let turn_n = count_turn_complete(&events_now) as u32 + 1;
             let code_checkpoint = checkpoint_codebase(
                 repos.checkpoints.as_ref(),
-                &workspace, &session_id, &codebase_path, turn_n,
+                &gait_dir, &session_id, &codebase_path, turn_n,
             );
             let usage = TurnUsage {
                 input: total_usage.input_tokens as u64,
@@ -746,7 +746,7 @@ pub async fn run_turn(
                 &usage, codebase_hash.clone(), codebase_dirty, code_checkpoint,
                 split_into_blocks(&all_turn_text), &output,
             ))?;
-            repos.traces.commit_session(&workspace, &session_id,
+            repos.traces.commit_session(&gait_dir, &session_id,
                 &format!("session({}): turn {}", session_id, turn_n))?;
             for h in &hooks { h.post_turn(); }
             return Ok(TurnResult::Done { message, result: None });
@@ -932,14 +932,14 @@ pub async fn run_turn(
                 if let Some(parse_ops) = tc.args.get("parse") {
                     result.result = serde_json::Value::String(apply_parse_filter(&result_str, parse_ops));
                 } else if let Some(curate_prompt) = tc.args.get("curate_prompt").and_then(|v| v.as_str()) {
-                    let workspace = workspace.clone();
+                    let gait_dir = gait_dir.clone();
                     let codebase_path = codebase_path.clone();
                     let model = model.clone();
                     let provider_clone = provider.clone();
                     result.result = Box::pin(async move {
                         apply_curate_filter(
                             &result_str, curate_prompt,
-                            &workspace, &codebase_path, &model, provider_clone,
+                            &gait_dir, &codebase_path, &model, provider_clone,
                         ).await
                     }).await;
                 }
@@ -1021,14 +1021,14 @@ pub async fn run_turn(
                         if let Some(parse_ops) = tc.args.get("parse") {
                             result.result = serde_json::Value::String(apply_parse_filter(&result_str, parse_ops));
                         } else if let Some(curate_prompt) = tc.args.get("curate_prompt").and_then(|v| v.as_str()) {
-                            let workspace = workspace.clone();
+                            let gait_dir = gait_dir.clone();
                             let codebase_path = codebase_path.clone();
                             let model = model.clone();
                             let provider_clone = provider.clone();
                             result.result = Box::pin(async move {
                                 apply_curate_filter(
                                     &result_str, curate_prompt,
-                                    &workspace, &codebase_path, &model, provider_clone,
+                                    &gait_dir, &codebase_path, &model, provider_clone,
                                 ).await
                             }).await;
                         }
@@ -1051,7 +1051,7 @@ pub async fn run_turn(
                         let turn_n = count_turn_complete(&events_now) as u32 + 1;
                         let code_checkpoint = checkpoint_codebase(
                             repos.checkpoints.as_ref(),
-                            &workspace, &session_id, &codebase_path, turn_n,
+                            &gait_dir, &session_id, &codebase_path, turn_n,
                         );
                         let usage = TurnUsage {
                             input: total_usage.input_tokens as u64,
@@ -1064,7 +1064,7 @@ pub async fn run_turn(
                             &usage, codebase_hash.clone(), codebase_dirty, code_checkpoint,
                             split_into_blocks(&all_turn_text), &turn_output,
                         ))?;
-                        repos.traces.commit_session(&workspace, &session_id,
+                        repos.traces.commit_session(&gait_dir, &session_id,
                             &format!("session({}): turn {}", session_id, turn_n))?;
                         for h in &hooks { h.post_turn(); }
                         return Ok(TurnResult::Done { message, result });
@@ -1100,14 +1100,14 @@ pub async fn run_turn(
                         if let Some(parse_ops) = tc.args.get("parse") {
                             result.result = serde_json::Value::String(apply_parse_filter(&result_str, parse_ops));
                         } else if let Some(curate_prompt) = tc.args.get("curate_prompt").and_then(|v| v.as_str()) {
-                            let workspace = workspace.clone();
+                            let gait_dir = gait_dir.clone();
                             let codebase_path = codebase_path.clone();
                             let model = model.clone();
                             let provider_clone = provider.clone();
                             result.result = Box::pin(async move {
                                 apply_curate_filter(
                                     &result_str, curate_prompt,
-                                    &workspace, &codebase_path, &model, provider_clone,
+                                    &gait_dir, &codebase_path, &model, provider_clone,
                                 ).await
                             }).await;
                         }
@@ -1133,7 +1133,7 @@ pub async fn run_turn(
         // (In auto mode gated_ids is always empty — this block is never reached.)
         if !pending_permissions.is_empty() {
             wire::emit(&tx_path, events::permissions(&pending_permissions))?;
-            repos.traces.commit_session(&workspace, &session_id,
+            repos.traces.commit_session(&gait_dir, &session_id,
                 &format!("session({}): permissions", session_id))?;
             for h in &hooks { h.post_turn(); }
             return Ok(TurnResult::Permissions);
@@ -1141,13 +1141,13 @@ pub async fn run_turn(
 
         // Exit turn for clarify/inform — event already in transcript+stdout via emit_event
         if let Some(items) = clarify_signal.take() {
-            repos.traces.commit_session(&workspace, &session_id,
+            repos.traces.commit_session(&gait_dir, &session_id,
                 &format!("session({}): clarify", session_id))?;
             for h in &hooks { h.post_turn(); }
             return Ok(TurnResult::Clarify { items });
         }
         if let Some(items) = inform_signal.take() {
-            repos.traces.commit_session(&workspace, &session_id,
+            repos.traces.commit_session(&gait_dir, &session_id,
                 &format!("session({}): inform", session_id))?;
             for h in &hooks { h.post_turn(); }
             return Ok(TurnResult::Inform { items });
@@ -1174,7 +1174,7 @@ mod tests {
     use async_stream::stream;
     /// Bridges old per-field test call sites to the new run_turn(&Session, ResolvedProfile, TurnInput).
     async fn run_turn_test_call(
-        workspace: std::path::PathBuf,
+        gait_dir: std::path::PathBuf,
         codebase_path: std::path::PathBuf,
         session_id: String,
         provider: std::sync::Arc<dyn Provider>,
@@ -1186,7 +1186,7 @@ mod tests {
     ) -> anyhow::Result<TurnResult> {
         let session = crate::session::Session {
             id: session_id,
-            workspace,
+            gait_dir,
             codebase_path,
             assigned_by: None,
             repos,
@@ -1234,7 +1234,7 @@ mod tests {
     async fn run_turn_writes_transcript_and_commits() {
         let ws = TempDir::new().unwrap();
         init_git_repo(ws.path());
-        // Codebase dir (can be same as workspace for test)
+        // Codebase dir (can be same as gait_dir for test)
         let codebase = ws.path().to_path_buf();
 
         let provider = Arc::new(MockProvider {

@@ -25,8 +25,8 @@ pub struct ProgressNode {
     pub error: Option<String>,
 }
 
-pub fn write_progress(workspace: &Path, session_id: &str, progress: &ProgressFile) -> anyhow::Result<()> {
-    let session_dir = workspace.join("sessions").join(session_id);
+pub fn write_progress(gait_dir: &Path, session_id: &str, progress: &ProgressFile) -> anyhow::Result<()> {
+    let session_dir = gait_dir.join("sessions").join(session_id);
     let path = session_dir.join("progress.yaml");
     let tmp = session_dir.join("progress.yaml.tmp");
     std::fs::write(&tmp, serde_yaml::to_string(progress)?)?;
@@ -34,8 +34,8 @@ pub fn write_progress(workspace: &Path, session_id: &str, progress: &ProgressFil
     Ok(())
 }
 
-pub fn read_progress(workspace: &Path, session_id: &str) -> Option<ProgressFile> {
-    let path = workspace.join("sessions").join(session_id).join("progress.yaml");
+pub fn read_progress(gait_dir: &Path, session_id: &str) -> Option<ProgressFile> {
+    let path = gait_dir.join("sessions").join(session_id).join("progress.yaml");
     let content = std::fs::read_to_string(&path).ok()?;
     serde_yaml::from_str(&content).ok()
 }

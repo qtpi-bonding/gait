@@ -87,7 +87,7 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
     let result = run_turn(
         &gait_ai::session::Session {
             id: "sparent001".into(),
-            workspace: ws.path().to_path_buf(),
+            gait_dir: ws.path().to_path_buf(),
             codebase_path: ws.path().to_path_buf(),
             assigned_by: None,
             repos: gait_ai::git::Repos::production(),
@@ -153,7 +153,7 @@ async fn run_turn_permissions_result_integration() {
     let result = run_turn(
         &gait_ai::session::Session {
             id: "spermint".into(),
-            workspace: ws.path().to_path_buf(),
+            gait_dir: ws.path().to_path_buf(),
             codebase_path: ws.path().to_path_buf(),
             assigned_by: None,
             repos: gait_ai::git::Repos::production(),

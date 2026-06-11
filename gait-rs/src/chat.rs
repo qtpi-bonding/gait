@@ -419,20 +419,20 @@ pub fn expand_at_markers(
 }
 
 pub fn run_chat(
-    workspace: PathBuf,
+    gait_dir: PathBuf,
     codebase: PathBuf,
     agent_name: Option<String>,
 ) -> anyhow::Result<()> {
     let gait_bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gait"));
 
     let agent_path: PathBuf = match agent_name.as_deref() {
-        Some(n) => crate::agent_frontmatter::resolve_agent_path(&workspace, n),
-        None => workspace.join("agent.md"),
+        Some(n) => crate::agent_frontmatter::resolve_agent_path(&gait_dir, n),
+        None => gait_dir.join("agent.md"),
     };
     let theme = Theme::detect();
 
     let mut session_id = new_session_id();
-    let mut shell_history_path = workspace.join("tmp").join(format!("shell-{}.jsonl", session_id));
+    let mut shell_history_path = gait_dir.join("tmp").join(format!("shell-{}.jsonl", session_id));
     eprintln!(
         "{}gait{}  {}session {}{}  {}{}{}",
         theme.accent.fg(), RESET,
@@ -447,7 +447,7 @@ pub fn run_chat(
     }));
 
     let mut rl = Editor::<ReplHelper, DefaultHistory>::new()?;
-    seed_history_from_transcripts(&mut rl, &workspace);
+    seed_history_from_transcripts(&mut rl, &gait_dir);
     rl.set_helper(Some(ReplHelper { nav: nav.clone() }));
     rl.bind_sequence(
         KeyEvent(KeyCode::Up, Modifiers::SHIFT),
@@ -492,7 +492,7 @@ pub fn run_chat(
         match line.as_str() {
             "/n" | "/new" => {
                 session_id = new_session_id();
-                shell_history_path = workspace.join("tmp").join(format!("shell-{}.jsonl", session_id));
+                shell_history_path = gait_dir.join("tmp").join(format!("shell-{}.jsonl", session_id));
                 nav.lock().unwrap().path = shell_history_path.clone();
                 eprintln!("new session {}", session_id);
                 continue;
@@ -515,13 +515,13 @@ pub fn run_chat(
             if arg.is_empty() {
                 let _ = Command::new(&gait_bin)
                     .args(["undo", &session_id, "--list",
-                           "--gait-dir", workspace.to_str().unwrap_or(".")])
+                           "--gait-dir", gait_dir.to_str().unwrap_or(".")])
                     .status();
                 continue;
             } else if let Ok(n) = arg.parse::<u32>() {
                 let mut cmd_args = vec!["undo", &session_id, "--turn", &arg];
                 cmd_args.extend_from_slice(flags);
-                cmd_args.extend_from_slice(&["--gait-dir", workspace.to_str().unwrap_or(".")]);
+                cmd_args.extend_from_slice(&["--gait-dir", gait_dir.to_str().unwrap_or(".")]);
                 let ok = Command::new(&gait_bin)
                     .args(&cmd_args)
                     .status()
@@ -554,7 +554,7 @@ pub fn run_chat(
                 "--task",
                 &line,
                 "--gait-dir",
-                workspace.to_str().unwrap_or("."),
+                gait_dir.to_str().unwrap_or("."),
                 "--codebase",
                 codebase.to_str().unwrap_or("."),
                 // No --auto: allow list governs execution
@@ -615,7 +615,7 @@ pub fn run_chat(
 
             // Handle clarify: prompt user for each question, write ClarifyReply, re-spawn
             if !pending_clarify.is_empty() {
-                let tx_path = workspace.join("sessions").join(&session_id).join("transcript.jsonl");
+                let tx_path = gait_dir.join("sessions").join(&session_id).join("transcript.jsonl");
                 let reply_items = prompt_clarify_items(&pending_clarify, &theme);
                 let _ = wire::append(&tx_path, events::clarify_reply(&reply_items));
                 continue 'spawn;
@@ -623,7 +623,7 @@ pub fn run_chat(
 
             // Handle inform: prompt user to confirm understanding, write InformReply, re-spawn
             if !pending_inform.is_empty() {
-                let tx_path = workspace.join("sessions").join(&session_id).join("transcript.jsonl");
+                let tx_path = gait_dir.join("sessions").join(&session_id).join("transcript.jsonl");
                 let reply_items = prompt_inform_items(&pending_inform, &theme);
                 let _ = wire::append(&tx_path, events::inform_reply(&reply_items));
                 continue 'spawn;
@@ -659,7 +659,7 @@ pub fn run_chat(
                 // The REPL is a pure UI layer — all persistence lives in `crate::permission`.
                 if let Err(e) = crate::permission::save_choice(
                     &choice,
-                    &workspace,
+                    &gait_dir,
                     &session_id,
                     Some(agent_path.as_path()),
                 ) {
@@ -706,7 +706,7 @@ pub fn run_chat(
 
             // Emit the reply event through the shared transcript helper.
             // (Even on full reject — the model needs a denied ToolResult.)
-            let tx_path = workspace
+            let tx_path = gait_dir
                 .join("sessions")
                 .join(&session_id)
                 .join("transcript.jsonl");
@@ -728,9 +728,9 @@ pub fn run_chat(
 
 fn seed_history_from_transcripts(
     rl: &mut Editor<ReplHelper, DefaultHistory>,
-    workspace: &std::path::Path,
+    gait_dir: &std::path::Path,
 ) {
-    let sessions_dir = workspace.join("sessions");
+    let sessions_dir = gait_dir.join("sessions");
     let Ok(entries) = std::fs::read_dir(&sessions_dir) else { return };
 
     let mut sessions: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries

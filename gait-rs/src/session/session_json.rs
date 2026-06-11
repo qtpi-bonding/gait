@@ -25,8 +25,8 @@ pub struct SessionJson {
     pub system_prompt: Option<String>,
 }
 
-pub fn read_session_json(workspace: &Path, session_id: &str) -> SessionJson {
-    let path = workspace.join("sessions").join(session_id).join("session.json");
+pub fn read_session_json(gait_dir: &Path, session_id: &str) -> SessionJson {
+    let path = gait_dir.join("sessions").join(session_id).join("session.json");
     if !path.exists() {
         return SessionJson {
             id: session_id.to_string(),
@@ -50,8 +50,8 @@ pub fn read_session_json(workspace: &Path, session_id: &str) -> SessionJson {
     })
 }
 
-pub fn write_session_json(workspace: &Path, session_json: &SessionJson) -> anyhow::Result<()> {
-    let dir = workspace.join("sessions").join(&session_json.id);
+pub fn write_session_json(gait_dir: &Path, session_json: &SessionJson) -> anyhow::Result<()> {
+    let dir = gait_dir.join("sessions").join(&session_json.id);
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("session.json");
     let tmp = dir.join("session.json.tmp");
