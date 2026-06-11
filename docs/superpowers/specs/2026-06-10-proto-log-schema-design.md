@@ -214,9 +214,14 @@ a converter + a coordinated read-side flip rather than one big-bang):
   added `events::resolution_msg`/`resolution`/`last_resolution`; `run_turn` emits a
   `Resolution` at run start under a drift guard (skip if identical to the last
   logged one). Write-only; the retrace LWW projection is Phase 3.
-- **2.4 ⏳:** `shell.rs` — populate `ProcessResult` + generic `duration`; stop
-  stringifying exit/time into `output` (forces the ToolResult write sites onto
-  proto, so it composes with 2.2c).
+- **2.4 ✅ (f77ac5a):** `execute_tool_call` times every `tool.execute()` into
+  `ToolResult.duration`; shell returns a structured `{output, exit_code, timed_out}`
+  object that `execute_tool_call` unwraps (clean `output` to the model) + lifts into
+  `ToolResult.process`. `shell.rs` no longer stringifies `"exit N (Xms)"`.
+
+**Phase 2 COMPLETE** — proto is the sole event format end to end (write + read + on
+disk). Remaining original scope: Phase 3 (unified Retrace projections incl. the
+`Resolution` LWW-Register) and Phase 4 (Redact/Replace mutations + migration cut-over).
 
 ### Phase 3 — Unified Retrace (five projections)
 The Retrace folds the Log (sorted by `(seq, id)`) into:
