@@ -18,6 +18,7 @@ pub mod scheduler;
 pub mod workflow;
 pub mod permission;
 pub mod render;
+pub mod ui;
 pub mod chat;
 pub mod shell_history;
 pub mod docker;
