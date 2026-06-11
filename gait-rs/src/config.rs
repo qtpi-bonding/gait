@@ -62,6 +62,18 @@ pub struct WasmPluginDef {
     #[serde(default)]
     pub allow_fs: Vec<String>,
 }
+/// One entry in the `gait.jsonc` `"hooks"` array.
+/// `event` is the lifecycle point ("post_tool", "pre_tool", "post_turn", "pre_turn").
+/// `tool` filters to a specific tool name; absent means all tools.
+/// `run` is a shell command; env vars `GAIT_TOOL_NAME`, `GAIT_TOOL_RESULT`,
+/// and `GAIT_ARG_<KEY>` (one per tool arg, KEY uppercased) are set before execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookDef {
+    pub event: String,
+    #[serde(default)]
+    pub tool: Option<String>,
+    pub run: String,
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct GaitConfig {
@@ -80,6 +92,8 @@ pub struct GaitConfig {
     pub skills: Vec<SkillDef>,
     #[serde(default)]
     pub wasm_plugins: Vec<WasmPluginDef>,
+    #[serde(default)]
+    pub hooks: Vec<HookDef>,
     /// Max retries when an LLM result fails output_schema validation.
     /// The retry loop is a future feature; this just plumbs the knob from gait.jsonc.
     #[serde(default = "default_output_schema_retries")]
@@ -104,6 +118,7 @@ impl Default for GaitConfig {
             mcp_servers: vec![],
             skills: vec![],
             wasm_plugins: vec![],
+            hooks: vec![],
             output_schema_retries: 3,
         }
     }

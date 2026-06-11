@@ -14,6 +14,7 @@ pub struct Profile {
     pub config_tools: Vec<crate::config::ConfigTool>,   // shell-command tool descriptors from gait.jsonc (config.tools: Vec<ConfigTool>)
     pub config_enabled: std::collections::HashSet<String>,
     pub output_schema_retries: u8,
+    pub hooks: Vec<crate::config::HookDef>,
 }
 
 /// The live, resolved counterpart of `Profile`: the provider, tools, and
@@ -84,6 +85,7 @@ impl Profile {
             config_tools: config.tools.clone(),
             config_enabled,
             output_schema_retries: config.output_schema_retries,
+            hooks: config.hooks.clone(),
         }
     }
 
@@ -257,6 +259,7 @@ mod tests {
             config_tools: vec![],
             config_enabled: HashSet::new(),
             output_schema_retries: 3,
+            hooks: vec![],
         };
         let resolved = profile.resolve(
             std::path::PathBuf::from("."),
