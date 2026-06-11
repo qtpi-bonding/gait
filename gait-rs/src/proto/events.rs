@@ -277,6 +277,36 @@ pub fn sandbox_applied(
         scope_paths,
         reason,
     }))
+
+}
+
+/// `HookRun` — config hook execution record.
+/// `phase`: "post_tool" | "pre_tool" | "post_turn" | "pre_turn"
+pub fn hook_run(
+    phase: &str,
+    command: &str,
+    exit_code: i32,
+    output: &str,
+    call_id: Option<String>,
+) -> pb::event::Body {
+    wire::body(pb::payload::Kind::HookRun(pb::HookRun {
+        phase: hook_phase(phase),
+        command: command.to_string(),
+        exit_code,
+        output: output.to_string(),
+        call_id,
+    }))
+}
+
+fn hook_phase(s: &str) -> i32 {
+    let p = match s {
+        "post_tool"  => pb::HookPhase::PostTool,
+        "pre_tool"   => pb::HookPhase::PreTool,
+        "post_turn"  => pb::HookPhase::PostTurn,
+        "pre_turn"   => pb::HookPhase::PreTurn,
+        _            => pb::HookPhase::Unspecified,
+    };
+    p as i32
 }
 
 /// `Compaction` — through_seq unset (no seq in legacy data).
