@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Repo Dependency Injection Implementation Plan
 
 **Status: DONE** (all 5 tasks complete — verified 2026-06-10)

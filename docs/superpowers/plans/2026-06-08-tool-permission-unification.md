@@ -1,3 +1,7 @@
+---
+status: partial
+---
+
 # Tool & Permission Unification Implementation Plan
 
 > **Status: Partially done (10 of 11 tasks substantially complete; 3 sub-items outstanding — see Implementation Status section at bottom)**

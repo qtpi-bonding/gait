@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Permissions System Implementation Plan
 
 **Status:** DONE (all tasks implemented and merged)

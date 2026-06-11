@@ -1,3 +1,7 @@
+---
+status: partial
+---
+
 # Rename: WorkspaceRepo → SessionRepo, RewindRepo → CheckpointRepo, gait rewind → gait undo
 
 ## Why

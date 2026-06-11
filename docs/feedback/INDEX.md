@@ -44,6 +44,7 @@ These all touch the `output` tool shape or the turn-termination model.
 |----|------|----------|--------|--------------|------|
 | C1 | **[bug]** `edit` tool rejects all input shapes: "invalid type: map, expected a sequence" | HIGH | ✅ **closed** — root cause was `$ref` schema that broke MiniMax deserialization. Fixed in `ed1badd` (inline schemas + tolerant lines deser). `list_agents.rs` confirms the fix landed. | [bug-edit-tool](bug-2026-06-09-edit-tool-shape-rejected.md) | `gait-rs/src/tools/edit.rs:50` |
 | C2 | **[bug]** After a `[r]` reject, the model gets no follow-up turn — REPL returns to input silently | MEDIUM | ✅ **done** — `break 'spawn` → `continue 'spawn` at `chat.rs:580`. Deny event is already in the transcript; re-entering the spawn loop gives the model a turn to react. | [bug-permission-reject](bug-2026-06-09-permission-reject-drops-reply.md) | `gait-rs/src/chat.rs:576-583` |
+| C3 | **[bug]** `edit` range-replace (`pos..end`) drops a brace and reports success — no post-edit balance/parse guard. M3 set `end` one line past the fn close; file no longer compiles, agent reported done. Sibling of the closed C1 (different failure on the now-working tool). | HIGH | open — add a delimiter-balance (or tree-sitter) guard after `apply_hashline_edits`; the existing `end` guard only catches a *missing* `end`, not a wrong one. | [bug-edit-range-replace](bug-2026-06-10-edit-range-replace-drops-brace.md) | `gait-rs/src/tools/edit.rs:67`, `gait-rs/src/hashline.rs` |
 
 ---
 

@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Real MCP Client Implementation Plan
 
 **Status: DONE** — all four implementation tasks are fully complete as of 2026-06-10.

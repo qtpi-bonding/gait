@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Rename: SessionRepo → TraceRepo
 
 ## Why

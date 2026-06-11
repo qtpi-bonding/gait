@@ -1,3 +1,7 @@
+---
+status: superseded
+---
+
 # Unified Tool Permission System Implementation Plan
 
 **Status: SUPERSEDED** — The tasks here are a subset of `2026-06-08-tool-permission-unification.md`, which extends this plan with deny lists, path-aware patterns, CLI subcommands, and a full REPL cleanup. All tasks in this plan are DONE (verified 2026-06-10); see the larger plan for the full implementation status.

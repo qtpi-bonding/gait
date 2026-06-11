@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # WASM Plugin System — Idea
 
 **Status:** Not started — idea stage only. Config stub (`WasmPluginDef`) and `LoadableKind::WasmPlugin` variant exist as scaffolding; no runtime, executor, or lifecycle hooks are wired in.

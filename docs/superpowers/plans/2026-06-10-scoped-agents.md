@@ -1,3 +1,7 @@
+---
+status: draft
+---
+
 # Scoped Agents
 
 **Date:** 2026-06-10  
