@@ -24,7 +24,7 @@ pub struct SpawnAgentTool {
 
 impl SpawnAgentTool {
     pub fn new(ctx: ToolCtx, repos: crate::git::Repos) -> Self {
-        Self { ctx, repos, parameters: make_schema::<SpawnAgentArgs>() }
+        Self { ctx, repos, parameters: crate::tools::inject_filter(make_schema::<SpawnAgentArgs>(), crate::types::OutputFilter::Both) }
     }
 }
 

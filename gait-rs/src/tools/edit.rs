@@ -88,7 +88,10 @@ pub struct EditTool {
 
 impl EditTool {
     pub fn new(ctx: ToolCtx) -> Self {
-        let parameters = crate::tools::make_schema::<HashlineEditParams>();
+        let parameters = crate::tools::inject_filter(
+            crate::tools::make_schema::<HashlineEditParams>(),
+            crate::types::OutputFilter::Both,
+        );
         Self { ctx, parameters }
     }
 }

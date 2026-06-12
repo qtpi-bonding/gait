@@ -30,7 +30,7 @@ impl LsTool {
     pub fn new(ctx: ToolCtx) -> Self {
         let parameters = crate::tools::inject_filter(
             crate::tools::make_schema::<LsParams>(),
-            crate::types::OutputFilter::Parse,
+            crate::types::OutputFilter::Both,
         );
         Self { ctx, parameters }
     }

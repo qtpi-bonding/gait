@@ -15,7 +15,10 @@ pub struct ListAgentsTool {
 
 impl ListAgentsTool {
     pub fn new(ctx: ToolCtx) -> Self {
-        let parameters = crate::tools::make_schema::<ListAgentsParams>();
+        let parameters = crate::tools::inject_filter(
+            crate::tools::make_schema::<ListAgentsParams>(),
+            crate::types::OutputFilter::Both,
+        );
         Self { ctx, parameters }
     }
 }

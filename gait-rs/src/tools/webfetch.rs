@@ -37,7 +37,7 @@ impl WebfetchTool {
     pub fn new() -> Self {
         let parameters = crate::tools::inject_filter(
             crate::tools::make_schema::<WebfetchParams>(),
-            crate::types::OutputFilter::Curate,
+            crate::types::OutputFilter::Both,
         );
         Self { parameters }
     }

@@ -30,7 +30,7 @@ impl ShellTool {
     pub fn new(ctx: ToolCtx) -> Self {
         let parameters = crate::tools::inject_filter(
             crate::tools::make_schema::<ShellParams>(),
-            crate::types::OutputFilter::Parse,
+            crate::types::OutputFilter::Both,
         );
         Self { ctx, parameters }
     }

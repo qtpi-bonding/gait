@@ -157,6 +157,7 @@ pub enum OutputFilter {
     None,
     Parse,
     Curate,
+    Both,
 }
 
 /// What a `pre_tool` hook returns.
@@ -388,6 +389,9 @@ mod tests {
     fn output_filter_variants_are_distinct() {
         assert_ne!(OutputFilter::None, OutputFilter::Parse);
         assert_ne!(OutputFilter::None, OutputFilter::Curate);
+        assert_ne!(OutputFilter::None, OutputFilter::Both);
         assert_ne!(OutputFilter::Parse, OutputFilter::Curate);
+        assert_ne!(OutputFilter::Parse, OutputFilter::Both);
+        assert_ne!(OutputFilter::Curate, OutputFilter::Both);
     }
 }

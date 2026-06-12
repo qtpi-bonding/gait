@@ -26,7 +26,7 @@ impl CodesearchTool {
     pub fn new(ctx: ToolCtx) -> Self {
         let parameters = crate::tools::inject_filter(
             crate::tools::make_schema::<CodesearchParams>(),
-            crate::types::OutputFilter::Curate,
+            crate::types::OutputFilter::Both,
         );
         Self { ctx, parameters }
     }
