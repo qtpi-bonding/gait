@@ -93,7 +93,7 @@ fn try_docker_route(orig_args: &[String]) {
 fn usage() -> ! {
     eprintln!("usage: gait <command> [options]");
     eprintln!("  run      [--session <id>] [--task <text>] [--gait-dir <path>] [--codebase <path>] [--auto] [--model <provider/model>] [--container]");
-    eprintln!("  init     [<repo-url>]");
+    eprintln!("  init     [<path>]");
     eprintln!("  finish   <session-id> [--gait-dir <path>]");
     eprintln!("  undo    <session-id> [--turn N | --list] [--code] [--transcript] [--gait-dir <path>]");
     eprintln!("  sessions [--gait-dir <path>]");
