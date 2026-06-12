@@ -54,6 +54,29 @@ pub fn cwd(path: &str) -> pb::event::Body {
     wire::body(pb::payload::Kind::Cwd(pb::Cwd { path: path.to_string() }))
 }
 
+/// `Toggle` — capability enable/disable delta (skill | mcp | tool), folded by ActiveAgent.
+pub fn toggle(kind: &str, name: &str, enabled: bool) -> pb::event::Body {
+    let k = match kind {
+        "skill" => pb::ToggleKind::Skill,
+        "mcp"   => pb::ToggleKind::Mcp,
+        "tool"  => pb::ToggleKind::Tool,
+        _       => pb::ToggleKind::Unspecified,
+    };
+    wire::body(pb::payload::Kind::Toggle(pb::Toggle {
+        kind: k as i32,
+        name: name.to_string(),
+        enabled,
+    }))
+}
+
+/// `ModelChange` — model-swap delta, LWW-folded by ActiveAgent.
+pub fn model_change(model: &str) -> pb::event::Body {
+    wire::body(pb::payload::Kind::ModelChange(pb::ModelChange {
+        model: model.to_string(),
+    }))
+}
+
+
 /// `ToolCall` — id → call_id, `Value` input → `Struct`.
 pub fn tool_call(call_id: String, name: String, input: &serde_json::Value) -> pb::event::Body {
     wire::body(pb::payload::Kind::ToolCall(pb::ToolCall {

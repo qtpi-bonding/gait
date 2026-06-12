@@ -210,18 +210,20 @@ impl Projection for ActiveAgent {
         if let payload::Kind::Agent(a) = kind { Some(AgentState::from(a)) } else { None }
     }
     fn apply(&self, st: &mut AgentState, _ev: &Event, kind: &payload::Kind) {
-        // 3a compat path — fold `load` ToolCalls exactly as ActiveLoadables did.
-        // A toggled name lands in BOTH skills + mcp; the union is what callers read,
-        // reproducing the flat name-set semantics. Replaced by Toggle in 3b.
-        if let payload::Kind::ToolCall(tc) = kind {
-            if tc.name == "load" {
-                let input = struct_to_value(&tc.input);
-                let name = input.get("name").and_then(|v| v.as_str())
-                    .unwrap_or("").to_string();
-                let on = input.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-                if on { st.skills.insert(name.clone()); st.mcp.insert(name); }
-                else  { st.skills.remove(&name); st.mcp.remove(&name); }
+        use crate::proto::gait::log::v1::ToggleKind;
+        match kind {
+            payload::Kind::Toggle(t) => {
+                let set = match ToggleKind::try_from(t.kind).unwrap_or(ToggleKind::Unspecified) {
+                    ToggleKind::Skill => &mut st.skills,
+                    ToggleKind::Mcp   => &mut st.mcp,
+                    ToggleKind::Tool  => &mut st.tools,
+                    ToggleKind::Unspecified => return,
+                };
+                if t.enabled { set.insert(t.name.clone()); }
+                else         { set.remove(&t.name); }
             }
+            payload::Kind::ModelChange(m) => st.model = m.model.clone(),
+            _ => {}
         }
     }
 }
@@ -790,10 +792,10 @@ mod tests {
         use std::collections::HashSet;
         let config_enabled: HashSet<String> = ["tdd".into()].into();
         let bodies = vec![
-            events::tool_call("1".into(), "load".into(), &serde_json::json!({"name": "slack_send", "enabled": true})),
-            events::tool_call("2".into(), "load".into(), &serde_json::json!({"name": "tdd", "enabled": false})),
+            events::toggle("mcp", "slack_send", true),
+            events::toggle("skill", "tdd", false),
         ];
-        let seed = AgentState { skills: config_enabled.clone(), mcp: config_enabled.clone(), ..Default::default() };
+        let seed = AgentState { skills: config_enabled, mcp: HashSet::new(), ..Default::default() };
         let st = active_agent(&mint_events(bodies), seed);
         let enabled = st.enabled_loadables();
         assert!(enabled.contains("slack_send"), "slack should be enabled after load");
@@ -804,7 +806,7 @@ mod tests {
     fn both_projections_derive_from_one_event_log() {
         let bodies = vec![
             events::user_turn("hi".into(), None, None),
-            events::tool_call("1".into(), "load".into(), &serde_json::json!({"name": "slack_send", "enabled": true})),
+            events::toggle("mcp", "slack_send", true),
         ];
         let proto_events = mint_events(bodies);
         let msgs = messages(&proto_events).unwrap();
@@ -921,12 +923,9 @@ mod tests {
             &crate::config::GaitConfig::default(),
             "m".into(), "sys".into(), vec![], vec![]);
         let evs = mint_events(vec![
-            events::tool_call("1".into(), "load".into(),
-                &serde_json::json!({"name":"slack","enabled":true})),
-            events::tool_call("2".into(), "load".into(),
-                &serde_json::json!({"name":"slack","enabled":false})),
-            events::tool_call("3".into(), "load".into(),
-                &serde_json::json!({"name":"tdd","enabled":true})),
+            events::toggle("mcp", "slack", true),
+            events::toggle("mcp", "slack", false),
+            events::toggle("skill", "tdd", true),
         ]);
         let st = run_projection(&ActiveAgent { seed }, &evs, &HashMap::new());
         let names = st.enabled_loadables();
@@ -940,16 +939,14 @@ mod tests {
         let seed = AgentState::from_config(
             &crate::config::GaitConfig::default(), "m".into(), "sys".into(), vec![], vec![]);
         let evs = mint_events(vec![
-            events::tool_call("1".into(), "load".into(),
-                &serde_json::json!({"name":"old","enabled":true})),
+            events::toggle("skill", "old", true),
             wire::body(payload::Kind::Agent(pb::Agent {
                 model: "m2".into(), instructions: "sys2".into(),
                 tools: vec![], mcp_servers: vec!["slack".into()], skills: vec![],
                 permissions: Some(pb::PermissionPolicy { allow: vec![], deny: vec![] }),
                 through_seq: 0,
             })),
-            events::tool_call("2".into(), "load".into(),
-                &serde_json::json!({"name":"tdd","enabled":true})),
+            events::toggle("skill", "tdd", true),
         ]);
         let st = run_projection(&ActiveAgent { seed }, &evs, &HashMap::new());
         assert_eq!(st.model, "m2", "checkpoint reset the model");
@@ -965,8 +962,7 @@ mod tests {
         let seed = AgentState::from_config(
             &crate::config::GaitConfig::default(), "m".into(), "sys".into(), vec![], vec![]);
         let one = mint_events(vec![
-            events::tool_call("1".into(), "load".into(),
-                &serde_json::json!({"name":"slack","enabled":true})),
+            events::toggle("mcp", "slack", true),
         ]);
         let mut muts = HashMap::new();
         muts.insert(one[0].id.clone(), MutationState::Redacted { reason: None });
@@ -997,7 +993,7 @@ mod tests {
                 instructions: String::new(), through_seq: 0,
             })),
             events::user_turn("hi".into(), None, None),
-            events::tool_call("1".into(), "load".into(), &serde_json::json!({"name": "tdd", "enabled": true})),
+            events::toggle("skill", "tdd", true),
         ]);
         let all_events = read_events(&path).unwrap();
         let seed = AgentState::from_config(&crate::config::GaitConfig::default(),
@@ -1015,8 +1011,7 @@ mod tests {
     #[test]
     fn fold_runs_all_projections_single_pass() {
         let evs = mint_events(vec![
-            events::tool_call("tc1".into(), "load".into(),
-                &serde_json::json!({"name":"slack","enabled":true})),
+            events::toggle("mcp", "slack", true),
         ]);
         let seed = AgentState::from_config(&crate::config::GaitConfig::default(),
             "m".into(), "".into(), vec![], vec![]);
@@ -1315,7 +1310,7 @@ mod tests {
         // A load, then a compaction AFTER it — the projection must NOT reset (full session).
         let cu = CompactionUsage { input: 1, output: 1 };
         let with_comp = mint_events(vec![
-            events::tool_call("1".into(), "load".into(), &serde_json::json!({"name":"slack","enabled":true})),
+            events::toggle("mcp", "slack", true),
             events::summary("summary".into(), 1, &cu),
         ]);
         let p = ActiveAgent { seed: AgentState::default() };
@@ -1324,7 +1319,7 @@ mod tests {
 
         // Now redact that load → projection must drop it (honors mutations).
         let one = mint_events(vec![
-            events::tool_call("1".into(), "load".into(), &serde_json::json!({"name":"slack","enabled":true})),
+            events::toggle("mcp", "slack", true),
         ]);
         let mut muts = HashMap::new();
         muts.insert(one[0].id.clone(), MutationState::Redacted { reason: None });
@@ -1355,6 +1350,28 @@ mod tests {
             events::assistant_text("hello".into()),
         ]);
         assert!(last_turn_blocks(&evs).is_empty());
+    }
+
+    #[test]
+    fn active_agent_folds_toggle_per_kind_and_model_change() {
+        use std::collections::HashMap;
+        use crate::proto::gait::log::v1::ToggleKind;
+        let seed = AgentState::from_config(
+            &crate::config::GaitConfig::default(), "m".into(), "sys".into(), vec![], vec![]);
+        let evs = mint_events(vec![
+            wire::body(payload::Kind::Toggle(pb::Toggle {
+                kind: ToggleKind::Skill as i32, name: "tdd".into(), enabled: true })),
+            wire::body(payload::Kind::Toggle(pb::Toggle {
+                kind: ToggleKind::Mcp as i32, name: "slack".into(), enabled: true })),
+            wire::body(payload::Kind::Toggle(pb::Toggle {
+                kind: ToggleKind::Skill as i32, name: "tdd".into(), enabled: false })),
+            wire::body(payload::Kind::ModelChange(pb::ModelChange { model: "m2".into() })),
+        ]);
+        let st = run_projection(&ActiveAgent { seed }, &evs, &HashMap::new());
+        assert!(!st.skills.contains("tdd"), "skill toggled off");
+        assert!(st.mcp.contains("slack"), "mcp toggled on in mcp set");
+        assert!(!st.skills.contains("slack"), "mcp toggle did NOT leak into skills");
+        assert_eq!(st.model, "m2", "ModelChange LWW");
     }
 
 }
