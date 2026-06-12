@@ -129,6 +129,20 @@ impl Projection for ActiveLoadables {
     }
 }
 
+/// Last-write-wins register over `Manifest` events.
+pub(crate) struct ActiveManifest;
+impl Projection for ActiveManifest {
+    type State = Option<pb::Manifest>;
+    fn seed(&self) -> Self::State {
+        None
+    }
+    fn apply(&self, state: &mut Self::State, _ev: &Event, kind: &payload::Kind) {
+        if let payload::Kind::Manifest(r) = kind {
+            *state = Some(r.clone());
+        }
+    }
+}
+
 /// Build messages, applying the given mutations map.
 /// This is the internal implementation that both `messages` and `fold` use.
 fn messages_applying(
@@ -447,19 +461,10 @@ pub fn fold(
     Ok(RetraceResult { messages, enabled_loadables, active_manifest, mutations })
 }
 
-/// The most recent `Manifest` payload in `events`, if any. LWW-Register over
-/// `Manifest` events. Used by `run_turn` as the drift-guard baseline: skip
-/// emitting a new `Manifest` if the live profile already matches the most
-/// recent one.
+/// Most recent `Manifest` payload (LWW-Register). Shim over the `ActiveManifest`
+/// projection so existing callers (drift-guard in run_turn) are untouched.
 pub fn active_manifest(events: &[Event]) -> Option<pb::Manifest> {
-    events.iter().rev().find_map(|e| {
-        if let Some(event::Body::Payload(p)) = &e.body {
-            if let Some(payload::Kind::Manifest(r)) = &p.kind {
-                return Some(r.clone());
-            }
-        }
-        None
-    })
+    run_projection(&ActiveManifest, events, &HashMap::new())
 }
 
 
@@ -639,6 +644,17 @@ mod tests {
         ];
         let proto_events = mint_events(bodies);
         assert!(active_manifest(&proto_events).is_none());
+    }
+
+    #[test]
+    fn active_manifest_projection_is_last_write_wins() {
+        use std::collections::HashMap;
+        let evs = mint_events(vec![
+            wire::body(payload::Kind::Manifest(pb::Manifest { model: "m1".into(), ..Default::default() })),
+            wire::body(payload::Kind::Manifest(pb::Manifest { model: "m2".into(), ..Default::default() })),
+        ]);
+        let got = run_projection(&ActiveManifest, &evs, &HashMap::new());
+        assert_eq!(got.expect("a manifest").model, "m2", "latest Manifest wins");
     }
 
     #[test]
