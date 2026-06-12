@@ -105,9 +105,23 @@ pub(crate) fn run_projection<P: Projection>(
     mutations: &HashMap<String, MutationState>,
 ) -> P::State {
     let mut state = p.seed();
+
     for (ev, kind) in effective_kinds(all_events, mutations) {
-        p.apply(&mut state, ev, kind);
+
+        match p.checkpoint(kind) {
+
+            // A checkpoint resets the fold baseline positionally (C1: where the
+
+            // event sits in the stream; `through_seq` is never consulted).
+
+            Some(base) => state = base,
+
+            None => p.apply(&mut state, ev, kind),
+
+        }
+
     }
+
     p.finish(state)
 }
 
