@@ -108,7 +108,6 @@ impl ToolCallWidget {
         name: &str,
         elapsed_ms: Option<u64>,
         output: &str,
-        had_spinner: bool,
     ) {
         let (color, mark) = if ok {
             (theme.success.fg(), '\u{2713}')
@@ -116,7 +115,7 @@ impl ToolCallWidget {
             (theme.danger.fg(), '\u{2717}')
         };
         let timing = elapsed_ms.map(|ms| format!(" \u{b7} {}ms", ms)).unwrap_or_default();
-        ReplaceLine::update(had_spinner, &format!("{}  {} {}{}{}", color, mark, name, timing, RESET));
+        eprintln!("{}  {} {}{}{}", color, mark, name, timing, RESET);
         let lines: Vec<&str> = output.lines().filter(|l| !l.trim().is_empty()).collect();
         match lines.len() {
             0 => {}
@@ -177,20 +176,33 @@ impl ReplRenderer {
 
     /// Drain all pending items from state and paint them to the terminal.
     pub fn paint(&self, state: &mut ReplState) {
+        if state.pending.is_empty() { return; }
+        // Erase the live status line before printing content so they don't overlap.
+        eprint!("\r\x1b[2K");
         for item in state.pending.drain(..) {
             match item {
                 PendingItem::Block { content, block_num } => {
                     self.paint_block(&content, block_num);
                 }
                 PendingItem::Spacing => { println!(); }
-                PendingItem::ToolCall { display } => {
-                    ToolCallWidget::show_spinner(&display);
-                }
-                PendingItem::ToolResult { ok, name, elapsed_ms, output, had_spinner } => {
-                    ToolCallWidget::show_result(&self.theme, ok, &name, elapsed_ms, &output, had_spinner);
+                PendingItem::ToolResult { ok, name, elapsed_ms, output } => {
+                    ToolCallWidget::show_result(&self.theme, ok, &name, elapsed_ms, &output);
                 }
                 PendingItem::Error { message } => {
                     eprintln!("{}[error] {}{}", self.theme.danger.fg(), message, RESET);
+                }
+                PendingItem::TurnSummary { elapsed_ms, output_tokens } => {
+                    let elapsed = if elapsed_ms < 60_000 {
+                        format!("{}s", elapsed_ms / 1000)
+                    } else {
+                        format!("{}m {}s", elapsed_ms / 60_000, (elapsed_ms % 60_000) / 1000)
+                    };
+                    let tokens = if output_tokens >= 1000 {
+                        format!("{:.1}k", output_tokens as f64 / 1000.0)
+                    } else {
+                        format!("{}", output_tokens)
+                    };
+                    eprintln!("{}  \u{b7} {} \u{b7} \u{2193} {} tokens{}", DIM_FG, elapsed, tokens, RESET);
                 }
             }
         }

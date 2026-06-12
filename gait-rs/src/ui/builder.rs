@@ -40,7 +40,6 @@ impl ReplBuilder {
     }
 
     pub fn handle_stream_item(&mut self, item: pb::StreamItem) -> ViewSignal {
-        if let Some(mut t) = self.state.timer.take() { t.stop(); }
         use pb::stream_item::Item;
         let signal = match item.item {
             Some(Item::Event(ev)) => self.state.apply_event(&ev),

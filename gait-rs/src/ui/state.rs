@@ -1,3 +1,4 @@
+use std::time::Instant;
 use crate::proto::gait::log::v1 as pb;
 use crate::session::transcript::{self as tx, ClarifyItem, InformItem, PermissionItem};
 use crate::ui::timer::Timer;
@@ -6,9 +7,9 @@ use crate::ui::timer::Timer;
 pub(crate) enum PendingItem {
     Block { content: String, block_num: usize },
     Spacing,
-    ToolCall { display: String },
-    ToolResult { ok: bool, name: String, elapsed_ms: Option<u64>, output: String, had_spinner: bool },
+    ToolResult { ok: bool, name: String, elapsed_ms: Option<u64>, output: String },
     Error { message: String },
+    TurnSummary { elapsed_ms: u64, output_tokens: u64 },
 }
 
 // Interaction pending (one-shot per turn)
@@ -71,6 +72,7 @@ pub struct ReplState {
     pub(crate) pending_tool: Option<String>,
     pub(crate) interaction_pending: Pending,
     pub(crate) timer: Option<Timer>,
+    pub(crate) turn_start: Option<Instant>,
 }
 
 impl ReplState {
@@ -85,12 +87,15 @@ impl ReplState {
             pending_tool: Option::None,
             interaction_pending: Pending::None,
             timer: Option::None,
+            turn_start: None,
         }
     }
 
     pub fn begin_turn(&mut self) {
+        let now = Instant::now();
         *self = Self::new();
-        self.timer = Some(Timer::start());
+        self.turn_start = Some(now);
+        self.timer = Some(Timer::start(now));
     }
 
     pub fn push_text(&mut self, content: &str) {
@@ -145,8 +150,6 @@ impl ReplState {
     }
 
     pub fn apply_event(&mut self, ev: &pb::Event) -> ViewSignal {
-        if let Some(mut t) = self.timer.take() { t.stop(); }
-
         let Some(pb::event::Body::Payload(p)) = &ev.body else {
             return ViewSignal::Continue;
         };
@@ -162,18 +165,18 @@ impl ReplState {
                     .unwrap_or_default();
                 let display = format!("{}{}", tc.name, target);
                 self.pending_tool = Some(display.clone());
-                self.pending.push(PendingItem::ToolCall { display });
+                // Show the tool name in the status line — no separate spinner line.
+                if let Some(t) = &self.timer { t.set_activity(&display); }
                 ViewSignal::Continue
             }
             Some(pb::payload::Kind::ToolResult(tr)) => {
                 let elapsed_ms = tr.duration.as_ref()
                     .map(|d| (d.seconds as u64) * 1000 + (d.nanos as u64) / 1_000_000);
                 let ok = tr.process.as_ref().map_or(true, |pr| pr.exit_code == 0);
-                let had_spinner = self.pending_tool.is_some();
                 let name = self.pending_tool.take().unwrap_or_else(|| "?".to_string());
-                self.pending.push(PendingItem::ToolResult { ok, name, elapsed_ms, output: tr.output.clone(), had_spinner });
-                // LLM is now processing the result — restart the thinking timer.
-                self.timer = Some(Timer::start());
+                // Revert status line to "thinking…" while LLM processes the result.
+                if let Some(t) = &self.timer { t.set_activity("thinking\u{2026}"); }
+                self.pending.push(PendingItem::ToolResult { ok, name, elapsed_ms, output: tr.output.clone() });
                 ViewSignal::Continue
             }
             Some(pb::payload::Kind::Permissions(pm)) => {
@@ -193,6 +196,11 @@ impl ReplState {
             }
             Some(pb::payload::Kind::TurnComplete(tc)) => {
                 self.flush_buf();
+                // Stop the status line and emit the final turn summary.
+                if let Some(mut t) = self.timer.take() { t.stop(); }
+                let elapsed_ms = self.turn_start.map(|s| s.elapsed().as_millis() as u64).unwrap_or(0);
+                let output_tokens = tc.usage.as_ref().map(|u| u.output).unwrap_or(0);
+                self.pending.push(PendingItem::TurnSummary { elapsed_ms, output_tokens });
                 let blocks = if tc.blocks.is_empty() {
                     self.all_blocks.clone()
                 } else {
@@ -334,14 +342,16 @@ mod tests {
     }
 
     #[test]
-    fn apply_event_tool_call_pushes_pending_item() {
+    fn apply_event_tool_call_sets_pending_tool() {
         use crate::proto::events;
         let mut state = ReplState::new();
         let body = events::tool_call("call-1".into(), "read".into(), &serde_json::json!({"file_path": "a.rs"}));
         let ev = crate::proto::envelope::mint(body, None);
         let signal = state.apply_event(&ev);
         assert!(matches!(signal, ViewSignal::Continue));
-        assert!(state.pending.iter().any(|p| matches!(p, PendingItem::ToolCall { .. })));
+        // Tool indication is via the timer status line, not a pending item.
+        assert!(state.pending.is_empty());
+        assert!(state.pending_tool.is_some());
     }
 
     #[test]
