@@ -14,7 +14,7 @@ impl Ingestor {
 
     pub fn from_session(gait_dir: &Path, session_id: &str) -> Self {
         Self::new(
-            gait_dir.join("sessions").join(session_id).join("transcript.jsonl"),
+            gait_dir.join("sessions").join(session_id).join("log.jsonl"),
         )
     }
 
@@ -38,7 +38,7 @@ mod tests {
     fn from_session_builds_correct_path() {
         let dir = tempdir().unwrap();
         let ingestor = Ingestor::from_session(dir.path(), "s1234567");
-        assert_eq!(ingestor.path, dir.path().join("sessions/s1234567/transcript.jsonl"));
+        assert_eq!(ingestor.path, dir.path().join("sessions/s1234567/log.jsonl"));
     }
 
     #[test]

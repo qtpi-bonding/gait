@@ -136,7 +136,7 @@ impl Profile {
             tools.push(build_config_tool(ct, &gait_dir, &codebase_path));
         }
 
-        let tx_path = gait_dir.join("sessions").join(&session_id).join("transcript.jsonl");
+        let tx_path = gait_dir.join("sessions").join(&session_id).join("log.jsonl");
         let hooks: Vec<Box<dyn crate::types::Hook>> = self.hooks
             .iter()
             .map(|def| -> Box<dyn crate::types::Hook> {

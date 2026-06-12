@@ -99,7 +99,7 @@ mod tests {
     #[test]
     fn append_chains_seq_and_parents() {
         let dir = TempDir::new().expect("tempdir");
-        let path = dir.path().join("transcript.jsonl");
+        let path = dir.path().join("log.jsonl");
 
         let first = append(&path, simple_body()).expect("append first");
         let second = append(&path, simple_body()).expect("append second");
@@ -126,7 +126,7 @@ mod tests {
     #[test]
     fn raw_round_trips() {
         let dir = TempDir::new().expect("tempdir");
-        let path = dir.path().join("transcript.jsonl");
+        let path = dir.path().join("log.jsonl");
 
         let written = append(
             &path,

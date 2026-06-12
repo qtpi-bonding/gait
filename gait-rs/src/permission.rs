@@ -10,8 +10,10 @@ pub enum PermissionChoice {
     Global(String),
     /// Save pattern to agent frontmatter (scoped to this agent file).
     Agent(String),
-    /// Approve once via temp file (single turn only).
+    /// Approve once (log-derived; no temp file).
     Once(String),
+    /// Approve for the rest of this session (log-derived; no config file).
+    Session(String),
     /// Deny — model receives "permission denied" and can react.
     Reject,
 }
@@ -20,16 +22,17 @@ pub enum PermissionChoice {
 ///
 /// * `Global(pattern)` → appends to `<gait_dir>/gait.jsonc`
 /// * `Agent(pattern)` → appends to the agent's frontmatter at `agent_path`
-/// * `Once(pattern)`  → appends a line to the per-session temp file
-///   (read once at the start of the next turn, then deleted)
+/// * `Once(pattern)`  → no side effect; the grant is recorded as a
+///   `PermissionsReply{scope:"once"}` log event by chat.rs and replayed by
+///   the `ActivePermissions` projection.
+/// * `Session(pattern)` → no side effect; the grant is recorded as a
+///   `PermissionsReply{scope:"session"}` log event by chat.rs and replayed
+///   by the `ActivePermissions` projection.
 /// * `Reject`         → no side effect
-///
-/// The `Once` case is intentionally line-based to match the existing reader
-/// in `turn.rs`, which consumes the file with `.lines()`.
 pub fn save_choice(
     choice: &PermissionChoice,
     gait_dir: &Path,
-    session_id: &str,
+    _session_id: &str,
     agent_path: Option<&Path>,
 ) -> anyhow::Result<()> {
     match choice {
@@ -41,16 +44,11 @@ pub fn save_choice(
                 crate::agent_frontmatter::append_agent_allow(path.to_path_buf(), pattern)?;
             }
         }
-        PermissionChoice::Once(pattern) => {
-            let tmp_dir = gait_dir.join("tmp");
-            std::fs::create_dir_all(&tmp_dir)?;
-            let once_path = crate::turn::once_approval_path(gait_dir, session_id);
-            use std::io::Write;
-            let mut f = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&once_path)?;
-            writeln!(f, "{}", pattern)?;
+        PermissionChoice::Once(_pattern) => {
+            // No side effect — derived from the PermissionsReply(once) log event.
+        }
+        PermissionChoice::Session(_pattern) => {
+            // No side effect — derived from the PermissionsReply(session) log event.
         }
         PermissionChoice::Reject => {}
     }
@@ -77,7 +75,7 @@ pub fn execute_approve(
     params: &ApproveParams,
     agent_path: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
-    let tx_path = gait_dir.join("sessions").join(session_id).join("transcript.jsonl");
+    let tx_path = gait_dir.join("sessions").join(session_id).join("log.jsonl");
     let state = crate::session::transcript::session_state(&tx_path)?;
 
     let items = match &state {

@@ -58,7 +58,7 @@ impl Tool for SpawnAgentTool {
 
         let config = load_config(&self.ctx.gait_dir);
         let codebase_hash = self.repos.codebase.head_hash(&self.ctx.codebase_path);
-        let tx_path = self.ctx.gait_dir.join("sessions").join(&new_id).join("transcript.jsonl");
+        let tx_path = self.ctx.gait_dir.join("sessions").join(&new_id).join("log.jsonl");
 
         init_session(InitSessionOpts {
             transcript_path: tx_path.clone(),
@@ -139,7 +139,7 @@ mod tests {
         let new_id = result["session_id"].as_str().unwrap();
         assert!(new_id.starts_with('s'));
 
-        let tx = ws.path().join(format!("sessions/{}/transcript.jsonl", new_id));
+        let tx = ws.path().join(format!("sessions/{}/log.jsonl", new_id));
         assert!(tx.exists());
         let events = read_events(&tx).unwrap();
         let ek = |e: &crate::proto::gait::log::v1::Event| -> Option<payload::Kind> {

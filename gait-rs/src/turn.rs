@@ -59,11 +59,6 @@ pub struct SessionLock {
     path: PathBuf,
 }
 
-/// Shared path for the once-approval temp file, used by both turn.rs and chat.rs.
-pub fn once_approval_path(gait_dir: &std::path::Path, session_id: &str) -> std::path::PathBuf {
-    gait_dir.join("tmp").join(format!("gait-approve-{}", session_id))
-}
-
 impl SessionLock {
     pub fn acquire(session_dir: &Path) -> anyhow::Result<Self> {
         let path = session_dir.join("lock");
@@ -375,7 +370,7 @@ async fn apply_curate_filter(
 
     let _ = repos.checkpoints.remove(gait_dir, &session_id);
 
-    let tx_path = gait_dir.join("sessions").join(&session_id).join("transcript.jsonl");
+    let tx_path = gait_dir.join("sessions").join(&session_id).join("log.jsonl");
     read_events(&tx_path)
         .ok()
         .and_then(|events| {
@@ -400,10 +395,10 @@ pub async fn run_turn(
     caps: crate::profile::ResolvedProfile,
     input: TurnInput,
 ) -> anyhow::Result<TurnResult> {
-    // Build the live Resolution from the whole profile BEFORE `caps` is
-    // destructured, so `events::resolution_msg` stays the single source of truth
+    // Build the live Manifest from the whole profile BEFORE `caps` is
+    // destructured, so `events::manifest_msg` stays the single source of truth
     // (incl. output_schema_retries). Emitted later, under the drift guard.
-    let resolution = crate::proto::events::resolution_msg(&caps);
+    let manifest = crate::proto::events::manifest_msg(&caps);
     let provider = caps.provider.clone();
     let tools = caps.tools;
     let session_id = session.id.clone();
@@ -439,7 +434,7 @@ pub async fn run_turn(
     }
 
     let session_dir = gait_dir.join("sessions").join(&session_id);
-    let tx_path = session_dir.join("transcript.jsonl");
+    let tx_path = session_dir.join("log.jsonl");
     let ingestor = Ingestor::from_session(&gait_dir, &session_id);
 
     let _lock = SessionLock::acquire(&session_dir)?;
@@ -460,17 +455,18 @@ pub async fn run_turn(
         })?;
     }
 
-    // Read and delete once-approval temp file (written by gait chat after user approval)
-    let once_path = once_approval_path(&gait_dir, &session_id);
-    let once_allow: Vec<String> = std::fs::read_to_string(&once_path)
-        .unwrap_or_default()
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
-    let _ = std::fs::remove_file(&once_path);
-    let mut effective_allow = allow.clone();
-    effective_allow.extend(once_allow);
+    // Effective allow = config baseline (global+agent, in `allow`) + log-derived
+    // session/once grants, folded mutation-aware from the full session via the
+    // ActivePermissions projection. Replaces the once-approval temp file entirely:
+    // once/session approvals now live in the Log as PermissionsReply events.
+    let effective_allow: Vec<String> = {
+        let evs = ingestor.events()?;
+        let mut muts = retrace::active_mutations(&evs);
+        retrace::apply_cascade(&mut muts, &evs);
+        let seed: std::collections::HashSet<String> = allow.iter().cloned().collect();
+        let st = retrace::run_projection(&retrace::ActivePermissions { seed }, &evs, &muts);
+        st.session.union(&st.once).cloned().collect()
+    };
 
     // Detect resume after permission approval: last two transcript events are
     // Permissions → PermissionsReply. On resume we directly execute the
@@ -581,17 +577,17 @@ pub async fn run_turn(
         false
     };
 
-    // Emit the live Resolution iff it differs from the last one in the log
-    // (drift guard). First run of a session has no prior Resolution → emit.
+    // Emit the live Manifest iff it differs from the last one in the log
+    // (drift guard). First run of a session has no prior Manifest → emit.
     // Identical resumes skip the write; a real change (e.g. model swap, new
     // MCP load) is recorded. Placed AFTER init_session + resume setup, BEFORE
-    // the first UserTurn is appended, so the Resolution opens (or refreshes)
+    // the first UserTurn is appended, so the Manifest opens (or refreshes)
     // the working state projection for the turn.
     {
         let events_for_guard = ingestor.events()?;
-        if retrace::active_resolution(&events_for_guard) != Some(resolution.clone()) {
+        if retrace::active_manifest(&events_for_guard) != Some(manifest.clone()) {
 
-            emitter.emit(wire::body(payload::Kind::Resolution(resolution)))?;
+            emitter.emit(wire::body(payload::Kind::Manifest(manifest)))?;
         }
     }
 
@@ -611,16 +607,18 @@ pub async fn run_turn(
         messages.insert(0, Message::User { content: MessageContent::Text(turn_ctx) });
     }
 
-    // Derive loaded MCP tools from the POST-COMPACTION slice only.
-    // Pre-compaction loads are intentionally forgotten (spec: model reloads after compaction).
-    let events = ingestor.events()?;
-    let compaction_start = crate::session::transcript::last_compaction_index(&events).unwrap_or(0);
-    let post_compaction = &events[compaction_start..];
-
-    // Step 6: post-compaction reload loop. Server-granularity push:
-    // enabled_names is a set of server names (and skill names); for each
-    // enabled MCP server, push all of its tools into the active tools vec.
-    let enabled_names = retrace::enabled_loadables(&post_compaction, &config_enabled);
+    // Derive enabled loadables from the FULL session (mutation-aware, via the
+    // ActiveLoadables projection). Loadables are a "state" projection and persist
+    // across compaction — only the message context (ActiveMessages) resets on
+    // compaction; consistent with permissions and manifest.
+    let all_events = ingestor.events()?;
+    let mut muts = retrace::active_mutations(&all_events);
+    retrace::apply_cascade(&mut muts, &all_events);
+    let enabled_names = retrace::run_projection(
+        &retrace::ActiveLoadables { seed: config_enabled.clone() },
+        &all_events,
+        &muts,
+    );
     for server_name in &enabled_names {
         for def in mcp_registry.iter().filter(|d| &d.server_name == server_name) {
             if let Some(client) = mcp_clients.get(&def.server_name) {
@@ -1285,7 +1283,7 @@ mod tests {
         ).await.unwrap();
 
         // Verify transcript has expected events
-        let tx_path = ws.path().join("sessions/stest001/transcript.jsonl");
+        let tx_path = ws.path().join("sessions/stest001/log.jsonl");
         let events = read_events(&tx_path).unwrap();
         let types: Vec<&str> = events.iter().map(|e| match event_kind(e) {
             Some(payload::Kind::SessionStart(_)) => "session_start",
@@ -1339,7 +1337,7 @@ mod tests {
             crate::git::Repos::production(),
         ).await.unwrap();
 
-        let tx_path = ws.path().join("sessions/stest_out/transcript.jsonl");
+        let tx_path = ws.path().join("sessions/stest_out/log.jsonl");
         let events = read_events(&tx_path).unwrap();
         let tc = events.iter().find_map(|e| match event_kind(e) {
             Some(payload::Kind::TurnComplete(tc)) => Some(tc),
@@ -1380,7 +1378,7 @@ mod tests {
             crate::git::Repos::production(),
         ).await.unwrap();
 
-        let tx_path = ws.path().join("sessions/stest_out2/transcript.jsonl");
+        let tx_path = ws.path().join("sessions/stest_out2/log.jsonl");
         let events = read_events(&tx_path).unwrap();
         let has_tc = events.iter().any(|e| matches!(event_kind(e), Some(payload::Kind::TurnComplete(_))));
         let has_permissions = events.iter().any(|e| matches!(event_kind(e), Some(payload::Kind::Permissions(_))));
@@ -1415,7 +1413,7 @@ mod tests {
             crate::git::Repos::production(),
         ).await.unwrap();
 
-        let tx_path = ws.path().join("sessions/stest002/transcript.jsonl");
+        let tx_path = ws.path().join("sessions/stest002/log.jsonl");
         let events = read_events(&tx_path).unwrap();
         let has_permissions = events.iter().any(|e| matches!(event_kind(e), Some(payload::Kind::Permissions(_))));
         let has_turn_complete = events.iter().any(|e| matches!(event_kind(e), Some(payload::Kind::TurnComplete(_))));
@@ -1533,7 +1531,7 @@ mod tests {
             crate::git::Repos::production(),
         ).await.unwrap();
 
-        let tx_path = ws.path().join("sessions/sdelta01/transcript.jsonl");
+        let tx_path = ws.path().join("sessions/sdelta01/log.jsonl");
         let events = read_events(&tx_path).unwrap();
         let text_events: Vec<_> = events.iter().filter_map(|e| match event_kind(e) {
             Some(payload::Kind::AssistantText(a)) => Some(a),
@@ -1586,7 +1584,7 @@ mod tests {
             crate::git::Repos::production(),
         ).await.unwrap();
 
-        let tx_path = ws.path().join("sessions/sdeny001/transcript.jsonl");
+        let tx_path = ws.path().join("sessions/sdeny001/log.jsonl");
         let events = read_events(&tx_path).unwrap();
 
         // Must have a ToolResult indicating blocked by config
@@ -1639,7 +1637,7 @@ mod tests {
             crate::git::Repos::production(),
         ).await.unwrap();
 
-        let tx_path = ws.path().join("sessions/sdeny002/transcript.jsonl");
+        let tx_path = ws.path().join("sessions/sdeny002/log.jsonl");
         let events = read_events(&tx_path).unwrap();
 
         // Same assertions as the first deny test
@@ -1705,7 +1703,7 @@ mod tests {
         // Initialize the session worktree (creates the session dir + branch)
         GitTraceRepo.create_session_worktree(ws.path(), session_id).unwrap();
         let session_dir = ws.path().join("sessions").join(session_id);
-        let tx_path = session_dir.join("transcript.jsonl");
+        let tx_path = session_dir.join("log.jsonl");
 
         // Pre-populate transcript: SessionStart + UserTurn + Permissions + PermissionsReply
         let perm_item = PermissionItem {
@@ -1767,7 +1765,7 @@ mod tests {
         // Initialize the session worktree (creates the session dir + branch)
         GitTraceRepo.create_session_worktree(ws.path(), session_id).unwrap();
         let session_dir = ws.path().join("sessions").join(session_id);
-        let tx_path = session_dir.join("transcript.jsonl");
+        let tx_path = session_dir.join("log.jsonl");
 
         let perm_item = PermissionItem {
             id: "tc-deny-1".into(), cmd: "rm -rf /".into(),
@@ -1850,7 +1848,7 @@ mod tests {
         let session_id = "sscope001";
         // Initialize the session worktree (creates the session dir + branch)
         GitTraceRepo.create_session_worktree(ws.path(), session_id).unwrap();
-        let tx_path = ws.path().join("sessions").join(session_id).join("transcript.jsonl");
+        let tx_path = ws.path().join("sessions").join(session_id).join("log.jsonl");
 
         // Pre-write a transcript with a Permissions+PermissionsReply already in it,
         // simulating a previous turn that was interrupted mid-permission-prompt.
@@ -2019,7 +2017,7 @@ mod tests {
             crate::git::Repos::production(),
         ).await.unwrap();
 
-        let tx_path = ws.path().join("sessions").join(session_id).join("transcript.jsonl");
+        let tx_path = ws.path().join("sessions").join(session_id).join("log.jsonl");
         let events = read_events(&tx_path).unwrap();
         let cp = events.iter().rev().find_map(|e| match event_kind(e) {
             Some(payload::Kind::TurnComplete(tc)) => Some(tc.checkpoint.clone()),

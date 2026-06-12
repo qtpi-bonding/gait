@@ -302,7 +302,7 @@ impl Renderer {
                 eprintln!("{}[error] {}{}", self.theme.danger.fg(), e.message, RESET);
                 RenderAction::Continue
             }
-            // SessionStart, Resolution, UserTurn, Raw, replies, etc. — no-op.
+            // SessionStart, Manifest, UserTurn, Raw, replies, etc. — no-op.
             _ => RenderAction::Continue,
         }
     }

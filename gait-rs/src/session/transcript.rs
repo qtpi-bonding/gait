@@ -2,6 +2,11 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use crate::proto::gait::log::v1::{event, payload, Event};
+/// The session's append-only Log file. (The file is the Log, not the Transcript —
+/// the Transcript is the ActiveMessages projection derived from it.)
+pub fn log_path(gait_dir: &std::path::Path, session_id: &str) -> std::path::PathBuf {
+    gait_dir.join("sessions").join(session_id).join("log.jsonl")
+}
 
 // ── Supporting types ─────────────────────────────────────────────────────────
 
@@ -245,7 +250,7 @@ mod tests {
     #[test]
     fn append_and_read_roundtrip() {
         let dir = TempDir::new().unwrap();
-        let path = dir.path().join("transcript.jsonl");
+        let path = dir.path().join("log.jsonl");
         wire::append(&path, events::user_turn("hello".into(), None, None)).unwrap();
         wire::append(&path, events::assistant_text("world".into())).unwrap();
         let events = read_events(&path).unwrap();
@@ -257,7 +262,7 @@ mod tests {
     #[test]
     fn init_session_writes_session_start() {
         let dir = TempDir::new().unwrap();
-        let path = dir.path().join("transcript.jsonl");
+        let path = dir.path().join("log.jsonl");
         init_session(InitSessionOpts {
             transcript_path: path.clone(),
             id: "s1234".into(),
@@ -301,7 +306,7 @@ mod tests {
     #[test]
     fn user_turn_from_field_roundtrips() {
         let dir = TempDir::new().unwrap();
-        let path = dir.path().join("transcript.jsonl");
+        let path = dir.path().join("log.jsonl");
         wire::append(
             &path,
             events::user_turn("do the thing".into(), Some("agent:s-parent123".into()), None),
@@ -393,7 +398,7 @@ mod tests {
     #[test]
     fn emit_writes_to_transcript() {
         let dir = TempDir::new().unwrap();
-        let path = dir.path().join("transcript.jsonl");
+        let path = dir.path().join("log.jsonl");
         wire::emit(&path, events::assistant_text("hello emit".into())).unwrap();
         let events = read_events(&path).unwrap();
         assert_eq!(events.len(), 1);
@@ -429,5 +434,14 @@ mod tests {
         let back: PermissionItem = serde_json::from_str(&json).unwrap();
         assert_eq!(back.tool_name, "shell");
         assert_eq!(back.tool_args["cmd"], "cargo test --verbose");
+    }
+
+    #[test]
+    fn log_path_is_log_jsonl() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert_eq!(
+            log_path(dir.path(), "s1"),
+            dir.path().join("sessions").join("s1").join("log.jsonl"),
+        );
     }
 }

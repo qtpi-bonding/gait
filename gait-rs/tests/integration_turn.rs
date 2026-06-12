@@ -100,7 +100,7 @@ async fn full_turn_creates_transcript_and_git_commit() {
         gait_ai::turn::TurnInput { task: Some("list the files".into()), auto: true, max_iter: None },
     ).await.unwrap();
     // Verify transcript
-    let tx = ws.path().join("sessions/sint001/transcript.jsonl");
+    let tx = ws.path().join("sessions/sint001/log.jsonl");
     let events = read_events(&tx).unwrap();
     let event_types: Vec<String> = events.iter().map(|e| match event_kind(e) {
         Some(payload::Kind::SessionStart(_)) => "session_start",
@@ -171,7 +171,7 @@ async fn second_turn_resumes_session() {
         gait_ai::turn::TurnInput { task: Some("task 2".into()), auto: true, max_iter: None },
     ).await.unwrap();
 
-    let tx = ws.path().join("sessions/sint002/transcript.jsonl");
+    let tx = ws.path().join("sessions/sint002/log.jsonl");
     let events = read_events(&tx).unwrap();
     let turn_count = events.iter().filter(|e| matches!(event_kind(e), Some(payload::Kind::TurnComplete(_)))).count();
     assert_eq!(turn_count, 2, "expected 2 turn_complete events");
