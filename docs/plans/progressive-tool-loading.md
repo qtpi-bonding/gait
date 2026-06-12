@@ -1,5 +1,7 @@
 # Progressive Tool Loading
 
+> **STATUS: ✅ DONE.** Shipped and verified in-code 2026-06-12. Implemented as a single unified `load(name, enabled: bool)` tool (`gait-rs/src/tools/load.rs`) rather than the separate `mcp()`/`skill()` tools sketched below — one tool enables/disables both MCP tools and skills per session. The `<loadable-index>` system-prompt section (`turn.rs::build_loadable_index`) advertises available items, and `config_enabled` (profile.rs) tracks state. The design below is the original sketch; the unified-`load` consolidation is the as-built interface.
+
 ## Problem
 
 MCP tools today are dumped into the `tools` array on every API call — full schemas, all registered servers, every turn. Token waste, attention dilution, no progressive disclosure. Same problem as Claude Code's skill loading.

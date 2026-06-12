@@ -2,6 +2,8 @@
 
 Design plan for structured knowledge exchange between LLM and human in gait sessions, with composition into catuskoti (search) and grorg (coordination).
 
+> **STATUS: ✅ DONE in gait** (commit `15067a1`). The gait implementation — items 1–5 in the [Gait Implementation](#gait-implementation) section — is complete: transcript schema, `clarify`/`inform` tools, message reconstruction, turn-loop interception (`TurnResult::Clarify`/`Inform`), and REPL prompt/re-spawn. The `is`/`ought` forcing function and pause→answer→resume loop all work. **Out of gait's scope by design:** the cross-session "learn" layer (open/resolved status aggregated across sessions, "all unresolved OUGHT questions") lives in the separate grorg/catuskoti bridges (item 6) — *"Gait ships nothing for this. The schema is the contract."* So for gait, nothing here is outstanding.
+
 ---
 
 ## What This Is

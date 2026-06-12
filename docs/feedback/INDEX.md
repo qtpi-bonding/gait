@@ -63,7 +63,7 @@ These all touch the `output` tool shape or the turn-termination model.
 | ID | Item | Effort | Status | Feedback doc | Code |
 |----|------|--------|--------|--------------|------|
 | E1 | **[feature]** Turn rewind (`gait rewind`) via git shadow db | Medium | ✅ done — `gait rewind` command implemented; shadow db checkpoints codebase per turn | [repl-cli-feedback §1](2026-06-09-repl-cli-feedback.md) | `gait-rs/src/` (rewind module) |
-| E2 | **[feature]** Ctrl+C to abort in-progress turn in `gait chat` | Medium | open — needs cancellation token refactor in `run_turn`, new `TurnResult::Cancelled` variant | [repl-cli-feedback §3](2026-06-09-repl-cli-feedback.md) | `gait-rs/src/turn.rs:435-450` |
+| E2 | **[feature]** **Esc** to interrupt an in-progress turn in `gait chat` (keep the REPL alive). NOT Ctrl+C — Ctrl+C is the conventional/actual "exit chat" gesture (prompt: `Interrupted => break`; mid-turn: default SIGINT kills the process), so interrupt must bind to Esc instead. | Medium | open — needs (1) a cancellation token threaded into `run_turn` + a `TurnResult::Cancelled` variant, and (2) the REPL to listen for an Esc keypress concurrently with the turn (e.g. `tokio::select!` on `rx.recv()` vs a raw-mode stdin watcher), since rustyline isn't reading during a turn. | [repl-cli-feedback §3](2026-06-09-repl-cli-feedback.md) | `gait-rs/src/turn.rs`, `gait-rs/src/chat.rs` |
 | E3 | **[feature]** REPL output line numbering + `>(N)` quote-reply syntax | Medium | ✅ done — dim gutter numbers on agent output; `>(N)` / `>(N-M)` / `>(N) message` expands to quoted block | [repl-cli-feedback §2](2026-06-09-repl-cli-feedback.md) | `gait-rs/src/chat.rs`, `gait-rs/src/render.rs` |
 
 ---
