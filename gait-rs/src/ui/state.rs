@@ -172,6 +172,8 @@ impl ReplState {
                 let had_spinner = self.pending_tool.is_some();
                 let name = self.pending_tool.take().unwrap_or_else(|| "?".to_string());
                 self.pending.push(PendingItem::ToolResult { ok, name, elapsed_ms, output: tr.output.clone(), had_spinner });
+                // LLM is now processing the result — restart the thinking timer.
+                self.timer = Some(Timer::start());
                 ViewSignal::Continue
             }
             Some(pb::payload::Kind::Permissions(pm)) => {
