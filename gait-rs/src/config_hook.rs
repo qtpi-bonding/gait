@@ -7,11 +7,13 @@ use crate::proto::{events, wire};
 pub struct ConfigHook {
     def: HookDef,
     tx_path: PathBuf,
+    gait_dir: PathBuf,
+    codebase: PathBuf,
 }
 
 impl ConfigHook {
-    pub fn new(def: HookDef, tx_path: PathBuf) -> Self {
-        Self { def, tx_path }
+    pub fn new(def: HookDef, tx_path: PathBuf, gait_dir: PathBuf, codebase: PathBuf) -> Self {
+        Self { def, tx_path, gait_dir, codebase }
     }
 }
 
@@ -36,6 +38,10 @@ impl crate::types::Hook for ConfigHook {
         let mut env: HashMap<String, String> = HashMap::new();
         env.insert("GAIT_TOOL_NAME".into(), name.to_string());
         env.insert("GAIT_TOOL_RESULT".into(), result.to_string());
+        // Path context so a hook can reference user-owned scripts portably,
+        // e.g. "$GAIT_DIR/scripts/edit-syntax-check.sh" — no hardcoded paths.
+        env.insert("GAIT_DIR".into(), self.gait_dir.display().to_string());
+        env.insert("GAIT_CODEBASE".into(), self.codebase.display().to_string());
         if let Some(obj) = args.as_object() {
             for (k, v) in obj {
                 let key = format!("GAIT_ARG_{}", k.to_uppercase().replace('-', "_"));
@@ -71,6 +77,9 @@ mod tests {
     use crate::types::Hook;
     use tempfile::TempDir;
 
+    // Test helper: use the temp dir as both gait_dir and codebase.
+    fn gd(dir: &TempDir) -> PathBuf { dir.path().to_path_buf() }
+
     fn hook_def(event: &str, tool: Option<&str>, run: &str) -> HookDef {
         HookDef {
             event: event.to_string(),
@@ -83,7 +92,7 @@ mod tests {
     async fn matching_tool_success_returns_none() {
         let dir = TempDir::new().unwrap();
         let tx = dir.path().join("transcript.jsonl");
-        let hook = ConfigHook::new(hook_def("post_tool", Some("edit"), "exit 0"), tx);
+        let hook = ConfigHook::new(hook_def("post_tool", Some("edit"), "exit 0"), tx, gd(&dir), gd(&dir));
         let result = hook.post_tool("edit", "call-1", &serde_json::json!({}), "original").await;
         assert!(result.is_none());
     }
@@ -94,7 +103,7 @@ mod tests {
         let tx = dir.path().join("transcript.jsonl");
         let hook = ConfigHook::new(
             hook_def("post_tool", Some("edit"), "echo 'syntax error'; exit 1"),
-            tx,
+            tx, gd(&dir), gd(&dir),
         );
         let result = hook.post_tool("edit", "call-1", &serde_json::json!({}), "original").await;
         let new = result.expect("failure must return Some");
@@ -106,7 +115,7 @@ mod tests {
     async fn non_matching_tool_skips() {
         let dir = TempDir::new().unwrap();
         let tx = dir.path().join("transcript.jsonl");
-        let hook = ConfigHook::new(hook_def("post_tool", Some("edit"), "exit 1"), tx);
+        let hook = ConfigHook::new(hook_def("post_tool", Some("edit"), "exit 1"), tx, gd(&dir), gd(&dir));
         let result = hook.post_tool("shell", "call-1", &serde_json::json!({}), "original").await;
         assert!(result.is_none(), "non-matching tool must return None");
     }
@@ -115,7 +124,7 @@ mod tests {
     async fn no_tool_filter_runs_for_all_tools() {
         let dir = TempDir::new().unwrap();
         let tx = dir.path().join("transcript.jsonl");
-        let hook = ConfigHook::new(hook_def("post_tool", None, "exit 0"), tx);
+        let hook = ConfigHook::new(hook_def("post_tool", None, "exit 0"), tx, gd(&dir), gd(&dir));
         let result = hook.post_tool("shell", "call-1", &serde_json::json!({}), "original").await;
         assert!(result.is_none());
     }
@@ -126,7 +135,7 @@ mod tests {
         let tx = dir.path().join("transcript.jsonl");
         let hook = ConfigHook::new(
             hook_def("post_tool", Some("edit"), "[ -n \"$GAIT_ARG_FILE_PATH\" ] || exit 1"),
-            tx.clone(),
+            tx.clone(), gd(&dir), gd(&dir),
         );
         let args = serde_json::json!({"file_path": "src/main.rs"});
         let result = hook.post_tool("edit", "call-1", &args, "original").await;
@@ -134,10 +143,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gait_dir_and_codebase_exposed_as_env_vars() {
+        let dir = TempDir::new().unwrap();
+        let tx = dir.path().join("transcript.jsonl");
+        // The hook fails unless BOTH $GAIT_DIR and $GAIT_CODEBASE are set — the
+        // contract that lets a hook reference user-owned scripts portably.
+        let hook = ConfigHook::new(
+            hook_def("post_tool", Some("edit"),
+                "[ -n \"$GAIT_DIR\" ] && [ -n \"$GAIT_CODEBASE\" ] || exit 1"),
+            tx, gd(&dir), gd(&dir),
+        );
+        let result = hook.post_tool("edit", "call-1", &serde_json::json!({}), "original").await;
+        assert!(result.is_none(), "GAIT_DIR and GAIT_CODEBASE must be set: {result:?}");
+    }
+
+    #[tokio::test]
     async fn wrong_event_type_skips() {
         let dir = TempDir::new().unwrap();
         let tx = dir.path().join("transcript.jsonl");
-        let hook = ConfigHook::new(hook_def("pre_tool", Some("edit"), "exit 1"), tx);
+        let hook = ConfigHook::new(hook_def("pre_tool", Some("edit"), "exit 1"), tx, gd(&dir), gd(&dir));
         let result = hook.post_tool("edit", "call-1", &serde_json::json!({}), "original").await;
         assert!(result.is_none(), "pre_tool hook must not fire in post_tool");
     }

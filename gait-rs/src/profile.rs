@@ -140,7 +140,9 @@ impl Profile {
         let hooks: Vec<Box<dyn crate::types::Hook>> = self.hooks
             .iter()
             .map(|def| -> Box<dyn crate::types::Hook> {
-                Box::new(crate::config_hook::ConfigHook::new(def.clone(), tx_path.clone()))
+                Box::new(crate::config_hook::ConfigHook::new(
+                    def.clone(), tx_path.clone(), gait_dir.clone(), codebase_path.clone(),
+                ))
             })
             .collect();
         Ok(ResolvedProfile {
