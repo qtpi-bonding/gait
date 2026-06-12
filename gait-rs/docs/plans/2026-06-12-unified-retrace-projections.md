@@ -2,32 +2,37 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Fold every derived-state view in `retrace.rs` (transcript messages, enabled loadables, active resolution, and a new effective-allow set) onto a single `Projection` trait that all read the *same* input — the mutation-applied, full-session event stream — eliminating today's raw-vs-mutated and compaction-window inconsistencies, and making session-scoped permissions (F1) and log-derived "once" fall out as projections.
+**Goal:** Fold every derived-state view in `retrace.rs` (transcript messages, enabled loadables, active manifest, and a new effective-allow set) onto a single `Projection` trait that all read the *same* input — the mutation-applied, full-session event stream — eliminating today's raw-vs-mutated and compaction-window inconsistencies, and making session-scoped permissions (F1) and log-derived "once" fall out as projections.
 
-**Architecture:** The append-only event **Log** (the file on disk, renamed `transcript.jsonl` → `log.jsonl` in Phase 0) is folded into **projections** (read-models). The **Transcript** is *one* projection — the `Messages` `Vec<Message>` given to the model — NOT the file. **Mutations** (`Redact`/`Replace` + ToolCall↔ToolResult cascade) are the *substrate*: computed first, producing an "effective" event view that every projection folds in a single pass. **Every** derived view — `Messages`, `Loadables`, `Permissions`, `Resolution` — is a `Projection` impl; mutations are the layer underneath, not a peer.
+**Architecture:** The append-only event **Log** (the file on disk, renamed `transcript.jsonl` → `log.jsonl` in Phase 0) is folded into **projections** (read-models). The **Transcript** is *one* projection — the `ActiveMessages` `Vec<Message>` given to the model — NOT the file. **Mutations** (`Redact`/`Replace` + ToolCall↔ToolResult cascade) are the *substrate*: computed first, producing an "effective" event view that every projection folds in a single pass. **Every** derived view — `ActiveMessages`, `ActiveLoadables`, `ActivePermissions`, `ActiveManifest` — is a `Projection` impl; mutations are the layer underneath, not a peer.
 
-**Naming:** `Log` = the append-only file (`log.jsonl`). `Transcript` = the `Messages` projection. `Permissions` projection = the effective allow-set (renamed from `EffectiveAllow`). This vocabulary split is the whole point of the Phase-0 file rename — the file was called `transcript.jsonl` but it is the Log, not the Transcript.
+**Naming key (authoritative — supersedes any older names below):**
+- **Convention:** a bare name = a logged **event** (keeps its proto name); **`Active___`** = a derived **projection** folded from the Log.
+- **Log** = the append-only file, `log.jsonl` (Phase 0 renames it from `transcript.jsonl`). The word *"transcript"* is **retired entirely** — the file is the Log; the message context is `ActiveMessages`.
+- **Projections:** `ActiveMessages` (the message context the model reads), `ActiveLoadables`, `ActivePermissions` (the effective allow-set, was `EffectiveAllow`), `ActiveManifest`.
+- **One event renamed for clarity:** `Resolution → Manifest` (it holds the turn's full resolved spec — model · tools · skills · permissions · prompt; "Resolution" named the *act of resolving*, not the contents). All other events keep their proto names.
+- **Substrate:** `Mutation` (Redact/Replace + cascade) — not a projection; computed first.
 
 **Tech Stack:** Rust, prost/pbjson proto (`proto/log.proto` → `crate::proto::gait::log::v1`), `anyhow`. Tests: `cargo test` (per `gait-rs/CLAUDE.md`: redirect to a file, then grep — never re-run cargo just to see output).
 
 **Design principles (carry into every task):**
-- **Everything is a `Projection`.** `Messages`, `Loadables`, `Permissions`, `Resolution` all implement the same trait and fold the same mutation-applied, full-session stream. No projection reads raw events or a pre-sliced window. (Mutations are the substrate underneath, not a projection.)
-- **Compaction is its own boundary signal — not a projection.** A `Compaction` event means: *"restart the message context from this summary, but carry all derived state forward unchanged."* So the `Messages` projection treats a `Compaction` event as a reset point (clear its accumulated messages, emit the summary); **state** projections (`Loadables`, `Permissions`, `Resolution`) ignore it entirely and fold the whole session. Compaction is an *event handled differently by each projection*, never a projection itself.
+- **Everything is a `Projection`.** `ActiveMessages`, `ActiveLoadables`, `ActivePermissions`, `ActiveManifest` all implement the same trait and fold the same mutation-applied, full-session stream. No projection reads raw events or a pre-sliced window. (Mutations are the substrate underneath, not a projection.)
+- **Compaction is its own boundary signal — not a projection.** A `Compaction` event means: *"restart the message context from this summary, but carry all derived state forward unchanged."* So the `ActiveMessages` projection treats a `Compaction` event as a reset point (clear its accumulated messages, emit the summary); **state** projections (`ActiveLoadables`, `ActivePermissions`, `ActiveManifest`) ignore it entirely and fold the whole session. Compaction is an *event handled differently by each projection*, never a projection itself.
 - **Permission is forward-only.** A grant/revoke affects *subsequent* turns and the projected state; it never re-validates an already-recorded action. Reconstruction replays recorded facts, never re-executes.
-- **Revoke = a forward `deny` event, not deletion.** The Log is an append-only ledger: `allow(X)` and a later `deny(X)` BOTH stay on disk; the `Permissions` projection folds them (approve inserts, deny removes) so the *derived* set no longer contains X — while history honestly records that X was allowed in between (a tool may have run under it). `Redact`/undo is a **separate** mechanism reserved for genuine mistakes / secret-scrubbing: it appends a Redact event and the projection skips the target as if it never happened. Do NOT use redact for normal revocation — it would rewrite history dishonestly.
+- **Revoke = a forward `deny` event, not deletion.** The Log is an append-only ledger: `allow(X)` and a later `deny(X)` BOTH stay on disk; the `ActivePermissions` projection folds them (approve inserts, deny removes) so the *derived* set no longer contains X — while history honestly records that X was allowed in between (a tool may have run under it). `Redact`/undo is a **separate** mechanism reserved for genuine mistakes / secret-scrubbing: it appends a Redact event and the projection skips the target as if it never happened. Do NOT use redact for normal revocation — it would rewrite history dishonestly.
 
 ---
 
 ## File Structure
 
 - `proto/log.proto` — add `SCOPE_SESSION = 4` to the `Scope` enum (sibling repo of `gait-rs`; `build.rs` reads `../proto`).
-- `gait-rs/src/session/retrace.rs` — add the `Projection` trait + `effective_kinds` helper; reimplement `fold` as a single pass driving all projections; migrate `enabled_loadables` and `active_resolution` to fold the *mutation-applied, full-session* stream; add the `Permissions` projection. This is the heart of the change.
+- `gait-rs/src/session/retrace.rs` — add the `Projection` trait + `effective_kinds` helper; reimplement `fold` as a single pass driving all projections; migrate `enabled_loadables` and `active_manifest` to fold the *mutation-applied, full-session* stream; add the `ActivePermissions` projection. This is the heart of the change.
 - `gait-rs/src/permission.rs` — add `PermissionChoice::Session`; stop writing the per-session temp file for `Once` (it is now derived from the log); `Session`/`Once` produce log-only grants.
 - `gait-rs/src/ui/permission.rs` — add `[s] session` to the prompt and its parser.
 - `gait-rs/src/chat.rs` — handle `PermissionChoice::Session` → `PermissionsReplyItem{scope:"session"}`.
 - `gait-rs/src/turn.rs` — replace the once-approval temp-file read with `RetraceResult.effective_allow`; delete `once_approval_path`.
 
-Three phases. **Phase 0 (Task 0)** renames the Log file `transcript.jsonl` → `log.jsonl` (the vocabulary fix; mechanical, independently shippable). **Phase 1 (Tasks 1–5)** delivers the `Projection` trait + consistency fixes, with `Messages` as a projection too. **Phase 2 (Tasks 6–10)** adds the `Permissions` projection, session scope, and removes the temp-file hack.
+Three phases. **Phase 0 (Tasks 0, 0b)** does the mechanical renames: the Log file `transcript.jsonl` → `log.jsonl`, and the `Resolution` event → `Manifest`. Independently shippable. **Phase 1 (Tasks 1–5)** delivers the `Projection` trait + consistency fixes, with `ActiveMessages` as a projection too. **Phase 2 (Tasks 6–10)** adds the `ActivePermissions` projection, session scope, and removes the temp-file hack.
 
 Also add to the File Structure: `gait-rs/src/session/transcript.rs` — a single `log_path()` helper builds `…/log.jsonl` (hard rename from `transcript.jsonl`, no backward-compat fallback).
 
@@ -66,7 +71,7 @@ Expected: FAIL — `cannot find function log_path`.
 
 ```rust
 /// The session's append-only Log file. (The file is the Log, not the Transcript —
-/// the Transcript is the `Messages`/`Transcript` projection derived from it.)
+/// the Transcript is the `ActiveMessages`/`Transcript` projection derived from it.)
 pub fn log_path(gait_dir: &std::path::Path, session_id: &str) -> std::path::PathBuf {
     gait_dir.join("sessions").join(session_id).join("log.jsonl")
 }
@@ -79,11 +84,56 @@ Run: `grep -rn '"transcript.jsonl"' gait-rs/src gait-rs/tests` → replace each 
 - [ ] **Step 5: Run the full suite + commit**
 
 Run: `cargo test -p gait-ai 2>&1 > /tmp/t.txt; grep -E "test result|FAILED" /tmp/t.txt`
-Expected: all PASS; `grep -rn '"transcript.jsonl"' gait-rs/src` shows only the fallback in `log_path`.
+Expected: all PASS; `grep -rn '"transcript.jsonl"' gait-rs/src` shows nothing — the single helper builds the path.
 
 ```bash
 git add gait-rs/src gait-rs/tests
-git commit -m "refactor: rename Log file transcript.jsonl -> log.jsonl (read-fallback for legacy)"
+git commit -m "refactor: rename Log file transcript.jsonl -> log.jsonl (hard rename, no fallback)"
+```
+
+---
+
+### Task 0b: Rename the `Resolution` event → `Manifest` in the proto
+
+**Files:**
+- Modify: `proto/log.proto` (message `Resolution` at :138, the oneof field `resolution` at :2)
+- Modify: `gait-rs/src/proto/events.rs` (`resolution_msg` → `manifest_msg`)
+- Sweep: `pb::Resolution` / `payload::Kind::Resolution` / `resolution_msg` references across `gait-rs/src/**`
+
+"Resolution" names the *act of resolving*, not the contents (model · tools · skills · permissions · prompt). Rename the event to `Manifest`. No backward compat (same spirit as Task 0). The projection that folds it is `ActiveManifest` (Task 3).
+
+- [ ] **Step 1: Write the failing test** in `gait-rs/src/proto/tests.rs`
+
+```rust
+#[test]
+fn manifest_event_exists_resolution_gone() {
+    use crate::proto::gait::log::v1::{payload, Manifest};
+    // The message type is now `Manifest`, and the oneof arm is `Manifest`.
+    let _ = payload::Kind::Manifest(Manifest::default());
+}
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `cargo test -p gait-ai manifest_event_exists 2>&1 > /tmp/t.txt; grep -E "error|cannot find|no variant" /tmp/t.txt | head`
+Expected: FAIL — `no variant or associated item named Manifest`.
+
+- [ ] **Step 3: Rename in `proto/log.proto`**
+
+At :138, `message Resolution {` → `message Manifest {`. In the `Payload` oneof (:2), `Resolution resolution = 2;` → `Manifest manifest = 2;` (keep field number 2). Build regenerates the Rust types via `build.rs`.
+
+- [ ] **Step 4: Rename `resolution_msg` → `manifest_msg` and sweep references**
+
+In `events.rs`, rename `pub fn resolution_msg(...) -> pb::Resolution` → `manifest_msg(...) -> pb::Manifest`. Then: `grep -rn 'resolution_msg\|pb::Resolution\|Kind::Resolution' gait-rs/src` and update each (notably `turn.rs` drift-guard at :406, and `retrace.rs` `active_manifest`).
+
+- [ ] **Step 5: Run the full suite + commit**
+
+Run: `cargo test -p gait-ai 2>&1 > /tmp/t.txt; grep -E "test result|FAILED" /tmp/t.txt`
+Expected: all PASS; `grep -rn 'Resolution' gait-rs/src` returns nothing.
+
+```bash
+git add proto/log.proto gait-rs/src
+git commit -m "refactor(proto): rename Resolution event -> Manifest"
 ```
 
 ---
@@ -141,14 +191,14 @@ pub(crate) fn effective_kinds<'a>(
 /// input — the mutation-applied, full-session stream produced by `effective_kinds`
 /// — so two projections can never disagree about what happened. Mutations are the
 /// substrate (applied before folding); compaction is NOT handled here (only the
-/// `Messages` projection cares about it).
+/// `ActiveMessages` projection cares about it).
 pub(crate) trait Projection {
     type State;
     /// Initial state before any events (seeded from config where relevant).
     fn seed(&self) -> Self::State;
     /// Fold one event's effective payload kind into the state.
     fn apply(&self, state: &mut Self::State, event: &Event, kind: &payload::Kind);
-    /// Finalize (default: identity). Used by `Messages` to drop a trailing nothing.
+    /// Finalize (default: identity). Used by `ActiveMessages` to drop a trailing nothing.
     fn finish(&self, state: Self::State) -> Self::State { state }
 }
 ```
@@ -165,7 +215,7 @@ git add gait-rs/src/session/retrace.rs
 git commit -m "feat(retrace): add Projection trait + effective_kinds substrate view"
 ```
 
-### Task 2: Migrate `enabled_loadables` to a `Loadables` projection (fix compaction + mutation leaks)
+### Task 2: Migrate `enabled_loadables` to a `ActiveLoadables` projection (fix compaction + mutation leaks)
 
 **Files:**
 - Modify: `gait-rs/src/session/retrace.rs:340-359` (the existing `enabled_loadables`)
@@ -185,7 +235,7 @@ fn loadables_projection_honors_undo_and_full_session() {
     // A compaction AFTER the load must NOT reset the enabled set (full-session).
     let comp = wire::mint(events::compaction("summary".into()), &[], 2);
     let all = vec![load.clone(), comp];
-    let p = Loadables { seed: HashSet::new() };
+    let p = ActiveLoadables { seed: HashSet::new() };
     let muts = HashMap::new();
     let got = run_projection(&p, &all, &muts);
     assert!(got.contains("slack"), "load before compaction must stay enabled (full session)");
@@ -201,9 +251,9 @@ fn loadables_projection_honors_undo_and_full_session() {
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `cargo test -p gait-ai loadables_projection_honors_undo 2>&1 > /tmp/t.txt; grep -E "error|cannot find" /tmp/t.txt | head`
-Expected: FAIL — `cannot find type Loadables` / `run_projection`.
+Expected: FAIL — `cannot find type ActiveLoadables` / `run_projection`.
 
-- [ ] **Step 3: Add `run_projection` test helper + the `Loadables` projection**
+- [ ] **Step 3: Add `run_projection` test helper + the `ActiveLoadables` projection**
 
 Add a single-projection driver (used by tests and `fold`) below the trait:
 
@@ -222,10 +272,10 @@ pub(crate) fn run_projection<P: Projection>(
 /// Active loadable names. Seeds from config defaults; replays `load(name, enabled)`
 /// tool calls as last-write-wins toggles. Folds the FULL session (compaction does
 /// not reset it) and honors mutations (an undone load disables).
-pub(crate) struct Loadables {
+pub(crate) struct ActiveLoadables {
     pub seed: std::collections::HashSet<String>,
 }
-impl Projection for Loadables {
+impl Projection for ActiveLoadables {
     type State = std::collections::HashSet<String>;
     fn seed(&self) -> Self::State { self.seed.clone() }
     fn apply(&self, state: &mut Self::State, _ev: &Event, kind: &payload::Kind) {
@@ -244,13 +294,13 @@ impl Projection for Loadables {
 Then make the old free function delegate so existing callers keep working until Task 5 rewires them:
 
 ```rust
-/// Deprecated shim — prefer the `Loadables` projection via `fold`. Kept so the
+/// Deprecated shim — prefer the `ActiveLoadables` projection via `fold`. Kept so the
 /// run_turn callsite compiles until Task 5 switches it to RetraceResult.
 pub fn enabled_loadables(
     events: &[Event],
     config_enabled: &std::collections::HashSet<String>,
 ) -> std::collections::HashSet<String> {
-    run_projection(&Loadables { seed: config_enabled.clone() }, events, &HashMap::new())
+    run_projection(&ActiveLoadables { seed: config_enabled.clone() }, events, &HashMap::new())
 }
 ```
 
@@ -263,10 +313,10 @@ Expected: PASS (and the existing `enabled_loadables_seeds_from_config_and_replay
 
 ```bash
 git add gait-rs/src/session/retrace.rs
-git commit -m "feat(retrace): Loadables projection — full-session, mutation-aware"
+git commit -m "feat(retrace): ActiveLoadables projection — full-session, mutation-aware"
 ```
 
-### Task 3: Migrate `active_resolution` to a `Resolution` projection (LWW register)
+### Task 3: Migrate `active_manifest` to an `ActiveManifest` projection (LWW register)
 
 **Files:**
 - Modify: `gait-rs/src/session/retrace.rs:401-410`
@@ -276,48 +326,48 @@ git commit -m "feat(retrace): Loadables projection — full-session, mutation-aw
 
 ```rust
 #[test]
-fn resolution_projection_is_last_write_wins() {
+fn active_manifest_is_last_write_wins() {
     use crate::proto::{events, wire};
-    let r1 = wire::mint(wire::body(payload::Kind::Resolution(pb::Resolution {
+    let r1 = wire::mint(wire::body(payload::Kind::Manifest(pb::Manifest {
         model: "m1".into(), ..Default::default() })), &[], 1);
-    let r2 = wire::mint(wire::body(payload::Kind::Resolution(pb::Resolution {
+    let r2 = wire::mint(wire::body(payload::Kind::Manifest(pb::Manifest {
         model: "m2".into(), ..Default::default() })), &[], 2);
-    let got = run_projection(&Resolution, &vec![r1, r2], &HashMap::new());
-    assert_eq!(got.unwrap().model, "m2", "latest Resolution wins");
+    let got = run_projection(&ActiveManifest, &vec![r1, r2], &HashMap::new());
+    assert_eq!(got.unwrap().model, "m2", "latest Manifest wins");
 }
 ```
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `cargo test -p gait-ai resolution_projection_is_last 2>&1 > /tmp/t.txt; grep -E "error|cannot find" /tmp/t.txt | head`
-Expected: FAIL — `cannot find value Resolution` (the unit struct).
+Run: `cargo test -p gait-ai active_manifest_is_last 2>&1 > /tmp/t.txt; grep -E "error|cannot find" /tmp/t.txt | head`
+Expected: FAIL — `cannot find value ActiveManifest` (the unit struct).
 
-- [ ] **Step 3: Add the `Resolution` projection**
+- [ ] **Step 3: Add the `ActiveManifest` projection**
 
 ```rust
-/// Last-write-wins register over `Resolution` events.
-pub(crate) struct Resolution;
-impl Projection for Resolution {
-    type State = Option<pb::Resolution>;
+/// Last-write-wins register over `Manifest` events.
+pub(crate) struct ActiveManifest;
+impl Projection for ActiveManifest {
+    type State = Option<pb::Manifest>;
     fn seed(&self) -> Self::State { None }
     fn apply(&self, state: &mut Self::State, _ev: &Event, kind: &payload::Kind) {
-        if let payload::Kind::Resolution(r) = kind { *state = Some(r.clone()); }
+        if let payload::Kind::Manifest(r) = kind { *state = Some(r.clone()); }
     }
 }
 ```
 
-Keep the existing `active_resolution` free function as a one-line shim delegating to `run_projection(&Resolution, events, &HashMap::new())` so other callers are untouched.
+Keep the existing `active_manifest` free function as a one-line shim delegating to `run_projection(&ActiveManifest, events, &HashMap::new())` so other callers are untouched.
 
 - [ ] **Step 4: Run to verify it passes**
 
-Run: `cargo test -p gait-ai resolution_projection 2>&1 > /tmp/t.txt; grep -E "test result|error" /tmp/t.txt | head`
+Run: `cargo test -p gait-ai active_manifest 2>&1 > /tmp/t.txt; grep -E "test result|error" /tmp/t.txt | head`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add gait-rs/src/session/retrace.rs
-git commit -m "feat(retrace): Resolution projection (LWW register)"
+git commit -m "feat(retrace): ActiveManifest projection (LWW register)"
 ```
 
 ### Task 4: Rebuild `fold` as a single pass over all projections
@@ -326,14 +376,14 @@ git commit -m "feat(retrace): Resolution projection (LWW register)"
 - Modify: `gait-rs/src/session/retrace.rs:378-395` (the `fold` body) and `RetraceResult` (retrace.rs:362-372)
 - Test: same file
 
-`Messages` becomes a `Projection` too (`State = Vec<Message>`), so *everything* goes through one trait. Port the per-event match arms from today's `messages_applying` (retrace.rs:74-250) into `Messages::apply`, with **one change**: instead of pre-slicing `all_events[last_compaction..]`, the `Compaction` arm `state.clear()`s the accumulated messages and then pushes the summary message. This makes compaction "restart the message context, carry state forward" literal — `Messages` resets on the event; state projections never see it as special. `fold` then drives all four projections in a single pass.
+`ActiveMessages` becomes a `Projection` too (`State = Vec<Message>`), so *everything* goes through one trait. Port the per-event match arms from today's `messages_applying` (retrace.rs:74-250) into `ActiveMessages::apply`, with **one change**: instead of pre-slicing `all_events[last_compaction..]`, the `Compaction` arm `state.clear()`s the accumulated messages and then pushes the summary message. This makes compaction "restart the message context, carry state forward" literal — `ActiveMessages` resets on the event; state projections never see it as special. `fold` then drives all four projections in a single pass.
 
 ```rust
 /// The Transcript: the Vec<Message> the model reads. Resets on a Compaction event
 /// (restart context from the summary); otherwise ports the existing per-event
 /// rendering from messages_applying. Honors mutations via the effective stream.
-pub(crate) struct Messages;
-impl Projection for Messages {
+pub(crate) struct ActiveMessages;
+impl Projection for ActiveMessages {
     type State = Vec<Message>;
     fn seed(&self) -> Self::State { vec![] }
     fn apply(&self, msgs: &mut Self::State, ev: &Event, kind: &payload::Kind) {
@@ -345,7 +395,7 @@ impl Projection for Messages {
             }
             // ... port the remaining arms verbatim from messages_applying (UserTurn,
             // AssistantText, ToolCall, ToolResult, Clarify/Inform, AgentUpdate, …),
-            // pushing into `msgs`. SessionStart/Resolution/etc. are ignored here.
+            // pushing into `msgs`. SessionStart/Manifest/etc. are ignored here.
             _ => { /* ported arms */ }
         }
         let _ = ev;
@@ -384,7 +434,7 @@ Add to `RetraceResult` (retrace.rs:362):
     pub effective_allow: std::collections::HashSet<String>,
 ```
 
-Rewrite `fold` (the seed for `Permissions` is added in Task 6; until then pass an empty set):
+Rewrite `fold` (the seed for `ActivePermissions` is added in Task 6; until then pass an empty set):
 
 ```rust
 pub fn fold(
@@ -396,23 +446,23 @@ pub fn fold(
     apply_cascade(&mut mutations, all_events);
 
     // Phase 1 — state projections fold the SAME mutation-applied full session.
-    let enabled_loadables = run_projection(&Loadables { seed: config_enabled.clone() }, all_events, &mutations);
-    let active_resolution = run_projection(&Resolution, all_events, &mutations);
-    let effective_allow   = run_projection(&Permissions { seed: Default::default() }, all_events, &mutations);
+    let enabled_loadables = run_projection(&ActiveLoadables { seed: config_enabled.clone() }, all_events, &mutations);
+    let active_manifest = run_projection(&ActiveManifest, all_events, &mutations);
+    let effective_allow   = run_projection(&ActivePermissions { seed: Default::default() }, all_events, &mutations);
 
-    // Messages is a projection too — it resets on Compaction (compaction handled
+    // ActiveMessages is a projection too — it resets on Compaction (compaction handled
     // here only); all four fold the SAME mutation-applied stream.
-    let messages = run_projection(&Messages, all_events, &mutations);
+    let messages = run_projection(&ActiveMessages, all_events, &mutations);
 
-    Ok(RetraceResult { messages, enabled_loadables, active_resolution, effective_allow, mutations })
+    Ok(RetraceResult { messages, enabled_loadables, active_manifest, effective_allow, mutations })
 }
 ```
 
-Add a temporary stub `Permissions` (fully implemented in Task 6) so this compiles:
+Add a temporary stub `ActivePermissions` (fully implemented in Task 6) so this compiles:
 
 ```rust
-pub(crate) struct Permissions { pub seed: std::collections::HashSet<String> }
-impl Projection for Permissions {
+pub(crate) struct ActivePermissions { pub seed: std::collections::HashSet<String> }
+impl Projection for ActivePermissions {
     type State = std::collections::HashSet<String>;
     fn seed(&self) -> Self::State { self.seed.clone() }
     fn apply(&self, _s: &mut Self::State, _e: &Event, _k: &payload::Kind) {}
@@ -459,7 +509,7 @@ with a fold over the full event list (the same `pre_events`/`post_compaction` so
 let enabled_names = {
     let muts = { let mut m = retrace::active_mutations(&pre_events);
                  retrace::apply_cascade(&mut m, &pre_events); m };
-    retrace::run_projection(&retrace::Loadables { seed: config_enabled.clone() }, &pre_events, &muts)
+    retrace::run_projection(&retrace::ActiveLoadables { seed: config_enabled.clone() }, &pre_events, &muts)
 };
 ```
 
@@ -481,10 +531,10 @@ git commit -m "fix(turn): loadables fold full session (compaction no longer rese
 
 ## Phase 2 — Permission projection: session scope + log-derived once
 
-### Task 6: Implement the `Permissions` projection (once + session lifetimes)
+### Task 6: Implement the `ActivePermissions` projection (once + session lifetimes)
 
 **Files:**
-- Modify: `gait-rs/src/session/retrace.rs` (replace the Task-4 stub `Permissions`)
+- Modify: `gait-rs/src/session/retrace.rs` (replace the Task-4 stub `ActivePermissions`)
 - Test: same file
 
 Folds `PermissionsReply` events. Each `PermissionsReplyItem` has `decision` (`"approve"`/`"deny"`), `text` (the pattern), and `scope` (`"once"|"session"|"agent"|"global"`). Lifetime rules:
@@ -506,7 +556,7 @@ fn effective_allow_session_persists_once_expires_on_turn_complete() {
         text: Some("shell:ls".into()), scope: Some("once".into()) }]), &[], 2);
     let done = wire::mint(events::turn_complete(/* minimal TurnComplete */), &[], 3);
     let all = vec![sess, once, done];
-    let st = run_projection(&Permissions { seed: Default::default() }, &all, &HashMap::new());
+    let st = run_projection(&ActivePermissions { seed: Default::default() }, &all, &HashMap::new());
     assert!(st.session.contains("shell:cargo test"), "session grant persists past TurnComplete");
     assert!(!st.once.contains("shell:ls"), "once grant expires at TurnComplete");
 }
@@ -523,7 +573,7 @@ fn effective_allow_session_deny_revokes_but_ledger_keeps_both() {
     let all = vec![approve, deny];
     // Ledger: BOTH events remain in the Log; only the derived set drops the pattern.
     assert_eq!(all.len(), 2, "append-only — allow and deny both stay");
-    let st = run_projection(&Permissions { seed: Default::default() }, &all, &HashMap::new());
+    let st = run_projection(&ActivePermissions { seed: Default::default() }, &all, &HashMap::new());
     assert!(!st.session.contains("shell:rm"), "forward deny revokes from the derived set");
 }
 ```
@@ -546,13 +596,13 @@ Replace the Task-4 stub:
 /// config-file backed and ignored here. Because this folds the mutation-applied
 /// stream, undo/redact of a grant ALSO drops it — but redact is for mistakes, not
 /// normal revocation.
-pub(crate) struct Permissions { pub seed: std::collections::HashSet<String> }
+pub(crate) struct ActivePermissions { pub seed: std::collections::HashSet<String> }
 #[derive(Default)]
 pub(crate) struct AllowState {
     session: std::collections::HashSet<String>,
     once: std::collections::HashSet<String>,
 }
-impl Projection for Permissions {
+impl Projection for ActivePermissions {
     type State = AllowState;
     fn seed(&self) -> Self::State {
         AllowState { session: self.seed.clone(), once: Default::default() }
@@ -578,10 +628,10 @@ impl Projection for Permissions {
 }
 ```
 
-Because `Permissions::State` is `AllowState` (not a flat set), adjust the `fold` callsite from Task 4 to flatten:
+Because `ActivePermissions::State` is `AllowState` (not a flat set), adjust the `fold` callsite from Task 4 to flatten:
 
 ```rust
-let allow_state = run_projection(&Permissions { seed: Default::default() }, all_events, &mutations);
+let allow_state = run_projection(&ActivePermissions { seed: Default::default() }, all_events, &mutations);
 let effective_allow: std::collections::HashSet<String> =
     allow_state.session.union(&allow_state.once).cloned().collect();
 ```
@@ -595,7 +645,7 @@ Expected: PASS.
 
 ```bash
 git add gait-rs/src/session/retrace.rs
-git commit -m "feat(retrace): Permissions projection — session persists, once expires per turn"
+git commit -m "feat(retrace): ActivePermissions projection — session persists, once expires per turn"
 ```
 
 ### Task 7: Add `SCOPE_SESSION` to the proto
@@ -806,7 +856,7 @@ with a fold of the full session, seeded by config `allow`:
         let muts = { let mut m = retrace::active_mutations(&pre_events);
                      retrace::apply_cascade(&mut m, &pre_events); m };
         let st = retrace::run_projection(
-            &retrace::Permissions { seed: effective_allow.clone() }, &pre_events, &muts);
+            &retrace::ActivePermissions { seed: effective_allow.clone() }, &pre_events, &muts);
         effective_allow.extend(st.session);
         effective_allow.extend(st.once);
     }
@@ -834,21 +884,21 @@ git commit -m "feat(turn): effective_allow from projection; delete once-approval
 **Spec coverage:**
 - Rename Log file `transcript.jsonl` → `log.jsonl` (vocabulary fix) → Task 0. ✓
 - Projection trait + one consistent input → Task 1. ✓
-- Loadables consistency (full-session + mutation-aware) → Task 2 + Task 5. ✓
-- Resolution as projection → Task 3. ✓
-- `Messages` is also a projection (resets on Compaction) + single-pass `fold` → Task 4. ✓
-- `Permissions` projection (renamed from EffectiveAllow), session-scoped allow (F1) → Tasks 6–10. ✓
+- ActiveLoadables consistency (full-session + mutation-aware) → Task 2 + Task 5. ✓
+- ActiveManifest as projection → Task 3. ✓
+- `ActiveMessages` is also a projection (resets on Compaction) + single-pass `fold` → Task 4. ✓
+- `ActivePermissions` projection (renamed from EffectiveAllow), session-scoped allow (F1) → Tasks 6–10. ✓
 - Wrap `once` into the log (delete temp file) → Tasks 6, 8, 10. ✓
-- Compaction is its own boundary signal — handled only by `Messages` (reset), ignored by state projections → Tasks 2, 4, 5. ✓
+- Compaction is its own boundary signal — handled only by `ActiveMessages` (reset), ignored by state projections → Tasks 2, 4, 5. ✓
 - Forward-only permission; revoke = a forward `deny` ledger entry (append-only — allow+deny both remain), redact reserved for mistakes → Task 6 folds session approve/deny; both honored by the mutation-applied stream. ✓
 
-**Type consistency:** `Projection::apply(&self, &mut State, &Event, &payload::Kind)` is used identically in Tasks 1–6. `Permissions::State = AllowState { session, once }` defined in Task 6 and flattened in Task 4's `fold` and Task 10's run_turn (both `union`/`extend` the two sets). `enabled_loadables`/`active_resolution` shims (Tasks 2–3) keep external callers compiling until rewired. The public `messages()` / `messages_from_path()` (retrace.rs:50-57) must be updated in Task 4 to delegate to `run_projection(&Messages, …)` so `ingestor.rs::retrace` and the integration tests keep working.
+**Type consistency:** `Projection::apply(&self, &mut State, &Event, &payload::Kind)` is used identically in Tasks 1–6. `ActivePermissions::State = AllowState { session, once }` defined in Task 6 and flattened in Task 4's `fold` and Task 10's run_turn (both `union`/`extend` the two sets). `enabled_loadables`/`active_manifest` shims (Tasks 2–3) keep external callers compiling until rewired. The public `messages()` / `messages_from_path()` (retrace.rs:50-57) must be updated in Task 4 to delegate to `run_projection(&ActiveMessages, …)` so `ingestor.rs::retrace` and the integration tests keep working.
 
 **Open verification for the implementer (not placeholders — confirm against live code):**
 1. The exact variable name of the full event vector in `run_turn` (the plan calls it `pre_events`; confirm at turn.rs:~478 and use the **un-sliced** list, never `post_compaction`).
 2. Whether `effective_allow` downstream (turn.rs:640, :799) is `Vec<String>` or a set — match it in Task 10.
 3. The exact constructor names `events::permissions_reply`, `events::turn_complete`, `events::redact`, `events::compaction`, `wire::mint`, `wire::body` (used in tests) — confirm signatures in `src/proto/events.rs` / `src/proto/wire.rs` and adjust test setup to match.
-4. Porting `messages_applying` into `Messages::apply`: the current fn returns `anyhow::Result` but its body is effectively infallible (uses `.unwrap_or(...)`). Make `Messages::apply` infallible (default on any parse miss, as today), so `fold`/`messages()` no longer need `?`. Confirm no arm genuinely errors before dropping the `Result`.
+4. Porting `messages_applying` into `ActiveMessages::apply`: the current fn returns `anyhow::Result` but its body is effectively infallible (uses `.unwrap_or(...)`). Make `ActiveMessages::apply` infallible (default on any parse miss, as today), so `fold`/`messages()` no longer need `?`. Confirm no arm genuinely errors before dropping the `Result`.
 
 ---
 
