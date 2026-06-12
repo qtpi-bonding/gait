@@ -11,7 +11,7 @@
 **Design principles (carry into every task):**
 - **One input for all projections.** Every projection folds the mutation-applied, full-session stream. No projection reads raw events or a pre-sliced window.
 - **Permission is forward-only.** A grant/revoke affects *subsequent* turns and the projected state; it never re-validates an already-recorded action. Reconstruction replays recorded facts, never re-executes.
-- **Revoke = undo.** Revoking a session grant is undoing the turn that granted it (a `Redact` mutation on the `PermissionsReply`), which the substrate already cascades. No separate revoke event in v1 (YAGNI).
+- **Revoke = a forward `deny` event, not deletion.** The Log is an append-only ledger: `allow(X)` and a later `deny(X)` BOTH stay on disk; the `EffectiveAllow` projection folds them (approve inserts, deny removes) so the *derived* set no longer contains X — while history honestly records that X was allowed in between (a tool may have run under it). `Redact`/undo is a **separate** mechanism reserved for genuine mistakes / secret-scrubbing: it appends a Redact event and the projection skips the target as if it never happened. Do NOT use redact for normal revocation — it would rewrite history dishonestly.
 
 ---
 
@@ -402,7 +402,7 @@ git commit -m "fix(turn): loadables fold full session (compaction no longer rese
 - Test: same file
 
 Folds `PermissionsReply` events. Each `PermissionsReplyItem` has `decision` (`"approve"`/`"deny"`), `text` (the pattern), and `scope` (`"once"|"session"|"agent"|"global"`). Lifetime rules:
-- **session**: approve → insert pattern; persists for the whole session. (Revoke = undo the granting turn → the `Redact` mutation drops the event → projection no longer sees it. No explicit deny needed in v1.)
+- **session**: approve → insert pattern; persists for the whole session. **deny → remove pattern** (the honest forward revoke — both the approve and the deny stay in the ledger; only the derived set changes). Undo/redact of the granting turn ALSO drops it (projection folds the mutation-applied stream), but that is for mistakes, not normal revocation.
 - **once**: approve → active only if no `TurnComplete` has occurred *after* this event. Implement by clearing the once-set whenever a `TurnComplete` is folded.
 - **agent/global**: ignored here — they are written to config files and already present in the seed.
 
@@ -420,9 +420,25 @@ fn effective_allow_session_persists_once_expires_on_turn_complete() {
         text: Some("shell:ls".into()), scope: Some("once".into()) }]), &[], 2);
     let done = wire::mint(events::turn_complete(/* minimal TurnComplete */), &[], 3);
     let all = vec![sess, once, done];
-    let got = run_projection(&EffectiveAllow { seed: Default::default() }, &all, &HashMap::new());
-    assert!(got.contains("shell:cargo test"), "session grant persists past TurnComplete");
-    assert!(!got.contains("shell:ls"), "once grant expires at TurnComplete");
+    let st = run_projection(&EffectiveAllow { seed: Default::default() }, &all, &HashMap::new());
+    assert!(st.session.contains("shell:cargo test"), "session grant persists past TurnComplete");
+    assert!(!st.once.contains("shell:ls"), "once grant expires at TurnComplete");
+}
+
+#[test]
+fn effective_allow_session_deny_revokes_but_ledger_keeps_both() {
+    use crate::proto::{events, wire};
+    let approve = wire::mint(events::permissions_reply(&[tx::PermissionsReplyItem{
+        id: "1".into(), decision: "approve".into(),
+        text: Some("shell:rm".into()), scope: Some("session".into()) }]), &[], 1);
+    let deny = wire::mint(events::permissions_reply(&[tx::PermissionsReplyItem{
+        id: "2".into(), decision: "deny".into(),
+        text: Some("shell:rm".into()), scope: Some("session".into()) }]), &[], 2);
+    let all = vec![approve, deny];
+    // Ledger: BOTH events remain in the Log; only the derived set drops the pattern.
+    assert_eq!(all.len(), 2, "append-only — allow and deny both stay");
+    let st = run_projection(&EffectiveAllow { seed: Default::default() }, &all, &HashMap::new());
+    assert!(!st.session.contains("shell:rm"), "forward deny revokes from the derived set");
 }
 ```
 
@@ -437,11 +453,13 @@ Replace the Task-4 stub:
 
 ```rust
 /// Effective session allow-list. Seeds from config (global+agent, already loaded
-/// into `allow`). Folds `PermissionsReply` grants: `session` scope persists for the
-/// session; `once` scope is active only until the next `TurnComplete`. `agent`/
-/// `global` scopes are config-file backed and ignored here. Revocation of a session
-/// grant is undoing the granting turn (a Redact mutation), honored upstream because
-/// this folds the mutation-applied stream.
+/// into `allow`). Folds `PermissionsReply` grants as an append-only ledger:
+/// `session` approve inserts and `session` deny removes (the honest forward revoke
+/// — both events remain in the Log; only the derived set changes); `once` approve
+/// is active only until the next `TurnComplete`. `agent`/`global` scopes are
+/// config-file backed and ignored here. Because this folds the mutation-applied
+/// stream, undo/redact of a grant ALSO drops it — but redact is for mistakes, not
+/// normal revocation.
 pub(crate) struct EffectiveAllow { pub seed: std::collections::HashSet<String> }
 #[derive(Default)]
 pub(crate) struct AllowState {
@@ -458,12 +476,12 @@ impl Projection for EffectiveAllow {
             payload::Kind::TurnComplete(_) => state.once.clear(), // once grants expire per turn
             payload::Kind::PermissionsReply(r) => {
                 for item in &r.items {
-                    if item.decision != "approve" { continue; }
                     let Some(pat) = item.text.clone() else { continue; };
-                    match item.scope.as_deref() {
-                        Some("session") => { state.session.insert(pat); }
-                        Some("once")    => { state.once.insert(pat); }
-                        _ => {} // agent/global handled by config seed
+                    match (item.scope.as_deref(), item.decision.as_str()) {
+                        (Some("session"), "approve") => { state.session.insert(pat); }
+                        (Some("session"), "deny")    => { state.session.remove(&pat); } // forward revoke
+                        (Some("once"), "approve")    => { state.once.insert(pat); }
+                        _ => {} // agent/global via config seed; deny-once is a no-op
                     }
                 }
             }
@@ -735,7 +753,7 @@ git commit -m "feat(turn): effective_allow from projection; delete once-approval
 - Session-scoped allow (F1) → Tasks 6–10. ✓
 - Wrap `once` into the log (delete temp file) → Tasks 6, 8, 10. ✓
 - Compaction stays inside `Messages` only → Tasks 2, 4, 5 (state projections never slice on compaction). ✓
-- Forward-only permission / revoke = undo → encoded in Task 6's design + honored by folding the mutation-applied stream. ✓
+- Forward-only permission; revoke = a forward `deny` ledger entry (append-only — allow+deny both remain), redact reserved for mistakes → Task 6 folds session approve/deny; both honored by the mutation-applied stream. ✓
 
 **Type consistency:** `Projection::apply(&self, &mut State, &Event, &payload::Kind)` is used identically in Tasks 1–6. `EffectiveAllow::State = AllowState { session, once }` defined in Task 6 and flattened in Task 4's `fold` and Task 10's run_turn (both `union`/`extend` the two sets). `enabled_loadables`/`active_resolution` shims (Tasks 2–3) keep external callers compiling until rewired.
 
