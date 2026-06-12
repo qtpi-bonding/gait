@@ -367,8 +367,9 @@ async fn apply_curate_filter(
         mcp_clients: std::collections::HashMap::new(),
         skill_registry: vec![],
         config_enabled: std::collections::HashSet::new(),
-        output_schema_retries: 3,
-        hooks: vec![],
+            output_schema_retries: 3,
+            result_schema: None,
+            hooks: vec![],
     };
     // curate is a side turn — transcript only, no live stream consumer.
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();

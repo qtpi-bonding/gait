@@ -14,6 +14,7 @@ pub struct Profile {
     pub config_tools: Vec<crate::config::ConfigTool>,   // shell-command tool descriptors from gait.jsonc (config.tools: Vec<ConfigTool>)
     pub config_enabled: std::collections::HashSet<String>,
     pub output_schema_retries: u8,
+    pub result_schema: Option<serde_json::Value>,
     pub hooks: Vec<crate::config::HookDef>,
 }
 
@@ -33,6 +34,7 @@ pub struct ResolvedProfile {
     pub skill_registry: Vec<crate::config::SkillDef>,
     pub config_enabled: std::collections::HashSet<String>,
     pub output_schema_retries: u8,
+    pub result_schema: Option<serde_json::Value>,
     pub hooks: Vec<Box<dyn crate::types::Hook>>,
 }
 
@@ -61,7 +63,14 @@ impl Profile {
             .or_else(|| agent_path.and_then(crate::agent_frontmatter::read_agent_model))
             .unwrap_or_else(|| config.model.clone());
 
-        let instructions = crate::prompt::compose_system_prompt(gait_dir, codebase, agent_path);
+        let mut instructions = crate::prompt::compose_system_prompt(gait_dir, codebase, agent_path);
+        if let Some(schema) = &config.result_schema {
+            let schema_str = serde_json::to_string_pretty(schema).unwrap_or_default();
+            instructions.push_str(&format!(
+                "\n<result-schema>\nYour `result` field when calling `structured_done` must match this JSON Schema:\n{}\nValidation is enforced. If your call fails, you will receive the validation error and must retry with a conforming value.\n</result-schema>\n",
+                schema_str
+            ));
+        }
 
         let allow = agent_path
             .and_then(|p| crate::agent_frontmatter::read_agent_allow(p.to_path_buf()).ok())
@@ -100,6 +109,7 @@ impl Profile {
             config_tools: config.tools.clone(),
             config_enabled,
             output_schema_retries: config.output_schema_retries,
+            result_schema: config.result_schema.clone(),
             hooks: config.hooks.clone(),
         }
     }
@@ -150,6 +160,11 @@ impl Profile {
         for ct in &self.config_tools {
             tools.push(build_config_tool(ct, &gait_dir, &codebase_path));
         }
+        if let Some(schema) = &self.result_schema {
+            if let Some(pos) = tools.iter().position(|t| t.name() == "structured_done") {
+                tools[pos] = Box::new(crate::tools::OutputTool::with_schema(schema.clone()));
+            }
+        }
 
         let tx_path = gait_dir.join("sessions").join(&session_id).join("log.jsonl");
         let hooks: Vec<Box<dyn crate::types::Hook>> = self.hooks
@@ -172,6 +187,7 @@ impl Profile {
             skill_registry: self.skills,
             config_enabled: self.config_enabled,
             output_schema_retries: self.output_schema_retries,
+            result_schema: self.result_schema,
             hooks,
         })
     }
@@ -195,6 +211,7 @@ impl ResolvedProfile {
             skill_registry: vec![],
             config_enabled: std::collections::HashSet::new(),
             output_schema_retries: 3,
+            result_schema: None,
             hooks: vec![],
         }
     }
@@ -283,6 +300,7 @@ mod tests {
             config_tools: vec![],
             config_enabled: HashSet::new(),
             output_schema_retries: 3,
+            result_schema: None,
             hooks: vec![],
         };
         let resolved = profile.resolve(

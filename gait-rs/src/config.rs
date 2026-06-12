@@ -101,6 +101,10 @@ pub struct GaitConfig {
     /// Max turn iterations before giving up. Defaults to 100 when absent.
     #[serde(default)]
     pub max_iter: Option<usize>,
+    /// JSON Schema that `result` in `structured_done` must conform to.
+    /// If set, harness validates and retries on mismatch (up to output_schema_retries).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_schema: Option<serde_json::Value>,
 }
 
 fn default_compaction_threshold() -> f64 { 0.8 }
@@ -124,6 +128,7 @@ impl Default for GaitConfig {
             hooks: vec![],
             output_schema_retries: 3,
             max_iter: None,
+            result_schema: None,
         }
     }
 }
