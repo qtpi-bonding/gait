@@ -8,10 +8,9 @@ use rustyline::error::ReadlineError;
 use rustyline::{EventHandler, KeyCode, KeyEvent, Modifiers};
 use std::sync::{Arc, Mutex};
 
-use crate::session::transcript::{self, PermissionItem, PermissionsReplyItem, ClarifyItem, InformItem};
 use crate::proto::{events, wire};
 use crate::theme::{Theme, RESET, DIM_FG};
-use crate::ui::{Timer, Renderer, RenderAction, prompt_permission, prompt_clarify, prompt_inform};
+use crate::ui::{ReplBuilder, ViewSignal};
 use crate::repl_input::{is_bang_command, bang_command_str, expand_input, ExpandCtx, parse_skill_toggle, run_and_capture_pty_raw, CaptureResult};
 
 /// All user-visible hint strings for the REPL, centralised here for easy editing.
@@ -80,19 +79,17 @@ pub async fn run_chat(
         EventHandler::Conditional(Box::new(ShellNavHandler { nav: nav.clone(), up: false })),
     );
 
+    let mut builder = ReplBuilder::new(rl, theme.clone());
     let mut last_turn_blocks: Vec<String> = Vec::new();
 
     loop {
         nav.lock().unwrap().index = 0;
         let prompt = format!("{}>{} {}", theme.accent.fg(), RESET, theme.user_msg.fg());
-        let readline = rl.readline(&prompt);
-        eprint!("{}", RESET);
-        let line = match readline {
-            Ok(l) => l,
+        let line = match builder.readline(&prompt) {
+            Ok(l) => { eprint!("{}", RESET); l.trim().to_string() }
             Err(ReadlineError::Eof) | Err(ReadlineError::Interrupted) => break,
             Err(e) => return Err(e.into()),
         };
-        let line = line.trim().to_string();
         if line.is_empty() {
             continue;
         }
@@ -194,7 +191,7 @@ pub async fn run_chat(
             line
         };
 
-        let _ = rl.add_history_entry(&line);
+        builder.add_history_entry(&line);
         // Unified expansion: $(cmd)/$(N) shell, @path files, >(N) quote-reply —
         // identical to the CLI path. No cascade (see expand_input).
         let line = expand_input(&line, &ExpandCtx {
@@ -202,8 +199,6 @@ pub async fn run_chat(
             history: &shell_history_path,
             last_blocks: &last_turn_blocks,
         });
-
-        let mut current_turn_blocks: Vec<String> = Vec::new();
 
         // Build session/config/api_key ONCE per task line (in-process, no subprocess).
         let repos = crate::git::Repos::production();
@@ -259,39 +254,20 @@ pub async fn run_chat(
                 crate::turn::run_turn(&*session_for_turn, &emitter, caps, input).await
             });
 
-            // Drain events IN ORDER, rendering as they arrive.
-            use crate::proto::gait::log::v1::stream_item::Item;
-            let mut renderer = Renderer::new(theme.clone());
-            let mut pending_permissions: Vec<PermissionItem> = vec![];
-            let mut pending_clarify: Vec<ClarifyItem> = vec![];
-            let mut pending_inform: Vec<InformItem> = vec![];
-            let mut turn_complete_blocks: Option<Vec<String>> = None;
-            let mut timer = Timer::start();
+            builder.begin_turn();
+            let mut turn_done_blocks: Option<Vec<String>> = None;
 
-            while let Some(stream_item) = rx.recv().await {
-                timer.stop();
-                let action = match stream_item.item {
-                    Some(Item::Event(ev)) => renderer.handle_event(&ev),
-                    Some(Item::Delta(d)) => {
-                        renderer.push_text(&d.content);
-                        RenderAction::Continue
-                    }
-                    None => RenderAction::Continue,
-                };
-                match action {
-                    RenderAction::PermissionNeeded(items) => pending_permissions = items,
-                    RenderAction::ClarifyNeeded(items) => pending_clarify = items,
-                    RenderAction::InformNeeded(items) => pending_inform = items,
-                    RenderAction::TurnComplete(blocks) => turn_complete_blocks = Some(blocks),
-                    _ => {}
+            while let Some(item) = rx.recv().await {
+                match builder.handle_stream_item(item) {
+                    ViewSignal::TurnDone(blocks) => { turn_done_blocks = Some(blocks); }
+                    ViewSignal::Continue => {}
                 }
             }
-            renderer.flush();
-            timer.stop();
+            builder.flush();
+
             // Graceful turn-error handling: a turn that errors or panics must NOT
             // kill the REPL (the old subprocess just printed and returned to the
-            // prompt). break 'spawn falls through to `last_turn_blocks =
-            // current_turn_blocks;` below, keeping quote-reply state consistent.
+            // prompt). break 'spawn falls through to the outer loop.
             match turn_handle.await {
                 Ok(Ok(_)) => {}
                 Ok(Err(e)) => {
@@ -303,122 +279,19 @@ pub async fn run_chat(
                     break 'spawn;
                 }
             }
-            current_turn_blocks.extend(
-                turn_complete_blocks.unwrap_or_else(|| renderer.turn_blocks.drain(..).collect())
-            );
 
-            // Handle clarify: prompt user for each question, write ClarifyReply, re-spawn
-            if !pending_clarify.is_empty() {
+            last_turn_blocks = turn_done_blocks.unwrap_or_else(|| builder.take_turn_blocks());
+
+            if builder.has_interaction() {
                 let tx_path = gait_dir.join("sessions").join(&session_id).join("log.jsonl");
-                let reply_items = prompt_clarify(&pending_clarify, &theme);
-                let _ = wire::append(&tx_path, events::clarify_reply(&reply_items));
-                continue 'spawn;
+                let outcome = builder.run_interaction(&gait_dir, &session_id, agent_path.as_deref())?;
+                wire::append(&tx_path, outcome.event_body)?;
+                if outcome.respawn { continue 'spawn; }
             }
 
-            // Handle inform: prompt user to confirm understanding, write InformReply, re-spawn
-            if !pending_inform.is_empty() {
-                let tx_path = gait_dir.join("sessions").join(&session_id).join("log.jsonl");
-                let reply_items = prompt_inform(&pending_inform, &theme);
-                let _ = wire::append(&tx_path, events::inform_reply(&reply_items));
-                continue 'spawn;
-            }
-
-            if pending_permissions.is_empty() {
-                println!();
-                break 'spawn;
-            }
-            let pending_items = pending_permissions;
-
-            // Group items by id for display (show compound command segments together)
-            // then collect ALL decisions before writing anything
-            let mut reply_items: Vec<PermissionsReplyItem> = vec![];
-            let mut any_approved = false;
-
-            for item in &pending_items {
-                let total_segs = pending_items.iter().filter(|i| i.id == item.id).count();
-                let seg_idx = pending_items
-                    .iter()
-                    .filter(|i| i.id == item.id)
-                    .position(|i| std::ptr::eq(i, item))
-                    .unwrap_or(0);
-                let label = if total_segs > 1 {
-                    Some(format!("part {} of {}", seg_idx + 1, total_segs))
-                } else {
-                    None
-                };
-
-                let choice = prompt_permission(item, label.as_deref(), &theme);
-                if let Err(e) = crate::permission::save_choice(
-                    &choice,
-                    &gait_dir,
-                    &session_id,
-                    agent_path.as_deref(),
-                ) {
-                    eprintln!("[gait] warning: could not save permission: {e}");
-                }
-                match &choice {
-                    crate::permission::PermissionChoice::Once(pat) => {
-                        reply_items.push(PermissionsReplyItem {
-                            id: item.id.clone(),
-                            decision: "approve".into(),
-                            text: Some(pat.clone()),
-                            scope: Some("once".into()),
-                        });
-                        any_approved = true;
-                    }
-                    crate::permission::PermissionChoice::Session(pat) => {
-                        reply_items.push(PermissionsReplyItem {
-                            id: item.id.clone(),
-                            decision: "approve".into(),
-                            text: Some(pat.clone()),
-                            scope: Some("session".into()),
-                        });
-                        any_approved = true;
-                    }
-                    crate::permission::PermissionChoice::Agent(pat) => {
-                        reply_items.push(PermissionsReplyItem {
-                            id: item.id.clone(),
-                            decision: "approve".into(),
-                            text: Some(pat.clone()),
-                            scope: Some("agent".into()),
-                        });
-                        any_approved = true;
-                    }
-                    crate::permission::PermissionChoice::Global(pat) => {
-                        reply_items.push(PermissionsReplyItem {
-                            id: item.id.clone(),
-                            decision: "approve".into(),
-                            text: Some(pat.clone()),
-                            scope: Some("global".into()),
-                        });
-                        any_approved = true;
-                    }
-                    crate::permission::PermissionChoice::Reject => {
-                        reply_items.push(PermissionsReplyItem {
-                            id: item.id.clone(),
-                            decision: "deny".into(),
-                            text: None,
-                            scope: None,
-                        });
-                    }
-                }
-            }
-
-            let tx_path = gait_dir
-                .join("sessions")
-                .join(&session_id)
-                .join("log.jsonl");
-            let _ = transcript::write_permissions_reply(&tx_path, "user", reply_items);
-
-            if any_approved {
-                continue 'spawn;
-            } else {
-                eprintln!("[gait] permission denied");
-                println!();
-                continue 'spawn;
-            }
+            println!();
+            break 'spawn;
         }
-        last_turn_blocks = current_turn_blocks;
     }
 
     Ok(())
