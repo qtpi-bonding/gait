@@ -89,6 +89,7 @@ pub struct GaitConfig {
     #[serde(default)]
     pub mcp_servers: Vec<McpServerDef>,
     #[serde(default)]
+    /// Deprecated (O4): skill bodies should live in skills/<name>/SKILL.md.
     pub skills: Vec<SkillDef>,
     #[serde(default)]
     pub wasm_plugins: Vec<WasmPluginDef>,
@@ -149,10 +150,16 @@ pub fn load_config(gait_dir: &Path) -> GaitConfig {
     if !path.exists() { return GaitConfig::default(); }
     let raw = std::fs::read_to_string(&path).unwrap_or_default();
     let stripped = strip_jsonc_comments(&raw);
-    serde_json::from_str(&stripped).unwrap_or_else(|e| {
+    let config: GaitConfig = serde_json::from_str(&stripped).unwrap_or_else(|e| {
         eprintln!("[gait] warning: could not parse gait.jsonc: {e}");
         GaitConfig::default()
-    })
+    });
+    // O4: inline skill bodies in gait.jsonc are deprecated; use skills/<name>/SKILL.md.
+    if !config.skills.is_empty() {
+        eprintln!("[gait] warning: gait.jsonc `skills:` field is deprecated (O4). \
+                   Move skill bodies to skills/<name>/SKILL.md");
+    }
+    config
 }
 
 pub fn append_allow_pattern(gait_dir: &Path, pattern: &str) -> anyhow::Result<()> {
