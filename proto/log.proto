@@ -90,6 +90,8 @@ message Payload {
     SandboxApplied     sandbox_applied     = 50;
     HookRun         hook_run            = 51;
     Cwd                cwd                 = 52;
+    Toggle      toggle       = 53;
+    ModelChange model_change = 54;
 
   }
   reserved 20 to 49;  // workflow family (WorkflowHook* / WorkflowNode* / WorkflowStart …) — deferred to the workflow-subsystem redo
@@ -97,6 +99,23 @@ message Payload {
 
 // working-directory change; ActiveCwd LWW-folds to the last one
 message Cwd { string path = 1; }
+
+// capability enable/disable delta — OR-Set per kind; folded by ActiveAgent.
+enum ToggleKind {
+  TOGGLE_KIND_UNSPECIFIED = 0;
+  TOGGLE_KIND_SKILL       = 1;
+  TOGGLE_KIND_MCP         = 2;
+  TOGGLE_KIND_TOOL        = 3;
+}
+message Toggle {
+  ToggleKind kind    = 1;
+  string     name    = 2;
+  bool       enabled = 3;
+}
+// model-swap delta — LWW-Register; folded by ActiveAgent.
+message ModelChange { string model = 1; }
+
+
 
 
 // ── Mutations ────────────────────────────────────────────────────────────────
