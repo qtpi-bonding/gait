@@ -418,6 +418,18 @@ async fn apply_curate_filter(
         .unwrap_or_else(|| serde_json::Value::String(raw.to_string()))
 }
 
+fn validate_against_schema(schema: &serde_json::Value, value: &serde_json::Value) -> Result<(), String> {
+    let compiled = jsonschema::JSONSchema::compile(schema)
+        .map_err(|e| format!("invalid schema: {e}"))?;
+    let result = compiled.validate(value);
+    if let Err(errors) = result {
+        let msgs: Vec<String> = errors.map(|e| format!("  - {e}")).collect();
+        return Err(msgs.join("\n"));
+    }
+    Ok(())
+}
+
+
 pub async fn run_turn(
     session: &crate::session::Session,
     emitter: &Emitter,
@@ -443,6 +455,8 @@ pub async fn run_turn(
     let skill_registry = caps.skill_registry;
     let config_enabled = caps.config_enabled;
     let hooks = caps.hooks;
+    let result_schema = caps.result_schema;
+    let mut schema_retries_remaining: u8 = caps.output_schema_retries;
 
     // Build the agent-dimension seed (M3): config-derived genesis for ActiveAgent.
     // Approach (a): build directly from the resolved fields already in scope.
@@ -1100,6 +1114,32 @@ pub async fn run_turn(
                         all_results[*i] = Some((part, result));
                     }
                     ExecutionSignal::TurnComplete => {
+                        let message = tc.args.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let result = tc.args.get("result").cloned();
+
+                        // Validate result against schema if configured.
+                        if let Some(ref schema) = result_schema {
+                            let value_to_validate = result.clone().unwrap_or(serde_json::Value::Null);
+                            if let Err(errors) = validate_against_schema(schema, &value_to_validate) {
+                                if schema_retries_remaining > 0 {
+                                    schema_retries_remaining -= 1;
+                                    emitter.emit(events::tool_call(
+                                        tc.tool_call_id.clone(), tc.tool_name.clone(), &tc.args,
+                                    ))?;
+                                    let error_msg = format!(
+                                        "result schema validation failed ({} retries remaining):\n{}",
+                                        schema_retries_remaining, errors
+                                    );
+                                    emitter.emit(events::tool_result(
+                                        tc.tool_call_id.clone(), error_msg, None, None,
+                                    ))?;
+                                    continue;
+                                } else {
+                                    return Err(anyhow::anyhow!("result schema validation failed after all retries:\n{}", errors));
+                                }
+                            }
+                        }
+
                         // Emit call+result pair for transcript auditability before ending the turn.
                         emitter.emit(events::tool_call(
                             tc.tool_call_id.clone(), tc.tool_name.clone(), &tc.args,
@@ -1107,8 +1147,6 @@ pub async fn run_turn(
                         emitter.emit(events::tool_result(
                             tc.tool_call_id.clone(), "recorded".to_string(), None, None,
                         ))?;
-                        let message = tc.args.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let result = tc.args.get("result").cloned();
                         for t in post_tool_text.drain(..) {
                             emitter.delta(t);
                         }
