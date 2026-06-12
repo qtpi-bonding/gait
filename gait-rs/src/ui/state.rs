@@ -154,9 +154,13 @@ impl ReplState {
             Some(pb::payload::Kind::AssistantText(_)) => ViewSignal::Continue,
 
             Some(pb::payload::Kind::ToolCall(tc)) => {
-                // Display = tool name only for now. tool_target extraction will be
-                // wired up in Task 2 once `tool_target` is made pub(crate).
-                let display = tc.name.clone();
+                let args = tc.input.as_ref()
+                    .and_then(|s| serde_json::to_value(s).ok());
+                let target = args.as_ref()
+                    .and_then(|a| crate::ui::renderer::tool_target(&tc.name, a))
+                    .map(|t| format!(" {}", t))
+                    .unwrap_or_default();
+                let display = format!("{}{}", tc.name, target);
                 self.pending_tool = Some(display.clone());
                 self.pending.push(PendingItem::ToolCall { display });
                 ViewSignal::Continue
@@ -283,5 +287,103 @@ mod tests {
         } else {
             panic!("expected Pending::Clarify");
         }
+    }
+    #[test]
+    fn apply_event_permissions_sets_pending() {
+        use crate::proto::events;
+        use crate::session::transcript::PermissionItem as txPI;
+        let mut state = ReplState::new();
+        let body = events::permissions(&[txPI {
+            id: "tc-1".into(),
+            cmd: "cargo test".into(),
+            reason: "shell requires permission".into(),
+            patterns: vec!["cargo *".into(), "cargo test".into()],
+            tool_name: "shell".into(),
+            tool_args: serde_json::json!({"cmd": "cargo test"}),
+        }]);
+        let ev = crate::proto::envelope::mint(body, None);
+        state.apply_event(&ev);
+        if let Pending::Permission(items) = &state.interaction_pending {
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].cmd, "cargo test");
+            assert_eq!(items[0].tool_name, "shell");
+            assert_eq!(items[0].tool_args["cmd"], "cargo test");
+        } else {
+            panic!("expected Pending::Permission");
+        }
+    }
+
+    #[test]
+    fn apply_event_turn_complete_returns_done() {
+        use crate::proto::events;
+        use crate::session::transcript::{TurnUsage, TurnOutput};
+        let mut state = ReplState::new();
+        let body = events::turn_complete(
+            &TurnUsage { input: 0, output: 0, cache_read: 0, cache_write: 0 },
+            "h".into(), false, None, vec!["block one".into()],
+            &TurnOutput { message: "done".into(), result: None },
+        );
+        let ev = crate::proto::envelope::mint(body, None);
+        match state.apply_event(&ev) {
+            ViewSignal::TurnDone(blocks) => assert_eq!(blocks, vec!["block one".to_string()]),
+            _ => panic!("expected TurnDone"),
+        }
+    }
+
+    #[test]
+    fn apply_event_tool_call_pushes_pending_item() {
+        use crate::proto::events;
+        let mut state = ReplState::new();
+        let body = events::tool_call("call-1".into(), "read".into(), &serde_json::json!({"file_path": "a.rs"}));
+        let ev = crate::proto::envelope::mint(body, None);
+        let signal = state.apply_event(&ev);
+        assert!(matches!(signal, ViewSignal::Continue));
+        assert!(state.pending.iter().any(|p| matches!(p, PendingItem::ToolCall { .. })));
+    }
+
+    #[test]
+    fn apply_event_tool_result_pushes_pending_item() {
+        use crate::proto::events;
+        let mut state = ReplState::new();
+        state.pending_tool = Some("read".into());
+        let duration = pbjson_types::Duration { seconds: 1, nanos: 500_000_000 };
+        let body = events::tool_result("call-1".into(), "line one\nline two".into(), Some(duration), None);
+        let ev = crate::proto::envelope::mint(body, None);
+        let signal = state.apply_event(&ev);
+        assert!(matches!(signal, ViewSignal::Continue));
+        assert!(state.pending.iter().any(|p| matches!(p, PendingItem::ToolResult { .. })));
+        assert!(state.pending_tool.is_none(), "pending_tool should be consumed");
+    }
+
+    #[test]
+    fn apply_event_assistant_text_is_noop() {
+        use crate::proto::events;
+        let mut state = ReplState::new();
+        state.all_blocks.push("prior".into());
+        let before_blocks = state.all_blocks.clone();
+        let body = events::assistant_text("full accumulated text".into());
+        let ev = crate::proto::envelope::mint(body, None);
+        let signal = state.apply_event(&ev);
+        assert!(matches!(signal, ViewSignal::Continue));
+        assert_eq!(state.line_buf, "");
+        assert_eq!(state.all_blocks, before_blocks);
+    }
+
+    #[test]
+    fn push_text_paragraph_populates_all_blocks() {
+        let mut state = ReplState::new();
+        state.push_text("hello world\n");
+        state.push_text("\n");
+        assert_eq!(state.all_blocks.len(), 1);
+        assert_eq!(state.all_blocks[0], "hello world");
+    }
+
+    #[test]
+    fn blocks_numbered_sequentially() {
+        let mut state = ReplState::new();
+        state.push_text("para one\n\n");
+        state.push_text("para two\n\n");
+        assert_eq!(state.all_blocks.len(), 2);
+        assert_eq!(state.block_num, 2);
     }
 }

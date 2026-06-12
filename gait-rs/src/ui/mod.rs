@@ -11,4 +11,4 @@ pub use timer::Timer;
 pub use permission::prompt_permission;
 pub use clarify::prompt_clarify;
 pub use inform::prompt_inform;
-pub use renderer::{Renderer, RenderAction, split_into_blocks};
+pub use renderer::{Renderer, ReplRenderer, RenderAction, split_into_blocks};

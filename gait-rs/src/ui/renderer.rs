@@ -4,6 +4,7 @@ use termimad::crossterm::style::Color as CColor;
 use crate::session::transcript::{self as tx, PermissionItem, ClarifyItem, InformItem};
 use crate::proto::gait::log::v1 as pb;
 use crate::theme::{Theme, RESET, DIM_FG};
+use crate::ui::state::{ReplState, PendingItem};
 
 pub enum RenderAction {
     Continue,
@@ -80,7 +81,7 @@ pub fn split_into_blocks(text: &str) -> Vec<String> {
 
 /// Extract the most meaningful argument from a tool call to show beside the tool name.
 /// Returns a short, human-readable target: filename for file tools, pattern for search, etc.
-fn tool_target(name: &str, args: &serde_json::Value) -> Option<String> {
+pub(crate) fn tool_target(name: &str, args: &serde_json::Value) -> Option<String> {
     let s = |key: &str| -> Option<&str> { args.get(key).and_then(|v| v.as_str()) };
     let basename = |p: &str| -> String {
         std::path::Path::new(p).file_name()
@@ -376,6 +377,88 @@ impl Renderer {
     }
 }
 
+/// Stateless terminal painter — the StatelessWidget in the Flutter/Bloc analogy.
+/// Fields: theme (ThemeData analog) and skin (derived from theme at construction).
+/// paint() takes &self — no mutable fields.
+pub struct ReplRenderer {
+    pub theme: Theme,
+    skin: MadSkin,
+}
+
+impl ReplRenderer {
+    pub fn new(theme: Theme) -> Self {
+        let skin = themed_skin(&theme);
+        Self { theme, skin }
+    }
+
+    pub fn theme(&self) -> &Theme { &self.theme }
+
+    /// Drain all pending items from state and paint them to the terminal.
+    pub fn paint(&self, state: &mut ReplState) {
+        for item in state.pending.drain(..) {
+            match item {
+                PendingItem::Block { content, block_num } => {
+                    self.paint_block(&content, block_num);
+                }
+                PendingItem::Spacing => { println!(); }
+                PendingItem::ToolCall { display } => {
+                    eprintln!("{}  \u{27f3} {}(\u{2026}){}", DIM_FG, display, RESET);
+                }
+                PendingItem::ToolResult { ok, name, elapsed_ms, output } => {
+                    self.paint_tool_result(ok, &name, elapsed_ms, &output);
+                }
+                PendingItem::Error { message } => {
+                    eprintln!("{}[error] {}{}", self.theme.danger.fg(), message, RESET);
+                }
+            }
+        }
+    }
+
+    fn paint_block(&self, block: &str, block_num: usize) {
+        let term_w = termimad::terminal_size().0 as usize;
+        let content_w = term_w.saturating_sub(6);
+        let fmt = self.skin.text(block, Some(content_w));
+        let rendered = format!("{}", fmt);
+        let mut first = true;
+        for line in rendered.lines() {
+            if first {
+                print!("{}{:>3}\u{2502}{} {}", DIM_FG, block_num, RESET, line);
+                first = false;
+            } else {
+                print!("     {}", line);
+            }
+            println!();
+        }
+        if first {
+            println!("{}{:>3}\u{2502}{}", DIM_FG, block_num, RESET);
+        }
+        let _ = std::io::stdout().flush();
+    }
+
+    fn paint_tool_result(&self, ok: bool, name: &str, elapsed_ms: Option<u64>, output: &str) {
+        let (color, mark) = if ok {
+            (self.theme.success.fg(), '\u{2713}')
+        } else {
+            (self.theme.danger.fg(), '\u{2717}')
+        };
+        let timing = elapsed_ms.map(|ms| format!(" \u{b7} {}ms", ms)).unwrap_or_default();
+        eprintln!("{}  {} {}{}{}", color, mark, name, timing, RESET);
+        let lines: Vec<&str> = output.lines().filter(|l| !l.trim().is_empty()).collect();
+        match lines.len() {
+            0 => {}
+            1 => eprintln!("{}     {}{}", DIM_FG, lines[0], RESET),
+            2 => {
+                eprintln!("{}     {}{}", DIM_FG, lines[0], RESET);
+                eprintln!("{}     {}{}", DIM_FG, lines[1], RESET);
+            }
+            n => {
+                eprintln!("{}     {}{}", DIM_FG, lines[0], RESET);
+                eprintln!("{}     \u{2026} ({} lines){}", DIM_FG, n - 2, RESET);
+                eprintln!("{}     {}{}", DIM_FG, lines[n - 1], RESET);
+            }
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -591,5 +674,41 @@ mod tests {
         r.handle_event(&ev(tc));
         assert_eq!(r.turn_blocks.len(), 1);
         assert_eq!(r.turn_blocks[0], "trailing");
+    }
+}
+
+#[cfg(test)]
+mod replrenderer_tests {
+    use super::*;
+    use crate::ui::state::{ReplState, PendingItem};
+    use crate::theme::Theme;
+
+    #[test]
+    fn paint_drains_pending() {
+        let r = ReplRenderer::new(Theme::detect());
+        let mut state = ReplState::new();
+        state.pending.push(PendingItem::Block { content: "hello".into(), block_num: 1 });
+        state.pending.push(PendingItem::Spacing);
+        r.paint(&mut state);
+        assert!(state.pending.is_empty(), "paint must drain all pending items");
+    }
+
+    #[test]
+    fn paint_empty_state_is_noop() {
+        let r = ReplRenderer::new(Theme::detect());
+        let mut state = ReplState::new();
+        r.paint(&mut state);
+        assert!(state.pending.is_empty());
+    }
+
+    #[test]
+    fn paint_takes_ref_self_not_mut() {
+        let r = ReplRenderer::new(Theme::detect());
+        let mut state = ReplState::new();
+        state.pending.push(PendingItem::Block { content: "a".into(), block_num: 1 });
+        r.paint(&mut state);
+        state.pending.push(PendingItem::Block { content: "b".into(), block_num: 2 });
+        r.paint(&mut state);
+        assert!(state.pending.is_empty());
     }
 }
