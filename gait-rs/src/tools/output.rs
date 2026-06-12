@@ -25,7 +25,7 @@ impl OutputTool {
 
 #[async_trait::async_trait]
 impl Tool for OutputTool {
-    fn name(&self) -> &str { "output" }
+    fn name(&self) -> &str { "structured_done" }
     fn description(&self) -> &str {
         "Return structured output from this turn. Use when the caller needs to read specific fields — in a workflow via $node.output.field, or from a parent agent via spawn_agent. For plain-text completion, just respond — the turn ends automatically."
     }
@@ -67,9 +67,9 @@ mod tests {
     }
 
     #[test]
-    fn name_is_output() {
+    fn name_is_structured_done() {
         let tool = OutputTool::new();
-        assert_eq!(tool.name(), "output");
+        assert_eq!(tool.name(), "structured_done");
     }
 
     #[test]

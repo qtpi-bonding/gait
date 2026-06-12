@@ -98,7 +98,7 @@ pub fn inject_filter(mut schema: serde_json::Value, filter: crate::types::Output
 
 /// Names of all built-in tools. Used for allow-list validation without constructing tool instances.
 pub fn builtin_tool_names() -> &'static [&'static str] {
-    &["read", "write", "edit", "glob", "grep", "ls", "shell", "output",
+    &["read", "write", "edit", "glob", "grep", "ls", "shell", "structured_done",
       "codesearch", "webfetch", "load", "spawn_agent", "list_agents", "clarify", "inform"]
 }
 
