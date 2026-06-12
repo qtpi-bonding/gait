@@ -151,4 +151,51 @@ mod tests {
         assert_eq!(LoadTool::new(vec![], vec![]).execution_signal(),
             ExecutionSignal::LoadContext);
     }
+    #[tokio::test]
+    async fn disk_skill_loads_via_load_tool() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let skill_dir = dir.path().join("skills").join("retro");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: retro\ndescription: Retrospective interview workflow\n---\n# Retro\nDo a retro.\n",
+        ).unwrap();
+
+        // Scanner builds the registry directly from disk (mimics profile.rs path)
+        let skill_registry = crate::skills::scan_skills(dir.path());
+        assert_eq!(skill_registry.len(), 1, "scanner must find the disk skill");
+        assert_eq!(skill_registry[0].name, "retro");
+        assert_eq!(skill_registry[0].description, "Retrospective interview workflow");
+
+        // LoadTool returns the markdown body
+        let tool = LoadTool::new(vec![], skill_registry);
+        let result = tool.execute(serde_json::json!({"name":"retro","enabled":true})).await.unwrap();
+        assert!(result.as_str().unwrap().contains("Retro"));
+    }
+
+    #[test]
+    fn disk_skill_appears_in_loadable_index() {
+        use tempfile::TempDir;
+        use crate::types::{LoadableEntry, LoadableKind};
+        let dir = TempDir::new().unwrap();
+        let skill_dir = dir.path().join("skills").join("refactor");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: refactor\ndescription: Refactoring patterns\n---\n# Refactor\nclean code.\n",
+        ).unwrap();
+        let skills = crate::skills::scan_skills(dir.path());
+        let entries: Vec<LoadableEntry> = skills.iter().map(|s| LoadableEntry {
+            name: s.name.clone(),
+            kind: LoadableKind::Skill,
+            description: s.description.clone(),
+            enabled: s.enabled,
+        }).collect();
+        let idx = crate::turn::build_loadable_index(&entries);
+        assert!(idx.contains("refactor"), "index must list skill name");
+        assert!(idx.contains("Refactoring patterns"), "index must show description");
+        assert!(idx.contains("enabled=true"), "disk skill defaults to enabled=true");
+    }
+
 }
