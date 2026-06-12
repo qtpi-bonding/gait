@@ -401,6 +401,7 @@ fn sandbox_enforcement(s: &str) -> i32 {
 fn scope(s: &Option<String>) -> i32 {
     let sc = match s.as_deref() {
         Some("once") => pb::Scope::Once,
+        Some("session") => pb::Scope::Session,
         Some("agent") => pb::Scope::Agent,
         Some("global") => pb::Scope::Global,
         _ => pb::Scope::Unspecified,

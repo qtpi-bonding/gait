@@ -341,15 +341,53 @@ impl Projection for ActiveMessages {
     }
 }
 
-/// Effective session allow-list projection. STUB for Task 4 — the real session/
-/// once lifetimes land in Task 6. For now it seeds from config and folds nothing.
+/// Effective allow-list state: config baseline + log-derived grants, split by
+/// lifetime. `session` persists for the whole session; `once` is cleared on every
+/// `TurnComplete` (active only within the turn it was granted).
+#[derive(Default)]
+pub(crate) struct AllowState {
+    pub session: std::collections::HashSet<String>,
+    pub once: std::collections::HashSet<String>,
+}
+
+/// Effective session allow-list projection. Seeds `session` from config
+/// (global+agent grants, already loaded). Folds `PermissionsReply` as an
+/// append-only ledger: a `session` approve inserts and a `session` deny REMOVES
+/// the pattern (the honest forward revoke — both events stay in the Log; only the
+/// derived set changes); a `once` approve is active until the next `TurnComplete`.
+/// `agent`/`global` scopes are config-file backed and ignored here. Because it
+/// folds the mutation-applied stream, undo/redact of a grant also drops it — but
+/// redact is for mistakes, not normal revocation.
 pub(crate) struct ActivePermissions {
     pub seed: std::collections::HashSet<String>,
 }
 impl Projection for ActivePermissions {
-    type State = std::collections::HashSet<String>;
-    fn seed(&self) -> Self::State { self.seed.clone() }
-    fn apply(&self, _state: &mut Self::State, _ev: &Event, _kind: &payload::Kind) {}
+    type State = AllowState;
+    fn seed(&self) -> Self::State {
+        AllowState { session: self.seed.clone(), once: Default::default() }
+    }
+    fn apply(&self, state: &mut Self::State, _ev: &Event, kind: &payload::Kind) {
+        match kind {
+            payload::Kind::TurnComplete(_) => state.once.clear(), // once grants expire per turn
+            payload::Kind::PermissionsReply(r) => {
+                for item in &r.items {
+                    let Some(pat) = item.text.clone() else { continue };
+                    let decision = pb::Decision::try_from(item.decision)
+                        .unwrap_or(pb::Decision::Unspecified);
+                    let scope = pb::Scope::try_from(item.scope)
+                        .unwrap_or(pb::Scope::Unspecified);
+                    match (scope, decision) {
+                        (pb::Scope::Session, pb::Decision::Approve) => { state.session.insert(pat); }
+                        (pb::Scope::Session, pb::Decision::Deny) => { state.session.remove(&pat); } // forward revoke
+                        (pb::Scope::Once, pb::Decision::Approve) => { state.once.insert(pat); }
+                        // agent/global via config seed; once-deny is a no-op.
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Fold all Redact/Replace event bodies into a LWW map keyed by target id.
@@ -490,8 +528,10 @@ pub fn fold(
     let enabled_loadables =
         run_projection(&ActiveLoadables { seed: config_enabled.clone() }, all_events, &mutations);
     let active_manifest = run_projection(&ActiveManifest, all_events, &mutations);
-    let effective_allow =
+    let allow_state =
         run_projection(&ActivePermissions { seed: Default::default() }, all_events, &mutations);
+    let effective_allow: std::collections::HashSet<String> =
+        allow_state.session.union(&allow_state.once).cloned().collect();
     let messages = run_projection(&ActiveMessages, all_events, &mutations).msgs;
 
     Ok(RetraceResult { messages, enabled_loadables, active_manifest, effective_allow, mutations })
@@ -773,6 +813,53 @@ mod tests {
             Message::User { content: MessageContent::Text(t) } if t.contains("the summary")));
         assert!(matches!(&msgs[1],
             Message::User { content: MessageContent::Text(t) } if t == "after"));
+    }
+
+    #[test]
+    fn permissions_session_persists_once_expires_on_turn_complete() {
+        use std::collections::{HashMap, HashSet};
+        let evs = mint_events(vec![
+            events::permissions_reply("user".into(), &[PermissionsReplyItem {
+                id: "1".into(), decision: "approve".into(),
+                text: Some("shell:cargo test".into()), scope: Some("session".into()) }]),
+            events::permissions_reply("user".into(), &[PermissionsReplyItem {
+                id: "2".into(), decision: "approve".into(),
+                text: Some("shell:ls".into()), scope: Some("once".into()) }]),
+            wire::body(payload::Kind::TurnComplete(pb::TurnComplete::default())),
+        ]);
+        let st = run_projection(&ActivePermissions { seed: HashSet::new() }, &evs, &HashMap::new());
+        assert!(st.session.contains("shell:cargo test"), "session grant persists past TurnComplete");
+        assert!(!st.once.contains("shell:ls"), "once grant expires at TurnComplete");
+    }
+
+    #[test]
+    fn permissions_session_deny_revokes_but_ledger_keeps_both() {
+        use std::collections::{HashMap, HashSet};
+        let evs = mint_events(vec![
+            events::permissions_reply("user".into(), &[PermissionsReplyItem {
+                id: "1".into(), decision: "approve".into(),
+                text: Some("shell:rm".into()), scope: Some("session".into()) }]),
+            events::permissions_reply("user".into(), &[PermissionsReplyItem {
+                id: "2".into(), decision: "deny".into(),
+                text: Some("shell:rm".into()), scope: Some("session".into()) }]),
+        ]);
+        // Append-only ledger: both the approve and the deny remain on disk.
+        assert_eq!(evs.len(), 2, "approve and deny both stay in the log");
+        let st = run_projection(&ActivePermissions { seed: HashSet::new() }, &evs, &HashMap::new());
+        assert!(!st.session.contains("shell:rm"), "forward deny revokes from the derived set");
+    }
+
+    #[test]
+    fn fold_effective_allow_includes_session_grant() {
+        use std::collections::HashSet;
+        let evs = mint_events(vec![
+            events::permissions_reply("user".into(), &[PermissionsReplyItem {
+                id: "1".into(), decision: "approve".into(),
+                text: Some("shell:git status".into()), scope: Some("session".into()) }]),
+        ]);
+        let res = fold(&evs, &HashSet::new()).unwrap();
+        assert!(res.effective_allow.contains("shell:git status"),
+            "fold flattens session grants into effective_allow");
     }
 
     #[test]

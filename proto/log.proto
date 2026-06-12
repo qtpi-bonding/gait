@@ -245,7 +245,7 @@ message PermissionsReplyItem {
   Scope scope          = 4;            // legacy null → SCOPE_UNSPECIFIED
 }
 enum Decision { DECISION_UNSPECIFIED = 0; DECISION_APPROVE = 1; DECISION_DENY = 2; }
-enum Scope    { SCOPE_UNSPECIFIED = 0; SCOPE_ONCE = 1; SCOPE_AGENT = 2; SCOPE_GLOBAL = 3; }
+enum Scope    { SCOPE_UNSPECIFIED = 0; SCOPE_ONCE = 1; SCOPE_AGENT = 2; SCOPE_GLOBAL = 3; SCOPE_SESSION = 4; }
 message Permissions      { repeated PermissionItem items = 1; }
 message PermissionsReply { string from = 1; repeated PermissionsReplyItem items = 2; }  // from = replier id
 

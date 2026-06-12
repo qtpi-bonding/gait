@@ -103,3 +103,9 @@ fn manifest_event_exists_resolution_gone() {
     use super::gait::log::v1::{payload, Manifest};
     let _ = payload::Kind::Manifest(Manifest::default());
 }
+
+#[test]
+fn scope_session_variant_exists() {
+    use super::gait::log::v1::Scope;
+    assert_eq!(Scope::Session as i32, 4);
+}
