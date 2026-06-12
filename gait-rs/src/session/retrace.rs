@@ -6,7 +6,7 @@
 //! - [`messages`] / [`messages_from_path`] — the **Transcript** (`Vec<Message>`).
 //!   Honours `Compaction` breakpoints and `Redact`/`Replace` mutations.
 //! - [`enabled_loadables`] — active loadable set (LWW-Map over `load` tool calls).
-//! - [`active_manifest`] — last `Manifest` payload (LWW-Register).
+//! - [`active_agent`] — last `Agent` payload (LWW-Register).
 //! - [`active_mutations`] + [`apply_cascade`] — `Redact`/`Replace` LWW fold with
 //!   ToolCall↔ToolResult cascade.
 
@@ -148,15 +148,15 @@ impl Projection for ActiveLoadables {
     }
 }
 
-/// Last-write-wins register over `Manifest` events.
-pub(crate) struct ActiveManifest;
-impl Projection for ActiveManifest {
-    type State = Option<pb::Manifest>;
+/// Last-write-wins register over `Agent` events.
+pub(crate) struct ActiveAgent;
+impl Projection for ActiveAgent {
+    type State = Option<pb::Agent>;
     fn seed(&self) -> Self::State {
         None
     }
     fn apply(&self, state: &mut Self::State, _ev: &Event, kind: &payload::Kind) {
-        if let payload::Kind::Manifest(r) = kind {
+        if let payload::Kind::Agent(r) = kind {
             *state = Some(r.clone());
         }
     }
@@ -213,8 +213,8 @@ impl MessagesState {
 }
 
 /// The Transcript: the `Vec<Message>` the model reads, folded from the Log.
-/// Resets on a `Compaction` event (restart the message context from the summary;
-/// state projections carry forward and ignore compaction). Consecutive tool
+/// Resets on a `Summary` event (restart the message context from the summary;
+/// state projections carry forward and ignore it). Consecutive tool
 /// calls/results coalesce into single assistant/tool messages. Honors mutations
 /// via the effective-event stream: redacted events never arrive here; replaced
 /// events arrive as their replacement kind.
@@ -224,11 +224,11 @@ impl Projection for ActiveMessages {
     fn seed(&self) -> Self::State {
         MessagesState { msgs: vec![], phase: MsgPhase::Other }
     }
-    /// `Compaction` is the message dimension's checkpoint: reset the context to a
+    /// `Summary` is the message dimension's checkpoint: reset the context to a
     /// baseline restarted from the synthesized summary (C2 — a fold-from-payload,
     /// not empty). Reset is positional (C1): `through_seq` is never read.
     fn checkpoint(&self, kind: &payload::Kind) -> Option<Self::State> {
-        if let payload::Kind::Compaction(c) = kind {
+        if let payload::Kind::Summary(c) = kind {
             Some(MessagesState::with_summary(&c.summary))
         } else {
             None
@@ -548,8 +548,8 @@ pub struct RetraceResult {
     pub messages: Vec<Message>,
     /// Active loadable names (seeds from config, LWW-toggled by `load` tool calls).
     pub enabled_loadables: std::collections::HashSet<String>,
-    /// The most recent `Manifest` payload, if any (LWW-Register).
-    pub active_manifest: Option<pb::Manifest>,
+    /// The most recent `Agent` payload, if any (LWW-Register).
+    pub active_agent: Option<pb::Agent>,
     /// Effective session allow-list: config baseline + log-derived session/once
     /// grants. STUB until Task 6 (currently just the config seed; empty in `fold`).
     pub effective_allow: std::collections::HashSet<String>,
@@ -560,9 +560,9 @@ pub struct RetraceResult {
 
 /// Fold the full event log into all projections in a single pass.
 ///
-/// Every projection (`ActiveMessages`, `ActiveLoadables`, `ActiveManifest`,
+/// Every projection (`ActiveMessages`, `ActiveLoadables`, `ActiveAgent`,
 /// `ActivePermissions`) folds the SAME input: the mutation-applied, full-session
-/// event stream. Compaction is handled only inside `ActiveMessages` (it resets
+/// event stream. Summary is handled only inside `ActiveMessages` (it resets
 /// the message context); the state projections fold the whole session and ignore
 /// it. `config_enabled` is the baseline loadable set from config.
 pub fn fold(
@@ -576,24 +576,24 @@ pub fn fold(
     // Phase 1 — drive every projection over the same effective stream.
     let enabled_loadables =
         run_projection(&ActiveLoadables { seed: config_enabled.clone() }, all_events, &mutations);
-    let active_manifest = run_projection(&ActiveManifest, all_events, &mutations);
+    let active_agent = run_projection(&ActiveAgent, all_events, &mutations);
     let allow_state =
         run_projection(&ActivePermissions { seed: Default::default() }, all_events, &mutations);
     let effective_allow: std::collections::HashSet<String> =
         allow_state.session.union(&allow_state.once).cloned().collect();
     let messages = run_projection(&ActiveMessages, all_events, &mutations).msgs;
 
-    Ok(RetraceResult { messages, enabled_loadables, active_manifest, effective_allow, mutations })
+    Ok(RetraceResult { messages, enabled_loadables, active_agent, effective_allow, mutations })
 }
 
-/// Most recent `Manifest` payload (LWW-Register). Shim over the `ActiveManifest`
-/// projection so existing callers (drift-guard in run_turn) are untouched.
-pub fn active_manifest(events: &[Event]) -> Option<pb::Manifest> {
-    run_projection(&ActiveManifest, events, &HashMap::new())
+/// Most recent `Agent` payload (LWW-Register). Shim over the `ActiveAgent`
+/// projection for the drift-guard in run_turn.
+pub fn active_agent(events: &[Event]) -> Option<pb::Agent> {
+    run_projection(&ActiveAgent, events, &HashMap::new())
 }
 
 /// Current sticky working directory (LWW over `Cwd` events, seeded at `root`).
-/// Mutations are ignored, matching `active_manifest`; the shell tool and the
+/// Mutations are ignored, matching `active_agent`; the shell tool and the
 /// `<status>` builder both refold this so they never diverge.
 pub fn active_cwd(events: &[Event], root: &std::path::Path) -> std::path::PathBuf {
     run_projection(&ActiveCwd { root: root.to_path_buf() }, events, &HashMap::new())
@@ -718,7 +718,7 @@ mod tests {
             events::user_turn("old".into(), None, None),
             events::assistant_text("old response".into()),
             events::turn_complete(&usage, "h".into(), false, None, vec![], &output),
-            events::compaction("summary of old stuff".into(), 1, &cu),
+            events::summary("summary of old stuff".into(), 1, &cu),
             events::user_turn("new".into(), None, None),
         ]);
         let msgs = messages_from_path(&path).unwrap();
@@ -757,37 +757,37 @@ mod tests {
     }
 
     #[test]
-    fn active_manifest_returns_last_manifest() {
+    fn active_agent_returns_last_agent() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("tx.jsonl");
 
-        // Write two Manifest events — active_manifest should return the second.
-        wire::append(&path, wire::body(pb::payload::Kind::Manifest(pb::Manifest {
+        // Write two Agent events — active_agent should return the second.
+        wire::append(&path, wire::body(pb::payload::Kind::Agent(pb::Agent {
             model: "model-a".into(),
             tools: vec![], mcp_servers: vec![], skills: vec![],
             permissions: Some(pb::PermissionPolicy { allow: vec![], deny: vec![] }),
-            instructions: String::new(), output_schema_retries: None,
+            instructions: String::new(), through_seq: 0,
         }))).unwrap();
-        wire::append(&path, wire::body(pb::payload::Kind::Manifest(pb::Manifest {
+        wire::append(&path, wire::body(pb::payload::Kind::Agent(pb::Agent {
             model: "model-b".into(),
             tools: vec![], mcp_servers: vec![], skills: vec![],
             permissions: Some(pb::PermissionPolicy { allow: vec![], deny: vec![] }),
-            instructions: String::new(), output_schema_retries: None,
+            instructions: String::new(), through_seq: 0,
         }))).unwrap();
 
         let all_events = read_events(&path).unwrap();
-        let r = active_manifest(&all_events).expect("a manifest");
+        let r = active_agent(&all_events).expect("an agent");
         assert_eq!(r.model, "model-b");
     }
 
     #[test]
-    fn active_manifest_returns_none_for_no_manifest() {
+    fn active_agent_returns_none_for_no_agent() {
         let bodies = vec![
             events::user_turn("hi".into(), None, None),
             events::assistant_text("hello".into()),
         ];
         let proto_events = mint_events(bodies);
-        assert!(active_manifest(&proto_events).is_none());
+        assert!(active_agent(&proto_events).is_none());
     }
 
     #[test]
@@ -808,14 +808,14 @@ mod tests {
     }
 
     #[test]
-    fn active_manifest_projection_is_last_write_wins() {
+    fn active_agent_projection_is_last_write_wins() {
         use std::collections::HashMap;
         let evs = mint_events(vec![
-            wire::body(payload::Kind::Manifest(pb::Manifest { model: "m1".into(), ..Default::default() })),
-            wire::body(payload::Kind::Manifest(pb::Manifest { model: "m2".into(), ..Default::default() })),
+            wire::body(payload::Kind::Agent(pb::Agent { model: "m1".into(), ..Default::default() })),
+            wire::body(payload::Kind::Agent(pb::Agent { model: "m2".into(), ..Default::default() })),
         ]);
-        let got = run_projection(&ActiveManifest, &evs, &HashMap::new());
-        assert_eq!(got.expect("a manifest").model, "m2", "latest Manifest wins");
+        let got = run_projection(&ActiveAgent, &evs, &HashMap::new());
+        assert_eq!(got.expect("an agent").model, "m2", "latest Agent wins");
     }
 
     #[test]
@@ -823,11 +823,11 @@ mod tests {
         use std::collections::HashSet;
         let dir = TempDir::new().unwrap();
         let path = write_events(dir.path(), vec![
-            wire::body(pb::payload::Kind::Manifest(pb::Manifest {
+            wire::body(pb::payload::Kind::Agent(pb::Agent {
                 model: "gpt-fold".into(),
                 tools: vec![], mcp_servers: vec![], skills: vec![],
                 permissions: Some(pb::PermissionPolicy { allow: vec![], deny: vec![] }),
-                instructions: String::new(), output_schema_retries: None,
+                instructions: String::new(), through_seq: 0,
             })),
             events::user_turn("hi".into(), None, None),
             events::tool_call("1".into(), "load".into(), &serde_json::json!({"name": "tdd", "enabled": true})),
@@ -836,10 +836,10 @@ mod tests {
         let config: HashSet<String> = HashSet::new();
         let result = fold(&all_events, &config).unwrap();
 
-        // messages: user turn (compaction_start == 0, no manifest-only, user_turn becomes a Message)
+        // messages: user turn (no summary-only events, user_turn becomes a Message)
         assert!(!result.messages.is_empty());
-        // active_manifest: the one we wrote
-        assert_eq!(result.active_manifest.as_ref().map(|r| r.model.as_str()), Some("gpt-fold"));
+        // active_agent: the one we wrote
+        assert_eq!(result.active_agent.as_ref().map(|r| r.model.as_str()), Some("gpt-fold"));
         // enabled_loadables: tdd was toggled on
         assert!(result.enabled_loadables.contains("tdd"));
     }
@@ -889,7 +889,7 @@ mod tests {
         let cu = CompactionUsage { input: 1, output: 1 };
         let evs = mint_events(vec![
             events::user_turn("before".into(), None, None),
-            events::compaction("the summary".into(), 1, &cu),
+            events::summary("the summary".into(), 1, &cu),
             events::user_turn("after".into(), None, None),
         ]);
         let msgs = run_projection(&ActiveMessages, &evs, &HashMap::new()).msgs;
@@ -908,9 +908,9 @@ mod tests {
         let cu = CompactionUsage { input: 1, output: 1 };
         let evs = mint_events(vec![
             events::user_turn("before-first".into(), None, None),
-            events::compaction("first summary".into(), 1, &cu),
+            events::summary("first summary".into(), 1, &cu),
             events::user_turn("between".into(), None, None),
-            events::compaction("second summary".into(), 1, &cu),
+            events::summary("second summary".into(), 1, &cu),
             events::user_turn("after-second".into(), None, None),
         ]);
         let msgs = run_projection(&ActiveMessages, &evs, &HashMap::new()).msgs;
@@ -1149,7 +1149,7 @@ mod tests {
         let cu = CompactionUsage { input: 1, output: 1 };
         let with_comp = mint_events(vec![
             events::tool_call("1".into(), "load".into(), &serde_json::json!({"name":"slack","enabled":true})),
-            events::compaction("summary".into(), 1, &cu),
+            events::summary("summary".into(), 1, &cu),
         ]);
         let p = ActiveLoadables { seed: HashSet::new() };
         let got = run_projection(&p, &with_comp, &HashMap::new());

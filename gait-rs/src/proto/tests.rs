@@ -99,9 +99,9 @@ fn content_hash_is_sensitive() {
 
 
 #[test]
-fn manifest_event_exists_resolution_gone() {
-    use super::gait::log::v1::{payload, Manifest};
-    let _ = payload::Kind::Manifest(Manifest::default());
+fn agent_event_exists() {
+    use super::gait::log::v1::{payload, Agent};
+    let _ = payload::Kind::Agent(Agent::default());
 }
 
 #[test]

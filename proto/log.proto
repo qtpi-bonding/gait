@@ -69,7 +69,7 @@ message StreamItem {
 message Payload {
   oneof kind {
     SessionStart       session_start       = 1;
-    Manifest           manifest            = 2;
+    Agent              agent               = 2;
     UserTurn           user_turn           = 3;
     AssistantText      assistant_text      = 4;
     ToolCall           tool_call           = 5;
@@ -84,7 +84,7 @@ message Payload {
     PermissionsReply   permissions_reply   = 14;
     AgentUpdate        agent_update        = 15;
     TurnComplete       turn_complete       = 16;
-    Compaction         compaction          = 17;
+    Summary            summary             = 17;
     Error              error               = 18;
     RawEvent           raw                 = 19;  // opaque holder: legacy / not-yet-modeled events (incl. workflow today)
     SandboxApplied     sandbox_applied     = 50;
@@ -140,14 +140,14 @@ message SessionStart {                // root event — identity ONLY
   optional string assigned_by = 2;
 }
 
-message Manifest {                    // the live manifest from this seq forward; first instance = opening.
+message Agent {                       // the live agent config from this seq forward; first instance = opening.
   string model                 = 1;   // LWW-projected (LWW-Register). "provider/model-id".
-  repeated string tools        = 2;   // resolved tool names
-  repeated string mcp_servers  = 3;
-  repeated string skills       = 4;
-  PermissionPolicy permissions = 5;
-  string instructions          = 6;   // composed system prompt — FULL (replay-complete). Re-emitted whole on any drift.
-  optional uint32 output_schema_retries = 7;
+  string instructions          = 2;   // composed system prompt — FULL (replay-complete). Re-emitted whole on any drift.
+  repeated string tools        = 3;   // resolved tool names
+  repeated string mcp_servers  = 4;
+  repeated string skills       = 5;
+  PermissionPolicy permissions = 6;
+  uint64 through_seq           = 7;   // audit: seq of the last event this config was derived from
 }
 
 message UserTurn {
@@ -179,7 +179,7 @@ message TurnComplete {
   TurnOutput    output       = 5;
 }
 
-message Compaction {
+message Summary {
   string summary        = 1;
   uint32 turns_covered  = 2;
   CompactionUsage usage = 3;

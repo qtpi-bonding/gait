@@ -242,17 +242,18 @@ pub fn turn_complete(
     }))
 }
 
-/// Build the proto `Manifest` message from the live resolved profile.
+/// Build the proto `Agent` message from the live resolved profile.
 /// Mapped field-by-field from the in-memory `ResolvedProfile`. The `mcp_servers`
 /// list is sorted because the source `mcp_clients` is a `HashMap` whose
 /// iteration order is nondeterministic; sorting makes the emitted event stable
 /// so the drift check in `run_turn` doesn't thrash on otherwise-identical
-/// manifests.
-pub fn manifest_msg(resolved: &crate::profile::ResolvedProfile) -> pb::Manifest {
+/// agent configs.
+pub fn agent_msg(resolved: &crate::profile::ResolvedProfile) -> pb::Agent {
     let mut mcp_servers: Vec<String> = resolved.mcp_clients.keys().cloned().collect();
     mcp_servers.sort();
-    pb::Manifest {
+    pb::Agent {
         model: resolved.model.clone(),
+        instructions: resolved.instructions.clone(),
         tools: resolved.tools.iter().map(|t| t.name().to_string()).collect(),
         mcp_servers,
         skills: resolved.skill_registry.iter().map(|s| s.name.clone()).collect(),
@@ -260,14 +261,13 @@ pub fn manifest_msg(resolved: &crate::profile::ResolvedProfile) -> pb::Manifest 
             allow: resolved.allow.clone(),
             deny: resolved.deny.clone(),
         }),
-        instructions: resolved.instructions.clone(),
-        output_schema_retries: Some(resolved.output_schema_retries as u32),
+        through_seq: 0,
     }
 }
 
-/// The `Manifest` event body.
-pub fn manifest(resolved: &crate::profile::ResolvedProfile) -> pb::event::Body {
-    wire::body(pb::payload::Kind::Manifest(manifest_msg(resolved)))
+/// The `Agent` event body.
+pub fn agent(resolved: &crate::profile::ResolvedProfile) -> pb::event::Body {
+    wire::body(pb::payload::Kind::Agent(agent_msg(resolved)))
 }
 
 /// `SandboxApplied` — kernel enforcement status at process start.
@@ -314,13 +314,13 @@ fn hook_phase(s: &str) -> i32 {
     p as i32
 }
 
-/// `Compaction` — through_seq unset (no seq in legacy data).
-pub fn compaction(
+/// `Summary` — through_seq unset (no seq in legacy data).
+pub fn summary(
     summary: String,
     turns_covered: u32,
     usage: &tx::CompactionUsage,
 ) -> pb::event::Body {
-    wire::body(pb::payload::Kind::Compaction(pb::Compaction {
+    wire::body(pb::payload::Kind::Summary(pb::Summary {
         summary,
         turns_covered,
         usage: Some(pb::CompactionUsage {
@@ -469,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn manifest_maps_fields_from_resolved_profile() {
+    fn agent_maps_fields_from_resolved_profile() {
         use crate::profile::ResolvedProfile;
         use crate::tools::OutputTool;
         use std::sync::Arc;
@@ -486,18 +486,16 @@ mod tests {
         );
         profile.model = "anthropic/x".into();
         profile.instructions = "be terse".into();
-        profile.output_schema_retries = 7;
 
-        let body = manifest(&profile);
+        let body = agent(&profile);
         let r = match kind_of(&body) {
-            pb::payload::Kind::Manifest(r) => r.clone(),
-            other => panic!("expected Manifest, got {other:?}"),
+            pb::payload::Kind::Agent(r) => r.clone(),
+            other => panic!("expected Agent, got {other:?}"),
         };
         assert_eq!(r.model, "anthropic/x");
         let perms = r.permissions.as_ref().expect("permissions");
         assert_eq!(perms.allow, vec!["read".to_string()]);
         assert_eq!(perms.deny, vec!["shell:rm *".to_string()]);
-        assert_eq!(r.output_schema_retries, Some(7));
         // mcp_servers is empty in for_test (no MCP clients); trivially sorted.
         assert!(r.mcp_servers.is_empty());
         // skills is empty in for_test default.
@@ -505,25 +503,25 @@ mod tests {
     }
 
     #[test]
-    fn manifest_equality_is_mcp_server_order_sensitive() {
-        // The drift-guard relies on equality of `pb::Manifest` being
+    fn agent_equality_is_mcp_server_order_sensitive() {
+        // The drift-guard relies on equality of `pb::Agent` being
         // order-sensitive for mcp_servers, so a `HashMap` iteration-order
         // change does not falsely appear as a content change after we sort
         // the vec on emit.
-        let r1 = pb::Manifest {
+        let r1 = pb::Agent {
             model: "m".into(),
             tools: vec![],
             mcp_servers: vec!["zeta".into(), "alpha".into()],
             skills: vec![],
             permissions: Some(pb::PermissionPolicy { allow: vec![], deny: vec![] }),
             instructions: String::new(),
-            output_schema_retries: None,
+            through_seq: 0,
         };
-        let r2 = pb::Manifest {
+        let r2 = pb::Agent {
             mcp_servers: vec!["alpha".into(), "zeta".into()],
             ..r1.clone()
         };
-        assert_ne!(r1, r2, "manifest equality is sensitive to mcp_servers order");
+        assert_ne!(r1, r2, "agent equality is sensitive to mcp_servers order");
     }
 
     // ── Dummy provider for the mapping test (we never call into it) ──────────

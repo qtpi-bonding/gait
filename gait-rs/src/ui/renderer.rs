@@ -322,7 +322,7 @@ impl Renderer {
         }
         // Otherwise a proto Event line (or an unrelated flat line like
         // session_id, which fails proto parse → Continue).
-        match serde_json::from_str::<pb::Event>(json_line) {
+        match serde_json::from_str::<pb::Event>(&crate::proto::wire::compat_rewrite_keys(json_line)) {
             Ok(ev) => self.handle_event(&ev),
             Err(_) => RenderAction::Continue,
         }

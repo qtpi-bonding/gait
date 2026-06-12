@@ -33,6 +33,31 @@ pub fn raw(event_type: &str, payload: serde_json::Value) -> event::Body {
     }))
 }
 
+/// Rewrite pre-rename JSON keys so old logs (`"manifest"`, `"compaction"`) decode
+/// to the new proto names (`"agent"`, `"summary"`). Also strips `outputSchemaRetries`
+/// which was dropped from the Agent envelope (M4). Applied before every Event
+/// `serde_json::from_str` call. No-ops on modern logs (fast string check first).
+pub(crate) fn compat_rewrite_keys(line: &str) -> std::borrow::Cow<'_, str> {
+    if !line.contains("\"manifest\":") && !line.contains("\"compaction\":") {
+        return std::borrow::Cow::Borrowed(line);
+    }
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(line) else {
+        return std::borrow::Cow::Borrowed(line);
+    };
+    if let Some(payload) = v.get_mut("payload").and_then(|p| p.as_object_mut()) {
+        if let Some(mut m) = payload.remove("manifest") {
+            if let Some(o) = m.as_object_mut() {
+                o.remove("outputSchemaRetries");
+            }
+            payload.insert("agent".to_string(), m);
+        }
+        if let Some(c) = payload.remove("compaction") {
+            payload.insert("summary".to_string(), c);
+        }
+    }
+    std::borrow::Cow::Owned(serde_json::to_string(&v).unwrap_or_else(|_| line.to_string()))
+}
+
 /// Read all events from a transcript JSONL file (one [`Event`] per line).
 /// Skips blank lines.
 pub fn read_events(path: &Path) -> anyhow::Result<Vec<Event>> {
@@ -45,7 +70,7 @@ pub fn read_events(path: &Path) -> anyhow::Result<Vec<Event>> {
         if line.trim().is_empty() {
             continue;
         }
-        events.push(serde_json::from_str::<Event>(line)?);
+        events.push(serde_json::from_str::<Event>(&compat_rewrite_keys(line))?);
     }
     Ok(events)
 }
@@ -168,4 +193,32 @@ mod tests {
         let events = read_events(&path).expect("read missing");
         assert!(events.is_empty(), "missing file must yield empty vec");
     }
+
+    #[test]
+    fn pre_rename_log_decodes_via_compat_rewrite() {
+        use crate::proto::gait::log::v1::{event, payload};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.jsonl");
+        // Two hand-written PRE-RENAME lines, exactly as old sessions persisted them:
+        // a "manifest" payload (old Manifest) and a "compaction" payload (old Compaction).
+        let old = concat!(
+            r#"{"version":1,"id":"11111111-1111-4111-8111-111111111111","seq":1,"ts":1,"contentHash":"x","parents":[],"payload":{"manifest":{"model":"anthropic/x","instructions":"be terse","outputSchemaRetries":7}}}"#,
+            "\n",
+            r#"{"version":1,"id":"22222222-2222-4222-8222-222222222222","seq":2,"ts":2,"contentHash":"y","parents":["11111111-1111-4111-8111-111111111111"],"payload":{"compaction":{"summary":"did stuff","turnsCovered":3}}}"#,
+            "\n",
+        );
+        std::fs::write(&path, old).unwrap();
+
+        let events = read_events(&path).expect("pre-rename log must still decode");
+        assert_eq!(events.len(), 2, "both legacy events decode");
+
+        let k0 = match &events[0].body { Some(event::Body::Payload(p)) => p.kind.clone(), _ => None };
+        assert!(matches!(k0, Some(payload::Kind::Agent(_))), "old \"manifest\" -> Kind::Agent");
+        let k1 = match &events[1].body { Some(event::Body::Payload(p)) => p.kind.clone(), _ => None };
+        assert!(matches!(k1, Some(payload::Kind::Summary(_))), "old \"compaction\" -> Kind::Summary");
+
+        // outputSchemaRetries (dropped from the envelope, M4) is silently ignored, not an error.
+        if let Some(payload::Kind::Agent(a)) = k0 { assert_eq!(a.model, "anthropic/x"); }
+    }
+
 }

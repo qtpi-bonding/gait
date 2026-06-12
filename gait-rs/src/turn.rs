@@ -398,10 +398,10 @@ pub async fn run_turn(
     caps: crate::profile::ResolvedProfile,
     input: TurnInput,
 ) -> anyhow::Result<TurnResult> {
-    // Build the live Manifest from the whole profile BEFORE `caps` is
-    // destructured, so `events::manifest_msg` stays the single source of truth
-    // (incl. output_schema_retries). Emitted later, under the drift guard.
-    let manifest = crate::proto::events::manifest_msg(&caps);
+    // Build the live Agent config from the whole profile BEFORE `caps` is
+    // destructured, so `events::agent_msg` stays the single source of truth.
+    // Emitted later, under the drift guard.
+    let agent = crate::proto::events::agent_msg(&caps);
     let provider = caps.provider.clone();
     let tools = caps.tools;
     let session_id = session.id.clone();
@@ -580,17 +580,16 @@ pub async fn run_turn(
         false
     };
 
-    // Emit the live Manifest iff it differs from the last one in the log
-    // (drift guard). First run of a session has no prior Manifest → emit.
+    // Emit the live Agent config iff it differs from the last one in the log
+    // (drift guard). First run of a session has no prior Agent → emit.
     // Identical resumes skip the write; a real change (e.g. model swap, new
     // MCP load) is recorded. Placed AFTER init_session + resume setup, BEFORE
-    // the first UserTurn is appended, so the Manifest opens (or refreshes)
+    // the first UserTurn is appended, so the Agent opens (or refreshes)
     // the working state projection for the turn.
     {
         let events_for_guard = ingestor.events()?;
-        if retrace::active_manifest(&events_for_guard) != Some(manifest.clone()) {
-
-            emitter.emit(wire::body(payload::Kind::Manifest(manifest)))?;
+        if retrace::active_agent(&events_for_guard) != Some(agent.clone()) {
+            emitter.emit(wire::body(payload::Kind::Agent(agent)))?;
         }
     }
 

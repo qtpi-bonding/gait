@@ -134,7 +134,7 @@ pub fn count_turn_complete(events: &[Event]) -> usize {
 }
 
 pub fn last_compaction_index(events: &[Event]) -> Option<usize> {
-    events.iter().rposition(|e| matches!(kind(e), Some(payload::Kind::Compaction(_))))
+    events.iter().rposition(|e| matches!(kind(e), Some(payload::Kind::Summary(_))))
 }
 
 pub struct InitSessionOpts {
@@ -297,7 +297,7 @@ mod tests {
         let cu = CompactionUsage { input: 10, output: 5 };
         let events = vec![
             mint(events::user_turn("x".into(), None, None)),
-            mint(events::compaction("s1".into(), 1, &cu)),
+            mint(events::summary("s1".into(), 1, &cu)),
             mint(events::user_turn("y".into(), None, None)),
         ];
         assert_eq!(last_compaction_index(&events), Some(1));
