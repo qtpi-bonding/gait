@@ -1,22 +1,20 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::collections::HashMap;
 use futures_util::StreamExt;
-use crate::provider::{Provider, StreamChunk};
+use crate::provider::StreamChunk;
 use crate::ui::split_into_blocks;
-use crate::types::{Message, MessageContent, AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind, Usage, ExecutionMode, ExecutionSignal, ToolPermission, Hook, HookAction};
+use crate::types::{Message, MessageContent, AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind, Usage, ExecutionMode, ExecutionSignal, ToolPermission, HookAction};
 use crate::types::Tool;
 use crate::session::transcript::{
     init_session, count_turn_complete, now_ms,
-    InitSessionOpts, PermissionItem, PermissionsReplyItem, TurnUsage, TurnOutput,
+    InitSessionOpts, PermissionItem, TurnUsage, TurnOutput,
     ClarifyItem, InformItem,
 };
 use crate::proto::{events, wire};
 use crate::proto::Emitter;
 use crate::session::Ingestor;
 use crate::session::retrace;
-use crate::config::{McpToolDef, SkillDef};
-use crate::git;
+use crate::config::McpToolDef;
 use crate::git::checkpoint::CheckpointRepo;
 use crate::mcp_client::McpClient;
 use crate::permission::{is_request_approved, find_matched_allow_pattern, is_request_denied, find_matched_deny_pattern};
@@ -408,7 +406,7 @@ pub async fn run_turn(
     // (incl. output_schema_retries). Emitted later, under the drift guard.
     let resolution = crate::proto::events::resolution_msg(&caps);
     let provider = caps.provider.clone();
-    let mut tools = caps.tools;
+    let tools = caps.tools;
     let session_id = session.id.clone();
     let gait_dir = session.gait_dir.clone();
     let codebase_path = session.codebase_path.clone();
@@ -1173,7 +1171,8 @@ pub async fn run_turn(
 mod tests {
     use super::*;
     use crate::git::trace::{GitTraceRepo, TraceRepo};
-    use crate::session::transcript::read_events;
+    use crate::session::transcript::{read_events, PermissionsReplyItem};
+    use crate::provider::Provider;
     use tempfile::TempDir;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};

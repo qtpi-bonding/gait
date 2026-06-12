@@ -307,10 +307,10 @@ impl Renderer {
         }
     }
 
-    /// Transitional line handler for the REPL subprocess. The CLI stdout carries
-    /// BOTH the flat `{"type":"text_delta",...}` live-typing stream AND proto
-    /// `Event` JSON lines (everything else). Flat text deltas stream through
-    /// `push_text`; any other line is parsed as a proto Event and dispatched.
+    /// Render one line of the `gait run` NDJSON stdout stream: a flat `text_delta`
+    /// line or a proto `Event` line. Used for rendering a serialized event stream
+    /// (e.g. log replay or external consumers); the in-process REPL uses
+    /// `handle_event` directly instead.
     pub fn handle_line(&mut self, json_line: &str) -> RenderAction {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(json_line) else {
             return RenderAction::Continue;
