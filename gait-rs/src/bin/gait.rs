@@ -100,7 +100,7 @@ fn usage() -> ! {
     eprintln!("  auth     <list|add|remove> [<provider>]");
     eprintln!("  models   [<filter>]");
     eprintln!("  workflow <run|list|continue|abort|log> [args...]");
-    eprintln!("  chat     [--gait-dir <path>] [--codebase <path>] [--agent <name>]");
+    eprintln!("  chat     [--gait-dir <path>] [--codebase <path>] [--agent <name>] [--session <id>]");
     eprintln!("  approve  <session-id> [--pattern <pat>] [--scope <global|agent|once>] [--gait-dir <path>] [--agent <name>]");
     eprintln!("  reject   <session-id> [--gait-dir <path>]");
     eprintln!("  status   <session-id> [--gait-dir <path>] [--json]");
@@ -832,12 +832,14 @@ fn cmd_workflow_log(argv: &[String], gait_dir: PathBuf) {
 async fn cmd_chat(argv: &[String]) {
     let mut codebase_path: Option<PathBuf> = None;
     let mut agent_name: Option<String> = None;
-
+    let mut session_id: Option<String> = None;
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
             "--codebase" => { i += 1; codebase_path = argv.get(i).map(PathBuf::from); }
             "--agent"    => { i += 1; agent_name = argv.get(i).cloned(); }
+            "--gait-dir" => { i += 1; }
+            "--session"  => { i += 1; session_id = argv.get(i).cloned(); }
             _ => {}
         }
         i += 1;
@@ -857,7 +859,7 @@ async fn cmd_chat(argv: &[String]) {
         eprintln!("[gait] warning: codebase path does not exist: {}", codebase.display());
     }
 
-    if let Err(e) = gait_ai::chat::run_chat(gait_dir, codebase, agent_name).await {
+    if let Err(e) = gait_ai::chat::run_chat(gait_dir, codebase, agent_name, session_id).await {
         eprintln!("[gait] error: {}", e);
         std::process::exit(1);
     }

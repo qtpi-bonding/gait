@@ -32,6 +32,7 @@ pub async fn run_chat(
     gait_dir: PathBuf,
     codebase: PathBuf,
     agent_name: Option<String>,
+    session_id: Option<String>,
 ) -> anyhow::Result<()> {
     let gait_bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gait"));
 
@@ -41,7 +42,7 @@ pub async fn run_chat(
     };
     let theme = Theme::detect();
 
-    let mut session_id = new_session_id();
+    let mut session_id = session_id.unwrap_or_else(new_session_id);
     let mut shell_history_path = gait_dir.join("tmp").join(format!("shell-{}.jsonl", session_id));
     eprintln!(
         "{}gait{}  {}session {}{}  {}{}{}",
