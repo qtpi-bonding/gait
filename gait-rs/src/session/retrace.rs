@@ -88,6 +88,11 @@ pub(crate) trait Projection {
     type State;
     /// Initial state before any events (seeded from config where relevant).
     fn seed(&self) -> Self::State;
+    /// If `kind` is a checkpoint for THIS projection's dimension, return the
+    /// baseline state it establishes — the fold resets to it (positionally,
+    /// where the event sits in the stream; `through_seq` is NOT consulted).
+    /// Default: not a checkpoint for any projection.
+    fn checkpoint(&self, _kind: &payload::Kind) -> Option<Self::State> { None }
     /// Fold one event's effective payload kind into the state.
     fn apply(&self, state: &mut Self::State, event: &Event, kind: &payload::Kind);
     /// Finalize (default: identity).
