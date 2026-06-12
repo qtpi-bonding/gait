@@ -88,6 +88,11 @@ fn append_to_list(path: PathBuf, key: &str, pattern: &str) -> anyhow::Result<()>
     }
 
     let new_fm = serde_yaml::to_string(&yaml)?;
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
     std::fs::write(&path, format!("---\n{}---\n{}", new_fm, body))?;
     Ok(())
 }
@@ -223,4 +228,16 @@ mod tests {
         let path = resolve_agent_path(dir.path(), "coder");
         assert_eq!(path, dir.path().join("agents/coder.md"));
     }
+    #[test]
+    fn append_agent_allow_creates_missing_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("agents").join("new.md");
+        append_agent_allow(path.clone(), "shell:cargo *").unwrap();
+        assert!(path.exists());
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("shell:cargo *"));
+        let allow = read_agent_allow(path).unwrap();
+        assert!(allow.contains(&"shell:cargo *".to_string()));
+    }
+
 }

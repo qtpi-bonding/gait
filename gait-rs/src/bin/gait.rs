@@ -100,7 +100,7 @@ fn usage() -> ! {
     eprintln!("  auth     <list|add|remove> [<provider>]");
     eprintln!("  models   [<filter>]");
     eprintln!("  workflow <run|list|continue|abort|log> [args...]");
-    eprintln!("  chat     [--gait-dir <path>] [--codebase <path>] [--agent <name>]");
+    eprintln!("  chat     [--gait-dir <path>] [--codebase <path>] [--agent <name>] [--session <id>]");
     eprintln!("  approve  <session-id> [--pattern <pat>] [--scope <global|agent|once>] [--gait-dir <path>] [--agent <name>]");
     eprintln!("  reject   <session-id> [--gait-dir <path>]");
     eprintln!("  status   <session-id> [--gait-dir <path>] [--json]");
@@ -247,11 +247,19 @@ async fn cmd_run(argv: &[String]) {
         }
     };
 
-    // Expand $(cmd) and @path markers in the task string before the turn runs.
+    // Expand $(cmd)/$(N) shell, @path files, and >(N) quote-reply in the task
+    // string before the turn runs — same expander the REPL uses. Quote-reply
+    // pulls the prior turn's blocks from the session log (empty for a fresh one).
     let task = task.map(|t| {
         let hist = gait_dir.join("tmp").join(format!("shell-{}.jsonl", &session_id));
-        gait_ai::repl_input::expand_at_markers(&t, &hist, &codebase_path)
-            .unwrap_or_else(|e| { eprintln!("[!] @ expand error: {e}"); t })
+        let events = gait_ai::session::ingestor::Ingestor::from_session(&gait_dir, &session_id)
+            .events().unwrap_or_default();
+        let last_blocks = gait_ai::session::retrace::last_turn_blocks(&events);
+        gait_ai::repl_input::expand_input(&t, &gait_ai::repl_input::ExpandCtx {
+            codebase: &codebase_path,
+            history: &hist,
+            last_blocks: &last_blocks,
+        })
     });
 
     let session = gait_ai::session::Session::load(
@@ -832,12 +840,14 @@ fn cmd_workflow_log(argv: &[String], gait_dir: PathBuf) {
 async fn cmd_chat(argv: &[String]) {
     let mut codebase_path: Option<PathBuf> = None;
     let mut agent_name: Option<String> = None;
-
+    let mut session_id: Option<String> = None;
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
             "--codebase" => { i += 1; codebase_path = argv.get(i).map(PathBuf::from); }
             "--agent"    => { i += 1; agent_name = argv.get(i).cloned(); }
+            "--gait-dir" => { i += 1; }
+            "--session"  => { i += 1; session_id = argv.get(i).cloned(); }
             _ => {}
         }
         i += 1;
@@ -857,7 +867,7 @@ async fn cmd_chat(argv: &[String]) {
         eprintln!("[gait] warning: codebase path does not exist: {}", codebase.display());
     }
 
-    if let Err(e) = gait_ai::chat::run_chat(gait_dir, codebase, agent_name).await {
+    if let Err(e) = gait_ai::chat::run_chat(gait_dir, codebase, agent_name, session_id).await {
         eprintln!("[gait] error: {}", e);
         std::process::exit(1);
     }
