@@ -131,7 +131,7 @@ async fn main() {
         "auth"     => cmd_auth(&args[2..]),
         "models"   => cmd_models(&args[2..]).await,
         "workflow" => cmd_workflow(&args[2..]).await,
-        "chat" => cmd_chat(&args[2..]),
+        "chat" => cmd_chat(&args[2..]).await,
         "approve"  => cmd_approve(&args[2..]),
         "reject"   => cmd_reject(&args[2..]),
         "status"   => cmd_status(&args[2..]),
@@ -809,7 +809,7 @@ fn cmd_workflow_log(argv: &[String], gait_dir: PathBuf) {
     }
 }
 
-fn cmd_chat(argv: &[String]) {
+async fn cmd_chat(argv: &[String]) {
     let mut gait_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut codebase_path: Option<PathBuf> = None;
     let mut agent_name: Option<String> = None;
@@ -833,7 +833,7 @@ fn cmd_chat(argv: &[String]) {
         eprintln!("[gait] warning: codebase path does not exist: {}", codebase.display());
     }
 
-    if let Err(e) = gait_ai::chat::run_chat(gait_dir, codebase, agent_name) {
+    if let Err(e) = gait_ai::chat::run_chat(gait_dir, codebase, agent_name).await {
         eprintln!("[gait] error: {}", e);
         std::process::exit(1);
     }

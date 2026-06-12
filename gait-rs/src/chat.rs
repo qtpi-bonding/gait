@@ -1,6 +1,5 @@
-use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use rustyline::Editor;
 use rustyline::history::DefaultHistory;
 
@@ -29,7 +28,7 @@ pub fn new_session_id() -> String {
     format!("s{}", &uuid::Uuid::new_v4().to_string().replace('-', "")[..8])
 }
 
-pub fn run_chat(
+pub async fn run_chat(
     gait_dir: PathBuf,
     codebase: PathBuf,
     agent_name: Option<String>,
@@ -159,29 +158,64 @@ pub fn run_chat(
 
         let mut current_turn_blocks: Vec<String> = Vec::new();
 
+        // Build session/config/api_key ONCE per task line (in-process, no subprocess).
+        let repos = crate::git::Repos::production();
+        let session = Arc::new(crate::session::Session::load(
+            gait_dir.clone(),
+            session_id.clone(),
+            codebase.clone(),
+            repos.clone(),
+        ));
+        let config = crate::config::load_config(&gait_dir);
+
         'spawn: loop {
-            let mut cmd = Command::new(&gait_bin);
-            cmd.args([
-                "run",
-                "--session",
-                &session_id,
-                "--task",
-                &line,
-                "--gait-dir",
-                gait_dir.to_str().unwrap_or("."),
-                "--codebase",
-                codebase.to_str().unwrap_or("."),
-                // No --auto: allow list governs execution
-            ]);
-            cmd.args(["--agent", agent_path.to_str().unwrap_or("")]);
+            let tx_path = gait_dir
+                .join("sessions")
+                .join(&session_id)
+                .join("transcript.jsonl");
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<
+                crate::proto::gait::log::v1::StreamItem,
+            >();
+            let emitter = crate::proto::Emitter::new(tx_path, tx);
 
-            let mut child = cmd
-                .stdout(Stdio::piped())
-                .stderr(Stdio::inherit())
-                .spawn()?;
+            // Rebuild Profile per turn (Profile is not Clone) and resolve with OWNED args.
+            let profile = crate::profile::Profile::from_config_and_agent(
+                &config,
+                Some(agent_path.as_path()),
+                None,
+            );
+            // Derive provider + api_key from the RESOLVED model (matches gait.rs run
+            // handler): precedence is override > agent frontmatter > config, so the
+            // provider must come from profile.model, not config.model. Compute the
+            // owned api_key in one statement so the &profile.model borrow ends before
+            // profile.resolve(...) moves profile.
+            let api_key = crate::auth::resolve_api_key(
+                profile.model.split_once('/').map(|(p, _)| p).unwrap_or(&profile.model),
+            );
+            let caps = profile
+                .resolve(
+                    codebase.clone(),
+                    session_id.clone(),
+                    gait_dir.clone(),
+                    repos.clone(),
+                    api_key,
+                )
+                .await?;
+            let input = crate::turn::TurnInput {
+                task: Some(line.clone()),
+                auto: false,
+                max_iter: config.max_iter,
+            };
 
-            let stdout = child.stdout.take().expect("piped stdout");
-            let reader = BufReader::new(stdout);
+            // Spawn the turn; move owned session(Arc)+emitter+caps+input so emitter
+            // drops on completion → channel closes → rx.recv() yields None.
+            let session_for_turn = session.clone();
+            let turn_handle = tokio::spawn(async move {
+                crate::turn::run_turn(&*session_for_turn, &emitter, caps, input).await
+            });
+
+            // Drain events IN ORDER, rendering as they arrive.
+            use crate::proto::gait::log::v1::stream_item::Item;
             let mut renderer = Renderer::new(theme.clone());
             let mut pending_permissions: Vec<PermissionItem> = vec![];
             let mut pending_clarify: Vec<ClarifyItem> = vec![];
@@ -189,9 +223,17 @@ pub fn run_chat(
             let mut turn_complete_blocks: Option<Vec<String>> = None;
             let mut timer = Timer::start();
 
-            for json_line in reader.lines() {
+            while let Some(stream_item) = rx.recv().await {
                 timer.stop();
-                match renderer.handle_line(&json_line?) {
+                let action = match stream_item.item {
+                    Some(Item::Event(ev)) => renderer.handle_event(&ev),
+                    Some(Item::Delta(d)) => {
+                        renderer.push_text(&d.content);
+                        RenderAction::Continue
+                    }
+                    None => RenderAction::Continue,
+                };
+                match action {
                     RenderAction::PermissionNeeded(items) => pending_permissions = items,
                     RenderAction::ClarifyNeeded(items) => pending_clarify = items,
                     RenderAction::InformNeeded(items) => pending_inform = items,
@@ -201,7 +243,21 @@ pub fn run_chat(
             }
             renderer.flush();
             timer.stop();
-            child.wait()?;
+            // Graceful turn-error handling: a turn that errors or panics must NOT
+            // kill the REPL (the old subprocess just printed and returned to the
+            // prompt). break 'spawn falls through to `last_turn_blocks =
+            // current_turn_blocks;` below, keeping quote-reply state consistent.
+            match turn_handle.await {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => {
+                    eprintln!("[gait] turn error: {e}");
+                    break 'spawn;
+                }
+                Err(e) => {
+                    eprintln!("[gait] turn panicked: {e}");
+                    break 'spawn;
+                }
+            }
             current_turn_blocks.extend(
                 turn_complete_blocks.unwrap_or_else(|| renderer.turn_blocks.drain(..).collect())
             );
