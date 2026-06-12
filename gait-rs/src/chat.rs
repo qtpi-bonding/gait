@@ -317,6 +317,15 @@ pub async fn run_chat(
                         });
                         any_approved = true;
                     }
+                    crate::permission::PermissionChoice::Session(pat) => {
+                        reply_items.push(PermissionsReplyItem {
+                            id: item.id.clone(),
+                            decision: "approve".into(),
+                            text: Some(pat.clone()),
+                            scope: Some("session".into()),
+                        });
+                        any_approved = true;
+                    }
                     crate::permission::PermissionChoice::Agent(pat) => {
                         reply_items.push(PermissionsReplyItem {
                             id: item.id.clone(),

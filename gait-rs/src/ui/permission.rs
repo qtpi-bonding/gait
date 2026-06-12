@@ -18,7 +18,7 @@ pub fn prompt_permission(
         eprintln!("  {}[{}] {}{}", DIM_FG, i + 1, pat, RESET);
     }
     eprintln!();
-    eprintln!("  {}[o] once   [r] reject{}", DIM_FG, RESET);
+    eprintln!("  {}[o] once   [s] session   [r] reject{}", DIM_FG, RESET);
     loop {
         eprint!("  {}>{} {}", theme.accent.fg(), RESET, theme.user_msg.fg());
         let _ = std::io::stderr().flush();
@@ -47,6 +47,10 @@ fn parse_permission_response(
         "o" | "once" => {
             let pat = patterns.last()?;
             return Some(PermissionChoice::Once(pat.clone()));
+        }
+        "s" | "session" => {
+            let pat = patterns.last()?;
+            return Some(PermissionChoice::Session(pat.clone()));
         }
         _ => {}
     }
@@ -82,6 +86,13 @@ mod tests {
             parse_permission_response("o", &patterns),
             Some(crate::permission::PermissionChoice::Once("shell:cargo test".to_string()))
         );
+    }
+
+    #[test]
+    fn parse_permission_response_session() {
+        let patterns = vec!["shell:ls".to_string()];
+        assert_eq!(parse_permission_response("s", &patterns),
+            Some(crate::permission::PermissionChoice::Session("shell:ls".to_string())));
     }
 
     #[test]
