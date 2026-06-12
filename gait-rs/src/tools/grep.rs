@@ -6,7 +6,6 @@ use serde::Deserialize;
 use serde_json::Value;
 
 const MAX_LINE_LENGTH: usize = 2000;
-const GREP_LIMIT: usize = 100;
 
 #[derive(Deserialize, JsonSchema)]
 struct GrepParams {
@@ -144,12 +143,9 @@ impl Tool for GrepTool {
 
         matches.sort_by(|a, b| b.mod_time.cmp(&a.mod_time));
 
-        let truncated = matches.len() > GREP_LIMIT;
-        let final_matches = &matches[..matches.len().min(GREP_LIMIT)];
-
-        let mut lines = vec![format!("Found {} matches", final_matches.len())];
+        let mut lines = vec![format!("Found {} matches", matches.len())];
         let mut current_file = String::new();
-        for m in final_matches {
+        for m in &matches {
             if current_file != m.path {
                 if !current_file.is_empty() { lines.push(String::new()); }
                 current_file = m.path.clone();
@@ -161,10 +157,6 @@ impl Tool for GrepTool {
                 m.line_text.clone()
             };
             lines.push(format!("  Line {}: {}", m.line_num, text));
-        }
-        if truncated {
-            lines.push(String::new());
-            lines.push("(Results are truncated. Consider using a more specific path or pattern.)".into());
         }
 
         Ok(Value::String(lines.join("\n")))

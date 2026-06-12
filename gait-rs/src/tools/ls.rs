@@ -5,7 +5,6 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
 
-const LS_LIMIT: usize = 100;
 
 static IGNORE_NAMES: &[&str] = &[
     "node_modules", "__pycache__", ".git", "dist", "build", "target",
@@ -41,11 +40,8 @@ fn should_ignore(name: &str, extra: &[String]) -> bool {
     IGNORE_NAMES.contains(&name) || extra.iter().any(|e| e == name)
 }
 
-fn collect_files_walkdir(dir: &std::path::Path, extra_ignore: &[String]) -> (Vec<PathBuf>, bool) {
+fn collect_files_walkdir(dir: &std::path::Path, extra_ignore: &[String]) -> Vec<PathBuf> {
     let mut files = vec![];
-    let mut truncated = false;
-    // filter_entry prunes entire ignored subtrees — `continue` would only skip the entry itself
-    // and WalkDir would still descend into node_modules/, target/, etc.
     for entry in walkdir::WalkDir::new(dir).into_iter()
         .filter_entry(|e| {
             let name = e.file_name().to_string_lossy();
@@ -56,11 +52,10 @@ fn collect_files_walkdir(dir: &std::path::Path, extra_ignore: &[String]) -> (Vec
         let name = entry.file_name().to_string_lossy();
         if should_ignore(&name, extra_ignore) { continue; }
         if entry.file_type().is_file() {
-            if files.len() >= LS_LIMIT { truncated = true; break; }
             files.push(entry.path().to_path_buf());
         }
     }
-    (files, truncated)
+    files
 }
 
 /// Returns None if rg is unavailable or errored (caller should fall back to walkdir).
@@ -88,11 +83,10 @@ fn collect_files_rg(dir: &std::path::Path, extra_ignore: &[String]) -> anyhow::R
 
     let text = String::from_utf8_lossy(&output.stdout);
     let all: Vec<PathBuf> = text.lines().filter(|l| !l.is_empty()).map(PathBuf::from).collect();
-    let truncated = all.len() >= LS_LIMIT;
-    Ok(Some((all.into_iter().take(LS_LIMIT).collect(), truncated)))
+    Ok(Some((all, false)))
 }
 
-fn render_tree(search_dir: &std::path::Path, files: &[PathBuf], truncated: bool) -> String {
+fn render_tree(search_dir: &std::path::Path, files: &[PathBuf]) -> String {
     use std::collections::{BTreeMap, BTreeSet};
     let mut dir_files: BTreeMap<PathBuf, BTreeSet<String>> = BTreeMap::new();
     let mut all_dirs: BTreeSet<PathBuf> = BTreeSet::new();
@@ -152,9 +146,6 @@ fn render_tree(search_dir: &std::path::Path, files: &[PathBuf], truncated: bool)
     let root = std::path::Path::new(".");
     let mut output = format!("{}/\n", search_dir.display());
     output.push_str(&render_dir(root, &all_dirs, &dir_files, 0));
-    if truncated {
-        output.push_str("\n(Results are truncated. Only first 100 files shown.)");
-    }
     output
 }
 
@@ -188,12 +179,12 @@ impl Tool for LsTool {
             anyhow::bail!("Not a directory: {}", search_dir.display());
         }
 
-        let (files, truncated) = match collect_files_rg(&search_dir, &extra_ignore)? {
+        let (files, _) = match collect_files_rg(&search_dir, &extra_ignore)? {
             Some(r) => r,                                          // rg ran — authoritative (even if empty)
-            None => collect_files_walkdir(&search_dir, &extra_ignore), // rg unavailable/errored — fall back
+            None => (collect_files_walkdir(&search_dir, &extra_ignore), false),
         };
 
-        Ok(Value::String(render_tree(&search_dir, &files, truncated)))
+        Ok(Value::String(render_tree(&search_dir, &files)))
     }
 }
 

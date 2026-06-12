@@ -321,6 +321,11 @@ fn apply_parse_filter(raw: &str, ops: &serde_json::Value) -> String {
         }
     }
 
+    let in_lines = raw.lines().count();
+    let out_lines = current.lines().count();
+    if out_lines != in_lines {
+        eprintln!("[gait] parse-filter: {}/{} lines kept", out_lines, in_lines);
+    }
     current
 }
 
@@ -388,6 +393,11 @@ async fn apply_curate_filter(
                     None
                 }
             })
+        })
+        .inspect(|v| {
+            let relevant = v.get("relevant").and_then(|r| r.as_array()).map(|a| a.len()).unwrap_or(0);
+            let irrelevant = v.get("irrelevant").and_then(|r| r.as_array()).map(|a| a.len()).unwrap_or(0);
+            eprintln!("[gait] curate-filter: {}/{} items kept", relevant, relevant + irrelevant);
         })
         .unwrap_or_else(|| serde_json::json!({"relevant": [], "irrelevant": []}))
 }

@@ -5,7 +5,6 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
 
-const GLOB_LIMIT: usize = 100;
 
 #[derive(Deserialize, JsonSchema)]
 struct GlobParams {
@@ -59,7 +58,6 @@ impl Tool for GlobTool {
         let abs_pattern = format!("{}/{}", search_dir.display(), params.pattern);
 
         let mut files: Vec<(PathBuf, Option<std::time::SystemTime>)> = vec![];
-        let mut truncated = false;
 
         let glob_results = ::glob::glob(&abs_pattern)
             .map_err(|e| anyhow::anyhow!("Invalid glob pattern: {e}"))?;
@@ -67,7 +65,6 @@ impl Tool for GlobTool {
         for entry in glob_results {
             match entry {
                 Ok(path) if path.is_file() => {
-                    if files.len() >= GLOB_LIMIT { truncated = true; break; }
                     let mtime = path.metadata().ok().and_then(|m| m.modified().ok());
                     files.push((path, mtime));
                 }
@@ -79,13 +76,9 @@ impl Tool for GlobTool {
 
         files.sort_by(|a, b| b.1.cmp(&a.1));
 
-        let mut lines: Vec<String> = files.iter()
+        let lines: Vec<String> = files.iter()
             .map(|(p, _)| p.display().to_string())
             .collect();
-        if truncated {
-            lines.push(String::new());
-            lines.push("(Results are truncated. Consider using a more specific path or pattern.)".into());
-        }
 
         Ok(Value::String(lines.join("\n")))
     }
