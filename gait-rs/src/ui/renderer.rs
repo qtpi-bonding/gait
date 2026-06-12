@@ -64,6 +64,55 @@ pub(crate) fn tool_target(name: &str, args: &serde_json::Value) -> Option<String
     }
 }
 
+// ── ToolCallWidget ────────────────────────────────────────────────────────────
+
+/// Stateless widget for the tool-call lifecycle animation.
+///
+/// Call `show_spinner` when the tool starts; call `show_result` when it finishes.
+/// `show_result` auto-erases the spinner line when `had_spinner` is true — the
+/// caller never needs to know the ANSI escape sequence.
+pub(crate) struct ToolCallWidget;
+
+impl ToolCallWidget {
+    pub(crate) fn show_spinner(display: &str) {
+        eprintln!("{}  \u{27f3} {}(\u{2026}){}", DIM_FG, display, RESET);
+    }
+
+    pub(crate) fn show_result(
+        theme: &Theme,
+        ok: bool,
+        name: &str,
+        elapsed_ms: Option<u64>,
+        output: &str,
+        had_spinner: bool,
+    ) {
+        if had_spinner { eprint!("\x1b[1A\x1b[2K"); }
+        let (color, mark) = if ok {
+            (theme.success.fg(), '\u{2713}')
+        } else {
+            (theme.danger.fg(), '\u{2717}')
+        };
+        let timing = elapsed_ms.map(|ms| format!(" \u{b7} {}ms", ms)).unwrap_or_default();
+        eprintln!("{}  {} {}{}{}", color, mark, name, timing, RESET);
+        let lines: Vec<&str> = output.lines().filter(|l| !l.trim().is_empty()).collect();
+        match lines.len() {
+            0 => {}
+            1 => eprintln!("{}     {}{}", DIM_FG, lines[0], RESET),
+            2 => {
+                eprintln!("{}     {}{}", DIM_FG, lines[0], RESET);
+                eprintln!("{}     {}{}", DIM_FG, lines[1], RESET);
+            }
+            n => {
+                eprintln!("{}     {}{}", DIM_FG, lines[0], RESET);
+                eprintln!("{}     \u{2026} ({} lines){}", DIM_FG, n - 2, RESET);
+                eprintln!("{}     {}{}", DIM_FG, lines[n - 1], RESET);
+            }
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+
 fn to_ccolor(r: u8, g: u8, b: u8) -> CColor {
     if crate::theme::supports_truecolor() {
         CColor::Rgb { r, g, b }
@@ -112,11 +161,10 @@ impl ReplRenderer {
                 }
                 PendingItem::Spacing => { println!(); }
                 PendingItem::ToolCall { display } => {
-                    eprintln!("{}  \u{27f3} {}(\u{2026}){}", DIM_FG, display, RESET);
+                    ToolCallWidget::show_spinner(&display);
                 }
                 PendingItem::ToolResult { ok, name, elapsed_ms, output, had_spinner } => {
-                    if had_spinner { eprint!("\x1b[1A\x1b[2K"); }
-                    self.paint_tool_result(ok, &name, elapsed_ms, &output);
+                    ToolCallWidget::show_result(&self.theme, ok, &name, elapsed_ms, &output, had_spinner);
                 }
                 PendingItem::Error { message } => {
                     eprintln!("{}[error] {}{}", self.theme.danger.fg(), message, RESET);
@@ -146,29 +194,6 @@ impl ReplRenderer {
         let _ = std::io::stdout().flush();
     }
 
-    fn paint_tool_result(&self, ok: bool, name: &str, elapsed_ms: Option<u64>, output: &str) {
-        let (color, mark) = if ok {
-            (self.theme.success.fg(), '\u{2713}')
-        } else {
-            (self.theme.danger.fg(), '\u{2717}')
-        };
-        let timing = elapsed_ms.map(|ms| format!(" \u{b7} {}ms", ms)).unwrap_or_default();
-        eprintln!("{}  {} {}{}{}", color, mark, name, timing, RESET);
-        let lines: Vec<&str> = output.lines().filter(|l| !l.trim().is_empty()).collect();
-        match lines.len() {
-            0 => {}
-            1 => eprintln!("{}     {}{}", DIM_FG, lines[0], RESET),
-            2 => {
-                eprintln!("{}     {}{}", DIM_FG, lines[0], RESET);
-                eprintln!("{}     {}{}", DIM_FG, lines[1], RESET);
-            }
-            n => {
-                eprintln!("{}     {}{}", DIM_FG, lines[0], RESET);
-                eprintln!("{}     \u{2026} ({} lines){}", DIM_FG, n - 2, RESET);
-                eprintln!("{}     {}{}", DIM_FG, lines[n - 1], RESET);
-            }
-        }
-    }
 }
 
 #[cfg(test)]

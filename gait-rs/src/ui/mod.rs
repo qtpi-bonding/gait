@@ -7,4 +7,5 @@ pub mod builder;
 pub use state::{ReplState, ViewSignal};
 pub(crate) use state::Pending;
 pub use renderer::{ReplRenderer, split_into_blocks};
+pub(crate) use renderer::ToolCallWidget;
 pub use builder::{ReplBuilder, InteractionOutcome};
