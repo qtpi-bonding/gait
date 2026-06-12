@@ -96,3 +96,10 @@ fn content_hash_is_sensitive() {
     // A changed version changes the hash (version is bound into the input).
     assert_ne!(content_hash(base.version + 1, &body_json(&base)), h);
 }
+
+
+#[test]
+fn manifest_event_exists_resolution_gone() {
+    use super::gait::log::v1::{payload, Manifest};
+    let _ = payload::Kind::Manifest(Manifest::default());
+}

@@ -6,7 +6,7 @@
 //! - [`messages`] / [`messages_from_path`] — the **Transcript** (`Vec<Message>`).
 //!   Honours `Compaction` breakpoints and `Redact`/`Replace` mutations.
 //! - [`enabled_loadables`] — active loadable set (LWW-Map over `load` tool calls).
-//! - [`active_resolution`] — last `Resolution` payload (LWW-Register).
+//! - [`active_manifest`] — last `Manifest` payload (LWW-Register).
 //! - [`active_mutations`] + [`apply_cascade`] — `Redact`/`Replace` LWW fold with
 //!   ToolCall↔ToolResult cascade.
 
@@ -239,7 +239,7 @@ fn messages_applying(
                 i += 1;
             }
 
-            // Skip: TurnComplete, Raw (workflow/etc.), InformConvergence, Resolution,
+            // Skip: TurnComplete, Raw (workflow/etc.), InformConvergence, Manifest,
             // mutations (Redact/Replace) — not needed for LLM context.
             _ => { i += 1; }
         }
@@ -364,8 +364,8 @@ pub struct RetraceResult {
     pub messages: Vec<Message>,
     /// Active loadable names (seeds from config, LWW-toggled by `load` tool calls).
     pub enabled_loadables: std::collections::HashSet<String>,
-    /// The most recent `Resolution` payload, if any (LWW-Register).
-    pub active_resolution: Option<pb::Resolution>,
+    /// The most recent `Manifest` payload, if any (LWW-Register).
+    pub active_manifest: Option<pb::Manifest>,
     /// LWW-converged mutations (Redact/Replace) keyed by target event id,
     /// with ToolCall↔ToolResult cascade applied.
     pub mutations: HashMap<String, MutationState>,
@@ -389,19 +389,19 @@ pub fn fold(
     let post_compaction = &all_events[compaction_start..];
     let enabled_loadables = enabled_loadables(post_compaction, config_enabled);
 
-    let active_resolution = active_resolution(all_events);
+    let active_manifest = active_manifest(all_events);
 
-    Ok(RetraceResult { messages, enabled_loadables, active_resolution, mutations })
+    Ok(RetraceResult { messages, enabled_loadables, active_manifest, mutations })
 }
 
-/// The most recent `Resolution` payload in `events`, if any. LWW-Register over
-/// `Resolution` events. Used by `run_turn` as the drift-guard baseline: skip
-/// emitting a new `Resolution` if the live profile already matches the most
+/// The most recent `Manifest` payload in `events`, if any. LWW-Register over
+/// `Manifest` events. Used by `run_turn` as the drift-guard baseline: skip
+/// emitting a new `Manifest` if the live profile already matches the most
 /// recent one.
-pub fn active_resolution(events: &[Event]) -> Option<pb::Resolution> {
+pub fn active_manifest(events: &[Event]) -> Option<pb::Manifest> {
     events.iter().rev().find_map(|e| {
         if let Some(event::Body::Payload(p)) = &e.body {
-            if let Some(payload::Kind::Resolution(r)) = &p.kind {
+            if let Some(payload::Kind::Manifest(r)) = &p.kind {
                 return Some(r.clone());
             }
         }
@@ -555,18 +555,18 @@ mod tests {
     }
 
     #[test]
-    fn active_resolution_returns_last_resolution() {
+    fn active_manifest_returns_last_manifest() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("tx.jsonl");
 
-        // Write two Resolution events — active_resolution should return the second.
-        wire::append(&path, wire::body(pb::payload::Kind::Resolution(pb::Resolution {
+        // Write two Manifest events — active_manifest should return the second.
+        wire::append(&path, wire::body(pb::payload::Kind::Manifest(pb::Manifest {
             model: "model-a".into(),
             tools: vec![], mcp_servers: vec![], skills: vec![],
             permissions: Some(pb::PermissionPolicy { allow: vec![], deny: vec![] }),
             instructions: String::new(), output_schema_retries: None,
         }))).unwrap();
-        wire::append(&path, wire::body(pb::payload::Kind::Resolution(pb::Resolution {
+        wire::append(&path, wire::body(pb::payload::Kind::Manifest(pb::Manifest {
             model: "model-b".into(),
             tools: vec![], mcp_servers: vec![], skills: vec![],
             permissions: Some(pb::PermissionPolicy { allow: vec![], deny: vec![] }),
@@ -574,18 +574,18 @@ mod tests {
         }))).unwrap();
 
         let all_events = read_events(&path).unwrap();
-        let r = active_resolution(&all_events).expect("a resolution");
+        let r = active_manifest(&all_events).expect("a manifest");
         assert_eq!(r.model, "model-b");
     }
 
     #[test]
-    fn active_resolution_returns_none_for_no_resolution() {
+    fn active_manifest_returns_none_for_no_manifest() {
         let bodies = vec![
             events::user_turn("hi".into(), None, None),
             events::assistant_text("hello".into()),
         ];
         let proto_events = mint_events(bodies);
-        assert!(active_resolution(&proto_events).is_none());
+        assert!(active_manifest(&proto_events).is_none());
     }
 
     #[test]
@@ -593,7 +593,7 @@ mod tests {
         use std::collections::HashSet;
         let dir = TempDir::new().unwrap();
         let path = write_events(dir.path(), vec![
-            wire::body(pb::payload::Kind::Resolution(pb::Resolution {
+            wire::body(pb::payload::Kind::Manifest(pb::Manifest {
                 model: "gpt-fold".into(),
                 tools: vec![], mcp_servers: vec![], skills: vec![],
                 permissions: Some(pb::PermissionPolicy { allow: vec![], deny: vec![] }),
@@ -606,10 +606,10 @@ mod tests {
         let config: HashSet<String> = HashSet::new();
         let result = fold(&all_events, &config).unwrap();
 
-        // messages: user turn (compaction_start == 0, no resolution-only, user_turn becomes a Message)
+        // messages: user turn (compaction_start == 0, no manifest-only, user_turn becomes a Message)
         assert!(!result.messages.is_empty());
-        // active_resolution: the one we wrote
-        assert_eq!(result.active_resolution.as_ref().map(|r| r.model.as_str()), Some("gpt-fold"));
+        // active_manifest: the one we wrote
+        assert_eq!(result.active_manifest.as_ref().map(|r| r.model.as_str()), Some("gpt-fold"));
         // enabled_loadables: tdd was toggled on
         assert!(result.enabled_loadables.contains("tdd"));
     }

@@ -237,16 +237,16 @@ pub fn turn_complete(
     }))
 }
 
-/// Build the proto `Resolution` message from the live resolved profile.
+/// Build the proto `Manifest` message from the live resolved profile.
 /// Mapped field-by-field from the in-memory `ResolvedProfile`. The `mcp_servers`
 /// list is sorted because the source `mcp_clients` is a `HashMap` whose
 /// iteration order is nondeterministic; sorting makes the emitted event stable
 /// so the drift check in `run_turn` doesn't thrash on otherwise-identical
-/// resolutions.
-pub fn resolution_msg(resolved: &crate::profile::ResolvedProfile) -> pb::Resolution {
+/// manifests.
+pub fn manifest_msg(resolved: &crate::profile::ResolvedProfile) -> pb::Manifest {
     let mut mcp_servers: Vec<String> = resolved.mcp_clients.keys().cloned().collect();
     mcp_servers.sort();
-    pb::Resolution {
+    pb::Manifest {
         model: resolved.model.clone(),
         tools: resolved.tools.iter().map(|t| t.name().to_string()).collect(),
         mcp_servers,
@@ -260,9 +260,9 @@ pub fn resolution_msg(resolved: &crate::profile::ResolvedProfile) -> pb::Resolut
     }
 }
 
-/// The `Resolution` event body.
-pub fn resolution(resolved: &crate::profile::ResolvedProfile) -> pb::event::Body {
-    wire::body(pb::payload::Kind::Resolution(resolution_msg(resolved)))
+/// The `Manifest` event body.
+pub fn manifest(resolved: &crate::profile::ResolvedProfile) -> pb::event::Body {
+    wire::body(pb::payload::Kind::Manifest(manifest_msg(resolved)))
 }
 
 /// `SandboxApplied` — kernel enforcement status at process start.
@@ -463,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn resolution_maps_fields_from_resolved_profile() {
+    fn manifest_maps_fields_from_resolved_profile() {
         use crate::profile::ResolvedProfile;
         use crate::tools::OutputTool;
         use std::sync::Arc;
@@ -482,10 +482,10 @@ mod tests {
         profile.instructions = "be terse".into();
         profile.output_schema_retries = 7;
 
-        let body = resolution(&profile);
+        let body = manifest(&profile);
         let r = match kind_of(&body) {
-            pb::payload::Kind::Resolution(r) => r.clone(),
-            other => panic!("expected Resolution, got {other:?}"),
+            pb::payload::Kind::Manifest(r) => r.clone(),
+            other => panic!("expected Manifest, got {other:?}"),
         };
         assert_eq!(r.model, "anthropic/x");
         let perms = r.permissions.as_ref().expect("permissions");
@@ -499,12 +499,12 @@ mod tests {
     }
 
     #[test]
-    fn resolution_equality_is_mcp_server_order_sensitive() {
-        // The drift-guard relies on equality of `pb::Resolution` being
+    fn manifest_equality_is_mcp_server_order_sensitive() {
+        // The drift-guard relies on equality of `pb::Manifest` being
         // order-sensitive for mcp_servers, so a `HashMap` iteration-order
         // change does not falsely appear as a content change after we sort
         // the vec on emit.
-        let r1 = pb::Resolution {
+        let r1 = pb::Manifest {
             model: "m".into(),
             tools: vec![],
             mcp_servers: vec!["zeta".into(), "alpha".into()],
@@ -513,11 +513,11 @@ mod tests {
             instructions: String::new(),
             output_schema_retries: None,
         };
-        let r2 = pb::Resolution {
+        let r2 = pb::Manifest {
             mcp_servers: vec!["alpha".into(), "zeta".into()],
             ..r1.clone()
         };
-        assert_ne!(r1, r2, "resolution equality is sensitive to mcp_servers order");
+        assert_ne!(r1, r2, "manifest equality is sensitive to mcp_servers order");
     }
 
     // ── Dummy provider for the mapping test (we never call into it) ──────────

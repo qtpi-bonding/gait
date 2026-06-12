@@ -1325,7 +1325,7 @@ mod tests {
         assert!(cmd_load(dir.path(), &args).is_err());
     }
 
-    mod resolution_tests {
+    mod manifest_tests {
         use super::*;
         use serial_test::serial;
 

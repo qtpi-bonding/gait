@@ -69,7 +69,7 @@ message StreamItem {
 message Payload {
   oneof kind {
     SessionStart       session_start       = 1;
-    Resolution         resolution          = 2;
+    Manifest           manifest            = 2;
     UserTurn           user_turn           = 3;
     AssistantText      assistant_text      = 4;
     ToolCall           tool_call           = 5;
@@ -135,7 +135,7 @@ message SessionStart {                // root event — identity ONLY
   optional string assigned_by = 2;
 }
 
-message Resolution {                  // the live resolution from this seq forward; first instance = opening.
+message Manifest {                    // the live manifest from this seq forward; first instance = opening.
   string model                 = 1;   // LWW-projected (LWW-Register). "provider/model-id".
   repeated string tools        = 2;   // resolved tool names
   repeated string mcp_servers  = 3;
