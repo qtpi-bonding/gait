@@ -16,17 +16,20 @@ fn extract_path_arg(args: &[String], flag: &str) -> Option<std::path::PathBuf> {
         .map(|w| std::path::PathBuf::from(&w[1]))
 }
 
+/// The single source of truth for gait-dir precedence: `--gait-dir` arg >
+/// `$GAIT_DIR` env var > `None`. Callers pick the no-value policy (error vs.
+/// fall back to pwd) — see `resolve_gait_dir` and `cmd_chat`.
+fn gait_dir_or_env(args: &[String]) -> Option<std::path::PathBuf> {
+    if let Some(p) = extract_path_arg(args, "--gait-dir") {
+        return Some(p);
+    }
+    std::env::var("GAIT_DIR").ok().filter(|v| !v.is_empty()).map(std::path::PathBuf::from)
+}
+
 /// Resolve gait dir: --gait-dir arg > $GAIT_DIR env var > error.
 fn resolve_gait_dir(args: &[String]) -> anyhow::Result<std::path::PathBuf> {
-    if let Some(p) = extract_path_arg(args, "--gait-dir") {
-        return Ok(p);
-    }
-    if let Ok(v) = std::env::var("GAIT_DIR") {
-        if !v.is_empty() {
-            return Ok(std::path::PathBuf::from(v));
-        }
-    }
-    anyhow::bail!("no gait dir: pass --gait-dir <path> or set $GAIT_DIR")
+    gait_dir_or_env(args)
+        .ok_or_else(|| anyhow::anyhow!("no gait dir: pass --gait-dir <path> or set $GAIT_DIR"))
 }
 
 /// Resolve codebase: --codebase arg > current working directory.
@@ -809,20 +812,24 @@ fn cmd_workflow_log(argv: &[String], gait_dir: PathBuf) {
 }
 
 async fn cmd_chat(argv: &[String]) {
-    let mut gait_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut codebase_path: Option<PathBuf> = None;
     let mut agent_name: Option<String> = None;
 
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
-            "--gait-dir" => { i += 1; gait_dir = argv.get(i).map(PathBuf::from).unwrap_or(gait_dir); }
-            "--codebase"  => { i += 1; codebase_path = argv.get(i).map(PathBuf::from); }
-            "--agent"     => { i += 1; agent_name = argv.get(i).cloned(); }
+            "--codebase" => { i += 1; codebase_path = argv.get(i).map(PathBuf::from); }
+            "--agent"    => { i += 1; agent_name = argv.get(i).cloned(); }
             _ => {}
         }
         i += 1;
     }
+
+    // Same precedence as every other subcommand (via `gait_dir_or_env`): --gait-dir
+    // arg > $GAIT_DIR env var > pwd. Chat falls back to pwd rather than erroring
+    // because it's interactive.
+    let gait_dir = gait_dir_or_env(argv)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
     let codebase = match codebase_path.as_deref().and_then(|p| p.to_str()) {
         Some(".") => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
