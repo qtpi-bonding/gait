@@ -219,7 +219,7 @@ async fn cmd_run(argv: &[String]) {
     // Build the declarative profile (model precedence: --model > agent frontmatter > config),
     // then resolve it into a live provider + tools + MCP clients in one place.
     let profile = gait_ai::profile::Profile::from_config_and_agent(
-        &config, agent_path.as_deref(), model_override.clone());
+        &config, &gait_dir, Some(codebase_path.as_path()), agent_path.as_deref(), model_override.clone());
     let model = profile.model.clone();
 
     let provider_name = match model.split_once('/') {

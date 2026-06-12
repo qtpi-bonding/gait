@@ -177,6 +177,8 @@ pub async fn run_chat(
             // Rebuild Profile per turn (Profile is not Clone) and resolve with OWNED args.
             let profile = crate::profile::Profile::from_config_and_agent(
                 &config,
+                &gait_dir,
+                Some(codebase.as_path()),
                 Some(agent_path.as_path()),
                 None,
             );
