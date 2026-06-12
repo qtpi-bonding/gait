@@ -198,6 +198,19 @@ pub(crate) struct MessagesState {
     msgs: Vec<Message>,
     phase: MsgPhase,
 }
+impl MessagesState {
+    /// The post-compaction baseline: a context restarted from the synthesized
+    /// summary user message. Reproduces the historical clear()-then-push reset.
+    fn with_summary(summary: &str) -> Self {
+        MessagesState {
+            msgs: vec![Message::User {
+                content: MessageContent::Text(
+                    format!("[Session history summary: {}]", summary)),
+            }],
+            phase: MsgPhase::Other,
+        }
+    }
+}
 
 /// The Transcript: the `Vec<Message>` the model reads, folded from the Log.
 /// Resets on a `Compaction` event (restart the message context from the summary;
@@ -211,19 +224,18 @@ impl Projection for ActiveMessages {
     fn seed(&self) -> Self::State {
         MessagesState { msgs: vec![], phase: MsgPhase::Other }
     }
+    /// `Compaction` is the message dimension's checkpoint: reset the context to a
+    /// baseline restarted from the synthesized summary (C2 — a fold-from-payload,
+    /// not empty). Reset is positional (C1): `through_seq` is never read.
+    fn checkpoint(&self, kind: &payload::Kind) -> Option<Self::State> {
+        if let payload::Kind::Compaction(c) = kind {
+            Some(MessagesState::with_summary(&c.summary))
+        } else {
+            None
+        }
+    }
     fn apply(&self, st: &mut Self::State, _ev: &Event, kind: &payload::Kind) {
         match kind {
-            payload::Kind::Compaction(c) => {
-                // Restart the message context from the summary (state projections
-                // carry forward; only this projection resets).
-                st.msgs.clear();
-                st.msgs.push(Message::User {
-                    content: MessageContent::Text(
-                        format!("[Session history summary: {}]", c.summary)),
-                });
-                st.phase = MsgPhase::Other;
-            }
-
             payload::Kind::ToolCall(tc) => {
                 let part = AssistantPart::ToolCall(ToolCall {
                     tool_call_id: tc.call_id.clone(),
