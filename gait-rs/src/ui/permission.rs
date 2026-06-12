@@ -42,7 +42,7 @@ pub fn prompt_permission(
 /// broadest, `patterns.last()`); the letter picks the scope (default, i.e. a
 /// bare number, is Once). `r` rejects. No `g`/global — global stays config-only.
 ///   `2` → once-pattern-2 · `s2`/`2s` → session · `a1`/`1a` → agent · `s` → session-broadest
-fn parse_permission_response(
+pub(crate) fn parse_permission_response(
     input: &str,
     patterns: &[String],
 ) -> Option<crate::permission::PermissionChoice> {

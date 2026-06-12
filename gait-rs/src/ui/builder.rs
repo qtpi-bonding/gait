@@ -9,7 +9,7 @@ use crate::ui::renderer::ReplRenderer;
 use crate::theme::Theme;
 use crate::session::transcript::{
     ClarifyItem, ClarifyReplyItem, InformItem, InformReplyItem,
-    PermissionItem,
+    PermissionItem, PermissionsReplyItem,
 };
 use crate::theme::{RESET, DIM_FG};
 use crate::proto::events;
@@ -122,12 +122,62 @@ impl ReplBuilder {
 
     fn run_permission(
         &mut self,
-        _items: Vec<PermissionItem>,
-        _gait_dir: &std::path::Path,
-        _session_id: &str,
-        _agent_path: Option<&std::path::Path>,
+        items: Vec<PermissionItem>,
+        gait_dir: &std::path::Path,
+        session_id: &str,
+        agent_path: Option<&std::path::Path>,
     ) -> anyhow::Result<InteractionOutcome> {
-        anyhow::bail!("run_permission not yet implemented — see Task 5")
+        use crate::ui::permission::parse_permission_response;
+        let prompt = format!("  {}>{} ", self.renderer.theme().accent.fg(), RESET);
+        let mut reply_items: Vec<PermissionsReplyItem> = vec![];
+
+        for (idx, item) in items.iter().enumerate() {
+            eprintln!();
+            if items.len() > 1 {
+                eprintln!("{}⟳ {}  {}({} of {}){}", self.renderer.theme().accent.fg(), item.cmd, DIM_FG, idx + 1, items.len(), RESET);
+            } else {
+                eprintln!("{}⟳ {}{}", self.renderer.theme().accent.fg(), item.cmd, RESET);
+            }
+            eprintln!();
+            for (i, pat) in item.patterns.iter().enumerate() {
+                eprintln!("  {}[{}] {}{}", DIM_FG, i + 1, pat, RESET);
+            }
+            eprintln!();
+            eprintln!("  {}number = once · s = session · a = agent · r = reject{}", DIM_FG, RESET);
+
+            let choice = loop {
+                match self.rl.readline(&prompt) {
+                    Ok(input) => match parse_permission_response(input.trim(), &item.patterns) {
+                        Some(c) => break c,
+                        None => eprintln!("  unrecognized — e.g. 1, s, s1, 1a, r"),
+                    },
+                    Err(_) => break crate::permission::PermissionChoice::Reject,
+                }
+            };
+
+            if let Err(e) = crate::permission::save_choice(&choice, gait_dir, session_id, agent_path) {
+                eprintln!("[gait] warning: could not save permission: {e}");
+            }
+
+            let perm = match &choice {
+                crate::permission::PermissionChoice::Once(p) =>
+                    PermissionsReplyItem { id: item.id.clone(), decision: "approve".into(), text: Some(p.clone()), scope: Some("once".into()) },
+                crate::permission::PermissionChoice::Session(p) =>
+                    PermissionsReplyItem { id: item.id.clone(), decision: "approve".into(), text: Some(p.clone()), scope: Some("session".into()) },
+                crate::permission::PermissionChoice::Agent(p) =>
+                    PermissionsReplyItem { id: item.id.clone(), decision: "approve".into(), text: Some(p.clone()), scope: Some("agent".into()) },
+                crate::permission::PermissionChoice::Global(p) =>
+                    PermissionsReplyItem { id: item.id.clone(), decision: "approve".into(), text: Some(p.clone()), scope: Some("global".into()) },
+                crate::permission::PermissionChoice::Reject =>
+                    PermissionsReplyItem { id: item.id.clone(), decision: "deny".into(), text: None, scope: None },
+            };
+            reply_items.push(perm);
+        }
+
+        Ok(InteractionOutcome {
+            event_body: events::permissions_reply("user".into(), &reply_items),
+            respawn: true,
+        })
     }
 }
 
@@ -169,6 +219,19 @@ mod tests {
         let body = crate::proto::events::inform_reply(&replies);
         if let crate::proto::gait::log::v1::event::Body::Payload(p) = body {
             assert!(matches!(p.kind, Some(payload::Kind::InformReply(_))));
+        } else { panic!("expected Payload body"); }
+    }
+    #[test]
+    fn permissions_reply_event_has_correct_kind() {
+        use crate::session::transcript::PermissionsReplyItem;
+        use crate::proto::gait::log::v1 as pb;
+        use crate::proto::gait::log::v1::payload;
+        let replies = vec![PermissionsReplyItem {
+            id: "tc-1".into(), decision: "deny".into(), text: None, scope: None,
+        }];
+        let body = crate::proto::events::permissions_reply("user".into(), &replies);
+        if let pb::event::Body::Payload(p) = body {
+            assert!(matches!(p.kind, Some(payload::Kind::PermissionsReply(_))));
         } else { panic!("expected Payload body"); }
     }
 }
