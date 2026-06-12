@@ -49,6 +49,11 @@ pub fn assistant_text(content: String) -> pb::event::Body {
     wire::body(pb::payload::Kind::AssistantText(pb::AssistantText { content }))
 }
 
+/// A working-directory change. `ActiveCwd` LWW-folds these.
+pub fn cwd(path: &str) -> pb::event::Body {
+    wire::body(pb::payload::Kind::Cwd(pb::Cwd { path: path.to_string() }))
+}
+
 /// `ToolCall` — id → call_id, `Value` input → `Struct`.
 pub fn tool_call(call_id: String, name: String, input: &serde_json::Value) -> pb::event::Body {
     wire::body(pb::payload::Kind::ToolCall(pb::ToolCall {
