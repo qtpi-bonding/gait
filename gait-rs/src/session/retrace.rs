@@ -889,6 +889,31 @@ mod tests {
     }
 
     #[test]
+    fn active_messages_two_compactions_second_wins() {
+        use std::collections::HashMap;
+        // Two Compaction events in one log. Each resets the message context to its
+        // own summary; the SECOND summary replaces the first (positional reset, C1).
+        let cu = CompactionUsage { input: 1, output: 1 };
+        let evs = mint_events(vec![
+            events::user_turn("before-first".into(), None, None),
+            events::compaction("first summary".into(), 1, &cu),
+            events::user_turn("between".into(), None, None),
+            events::compaction("second summary".into(), 1, &cu),
+            events::user_turn("after-second".into(), None, None),
+        ]);
+        let msgs = run_projection(&ActiveMessages, &evs, &HashMap::new()).msgs;
+        // Only the second summary + the turn after it survive; the first summary and
+        // everything before the second compaction are gone.
+        assert_eq!(msgs.len(), 2, "second summary + post-second turn, got: {msgs:?}");
+        assert!(matches!(&msgs[0],
+            Message::User { content: MessageContent::Text(t) }
+            if t.contains("second summary") && !t.contains("first summary")),
+            "second compaction's summary replaces the first");
+        assert!(matches!(&msgs[1],
+            Message::User { content: MessageContent::Text(t) } if t == "after-second"));
+    }
+
+    #[test]
     fn permissions_session_persists_once_expires_on_turn_complete() {
         use std::collections::{HashMap, HashSet};
         let evs = mint_events(vec![
