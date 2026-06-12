@@ -254,6 +254,51 @@ fn expand_file_marker(token: &str, codebase: &std::path::Path) -> String {
     }
 }
 
+/// Reserved REPL built-in prefixes that must NOT be treated as skill names.
+const BUILTIN_PREFIXES: &[&str] = &["n", "new", "q", "exit", "quit", "u", "uc", "ut"];
+
+/// Parse a REPL line as a skill-toggle command.
+///
+/// Returns `Some((skill_name, enabled))` when the line is exactly:
+///   `/skillname`        → enable  (enabled = true)
+///   `/skillname off`    → disable (enabled = false)
+///
+/// Returns `None` for any other input, including:
+///   - lines not starting with `/`
+///   - reserved built-in commands (`/n`, `/q`, `/u`, `/uc`, `/ut`, `/exit`)
+///   - bare `/` with no name
+///   - names containing `/` (path-like) or characters outside `[a-zA-Z0-9_-]`
+///   - three or more whitespace-separated tokens
+pub(crate) fn parse_skill_toggle(line: &str) -> Option<(String, bool)> {
+    let rest = line.strip_prefix('/')?;
+    // Bare slash
+    if rest.is_empty() { return None; }
+
+    // Split on whitespace: expect 1 or 2 tokens
+    let mut tokens = rest.split_whitespace();
+    let name = tokens.next()?;
+    let modifier = tokens.next(); // "off" or absent
+    // Reject any further tokens
+    if tokens.next().is_some() { return None; }
+
+    // Reserved built-in names
+    if BUILTIN_PREFIXES.contains(&name) { return None; }
+
+    // Validate name: alphanumeric, hyphen, underscore only
+    if !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        return None;
+    }
+
+    let enabled = match modifier {
+        None => true,
+        Some(m) if m.eq_ignore_ascii_case("off") => false,
+        _ => return None, // unrecognised modifier
+    };
+
+    Some((name.to_string(), enabled))
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,5 +511,69 @@ mod quote_reply_tests {
     #[test]
     fn empty_blocks_passes_through() {
         assert_eq!(q(">(1)", &[]), ">(1)");
+    }
+}
+
+#[cfg(test)]
+
+mod skill_toggle_tests {
+    use super::parse_skill_toggle;
+
+    #[test]
+    fn enable_bare_name() {
+        assert_eq!(parse_skill_toggle("/tdd"), Some(("tdd".to_string(), true)));
+    }
+
+    #[test]
+    fn enable_with_trailing_whitespace() {
+        assert_eq!(parse_skill_toggle("/tdd  "), Some(("tdd".to_string(), true)));
+    }
+
+    #[test]
+    fn disable_with_off() {
+        assert_eq!(parse_skill_toggle("/tdd off"), Some(("tdd".to_string(), false)));
+    }
+
+    #[test]
+    fn disable_with_off_uppercase() {
+        assert_eq!(parse_skill_toggle("/tdd OFF"), Some(("tdd".to_string(), false)));
+    }
+
+    #[test]
+    fn disable_with_extra_whitespace() {
+        assert_eq!(parse_skill_toggle("/tdd   off"), Some(("tdd".to_string(), false)));
+    }
+
+    #[test]
+    fn plain_message_returns_none() {
+        assert_eq!(parse_skill_toggle("hello world"), None);
+    }
+
+    #[test]
+    fn known_builtins_return_none() {
+        assert_eq!(parse_skill_toggle("/n"), None);
+        assert_eq!(parse_skill_toggle("/new"), None);
+        assert_eq!(parse_skill_toggle("/q"), None);
+        assert_eq!(parse_skill_toggle("/exit"), None);
+        assert_eq!(parse_skill_toggle("/u"), None);
+        assert_eq!(parse_skill_toggle("/uc"), None);
+        assert_eq!(parse_skill_toggle("/ut"), None);
+    }
+
+    #[test]
+    fn bare_slash_returns_none() {
+        assert_eq!(parse_skill_toggle("/"), None);
+    }
+
+    #[test]
+    fn invalid_chars_in_name_return_none() {
+        assert_eq!(parse_skill_toggle("/foo/bar"), None);
+        assert_eq!(parse_skill_toggle("/foo bar baz"), None);
+    }
+
+    #[test]
+    fn hyphen_underscore_allowed() {
+        assert_eq!(parse_skill_toggle("/my-skill"), Some(("my-skill".to_string(), true)));
+        assert_eq!(parse_skill_toggle("/my_skill"), Some(("my_skill".to_string(), true)));
     }
 }
