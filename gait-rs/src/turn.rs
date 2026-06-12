@@ -1429,7 +1429,7 @@ mod tests {
                 vec![
                     StreamChunk::ToolCallComplete {
                         tool_call_id: "tc1".into(),
-                        tool_name: "output".into(),
+                        tool_name: "structured_done".into(),
                         args: serde_json::json!({ "message": "fixed the bug", "result": { "files": 2 } }),
                     },
                     StreamChunk::Done,
@@ -1470,7 +1470,7 @@ mod tests {
                 vec![
                     StreamChunk::ToolCallComplete {
                         tool_call_id: "tc1".into(),
-                        tool_name: "output".into(),
+                        tool_name: "structured_done".into(),
                         args: serde_json::json!({ "message": "done" }),
                     },
                     StreamChunk::Done,
@@ -1673,7 +1673,7 @@ mod tests {
                 vec![
                     StreamChunk::ToolCallComplete {
                         tool_call_id: "tc2".into(),
-                        tool_name: "output".into(),
+                        tool_name: "structured_done".into(),
                         args: serde_json::json!({ "message": "blocked" }),
                     },
                     StreamChunk::Done,
@@ -1726,7 +1726,7 @@ mod tests {
                 vec![
                     StreamChunk::ToolCallComplete {
                         tool_call_id: "tc2".into(),
-                        tool_name: "output".into(),
+                        tool_name: "structured_done".into(),
                         args: serde_json::json!({ "message": "blocked" }),
                     },
                     StreamChunk::Done,
@@ -2262,7 +2262,7 @@ mod tests {
                 vec![
                     StreamChunk::ToolCallComplete {
                         tool_call_id: "tc2".into(),
-                        tool_name: "output".into(),
+                        tool_name: "structured_done".into(),
                         args: serde_json::json!({ "message": "done" }),
                     },
                     StreamChunk::Done,

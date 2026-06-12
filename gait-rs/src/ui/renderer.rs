@@ -288,7 +288,7 @@ mod tests {
         let args = serde_json::json!({"url": "https://example.com/page"});
         assert_eq!(tool_target("webfetch", &args).as_deref(), Some("https://example.com/page"));
 
-        assert_eq!(tool_target("output", &serde_json::json!({"message": "hi"})), None);
+        assert_eq!(tool_target("structured_done", &serde_json::json!({"message": "hi"})), None);
     }
 
     #[test]
