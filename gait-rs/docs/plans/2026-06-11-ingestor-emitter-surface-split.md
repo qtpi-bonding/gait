@@ -4,6 +4,13 @@
 
 > **STATUS: ✅ COMPLETE — merged to `main` 2026-06-11.** All 8 tasks (1–7b) implemented via subagent-driven development with spec + code-quality review on each, merged in `a6a2f92`. A follow-up `Emitter::for_session` constructor (deduping transcript-path construction at 7 sites) merged in `3880662`. 475 tests green. **One item intentionally deferred:** streaming the separate `gait workflow` surface — Task 6 was re-scoped to leave `wire::emit` in place for it (see the re-scope note under Task 6). That work is to be redone separately.
 
+> **VERIFIED IN-CODE 2026-06-11.** Both surfaces confirmed to call the library turn in-process over the proto `StreamItem` channel — no JSONL re-parse, no subprocess self-spawn:
+> - **CLI** (`src/bin/gait.rs` run handler): builds `Emitter::for_session`, spawns `run_turn(&session, &emitter, …)`, drains `rx.recv()` → NDJSON stdout (`Event` → inner proto; `Delta` → flat `text_delta` line). External stdout API byte-identical to before.
+> - **REPL** (`src/chat.rs`): per-turn `Emitter::for_session`, `tokio::spawn(run_turn(…))`, drains the channel → `Renderer::handle_event(&Event)` / text append. The old turn self-spawn is **deleted**; the only remaining `Command::new(&gait_bin)` calls are the separate `gait undo` subcommand (`/u`, `/uc`, `/ut`), not the turn.
+> - **Read/write boundary** is structural: `Ingestor` (retrace/events, read-only) vs `Emitter` (transcript + channel, write-only).
+>
+> A future web/FFI/Serverpod surface is the same wiring — deserialize the same `StreamItem`, render or re-emit; the core stays daemonless.
+
 **Goal:** Replace the implicit stdout coupling in `wire::emit()` with two distinct types — `Ingestor` (read-only transcript/retrace) and `Emitter` (write-only: transcript + an in-process channel of `StreamItem`). Rewire `run_turn()` and the REPL to use them, finish the half-done proto migration in the renderer, and eliminate the subprocess self-spawn in `chat.rs`.
 
 **Architecture:**
