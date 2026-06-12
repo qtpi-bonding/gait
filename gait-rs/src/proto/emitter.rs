@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::sync::mpsc::UnboundedSender;
 use crate::proto::{wire, gait::log::v1::{Event, event, StreamItem, TextDelta, stream_item}};
 
@@ -10,6 +10,15 @@ pub struct Emitter {
 impl Emitter {
     pub fn new(tx_path: PathBuf, sender: UnboundedSender<StreamItem>) -> Self {
         Self { tx_path, sender }
+    }
+
+    /// Construct from a session layout: writes to `<gait_dir>/sessions/<id>/transcript.jsonl`.
+    /// Mirror of [`Ingestor::from_session`](crate::session::Ingestor::from_session).
+    pub fn for_session(gait_dir: &Path, session_id: &str, sender: UnboundedSender<StreamItem>) -> Self {
+        Self::new(
+            gait_dir.join("sessions").join(session_id).join("transcript.jsonl"),
+            sender,
+        )
     }
 
     /// Durable: write Event to transcript AND send StreamItem{event}. Always both.
@@ -42,6 +51,14 @@ mod tests {
     fn make(dir: &std::path::Path) -> (Emitter, mpsc::UnboundedReceiver<StreamItem>) {
         let (tx, rx) = mpsc::unbounded_channel();
         (Emitter::new(dir.join("transcript.jsonl"), tx), rx)
+    }
+
+    #[test]
+    fn for_session_builds_transcript_path() {
+        let dir = tempdir().unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let em = Emitter::for_session(dir.path(), "s1234567", tx);
+        assert_eq!(em.tx_path, dir.path().join("sessions/s1234567/transcript.jsonl"));
     }
 
     #[test]
