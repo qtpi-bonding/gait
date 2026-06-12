@@ -72,9 +72,22 @@ impl Profile {
             .unwrap_or_default();
         let deny = merge_deny(&config.deny, &agent_deny);
 
+        // Phase 5: skills come from disk first; fall back to config.skills for
+        // backward compat with gait.jsonc inline bodies.
+        let mut disk_skills = crate::skills::scan_skills(gait_dir);
+        // Merge: disk wins over config for same name; config-only entries kept.
+        let config_skill_names: std::collections::HashSet<String> =
+            disk_skills.iter().map(|s| s.name.clone()).collect();
+        for s in &config.skills {
+            if !config_skill_names.contains(&s.name) {
+                disk_skills.push(s.clone());
+            }
+        }
+        let merged_skills = disk_skills;
+
         let config_enabled: HashSet<String> = config.mcp_servers.iter()
             .filter(|s| s.enabled).map(|s| s.name.clone())
-            .chain(config.skills.iter().filter(|s| s.enabled).map(|s| s.name.clone()))
+            .chain(merged_skills.iter().filter(|s| s.enabled).map(|s| s.name.clone()))
             .collect();
 
         Profile {
@@ -83,7 +96,7 @@ impl Profile {
             allow,
             deny,
             mcp_servers: config.mcp_servers.clone(),
-            skills: config.skills.clone(),
+            skills: merged_skills,
             config_tools: config.tools.clone(),
             config_enabled,
             output_schema_retries: config.output_schema_retries,
@@ -290,4 +303,64 @@ mod tests {
         // config denies survive; agent denies are added; no duplicates
         assert_eq!(d, vec!["shell:rm *", "shell:curl *", "edit:secrets/*"]);
     }
+
+    #[test]
+    fn disk_skills_populate_profile_skills() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let skill_dir = dir.path().join("skills").join("tdd");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: tdd\ndescription: TDD workflow\n---\n# TDD\nbody\n",
+        ).unwrap();
+        let config = GaitConfig::default();
+        let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
+        assert_eq!(profile.skills.len(), 1);
+        assert_eq!(profile.skills[0].name, "tdd");
+        assert!(profile.skills[0].content.contains("TDD"));
+    }
+
+    #[test]
+    fn config_skills_kept_when_no_disk_skill() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let config = GaitConfig {
+            skills: vec![crate::config::SkillDef {
+                name: "inline".into(),
+                description: "inline desc".into(),
+                content: "# Inline body".into(),
+                enabled: true,
+            }],
+            ..GaitConfig::default()
+        };
+        let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
+        assert_eq!(profile.skills.len(), 1);
+        assert_eq!(profile.skills[0].name, "inline");
+    }
+
+    #[test]
+    fn disk_skill_wins_over_config_skill_same_name() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let skill_dir = dir.path().join("skills").join("tdd");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: tdd\ndescription: Disk version\n---\n# Disk TDD\n",
+        ).unwrap();
+        let config = GaitConfig {
+            skills: vec![crate::config::SkillDef {
+                name: "tdd".into(),
+                description: "Config version".into(),
+                content: "# Config TDD".into(),
+                enabled: true,
+            }],
+            ..GaitConfig::default()
+        };
+        let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
+        assert_eq!(profile.skills.len(), 1, "should deduplicate same-named skill");
+        assert_eq!(profile.skills[0].description, "Disk version", "disk wins");
+    }
+
 }
