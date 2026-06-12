@@ -29,58 +29,46 @@
 
 Three phases. **Phase 0 (Task 0)** renames the Log file `transcript.jsonl` → `log.jsonl` (the vocabulary fix; mechanical, independently shippable). **Phase 1 (Tasks 1–5)** delivers the `Projection` trait + consistency fixes, with `Messages` as a projection too. **Phase 2 (Tasks 6–10)** adds the `Permissions` projection, session scope, and removes the temp-file hack.
 
-Also add to the File Structure: `gait-rs/src/session/transcript.rs` — the Log path constant moves from `transcript.jsonl` to `log.jsonl` with a read-fallback for pre-existing sessions.
+Also add to the File Structure: `gait-rs/src/session/transcript.rs` — a single `log_path()` helper builds `…/log.jsonl` (hard rename from `transcript.jsonl`, no backward-compat fallback).
 
 ---
 
 ## Phase 0 — Rename the Log file: `transcript.jsonl` → `log.jsonl`
 
-### Task 0: Rename the on-disk Log, with read-fallback for existing sessions
+### Task 0: Rename the on-disk Log — hard rename, no backward compat
 
 **Files:**
 - Modify: `gait-rs/src/session/transcript.rs` (the path that builds `…/transcript.jsonl`)
 - Sweep: every literal `"transcript.jsonl"` across `gait-rs/src/**` and `gait-rs/tests/**`
 - Docs: `~/.claude/skills/gait-agent/SKILL.md` references `transcript.jsonl` (update separately; not in this repo)
 
-The file is the **Log**, not the Transcript — renaming it removes the core confusion. Writers emit `log.jsonl`; readers prefer `log.jsonl` and fall back to `transcript.jsonl` so pre-existing dogfood sessions still load.
+The file is the **Log**, not the Transcript — renaming it removes the core confusion. **Clean rename, no fallback**: a "read `log.jsonl` else `transcript.jsonl`" shim is permanent cruft for a one-time pre-release migration — it would bite us later. Pre-existing dogfood sessions in `gait-trace` simply won't be read by name (acceptable; they can be re-run or manually renamed). One canonical path helper, one filename.
 
-- [ ] **Step 1: Write the failing test** (reader prefers `log.jsonl`, falls back to legacy)
+- [ ] **Step 1: Write the failing test**
 
 ```rust
 #[test]
-fn log_path_prefers_log_jsonl_falls_back_to_transcript() {
+fn log_path_is_log_jsonl() {
     let dir = tempfile::TempDir::new().unwrap();
-    let sess = dir.path().join("sessions").join("s1");
-    std::fs::create_dir_all(&sess).unwrap();
-    // Only legacy file exists → resolver returns it.
-    std::fs::write(sess.join("transcript.jsonl"), "").unwrap();
-    assert_eq!(log_path(dir.path(), "s1"), sess.join("transcript.jsonl"));
-    // New file exists → resolver prefers it.
-    std::fs::write(sess.join("log.jsonl"), "").unwrap();
-    assert_eq!(log_path(dir.path(), "s1"), sess.join("log.jsonl"));
-    // Neither exists → resolver returns the NEW path (writers create log.jsonl).
-    std::fs::remove_file(sess.join("transcript.jsonl")).unwrap();
-    std::fs::remove_file(sess.join("log.jsonl")).unwrap();
-    assert_eq!(log_path(dir.path(), "s1"), sess.join("log.jsonl"));
+    assert_eq!(
+        log_path(dir.path(), "s1"),
+        dir.path().join("sessions").join("s1").join("log.jsonl"),
+    );
 }
 ```
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `cargo test -p gait-ai log_path_prefers_log_jsonl 2>&1 > /tmp/t.txt; grep -E "error|cannot find" /tmp/t.txt | head`
+Run: `cargo test -p gait-ai log_path_is_log_jsonl 2>&1 > /tmp/t.txt; grep -E "error|cannot find" /tmp/t.txt | head`
 Expected: FAIL — `cannot find function log_path`.
 
-- [ ] **Step 3: Add the resolver in `transcript.rs`**
+- [ ] **Step 3: Add the path helper in `transcript.rs`**
 
 ```rust
-/// Resolve a session's Log file. Prefers `log.jsonl`; falls back to the legacy
-/// `transcript.jsonl` if only that exists; otherwise returns the new `log.jsonl`
-/// path (writers create it). The file is the append-only Log, not the Transcript.
+/// The session's append-only Log file. (The file is the Log, not the Transcript —
+/// the Transcript is the `Messages`/`Transcript` projection derived from it.)
 pub fn log_path(gait_dir: &std::path::Path, session_id: &str) -> std::path::PathBuf {
-    let dir = gait_dir.join("sessions").join(session_id);
-    let new = dir.join("log.jsonl");
-    let legacy = dir.join("transcript.jsonl");
-    if new.exists() { new } else if legacy.exists() { legacy } else { new }
+    gait_dir.join("sessions").join(session_id).join("log.jsonl")
 }
 ```
 
