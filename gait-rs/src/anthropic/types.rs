@@ -195,7 +195,10 @@ pub fn to_anthropic_messages(messages: &[Message]) -> Vec<AnthropicMessage> {
                             AnthropicBlock::ToolUse {
                                 id: tc.tool_call_id.clone(),
                                 name: tc.tool_name.clone(),
-                                input: tc.args.clone(),
+                                // Backstop: `tool_use.input` must be a JSON object. Coerce any
+                                // non-object (e.g. a malformed value from an older transcript) so
+                                // a poisoned history can't 400 the request. See provider::coerce_tool_input.
+                                input: crate::provider::coerce_tool_input(tc.args.clone()),
                             },
                     }).collect()
                 ),
@@ -303,6 +306,26 @@ mod tests {
         } else {
             panic!("wrong variant");
         }
+    }
+
+    #[test]
+    fn malformed_tool_use_input_is_coerced_to_object() {
+        use crate::types::{ToolCall, AssistantContent, AssistantPart};
+        // Simulate a poisoned history: a tool_use whose input was stored as a bare
+        // JSON string (the truncated-buffer bug). It must serialize as an object,
+        // otherwise the provider 400s on `tool_use.input` and the session dies.
+        let messages = vec![Message::Assistant {
+            content: AssistantContent::Parts(vec![AssistantPart::ToolCall(ToolCall {
+                tool_call_id: "tc1".into(),
+                tool_name: "edit".into(),
+                args: serde_json::Value::String("{\"edits\": ".into()),
+            })]),
+        }];
+        let converted = to_anthropic_messages(&messages);
+        let AnthropicContent::Blocks(blocks) = &converted[0].content else { panic!("expected blocks") };
+        let AnthropicBlock::ToolUse { input, .. } = &blocks[0] else { panic!("expected tool_use") };
+        assert!(input.is_object(), "tool_use.input must be an object, got {input:?}");
+        assert_eq!(*input, serde_json::json!({}));
     }
 
     #[test]

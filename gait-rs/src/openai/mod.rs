@@ -164,7 +164,9 @@ fn to_chat_messages(system: &str, messages: &[Message]) -> Vec<ChatMessage> {
                                     r#type: "function".into(),
                                     function: ChatFunction {
                                         name: tc.tool_name.clone(),
-                                        arguments: tc.args.to_string(),
+                                        // Backstop: function arguments must serialize as a JSON
+                                        // object. Coerce non-objects from older transcripts to `{}`.
+                                        arguments: crate::provider::coerce_tool_input(tc.args.clone()).to_string(),
                                     },
                                 })
                             } else { None }
@@ -305,8 +307,7 @@ impl Provider for OpenAIProvider {
                         for (idx, args_str) in &tool_args {
                             let id   = tool_ids.get(idx).cloned().unwrap_or_default();
                             let name = tool_names.get(idx).cloned().unwrap_or_default();
-                            let args = serde_json::from_str(args_str)
-                                .unwrap_or(Value::String(args_str.clone()));
+                            let args = crate::provider::parse_tool_args(args_str);
                             yield StreamChunk::ToolCallComplete { tool_call_id: id, tool_name: name, args };
                         }
                         yield StreamChunk::Done;

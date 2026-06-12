@@ -113,8 +113,7 @@ impl SseClient {
                             tool_name_map.remove(&index),
                             args_buf.remove(&index),
                         ) {
-                            let args = serde_json::from_str(&buf)
-                                .unwrap_or(serde_json::Value::String(buf));
+                            let args = crate::provider::parse_tool_args(&buf);
                             yield StreamChunk::ToolCallComplete {
                                 tool_call_id: id,
                                 tool_name: name,
