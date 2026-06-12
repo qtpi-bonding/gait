@@ -394,12 +394,27 @@ async fn apply_curate_filter(
                 }
             })
         })
-        .inspect(|v| {
-            let relevant = v.get("relevant").and_then(|r| r.as_array()).map(|a| a.len()).unwrap_or(0);
-            let irrelevant = v.get("irrelevant").and_then(|r| r.as_array()).map(|a| a.len()).unwrap_or(0);
-            eprintln!("[gait] curate-filter: {}/{} items kept", relevant, relevant + irrelevant);
+        .map(|v| {
+            let relevant_items: Vec<&str> = v.get("relevant")
+                .and_then(|r| r.as_array())
+                .map(|a| a.iter().filter_map(|s| s.as_str()).collect())
+                .unwrap_or_default();
+            let irrelevant_count = v.get("irrelevant")
+                .and_then(|r| r.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            eprintln!("[gait] curate-filter: {}/{} items kept", relevant_items.len(), relevant_items.len() + irrelevant_count);
+            let body = relevant_items.join("\n");
+            if irrelevant_count > 0 {
+                serde_json::Value::String(format!(
+                    "[curate-filter: {} kept, {} dropped]\n{}",
+                    relevant_items.len(), irrelevant_count, body
+                ))
+            } else {
+                serde_json::Value::String(body)
+            }
         })
-        .unwrap_or_else(|| serde_json::json!({"relevant": [], "irrelevant": []}))
+        .unwrap_or_else(|| serde_json::Value::String(raw.to_string()))
 }
 
 pub async fn run_turn(
