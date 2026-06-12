@@ -21,7 +21,7 @@ The log vocabulary bifurcates into two roles:
   `ToolCall`/`ToolResult`, `Cwd`, and the new `SkillToggle` / `PermissionGrant` /
   `ModelChange`. Each is a small, commutative mutation.
 - **Checkpoints** — a baseline state for *one dimension*, valid as of a `through_seq`
-  fold-coordinate. `Compaction` (the **message** dimension) and `Agent` (the
+  fold-coordinate. `MessageCheckpoint` (the **message** dimension) and `AgentCheckpoint` (the
   **agent** dimension, renamed from `Manifest`). The shadow-git checkpoint commit is
   the **codebase** dimension's equivalent.
 
@@ -66,37 +66,38 @@ Keep checkpoints as **distinct messages** (a single `oneof` `Checkpoint` would j
 relocate per-dimension handling — the payloads genuinely differ: prose summary vs typed
 config). Unify *behavior*, not *bytes*.
 
-1. **Rename `Manifest` → `Agent`.** It is the **envelope** holding a full snapshot of
-   every agent sub-state — which today's `Manifest` already half-is:
+1. **Rename `Manifest` → `AgentCheckpoint`** and **`Compaction` → `MessageCheckpoint`**
+   (O6). `AgentCheckpoint` is the **envelope** holding a full snapshot of every agent
+   sub-state — which today's `Manifest` already half-is. **No hooks** (O5):
 
    ```proto
    // The agent-dimension checkpoint: a full snapshot of the composed agent state
    // as of `through_seq`. Each delta event mutates exactly one sub-state below.
-   message Agent {
+   message AgentCheckpoint {
      string model                 = 1;   // LWW
      string instructions          = 2;   // composed system prompt (replay-complete)
-     repeated string tools        = 3;
-     repeated string mcp_servers  = 4;
-     repeated string skills       = 5;   // ENABLED skill set as of the checkpoint
+     repeated string tools        = 3;   // ENABLED tools (enable-set, O3)
+     repeated string mcp_servers  = 4;   // ENABLED mcp
+     repeated string skills       = 5;   // ENABLED skills
      PermissionPolicy permissions = 6;
-     optional uint32 output_schema_retries = 7;
-     uint64 through_seq           = 8;   // fold coordinate (NEW — matches Compaction)
-     // hooks? — see [open] below
+     optional uint32 output_schema_retries = 7;   // (O2: may move to gait.jsonc runtime)
+     uint64 through_seq           = 8;   // fold coordinate (NEW — matches MessageCheckpoint)
    }
    ```
-   Field numbers stay in the existing `Manifest` slot (oneof arm `2`), renamed.
-   The `oneof kind` arm becomes `Agent agent = 2;`.
+   Field numbers stay in the existing `Manifest` slot (oneof arm `2`), renamed
+   `AgentCheckpoint agent_checkpoint = 2;`. `Compaction` (arm `17`) → `MessageCheckpoint`.
 
-2. **Add `through_seq` to the `Agent` checkpoint** so the fold knows its baseline
-   coordinate, mirroring `Compaction.through_seq`.
+2. **Add `through_seq` to `AgentCheckpoint`** so the fold knows its baseline coordinate,
+   mirroring `MessageCheckpoint.through_seq`.
 
-3. **New delta event messages** (free oneof field numbers ≥ 53):
+3. **New delta event messages** (O1 — everything in the envelope is toggleable; free
+   oneof field numbers ≥ 53):
    ```proto
-   message SkillToggle    { string name = 1; bool enabled = 2; }       // OR-Set op
-   message PermissionGrant{ string pattern = 1; Scope scope = 2; }     // G-Set op
-   message ModelChange    { string model = 1; }                        // LWW op
+   enum ToggleKind { TOGGLE_KIND_UNSPECIFIED = 0; SKILL = 1; MCP = 2; TOOL = 3; }
+   message Toggle         { ToggleKind kind = 1; string name = 2; bool enabled = 3; } // OR-Set per kind
+   message ModelChange    { string model = 1; }                    // LWW op
+   message PermissionGrant { string pattern = 1; Scope scope = 2; } // G-Set op
    ```
-   `[open]` exact set — see §6.
 
 ---
 
@@ -140,11 +141,14 @@ impl Projection for ActiveAgent {
     type State = AgentState;   // { model, instructions, tools, skills:Set, mcp:Set, allow:Set, deny:Set, ... }
     fn seed(&self) -> AgentState { self.seed.clone() }
     fn checkpoint(&self, kind) -> Option<AgentState> {
-        if let Kind::Agent(a) = kind { Some(AgentState::from(a)) } else { None }
+        if let Kind::AgentCheckpoint(a) = kind { Some(AgentState::from(a)) } else { None }
     }
     fn apply(&self, st, _ev, kind) {
         match kind {
-            Kind::SkillToggle(t)     => if t.enabled { st.skills.insert(t.name) } else { st.skills.remove(&t.name) },
+            Kind::Toggle(t) => {
+                let set = match t.kind { Skill => &mut st.skills, Mcp => &mut st.mcp, Tool => &mut st.tools };
+                if t.enabled { set.insert(t.name) } else { set.remove(&t.name) }
+            }
             Kind::PermissionGrant(g) => { st.allow.insert(g.pattern.clone()); }
             Kind::ModelChange(m)     => st.model = m.model.clone(),
             _ => {}
@@ -208,24 +212,44 @@ These all reduce to "emit/seed agent-dimension state," so they fall out of §1�
 
 ---
 
-## 6. Open decisions (need your call before plans)
+## 6. Decisions (round 2, 2026-06-12)
 
-- **O1 — exact delta event set.** Minimum: `SkillToggle`, `PermissionGrant`. Also
-  `ModelChange`? `McpToggle` (or reuse `SkillToggle`-shaped generic `Toggle{kind,name,on}`)?
-  Tool enable/disable as a delta, or tools fixed at seed?
-- **O2 — `skills`/`mcp` enabled-at-start merge** when both `gait.jsonc` and `AGENT.md`
-  list them: union (additive) or agent-replaces-config (like `allow`)?
-- **O3 — tool availability semantics.** For *tools* specifically, is an agent's `tools:`
-  list a **restriction** (only these available — a reviewer can't `write`) or an
-  **enable set** (all available, these on)? Skills are clearly enable-set; tools may want
-  restriction.
-- **O4 — `gait.jsonc` inline skills.** Disk-only (`SKILL.md`), or disk + inline override?
-  (You leaned "two-part, like tools" — needs pinning to a concrete rule.)
-- **O5 — hooks in the `Agent` envelope?** Hooks are agent-dimension config but aren't in
-  `Manifest` today. Fold them in (so an agent can declare hooks) or leave in `gait.jsonc`
-  global only?
-- **O6 — `Compaction` rename?** Keep `Compaction`, or rename to `MessageCheckpoint` for
-  symmetry with `Agent`? (Leaning keep — `Compaction` is well-understood.)
+- **O1 [locked] — everything in the envelope is toggleable.** One generic delta
+  `Toggle { kind: skill|mcp|tool, name, enabled }` (OR-Set per kind) covers skills, mcp,
+  AND tools uniformly. Plus `ModelChange { model }` (LWW) and `PermissionGrant { pattern,
+  scope }` (G-Set). Tools are toggled like everything else — no fixed-at-seed tool list.
+- **O3 [locked] — no restriction concept.** An agent's `tools:` is an **enable-set**, not
+  a restriction. "Reviewer can't write" = just don't enable `write` (not-enabled = absent).
+  Enable-set gives restriction-by-omission for free, so the separate restriction idea is
+  dropped.
+- **O4 [locked] — skills disk-only, enabled via config.** A `skills/<name>/SKILL.md` on
+  disk = *available/loadable*. *Enabled* is config-driven (where that config lives = O2).
+  No inline skill bodies in `gait.jsonc`.
+- **O5 [locked] — hooks stay OUT of the agent.** Hooks are workspace-level, in
+  `gait.jsonc`, not in the `AgentCheckpoint` envelope. (So the envelope = model,
+  instructions, tools, skills, mcp, permissions — no hooks.)
+- **O6 [locked] — `*Checkpoint` naming.** `Compaction → MessageCheckpoint`,
+  `Manifest → AgentCheckpoint`. Projections stay `ActiveMessages` / `ActiveAgent`.
+
+### O2 [OPEN] — the `gait.jsonc` ↔ `AGENT.md` split
+
+The live question: if `AGENT.md` holds the `AgentCheckpoint` config (model, enabled
+skills/mcp/tools, permissions, instructions body), **what's left in `gait.jsonc`?**
+
+Proposed principle — **registry/infra vs selection**:
+- **`gait.jsonc` = what EXISTS + how to run it + workspace runtime** (not agent state):
+  `mcp_servers` (connection defs), `tools` (shell-cmd registry: name→cmd), `hooks` (O5),
+  runtime knobs (`compaction_threshold`, `output_schema_retries`, provider/api), and a
+  workspace **default model** + **deny floor** (deny is a monotonic union, so a workspace
+  safety floor composes naturally).
+- **`AGENT.md` = which of those this agent ENABLES + its role** — the `AgentCheckpoint`
+  seed: `model` (override), `allow`/`deny`, `skills:`/`mcp:`/`tools:` (enabled subsets of
+  the registry), body = instructions.
+
+Sub-fork: does `gait.jsonc` carry *any* agent-state baseline (default model + deny floor,
+flavor **b**), or stay **pure** registry/infra with all agent state in `AGENT.md`
+(flavor **a**)? Leaning **b-lite** (default model + deny floor only). This also subsumes
+the old O2 (skills/mcp merge): agent enable-set composes on the workspace registry.
 
 ## 7. Out of scope / non-goals
 
