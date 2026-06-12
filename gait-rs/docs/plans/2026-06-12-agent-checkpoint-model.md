@@ -175,10 +175,11 @@ replay stays pure. Mid-session source changes (you edit `AGENT.md`) emit a **fre
 `Agent` checkpoint** (re-seed) — the same snapshot+delta pattern `ActiveMessages` uses
 for compaction.
 
-**Agent = capability bundle [locked].** `gait.jsonc` is the global baseline + registry
-of what *exists*; an `AGENT.md` curates a composition on top (model, allow, deny, and —
-new — `skills:`/`tools:`/`mcp:` enabled-at-start); runtime `load()` / `/skill` are
-ad-hoc toggles. `manifest = compose(builtin, gait.jsonc, agent, runtime-deltas)`.
+**Agent = capability bundle [locked].** `gait.jsonc` *installs* (registry/infra) +
+policy/fallback; an `AGENT.md` *enables* a subset + identity (model, role, allow); runtime
+`load()` / `/skill` are ad-hoc `Toggle` deltas. `agent_state = compose(builtin,
+gait.jsonc-installed, AGENT.md-enabled, runtime-deltas)`. (See O2 for the installed-vs-
+enabled split.)
 
 Merge rules (extending today's `Profile::from_config_and_agent`):
 - `model`: override › agent › config (precedence) — unchanged
@@ -232,25 +233,28 @@ These all reduce to "emit/seed agent-dimension state," so they fall out of §1�
 - **O6 [locked] — `*Checkpoint` naming.** `Compaction → MessageCheckpoint`,
   `Manifest → AgentCheckpoint`. Projections stay `ActiveMessages` / `ActiveAgent`.
 
-### O2 [OPEN] — the `gait.jsonc` ↔ `AGENT.md` split
+### O2 [locked] — `gait.jsonc` owns "installed", `AGENT.md` owns "enabled"
 
-The live question: if `AGENT.md` holds the `AgentCheckpoint` config (model, enabled
-skills/mcp/tools, permissions, instructions body), **what's left in `gait.jsonc`?**
+The clarifying axis: **installed vs enabled** (like a package manager — the workspace
+*installs* a capability; an agent *enables* a subset; runtime `Toggle` deltas flip
+enabled-state live).
 
-Proposed principle — **registry/infra vs selection**:
-- **`gait.jsonc` = what EXISTS + how to run it + workspace runtime** (not agent state):
-  `mcp_servers` (connection defs), `tools` (shell-cmd registry: name→cmd), `hooks` (O5),
-  runtime knobs (`compaction_threshold`, `output_schema_retries`, provider/api), and a
-  workspace **default model** + **deny floor** (deny is a monotonic union, so a workspace
-  safety floor composes naturally).
-- **`AGENT.md` = which of those this agent ENABLES + its role** — the `AgentCheckpoint`
-  seed: `model` (override), `allow`/`deny`, `skills:`/`mcp:`/`tools:` (enabled subsets of
-  the registry), body = instructions.
+- **`gait.jsonc` = INSTALLED + policy/fallback** (never *enabled* state):
+  - *installed*: `mcp_servers` (connection defs), `tools` (name→cmd registry). Skills are
+    *installed* by presence on disk (`skills/<name>/SKILL.md`), not listed here.
+  - *runtime*: `compaction_threshold`, provider/api, `output_schema_retries`, `hooks` (O5).
+  - *policy/fallback* (neither installed nor enabled, named explicitly): a **fallback
+    default `model`** (so a minimal `AGENT.md` boots) and a workspace **`deny` floor**
+    (monotonic union — composes under every agent).
+- **`AGENT.md` = ENABLED + identity** — the `AgentCheckpoint` seed: `model` (identity;
+  else the gait.jsonc fallback), `allow`/`deny` (agent adds to the floor),
+  `skills:`/`mcp:`/`tools:` (the **enabled** subsets of what's installed), body =
+  instructions.
 
-Sub-fork: does `gait.jsonc` carry *any* agent-state baseline (default model + deny floor,
-flavor **b**), or stay **pure** registry/infra with all agent state in `AGENT.md`
-(flavor **a**)? Leaning **b-lite** (default model + deny floor only). This also subsumes
-the old O2 (skills/mcp merge): agent enable-set composes on the workspace registry.
+The `AgentCheckpoint` envelope's `skills`/`mcp`/`tools` fields *are* the enabled set;
+the installed registry is **not** in the envelope (it lives in gait.jsonc/disk and feeds
+the `<loadable-index>`). This also subsumes the old "merge" sub-question: an agent's
+enabled set composes on the installed registry; nothing to union.
 
 ## 7. Out of scope / non-goals
 
