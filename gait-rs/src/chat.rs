@@ -12,7 +12,7 @@ use crate::session::transcript::{self, PermissionItem, PermissionsReplyItem, Cla
 use crate::proto::{events, wire};
 use crate::theme::{Theme, RESET, DIM_FG};
 use crate::ui::{Timer, Renderer, RenderAction, prompt_permission, prompt_clarify, prompt_inform};
-use crate::repl_input::{is_bang_command, bang_command_str, expand_input, ExpandCtx, run_and_capture_pty_raw, CaptureResult};
+use crate::repl_input::{is_bang_command, bang_command_str, expand_input, ExpandCtx, parse_skill_toggle, run_and_capture_pty_raw, CaptureResult};
 
 /// All user-visible hint strings for the REPL, centralised here for easy editing.
 mod hints {
@@ -113,6 +113,35 @@ pub async fn run_chat(
             );
             continue;
         }
+
+        // /skillname [off] — emit Toggle{kind:SKILL} event; do NOT forward to model.
+        // Checked on the original line (before the undo block mutates it) so that
+        // a user typing "/tdd" toggles the skill rather than being swallowed by undo.
+        if let Some((skill_name, enabled)) = parse_skill_toggle(&line) {
+            let available = crate::skills::scan_skills(&gait_dir);
+            if !available.iter().any(|s| s.name == skill_name) {
+                eprintln!(
+                    "[gait] no such skill {:?} — is skills/{}/SKILL.md present?",
+                    skill_name, skill_name,
+                );
+            } else {
+                let tx_path = gait_dir
+                    .join("sessions")
+                    .join(&session_id)
+                    .join("log.jsonl");
+                let _ = wire::append(
+                    &tx_path,
+                    events::toggle("skill", &skill_name, enabled),
+                );
+                if enabled {
+                    eprintln!("skill {} enabled", skill_name);
+                } else {
+                    eprintln!("skill {} disabled", skill_name);
+                }
+            }
+            continue;
+        }
+
 
         match line.as_str() {
             "/n" | "/new" => {
