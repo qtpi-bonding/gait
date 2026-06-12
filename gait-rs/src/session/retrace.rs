@@ -143,6 +143,24 @@ impl Projection for ActiveManifest {
     }
 }
 
+/// Last-write-wins working directory. Seeds at the codebase root; each `Cwd`
+/// event overwrites. Folded over the full session (survives compaction), so the
+/// sticky cwd persists across turns and `undo` reverts it (the event is truncated).
+pub(crate) struct ActiveCwd {
+    pub root: std::path::PathBuf,
+}
+impl Projection for ActiveCwd {
+    type State = std::path::PathBuf;
+    fn seed(&self) -> Self::State {
+        self.root.clone()
+    }
+    fn apply(&self, state: &mut Self::State, _ev: &Event, kind: &payload::Kind) {
+        if let payload::Kind::Cwd(c) = kind {
+            *state = std::path::PathBuf::from(&c.path);
+        }
+    }
+}
+
 /// Coalescing phase for the `ActiveMessages` fold: tracks whether the previous
 /// folded event was part of a consecutive tool-call run or tool-result run, so
 /// consecutive `ToolCall`s collapse into one assistant message and consecutive
@@ -542,6 +560,13 @@ pub fn fold(
 pub fn active_manifest(events: &[Event]) -> Option<pb::Manifest> {
     run_projection(&ActiveManifest, events, &HashMap::new())
 }
+
+/// Current sticky working directory (LWW over `Cwd` events, seeded at `root`).
+/// Mutations are ignored, matching `active_manifest`; the shell tool and the
+/// `<status>` builder both refold this so they never diverge.
+pub fn active_cwd(events: &[Event], root: &std::path::Path) -> std::path::PathBuf {
+    run_projection(&ActiveCwd { root: root.to_path_buf() }, events, &HashMap::new())
+}
 /// Blocks from the LAST `TurnComplete` event in the log, in source order.
 /// Returns an empty Vec if there is no TurnComplete. Used by the CLI
 /// `>(N)` quote-reply expander, which needs the prior turn's blocks to
@@ -732,6 +757,23 @@ mod tests {
         ];
         let proto_events = mint_events(bodies);
         assert!(active_manifest(&proto_events).is_none());
+    }
+
+    #[test]
+    fn active_cwd_defaults_to_root() {
+        let root = std::path::Path::new("/repo/root");
+        let evs = mint_events(vec![events::assistant_text("no cwd here".into())]);
+        assert_eq!(active_cwd(&evs, root), root.to_path_buf());
+    }
+
+    #[test]
+    fn active_cwd_last_write_wins() {
+        let root = std::path::Path::new("/repo/root");
+        let evs = mint_events(vec![
+            events::cwd("/a"),
+            events::cwd("/b"),
+        ]);
+        assert_eq!(active_cwd(&evs, root), std::path::PathBuf::from("/b"));
     }
 
     #[test]

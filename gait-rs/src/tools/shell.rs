@@ -15,6 +15,10 @@ struct ShellParams {
     reason: String,
     /// Timeout in milliseconds (default 30000)
     timeout_ms: Option<u64>,
+    /// Optional working directory for this command. Relative paths resolve against
+    /// the current directory and PERSIST (like `cd`); absolute paths are used as-is.
+    /// A nonexistent path errors and leaves the working directory unchanged.
+    cwd: Option<String>,
 }
 
 pub struct ShellTool {
@@ -41,6 +45,8 @@ impl Tool for ShellTool {
          large output (cargo test, build logs, grep over large trees) use the `parse` field \
          (e.g. \"grep FAILED | head -30\") to return only relevant lines and keep context small. \
          You can then grep/read the tmp file for more detail without re-running. \
+         Pass `cwd` to run in a subdirectory; it persists for later commands like `cd` \
+         (relative paths resolve against the current dir, absolute used as-is). \
          All shell commands require permission approval unless pre-allowed."
     }
     fn parameters(&self) -> &Value { &self.parameters }
@@ -66,7 +72,39 @@ impl Tool for ShellTool {
     async fn execute(&self, args: Value) -> anyhow::Result<Value> {
         let params: ShellParams = serde_json::from_value(args)?;
         let timeout_ms = params.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
-        let cwd = self.ctx.codebase_path.clone();
+
+        // Refold the sticky cwd from the log (seeded at the codebase root). A `cwd`
+        // param resolves against it (relative joins, absolute as-is), and on success
+        // emits a `Cwd` event so the change persists across calls — like `cd`.
+        let events = crate::session::ingestor::Ingestor::from_session(
+            &self.ctx.gait_dir, &self.ctx.session_id).events().unwrap_or_default();
+        let current = crate::session::retrace::active_cwd(&events, &self.ctx.codebase_path);
+
+        let run_dir = match params.cwd.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(req) => {
+                let p = std::path::Path::new(req);
+                let target = if p.is_absolute() { p.to_path_buf() } else { current.join(p) };
+                match std::fs::canonicalize(&target) {
+                    Ok(dir) if dir.is_dir() => {
+                        let log = self.ctx.gait_dir.join("sessions")
+                            .join(&self.ctx.session_id).join("log.jsonl");
+                        if let Some(parent) = log.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        let _ = crate::proto::wire::append(
+                            &log, crate::proto::events::cwd(&dir.to_string_lossy()));
+                        dir
+                    }
+                    _ => return Ok(serde_json::json!({
+                        "output": format!("cd: no such directory: {}", req),
+                        "exit_code": 1,
+                        "timed_out": false,
+                    })),
+                }
+            }
+            None => current,
+        };
+        let cwd = run_dir;
 
         let tmp_dir = self.ctx.gait_dir.join("tmp");
         let _ = std::fs::create_dir_all(&tmp_dir);
@@ -175,6 +213,55 @@ mod tests {
         })).await.unwrap();
         let output = result.get("output").and_then(|v| v.as_str()).expect("output field");
         assert!(output.contains("marker"), "got: {output}");
+    }
+
+    #[tokio::test]
+    async fn cwd_param_runs_in_subdir() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/sentinel.txt"), "submarker").unwrap();
+        let tool = make_tool(&dir);
+        let result = tool.execute(serde_json::json!({
+            "cmd": "cat sentinel.txt",
+            "reason": "test",
+            "cwd": "sub"
+        })).await.unwrap();
+        let output = result.get("output").and_then(|v| v.as_str()).expect("output field");
+        assert!(output.contains("submarker"), "got: {output}");
+    }
+
+    #[tokio::test]
+    async fn cwd_param_persists_across_calls() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        let tool = make_tool(&dir);
+        // Call 1: cd into sub (emits a Cwd event).
+        let _ = tool.execute(serde_json::json!({
+            "cmd": "pwd", "reason": "test", "cwd": "sub"
+        })).await.unwrap();
+        // Call 2: no cwd → should refold the emitted Cwd and run in sub.
+        let result = tool.execute(serde_json::json!({
+            "cmd": "pwd", "reason": "test"
+        })).await.unwrap();
+        let output = result.get("output").and_then(|v| v.as_str()).expect("output field");
+        assert!(output.contains("sub"), "expected to run in sub, got: {output}");
+    }
+
+    #[tokio::test]
+    async fn cwd_nonexistent_errors_without_emitting() {
+        let dir = TempDir::new().unwrap();
+        let tool = make_tool(&dir);
+        let result = tool.execute(serde_json::json!({
+            "cmd": "pwd", "reason": "test", "cwd": "nope"
+        })).await.unwrap();
+        let exit_code = result.get("exit_code").and_then(|v| v.as_i64()).expect("exit_code field");
+        let output = result.get("output").and_then(|v| v.as_str()).expect("output field");
+        assert_eq!(exit_code, 1, "got: {result}");
+        assert!(output.contains("no such directory"), "got: {output}");
+        // No Cwd event written: the session log is absent or empty.
+        let log = dir.path().join("sessions").join("test").join("log.jsonl");
+        let folded = crate::proto::wire::read_events(&log).unwrap_or_default();
+        assert!(folded.is_empty(), "a failed cd must not emit a Cwd event, got {} events", folded.len());
     }
 
     #[tokio::test]

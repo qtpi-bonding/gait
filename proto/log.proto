@@ -89,9 +89,14 @@ message Payload {
     RawEvent           raw                 = 19;  // opaque holder: legacy / not-yet-modeled events (incl. workflow today)
     SandboxApplied     sandbox_applied     = 50;
     HookRun         hook_run            = 51;
+    Cwd                cwd                 = 52;
+
   }
   reserved 20 to 49;  // workflow family (WorkflowHook* / WorkflowNode* / WorkflowStart …) — deferred to the workflow-subsystem redo
 }
+
+// working-directory change; ActiveCwd LWW-folds to the last one
+message Cwd { string path = 1; }
 
 
 // ── Mutations ────────────────────────────────────────────────────────────────

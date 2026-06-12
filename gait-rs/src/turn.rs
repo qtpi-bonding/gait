@@ -105,7 +105,7 @@ fn checkpoint_codebase(
     }
 }
 
-fn build_turn_context(codebase_hash: &str, dirty_files: &[String]) -> String {
+fn build_turn_context(codebase_hash: &str, dirty_files: &[String], cwd: &std::path::Path) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
@@ -115,6 +115,8 @@ fn build_turn_context(codebase_hash: &str, dirty_files: &[String]) -> String {
         ctx.push_str("Dirty files:\n");
         for f in dirty_files { ctx.push_str(&format!("  {}\n", f)); }
     }
+    // Terminal-style prompt: reminds the agent where `shell` runs (sticky cwd).
+    ctx.push_str(&format!("{} %\n", cwd.display()));
     ctx.push_str("</status>\n");
     ctx
 }
@@ -604,7 +606,8 @@ pub async fn run_turn(
         }
         let events = ingestor.events()?;
         messages = retrace::messages(&events)?;
-        let turn_ctx = build_turn_context(&codebase_hash, &dirty_files);
+        let cwd = retrace::active_cwd(&events, &codebase_path);
+        let turn_ctx = build_turn_context(&codebase_hash, &dirty_files, &cwd);
         messages.insert(0, Message::User { content: MessageContent::Text(turn_ctx) });
     }
 
@@ -1180,11 +1183,12 @@ mod tests {
     use async_stream::stream;
     #[test]
     fn turn_context_is_wrapped_in_status_tag() {
-        let ctx = build_turn_context("deadbeef", &["src/a.rs".to_string()]);
+        let ctx = build_turn_context("deadbeef", &["src/a.rs".to_string()], std::path::Path::new("/repo/sub"));
         assert!(ctx.starts_with("<status>"), "got: {ctx}");
         assert!(ctx.trim_end().ends_with("</status>"), "got: {ctx}");
         assert!(ctx.contains("Codebase commit: deadbeef"));
         assert!(ctx.contains("src/a.rs"));
+        assert!(ctx.contains("/repo/sub %"), "expected terminal-style cwd prompt, got: {ctx}");
     }
 
 
