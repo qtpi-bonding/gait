@@ -69,6 +69,31 @@ fn effective_kind<'a>(
     }
 }
 
+/// Iterate `(event, effective_kind)` over the full session, applying mutations:
+/// redacted events are skipped; replaced events yield their replacement kind.
+/// This is the single canonical input every `Projection` folds.
+pub(crate) fn effective_kinds<'a>(
+    all_events: &'a [Event],
+    mutations: &'a HashMap<String, MutationState>,
+) -> impl Iterator<Item = (&'a Event, &'a payload::Kind)> {
+    all_events.iter().filter_map(move |e| effective_kind(e, mutations).map(|k| (e, k)))
+}
+
+/// A derived read-model folded from the Log. Every projection folds the SAME
+/// input — the mutation-applied, full-session stream produced by `effective_kinds`
+/// — so two projections can never disagree about what happened. Mutations are the
+/// substrate (applied before folding); compaction is NOT handled here (only the
+/// `ActiveMessages` projection cares about it).
+pub(crate) trait Projection {
+    type State;
+    /// Initial state before any events (seeded from config where relevant).
+    fn seed(&self) -> Self::State;
+    /// Fold one event's effective payload kind into the state.
+    fn apply(&self, state: &mut Self::State, event: &Event, kind: &payload::Kind);
+    /// Finalize (default: identity).
+    fn finish(&self, state: Self::State) -> Self::State { state }
+}
+
 /// Build messages, applying the given mutations map.
 /// This is the internal implementation that both `messages` and `fold` use.
 fn messages_applying(
@@ -612,6 +637,32 @@ mod tests {
         assert_eq!(result.active_manifest.as_ref().map(|r| r.model.as_str()), Some("gpt-fold"));
         // enabled_loadables: tdd was toggled on
         assert!(result.enabled_loadables.contains("tdd"));
+    }
+
+    #[test]
+    fn effective_kinds_skips_redacted_and_keeps_others() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("tx.jsonl");
+
+        // A load tool_call (will be redacted) + an assistant_text (kept).
+        let tc = wire::append(&path, events::tool_call(
+            "tc1".into(), "load".into(),
+            &serde_json::json!({"name":"slack","enabled":true}))).unwrap();
+        wire::append(&path, redact_body(&tc.id)).unwrap();
+        wire::append(&path, events::assistant_text("hi".into())).unwrap();
+
+        let all = read_events(&path).unwrap();
+        let mut muts = active_mutations(&all);
+        apply_cascade(&mut muts, &all);
+
+        let kinds: Vec<_> = effective_kinds(&all, &muts).collect();
+        // redacted load must NOT appear:
+        assert!(kinds.iter().all(|(_, k)|
+            !matches!(k, payload::Kind::ToolCall(tc) if tc.name == "load")),
+            "redacted load must not appear in effective kinds");
+        // the non-redacted assistant_text MUST appear:
+        assert!(kinds.iter().any(|(_, k)| matches!(k, payload::Kind::AssistantText(_))),
+            "non-redacted event must appear in effective kinds");
     }
 
     // --- Phase 4 mutation tests ---
