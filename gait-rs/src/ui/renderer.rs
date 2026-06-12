@@ -64,18 +64,42 @@ pub(crate) fn tool_target(name: &str, args: &serde_json::Value) -> Option<String
     }
 }
 
+// ── ReplaceLine ──────────────────────────────────────────────────────────────
+
+/// Terminal primitive for an in-place line replacement animation.
+///
+/// `show` prints the initial line; `update` optionally erases it (when
+/// `was_shown` is true) and prints the replacement. Any widget that needs
+/// a "pending → result" transition should delegate here instead of emitting
+/// ANSI escape sequences directly.
+pub(crate) struct ReplaceLine;
+
+impl ReplaceLine {
+    /// Print `line` to stderr. Call this for the initial / pending state.
+    pub(crate) fn show(line: &str) {
+        eprintln!("{}", line);
+    }
+
+    /// If `was_shown`, erase the previous line (\x1b[1A\x1b[2K) then print
+    /// `line`. If not, just print. Call this for the resolved / result state.
+    pub(crate) fn update(was_shown: bool, line: &str) {
+        if was_shown { eprint!("\x1b[1A\x1b[2K"); }
+        eprintln!("{}", line);
+    }
+}
+
 // ── ToolCallWidget ────────────────────────────────────────────────────────────
 
 /// Stateless widget for the tool-call lifecycle animation.
 ///
 /// Call `show_spinner` when the tool starts; call `show_result` when it finishes.
-/// `show_result` auto-erases the spinner line when `had_spinner` is true — the
-/// caller never needs to know the ANSI escape sequence.
+/// Uses `ReplaceLine` internally — the caller never needs to know the ANSI
+/// escape sequences or whether erasure is needed.
 pub(crate) struct ToolCallWidget;
 
 impl ToolCallWidget {
     pub(crate) fn show_spinner(display: &str) {
-        eprintln!("{}  \u{27f3} {}(\u{2026}){}", DIM_FG, display, RESET);
+        ReplaceLine::show(&format!("{}  \u{27f3} {}(\u{2026}){}", DIM_FG, display, RESET));
     }
 
     pub(crate) fn show_result(
@@ -86,14 +110,13 @@ impl ToolCallWidget {
         output: &str,
         had_spinner: bool,
     ) {
-        if had_spinner { eprint!("\x1b[1A\x1b[2K"); }
         let (color, mark) = if ok {
             (theme.success.fg(), '\u{2713}')
         } else {
             (theme.danger.fg(), '\u{2717}')
         };
         let timing = elapsed_ms.map(|ms| format!(" \u{b7} {}ms", ms)).unwrap_or_default();
-        eprintln!("{}  {} {}{}{}", color, mark, name, timing, RESET);
+        ReplaceLine::update(had_spinner, &format!("{}  {} {}{}{}", color, mark, name, timing, RESET));
         let lines: Vec<&str> = output.lines().filter(|l| !l.trim().is_empty()).collect();
         match lines.len() {
             0 => {}
