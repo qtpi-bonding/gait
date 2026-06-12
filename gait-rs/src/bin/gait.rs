@@ -345,6 +345,37 @@ fn scaffold_gait_dir(gait_dir: &std::path::Path) -> std::io::Result<()> {
     }
     Ok(())
 }
+struct InitArgs {
+    /// Target gait-dir. None = use cwd.
+    path: Option<std::path::PathBuf>,
+    /// User passed -h or --help.
+    help: bool,
+}
+
+/// Pure: parse `gait init [<path>] [-h|--help]`. No I/O, no side effects.
+fn parse_init_args(argv: &[String]) -> InitArgs {
+    let help = argv.iter().any(|a| a == "--help" || a == "-h");
+    let path = if help {
+        None
+    } else {
+        argv.iter()
+            .find(|a| !a.starts_with('-'))
+            .map(std::path::PathBuf::from)
+    };
+    InitArgs { path, help }
+}
+
+fn init_usage() -> ! {
+    eprintln!("usage: gait init [<path>]");
+    eprintln!();
+    eprintln!("Initialize a gait-dir at <path> (default: current directory).");
+    eprintln!("Like 'git init': creates the path if needed, safe to re-run.");
+    eprintln!();
+    eprintln!("Options:");
+    eprintln!("  -h, --help    Print this help");
+    std::process::exit(0);
+}
+
 fn cmd_init(argv: &[String]) {
     let repo_url = argv.first().filter(|a| !a.starts_with('-')).cloned();
     let gait_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -1383,6 +1414,95 @@ mod tests {
         scaffold_gait_dir(dir.path()).unwrap();
         assert_eq!(std::fs::read_to_string(dir.path().join("USER.md")).unwrap(), "mine");
         assert_eq!(gi.matches("USER.md").count(), 1, "no duplicate gitignore entry");
+    }
+
+    mod init_tests {
+        use super::*;
+
+        #[test]
+        fn parse_init_args_no_args_returns_cwd_and_no_help() {
+            let args: Vec<String> = vec![];
+            let a = parse_init_args(&args);
+            assert!(!a.help, "no --help flag");
+            assert!(a.path.is_none(), "no path -> None (caller resolves to cwd)");
+        }
+
+        #[test]
+        fn parse_init_args_with_path() {
+            let args = vec!["/tmp/myws".to_string()];
+            let a = parse_init_args(&args);
+            assert_eq!(a.path, Some(std::path::PathBuf::from("/tmp/myws")));
+            assert!(!a.help);
+        }
+
+        #[test]
+        fn parse_init_args_help_flag_long() {
+            let args = vec!["--help".to_string()];
+            let a = parse_init_args(&args);
+            assert!(a.help);
+        }
+
+        #[test]
+        fn parse_init_args_help_flag_short() {
+            let args = vec!["-h".to_string()];
+            let a = parse_init_args(&args);
+            assert!(a.help);
+        }
+
+        #[test]
+        fn parse_init_args_help_with_path_help_wins() {
+            let args = vec!["/tmp/x".to_string(), "--help".to_string()];
+            let a = parse_init_args(&args);
+            assert!(a.help, "--help anywhere in argv sets help=true");
+        }
+
+        #[test]
+        fn scaffold_creates_new_dir_layout() {
+            let dir = tempfile::TempDir::new().unwrap();
+            scaffold_gait_dir(dir.path()).unwrap();
+
+            assert!(dir.path().join("agents").join("default").join("AGENT.md").exists(),
+                "agents/default/AGENT.md must exist");
+            assert!(!dir.path().join("agents").join("default.md").exists(),
+                "agents/default.md (flat, old) must not be created");
+            assert!(dir.path().join("skills").is_dir(), "skills/ dir must exist");
+            assert!(dir.path().join("USER.md").exists());
+            let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap_or_default();
+            assert!(gi.lines().any(|l| l.trim() == "USER.md"), "USER.md in .gitignore");
+            assert!(gi.lines().any(|l| l.trim() == "sessions/"), "sessions/ in .gitignore");
+        }
+
+        #[test]
+        fn scaffold_is_idempotent_and_does_not_clobber() {
+            let dir = tempfile::TempDir::new().unwrap();
+            std::fs::create_dir_all(dir.path().join("agents").join("default")).unwrap();
+            std::fs::write(dir.path().join("agents").join("default").join("AGENT.md"),
+                "my instructions").unwrap();
+            std::fs::write(dir.path().join("USER.md"), "personal").unwrap();
+
+            scaffold_gait_dir(dir.path()).unwrap();
+
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("agents/default/AGENT.md")).unwrap(),
+                "my instructions",
+                "must not clobber existing AGENT.md"
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("USER.md")).unwrap(),
+                "personal",
+                "must not clobber existing USER.md"
+            );
+        }
+
+        #[test]
+        fn scaffold_gitignore_no_duplicate_entries() {
+            let dir = tempfile::TempDir::new().unwrap();
+            scaffold_gait_dir(dir.path()).unwrap();
+            scaffold_gait_dir(dir.path()).unwrap();
+            let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+            assert_eq!(gi.matches("USER.md").count(), 1, "USER.md appears once");
+            assert_eq!(gi.matches("sessions/").count(), 1, "sessions/ appears once");
+        }
     }
 
     mod manifest_tests {
