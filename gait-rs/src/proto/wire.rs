@@ -55,37 +55,30 @@ pub fn last_event(path: &Path) -> anyhow::Result<Option<Event>> {
     Ok(read_events(path)?.pop())
 }
 
+/// Mint an [`Event`] for `body` chained after the current tail, write its JSON
+/// line to the file, and return the minted event. Shared by [`append`] and
+/// [`emit`]; also called directly by [`crate::proto::Emitter`].
+pub(crate) fn write_to_transcript(path: &Path, body: event::Body) -> anyhow::Result<Event> {
+    let prev = last_event(path)?;
+    let ev = mint(body, prev.as_ref());
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let json = serde_json::to_string(&ev)?;
+    writeln!(file, "{}", json)?;
+    Ok(ev)
+}
+
 /// Mint an [`Event`] for `body` chained after the current tail (reads
 /// [`last_event`] as `prev`, so `seq`/`parents` chain correctly), append its
 /// JSON line to the file, and return the minted event.
 pub fn append(path: &Path, body: event::Body) -> anyhow::Result<Event> {
-    let prev = last_event(path)?;
-    let ev = mint(body, prev.as_ref());
-
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    let json = serde_json::to_string(&ev)?;
-    writeln!(file, "{}", json)?;
-
-    Ok(ev)
+    write_to_transcript(path, body)
 }
 
 /// Like [`append`], but also echoes the JSON line to stdout (NDJSON stream for
 /// the REPL / external runners), matching the old `emit_event` behavior.
 pub fn emit(path: &Path, body: event::Body) -> anyhow::Result<Event> {
-    let prev = last_event(path)?;
-    let ev = mint(body, prev.as_ref());
-
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    let json = serde_json::to_string(&ev)?;
-    writeln!(file, "{}", json)?;
-    println!("{}", json);
-
+    let ev = write_to_transcript(path, body)?;
+    println!("{}", serde_json::to_string(&ev)?);
     Ok(ev)
 }
 

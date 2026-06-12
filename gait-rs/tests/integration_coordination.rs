@@ -13,6 +13,12 @@ fn event_kind(e: &Event) -> Option<&payload::Kind> {
         _ => None,
     }
 }
+/// Test emitter: writes transcript, drops the live stream (receiver gone → sends ignored).
+fn discard_emitter(gait_dir: &std::path::Path, id: &str) -> gait_ai::Emitter {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<gait_ai::proto::gait::log::v1::StreamItem>();
+    gait_ai::Emitter::new(gait_dir.join("sessions").join(id).join("transcript.jsonl"), tx)
+}
+
 use gait_ai::provider::{Provider, StreamChunk, ProviderError};
 use gait_ai::types::{Message, Tool};
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
@@ -90,6 +96,7 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
             assigned_by: None,
             repos: gait_ai::git::Repos::production(),
         },
+        &discard_emitter(ws.path(), "sparent001"),
         gait_ai::profile::ResolvedProfile::for_test(provider, tools, vec!["spawn_agent".into()], vec![]),
         gait_ai::turn::TurnInput { task: Some("coordinate agents".into()), auto: true, max_iter: None },
     ).await.unwrap();
@@ -156,6 +163,7 @@ async fn run_turn_permissions_result_integration() {
             assigned_by: None,
             repos: gait_ai::git::Repos::production(),
         },
+        &discard_emitter(ws.path(), "spermint"),
         gait_ai::profile::ResolvedProfile::for_test(provider, vec![], vec![], vec![]),
         gait_ai::turn::TurnInput { task: Some("destroy everything".into()), auto: false, max_iter: None },
     ).await.unwrap();

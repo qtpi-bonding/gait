@@ -49,7 +49,7 @@ impl crate::types::Hook for ConfigHook {
 
         let (exit_code, output) = crate::workflow::hooks::run_hook(&self.def.run, &env).await;
 
-        let _ = wire::emit(
+        let _ = wire::append(
             &self.tx_path,
             events::hook_run("post_tool", &self.def.run, exit_code, &output, Some(call_id.to_string())),
         );

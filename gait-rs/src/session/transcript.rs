@@ -210,7 +210,7 @@ pub fn write_permissions_reply(
     from: &str,
     items: Vec<PermissionsReplyItem>,
 ) -> anyhow::Result<()> {
-    crate::proto::wire::emit(
+    crate::proto::wire::append(
         tx_path,
         crate::proto::events::permissions_reply(from.to_string(), &items),
     )?;
@@ -219,7 +219,7 @@ pub fn write_permissions_reply(
 
 pub fn init_session(opts: InitSessionOpts) -> anyhow::Result<()> {
     // SessionStart is identity-only; model/codebase fields on `opts` are unused here.
-    crate::proto::wire::emit(
+    crate::proto::wire::append(
         &opts.transcript_path,
         crate::proto::events::session_start(opts.id, None),
     )?;

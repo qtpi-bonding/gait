@@ -17,6 +17,12 @@ use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 use tempfile::TempDir;
 use async_stream::stream;
 
+/// Test emitter: writes transcript, drops the live stream (receiver gone → sends ignored).
+fn discard_emitter(gait_dir: &std::path::Path, id: &str) -> gait_ai::Emitter {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<gait_ai::proto::gait::log::v1::StreamItem>();
+    gait_ai::Emitter::new(gait_dir.join("sessions").join(id).join("transcript.jsonl"), tx)
+}
+
 fn init_git_repo(dir: &std::path::Path) {
     let repo = git2::Repository::init(dir).unwrap();
     let mut cfg = repo.config().unwrap();
@@ -89,6 +95,7 @@ async fn full_turn_creates_transcript_and_git_commit() {
             assigned_by: None,
             repos: gait_ai::git::Repos::production(),
         },
+        &discard_emitter(ws.path(), "sint001"),
         gait_ai::profile::ResolvedProfile::for_test(provider, vec![Box::new(ls_tool)], vec!["ls".into()], vec![]),
         gait_ai::turn::TurnInput { task: Some("list the files".into()), auto: true, max_iter: None },
     ).await.unwrap();
@@ -146,6 +153,7 @@ async fn second_turn_resumes_session() {
             assigned_by: None,
             repos: gait_ai::git::Repos::production(),
         },
+        &discard_emitter(ws.path(), "sint002"),
         gait_ai::profile::ResolvedProfile::for_test(provider.clone(), vec![], vec![], vec![]),
         gait_ai::turn::TurnInput { task: Some("task 1".into()), auto: true, max_iter: None },
     ).await.unwrap();
@@ -158,6 +166,7 @@ async fn second_turn_resumes_session() {
             assigned_by: None,
             repos: gait_ai::git::Repos::production(),
         },
+        &discard_emitter(ws.path(), "sint002"),
         gait_ai::profile::ResolvedProfile::for_test(provider, vec![], vec![], vec![]),
         gait_ai::turn::TurnInput { task: Some("task 2".into()), auto: true, max_iter: None },
     ).await.unwrap();

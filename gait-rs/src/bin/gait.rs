@@ -131,7 +131,7 @@ async fn main() {
         "auth"     => cmd_auth(&args[2..]),
         "models"   => cmd_models(&args[2..]).await,
         "workflow" => cmd_workflow(&args[2..]).await,
-        "chat" => cmd_chat(&args[2..]),
+        "chat" => cmd_chat(&args[2..]).await,
         "approve"  => cmd_approve(&args[2..]),
         "reject"   => cmd_reject(&args[2..]),
         "status"   => cmd_status(&args[2..]),
@@ -257,14 +257,39 @@ async fn cmd_run(argv: &[String]) {
         codebase_path,
         repos,
     );
-    let turn_result = match run_turn(
-        &session,
-        resolved,
-        gait_ai::turn::TurnInput { task, auto, max_iter: config.max_iter },
-    ).await {
-        Ok(r) => r,
-        Err(e) => {
+    let tx_path = gait_dir.join("sessions").join(&session_id).join("transcript.jsonl");
+    let (tx, mut rx) =
+        tokio::sync::mpsc::unbounded_channel::<gait_ai::proto::gait::log::v1::StreamItem>();
+    let emitter = gait_ai::Emitter::new(tx_path, tx);
+
+    let input = gait_ai::turn::TurnInput { task, auto, max_iter: config.max_iter };
+    let turn_handle = tokio::spawn(async move {
+        run_turn(&session, &emitter, resolved, input).await
+        // emitter drops here → channel closes → rx.recv() yields None
+    });
+
+    use gait_ai::proto::gait::log::v1::stream_item::Item;
+    while let Some(item) = rx.recv().await {
+        match item.item {
+            Some(Item::Event(ev)) => {
+                if let Ok(json) = serde_json::to_string(&ev) { println!("{}", json); }
+            }
+            Some(Item::Delta(d)) => {
+                println!("{}", serde_json::json!(
+                    {"type": "text_delta", "content": d.content, "ts": gait_ai::session::transcript::now_ms()}));
+            }
+            None => {}
+        }
+    }
+
+    let turn_result = match turn_handle.await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
             eprintln!("[gait] error: {}", e);
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("[gait] error: turn task panicked: {}", e);
             std::process::exit(1);
         }
     };
@@ -784,7 +809,7 @@ fn cmd_workflow_log(argv: &[String], gait_dir: PathBuf) {
     }
 }
 
-fn cmd_chat(argv: &[String]) {
+async fn cmd_chat(argv: &[String]) {
     let mut gait_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut codebase_path: Option<PathBuf> = None;
     let mut agent_name: Option<String> = None;
@@ -808,7 +833,7 @@ fn cmd_chat(argv: &[String]) {
         eprintln!("[gait] warning: codebase path does not exist: {}", codebase.display());
     }
 
-    if let Err(e) = gait_ai::chat::run_chat(gait_dir, codebase, agent_name) {
+    if let Err(e) = gait_ai::chat::run_chat(gait_dir, codebase, agent_name).await {
         eprintln!("[gait] error: {}", e);
         std::process::exit(1);
     }

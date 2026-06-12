@@ -26,6 +26,8 @@ pub mod hash;
 pub mod envelope;
 pub mod wire;
 pub mod events;
+pub mod emitter;
+pub use emitter::Emitter;
 
 #[cfg(test)]
 mod tests;

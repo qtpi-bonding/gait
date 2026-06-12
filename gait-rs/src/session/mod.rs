@@ -1,5 +1,7 @@
 pub mod transcript;
 pub mod retrace;
+pub mod ingestor;
+pub use ingestor::Ingestor;
 pub mod session_json;
 pub mod session_obj;
 pub use transcript::*;
