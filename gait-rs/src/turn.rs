@@ -110,11 +110,12 @@ fn build_turn_context(codebase_hash: &str, dirty_files: &[String]) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     let secs = now.as_secs();
-    let mut ctx = format!("Current time (unix): {}\nCodebase commit: {}\n", secs, codebase_hash);
+    let mut ctx = format!("<status>\nCurrent time (unix): {}\nCodebase commit: {}\n", secs, codebase_hash);
     if !dirty_files.is_empty() {
         ctx.push_str("Dirty files:\n");
         for f in dirty_files { ctx.push_str(&format!("  {}\n", f)); }
     }
+    ctx.push_str("</status>\n");
     ctx
 }
 
@@ -1177,6 +1178,16 @@ mod tests {
     use crate::types::ToolDef;
     use crate::tools::OutputTool;
     use async_stream::stream;
+    #[test]
+    fn turn_context_is_wrapped_in_status_tag() {
+        let ctx = build_turn_context("deadbeef", &["src/a.rs".to_string()]);
+        assert!(ctx.starts_with("<status>"), "got: {ctx}");
+        assert!(ctx.trim_end().ends_with("</status>"), "got: {ctx}");
+        assert!(ctx.contains("Codebase commit: deadbeef"));
+        assert!(ctx.contains("src/a.rs"));
+    }
+
+
     /// Bridges old per-field test call sites to the new run_turn(&Session, ResolvedProfile, TurnInput).
     async fn run_turn_test_call(
         gait_dir: std::path::PathBuf,

@@ -52,6 +52,8 @@ impl Profile {
     /// allow/deny: agent frontmatter (when non-empty) supersedes config.
     pub fn from_config_and_agent(
         config: &GaitConfig,
+        gait_dir: &Path,
+        codebase: Option<&Path>,
         agent_path: Option<&Path>,
         model_override: Option<String>,
     ) -> Self {
@@ -59,7 +61,7 @@ impl Profile {
             .or_else(|| agent_path.and_then(crate::agent_frontmatter::read_agent_model))
             .unwrap_or_else(|| config.model.clone());
 
-        let instructions = crate::prompt::compose_system_prompt(agent_path);
+        let instructions = crate::prompt::compose_system_prompt(gait_dir, codebase, agent_path);
 
         let allow = agent_path
             .and_then(|p| crate::agent_frontmatter::read_agent_allow(p.to_path_buf()).ok())
@@ -241,7 +243,8 @@ mod tests {
     #[test]
     fn builder_uses_config_model_when_no_override_or_agent() {
         let config = GaitConfig { model: "anthropic/x".into(), ..GaitConfig::default() };
-        let p = Profile::from_config_and_agent(&config, None, None);
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
         assert_eq!(p.model, "anthropic/x");
         assert_eq!(p.allow, config.allow);
     }
@@ -249,7 +252,8 @@ mod tests {
     #[test]
     fn explicit_model_override_wins() {
         let config = GaitConfig { model: "anthropic/x".into(), ..GaitConfig::default() };
-        let p = Profile::from_config_and_agent(&config, None, Some("openai/y".into()));
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = Profile::from_config_and_agent(&config, dir.path(), None, None, Some("openai/y".into()));
         assert_eq!(p.model, "openai/y");
     }
 

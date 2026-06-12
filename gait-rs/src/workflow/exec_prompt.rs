@@ -33,7 +33,9 @@ pub async fn exec_prompt_node(
     let config = crate::config::load_config(ctx.gait_dir);
 
     // Build the declarative profile for this workflow node, then resolve tools/clients in one place.
-    let mut profile = crate::profile::Profile::from_config_and_agent(&config, None, Some(model.clone()));
+    // codebase: None — workflow nodes overwrite `instructions` below, so the
+    // project layer is irrelevant here.
+    let mut profile = crate::profile::Profile::from_config_and_agent(&config, ctx.gait_dir, None, None, Some(model.clone()));
     profile.instructions = system_prompt;   // workflow body (resolve_system_prompt), not the harness preamble
     profile.deny = vec![];                   // workflow prompt nodes carry no deny
     profile.allow = allow;                   // workflow-resolved allow

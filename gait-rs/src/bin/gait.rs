@@ -219,7 +219,7 @@ async fn cmd_run(argv: &[String]) {
     // Build the declarative profile (model precedence: --model > agent frontmatter > config),
     // then resolve it into a live provider + tools + MCP clients in one place.
     let profile = gait_ai::profile::Profile::from_config_and_agent(
-        &config, agent_path.as_deref(), model_override.clone());
+        &config, &gait_dir, Some(codebase_path.as_path()), agent_path.as_deref(), model_override.clone());
     let model = profile.model.clone();
 
     let provider_name = match model.split_once('/') {
@@ -312,6 +312,23 @@ async fn cmd_run(argv: &[String]) {
     }
 }
 
+/// Create the empty, editable layer affordances in the gait-dir (idempotent,
+/// never clobbers) and ensure `USER.md` is gitignored.
+fn scaffold_gait_dir(gait_dir: &std::path::Path) -> std::io::Result<()> {
+    let agents = gait_dir.join("agents");
+    std::fs::create_dir_all(&agents)?;
+    for p in [agents.join("default.md"), gait_dir.join("USER.md")] {
+        if !p.exists() { std::fs::write(&p, "")?; }
+    }
+    let gi_path = gait_dir.join(".gitignore");
+    let mut gi = std::fs::read_to_string(&gi_path).unwrap_or_default();
+    if !gi.lines().any(|l| l.trim() == "USER.md") {
+        if !gi.is_empty() && !gi.ends_with('\n') { gi.push('\n'); }
+        gi.push_str("USER.md\n");
+        std::fs::write(&gi_path, gi)?;
+    }
+    Ok(())
+}
 fn cmd_init(argv: &[String]) {
     let repo_url = argv.first().filter(|a| !a.starts_with('-')).cloned();
     let gait_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -320,6 +337,7 @@ fn cmd_init(argv: &[String]) {
         eprintln!("[gait] git init failed: {}", e);
         std::process::exit(1);
     }
+    let _ = scaffold_gait_dir(&gait_dir);
 
     let _ = std::fs::create_dir_all(gait_dir.join("sessions"));
 
@@ -343,7 +361,7 @@ fn cmd_init(argv: &[String]) {
 
     // agents/ — gait_dir-local agent definitions (not tracked in git).
     // Each file: YAML frontmatter (model, allow, deny) + markdown body (additive system prompt).
-    // gait-agent.md (built-in harness description) is always prepended automatically.
+    // gait-harness.md (built-in harness description) is always prepended automatically.
     let agents_dir = gait_dir.join("agents");
     let _ = std::fs::create_dir_all(&agents_dir);
     let default_agent = agents_dir.join("default.md");
@@ -1330,6 +1348,22 @@ mod tests {
         std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"x"}"#).unwrap();
         let args: Vec<String> = ["plugin", "foo"].iter().map(|s| s.to_string()).collect();
         assert!(cmd_load(dir.path(), &args).is_err());
+    }
+
+    #[test]
+    fn scaffold_creates_empty_affordances_and_gitignores_user() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "sessions/\n").unwrap();
+        scaffold_gait_dir(dir.path()).unwrap();
+        assert!(dir.path().join("agents").join("default.md").exists());
+        assert!(dir.path().join("USER.md").exists());
+        let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(gi.lines().any(|l| l.trim() == "USER.md"), "USER.md gitignored: {gi}");
+        // Idempotent + non-clobbering:
+        std::fs::write(dir.path().join("USER.md"), "mine").unwrap();
+        scaffold_gait_dir(dir.path()).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.path().join("USER.md")).unwrap(), "mine");
+        assert_eq!(gi.matches("USER.md").count(), 1, "no duplicate gitignore entry");
     }
 
     mod manifest_tests {
