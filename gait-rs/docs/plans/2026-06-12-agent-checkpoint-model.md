@@ -18,15 +18,16 @@ log has only two event *roles*: **deltas** and **checkpoints**.
 The log vocabulary bifurcates into two roles:
 
 - **Deltas** — the incremental worldline. `UserTurn`, `AssistantText`,
-  `ToolCall`/`ToolResult`, `Cwd`, and the new `SkillToggle` / `PermissionGrant` /
+  `ToolCall`/`ToolResult`, `Cwd`, and the new `Toggle` / `PermissionGrant` /
   `ModelChange`. Each is a small, commutative mutation.
 - **Checkpoints** — a baseline state for *one dimension*, valid as of a `through_seq`
   fold-coordinate. `MessageCheckpoint` (the **message** dimension) and `AgentCheckpoint` (the
   **agent** dimension, renamed from `Manifest`). The shadow-git checkpoint commit is
   the **codebase** dimension's equivalent.
 
-`Compaction` and `Agent` are **the same kind of thing** — state checkpoints — differing
-only in which projection they baseline. Every projection then has exactly one shape:
+`MessageCheckpoint` and `AgentCheckpoint` are **the same kind of thing** — state
+checkpoints — differing only in which projection they baseline. Every projection then
+has exactly one shape:
 
 ```
 state = fold( latest checkpoint for my dimension , deltas after it )
@@ -34,13 +35,13 @@ state = fold( latest checkpoint for my dimension , deltas after it )
 
 | dimension | deltas | checkpoint |
 |---|---|---|
-| messages | `UserTurn`, `AssistantText`, `ToolCall`/`Result` | `Compaction` |
-| agent | `SkillToggle`, `PermissionGrant`, `ModelChange` | `Agent` (was `Manifest`) |
+| messages | `UserTurn`, `AssistantText`, `ToolCall`/`Result` | `MessageCheckpoint` |
+| agent | `Toggle`, `PermissionGrant`, `ModelChange` | `AgentCheckpoint` |
 | codebase/env | `Cwd`, dirty-stamp | shadow-git checkpoint commit |
 
-**"Compaction" generalizes** from a message-only operation to: *emit a checkpoint for
-dimension X so older deltas can be GC'd.* You can compact the agent dimension the same
-way you compact messages — collapse a long run of `SkillToggle`s into a fresh `Agent`
+**Checkpointing generalizes** from a message-only operation to: *emit a checkpoint for
+dimension X so older deltas can be GC'd.* You can checkpoint the agent dimension the same
+way you compact messages — collapse a long run of `Toggle`s into a fresh `AgentCheckpoint`
 snapshot. One operation, every dimension.
 
 ### Why this is CRDT-preserving (and better) **[locked]**
@@ -128,7 +129,7 @@ pub(crate) trait Projection {
 //   }
 ```
 
-- `ActiveMessages::checkpoint` returns the summary baseline on `Compaction`
+- `ActiveMessages::checkpoint` returns the summary baseline on `MessageCheckpoint`
   (lifting today's special-case out of `run_projection`).
 - `ActiveAgent::checkpoint` returns the snapshot on `Agent`.
 - `ActiveManifest` and `ActiveLoadables` are **deleted**; `ActiveAgent` replaces both.
