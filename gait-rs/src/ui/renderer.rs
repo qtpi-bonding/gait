@@ -78,6 +78,38 @@ pub fn split_into_blocks(text: &str) -> Vec<String> {
     blocks
 }
 
+/// Extract the most meaningful argument from a tool call to show beside the tool name.
+/// Returns a short, human-readable target: filename for file tools, pattern for search, etc.
+fn tool_target(name: &str, args: &serde_json::Value) -> Option<String> {
+    let s = |key: &str| -> Option<&str> { args.get(key).and_then(|v| v.as_str()) };
+    let basename = |p: &str| -> String {
+        std::path::Path::new(p).file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(p)
+            .to_string()
+    };
+    let trunc = |t: &str, max: usize| -> String {
+        if t.len() > max { format!("{}…", &t[..max]) } else { t.to_string() }
+    };
+    match name {
+        "read" | "edit" | "write" => s("file_path").map(basename),
+        "grep" => {
+            let pat = s("pattern")?;
+            Some(match s("path") {
+                Some(p) => format!("{} in {}", trunc(pat, 40), basename(p)),
+                None => trunc(pat, 50),
+            })
+        }
+        "glob" => s("pattern").map(|p| trunc(p, 50)),
+        "ls" => s("path").map(basename),
+        "shell" => s("cmd").map(|c| trunc(c, 60)),
+        "codesearch" => s("query").map(|q| trunc(q, 50)),
+        "webfetch" => s("url").map(|u| trunc(u, 80)),
+        "spawn_agent" => s("task").map(|t| trunc(t, 50)),
+        _ => None,
+    }
+}
+
 pub struct Renderer {
     pub line_buf: String,
     block_buf: String,
@@ -213,9 +245,13 @@ impl Renderer {
     /// Render the DIM spinner line for a tool call and record it as pending.
     /// Shared by the proto path (`handle_event`) and the transitional flat
     /// path so the two render identically.
-    fn render_tool_call(&mut self, name: &str) {
-        eprintln!("{}  \u{27f3} {}(\u{2026}){}", DIM_FG, name, RESET);
-        self.pending_tool = Some(name.to_string());
+    fn render_tool_call(&mut self, name: &str, args: Option<&serde_json::Value>) {
+        let target = args.and_then(|a| tool_target(name, a))
+            .map(|t| format!(" {}", t))
+            .unwrap_or_default();
+        let display = format!("{}{}", name, target);
+        eprintln!("{}  \u{27f3} {}(\u{2026}){}", DIM_FG, display, RESET);
+        self.pending_tool = Some(display);
     }
 
     /// Render a tool result: clear the pending spinner line, print the ✓/✗
@@ -266,7 +302,9 @@ impl Renderer {
 
             Some(pb::payload::Kind::ToolCall(tc)) => {
                 // proto ToolCall has no timing; timing comes from ToolResult.duration.
-                self.render_tool_call(&tc.name);
+                let args = tc.input.as_ref()
+                    .and_then(|s| serde_json::to_value(s).ok());
+                self.render_tool_call(&tc.name, args.as_ref());
                 RenderAction::Continue
             }
             Some(pb::payload::Kind::ToolResult(tr)) => {
@@ -431,7 +469,34 @@ mod tests {
         let body = events::tool_call("call-1".into(), "read".into(), &serde_json::json!({"file_path": "a.rs"}));
         let action = r.handle_event(&ev(body));
         assert!(matches!(action, RenderAction::Continue));
-        assert_eq!(r.pending_tool.as_deref(), Some("read"));
+        // pending_tool includes the target extracted from args
+        assert_eq!(r.pending_tool.as_deref(), Some("read a.rs"));
+    }
+
+    #[test]
+    fn tool_target_extracts_per_tool() {
+        let args = serde_json::json!({"file_path": "/tmp/src/types.rs"});
+        assert_eq!(tool_target("read", &args).as_deref(), Some("types.rs"));
+        assert_eq!(tool_target("edit", &args).as_deref(), Some("types.rs"));
+        assert_eq!(tool_target("write", &args).as_deref(), Some("types.rs"));
+
+        let args = serde_json::json!({"pattern": "fn foo", "path": "src/lib.rs"});
+        assert_eq!(tool_target("grep", &args).as_deref(), Some("fn foo in lib.rs"));
+
+        let args = serde_json::json!({"pattern": "**/*.rs"});
+        assert_eq!(tool_target("glob", &args).as_deref(), Some("**/*.rs"));
+
+        let args = serde_json::json!({"cmd": "cargo test"});
+        assert_eq!(tool_target("shell", &args).as_deref(), Some("cargo test"));
+
+        let args = serde_json::json!({"query": "impl Trait"});
+        assert_eq!(tool_target("codesearch", &args).as_deref(), Some("impl Trait"));
+
+        let args = serde_json::json!({"url": "https://example.com/page"});
+        assert_eq!(tool_target("webfetch", &args).as_deref(), Some("https://example.com/page"));
+
+        // unknown tool → None
+        assert_eq!(tool_target("output", &serde_json::json!({"message": "hi"})), None);
     }
 
     #[test]
