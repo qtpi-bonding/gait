@@ -542,7 +542,19 @@ pub fn fold(
 pub fn active_manifest(events: &[Event]) -> Option<pb::Manifest> {
     run_projection(&ActiveManifest, events, &HashMap::new())
 }
-
+/// Blocks from the LAST `TurnComplete` event in the log, in source order.
+/// Returns an empty Vec if there is no TurnComplete. Used by the CLI
+/// `>(N)` quote-reply expander, which needs the prior turn's blocks to
+/// reference them by index.
+pub fn last_turn_blocks(events: &[Event]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for e in events {
+        if let Some(payload::Kind::TurnComplete(tc)) = kind(e) {
+            out = tc.blocks.clone();
+        }
+    }
+    out
+}
 
 #[cfg(test)]
 mod tests {
@@ -1054,4 +1066,30 @@ mod tests {
         let got2 = run_projection(&p, &one, &muts);
         assert!(!got2.contains("slack"), "redacted/undone load must be disabled");
     }
+    #[test]
+    fn last_turn_blocks_returns_last_complete() {
+        // Two TurnComplete events with different blocks; the helper must return
+        // the second (last) one's blocks, in order.
+        let usage = TurnUsage { input: 1, output: 1, cache_read: 0, cache_write: 0 };
+        let output = TurnOutput { message: "ok".into(), result: None };
+        let first = vec!["alpha".to_string(), "beta".to_string()];
+        let second = vec!["gamma".to_string(), "delta".to_string(), "epsilon".to_string()];
+        let evs = mint_events(vec![
+            events::turn_complete(&usage, "h1".into(), false, None, first.clone(), &output),
+            events::turn_complete(&usage, "h2".into(), false, None, second.clone(), &output),
+        ]);
+        let got = last_turn_blocks(&evs);
+        assert_eq!(got, second, "last TurnComplete wins");
+    }
+
+    #[test]
+    fn last_turn_blocks_empty_when_none() {
+        // No TurnComplete events in the log → empty Vec.
+        let evs = mint_events(vec![
+            events::user_turn("hi".into(), None, None),
+            events::assistant_text("hello".into()),
+        ]);
+        assert!(last_turn_blocks(&evs).is_empty());
+    }
+
 }
