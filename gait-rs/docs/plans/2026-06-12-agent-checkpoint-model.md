@@ -21,11 +21,11 @@ The log vocabulary bifurcates into two roles:
   `ToolCall`/`ToolResult`, `Cwd`, and the new `Toggle` / `PermissionGrant` /
   `ModelChange`. Each is a small, commutative mutation.
 - **Checkpoints** — a baseline state for *one dimension*, valid as of a `through_seq`
-  fold-coordinate. `MessageCheckpoint` (the **message** dimension) and `AgentCheckpoint` (the
+  fold-coordinate. `Messages` (the **message** dimension) and `Agent` (the
   **agent** dimension, renamed from `Manifest`). The shadow-git checkpoint commit is
   the **codebase** dimension's equivalent.
 
-`MessageCheckpoint` and `AgentCheckpoint` are **the same kind of thing** — state
+`Messages` and `Agent` are **the same kind of thing** — state
 checkpoints — differing only in which projection they baseline. Every projection then
 has exactly one shape:
 
@@ -35,13 +35,13 @@ state = fold( latest checkpoint for my dimension , deltas after it )
 
 | dimension | deltas | checkpoint |
 |---|---|---|
-| messages | `UserTurn`, `AssistantText`, `ToolCall`/`Result` | `MessageCheckpoint` |
-| agent | `Toggle`, `PermissionGrant`, `ModelChange` | `AgentCheckpoint` |
+| messages | `UserTurn`, `AssistantText`, `ToolCall`/`Result` | `Messages` |
+| agent | `Toggle`, `PermissionGrant`, `ModelChange` | `Agent` |
 | codebase/env | `Cwd`, dirty-stamp | shadow-git checkpoint commit |
 
 **Checkpointing generalizes** from a message-only operation to: *emit a checkpoint for
 dimension X so older deltas can be GC'd.* You can checkpoint the agent dimension the same
-way you compact messages — collapse a long run of `Toggle`s into a fresh `AgentCheckpoint`
+way you compact messages — collapse a long run of `Toggle`s into a fresh `Agent`
 snapshot. One operation, every dimension.
 
 ### Why this is CRDT-preserving (and better) **[locked]**
@@ -67,14 +67,14 @@ Keep checkpoints as **distinct messages** (a single `oneof` `Checkpoint` would j
 relocate per-dimension handling — the payloads genuinely differ: prose summary vs typed
 config). Unify *behavior*, not *bytes*.
 
-1. **Rename `Manifest` → `AgentCheckpoint`** and **`Compaction` → `MessageCheckpoint`**
-   (O6). `AgentCheckpoint` is the **envelope** holding a full snapshot of every agent
+1. **Rename `Manifest` → `Agent`** and **`Compaction` → `Messages`**
+   (O6). `Agent` is the **envelope** holding a full snapshot of every agent
    sub-state — which today's `Manifest` already half-is. **No hooks** (O5):
 
    ```proto
    // The agent-dimension checkpoint: a full snapshot of the composed agent state
    // as of `through_seq`. Each delta event mutates exactly one sub-state below.
-   message AgentCheckpoint {
+   message Agent {
      string model                 = 1;   // LWW
      string instructions          = 2;   // composed system prompt (replay-complete)
      repeated string tools        = 3;   // ENABLED tools (enable-set, O3)
@@ -82,14 +82,14 @@ config). Unify *behavior*, not *bytes*.
      repeated string skills       = 5;   // ENABLED skills
      PermissionPolicy permissions = 6;
      optional uint32 output_schema_retries = 7;   // (O2: may move to gait.jsonc runtime)
-     uint64 through_seq           = 8;   // fold coordinate (NEW — matches MessageCheckpoint)
+     uint64 through_seq           = 8;   // fold coordinate (NEW — matches Messages)
    }
    ```
    Field numbers stay in the existing `Manifest` slot (oneof arm `2`), renamed
-   `AgentCheckpoint agent_checkpoint = 2;`. `Compaction` (arm `17`) → `MessageCheckpoint`.
+   `Agent agent = 2;`. `Compaction` (arm `17`) → `Messages`.
 
-2. **Add `through_seq` to `AgentCheckpoint`** so the fold knows its baseline coordinate,
-   mirroring `MessageCheckpoint.through_seq`.
+2. **Add `through_seq` to `Agent`** so the fold knows its baseline coordinate,
+   mirroring `Messages.through_seq`.
 
 3. **New delta event messages** (O1 — everything in the envelope is toggleable; free
    oneof field numbers ≥ 53):
@@ -129,7 +129,7 @@ pub(crate) trait Projection {
 //   }
 ```
 
-- `ActiveMessages::checkpoint` returns the summary baseline on `MessageCheckpoint`
+- `ActiveMessages::checkpoint` returns the summary baseline on `Messages`
   (lifting today's special-case out of `run_projection`).
 - `ActiveAgent::checkpoint` returns the snapshot on `Agent`.
 - `ActiveManifest` and `ActiveLoadables` are **deleted**; `ActiveAgent` replaces both.
@@ -142,7 +142,7 @@ impl Projection for ActiveAgent {
     type State = AgentState;   // { model, instructions, tools, skills:Set, mcp:Set, allow:Set, deny:Set, ... }
     fn seed(&self) -> AgentState { self.seed.clone() }
     fn checkpoint(&self, kind) -> Option<AgentState> {
-        if let Kind::AgentCheckpoint(a) = kind { Some(AgentState::from(a)) } else { None }
+        if let Kind::Agent(a) = kind { Some(AgentState::from(a)) } else { None }
     }
     fn apply(&self, st, _ev, kind) {
         match kind {
@@ -228,10 +228,10 @@ These all reduce to "emit/seed agent-dimension state," so they fall out of §1�
   disk = *available/loadable*. *Enabled* is config-driven (where that config lives = O2).
   No inline skill bodies in `gait.jsonc`.
 - **O5 [locked] — hooks stay OUT of the agent.** Hooks are workspace-level, in
-  `gait.jsonc`, not in the `AgentCheckpoint` envelope. (So the envelope = model,
+  `gait.jsonc`, not in the `Agent` envelope. (So the envelope = model,
   instructions, tools, skills, mcp, permissions — no hooks.)
-- **O6 [locked] — `*Checkpoint` naming.** `Compaction → MessageCheckpoint`,
-  `Manifest → AgentCheckpoint`. Projections stay `ActiveMessages` / `ActiveAgent`.
+- **O6 [locked] — `*Checkpoint` naming.** `Compaction → Messages`,
+  `Manifest → Agent`. Projections stay `ActiveMessages` / `ActiveAgent`.
 
 ### O2 [locked] — `gait.jsonc` owns "installed", `AGENT.md` owns "enabled"
 
@@ -246,12 +246,12 @@ enabled-state live).
   - *policy/fallback* (neither installed nor enabled, named explicitly): a **fallback
     default `model`** (so a minimal `AGENT.md` boots) and a workspace **`deny` floor**
     (monotonic union — composes under every agent).
-- **`AGENT.md` = ENABLED + identity** — the `AgentCheckpoint` seed: `model` (identity;
+- **`AGENT.md` = ENABLED + identity** — the `Agent` seed: `model` (identity;
   else the gait.jsonc fallback), `allow`/`deny` (agent adds to the floor),
   `skills:`/`mcp:`/`tools:` (the **enabled** subsets of what's installed), body =
   instructions.
 
-The `AgentCheckpoint` envelope's `skills`/`mcp`/`tools` fields *are* the enabled set;
+The `Agent` envelope's `skills`/`mcp`/`tools` fields *are* the enabled set;
 the installed registry is **not** in the envelope (it lives in gait.jsonc/disk and feeds
 the `<loadable-index>`). This also subsumes the old "merge" sub-question: an agent's
 enabled set composes on the installed registry; nothing to union.
