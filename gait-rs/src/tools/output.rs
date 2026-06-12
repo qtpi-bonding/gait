@@ -12,14 +12,29 @@ struct OutputParams {
     result: Option<Value>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+struct OutputParamsWithResult {
+    /// What the user reads. Markdown OK, multi-paragraph OK. Required, non-empty.
+    #[schemars(length(min = 1))]
+    message: String,
+    /// Structured JSON result that MUST conform to the caller-declared schema.
+    result: Value,
+}
+
 pub struct OutputTool {
     parameters: Value,
+    result_schema: Option<Value>,
 }
 
 impl OutputTool {
     pub fn new() -> Self {
         let parameters = crate::tools::make_schema::<OutputParams>();
-        Self { parameters }
+        Self { parameters, result_schema: None }
+    }
+
+    pub fn with_schema(schema: Value) -> Self {
+        let parameters = crate::tools::make_schema::<OutputParamsWithResult>();
+        Self { parameters, result_schema: Some(schema) }
     }
 }
 
@@ -27,7 +42,11 @@ impl OutputTool {
 impl Tool for OutputTool {
     fn name(&self) -> &str { "structured_done" }
     fn description(&self) -> &str {
-        "Return structured output from this turn. Use when the caller needs to read specific fields — in a workflow via $node.output.field, or from a parent agent via spawn_agent. For plain-text completion, just respond — the turn ends automatically."
+        if self.result_schema.is_some() {
+            "Return structured output from this turn. Your `result` field MUST conform to the schema declared by the caller — see <result-schema> in the system prompt. Validation is enforced; a mismatch sends the error back for you to retry."
+        } else {
+            "Return structured output from this turn. Use when the caller needs to read specific fields — in a workflow via $node.output.field, or from a parent agent via spawn_agent. For plain-text completion, just respond — the turn ends automatically."
+        }
     }
     fn parameters(&self) -> &Value { &self.parameters }
 
