@@ -51,10 +51,39 @@ pub fn append_agent_deny(path: PathBuf, pattern: &str) -> anyhow::Result<()> {
     append_to_list(path, "deny", pattern)
 }
 
+/// Which kind of named markdown context file to resolve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkdownKind {
+    /// `agents/<name>/AGENT.md` — role/identity file for a named agent.
+    Agent,
+    /// `codebases/<key>/PROJECT.md` — per-codebase project instructions.
+    Project,
+    /// `skills/<name>/SKILL.md` — a loadable skill body.
+    Skill,
+}
+
+/// Resolve a named markdown context file to its canonical directory-form path.
+///
+/// - `Agent`   → `<gait_dir>/agents/<name>/AGENT.md`
+/// - `Project` → `<gait_dir>/codebases/<name>/PROJECT.md`
+/// - `Skill`   → `<gait_dir>/skills/<name>/SKILL.md`
+///
+/// `USER.md` is a singleton (`<gait_dir>/USER.md`) — resolve it directly, not here.
+pub fn resolve_markdown_context_path(
+    gait_dir: &std::path::Path,
+    kind: MarkdownKind,
+    name: &str,
+) -> PathBuf {
+    match kind {
+        MarkdownKind::Agent   => gait_dir.join("agents").join(name).join("AGENT.md"),
+        MarkdownKind::Project => gait_dir.join("codebases").join(name).join("PROJECT.md"),
+        MarkdownKind::Skill   => gait_dir.join("skills").join(name).join("SKILL.md"),
+    }
+}
+
 /// Resolve a short agent name like "code" to its path in the gait_dir.
-/// "code" → "{gait_dir}/agents/code.md"
+/// Kept for call sites not yet migrated to `resolve_markdown_context_path`.
 pub fn resolve_agent_path(gait_dir: &std::path::Path, name: &str) -> PathBuf {
-    // If name already looks like a path (contains / or .md), use as-is relative to gait_dir
     if name.contains('/') || name.ends_with(".md") {
         gait_dir.join(name)
     } else {
@@ -223,11 +252,26 @@ mod tests {
     }
 
     #[test]
-    fn resolve_agent_path_appends_md() {
+    fn resolve_agent_path_uses_dir_form() {
         let dir = TempDir::new().unwrap();
-        let path = resolve_agent_path(dir.path(), "coder");
-        assert_eq!(path, dir.path().join("agents/coder.md"));
+        let path = resolve_markdown_context_path(dir.path(), MarkdownKind::Agent, "coder");
+        assert_eq!(path, dir.path().join("agents/coder/AGENT.md"));
     }
+
+    #[test]
+    fn resolve_markdown_context_path_project_uses_dir_form() {
+        let dir = TempDir::new().unwrap();
+        let path = resolve_markdown_context_path(dir.path(), MarkdownKind::Project, "myrepo-abc1234");
+        assert_eq!(path, dir.path().join("codebases/myrepo-abc1234/PROJECT.md"));
+    }
+
+    #[test]
+    fn resolve_markdown_context_path_skill_uses_dir_form() {
+        let dir = TempDir::new().unwrap();
+        let path = resolve_markdown_context_path(dir.path(), MarkdownKind::Skill, "tdd");
+        assert_eq!(path, dir.path().join("skills/tdd/SKILL.md"));
+    }
+
     #[test]
     fn append_agent_allow_creates_missing_file() {
         let dir = TempDir::new().unwrap();
