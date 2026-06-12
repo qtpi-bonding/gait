@@ -59,11 +59,6 @@ pub struct SessionLock {
     path: PathBuf,
 }
 
-/// Shared path for the once-approval temp file, used by both turn.rs and chat.rs.
-pub fn once_approval_path(gait_dir: &std::path::Path, session_id: &str) -> std::path::PathBuf {
-    gait_dir.join("tmp").join(format!("gait-approve-{}", session_id))
-}
-
 impl SessionLock {
     pub fn acquire(session_dir: &Path) -> anyhow::Result<Self> {
         let path = session_dir.join("lock");
@@ -460,17 +455,18 @@ pub async fn run_turn(
         })?;
     }
 
-    // Read and delete once-approval temp file (written by gait chat after user approval)
-    let once_path = once_approval_path(&gait_dir, &session_id);
-    let once_allow: Vec<String> = std::fs::read_to_string(&once_path)
-        .unwrap_or_default()
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
-    let _ = std::fs::remove_file(&once_path);
-    let mut effective_allow = allow.clone();
-    effective_allow.extend(once_allow);
+    // Effective allow = config baseline (global+agent, in `allow`) + log-derived
+    // session/once grants, folded mutation-aware from the full session via the
+    // ActivePermissions projection. Replaces the once-approval temp file entirely:
+    // once/session approvals now live in the Log as PermissionsReply events.
+    let effective_allow: Vec<String> = {
+        let evs = ingestor.events()?;
+        let mut muts = retrace::active_mutations(&evs);
+        retrace::apply_cascade(&mut muts, &evs);
+        let seed: std::collections::HashSet<String> = allow.iter().cloned().collect();
+        let st = retrace::run_projection(&retrace::ActivePermissions { seed }, &evs, &muts);
+        st.session.union(&st.once).cloned().collect()
+    };
 
     // Detect resume after permission approval: last two transcript events are
     // Permissions → PermissionsReply. On resume we directly execute the

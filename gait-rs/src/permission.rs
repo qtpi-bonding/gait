@@ -32,7 +32,7 @@ pub enum PermissionChoice {
 pub fn save_choice(
     choice: &PermissionChoice,
     gait_dir: &Path,
-    session_id: &str,
+    _session_id: &str,
     agent_path: Option<&Path>,
 ) -> anyhow::Result<()> {
     match choice {
