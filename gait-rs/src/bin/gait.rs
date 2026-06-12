@@ -343,7 +343,7 @@ fn cmd_init(argv: &[String]) {
 
     // agents/ — gait_dir-local agent definitions (not tracked in git).
     // Each file: YAML frontmatter (model, allow, deny) + markdown body (additive system prompt).
-    // gait-agent.md (built-in harness description) is always prepended automatically.
+    // gait-harness.md (built-in harness description) is always prepended automatically.
     let agents_dir = gait_dir.join("agents");
     let _ = std::fs::create_dir_all(&agents_dir);
     let default_agent = agents_dir.join("default.md");
