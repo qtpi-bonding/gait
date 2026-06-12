@@ -169,14 +169,10 @@ pub async fn run_chat(
         let config = crate::config::load_config(&gait_dir);
 
         'spawn: loop {
-            let tx_path = gait_dir
-                .join("sessions")
-                .join(&session_id)
-                .join("transcript.jsonl");
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<
                 crate::proto::gait::log::v1::StreamItem,
             >();
-            let emitter = crate::proto::Emitter::new(tx_path, tx);
+            let emitter = crate::proto::Emitter::for_session(&gait_dir, &session_id, tx);
 
             // Rebuild Profile per turn (Profile is not Clone) and resolve with OWNED args.
             let profile = crate::profile::Profile::from_config_and_agent(

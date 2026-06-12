@@ -57,9 +57,8 @@ pub async fn exec_prompt_node(
         repos,
     );
     // workflow turns currently discard the live stream; transcript still written. Future work.
-    let tx_path = session.gait_dir.join("sessions").join(&session.id).join("transcript.jsonl");
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
-    let emitter = crate::proto::Emitter::new(tx_path, tx);
+    let emitter = crate::proto::Emitter::for_session(&session.gait_dir, &session.id, tx);
     let result = run_turn(
         &session,
         &emitter,

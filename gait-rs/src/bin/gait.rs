@@ -257,10 +257,9 @@ async fn cmd_run(argv: &[String]) {
         codebase_path,
         repos,
     );
-    let tx_path = gait_dir.join("sessions").join(&session_id).join("transcript.jsonl");
     let (tx, mut rx) =
         tokio::sync::mpsc::unbounded_channel::<gait_ai::proto::gait::log::v1::StreamItem>();
-    let emitter = gait_ai::Emitter::new(tx_path, tx);
+    let emitter = gait_ai::Emitter::for_session(&gait_dir, &session_id, tx);
 
     let input = gait_ai::turn::TurnInput { task, auto, max_iter: config.max_iter };
     let turn_handle = tokio::spawn(async move {

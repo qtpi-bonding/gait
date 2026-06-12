@@ -369,8 +369,7 @@ async fn apply_curate_filter(
     };
     // curate is a side turn — transcript only, no live stream consumer.
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
-    let curate_emitter = Emitter::new(
-        session.gait_dir.join("sessions").join(&session.id).join("transcript.jsonl"), tx);
+    let curate_emitter = Emitter::for_session(&session.gait_dir, &session.id, tx);
     let _ = run_turn(&session, &curate_emitter, caps,
         TurnInput { task: Some(task), auto: true, max_iter: Some(1) }).await;
 
@@ -1201,8 +1200,7 @@ mod tests {
         };
         let caps = crate::profile::ResolvedProfile::for_test(provider, tools, allow, deny);
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
-        let emitter = Emitter::new(
-            session.gait_dir.join("sessions").join(&session.id).join("transcript.jsonl"), tx);
+        let emitter = Emitter::for_session(&session.gait_dir, &session.id, tx);
         run_turn(&session, &emitter, caps, input).await
     }
 
