@@ -126,7 +126,7 @@ fn append_to_list(path: PathBuf, key: &str, pattern: &str) -> anyhow::Result<()>
     Ok(())
 }
 
-fn split_frontmatter(content: &str) -> (&str, &str) {
+pub(crate) fn split_frontmatter(content: &str) -> (&str, &str) {
     if !content.starts_with(FENCE) {
         return ("", content);
     }
