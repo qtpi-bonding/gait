@@ -93,6 +93,41 @@ pub(crate) trait Projection {
     /// Finalize (default: identity).
     fn finish(&self, state: Self::State) -> Self::State { state }
 }
+/// Drive one projection over the mutation-applied full-session stream.
+pub(crate) fn run_projection<P: Projection>(
+    p: &P,
+    all_events: &[Event],
+    mutations: &HashMap<String, MutationState>,
+) -> P::State {
+    let mut state = p.seed();
+    for (ev, kind) in effective_kinds(all_events, mutations) {
+        p.apply(&mut state, ev, kind);
+    }
+    p.finish(state)
+}
+
+/// Active loadable names. Seeds from config defaults; replays `load(name, enabled)`
+/// tool calls as last-write-wins toggles. Folds the FULL session (compaction does
+/// not reset it) and honors mutations (an undone load disables it).
+pub(crate) struct ActiveLoadables {
+    pub seed: std::collections::HashSet<String>,
+}
+impl Projection for ActiveLoadables {
+    type State = std::collections::HashSet<String>;
+    fn seed(&self) -> Self::State {
+        self.seed.clone()
+    }
+    fn apply(&self, state: &mut Self::State, _ev: &Event, kind: &payload::Kind) {
+        if let payload::Kind::ToolCall(tc) = kind {
+            if tc.name == "load" {
+                let input = struct_to_value(&tc.input);
+                let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let on = input.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+                if on { state.insert(name); } else { state.remove(&name); }
+            }
+        }
+    }
+}
 
 /// Build messages, applying the given mutations map.
 /// This is the internal implementation that both `messages` and `fold` use.
@@ -362,25 +397,18 @@ pub fn apply_cascade(
 /// Derive which loadable names are currently enabled, from the Log.
 /// Seeds from config defaults (`config_enabled`), then replays the transcript's
 /// `load(name, enabled=…)` tool calls as last-write-wins toggles per entity.
+/// Deprecated shim — prefer the `ActiveLoadables` projection via `fold`. Kept so
+/// existing callers compile until Task 5 switches them to RetraceResult. Behaviour
+/// is identical (empty mutation map → effective_kinds == raw kinds).
 pub fn enabled_loadables(
     events: &[Event],
     config_enabled: &std::collections::HashSet<String>,
 ) -> std::collections::HashSet<String> {
-    let mut enabled = config_enabled.clone();
-    for event in events {
-        if let Some(payload::Kind::ToolCall(tc)) = kind(event) {
-            if tc.name == "load" {
-                let input = struct_to_value(&tc.input);
-                let item_name = input.get("name")
-                    .and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let on = input.get("enabled")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                if on { enabled.insert(item_name); } else { enabled.remove(&item_name); }
-            }
-        }
-    }
-    enabled
+    run_projection(
+        &ActiveLoadables { seed: config_enabled.clone() },
+        events,
+        &HashMap::new(),
+    )
 }
 
 /// Result of folding the full event log through all Retrace projections.
@@ -808,5 +836,27 @@ mod tests {
 
         assert!(!result.mutations.is_empty(), "fold must populate mutations");
         assert!(result.messages.is_empty(), "redacted event must not appear in fold messages");
+    }
+    #[test]
+    fn loadables_projection_full_session_and_mutation_aware() {
+        use std::collections::{HashMap, HashSet};
+        // A load, then a compaction AFTER it — the projection must NOT reset (full session).
+        let cu = CompactionUsage { input: 1, output: 1 };
+        let with_comp = mint_events(vec![
+            events::tool_call("1".into(), "load".into(), &serde_json::json!({"name":"slack","enabled":true})),
+            events::compaction("summary".into(), 1, &cu),
+        ]);
+        let p = ActiveLoadables { seed: HashSet::new() };
+        let got = run_projection(&p, &with_comp, &HashMap::new());
+        assert!(got.contains("slack"), "load before compaction must stay enabled (full session)");
+
+        // Now redact that load → projection must drop it (honors mutations).
+        let one = mint_events(vec![
+            events::tool_call("1".into(), "load".into(), &serde_json::json!({"name":"slack","enabled":true})),
+        ]);
+        let mut muts = HashMap::new();
+        muts.insert(one[0].id.clone(), MutationState::Redacted { reason: None });
+        let got2 = run_projection(&p, &one, &muts);
+        assert!(!got2.contains("slack"), "redacted/undone load must be disabled");
     }
 }
