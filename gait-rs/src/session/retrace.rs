@@ -5,8 +5,8 @@
 //!
 //! - [`messages`] / [`messages_from_path`] — the **Transcript** (`Vec<Message>`).
 //!   Honours `Compaction` breakpoints and `Redact`/`Replace` mutations.
-//! - [`enabled_loadables`] — active loadable set (LWW-Map over `load` tool calls).
-//! - [`active_agent`] — last `Agent` payload (LWW-Register).
+//! - [`active_agent`] — folded agent-dimension state (model + enabled loadables).
+//! - [`active_agent_checkpoint`] — last `Agent` payload LWW-Register (drift guard).
 //! - [`active_mutations`] + [`apply_cascade`] — `Redact`/`Replace` LWW fold with
 //!   ToolCall↔ToolResult cascade.
 
@@ -125,39 +125,103 @@ pub(crate) fn run_projection<P: Projection>(
     p.finish(state)
 }
 
-/// Active loadable names. Seeds from config defaults; replays `load(name, enabled)`
-/// tool calls as last-write-wins toggles. Folds the FULL session (compaction does
-/// not reset it) and honors mutations (an undone load disables it).
-pub(crate) struct ActiveLoadables {
-    pub seed: std::collections::HashSet<String>,
+/// The agent-dimension working state: the folded result of the latest `Agent`
+/// checkpoint plus the deltas after it. `skills`/`mcp`/`tools` are ENABLED sets
+/// (OR-Set semantics under the fold); `tools` is AUDIT-ONLY today (I2 — built-ins
+/// are not gated by it). `allow`/`deny` are the static policy seed (runtime grants
+/// live in ActivePermissions, I3).
+#[derive(Debug, Clone, Default)]
+pub struct AgentState {
+    pub model: String,
+    pub instructions: String,
+    pub tools: std::collections::HashSet<String>,
+    pub skills: std::collections::HashSet<String>,
+    pub mcp: std::collections::HashSet<String>,
+    pub allow: std::collections::HashSet<String>,
+    pub deny: std::collections::HashSet<String>,
 }
-impl Projection for ActiveLoadables {
-    type State = std::collections::HashSet<String>;
-    fn seed(&self) -> Self::State {
-        self.seed.clone()
+
+impl AgentState {
+    /// Enabled loadable names = skills ∪ mcp. Replaces the deleted `ActiveLoadables`
+    /// state (a flat name-set) so `<loadable-index>` and the MCP-load loop read
+    /// identical output.
+    pub fn enabled_loadables(&self) -> std::collections::HashSet<String> {
+        self.skills.union(&self.mcp).cloned().collect()
     }
-    fn apply(&self, state: &mut Self::State, _ev: &Event, kind: &payload::Kind) {
-        if let payload::Kind::ToolCall(tc) = kind {
-            if tc.name == "load" {
-                let input = struct_to_value(&tc.input);
-                let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let on = input.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-                if on { state.insert(name); } else { state.remove(&name); }
-            }
+
+    /// The genesis seed (M3): enabled-set derived from config exactly like
+    /// `Profile::from_config_and_agent` derives `config_enabled` (profile.rs:75-78)
+    /// — enabled mcp_servers + enabled skills — plus the resolved model /
+    /// instructions / allow / deny. So the first turn (before any `Agent` event
+    /// lands) yields the right enabled-set.
+    pub fn from_config(
+        cfg: &crate::config::GaitConfig,
+        model: String,
+        instructions: String,
+        allow: Vec<String>,
+        deny: Vec<String>,
+    ) -> Self {
+        let mcp = cfg.mcp_servers.iter().filter(|s| s.enabled)
+            .map(|s| s.name.clone()).collect();
+        let skills = cfg.skills.iter().filter(|s| s.enabled)
+            .map(|s| s.name.clone()).collect();
+        AgentState {
+            model, instructions,
+            tools: Default::default(),
+            skills, mcp,
+            allow: allow.into_iter().collect(),
+            deny: deny.into_iter().collect(),
         }
     }
 }
 
-/// Last-write-wins register over `Agent` events.
-pub(crate) struct ActiveAgent;
-impl Projection for ActiveAgent {
-    type State = Option<pb::Agent>;
-    fn seed(&self) -> Self::State {
-        None
+/// Checkpoint reset path: the `Agent` proto snapshot → working state.
+/// (Vec→Set for the enabled fields; permissions split into allow/deny sets.)
+impl From<&pb::Agent> for AgentState {
+    fn from(a: &pb::Agent) -> Self {
+        let (allow, deny) = a.permissions.as_ref()
+            .map(|p| (p.allow.iter().cloned().collect(),
+                      p.deny.iter().cloned().collect()))
+            .unwrap_or_default();
+        AgentState {
+            model: a.model.clone(),
+            instructions: a.instructions.clone(),
+            tools: a.tools.iter().cloned().collect(),
+            skills: a.skills.iter().cloned().collect(),
+            mcp: a.mcp_servers.iter().cloned().collect(),
+            allow,
+            deny,
+        }
     }
-    fn apply(&self, state: &mut Self::State, _ev: &Event, kind: &payload::Kind) {
-        if let payload::Kind::Agent(r) = kind {
-            *state = Some(r.clone());
+}
+
+/// The agent-dimension projection (replaces ActiveManifest + ActiveLoadables).
+/// `seed` is the config-derived genesis (M3). `checkpoint` resets the baseline to
+/// an `Agent` snapshot (recompose-preserving re-baseline, I4). `apply` folds the
+/// deltas: in 3a that's the `load` ToolCall compat path (byte-identical to the old
+/// ActiveLoadables), switched to typed `Toggle`/`ModelChange` in 3b.
+pub(crate) struct ActiveAgent {
+    pub seed: AgentState,
+}
+impl Projection for ActiveAgent {
+    type State = AgentState;
+    fn seed(&self) -> AgentState { self.seed.clone() }
+    fn checkpoint(&self, kind: &payload::Kind) -> Option<AgentState> {
+        if let payload::Kind::Agent(a) = kind { Some(AgentState::from(a)) } else { None }
+    }
+    fn apply(&self, st: &mut AgentState, _ev: &Event, kind: &payload::Kind) {
+        // 3a compat path — fold `load` ToolCalls exactly as ActiveLoadables did.
+        // A toggled name lands in BOTH skills + mcp; the union is what callers read,
+        // reproducing the flat name-set semantics. Replaced by Toggle in 3b.
+        if let payload::Kind::ToolCall(tc) = kind {
+            if tc.name == "load" {
+                let input = struct_to_value(&tc.input);
+                let name = input.get("name").and_then(|v| v.as_str())
+                    .unwrap_or("").to_string();
+                let on = input.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+                if on { st.skills.insert(name.clone()); st.mcp.insert(name); }
+                else  { st.skills.remove(&name); st.mcp.remove(&name); }
+            }
         }
     }
 }
@@ -525,31 +589,12 @@ pub fn apply_cascade(
     }
 }
 
-/// Derive which loadable names are currently enabled, from the Log.
-/// Seeds from config defaults (`config_enabled`), then replays the transcript's
-/// `load(name, enabled=…)` tool calls as last-write-wins toggles per entity.
-/// Deprecated shim — prefer the `ActiveLoadables` projection via `fold`. Kept so
-/// existing callers compile until Task 5 switches them to RetraceResult. Behaviour
-/// is identical (empty mutation map → effective_kinds == raw kinds).
-pub fn enabled_loadables(
-    events: &[Event],
-    config_enabled: &std::collections::HashSet<String>,
-) -> std::collections::HashSet<String> {
-    run_projection(
-        &ActiveLoadables { seed: config_enabled.clone() },
-        events,
-        &HashMap::new(),
-    )
-}
-
 /// Result of folding the full event log through all Retrace projections.
 pub struct RetraceResult {
     /// The Transcript: Vec<Message> for the model context window.
     pub messages: Vec<Message>,
-    /// Active loadable names (seeds from config, LWW-toggled by `load` tool calls).
-    pub enabled_loadables: std::collections::HashSet<String>,
-    /// The most recent `Agent` payload, if any (LWW-Register).
-    pub active_agent: Option<pb::Agent>,
+    /// Folded agent-dimension state (replaces enabled_loadables + active_agent).
+    pub agent: AgentState,
     /// Effective session allow-list: config baseline + log-derived session/once
     /// grants. STUB until Task 6 (currently just the config seed; empty in `fold`).
     pub effective_allow: std::collections::HashSet<String>,
@@ -560,41 +605,53 @@ pub struct RetraceResult {
 
 /// Fold the full event log into all projections in a single pass.
 ///
-/// Every projection (`ActiveMessages`, `ActiveLoadables`, `ActiveAgent`,
-/// `ActivePermissions`) folds the SAME input: the mutation-applied, full-session
-/// event stream. Summary is handled only inside `ActiveMessages` (it resets
-/// the message context); the state projections fold the whole session and ignore
-/// it. `config_enabled` is the baseline loadable set from config.
+/// Every projection (`ActiveMessages`, `ActiveAgent`, `ActivePermissions`) folds
+/// the SAME input: the mutation-applied, full-session event stream. Summary is
+/// handled only inside `ActiveMessages` (it resets the message context); the state
+/// projections fold the whole session and ignore it. `agent_seed` is the M3 genesis
+/// state built from config (model, instructions, enabled mcp/skills, allow/deny).
 pub fn fold(
     all_events: &[Event],
-    config_enabled: &std::collections::HashSet<String>,
+    agent_seed: AgentState,
 ) -> anyhow::Result<RetraceResult> {
     // Phase 0 — substrate: converge the mutation set (LWW + cascade) once.
     let mut mutations = active_mutations(all_events);
     apply_cascade(&mut mutations, all_events);
 
     // Phase 1 — drive every projection over the same effective stream.
-    let enabled_loadables =
-        run_projection(&ActiveLoadables { seed: config_enabled.clone() }, all_events, &mutations);
-    let active_agent = run_projection(&ActiveAgent, all_events, &mutations);
+    let agent = run_projection(&ActiveAgent { seed: agent_seed }, all_events, &mutations);
     let allow_state =
         run_projection(&ActivePermissions { seed: Default::default() }, all_events, &mutations);
     let effective_allow: std::collections::HashSet<String> =
         allow_state.session.union(&allow_state.once).cloned().collect();
     let messages = run_projection(&ActiveMessages, all_events, &mutations).msgs;
 
-    Ok(RetraceResult { messages, enabled_loadables, active_agent, effective_allow, mutations })
+    Ok(RetraceResult { messages, agent, effective_allow, mutations })
 }
 
-/// Most recent `Agent` payload (LWW-Register). Shim over the `ActiveAgent`
-/// projection for the drift-guard in run_turn.
-pub fn active_agent(events: &[Event]) -> Option<pb::Agent> {
-    run_projection(&ActiveAgent, events, &HashMap::new())
+/// Most recent `Agent` payload LWW-Register — used only by the drift-guard in
+/// `run_turn` to decide whether to emit a new `Agent` event.
+pub fn active_agent_checkpoint(events: &[Event]) -> Option<pb::Agent> {
+    // A one-off projection that reads just the Agent checkpoints (no seed/delta).
+    struct LwwAgent;
+    impl Projection for LwwAgent {
+        type State = Option<pb::Agent>;
+        fn seed(&self) -> Self::State { None }
+        fn apply(&self, state: &mut Self::State, _ev: &Event, kind: &payload::Kind) {
+            if let payload::Kind::Agent(r) = kind { *state = Some(r.clone()); }
+        }
+    }
+    run_projection(&LwwAgent, events, &HashMap::new())
+}
+
+/// Folded agent-dimension state (config seed + Agent checkpoints + deltas).
+pub fn active_agent(events: &[Event], seed: AgentState) -> AgentState {
+    run_projection(&ActiveAgent { seed }, events, &HashMap::new())
 }
 
 /// Current sticky working directory (LWW over `Cwd` events, seeded at `root`).
-/// Mutations are ignored, matching `active_agent`; the shell tool and the
-/// `<status>` builder both refold this so they never diverge.
+/// Mutations are ignored; the shell tool and the `<status>` builder both refold
+/// this so they never diverge.
 pub fn active_cwd(events: &[Event], root: &std::path::Path) -> std::path::PathBuf {
     run_projection(&ActiveCwd { root: root.to_path_buf() }, events, &HashMap::new())
 }
@@ -736,14 +793,15 @@ mod tests {
             events::tool_call("1".into(), "load".into(), &serde_json::json!({"name": "slack_send", "enabled": true})),
             events::tool_call("2".into(), "load".into(), &serde_json::json!({"name": "tdd", "enabled": false})),
         ];
-        let enabled = enabled_loadables(&mint_events(bodies), &config_enabled);
+        let seed = AgentState { skills: config_enabled.clone(), mcp: config_enabled.clone(), ..Default::default() };
+        let st = active_agent(&mint_events(bodies), seed);
+        let enabled = st.enabled_loadables();
         assert!(enabled.contains("slack_send"), "slack should be enabled after load");
         assert!(!enabled.contains("tdd"), "tdd should be disabled after unload (LWW per entity)");
     }
 
     #[test]
     fn both_projections_derive_from_one_event_log() {
-        use std::collections::HashSet;
         let bodies = vec![
             events::user_turn("hi".into(), None, None),
             events::tool_call("1".into(), "load".into(), &serde_json::json!({"name": "slack_send", "enabled": true})),
@@ -751,17 +809,16 @@ mod tests {
         let proto_events = mint_events(bodies);
         let msgs = messages(&proto_events).unwrap();
         assert!(matches!(&msgs[0], Message::User { content: MessageContent::Text(t) } if t == "hi"));
-        let enabled = enabled_loadables(&proto_events, &HashSet::new());
-
+        let enabled = active_agent(&proto_events, AgentState::default()).enabled_loadables();
         assert!(enabled.contains("slack_send"));
     }
 
     #[test]
-    fn active_agent_returns_last_agent() {
+    fn active_agent_checkpoint_returns_last_agent() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("tx.jsonl");
 
-        // Write two Agent events — active_agent should return the second.
+        // Write two Agent events — active_agent_checkpoint should return the second.
         wire::append(&path, wire::body(pb::payload::Kind::Agent(pb::Agent {
             model: "model-a".into(),
             tools: vec![], mcp_servers: vec![], skills: vec![],
@@ -776,18 +833,18 @@ mod tests {
         }))).unwrap();
 
         let all_events = read_events(&path).unwrap();
-        let r = active_agent(&all_events).expect("an agent");
+        let r = active_agent_checkpoint(&all_events).expect("an agent");
         assert_eq!(r.model, "model-b");
     }
 
     #[test]
-    fn active_agent_returns_none_for_no_agent() {
+    fn active_agent_checkpoint_returns_none_for_no_agent() {
         let bodies = vec![
             events::user_turn("hi".into(), None, None),
             events::assistant_text("hello".into()),
         ];
         let proto_events = mint_events(bodies);
-        assert!(active_agent(&proto_events).is_none());
+        assert!(active_agent_checkpoint(&proto_events).is_none());
     }
 
     #[test]
@@ -807,20 +864,130 @@ mod tests {
         assert_eq!(active_cwd(&evs, root), std::path::PathBuf::from("/b"));
     }
 
+    // ── AgentState + conversions (T1 + T2) ──────────────────────────────────────
+
     #[test]
-    fn active_agent_projection_is_last_write_wins() {
+    fn agent_state_from_pb_agent_maps_enabled_sets() {
+        let a = pb::Agent {
+            model: "x/y".into(),
+            instructions: "sys".into(),
+            tools: vec!["read".into(), "edit".into()],
+            mcp_servers: vec!["slack".into()],
+            skills: vec!["tdd".into()],
+            permissions: Some(pb::PermissionPolicy {
+                allow: vec!["read".into()], deny: vec!["shell:rm *".into()] }),
+            through_seq: 0,
+        };
+        let st = AgentState::from(&a);
+        assert_eq!(st.model, "x/y");
+        assert_eq!(st.instructions, "sys");
+        assert!(st.skills.contains("tdd"));
+        assert!(st.mcp.contains("slack"));
+        assert!(st.tools.contains("read") && st.tools.contains("edit"));
+        assert!(st.allow.contains("read"));
+        assert!(st.deny.contains("shell:rm *"));
+    }
+
+    #[test]
+    fn agent_state_from_config_seeds_enabled_from_config() {
+        use crate::config::{GaitConfig, McpServerDef, SkillDef};
+        let cfg = GaitConfig {
+            model: "anthropic/x".into(),
+            mcp_servers: vec![
+                McpServerDef { name: "slack".into(), spawn: None, connect: None,
+                    enabled: true, description: None },
+                McpServerDef { name: "off".into(), spawn: None, connect: None,
+                    enabled: false, description: None },
+            ],
+            skills: vec![SkillDef { name: "tdd".into(), description: "d".into(),
+                content: "c".into(), enabled: true }],
+            ..GaitConfig::default()
+        };
+        let st = AgentState::from_config(&cfg, "anthropic/x".into(), "sys".into(),
+            vec!["read".into()], vec!["shell:rm *".into()]);
+        assert!(st.mcp.contains("slack"), "enabled mcp seeded");
+        assert!(!st.mcp.contains("off"), "disabled mcp NOT seeded");
+        assert!(st.skills.contains("tdd"), "enabled skill seeded");
+        assert_eq!(st.model, "anthropic/x");
+        assert!(st.allow.contains("read") && st.deny.contains("shell:rm *"));
+    }
+
+    // ── ActiveAgent projection (T3 + T4) ────────────────────────────────────────
+
+    #[test]
+    fn active_agent_folds_load_toolcall_like_loadables() {
         use std::collections::HashMap;
+        let seed = AgentState::from_config(
+            &crate::config::GaitConfig::default(),
+            "m".into(), "sys".into(), vec![], vec![]);
+        let evs = mint_events(vec![
+            events::tool_call("1".into(), "load".into(),
+                &serde_json::json!({"name":"slack","enabled":true})),
+            events::tool_call("2".into(), "load".into(),
+                &serde_json::json!({"name":"slack","enabled":false})),
+            events::tool_call("3".into(), "load".into(),
+                &serde_json::json!({"name":"tdd","enabled":true})),
+        ]);
+        let st = run_projection(&ActiveAgent { seed }, &evs, &HashMap::new());
+        let names = st.enabled_loadables();
+        assert!(!names.contains("slack"), "LWW: slack toggled off");
+        assert!(names.contains("tdd"), "tdd toggled on");
+    }
+
+    #[test]
+    fn active_agent_checkpoint_resets_baseline() {
+        use std::collections::HashMap;
+        let seed = AgentState::from_config(
+            &crate::config::GaitConfig::default(), "m".into(), "sys".into(), vec![], vec![]);
+        let evs = mint_events(vec![
+            events::tool_call("1".into(), "load".into(),
+                &serde_json::json!({"name":"old","enabled":true})),
+            wire::body(payload::Kind::Agent(pb::Agent {
+                model: "m2".into(), instructions: "sys2".into(),
+                tools: vec![], mcp_servers: vec!["slack".into()], skills: vec![],
+                permissions: Some(pb::PermissionPolicy { allow: vec![], deny: vec![] }),
+                through_seq: 0,
+            })),
+            events::tool_call("2".into(), "load".into(),
+                &serde_json::json!({"name":"tdd","enabled":true})),
+        ]);
+        let st = run_projection(&ActiveAgent { seed }, &evs, &HashMap::new());
+        assert_eq!(st.model, "m2", "checkpoint reset the model");
+        let names = st.enabled_loadables();
+        assert!(!names.contains("old"), "pre-checkpoint load wiped by Agent reset");
+        assert!(names.contains("slack"), "checkpoint's mcp present");
+        assert!(names.contains("tdd"), "post-checkpoint load folded");
+    }
+
+    #[test]
+    fn active_agent_honors_mutations_redacted_load_dropped() {
+        use std::collections::HashMap;
+        let seed = AgentState::from_config(
+            &crate::config::GaitConfig::default(), "m".into(), "sys".into(), vec![], vec![]);
+        let one = mint_events(vec![
+            events::tool_call("1".into(), "load".into(),
+                &serde_json::json!({"name":"slack","enabled":true})),
+        ]);
+        let mut muts = HashMap::new();
+        muts.insert(one[0].id.clone(), MutationState::Redacted { reason: None });
+        let st = run_projection(&ActiveAgent { seed }, &one, &muts);
+        assert!(!st.enabled_loadables().contains("slack"), "redacted load disabled");
+    }
+
+    #[test]
+    fn active_agent_projection_checkpoint_is_last_write_wins() {
+        use std::collections::HashMap;
+        let seed = AgentState::default();
         let evs = mint_events(vec![
             wire::body(payload::Kind::Agent(pb::Agent { model: "m1".into(), ..Default::default() })),
             wire::body(payload::Kind::Agent(pb::Agent { model: "m2".into(), ..Default::default() })),
         ]);
-        let got = run_projection(&ActiveAgent, &evs, &HashMap::new());
-        assert_eq!(got.expect("an agent").model, "m2", "latest Agent wins");
+        let got = run_projection(&ActiveAgent { seed }, &evs, &HashMap::new());
+        assert_eq!(got.model, "m2", "latest Agent checkpoint wins");
     }
 
     #[test]
     fn fold_returns_all_three_projections() {
-        use std::collections::HashSet;
         let dir = TempDir::new().unwrap();
         let path = write_events(dir.path(), vec![
             wire::body(pb::payload::Kind::Agent(pb::Agent {
@@ -833,26 +1000,28 @@ mod tests {
             events::tool_call("1".into(), "load".into(), &serde_json::json!({"name": "tdd", "enabled": true})),
         ]);
         let all_events = read_events(&path).unwrap();
-        let config: HashSet<String> = HashSet::new();
-        let result = fold(&all_events, &config).unwrap();
+        let seed = AgentState::from_config(&crate::config::GaitConfig::default(),
+            "m".into(), "".into(), vec![], vec![]);
+        let result = fold(&all_events, seed).unwrap();
 
         // messages: user turn (no summary-only events, user_turn becomes a Message)
         assert!(!result.messages.is_empty());
-        // active_agent: the one we wrote
-        assert_eq!(result.active_agent.as_ref().map(|r| r.model.as_str()), Some("gpt-fold"));
+        // agent.model: the checkpoint we wrote
+        assert_eq!(result.agent.model, "gpt-fold");
         // enabled_loadables: tdd was toggled on
-        assert!(result.enabled_loadables.contains("tdd"));
+        assert!(result.agent.enabled_loadables().contains("tdd"));
     }
 
     #[test]
     fn fold_runs_all_projections_single_pass() {
-        use std::collections::HashSet;
         let evs = mint_events(vec![
             events::tool_call("tc1".into(), "load".into(),
                 &serde_json::json!({"name":"slack","enabled":true})),
         ]);
-        let res = fold(&evs, &HashSet::new()).unwrap();
-        assert!(res.enabled_loadables.contains("slack"));
+        let seed = AgentState::from_config(&crate::config::GaitConfig::default(),
+            "m".into(), "".into(), vec![], vec![]);
+        let res = fold(&evs, seed).unwrap();
+        assert!(res.agent.enabled_loadables().contains("slack"));
         assert!(res.effective_allow.is_empty(), "permission stub yields no grants yet");
     }
 
@@ -961,13 +1130,12 @@ mod tests {
 
     #[test]
     fn fold_effective_allow_includes_session_grant() {
-        use std::collections::HashSet;
         let evs = mint_events(vec![
             events::permissions_reply("user".into(), &[PermissionsReplyItem {
                 id: "1".into(), decision: "approve".into(),
                 text: Some("shell:git status".into()), scope: Some("session".into()) }]),
         ]);
-        let res = fold(&evs, &HashSet::new()).unwrap();
+        let res = fold(&evs, AgentState::default()).unwrap();
         assert!(res.effective_allow.contains("shell:git status"),
             "fold flattens session grants into effective_allow");
     }
@@ -1129,7 +1297,6 @@ mod tests {
 
     #[test]
     fn fold_mutations_included_in_result() {
-        use std::collections::HashSet;
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("tx.jsonl");
 
@@ -1137,23 +1304,23 @@ mod tests {
         wire::append(&path, redact_body(&e.id)).unwrap();
 
         let all = read_events(&path).unwrap();
-        let result = fold(&all, &HashSet::new()).unwrap();
+        let result = fold(&all, AgentState::default()).unwrap();
 
         assert!(!result.mutations.is_empty(), "fold must populate mutations");
         assert!(result.messages.is_empty(), "redacted event must not appear in fold messages");
     }
     #[test]
     fn loadables_projection_full_session_and_mutation_aware() {
-        use std::collections::{HashMap, HashSet};
+        use std::collections::HashMap;
         // A load, then a compaction AFTER it — the projection must NOT reset (full session).
         let cu = CompactionUsage { input: 1, output: 1 };
         let with_comp = mint_events(vec![
             events::tool_call("1".into(), "load".into(), &serde_json::json!({"name":"slack","enabled":true})),
             events::summary("summary".into(), 1, &cu),
         ]);
-        let p = ActiveLoadables { seed: HashSet::new() };
-        let got = run_projection(&p, &with_comp, &HashMap::new());
-        assert!(got.contains("slack"), "load before compaction must stay enabled (full session)");
+        let p = ActiveAgent { seed: AgentState::default() };
+        let got: AgentState = run_projection(&p, &with_comp, &HashMap::new());
+        assert!(got.enabled_loadables().contains("slack"), "load before compaction must stay enabled (full session)");
 
         // Now redact that load → projection must drop it (honors mutations).
         let one = mint_events(vec![
@@ -1161,8 +1328,8 @@ mod tests {
         ]);
         let mut muts = HashMap::new();
         muts.insert(one[0].id.clone(), MutationState::Redacted { reason: None });
-        let got2 = run_projection(&p, &one, &muts);
-        assert!(!got2.contains("slack"), "redacted/undone load must be disabled");
+        let got2: AgentState = run_projection(&p, &one, &muts);
+        assert!(!got2.enabled_loadables().contains("slack"), "redacted/undone load must be disabled");
     }
     #[test]
     fn last_turn_blocks_returns_last_complete() {

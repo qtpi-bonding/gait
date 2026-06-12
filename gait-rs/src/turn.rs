@@ -417,6 +417,24 @@ pub async fn run_turn(
     let skill_registry = caps.skill_registry;
     let config_enabled = caps.config_enabled;
     let hooks = caps.hooks;
+
+    // Build the agent-dimension seed (M3): config-derived genesis for ActiveAgent.
+    // Approach (a): build directly from the resolved fields already in scope.
+    // config_enabled = enabled mcp_servers ∪ enabled skills (profile.rs:75-78);
+    // fold it into both sets to reproduce the old ActiveLoadables flat seed exactly.
+    let agent_seed = {
+        let mut s = retrace::AgentState {
+            model: model.clone(),
+            instructions: system_prompt.clone(),
+            tools: Default::default(),
+            skills: skill_registry.iter().map(|sk| sk.name.clone()).collect(),
+            mcp: Default::default(),
+            allow: allow.iter().cloned().collect(),
+            deny: deny.iter().cloned().collect(),
+        };
+        for n in &config_enabled { s.skills.insert(n.clone()); s.mcp.insert(n.clone()); }
+        s
+    };
     let task = input.task;
     let auto = input.auto;
     let max_iter = input.max_iter;
@@ -588,7 +606,7 @@ pub async fn run_turn(
     // the working state projection for the turn.
     {
         let events_for_guard = ingestor.events()?;
-        if retrace::active_agent(&events_for_guard) != Some(agent.clone()) {
+        if retrace::active_agent_checkpoint(&events_for_guard) != Some(agent.clone()) {
             emitter.emit(wire::body(payload::Kind::Agent(agent)))?;
         }
     }
@@ -611,17 +629,18 @@ pub async fn run_turn(
     }
 
     // Derive enabled loadables from the FULL session (mutation-aware, via the
-    // ActiveLoadables projection). Loadables are a "state" projection and persist
+    // ActiveAgent projection). Loadables are a "state" projection and persist
     // across compaction — only the message context (ActiveMessages) resets on
-    // compaction; consistent with permissions and manifest.
+    // compaction; consistent with permissions and agent config.
     let all_events = ingestor.events()?;
     let mut muts = retrace::active_mutations(&all_events);
     retrace::apply_cascade(&mut muts, &all_events);
-    let enabled_names = retrace::run_projection(
-        &retrace::ActiveLoadables { seed: config_enabled.clone() },
+    let agent_state = retrace::run_projection(
+        &retrace::ActiveAgent { seed: agent_seed.clone() },
         &all_events,
         &muts,
     );
+    let enabled_names = agent_state.enabled_loadables();
     for server_name in &enabled_names {
         for def in mcp_registry.iter().filter(|d| &d.server_name == server_name) {
             if let Some(client) = mcp_clients.get(&def.server_name) {
