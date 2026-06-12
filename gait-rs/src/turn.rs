@@ -1030,6 +1030,12 @@ pub async fn run_turn(
                                         .unwrap_or(true)
                                 });
                             }
+                            let toggle_kind = if mcp_registry.iter().any(|d| d.server_name == item_name) {
+                                "mcp"
+                            } else {
+                                "skill"
+                            };
+                            emitter.emit(events::toggle(toggle_kind, item_name, on))?;
                         }
                         let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
                         let (part, mut result) = execute_tool_call(tc, &tools, emitter, prefix).await
@@ -2164,5 +2170,62 @@ mod tests {
         assert_eq!(mock.init_calls().len(), 1, "rewind.init should be called exactly once at session start");
         assert_eq!(mock.checkpoint_calls(), vec![(session_id.to_string(), 1u32)],
                    "rewind.checkpoint should be called for turn 1");
+    }
+
+    #[tokio::test]
+    async fn load_skill_emits_toggle_event() {
+        let ws = TempDir::new().unwrap();
+        init_git_repo(ws.path());
+
+        let provider = Arc::new(MockProvider {
+            responses: Arc::new(vec![
+                vec![
+                    StreamChunk::ToolCallComplete {
+                        tool_call_id: "tc1".into(),
+                        tool_name: "load".into(),
+                        args: serde_json::json!({ "name": "tdd", "enabled": true }),
+                    },
+                    StreamChunk::Done,
+                ],
+                vec![
+                    StreamChunk::ToolCallComplete {
+                        tool_call_id: "tc2".into(),
+                        tool_name: "output".into(),
+                        args: serde_json::json!({ "message": "done" }),
+                    },
+                    StreamChunk::Done,
+                ],
+            ]),
+            call_idx: Arc::new(AtomicUsize::new(0)),
+        });
+
+        let skill = crate::config::SkillDef {
+            name: "tdd".into(),
+            description: String::new(),
+            content: "TDD skill content".into(),
+            enabled: false,
+        };
+        let load_tool = crate::tools::LoadTool::new(vec![], vec![skill]);
+        let output_tool = OutputTool::new();
+
+        run_turn_test_call(
+            ws.path().to_path_buf(), ws.path().to_path_buf(), "slogtgl01".into(),
+            provider, vec![Box::new(load_tool), Box::new(output_tool)],
+            vec!["load".into()], vec![],
+            TurnInput { task: Some("enable tdd".into()), auto: true, max_iter: None },
+            crate::git::Repos::production(),
+        ).await.unwrap();
+
+        let tx_path = ws.path().join("sessions/slogtgl01/log.jsonl");
+        let events = crate::proto::wire::read_events(&tx_path).unwrap();
+        let toggles: Vec<_> = events.iter().filter_map(|e| match event_kind(e) {
+            Some(payload::Kind::Toggle(t)) => Some(t),
+            _ => None,
+        }).collect();
+        assert_eq!(toggles.len(), 1, "exactly one Toggle event emitted");
+        assert_eq!(toggles[0].name, "tdd");
+        assert!(toggles[0].enabled, "Toggle enabled=true");
+        use crate::proto::gait::log::v1::ToggleKind;
+        assert_eq!(toggles[0].kind, ToggleKind::Skill as i32, "skill kind — not in mcp_registry");
     }
 }
