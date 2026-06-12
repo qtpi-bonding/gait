@@ -611,16 +611,18 @@ pub async fn run_turn(
         messages.insert(0, Message::User { content: MessageContent::Text(turn_ctx) });
     }
 
-    // Derive loaded MCP tools from the POST-COMPACTION slice only.
-    // Pre-compaction loads are intentionally forgotten (spec: model reloads after compaction).
-    let events = ingestor.events()?;
-    let compaction_start = crate::session::transcript::last_compaction_index(&events).unwrap_or(0);
-    let post_compaction = &events[compaction_start..];
-
-    // Step 6: post-compaction reload loop. Server-granularity push:
-    // enabled_names is a set of server names (and skill names); for each
-    // enabled MCP server, push all of its tools into the active tools vec.
-    let enabled_names = retrace::enabled_loadables(&post_compaction, &config_enabled);
+    // Derive enabled loadables from the FULL session (mutation-aware, via the
+    // ActiveLoadables projection). Loadables are a "state" projection and persist
+    // across compaction — only the message context (ActiveMessages) resets on
+    // compaction; consistent with permissions and manifest.
+    let all_events = ingestor.events()?;
+    let mut muts = retrace::active_mutations(&all_events);
+    retrace::apply_cascade(&mut muts, &all_events);
+    let enabled_names = retrace::run_projection(
+        &retrace::ActiveLoadables { seed: config_enabled.clone() },
+        &all_events,
+        &muts,
+    );
     for server_name in &enabled_names {
         for def in mcp_registry.iter().filter(|d| &d.server_name == server_name) {
             if let Some(client) = mcp_clients.get(&def.server_name) {
