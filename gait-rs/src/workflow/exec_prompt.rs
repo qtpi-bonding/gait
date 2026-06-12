@@ -87,9 +87,12 @@ pub async fn exec_prompt_node(
 fn resolve_system_prompt(node: &NodeDef, gait_dir: &Path) -> String {
     if let Some(sp) = &node.system_prompt { return sp.clone(); }
     if let Some(name) = &node.agent {
-        let p = gait_dir.join("agents").join(format!("{}.md", name));
+        let p = crate::agent_frontmatter::resolve_markdown_context_path(
+            gait_dir,
+            crate::agent_frontmatter::MarkdownKind::Agent,
+            name,
+        );
         if let Ok(s) = std::fs::read_to_string(&p) { return s; }
     }
-    let agents_md = gait_dir.join("AGENTS.md");
-    std::fs::read_to_string(&agents_md).unwrap_or_default()
+    String::new()
 }

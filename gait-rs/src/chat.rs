@@ -36,9 +36,20 @@ pub async fn run_chat(
 ) -> anyhow::Result<()> {
     let gait_bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gait"));
 
-    let agent_path: PathBuf = match agent_name.as_deref() {
-        Some(n) => crate::agent_frontmatter::resolve_agent_path(&gait_dir, n),
-        None => gait_dir.join("agent.md"),
+    let agent_path: Option<PathBuf> = match agent_name.as_deref() {
+        Some(n) => Some(crate::agent_frontmatter::resolve_markdown_context_path(
+            &gait_dir,
+            crate::agent_frontmatter::MarkdownKind::Agent,
+            n,
+        )),
+        None => {
+            let default = crate::agent_frontmatter::resolve_markdown_context_path(
+                &gait_dir,
+                crate::agent_frontmatter::MarkdownKind::Agent,
+                "default",
+            );
+            if default.exists() { Some(default) } else { None }
+        }
     };
     let theme = Theme::detect();
 
@@ -186,7 +197,7 @@ pub async fn run_chat(
                 &config,
                 &gait_dir,
                 Some(codebase.as_path()),
-                Some(agent_path.as_path()),
+                agent_path.as_deref(),
                 None,
             );
             // Derive provider + api_key from the RESOLVED model (matches gait.rs run
@@ -312,7 +323,7 @@ pub async fn run_chat(
                     &choice,
                     &gait_dir,
                     &session_id,
-                    Some(agent_path.as_path()),
+                    agent_path.as_deref(),
                 ) {
                     eprintln!("[gait] warning: could not save permission: {e}");
                 }

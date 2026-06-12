@@ -208,11 +208,19 @@ async fn cmd_run(argv: &[String]) {
 
     let config = load_config(&gait_dir);
 
-    // Resolve agent file: explicit --agent name, or fallback to agents/default.md
+    // Resolve agent file: explicit --agent name, or fallback to agents/default/AGENT.md
     let agent_path: Option<PathBuf> = if let Some(ref name) = agent_name {
-        Some(gait_ai::agent_frontmatter::resolve_agent_path(&gait_dir, name))
+        Some(gait_ai::agent_frontmatter::resolve_markdown_context_path(
+            &gait_dir,
+            gait_ai::agent_frontmatter::MarkdownKind::Agent,
+            name,
+        ))
     } else {
-        let default = gait_dir.join("agents").join("default.md");
+        let default = gait_ai::agent_frontmatter::resolve_markdown_context_path(
+            &gait_dir,
+            gait_ai::agent_frontmatter::MarkdownKind::Agent,
+            "default",
+        );
         if default.exists() { Some(default) } else { None }
     };
 
@@ -874,7 +882,7 @@ async fn cmd_chat(argv: &[String]) {
 }
 fn cmd_approve(argv: &[String]) {
     use gait_ai::permission::{execute_approve, ApproveParams, ApproveScope};
-    use gait_ai::agent_frontmatter::resolve_agent_path;
+    use gait_ai::agent_frontmatter::{resolve_markdown_context_path, MarkdownKind};
 
     let mut session_id: Option<String> = None;
     let mut pattern: Option<String> = None;
@@ -923,7 +931,8 @@ fn cmd_approve(argv: &[String]) {
 
     // Default scope is Once (single-turn only) when not specified.
     let scope = scope.unwrap_or(ApproveScope::Once);
-    let agent_path = agent_name.as_deref().map(|n| resolve_agent_path(&gait_dir, n));
+    let agent_path = agent_name.as_deref()
+        .map(|n| resolve_markdown_context_path(&gait_dir, MarkdownKind::Agent, n));
 
     let params = ApproveParams { scope, pattern };
     if let Err(e) = execute_approve(&gait_dir, &session_id, &params, agent_path.as_deref()) {

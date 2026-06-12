@@ -2,7 +2,7 @@
 //! `instructions`. Four stable layers, each a named paired tag (skipped when
 //! empty), in order:
 //!   `<harness>`  — built-in `gait-harness.md` (always present)
-//!   `<agent>`    — `agents/<name>.md`, the role
+//!   `<agent>`    — `agents/<name>/AGENT.md`, the role
 //!   `<project>`  — `codebases/<key>/PROJECT.md`, per-codebase
 //!   `<user>`     — `USER.md` (gait-dir root, gitignored)
 //! The dynamic per-turn `<status>` block is NOT here — it is a separate user
