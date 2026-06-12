@@ -546,6 +546,78 @@ mod tests {
         };
         assert_ne!(r1, r2, "agent equality is sensitive to mcp_servers order");
     }
+    #[test]
+    fn toggle_skill_enabled_round_trips() {
+        use crate::proto::gait::log::v1::{ToggleKind, payload};
+        use crate::proto::wire;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("log.jsonl");
+
+        wire::append(&path, super::toggle("skill", "tdd", true))
+            .expect("append toggle");
+
+        let evs = wire::read_events(&path).expect("read events");
+        assert_eq!(evs.len(), 1);
+        match evs[0].body.as_ref().and_then(|b| match b {
+            crate::proto::gait::log::v1::event::Body::Payload(p) => p.kind.as_ref(),
+            _ => None,
+        }) {
+            Some(payload::Kind::Toggle(t)) => {
+                assert_eq!(t.kind, ToggleKind::Skill as i32);
+                assert_eq!(t.name, "tdd");
+                assert!(t.enabled);
+            }
+            other => panic!("expected Toggle payload, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn toggle_skill_disabled_round_trips() {
+        use crate::proto::gait::log::v1::{ToggleKind, payload};
+        use crate::proto::wire;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("log.jsonl");
+
+        wire::append(&path, super::toggle("skill", "tdd", false))
+            .expect("append toggle");
+
+        let evs = wire::read_events(&path).expect("read events");
+        match evs[0].body.as_ref().and_then(|b| match b {
+            crate::proto::gait::log::v1::event::Body::Payload(p) => p.kind.as_ref(),
+            _ => None,
+        }) {
+            Some(payload::Kind::Toggle(t)) => {
+                assert_eq!(t.kind, ToggleKind::Skill as i32, "kind round-trips even when disabled");
+                assert!(!t.enabled, "enabled must be false");
+                assert_eq!(t.name, "tdd");
+            }
+            other => panic!("expected Toggle payload, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn toggle_chains_seq_after_other_event() {
+        use crate::proto::wire;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("log.jsonl");
+
+        wire::append(&path, super::assistant_text("hello".into())).unwrap();
+        wire::append(&path, super::toggle("skill", "tdd", true)).unwrap();
+
+        let evs = wire::read_events(&path).unwrap();
+        assert_eq!(evs.len(), 2);
+        assert_eq!(evs[0].seq, 1);
+        assert_eq!(evs[1].seq, 2);
+        assert_eq!(evs[1].parents, vec![evs[0].id.clone()],
+            "Toggle must chain off the previous event");
+    }
+
 
     // ── Dummy provider for the mapping test (we never call into it) ──────────
     use async_trait::async_trait;
