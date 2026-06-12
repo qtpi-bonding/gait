@@ -455,7 +455,7 @@ names → compile fails until Task 5 (do 4+5 back-to-back; commit together if cl
       let allow_state =
           run_projection(&ActivePermissions { seed: Default::default() }, all_events, &mutations);
       let effective_allow = allow_state.session.union(&allow_state.once).cloned().collect();
-      let messages = run_projection(&ActiveMessages, all_events, &mutations).msgs;
+      let messages = run_projection(&ActiveSummary, all_events, &mutations).msgs;
       Ok(RetraceResult { messages, agent, effective_allow, mutations })
   }
   ```

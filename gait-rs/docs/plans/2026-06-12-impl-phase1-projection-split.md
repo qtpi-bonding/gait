@@ -22,6 +22,11 @@ inline `Compaction` arm — which clears `msgs` and pushes a synthesized
 No projection other than `ActiveMessages` overrides `checkpoint`, so every other fold is
 byte-identical.
 
+> **Note on naming:** this phase keeps the struct named `ActiveMessages` (its current name).
+> Phase 2 renames it `ActiveMessages → ActiveSummary` alongside the proto `Compaction → Summary`
+> rename (the projection-naming rule is `Active<Event>`). So `ActiveMessages::checkpoint` added
+> here becomes `ActiveSummary::checkpoint` in Phase 2.
+
 ## Tech Stack
 
 Rust, single crate `gait-rs`. No proto changes, no new events, no new dependencies. Edits

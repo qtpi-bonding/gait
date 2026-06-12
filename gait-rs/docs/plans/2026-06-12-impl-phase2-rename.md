@@ -358,10 +358,16 @@ The core I1 fix lands here. Rename the LWW shim, the `Kind::Compaction` matches,
   }
   ```
   Update the module-doc bullet at `src/session/retrace.rs:9` `Manifest`→`Agent`.
-- [ ] `src/session/retrace.rs:184-206` — in `ActiveMessages::apply`, rename the
-      `Kind::Compaction(c)` arm to `Kind::Summary(c)` (body unchanged — still
-      `clear()` + push `format!("[Session history summary: {}]", c.summary)`). Update the
-      doc comment at `src/session/retrace.rs:184` `Compaction`→`Summary`.
+- [ ] `src/session/retrace.rs:184-206` — **rename the struct `ActiveMessages` → `ActiveSummary`**
+      (mirrors the proto `Compaction`→`Summary` event and the projection-naming rule
+      `Active<Event>`). In its `apply`, rename the `Kind::Compaction(c)` arm to
+      `Kind::Summary(c)` (body unchanged — still `clear()` + push
+      `format!("[Session history summary: {}]", c.summary)`). Update the doc comment at
+      `src/session/retrace.rs:184` `Compaction`→`Summary`. Then update **every use site** of
+      the struct (grep `ActiveMessages` across `src/`): the `run_projection(&ActiveMessages, …)`
+      call in `fold` and the `messages()`/`messages_from_*` accessors all become `ActiveSummary`.
+      (Pure rename — behavior-identical. Note: Phase 1 introduced `ActiveMessages::checkpoint`;
+      it rides along to `ActiveSummary::checkpoint` here.)
 - [ ] `src/session/retrace.rs:520-521` — rename the `RetraceResult` field:
   ```rust
       /// The most recent `Agent` checkpoint payload, if any (LWW-Register).
