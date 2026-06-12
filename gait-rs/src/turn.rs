@@ -375,7 +375,7 @@ async fn apply_curate_filter(
 
     let _ = repos.checkpoints.remove(gait_dir, &session_id);
 
-    let tx_path = gait_dir.join("sessions").join(&session_id).join("transcript.jsonl");
+    let tx_path = gait_dir.join("sessions").join(&session_id).join("log.jsonl");
     read_events(&tx_path)
         .ok()
         .and_then(|events| {
@@ -439,7 +439,7 @@ pub async fn run_turn(
     }
 
     let session_dir = gait_dir.join("sessions").join(&session_id);
-    let tx_path = session_dir.join("transcript.jsonl");
+    let tx_path = session_dir.join("log.jsonl");
     let ingestor = Ingestor::from_session(&gait_dir, &session_id);
 
     let _lock = SessionLock::acquire(&session_dir)?;
@@ -1285,7 +1285,7 @@ mod tests {
         ).await.unwrap();
 
         // Verify transcript has expected events
-        let tx_path = ws.path().join("sessions/stest001/transcript.jsonl");
+        let tx_path = ws.path().join("sessions/stest001/log.jsonl");
         let events = read_events(&tx_path).unwrap();
         let types: Vec<&str> = events.iter().map(|e| match event_kind(e) {
             Some(payload::Kind::SessionStart(_)) => "session_start",
@@ -1339,7 +1339,7 @@ mod tests {
             crate::git::Repos::production(),
         ).await.unwrap();
 
-        let tx_path = ws.path().join("sessions/stest_out/transcript.jsonl");
+        let tx_path = ws.path().join("sessions/stest_out/log.jsonl");
         let events = read_events(&tx_path).unwrap();
         let tc = events.iter().find_map(|e| match event_kind(e) {
             Some(payload::Kind::TurnComplete(tc)) => Some(tc),
@@ -1380,7 +1380,7 @@ mod tests {
             crate::git::Repos::production(),
         ).await.unwrap();
 
-        let tx_path = ws.path().join("sessions/stest_out2/transcript.jsonl");
+        let tx_path = ws.path().join("sessions/stest_out2/log.jsonl");
         let events = read_events(&tx_path).unwrap();
         let has_tc = events.iter().any(|e| matches!(event_kind(e), Some(payload::Kind::TurnComplete(_))));
         let has_permissions = events.iter().any(|e| matches!(event_kind(e), Some(payload::Kind::Permissions(_))));
@@ -1415,7 +1415,7 @@ mod tests {
             crate::git::Repos::production(),
         ).await.unwrap();
 
-        let tx_path = ws.path().join("sessions/stest002/transcript.jsonl");
+        let tx_path = ws.path().join("sessions/stest002/log.jsonl");
         let events = read_events(&tx_path).unwrap();
         let has_permissions = events.iter().any(|e| matches!(event_kind(e), Some(payload::Kind::Permissions(_))));
         let has_turn_complete = events.iter().any(|e| matches!(event_kind(e), Some(payload::Kind::TurnComplete(_))));
@@ -1533,7 +1533,7 @@ mod tests {
             crate::git::Repos::production(),
         ).await.unwrap();
 
-        let tx_path = ws.path().join("sessions/sdelta01/transcript.jsonl");
+        let tx_path = ws.path().join("sessions/sdelta01/log.jsonl");
         let events = read_events(&tx_path).unwrap();
         let text_events: Vec<_> = events.iter().filter_map(|e| match event_kind(e) {
             Some(payload::Kind::AssistantText(a)) => Some(a),
@@ -1586,7 +1586,7 @@ mod tests {
             crate::git::Repos::production(),
         ).await.unwrap();
 
-        let tx_path = ws.path().join("sessions/sdeny001/transcript.jsonl");
+        let tx_path = ws.path().join("sessions/sdeny001/log.jsonl");
         let events = read_events(&tx_path).unwrap();
 
         // Must have a ToolResult indicating blocked by config
@@ -1639,7 +1639,7 @@ mod tests {
             crate::git::Repos::production(),
         ).await.unwrap();
 
-        let tx_path = ws.path().join("sessions/sdeny002/transcript.jsonl");
+        let tx_path = ws.path().join("sessions/sdeny002/log.jsonl");
         let events = read_events(&tx_path).unwrap();
 
         // Same assertions as the first deny test
@@ -1705,7 +1705,7 @@ mod tests {
         // Initialize the session worktree (creates the session dir + branch)
         GitTraceRepo.create_session_worktree(ws.path(), session_id).unwrap();
         let session_dir = ws.path().join("sessions").join(session_id);
-        let tx_path = session_dir.join("transcript.jsonl");
+        let tx_path = session_dir.join("log.jsonl");
 
         // Pre-populate transcript: SessionStart + UserTurn + Permissions + PermissionsReply
         let perm_item = PermissionItem {
@@ -1767,7 +1767,7 @@ mod tests {
         // Initialize the session worktree (creates the session dir + branch)
         GitTraceRepo.create_session_worktree(ws.path(), session_id).unwrap();
         let session_dir = ws.path().join("sessions").join(session_id);
-        let tx_path = session_dir.join("transcript.jsonl");
+        let tx_path = session_dir.join("log.jsonl");
 
         let perm_item = PermissionItem {
             id: "tc-deny-1".into(), cmd: "rm -rf /".into(),
@@ -1850,7 +1850,7 @@ mod tests {
         let session_id = "sscope001";
         // Initialize the session worktree (creates the session dir + branch)
         GitTraceRepo.create_session_worktree(ws.path(), session_id).unwrap();
-        let tx_path = ws.path().join("sessions").join(session_id).join("transcript.jsonl");
+        let tx_path = ws.path().join("sessions").join(session_id).join("log.jsonl");
 
         // Pre-write a transcript with a Permissions+PermissionsReply already in it,
         // simulating a previous turn that was interrupted mid-permission-prompt.
@@ -2019,7 +2019,7 @@ mod tests {
             crate::git::Repos::production(),
         ).await.unwrap();
 
-        let tx_path = ws.path().join("sessions").join(session_id).join("transcript.jsonl");
+        let tx_path = ws.path().join("sessions").join(session_id).join("log.jsonl");
         let events = read_events(&tx_path).unwrap();
         let cp = events.iter().rev().find_map(|e| match event_kind(e) {
             Some(payload::Kind::TurnComplete(tc)) => Some(tc.checkpoint.clone()),

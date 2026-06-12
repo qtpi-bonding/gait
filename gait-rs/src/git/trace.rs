@@ -267,7 +267,7 @@ mod tests {
         init_repo(ws.path());
         let git_ws = GitTraceRepo;
         git_ws.create_session_worktree(ws.path(), "sabc1234").unwrap();
-        let tx = ws.path().join("sessions/sabc1234/transcript.jsonl");
+        let tx = ws.path().join("sessions/sabc1234/log.jsonl");
         std::fs::write(&tx, "{\"type\":\"session_start\"}\n").unwrap();
         git_ws.commit_session(ws.path(), "sabc1234", "session(sabc1234): turn 1").unwrap();
         // Verify: repo in session dir has 2+ commits (init + our commit)

@@ -55,7 +55,7 @@ impl Tool for ListAgentsTool {
                 None => continue,
             };
 
-            // Read transcript.jsonl blob from the branch's committed tree
+            // Read log.jsonl blob from the branch's committed tree
             let reference = branch.into_reference();
             let commit = match reference.peel_to_commit() {
                 Ok(c) => c,
@@ -65,7 +65,7 @@ impl Tool for ListAgentsTool {
                 Ok(t) => t,
                 Err(_) => continue,
             };
-            let blob_content = match tree.get_name("transcript.jsonl") {
+            let blob_content = match tree.get_name("log.jsonl") {
                 Some(entry) => match repo.find_blob(entry.id()) {
                     Ok(blob) => match std::str::from_utf8(blob.content()) {
                         Ok(s) => s.to_string(),
@@ -160,12 +160,12 @@ mod tests {
         init_git_repo(ws.path());
 
         GitTraceRepo.create_session_worktree(ws.path(), "srunning1").unwrap();
-        let tx1 = ws.path().join("sessions/srunning1/transcript.jsonl");
+        let tx1 = ws.path().join("sessions/srunning1/log.jsonl");
         wire::append(&tx1, events::user_turn("task".into(), None, None)).unwrap();
         GitTraceRepo.commit_session(ws.path(), "srunning1", "session(srunning1): init").unwrap();
 
         GitTraceRepo.create_session_worktree(ws.path(), "sdone1").unwrap();
-        let tx2 = ws.path().join("sessions/sdone1/transcript.jsonl");
+        let tx2 = ws.path().join("sessions/sdone1/log.jsonl");
         let usage = TurnUsage { input: 1, output: 1, cache_read: 0, cache_write: 0 };
         let output = TurnOutput { message: "done".into(), result: None };
         wire::append(&tx2, events::turn_complete(

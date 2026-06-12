@@ -39,7 +39,7 @@ impl HarnessBackend for NativeHarnessBackend {
                 );
 
                 let target_dir = self.gait_dir.join("sessions").join(target_session);
-                let tx_path = target_dir.join("transcript.jsonl");
+                let tx_path = target_dir.join("log.jsonl");
 
                 // Only retry on "already running" — fail fast on I/O errors.
                 let mut lock: Option<SessionLock> = None;

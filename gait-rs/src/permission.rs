@@ -77,7 +77,7 @@ pub fn execute_approve(
     params: &ApproveParams,
     agent_path: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
-    let tx_path = gait_dir.join("sessions").join(session_id).join("transcript.jsonl");
+    let tx_path = gait_dir.join("sessions").join(session_id).join("log.jsonl");
     let state = crate::session::transcript::session_state(&tx_path)?;
 
     let items = match &state {

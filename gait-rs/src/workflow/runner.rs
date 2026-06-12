@@ -31,7 +31,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
     let repos = crate::git::Repos::production();
     repos.traces.create_session_worktree(&gait_dir, &session_id)?;
     let session_dir = gait_dir.join("sessions").join(&session_id);
-    let tx_path = session_dir.join("transcript.jsonl");
+    let tx_path = session_dir.join("log.jsonl");
 
     let existing_events = read_events(&tx_path).unwrap_or_default();
     let mut state = reconstruct_state(&existing_events);

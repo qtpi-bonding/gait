@@ -6,7 +6,7 @@
 //! prost's cross-package references (state → log item types) resolve.
 //!
 //! The wire is JSON (proto3 canonical / camelCase) via pbjson, so each line of
-//! `transcript.jsonl` is one [`gait::log::v1::Event`].
+//! `log.jsonl` is one [`gait::log::v1::Event`].
 pub mod gait {
     pub mod log {
         pub mod v1 {

@@ -418,7 +418,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn write_events(dir: &std::path::Path, bodies: Vec<event::Body>) -> std::path::PathBuf {
-        let path = dir.join("transcript.jsonl");
+        let path = dir.join("log.jsonl");
         for b in bodies { wire::append(&path, b).unwrap(); }
         path
     }
@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn empty_transcript_returns_empty() {
         let dir = TempDir::new().unwrap();
-        let path = dir.path().join("transcript.jsonl");
+        let path = dir.path().join("log.jsonl");
         let msgs = messages_from_path(&path).unwrap();
         assert!(msgs.is_empty());
     }

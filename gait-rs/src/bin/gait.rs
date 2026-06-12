@@ -488,7 +488,7 @@ fn undo_command(
     }
 
     let session_dir = gait_dir.join("sessions").join(session_id);
-    let tx_path = session_dir.join("transcript.jsonl");
+    let tx_path = session_dir.join("log.jsonl");
     let events = read_events(&tx_path)?;
 
     // Collect (turn_index, summary, checkpoint) from TurnComplete events.
@@ -728,7 +728,7 @@ async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) {
         Some(p) => p,
         None => { eprintln!("[gait] no progress.yaml found for workflow {}", workflow_id); std::process::exit(1); }
     };
-    let tx_path = gait_dir.join("sessions").join(&workflow_id).join("transcript.jsonl");
+    let tx_path = gait_dir.join("sessions").join(&workflow_id).join("log.jsonl");
     let events = gait_ai::session::transcript::read_events(&tx_path).unwrap_or_default();
     let yaml_path_str = events.iter().find_map(|e| {
         use gait_ai::proto::gait::log::v1::{event, payload};
@@ -786,7 +786,7 @@ fn cmd_workflow_abort(argv: &[String], gait_dir: PathBuf) {
         Some(id) => id.clone(),
         None => { eprintln!("[gait] usage: gait workflow abort <workflow-id>"); std::process::exit(1); }
     };
-    let tx_path = gait_dir.join("sessions").join(&workflow_id).join("transcript.jsonl");
+    let tx_path = gait_dir.join("sessions").join(&workflow_id).join("log.jsonl");
     let _ = gait_ai::proto::wire::emit(&tx_path, gait_ai::proto::wire::raw("workflow_error", serde_json::json!({
         "workflow_id": workflow_id.clone(),
         "failed_node": "(aborted)",
@@ -801,7 +801,7 @@ fn cmd_workflow_log(argv: &[String], gait_dir: PathBuf) {
         Some(id) => id.clone(),
         None => { eprintln!("[gait] usage: gait workflow log <workflow-id>"); std::process::exit(1); }
     };
-    let tx_path = gait_dir.join("sessions").join(&workflow_id).join("transcript.jsonl");
+    let tx_path = gait_dir.join("sessions").join(&workflow_id).join("log.jsonl");
     let events = gait_ai::session::transcript::read_events(&tx_path).unwrap_or_default();
     for event in &events {
         println!("{}", serde_json::to_string(event).unwrap_or_default());
@@ -924,7 +924,7 @@ fn cmd_reject(argv: &[String]) {
         }
     };
 
-    let tx_path = gait_dir.join("sessions").join(&session_id).join("transcript.jsonl");
+    let tx_path = gait_dir.join("sessions").join(&session_id).join("log.jsonl");
     let state = match session_state(&tx_path) {
         Ok(s) => s,
         Err(e) => { eprintln!("[gait] error: {}", e); std::process::exit(1); }
@@ -985,7 +985,7 @@ fn cmd_status(argv: &[String]) {
         }
     };
 
-    let tx_path = gait_dir.join("sessions").join(&session_id).join("transcript.jsonl");
+    let tx_path = gait_dir.join("sessions").join(&session_id).join("log.jsonl");
     let state = match session_state(&tx_path) {
         Ok(s) => s,
         Err(e) => { eprintln!("[gait] error: {}", e); std::process::exit(1); }

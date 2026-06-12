@@ -260,7 +260,7 @@ pub async fn run_chat(
 
             // Handle clarify: prompt user for each question, write ClarifyReply, re-spawn
             if !pending_clarify.is_empty() {
-                let tx_path = gait_dir.join("sessions").join(&session_id).join("transcript.jsonl");
+                let tx_path = gait_dir.join("sessions").join(&session_id).join("log.jsonl");
                 let reply_items = prompt_clarify(&pending_clarify, &theme);
                 let _ = wire::append(&tx_path, events::clarify_reply(&reply_items));
                 continue 'spawn;
@@ -268,7 +268,7 @@ pub async fn run_chat(
 
             // Handle inform: prompt user to confirm understanding, write InformReply, re-spawn
             if !pending_inform.is_empty() {
-                let tx_path = gait_dir.join("sessions").join(&session_id).join("transcript.jsonl");
+                let tx_path = gait_dir.join("sessions").join(&session_id).join("log.jsonl");
                 let reply_items = prompt_inform(&pending_inform, &theme);
                 let _ = wire::append(&tx_path, events::inform_reply(&reply_items));
                 continue 'spawn;
@@ -349,7 +349,7 @@ pub async fn run_chat(
             let tx_path = gait_dir
                 .join("sessions")
                 .join(&session_id)
-                .join("transcript.jsonl");
+                .join("log.jsonl");
             let _ = transcript::write_permissions_reply(&tx_path, "user", reply_items);
 
             if any_approved {
@@ -376,7 +376,7 @@ fn seed_history_from_transcripts(
     let mut sessions: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
         .filter_map(|e| e.ok())
         .filter_map(|e| {
-            let tx = e.path().join("transcript.jsonl");
+            let tx = e.path().join("log.jsonl");
             let mtime = std::fs::metadata(&tx).ok()?.modified().ok()?;
             Some((mtime, tx))
         })
