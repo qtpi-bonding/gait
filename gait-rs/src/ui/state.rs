@@ -7,7 +7,7 @@ pub(crate) enum PendingItem {
     Block { content: String, block_num: usize },
     Spacing,
     ToolCall { display: String },
-    ToolResult { ok: bool, name: String, elapsed_ms: Option<u64>, output: String },
+    ToolResult { ok: bool, name: String, elapsed_ms: Option<u64>, output: String, had_spinner: bool },
     Error { message: String },
 }
 
@@ -169,8 +169,9 @@ impl ReplState {
                 let elapsed_ms = tr.duration.as_ref()
                     .map(|d| (d.seconds as u64) * 1000 + (d.nanos as u64) / 1_000_000);
                 let ok = tr.process.as_ref().map_or(true, |pr| pr.exit_code == 0);
+                let had_spinner = self.pending_tool.is_some();
                 let name = self.pending_tool.take().unwrap_or_else(|| "?".to_string());
-                self.pending.push(PendingItem::ToolResult { ok, name, elapsed_ms, output: tr.output.clone() });
+                self.pending.push(PendingItem::ToolResult { ok, name, elapsed_ms, output: tr.output.clone(), had_spinner });
                 ViewSignal::Continue
             }
             Some(pb::payload::Kind::Permissions(pm)) => {

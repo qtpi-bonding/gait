@@ -114,7 +114,8 @@ impl ReplRenderer {
                 PendingItem::ToolCall { display } => {
                     eprintln!("{}  \u{27f3} {}(\u{2026}){}", DIM_FG, display, RESET);
                 }
-                PendingItem::ToolResult { ok, name, elapsed_ms, output } => {
+                PendingItem::ToolResult { ok, name, elapsed_ms, output, had_spinner } => {
+                    if had_spinner { eprint!("\x1b[1A\x1b[2K"); }
                     self.paint_tool_result(ok, &name, elapsed_ms, &output);
                 }
                 PendingItem::Error { message } => {
