@@ -247,11 +247,19 @@ async fn cmd_run(argv: &[String]) {
         }
     };
 
-    // Expand $(cmd) and @path markers in the task string before the turn runs.
+    // Expand $(cmd)/$(N) shell, @path files, and >(N) quote-reply in the task
+    // string before the turn runs — same expander the REPL uses. Quote-reply
+    // pulls the prior turn's blocks from the session log (empty for a fresh one).
     let task = task.map(|t| {
         let hist = gait_dir.join("tmp").join(format!("shell-{}.jsonl", &session_id));
-        gait_ai::repl_input::expand_at_markers(&t, &hist, &codebase_path)
-            .unwrap_or_else(|e| { eprintln!("[!] @ expand error: {e}"); t })
+        let events = gait_ai::session::ingestor::Ingestor::from_session(&gait_dir, &session_id)
+            .events().unwrap_or_default();
+        let last_blocks = gait_ai::session::retrace::last_turn_blocks(&events);
+        gait_ai::repl_input::expand_input(&t, &gait_ai::repl_input::ExpandCtx {
+            codebase: &codebase_path,
+            history: &hist,
+            last_blocks: &last_blocks,
+        })
     });
 
     let session = gait_ai::session::Session::load(

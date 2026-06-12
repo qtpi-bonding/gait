@@ -12,7 +12,7 @@ use crate::session::transcript::{self, PermissionItem, PermissionsReplyItem, Cla
 use crate::proto::{events, wire};
 use crate::theme::{Theme, RESET, DIM_FG};
 use crate::ui::{Timer, Renderer, RenderAction, prompt_permission, prompt_clarify, prompt_inform};
-use crate::repl_input::{is_bang_command, bang_command_str, expand_quote_reply, run_and_capture_pty_raw, CaptureResult};
+use crate::repl_input::{is_bang_command, bang_command_str, expand_input, ExpandCtx, run_and_capture_pty_raw, CaptureResult};
 
 /// All user-visible hint strings for the REPL, centralised here for easy editing.
 mod hints {
@@ -155,7 +155,13 @@ pub async fn run_chat(
         };
 
         let _ = rl.add_history_entry(&line);
-        let line = expand_quote_reply(&line, &last_turn_blocks);
+        // Unified expansion: $(cmd)/$(N) shell, @path files, >(N) quote-reply —
+        // identical to the CLI path. No cascade (see expand_input).
+        let line = expand_input(&line, &ExpandCtx {
+            codebase: &codebase,
+            history: &shell_history_path,
+            last_blocks: &last_turn_blocks,
+        });
 
         let mut current_turn_blocks: Vec<String> = Vec::new();
 
