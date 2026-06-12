@@ -408,47 +408,47 @@ fn init_usage() -> ! {
     std::process::exit(0);
 }
 
+fn print_init_summary(gait_dir: &std::path::Path) {
+    let display = gait_dir.display();
+    eprintln!("[gait] initialized gait-dir at {display}");
+    eprintln!();
+    eprintln!("  {:<32} {:<46} {}", "file", "purpose", "git");
+    eprintln!("  {:<32} {:<46} {}", "gait.jsonc", "model + tool-permission config", "committed");
+    eprintln!("  {:<32} {:<46} {}", "agents/default/AGENT.md", "the agent's role and instructions", "committed");
+    eprintln!("  {:<32} {:<46} {}", "USER.md", "your personal instructions (not shared)", "ignored");
+    eprintln!("  {:<32} {:<46} {}", "skills/", "installed skills  (skills/<n>/SKILL.md)", "committed*");
+    eprintln!("  {:<32} {:<46} {}", "sessions/", "turn history", "ignored");
+    eprintln!();
+    eprintln!("  * empty dir; git-tracked when you add skills");
+    eprintln!();
+    eprintln!("  next: gait run --task \"...\"");
+}
+
 fn cmd_init(argv: &[String]) {
-    let repo_url = argv.first().filter(|a| !a.starts_with('-')).cloned();
-    let gait_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let args = parse_init_args(argv);
+    if args.help { init_usage(); }
+
+    let gait_dir = match args.path {
+        Some(p) => p,
+        None => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+    };
+
+    if let Err(e) = std::fs::create_dir_all(&gait_dir) {
+        eprintln!("[gait] cannot create directory {}: {}", gait_dir.display(), e);
+        std::process::exit(1);
+    }
 
     if let Err(e) = gait_ai::git::Repos::production().traces.init_workspace(&gait_dir) {
         eprintln!("[gait] git init failed: {}", e);
         std::process::exit(1);
     }
-    let _ = scaffold_gait_dir(&gait_dir);
 
-    let _ = std::fs::create_dir_all(gait_dir.join("sessions"));
-
-    // .gitignore
-    let gi_path = gait_dir.join(".gitignore");
-    let gi_entry = "sessions/\n.gait-ws.lock\n";
-    if !gi_path.exists() {
-        let _ = std::fs::write(&gi_path, gi_entry);
-    } else {
-        let existing = std::fs::read_to_string(&gi_path).unwrap_or_default();
-        if !existing.contains("sessions/") {
-            let _ = std::fs::write(&gi_path, format!("{}\n{}", existing, gi_entry));
-        }
+    if let Err(e) = scaffold_gait_dir(&gait_dir) {
+        eprintln!("[gait] scaffold failed: {}", e);
+        std::process::exit(1);
     }
 
-    // gait.jsonc
-    let config_path = gait_dir.join("gait.jsonc");
-    if !config_path.exists() {
-        let _ = std::fs::write(&config_path, "{\n  // gait configuration\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  // Allow list: tools that run without approval. Default empty = everything gated.\n  \"allow\": [],\n  // Tier 1 config-defined tools: shell commands the LLM can call by name\n  \"tools\": []\n}\n");
-    }
-
-    // agents/ — gait_dir-local agent definitions (not tracked in git).
-    // Each file: YAML frontmatter (model, allow, deny) + markdown body (additive system prompt).
-    // gait-harness.md (built-in harness description) is always prepended automatically.
-    let agents_dir = gait_dir.join("agents");
-    let _ = std::fs::create_dir_all(&agents_dir);
-    let default_agent = agents_dir.join("default.md");
-    if !default_agent.exists() {
-        let _ = std::fs::write(&default_agent, "# Default agent\n\nAdd project-specific instructions here. Appended to the built-in gait harness description.\n\nFrontmatter fields (optional):\n  model: anthropic/claude-sonnet-4-6\n  allow: [read, shell:git *]\n  deny: [shell:rm *]\n");
-    }
-
-    // Stage and initial commit
+    // Stage and initial commit via git2
     let repo = match git2::Repository::open(&gait_dir) {
         Ok(r) => r,
         Err(e) => { eprintln!("[gait] cannot open repo: {e}"); std::process::exit(1); }
@@ -458,7 +458,12 @@ fn cmd_init(argv: &[String]) {
         .unwrap();
     let mut index = repo.index().unwrap();
 
-    let to_stage = ["gait.jsonc", ".gitignore", "AGENTS.md"];
+    // Stage exactly what scaffold created (relative paths from gait_dir root)
+    let to_stage = [
+        "gait.jsonc",
+        ".gitignore",
+        "agents/default/AGENT.md",
+    ];
     for f in &to_stage {
         if gait_dir.join(f).exists() {
             let _ = index.add_path(std::path::Path::new(f));
@@ -473,22 +478,7 @@ fn cmd_init(argv: &[String]) {
     let parents: Vec<&git2::Commit> = parent_commits.iter().collect();
     repo.commit(Some("HEAD"), &sig, &sig, "gait: init gait_dir", &tree, &parents).unwrap();
 
-    if let Some(url) = repo_url {
-        // Add submodule via git CLI (git2 submodule API is complex)
-        let status = std::process::Command::new("git")
-            .args(["submodule", "add", &url, "codebase"])
-            .current_dir(&gait_dir)
-            .status();
-        match status {
-            Ok(s) if s.success() => {
-                eprintln!("[gait] gait_dir initialized with codebase submodule at {url}");
-            }
-            _ => eprintln!("[gait] warning: could not add submodule {url}"),
-        }
-    } else {
-        eprintln!("[gait] gait_dir initialized");
-        eprintln!("[gait] start an agent turn: gait run --task \"...\"");
-    }
+    print_init_summary(&gait_dir);
 }
 fn cmd_finish(argv: &[String]) {
     let mut session_id: Option<String> = None;
