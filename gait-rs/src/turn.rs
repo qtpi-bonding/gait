@@ -606,8 +606,16 @@ pub async fn run_turn(
     // the working state projection for the turn.
     {
         let events_for_guard = ingestor.events()?;
-        if retrace::active_agent_checkpoint(&events_for_guard) != Some(agent.clone()) {
-            emitter.emit(wire::body(payload::Kind::Agent(agent)))?;
+        let mut guard_muts = retrace::active_mutations(&events_for_guard);
+        retrace::apply_cascade(&mut guard_muts, &events_for_guard);
+        let guard_state = retrace::run_projection(
+            &retrace::ActiveAgent { seed: agent_seed.clone() },
+            &events_for_guard,
+            &guard_muts,
+        );
+        let rebaselined = retrace::rebaseline_agent(agent.clone(), &guard_state);
+        if retrace::active_agent_checkpoint(&events_for_guard) != Some(rebaselined.clone()) {
+            emitter.emit(wire::body(payload::Kind::Agent(rebaselined)))?;
         }
     }
 

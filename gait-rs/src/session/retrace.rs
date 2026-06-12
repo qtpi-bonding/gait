@@ -646,6 +646,20 @@ pub fn active_agent_checkpoint(events: &[Event]) -> Option<pb::Agent> {
     run_projection(&LwwAgent, events, &HashMap::new())
 }
 
+/// Overlay the dynamic capability state from `st` onto the static `live` Agent.
+/// Static fields (model, instructions, tools, permissions, through_seq) come from `live`;
+/// skills and mcp_servers are replaced with the fold-result sets from `st`, sorted for
+/// determinism (the drift guard uses equality, so ordering must be stable).
+pub fn rebaseline_agent(mut live: pb::Agent, st: &AgentState) -> pb::Agent {
+    let mut skills: Vec<String> = st.skills.iter().cloned().collect();
+    skills.sort();
+    let mut mcp_servers: Vec<String> = st.mcp.iter().cloned().collect();
+    mcp_servers.sort();
+    live.skills = skills;
+    live.mcp_servers = mcp_servers;
+    live
+}
+
 /// Folded agent-dimension state (config seed + Agent checkpoints + deltas).
 pub fn active_agent(events: &[Event], seed: AgentState) -> AgentState {
     run_projection(&ActiveAgent { seed }, events, &HashMap::new())
@@ -1374,4 +1388,36 @@ mod tests {
         assert_eq!(st.model, "m2", "ModelChange LWW");
     }
 
+    #[test]
+    fn rebaseline_agent_overlays_skills_and_mcp_from_state() {
+        use std::collections::HashSet;
+        let live = pb::Agent {
+            model: "m1".into(),
+            instructions: "sys".into(),
+            tools: vec!["read".into()],
+            mcp_servers: vec!["old-mcp".into()],
+            skills: vec!["old-skill".into()],
+            permissions: Some(pb::PermissionPolicy { allow: vec![], deny: vec![] }),
+            through_seq: 0,
+        };
+        let st = AgentState {
+            model: "m2".into(), // model from state is NOT used — static field from live
+            instructions: String::new(),
+            tools: HashSet::new(),
+            skills: ["new-skill".to_string()].into(),
+            mcp: ["new-mcp".to_string()].into(),
+            allow: HashSet::new(),
+            deny: HashSet::new(),
+        };
+        let got = rebaseline_agent(live.clone(), &st);
+        assert_eq!(got.model, "m1", "model is static — from live, not state");
+        assert_eq!(got.instructions, "sys", "instructions are static");
+        assert_eq!(got.tools, vec!["read".to_string()], "tools are static");
+        assert_eq!(got.skills, vec!["new-skill".to_string()], "skills overlaid from state");
+        assert_eq!(got.mcp_servers, vec!["new-mcp".to_string()], "mcp overlaid from state");
+        let perms = got.permissions.as_ref().expect("permissions preserved");
+        assert!(perms.allow.is_empty());
 }
+
+}
+
