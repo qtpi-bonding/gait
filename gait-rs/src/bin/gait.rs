@@ -92,7 +92,7 @@ fn try_docker_route(orig_args: &[String]) {
 
 fn usage() -> ! {
     eprintln!("usage: gait <command> [options]");
-    eprintln!("  run      [--session <id>] [--task <text>] [--gait-dir <path>] [--codebase <path>] [--auto] [--model <provider/model>] [--container]");
+    eprintln!("  run      [--session <id>] [--task <text>] [--gait-dir <path>] [--codebase <path>] [--auto] [--model <provider/model>] [--result-schema <file>] [--container]");
     eprintln!("  init     [<path>]");
     eprintln!("  finish   <session-id> [--gait-dir <path>]");
     eprintln!("  undo    <session-id> [--turn N | --list] [--code] [--transcript] [--gait-dir <path>]");
@@ -184,17 +184,19 @@ async fn cmd_run(argv: &[String]) {
     let mut auto = false;
     let mut model_override: Option<String> = None;
     let mut agent_name: Option<String> = None;
+    let mut result_schema_path: Option<String> = None;
 
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
-            "--session"   => { i += 1; session_id = argv.get(i).cloned(); }
-            "--task"      => { i += 1; task = argv.get(i).cloned(); }
-            "--gait-dir" => { i += 1; }
-            "--codebase"  => { i += 1; }
-            "--model"     => { i += 1; model_override = argv.get(i).cloned(); }
-            "--auto"      => { auto = true; }
-            "--agent"     => { i += 1; agent_name = argv.get(i).cloned(); }
+            "--session"       => { i += 1; session_id = argv.get(i).cloned(); }
+            "--task"          => { i += 1; task = argv.get(i).cloned(); }
+            "--gait-dir"      => { i += 1; }
+            "--codebase"      => { i += 1; }
+            "--model"         => { i += 1; model_override = argv.get(i).cloned(); }
+            "--auto"          => { auto = true; }
+            "--agent"         => { i += 1; agent_name = argv.get(i).cloned(); }
+            "--result-schema" => { i += 1; result_schema_path = argv.get(i).cloned(); }
             _ => {}
         }
         i += 1;
@@ -206,7 +208,24 @@ async fn cmd_run(argv: &[String]) {
         id
     });
 
-    let config = load_config(&gait_dir);
+    let mut config = load_config(&gait_dir);
+
+    // Apply --result-schema override: read file, validate JSON Schema, error early if invalid.
+    if let Some(ref path) = result_schema_path {
+        let raw = std::fs::read_to_string(path).unwrap_or_else(|e| {
+            eprintln!("[gait] --result-schema: cannot read '{}': {}", path, e);
+            std::process::exit(1);
+        });
+        let schema: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|e| {
+            eprintln!("[gait] --result-schema: '{}' is not valid JSON: {}", path, e);
+            std::process::exit(1);
+        });
+        jsonschema::JSONSchema::compile(&schema).unwrap_or_else(|e| {
+            eprintln!("[gait] --result-schema: '{}' is not a valid JSON Schema: {}", path, e);
+            std::process::exit(1);
+        });
+        config.result_schema = Some(schema);
+    }
 
     // Resolve agent file: explicit --agent name, or fallback to agents/default/AGENT.md
     let agent_path: Option<PathBuf> = if let Some(ref name) = agent_name {
