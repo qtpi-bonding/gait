@@ -329,20 +329,52 @@ async fn cmd_run(argv: &[String]) {
 }
 
 /// Create the empty, editable layer affordances in the gait-dir (idempotent,
-/// never clobbers) and ensure `USER.md` is gitignored.
+/// never clobbers) and ensure USER.md and sessions/ are gitignored.
 fn scaffold_gait_dir(gait_dir: &std::path::Path) -> std::io::Result<()> {
-    let agents = gait_dir.join("agents");
-    std::fs::create_dir_all(&agents)?;
-    for p in [agents.join("default.md"), gait_dir.join("USER.md")] {
-        if !p.exists() { std::fs::write(&p, "")?; }
+    // agents/default/ — Phase 4 directory form
+    let default_agent_dir = gait_dir.join("agents").join("default");
+    std::fs::create_dir_all(&default_agent_dir)?;
+    let default_agent = default_agent_dir.join("AGENT.md");
+    if !default_agent.exists() {
+        std::fs::write(&default_agent, "")?;
     }
+
+    // USER.md — personal instructions, gitignored
+    let user_md = gait_dir.join("USER.md");
+    if !user_md.exists() {
+        std::fs::write(&user_md, "")?;
+    }
+
+    // skills/ — installed skills (disk presence = available)
+    std::fs::create_dir_all(gait_dir.join("skills"))?;
+
+    // sessions/ — turn history
+    std::fs::create_dir_all(gait_dir.join("sessions"))?;
+
+    // gait.jsonc — default config (never clobber)
+    let config_path = gait_dir.join("gait.jsonc");
+    if !config_path.exists() {
+        std::fs::write(&config_path,
+            "{\n  // gait configuration\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  // Allow list: tools that run without approval. Default empty = everything gated.\n  \"allow\": [],\n  // Tier 1 config-defined tools: shell commands the LLM can call by name\n  \"tools\": []\n}\n")?;
+    }
+
+    // .gitignore — merge required entries, no duplicates
     let gi_path = gait_dir.join(".gitignore");
     let mut gi = std::fs::read_to_string(&gi_path).unwrap_or_default();
-    if !gi.lines().any(|l| l.trim() == "USER.md") {
-        if !gi.is_empty() && !gi.ends_with('\n') { gi.push('\n'); }
-        gi.push_str("USER.md\n");
-        std::fs::write(&gi_path, gi)?;
+    let required = ["sessions/", "USER.md", ".gait-ws.lock"];
+    let mut changed = false;
+    for entry in &required {
+        if !gi.lines().any(|l| l.trim() == *entry) {
+            if !gi.is_empty() && !gi.ends_with('\n') { gi.push('\n'); }
+            gi.push_str(entry);
+            gi.push('\n');
+            changed = true;
+        }
     }
+    if changed {
+        std::fs::write(&gi_path, &gi)?;
+    }
+
     Ok(())
 }
 struct InitArgs {
@@ -1405,7 +1437,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join(".gitignore"), "sessions/\n").unwrap();
         scaffold_gait_dir(dir.path()).unwrap();
-        assert!(dir.path().join("agents").join("default.md").exists());
+        assert!(dir.path().join("agents").join("default").join("AGENT.md").exists());
         assert!(dir.path().join("USER.md").exists());
         let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert!(gi.lines().any(|l| l.trim() == "USER.md"), "USER.md gitignored: {gi}");
