@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use crate::types::{Message, MessageContent, AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind};
-use crate::session::transcript::{read_events, last_compaction_index};
+use crate::session::transcript::read_events;
 use crate::proto::gait::log::v1::{self as pb, event, payload, ClarifyKind, Event};
 
 /// The substantive payload kind for an event, if it carries one.
@@ -48,12 +48,12 @@ pub enum MutationState {
 }
 
 pub fn messages(all_events: &[Event]) -> anyhow::Result<Vec<Message>> {
-    messages_applying(all_events, &HashMap::new())
+    Ok(run_projection(&ActiveMessages, all_events, &HashMap::new()).msgs)
 }
 
 pub fn messages_from_path(path: &Path) -> anyhow::Result<Vec<Message>> {
     let all_events = read_events(path)?;
-    messages_applying(&all_events, &HashMap::new())
+    Ok(run_projection(&ActiveMessages, &all_events, &HashMap::new()).msgs)
 }
 
 /// Get the effective payload kind, applying Redact/Replace mutations.
@@ -143,183 +143,213 @@ impl Projection for ActiveManifest {
     }
 }
 
-/// Build messages, applying the given mutations map.
-/// This is the internal implementation that both `messages` and `fold` use.
-fn messages_applying(
-    all_events: &[Event],
-    mutations: &HashMap<String, MutationState>,
-) -> anyhow::Result<Vec<Message>> {
-    if all_events.is_empty() { return Ok(vec![]); }
+/// Coalescing phase for the `ActiveMessages` fold: tracks whether the previous
+/// folded event was part of a consecutive tool-call run or tool-result run, so
+/// consecutive `ToolCall`s collapse into one assistant message and consecutive
+/// `ToolResult`s into one tool message (the shape providers expect). Any other
+/// event resets the phase to `Other` (it breaks a tool run).
+#[derive(Default, PartialEq, Clone, Copy)]
+enum MsgPhase {
+    #[default]
+    Other,
+    ToolCallRun,
+    ToolResultRun,
+}
 
-    let start = last_compaction_index(all_events).unwrap_or(0);
-    let events = &all_events[start..];
+/// Accumulator for the `ActiveMessages` projection.
+pub(crate) struct MessagesState {
+    msgs: Vec<Message>,
+    phase: MsgPhase,
+}
 
-    let mut messages: Vec<Message> = vec![];
-    let mut i = 0;
-
-    while i < events.len() {
-        // Skip Redacted events (check before calling effective_kind).
-        if matches!(mutations.get(&events[i].id), Some(MutationState::Redacted { .. })) {
-            i += 1;
-            continue;
-        }
-
-        match effective_kind(&events[i], mutations) {
-            Some(payload::Kind::Compaction(c)) => {
-                messages.push(Message::User {
+/// The Transcript: the `Vec<Message>` the model reads, folded from the Log.
+/// Resets on a `Compaction` event (restart the message context from the summary;
+/// state projections carry forward and ignore compaction). Consecutive tool
+/// calls/results coalesce into single assistant/tool messages. Honors mutations
+/// via the effective-event stream: redacted events never arrive here; replaced
+/// events arrive as their replacement kind.
+pub(crate) struct ActiveMessages;
+impl Projection for ActiveMessages {
+    type State = MessagesState;
+    fn seed(&self) -> Self::State {
+        MessagesState { msgs: vec![], phase: MsgPhase::Other }
+    }
+    fn apply(&self, st: &mut Self::State, _ev: &Event, kind: &payload::Kind) {
+        match kind {
+            payload::Kind::Compaction(c) => {
+                // Restart the message context from the summary (state projections
+                // carry forward; only this projection resets).
+                st.msgs.clear();
+                st.msgs.push(Message::User {
                     content: MessageContent::Text(
-                        format!("[Session history summary: {}]", c.summary)
-                    ),
+                        format!("[Session history summary: {}]", c.summary)),
                 });
-                i += 1;
+                st.phase = MsgPhase::Other;
             }
-            Some(payload::Kind::SessionStart(_)) => { i += 1; }
 
-            Some(payload::Kind::AgentUpdate(au)) => {
-                let status = crate::proto::gait::log::v1::AgentStatus::try_from(au.status)
+            payload::Kind::ToolCall(tc) => {
+                let part = AssistantPart::ToolCall(ToolCall {
+                    tool_call_id: tc.call_id.clone(),
+                    tool_name: tc.name.clone(),
+                    args: struct_to_value(&tc.input),
+                });
+                if st.phase == MsgPhase::ToolCallRun {
+                    if let Some(Message::Assistant { content: AssistantContent::Parts(parts) }) =
+                        st.msgs.last_mut()
+                    {
+                        parts.push(part);
+                    } else {
+                        st.msgs.push(Message::Assistant {
+                            content: AssistantContent::Parts(vec![part]),
+                        });
+                    }
+                } else {
+                    st.msgs.push(Message::Assistant {
+                        content: AssistantContent::Parts(vec![part]),
+                    });
+                }
+                st.phase = MsgPhase::ToolCallRun;
+            }
+
+            payload::Kind::ToolResult(tr) => {
+                // A tool_result renders only inside a tool run: right after a
+                // tool-call run, or appended to an ongoing result run. An orphan
+                // result (phase Other) is skipped, matching the original fold.
+                let res = ToolResult {
+                    kind: ToolResultKind::ToolResult,
+                    tool_call_id: tr.call_id.clone(),
+                    result: serde_json::Value::String(tr.output.clone()),
+                };
+                match st.phase {
+                    MsgPhase::ToolCallRun => {
+                        st.msgs.push(Message::Tool { content: vec![res] });
+                        st.phase = MsgPhase::ToolResultRun;
+                    }
+                    MsgPhase::ToolResultRun => {
+                        if let Some(Message::Tool { content }) = st.msgs.last_mut() {
+                            content.push(res);
+                        }
+                    }
+                    MsgPhase::Other => { /* orphan tool_result — skip */ }
+                }
+            }
+
+            payload::Kind::UserTurn(u) => {
+                st.msgs.push(Message::User {
+                    content: MessageContent::Text(u.content.clone()),
+                });
+                st.phase = MsgPhase::Other;
+            }
+
+            payload::Kind::AssistantText(a) => {
+                st.msgs.push(Message::Assistant {
+                    content: AssistantContent::Text(a.content.clone()),
+                });
+                st.phase = MsgPhase::Other;
+            }
+
+            payload::Kind::AgentUpdate(au) => {
+                let status = pb::AgentStatus::try_from(au.status)
                     .map(|s| match s {
-                        crate::proto::gait::log::v1::AgentStatus::Done => "done",
-                        crate::proto::gait::log::v1::AgentStatus::Clarify => "clarify",
-                        crate::proto::gait::log::v1::AgentStatus::Inform => "inform",
-                        crate::proto::gait::log::v1::AgentStatus::Unspecified => "unspecified",
+                        pb::AgentStatus::Done => "done",
+                        pb::AgentStatus::Clarify => "clarify",
+                        pb::AgentStatus::Inform => "inform",
+                        pb::AgentStatus::Unspecified => "unspecified",
                     })
                     .unwrap_or("unspecified");
-                let mut content = format!("[agent:{}] status: {}\nsummary: {}", au.session_id, status, au.summary);
+                let mut content =
+                    format!("[agent:{}] status: {}\nsummary: {}", au.session_id, status, au.summary);
                 if let Some(items) = &au.items {
                     let v = serde_json::to_value(items).unwrap_or(serde_json::Value::Null);
                     content.push_str(&format!("\nitems: {}", v));
                 }
-                messages.push(Message::User { content: MessageContent::Text(content) });
-                i += 1;
+                st.msgs.push(Message::User { content: MessageContent::Text(content) });
+                st.phase = MsgPhase::Other;
             }
 
-            Some(payload::Kind::UserTurn(u)) => {
-                messages.push(Message::User { content: MessageContent::Text(u.content.clone()) });
-                i += 1;
-            }
-
-            Some(payload::Kind::AssistantText(a)) => {
-                messages.push(Message::Assistant { content: AssistantContent::Text(a.content.clone()) });
-                i += 1;
-            }
-
-            Some(payload::Kind::ToolCall(_)) => {
-                // Gather all consecutive tool_call events
-                let mut calls: Vec<(String, String, serde_json::Value)> = vec![];
-                while i < events.len() {
-                    if matches!(mutations.get(&events[i].id), Some(MutationState::Redacted { .. })) {
-                        i += 1;
-                        continue;
-                    }
-                    if let Some(payload::Kind::ToolCall(tc)) = effective_kind(&events[i], mutations) {
-                        calls.push((tc.call_id.clone(), tc.name.clone(), struct_to_value(&tc.input)));
-                        i += 1;
-                    } else { break; }
-                }
-                // Gather consecutive tool_result events
-                let mut results: Vec<(String, String)> = vec![];
-                while i < events.len() {
-                    if matches!(mutations.get(&events[i].id), Some(MutationState::Redacted { .. })) {
-                        i += 1;
-                        continue;
-                    }
-                    if let Some(payload::Kind::ToolResult(tr)) = effective_kind(&events[i], mutations) {
-                        results.push((tr.call_id.clone(), tr.output.clone()));
-                        i += 1;
-                    } else { break; }
-                }
-
-                let parts: Vec<AssistantPart> = calls.iter().map(|(id, name, args)| {
-                    AssistantPart::ToolCall(ToolCall {
-                        tool_call_id: id.clone(),
-                        tool_name: name.clone(),
-                        args: args.clone(),
-                    })
-                }).collect();
-                messages.push(Message::Assistant { content: AssistantContent::Parts(parts) });
-
-                if !results.is_empty() {
-                    let tool_content: Vec<ToolResult> = results.iter().map(|(id, output)| {
-                        ToolResult {
-                            kind: ToolResultKind::ToolResult,
-                            tool_call_id: id.clone(),
-                            result: serde_json::Value::String(output.clone()),
-                        }
-                    }).collect();
-                    messages.push(Message::Tool { content: tool_content });
-                }
-            }
-
-            Some(payload::Kind::ToolResult(_)) => { i += 1; } // orphan — skip
-
-            Some(payload::Kind::Clarify(c)) => {
+            payload::Kind::Clarify(c) => {
                 let text = c.items.iter().map(|q| {
                     format!("clarify ({}): {}\nwhy: {}", clarify_kind_str(q.kind), q.content, q.why)
                 }).collect::<Vec<_>>().join("\n\n");
-                messages.push(Message::Assistant { content: AssistantContent::Text(text) });
-                i += 1;
+                st.msgs.push(Message::Assistant { content: AssistantContent::Text(text) });
+                st.phase = MsgPhase::Other;
             }
 
-            Some(payload::Kind::ClarifyReply(cr)) => {
+            payload::Kind::ClarifyReply(cr) => {
                 let text = cr.items.iter().map(|r| {
                     let base = format!("{}: {}", r.id, r.content);
                     if let Some(reason) = &r.reasoning { format!("{}\nreason: {}", base, reason) }
                     else { base }
                 }).collect::<Vec<_>>().join("\n");
-                messages.push(Message::User { content: MessageContent::Text(text) });
-                i += 1;
+                st.msgs.push(Message::User { content: MessageContent::Text(text) });
+                st.phase = MsgPhase::Other;
             }
 
-            Some(payload::Kind::ClarifyConvergence(cc)) => {
+            payload::Kind::ClarifyConvergence(cc) => {
                 for item in &cc.items {
-                    messages.push(Message::Assistant { content: AssistantContent::Text(format!("[proposal] {}", item.proposal)) });
+                    st.msgs.push(Message::Assistant {
+                        content: AssistantContent::Text(format!("[proposal] {}", item.proposal)),
+                    });
                     if let Some(resp) = &item.response {
-                        messages.push(Message::User { content: MessageContent::Text(format!("[response] {}", resp)) });
+                        st.msgs.push(Message::User {
+                            content: MessageContent::Text(format!("[response] {}", resp)),
+                        });
                     }
                 }
-                i += 1;
+                st.phase = MsgPhase::Other;
             }
 
-            Some(payload::Kind::Inform(inf)) => {
+            payload::Kind::Inform(inf) => {
                 let text = inf.items.iter().map(|it| {
                     let mut s = it.content.clone();
                     if let Some(ctx) = &it.context { s.push_str(&format!("\ncontext: {}", ctx)); }
                     s
                 }).collect::<Vec<_>>().join("\n\n");
-                messages.push(Message::Assistant { content: AssistantContent::Text(text) });
-                i += 1;
+                st.msgs.push(Message::Assistant { content: AssistantContent::Text(text) });
+                st.phase = MsgPhase::Other;
             }
 
-            Some(payload::Kind::InformReply(ir)) => {
-                let text = ir.items.iter().map(|r| format!("{}: {}", r.id, r.content)).collect::<Vec<_>>().join("\n");
-                messages.push(Message::User { content: MessageContent::Text(text) });
-                i += 1;
+            payload::Kind::InformReply(ir) => {
+                let text = ir.items.iter()
+                    .map(|r| format!("{}: {}", r.id, r.content))
+                    .collect::<Vec<_>>().join("\n");
+                st.msgs.push(Message::User { content: MessageContent::Text(text) });
+                st.phase = MsgPhase::Other;
             }
 
-            Some(payload::Kind::Permissions(_)) => { i += 1; }    // audit event — excluded from model context
-            Some(payload::Kind::PermissionsReply(_)) => { i += 1; } // audit event — excluded from model context
-
-            Some(payload::Kind::Error(e)) => {
-                let phase = crate::proto::gait::log::v1::ErrorPhase::try_from(e.phase)
+            payload::Kind::Error(e) => {
+                let phase = pb::ErrorPhase::try_from(e.phase)
                     .map(|p| match p {
-                        crate::proto::gait::log::v1::ErrorPhase::Llm => "llm",
-                        crate::proto::gait::log::v1::ErrorPhase::Tool => "tool",
-                        crate::proto::gait::log::v1::ErrorPhase::Git => "git",
-                        crate::proto::gait::log::v1::ErrorPhase::Init => "init",
-                        crate::proto::gait::log::v1::ErrorPhase::Unspecified => "unspecified",
+                        pb::ErrorPhase::Llm => "llm",
+                        pb::ErrorPhase::Tool => "tool",
+                        pb::ErrorPhase::Git => "git",
+                        pb::ErrorPhase::Init => "init",
+                        pb::ErrorPhase::Unspecified => "unspecified",
                     })
                     .unwrap_or("unspecified");
-                messages.push(Message::User { content: MessageContent::Text(format!("error during {}: {}", phase, e.message)) });
-                i += 1;
+                st.msgs.push(Message::User {
+                    content: MessageContent::Text(format!("error during {}: {}", phase, e.message)),
+                });
+                st.phase = MsgPhase::Other;
             }
 
-            // Skip: TurnComplete, Raw (workflow/etc.), InformConvergence, Manifest,
-            // mutations (Redact/Replace) — not needed for LLM context.
-            _ => { i += 1; }
+            // Not part of the model context: SessionStart, TurnComplete, Raw,
+            // InformConvergence, Manifest, Permissions/PermissionsReply (audit).
+            // Each still resets the coalescing phase (it breaks a tool run).
+            _ => { st.phase = MsgPhase::Other; }
         }
     }
+}
 
-    Ok(messages)
+/// Effective session allow-list projection. STUB for Task 4 — the real session/
+/// once lifetimes land in Task 6. For now it seeds from config and folds nothing.
+pub(crate) struct ActivePermissions {
+    pub seed: std::collections::HashSet<String>,
+}
+impl Projection for ActivePermissions {
+    type State = std::collections::HashSet<String>;
+    fn seed(&self) -> Self::State { self.seed.clone() }
+    fn apply(&self, _state: &mut Self::State, _ev: &Event, _kind: &payload::Kind) {}
 }
 
 /// Fold all Redact/Replace event bodies into a LWW map keyed by target id.
@@ -433,32 +463,38 @@ pub struct RetraceResult {
     pub enabled_loadables: std::collections::HashSet<String>,
     /// The most recent `Manifest` payload, if any (LWW-Register).
     pub active_manifest: Option<pb::Manifest>,
+    /// Effective session allow-list: config baseline + log-derived session/once
+    /// grants. STUB until Task 6 (currently just the config seed; empty in `fold`).
+    pub effective_allow: std::collections::HashSet<String>,
     /// LWW-converged mutations (Redact/Replace) keyed by target event id,
     /// with ToolCall↔ToolResult cascade applied.
     pub mutations: HashMap<String, MutationState>,
 }
 
-/// Fold the full event log into all three projections in a single pass.
+/// Fold the full event log into all projections in a single pass.
 ///
-/// `config_enabled` is the baseline set of loadable names from config (used by
-/// `enabled_loadables`). Pass `&HashSet::new()` if not relevant.
+/// Every projection (`ActiveMessages`, `ActiveLoadables`, `ActiveManifest`,
+/// `ActivePermissions`) folds the SAME input: the mutation-applied, full-session
+/// event stream. Compaction is handled only inside `ActiveMessages` (it resets
+/// the message context); the state projections fold the whole session and ignore
+/// it. `config_enabled` is the baseline loadable set from config.
 pub fn fold(
     all_events: &[Event],
     config_enabled: &std::collections::HashSet<String>,
 ) -> anyhow::Result<RetraceResult> {
-    // Compute mutations (LWW + cascade) before building messages.
+    // Phase 0 — substrate: converge the mutation set (LWW + cascade) once.
     let mut mutations = active_mutations(all_events);
     apply_cascade(&mut mutations, all_events);
 
-    let messages = messages_applying(all_events, &mutations)?;
+    // Phase 1 — drive every projection over the same effective stream.
+    let enabled_loadables =
+        run_projection(&ActiveLoadables { seed: config_enabled.clone() }, all_events, &mutations);
+    let active_manifest = run_projection(&ActiveManifest, all_events, &mutations);
+    let effective_allow =
+        run_projection(&ActivePermissions { seed: Default::default() }, all_events, &mutations);
+    let messages = run_projection(&ActiveMessages, all_events, &mutations).msgs;
 
-    let compaction_start = last_compaction_index(all_events).unwrap_or(0);
-    let post_compaction = &all_events[compaction_start..];
-    let enabled_loadables = enabled_loadables(post_compaction, config_enabled);
-
-    let active_manifest = active_manifest(all_events);
-
-    Ok(RetraceResult { messages, enabled_loadables, active_manifest, mutations })
+    Ok(RetraceResult { messages, enabled_loadables, active_manifest, effective_allow, mutations })
 }
 
 /// Most recent `Manifest` payload (LWW-Register). Shim over the `ActiveManifest`
@@ -684,6 +720,62 @@ mod tests {
     }
 
     #[test]
+    fn fold_runs_all_projections_single_pass() {
+        use std::collections::HashSet;
+        let evs = mint_events(vec![
+            events::tool_call("tc1".into(), "load".into(),
+                &serde_json::json!({"name":"slack","enabled":true})),
+        ]);
+        let res = fold(&evs, &HashSet::new()).unwrap();
+        assert!(res.enabled_loadables.contains("slack"));
+        assert!(res.effective_allow.is_empty(), "permission stub yields no grants yet");
+    }
+
+    #[test]
+    fn active_messages_coalesces_consecutive_tool_calls_and_results() {
+        use std::collections::HashMap;
+        // Two consecutive tool_calls then two consecutive tool_results must render
+        // as ONE assistant(Parts[2]) message followed by ONE tool message[2].
+        let evs = mint_events(vec![
+            events::tool_call("c1".into(), "shell".into(), &serde_json::json!({"cmd":"ls"})),
+            events::tool_call("c2".into(), "shell".into(), &serde_json::json!({"cmd":"pwd"})),
+            events::tool_result("c1".into(), "a".into(), None, None),
+            events::tool_result("c2".into(), "b".into(), None, None),
+        ]);
+        let msgs = run_projection(&ActiveMessages, &evs, &HashMap::new()).msgs;
+        assert_eq!(msgs.len(), 2, "one assistant parts msg + one tool msg");
+        match &msgs[0] {
+            Message::Assistant { content: AssistantContent::Parts(parts) } =>
+                assert_eq!(parts.len(), 2, "two tool calls coalesced into one assistant message"),
+            other => panic!("expected Assistant Parts, got {other:?}"),
+        }
+        match &msgs[1] {
+            Message::Tool { content } =>
+                assert_eq!(content.len(), 2, "two tool results coalesced into one tool message"),
+            other => panic!("expected Tool message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn active_messages_resets_on_compaction() {
+        use std::collections::HashMap;
+        // A user turn before a compaction must be cleared; only the summary +
+        // anything after survive.
+        let cu = CompactionUsage { input: 1, output: 1 };
+        let evs = mint_events(vec![
+            events::user_turn("before".into(), None, None),
+            events::compaction("the summary".into(), 1, &cu),
+            events::user_turn("after".into(), None, None),
+        ]);
+        let msgs = run_projection(&ActiveMessages, &evs, &HashMap::new()).msgs;
+        assert_eq!(msgs.len(), 2, "summary + post-compaction turn (pre-compaction cleared)");
+        assert!(matches!(&msgs[0],
+            Message::User { content: MessageContent::Text(t) } if t.contains("the summary")));
+        assert!(matches!(&msgs[1],
+            Message::User { content: MessageContent::Text(t) } if t == "after"));
+    }
+
+    #[test]
     fn effective_kinds_skips_redacted_and_keeps_others() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("tx.jsonl");
@@ -737,7 +829,7 @@ mod tests {
         let all = read_events(&path).unwrap();
         let mut muts = active_mutations(&all);
         apply_cascade(&mut muts, &all);
-        let msgs = messages_applying(&all, &muts).unwrap();
+        let msgs = run_projection(&ActiveMessages, &all, &muts).msgs;
 
         assert!(msgs.is_empty(), "redacted UserTurn should not appear in messages");
     }
@@ -759,7 +851,7 @@ mod tests {
         let all = read_events(&path).unwrap();
         let mut muts = active_mutations(&all);
         apply_cascade(&mut muts, &all);
-        let msgs = messages_applying(&all, &muts).unwrap();
+        let msgs = run_projection(&ActiveMessages, &all, &muts).msgs;
 
         assert_eq!(msgs.len(), 1);
         assert!(matches!(&msgs[0], Message::User { content: MessageContent::Text(t) } if t == "new text"),
@@ -806,7 +898,7 @@ mod tests {
         assert_eq!(muts.len(), 2, "cascade should produce 2 Redacts");
         assert!(muts.values().all(|m| matches!(m, MutationState::Redacted { .. })));
 
-        let msgs = messages_applying(&all, &muts).unwrap();
+        let msgs = run_projection(&ActiveMessages, &all, &muts).msgs;
         assert!(msgs.is_empty(), "both paired events redacted → no messages");
     }
 
