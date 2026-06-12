@@ -17,7 +17,7 @@ use crate::repl_input::{is_bang_command, bang_command_str, expand_input, ExpandC
 /// All user-visible hint strings for the REPL, centralised here for easy editing.
 mod hints {
     pub const STARTUP: &str =
-        "ctrl+d or /q to exit  \u{2022}  /n new session  \u{2022}  /u [N] undo  \u{2022}  !cmd shell";
+        "ctrl+d or /q to exit  \u{2022}  /n new session  \u{2022}  /u [N] undo  \u{2022}  /skill enable  \u{2022}  !cmd shell";
     pub const UNDO_USAGE: &str =
         "/u [N]   undo code+transcript  (list turns if no N)\n\
          /uc [N]  undo code only\n\
