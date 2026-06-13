@@ -30,6 +30,7 @@ pub mod prompt;
 pub mod profile;
 pub mod skills;
 pub mod mcp_scanner;
+pub mod wasm_plugins;
 pub mod proto;
 pub mod sandbox;
 pub mod config_hook;
