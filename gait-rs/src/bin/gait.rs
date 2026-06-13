@@ -104,6 +104,7 @@ fn usage() -> ! {
     eprintln!("  allow    <session-id> [--pattern <pat>] [--scope <global|agent|once>] [--gait-dir <path>] [--agent <name>]  (was: approve)");
     eprintln!("  deny     <session-id> [--gait-dir <path>]                                                              (was: reject)");
     eprintln!("  status   <session-id> [--gait-dir <path>] [--json]");
+    eprintln!("  cost     <session-id> [--gait-dir <path>] [--json]");
     eprintln!("  register   <mcp|skill> <name> [flags] [--yes]            (was: load)");
     eprintln!("  unregister <mcp|skill> <name>                              (was: unload)");
     eprintln!("  enable     <mcp|skill> <name>");
@@ -140,6 +141,7 @@ async fn main() {
         "allow" | "approve"  => cmd_allow(&args[2..]),
         "deny"  | "reject"   => cmd_deny(&args[2..]),
         "status"   => cmd_status(&args[2..]),
+        "cost"     => cmd_cost(&args[2..]),
         "register" | "load" => {
             let rest: Vec<String> = args[2..].to_vec();
             if let Err(e) = cmd_register(&gait_dir, &rest) {
@@ -1202,6 +1204,58 @@ fn cmd_status(argv: &[String]) {
                 }
             }
         }
+    }
+}
+
+fn cmd_cost(argv: &[String]) {
+    use gait_ai::proto::wire::read_events;
+    use gait_ai::session::retrace::total_usage;
+
+    let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
+        eprintln!("[gait] {e}");
+        std::process::exit(1);
+    });
+
+    let mut session_id: Option<String> = None;
+    let mut json = false;
+    let mut i = 0;
+    while i < argv.len() {
+        match argv[i].as_str() {
+            "--gait-dir" => { i += 1; }
+            "--json"     => { json = true; }
+            other if !other.starts_with('-') => { session_id = Some(other.to_string()); }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let session_id = match session_id {
+        Some(id) => id,
+        None => {
+            eprintln!("usage: gait cost <session-id> [--gait-dir <path>] [--json]");
+            std::process::exit(1);
+        }
+    };
+
+    let tx_path = gait_dir.join("sessions").join(&session_id).join("log.jsonl");
+    let events = read_events(&tx_path).unwrap_or_else(|e| {
+        eprintln!("[gait] cannot read session {session_id}: {e}");
+        std::process::exit(1);
+    });
+    let u = total_usage(&events);
+
+    if json {
+        println!(
+            "{{\"input\":{},\"output\":{},\"cache_read\":{},\"cache_write\":{}}}",
+            u.input, u.output, u.cache_read, u.cache_write
+        );
+    } else {
+        println!("session {session_id}");
+        println!("  input        {}", u.input);
+        println!("  output       {}", u.output);
+        println!("  cache read   {}", u.cache_read);
+        println!("  cache write  {}", u.cache_write);
+        println!("  total tokens {}", u.input + u.output + u.cache_read + u.cache_write);
     }
 }
 
