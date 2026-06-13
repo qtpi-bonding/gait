@@ -92,7 +92,7 @@ fn try_docker_route(orig_args: &[String]) {
 
 fn usage() -> ! {
     eprintln!("usage: gait <command> [options]");
-    eprintln!("  run      [--session <id>] [--task <text>] [--gait-dir <path>] [--codebase <path>] [--auto] [--model <provider/model>] [--result-schema <file>] [--container]");
+    eprintln!("  run      [--session <id>] [--task <text>] [--gait-dir <path>] [--codebase <path>] [--auto] [--model <provider/model>] [--result-schema <file>] [--allow <pat>]... [--deny <pat>]... [--max-iter <n>] [--container]");
     eprintln!("  init     [<path>]");
     eprintln!("  finish   <session-id> [--gait-dir <path>]");
     eprintln!("  undo    <session-id> [--turn N | --list] [--code] [--transcript] [--gait-dir <path>]");
@@ -185,6 +185,9 @@ async fn cmd_run(argv: &[String]) {
     let mut model_override: Option<String> = None;
     let mut agent_name: Option<String> = None;
     let mut result_schema_path: Option<String> = None;
+    let mut cli_allow: Vec<String> = vec![];
+    let mut cli_deny: Vec<String> = vec![];
+    let mut cli_max_iter: Option<usize> = None;
 
     let mut i = 0;
     while i < argv.len() {
@@ -197,6 +200,9 @@ async fn cmd_run(argv: &[String]) {
             "--auto"          => { auto = true; }
             "--agent"         => { i += 1; agent_name = argv.get(i).cloned(); }
             "--result-schema" => { i += 1; result_schema_path = argv.get(i).cloned(); }
+            "--allow"         => { i += 1; if let Some(p) = argv.get(i) { cli_allow.push(p.clone()); } }
+            "--deny"          => { i += 1; if let Some(p) = argv.get(i) { cli_deny.push(p.clone()); } }
+            "--max-iter"      => { i += 1; cli_max_iter = argv.get(i).and_then(|s| s.parse().ok()); }
             _ => {}
         }
         i += 1;
@@ -209,6 +215,11 @@ async fn cmd_run(argv: &[String]) {
     });
 
     let mut config = load_config(&gait_dir);
+
+    // Merge CLI --allow / --deny (additive: CLI entries extend, never replace, gait.jsonc lists).
+    for p in cli_allow { if !config.allow.contains(&p) { config.allow.push(p); } }
+    for p in cli_deny  { if !config.deny.contains(&p)  { config.deny.push(p);  } }
+    if let Some(n) = cli_max_iter { config.max_iter = Some(n); }
 
     // Apply --result-schema override: read file, validate JSON Schema, error early if invalid.
     if let Some(ref path) = result_schema_path {
