@@ -93,6 +93,8 @@ pub struct PermissionItem {
     pub tool_name: String,
     #[serde(default)]
     pub tool_args: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -414,6 +416,7 @@ mod tests {
             patterns: vec!["cargo *".into(), "cargo test".into()],
             tool_name: String::new(),
             tool_args: serde_json::Value::Null,
+            preview: None,
         };
         let json = serde_json::to_string(&item).unwrap();
         let back: PermissionItem = serde_json::from_str(&json).unwrap();
@@ -429,6 +432,7 @@ mod tests {
             patterns: vec!["cargo *".into(), "cargo test".into()],
             tool_name: "shell".into(),
             tool_args: serde_json::json!({"cmd": "cargo test --verbose", "reason": "run tests"}),
+            preview: None,
         };
         let json = serde_json::to_string(&item).unwrap();
         let back: PermissionItem = serde_json::from_str(&json).unwrap();
@@ -443,5 +447,33 @@ mod tests {
             log_path(dir.path(), "s1"),
             dir.path().join("sessions").join("s1").join("log.jsonl"),
         );
+    }
+
+    #[test]
+    fn permission_preview_survives_proto_round_trip() {
+        use crate::proto::gait::log::v1::payload;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("log.jsonl");
+
+        let item = PermissionItem {
+            id: "tc-rt".into(),
+            cmd: "edit src/lib.rs".into(),
+            reason: "edit requires permission".into(),
+            patterns: vec![],
+            tool_name: "edit".into(),
+            tool_args: serde_json::Value::Null,
+            preview: Some("-old\n+new".into()),
+        };
+
+        wire::append(&path, events::permissions(&[item])).unwrap();
+
+        let events = read_events(&path).unwrap();
+        assert_eq!(events.len(), 1);
+        match k(&events[0]) {
+            payload::Kind::Permissions(p) => {
+                assert_eq!(p.items[0].preview.as_deref(), Some("-old\n+new"));
+            }
+            other => panic!("expected Permissions kind, got {other:?}"),
+        }
     }
 }

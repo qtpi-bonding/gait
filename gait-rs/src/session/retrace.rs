@@ -802,9 +802,13 @@ mod tests {
         let bodies = vec![
             events::user_turn("do x".into(), None, None),
             events::permissions(&[PermissionItem {
-                id: "tc1".into(), cmd: "shell".into(), reason: "test".into(),
-                patterns: vec![], tool_name: "shell".into(),
+                id: "tc1".into(),
+                cmd: "shell".into(),
+                reason: "test".into(),
+                patterns: vec![],
+                tool_name: "shell".into(),
                 tool_args: serde_json::Value::Null,
+                preview: None,
             }]),
             events::permissions_reply("user".into(), &[PermissionsReplyItem {
                 id: "tc1".into(), decision: "allow".into(), text: None, scope: None,
