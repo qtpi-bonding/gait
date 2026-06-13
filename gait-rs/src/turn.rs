@@ -452,6 +452,7 @@ pub async fn run_turn(
     let mcp_registry = caps.mcp_registry;
     let mcp_clients = caps.mcp_clients;
     let skill_registry = caps.skill_registry;
+    let plugin_registry = caps.plugin_registry;
     let config_enabled = caps.config_enabled;
     let hooks = caps.hooks;
     let result_schema = caps.result_schema;
@@ -748,6 +749,19 @@ pub async fn run_turn(
             kind: LoadableKind::Skill,
             description: skill.description.clone(),
             enabled: enabled_names.contains(&skill.name),
+        });
+    }
+    // Plugin entries — one per wasm plugin.
+    for plugin in &plugin_registry {
+        let basename = {
+            let p = plugin.path.as_str();
+            p.rsplit('/').next().unwrap_or(p)
+        };
+        entries.push(LoadableEntry {
+            name: plugin.name.clone(),
+            kind: LoadableKind::WasmPlugin,
+            description: format!("wasm plugin ({})", basename),
+            enabled: enabled_names.contains(&plugin.name),
         });
     }
     let loadable_idx = build_loadable_index(&entries);
@@ -1085,6 +1099,8 @@ pub async fn run_turn(
                             }
                             let toggle_kind = if mcp_registry.iter().any(|d| d.server_name == item_name) {
                                 "mcp"
+                            } else if plugin_registry.iter().any(|d| d.name == item_name) {
+                                "plugin"
                             } else {
                                 "skill"
                             };
@@ -1563,6 +1579,22 @@ mod tests {
         let result = build_loadable_index(&[]);
         assert!(result.contains("<loadable-index>"), "got: {result}");
         assert!(result.contains("(none enabled)"), "got: {result}");
+    }
+
+    #[test]
+    fn build_loadable_index_includes_plugin_entries() {
+        use crate::types::{LoadableEntry, LoadableKind};
+        let entries = vec![
+            LoadableEntry {
+                name: "myfmt".into(),
+                kind: LoadableKind::WasmPlugin,
+                description: "wasm plugin (myfmt.wasm)".into(),
+                enabled: false,
+            },
+        ];
+        let idx = build_loadable_index(&entries);
+        assert!(idx.contains("myfmt"), "plugin name in index: {idx}");
+        assert!(idx.contains("plugin"), "plugin kind in index: {idx}");
     }
 
 
