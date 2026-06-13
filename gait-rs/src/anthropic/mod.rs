@@ -43,7 +43,7 @@ impl Provider for AnthropicProvider {
 
         let mut oai_tools: Vec<AnthropicTool> = tools.iter().map(|t| AnthropicTool {
             name: t.name().to_string(),
-            description: t.description().to_string(),
+            description: crate::types::render_description(t.as_ref()),
             input_schema: t.parameters().clone(),
             cache_control: None,
         }).collect();

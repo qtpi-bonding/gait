@@ -216,7 +216,7 @@ impl Provider for OpenAIProvider {
             r#type: "function".into(),
             function: ChatToolDef {
                 name: t.name().to_string(),
-                description: t.description().to_string(),
+                description: crate::types::render_description(t.as_ref()),
                 parameters: t.parameters().clone(),
             },
         }).collect();
