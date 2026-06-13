@@ -1,13 +1,12 @@
-/// Lines to render for a permission preview, framed by a leading and trailing
-/// blank entry for spacing. `None` or an empty preview → empty vec (nothing rendered).
-/// The caller applies its own per-line ANSI styling; the blank sentinel entries
-/// render as blank separator lines.
+/// Lines to render for a permission preview: a leading blank entry (to separate
+/// the diff from the subject line) followed by one entry per preview line.
+/// `None` or an empty preview → empty vec (nothing rendered). The caller applies
+/// its own per-line ANSI styling and supplies the trailing spacing before the patterns.
 pub fn preview_block(preview: Option<&str>) -> Vec<String> {
     match preview {
         Some(p) if !p.is_empty() => {
             let mut out = vec![String::new()];
             out.extend(p.lines().map(|l| l.to_string()));
-            out.push(String::new());
             out
         }
         _ => Vec::new(),
@@ -118,7 +117,7 @@ mod tests {
     fn preview_block_frames_lines_with_blanks() {
         assert_eq!(
             preview_block(Some("-a\n+b")),
-            vec!["".to_string(), "-a".to_string(), "+b".to_string(), "".to_string()]
+            vec!["".to_string(), "-a".to_string(), "+b".to_string()]
         );
     }
 
