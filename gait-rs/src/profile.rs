@@ -95,7 +95,18 @@ impl Profile {
         }
         let merged_skills = disk_skills;
 
-        let config_enabled: HashSet<String> = config.mcp_servers.iter()
+        // MCP: disk files first; gait.jsonc entries kept if not already on disk (by name).
+        let mut disk_mcp = crate::mcp_scanner::scan_mcp_servers(gait_dir);
+        let disk_mcp_names: std::collections::HashSet<String> =
+            disk_mcp.iter().map(|s| s.name.clone()).collect();
+        for s in &config.mcp_servers {
+            if !disk_mcp_names.contains(&s.name) {
+                disk_mcp.push(s.clone());
+            }
+        }
+        let merged_mcp = disk_mcp;
+
+        let config_enabled: HashSet<String> = merged_mcp.iter()
             .filter(|s| s.enabled).map(|s| s.name.clone())
             .chain(merged_skills.iter().filter(|s| s.enabled).map(|s| s.name.clone()))
             .collect();
@@ -105,7 +116,7 @@ impl Profile {
             instructions,
             allow,
             deny,
-            mcp_servers: config.mcp_servers.clone(),
+            mcp_servers: merged_mcp,
             skills: merged_skills,
             config_tools: config.tools.clone(),
             config_enabled,
@@ -386,6 +397,65 @@ mod tests {
         let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
         assert_eq!(profile.skills.len(), 1, "should deduplicate same-named skill");
         assert_eq!(profile.skills[0].description, "Disk version", "disk wins");
+    }
+
+    #[test]
+    fn disk_mcp_populates_profile_mcp_servers() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let mcp_dir = dir.path().join("mcp");
+        std::fs::create_dir_all(&mcp_dir).unwrap();
+        std::fs::write(
+            mcp_dir.join("slack.json"),
+            r#"{"command":"npx","args":["-y","@pkg/slack"],"enabled":true}"#,
+        ).unwrap();
+        let config = GaitConfig::default();
+        let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
+        assert_eq!(profile.mcp_servers.len(), 1);
+        assert_eq!(profile.mcp_servers[0].name, "slack");
+        assert_eq!(profile.mcp_servers[0].command.as_deref(), Some("npx"));
+    }
+
+    #[test]
+    fn disk_mcp_wins_over_config_mcp_same_name() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let mcp_dir = dir.path().join("mcp");
+        std::fs::create_dir_all(&mcp_dir).unwrap();
+        std::fs::write(
+            mcp_dir.join("slack.json"),
+            r#"{"command":"npx","args":["disk-version"],"enabled":true}"#,
+        ).unwrap();
+        let config = GaitConfig {
+            mcp_servers: vec![crate::config::McpServerDef {
+                name: "slack".into(),
+                command: None, args: None, env: None, url: None,
+                spawn: Some("node config-version.js".into()),
+                connect: None, enabled: true, description: None,
+            }],
+            ..GaitConfig::default()
+        };
+        let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
+        assert_eq!(profile.mcp_servers.len(), 1, "should deduplicate");
+        assert_eq!(profile.mcp_servers[0].command.as_deref(), Some("npx"), "disk wins");
+    }
+
+    #[test]
+    fn config_mcp_kept_when_no_disk_mcp() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let config = GaitConfig {
+            mcp_servers: vec![crate::config::McpServerDef {
+                name: "remote".into(),
+                command: None, args: None, env: None,
+                url: Some("http://localhost/mcp".into()),
+                spawn: None, connect: None, enabled: true, description: None,
+            }],
+            ..GaitConfig::default()
+        };
+        let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
+        assert_eq!(profile.mcp_servers.len(), 1);
+        assert_eq!(profile.mcp_servers[0].name, "remote");
     }
 
 }
