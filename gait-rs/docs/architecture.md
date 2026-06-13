@@ -1,5 +1,12 @@
 # gait-rs Architecture
 
+gait is an event-sourced, turn-based agent. Every turn appends immutable events to a
+per-session log; all mutable state (conversation, agent config, permissions) is a
+**projection** folded from that log. Nothing is stored twice — the log is the single
+source of truth.
+
+---
+
 ## Layers
 
 ```
@@ -12,128 +19,189 @@
 │  Tier 3 · Turn          turn.rs  (production loop)   │
 │           Generate      stream.rs (stateless loop)   │
 ├──────────────────────────────────────────────────────┤
-│  Tier 4 · Provider      provider.rs, stream.rs,      │
-│                         anthropic/, openai/,          │
-│                         factory.rs                   │
+│  Tier 4 · Provider      provider.rs, anthropic/,     │
+│                         openai/, factory.rs          │
 ├──────────────────────────────────────────────────────┤
-│  Tier 5 · Session       session/retrace.rs,          │
-│                         session/transcript.rs,        │
-│                         proto/                        │
+│  Tier 5 · Session       session/{retrace,transcript, │
+│           (event log)   ingestor,session_json}.rs    │
+│                         proto/, git/                  │
 └──────────────────────────────────────────────────────┘
 
 Cross-cutting:
   tools/        Tool trait + built-in implementations
-  permission.rs Pattern matching (not gating — gating lives in turn.rs)
+  permission.rs Pure pattern matching (gating lives in turn.rs)
   ui/           REPL rendering + permission prompts (stderr only)
-  git/          Checkpoint, trace, codebase repos
+  git/          The three repos: codebase, trace, checkpoint
   auth.rs       API key resolution
 ```
 
----
-
-## What Each Layer Owns
-
 ### Tier 1 · Entry (`bin/gait.rs`, `chat.rs`)
-- CLI argument parsing and command dispatch
-- Session ID generation
-- REPL event loop (rustyline)
-- Docker sandboxing decision
-
-**Does NOT own:** Business logic. Commands should delegate immediately to lower layers.
+CLI parsing, command dispatch, session-ID generation, REPL loop, Docker sandbox decision.
+Should delegate to lower layers immediately — **not** own business logic.
 
 ### Tier 2 · Profile (`profile.rs`, `config.rs`, `agent_frontmatter.rs`)
-- Parse and merge config hierarchies: `gait.jsonc` → agent frontmatter → CLI flags
-- Resolve model string → provider instance
-- Connect MCP clients
-- Instantiate built-in + MCP + config tools
-- Build `PermissionedTools` (tools filtered through allow/deny lists)
-- Output: `ResolvedProfile` — the live, wired-up agent spec
+Merges config hierarchy (`gait.jsonc` → agent frontmatter → CLI flags), resolves model →
+provider, connects MCP clients, builds tools, produces `ResolvedProfile` — the live agent spec.
 
 ### Tier 3 · Turn (`turn.rs`)
-The production agentic loop. Single entry point: `run_turn(session, emitter, caps, input)`.
-
-Responsibilities:
-- Fold session log → `Vec<Message>` (transcript) via `retrace`
-- Build the unified system prompt (harness + agent body + loadable-index + permission status)
-- Drive the LLM via `provider.stream()` directly (NOT via `stream.rs`)
-- Check permissions before each tool call (allow/deny patterns)
-- Execute tools, emit events, handle signals (Continue, TurnComplete, Clarify, Inform, LoadContext)
-- Checkpoint the codebase (git shadow DB)
-- Return `TurnResult { Done | Permissions | Clarify | Inform }`
-
-**Does NOT own:** Rendering. It emits proto events to `log.jsonl`; rendering is chat.rs/ui's job.
+The production agentic loop. Entry: `run_turn(session, emitter, caps, input)`. Folds the log
+into a transcript, builds the system prompt, drives the LLM via `provider.stream()` **directly**,
+gates each tool call against allow/deny patterns, executes tools, emits events, returns
+`TurnResult { Done | Permissions | Clarify | Inform }`. Emits proto events — does **not** render.
 
 ### Tier 3 · Generate (`stream.rs`)
-A **separate, simpler** stateless loop. No sessions, no permissions, no transcripts. Used by:
-- `generate.rs` — basic text generation without tools
-- Integration tests
-
-**Not the production path.** Features added to `turn.rs` do NOT appear here automatically.
+A **separate, simpler** stateless loop — no sessions, permissions, or transcripts. Used only by
+`generate.rs` (tool-less text generation) and integration tests. **Not the production path.**
 
 ### Tier 4 · Provider (`provider.rs`, `anthropic/`, `openai/`, `factory.rs`)
-- `Provider` trait: `stream(system, messages, tools) → ChunkStream`
-- `StreamChunk` enum: Text, ToolCallComplete, StepUsage, Done
-- Provider implementations: AnthropicProvider, OpenAIProvider (covers OpenAI-compat APIs)
-- `factory.rs`: parse `provider/model-id` → resolve API key → return `Arc<dyn Provider>`
+`Provider` trait: `stream(system, messages, tools) → ChunkStream`. `StreamChunk` enum (Text,
+ToolCallComplete, StepUsage, Done). `factory.rs`: `provider/model-id` → API key → `Arc<dyn Provider>`.
+Streams chunks; turn.rs decides what to do with them.
 
-**Does NOT own:** Tool execution logic. Provider streams chunks; turn.rs decides what to do with them.
-
-### Tier 5 · Session (`session/`, `proto/`)
-- Append-only event log: `sessions/<id>/log.jsonl` (proto3 JSON via pbjson)
-- Projections folded via `run_projection()`:
-  - `ActiveMessages` → `Vec<Message>` (transcript sent to LLM)
-  - `ActiveAgent` → enabled MCP/skills/plugins, current model, allow/deny
-  - `ActivePermissions` → session + once-scoped approvals
-  - `ActiveMutations` → LWW Redact/Replace register
-- `session.json` → metadata (id, model, token_totals, codebase_path)
-
-**Does NOT own:** Business logic. Projections are pure folds over events.
+### Tier 5 · Session — see deep dive below.
 
 ---
 
-## Cross-Cutting Modules
+## The Event Log (Tier 5 core)
 
-### Tools (`tools/`)
-Each tool implements the `Tool` trait:
-```rust
-fn name() -> &str
-fn description() -> &str
-fn parameters() -> &Value
-fn permission(args) -> ToolPermission   // what permission does this call need?
-async fn execute(args) -> Result<Value> // do the work
+### One log per session
+`<gait_dir>/sessions/<id>/log.jsonl` — append-only NDJSON, one `Event` per line. Mutations
+(Redact/Replace) are appended as **new** events; existing lines are never modified.
+
+### The Event envelope
+Proto `gait.log.v1.Event` (`proto/log.proto:28`):
+
+```protobuf
+message Event {
+  uint32 version          = 1;  // format generation (part of content_hash)
+  string id               = 2;  // UUIDv4
+  uint64 seq              = 3;  // Lamport clock — the ordering key
+  uint64 ts               = 4;  // wall-clock ms (metadata only, never used for ordering)
+  string content_hash     = 5;  // SHA-256(JCS(body)) integrity stamp
+  repeated string parents = 6;  // causal DAG parents
+  oneof body {
+    Payload payload = 16;       // a substantive event
+    Redact  redact  = 17;       // mutation: remove a prior event
+    Replace replace = 18;       // mutation: rewrite a prior event's body
+  }
+}
 ```
 
-`ToolPermission` is either `Free` (no prompt) or `RequiresApproval(Vec<PermissionRequest>)`.
+### Append path (`proto/wire.rs`, `proto/envelope.rs`)
+`write_to_transcript(path, body)`: read last event → `mint()` (assign `seq = prev.seq + 1`,
+fresh UUID, parents) → `stamp_hash()` → serialize (pbjson canonical JSON) → append line.
 
-`PermissionRequest` carries:
-- `display` — the human-readable subject (file path, shell command, …)
-- `patterns` — allow-list patterns from broadest to most specific
-- `preview` — optional text the tool wants shown before the user decides (diff, content, etc.)
+### content_hash (`proto/hash.rs`)
+`SHA-256( "v" || version || "." || JCS(body_json) )`, lowercase hex. Covers the **body only**
+(the `payload`/`redact`/`replace` arm), not the envelope. Proves the body hasn't been tampered
+with for a given `version`. **Not** a Merkle chain — there is no prev-hash linkage yet.
 
-**The tool layer owns the preview content.** The tool knows what it's about to do and can populate `preview` in `permission()`. The UI renders whatever string is there without caring about format.
+### Event kinds (`Payload.kind` oneof — complete list)
+`SessionStart, Agent, UserTurn, AssistantText, ToolCall, ToolResult, Clarify, ClarifyReply,
+ClarifyConvergence, Inform, InformReply, InformConvergence, Permissions, PermissionsReply,
+AgentUpdate, TurnComplete, Summary, Error, RawEvent, SandboxApplied, HookRun, Cwd, Toggle,
+ModelChange`. Constructors live in `proto/events.rs` (e.g. `toggle()`, `tool_call()`, `summary()`).
 
-### Permission (`permission.rs`)
-Pure pattern-matching functions. No I/O, no state.
-- `is_request_approved(tool_name, req, allow_list)` → bool
-- `is_request_denied(tool_name, req, deny_list)` → bool
-- `path_patterns(tool, path)` → Vec<String>  (file tool pattern generator)
-- `command_patterns(cmd)` → Vec<String>  (shell tool pattern generator)
-- `save_choice(choice, gait_dir, ...)` → writes to gait.jsonc or frontmatter
+### The Emitter (`proto/emitter.rs`)
+Owns the log path + an unbounded channel sender. Two methods:
+- `emit(body)` — **durable + streamed**: writes the event to the log AND sends it to subscribers.
+- `delta(content)` — **ephemeral**: streams a typing fragment to the channel, no file write.
 
-**Does NOT own:** Gating (deciding whether to proceed). Gating is `turn.rs`'s job.
+A dropped receiver (headless/test) is silently ignored.
 
-### UI (`ui/`)
-Renders to stderr only. Reads from `PermissionItem` (which comes from `log.jsonl` via transcript.rs).
-- `prompt_permission(item, label, theme)` → PermissionChoice  (interactive prompt)
-- `ReplRenderer` — formats turn output (text streaming, tool calls, results)
-- `ReplBuilder` — handles REPL user input for clarify/inform/permission replies
+### Two proto packages
+- **`gait.log.v1`** (`log.proto`) — the durable event log schema. Source of truth.
+- **`gait.state.v1`** (`state.proto`) — `SessionStateReport` / `SessionState` (Idle,
+  AwaitingPermission, AwaitingClarify, AwaitingInform). **Derived, never stored** — computed on
+  demand by retrace from the log tail, returned by `gait status`. It references (not copies) the
+  item types from `log.v1`.
 
-**Does NOT own:** State or business logic. Pure rendering.
+---
 
-### Git (`git/`)
-- `CheckpointRepo` — shadow git DB per session (per-turn codebase snapshots)
-- `TraceRepo` — git worktree per session (isolated working directory)
-- `CodebaseRepo` — read codebase HEAD, dirty status
+## Projections (`session/retrace.rs`)
+
+A projection is a derived read-model produced by left-folding the log. All share one trait:
+
+```rust
+trait Projection {
+    type State;
+    fn seed(&self) -> Self::State;                               // initial (often config-seeded)
+    fn checkpoint(&self, kind) -> Option<Self::State> { None }   // a checkpoint resets the fold
+    fn apply(&self, state: &mut Self::State, ev, kind);          // fold one event
+    fn finish(&self, state) -> Self::State { state }             // finalize
+}
+```
+
+`run_projection(p, events, mutations)` seeds, then folds each event's **effective** kind
+(after mutations are applied). If an event is a checkpoint for this projection, the state resets
+to that baseline **positionally** (where the event sits in the stream — `through_seq` is not consulted).
+
+### The five projections
+
+| Projection | State | Folds | Semantics |
+|---|---|---|---|
+| **ActiveMessages** | `Vec<Message>` (the transcript) | UserTurn, AssistantText, ToolCall, ToolResult, Clarify/Inform, Error | Consecutive ToolCalls coalesce into one assistant msg; Permissions excluded (audit only) |
+| **ActiveAgent** | model, instructions, tools/skills/mcp/plugins sets, allow/deny | Toggle (OR-Set), ModelChange (LWW) | Seeded from config; `Agent` event is its checkpoint |
+| **ActivePermissions** | `{ session: Set, once: Set }` | PermissionsReply (allow inserts, deny removes), TurnComplete (clears `once`) | Effective allow = session ∪ once |
+| **ActiveCwd** | `PathBuf` | Cwd (LWW) | Seeded to codebase root |
+| **LwwAgent** | `Option<Agent>` | Agent (LWW) | Internal drift-guard for run_turn |
+
+`fold(events, agent_seed)` runs Messages + Agent + Permissions in one pass over the same
+mutation-applied stream and returns `RetraceResult { messages, agent, effective_allow, mutations }`.
+
+### Mutations — Redact & Replace
+`active_mutations(events)` converges all Redact/Replace events into a `HashMap<target_id, MutationState>`
+using **LWW**: for each target, the mutation with the highest `(seq, id)` wins.
+
+`apply_cascade()` enforces ToolCall↔ToolResult integrity: if **either** member of a call/result
+pair is redacted, **both** are redacted (a cascade Redact overrides any Replace on the peer).
+You can never have a result without its call in the folded transcript.
+
+`effective_kinds()` applies the converged mutation map while folding — redacted events are
+skipped, replaced events yield their replacement payload.
+
+### Compaction — Summary checkpoints
+A `Summary` event is a **checkpoint for ActiveMessages only**. When the fold hits it, the message
+state resets to a single synthesized summary message (positional reset — everything before it is
+dropped from context). The Agent, Permissions, and Cwd projections **ignore** Summary and fold the
+whole log, so agent config and session grants survive compaction. Multiple summaries: the latest wins.
+
+---
+
+## The Three Repos (`git/`)
+
+`Repos { codebase, traces, checkpoints }` is a DI bundle of three trait objects, built by
+`Repos::production()` and threaded through `Session` into turns and tools. Tests swap in mocks
+(e.g. `MockCheckpointRepo`).
+
+| Repo | Role | On disk | Writes? |
+|---|---|---|---|
+| **CodebaseRepo** | Read user's real git state (`head_hash`, `dirty_files`) for the prompt | the user's `<codebase>/.git` | **Never** — trait has no mutating methods |
+| **TraceRepo** | Per-session git worktree + commits the event log each turn | `<gait_dir>/.git` + `sessions/<id>/` worktree on branch `session/<id>` | Yes (turn commits) |
+| **CheckpointRepo** | Per-turn snapshot of the codebase working tree (for `rewind`) | `sessions/<id>/codebase.git/` (bare, `alternates` → user's `.git/objects`) | Yes (snapshot commits) — never touches user's `.git` |
+
+### On-disk layout for one session
+```
+gait_dir/
+├── .git/                                  ← TraceRepo main repo
+│   └── refs/heads/session/<id>            ← session branch
+└── sessions/<id>/
+    ├── .git                               ← worktree pointer
+    ├── log.jsonl                          ← the event log (source of truth)
+    ├── session.json                       ← metadata sidecar (see violation #1)
+    ├── lock                               ← PID file (RAII during a turn)
+    ├── codebase.git/                      ← CheckpointRepo bare shadow DB
+    │   └── objects/info/alternates        ← → user's .git/objects (dedup)
+    └── [codebase working-tree files]
+```
+
+### During a turn
+1. **CodebaseRepo** reads HEAD + dirty files → injected into the system prompt `<status>`.
+2. **TraceRepo** creates/attaches the session worktree (idempotent).
+3. **CheckpointRepo** inits the shadow DB (idempotent).
+4. Tools run, possibly mutating the codebase.
+5. **CheckpointRepo** snapshots the new tree → SHA recorded in the `TurnComplete` event.
+6. **TraceRepo** commits the turn's log changes.
 
 ---
 
@@ -142,32 +210,51 @@ Renders to stderr only. Reads from `PermissionItem` (which comes from `log.jsonl
 | Boundary | Types crossing |
 |----------|---------------|
 | Entry → Profile | `Config`, `AgentFrontmatter` |
-| Profile → Turn | `ResolvedProfile { provider, permissioned, mcp_registry, skill_registry, plugin_registry, hooks }` |
-| Turn → Provider | `&str` (system), `&[Message]`, `&[Box<dyn Tool>]` → `ChunkStream` |
-| Turn → Tools | `tool.permission(args)` → `ToolPermission`; `tool.execute(args)` → `Value` |
-| Turn → Permission | `PermissionRequest`, `Vec<String>` (allow/deny lists) → bool |
-| Turn → Session | `Event` (proto) emitted to log.jsonl; `retrace::messages_from_path` → `Vec<Message>` |
-| Turn → UI | `TurnResult { Permissions(Vec<PermissionItem>), Clarify(..), Inform(..) }` |
+| Profile → Turn | `ResolvedProfile { provider, permissioned, mcp/skill/plugin_registry, hooks }` |
+| Turn → Provider | `&str` system, `&[Message]`, `&[Box<dyn Tool>]` → `ChunkStream` |
+| Turn → Tools | `tool.permission(args) → ToolPermission`; `tool.execute(args) → Value` |
+| Turn → Permission | `PermissionRequest`, allow/deny `Vec<String>` → bool |
+| Turn → Session | `Event` emitted; `retrace::fold` → `RetraceResult` |
+| Turn → UI | `TurnResult { Permissions(Vec<PermissionItem>), Clarify, Inform }` |
 | Session → UI | `PermissionItem { id, cmd, reason, patterns, tool_name, tool_args, preview }` |
+
+**The tool layer owns preview content.** `PermissionRequest.preview` is populated in a tool's
+`permission()` method — never in turn.rs or the UI. The UI renders whatever string is there
+without knowing its format (diff, file content, command, …).
 
 ---
 
-## Known Issues / Violations
+## Known Issues / Boundary Violations
 
-### 1. `turn.rs` is monolithic (≈110 KB)
-It mixes: system prompt construction, the agentic loop, permission gating, signal dispatch, LoadContext handling, test infrastructure. Should be split into:
-- `turn/prompt.rs` — system prompt builder
-- `turn/gate.rs` — permission check + event emission
-- `turn/signals.rs` — ExecutionSignal dispatch
-- `turn/loop.rs` — the inner streaming loop
+### 1. `session.json` holds state that should be a projection
+`session.json` carries `token_totals` — cumulative input/output/cache tokens. But every
+`TurnComplete` event already records per-turn `usage`. So token totals exist **twice**: as
+appendable events (source of truth) and as a mutable read-modify-write sidecar. This contradicts
+"everything is a projection." The fix is an `ActiveUsage` projection that sums `TurnComplete.usage`
+over the log; `session.json` should keep only write-once identity (`id`, `created_at`,
+`codebase_path`, `assigned_by`).
 
-### 2. `stream.rs` duplicates the agentic loop
-`stream.rs` has its own 50-step loop that calls `tool.execute()` directly with no permission checks. It was written before `turn.rs` matured. Features added to `turn.rs` (e.g. per-tool signals, max_iter config) silently don't apply to the `stream.rs` path. The only current callers are `generate.rs` and integration tests. Options:
-- Delete `stream.rs` and rewrite those callers to use `turn.rs` with appropriate `TurnInput`
-- Keep it but document it as "permission-free generation only, not a general agent loop"
+### 2. `compat_rewrite_keys` is a backward-compat layer we said we don't want
+`proto/wire.rs` rewrites legacy event keys on read (`manifest`→`agent`, `compaction`→`summary`,
+strips `outputSchemaRetries`). The project policy is **no backward compat**. Either commit to a
+log-format version gate (and migrate old logs once) or delete this shim — silently rewriting keys
+hides schema drift.
 
-### 3. `bin/gait.rs` is growing (≈77 KB)
-Contains both CLI parsing and non-trivial command logic. Commands like `cmd_run` handle session creation, profile loading, and turn invocation inline. This will become hard to test and maintain. Business logic should live in domain modules, not in the binary.
+### 3. `turn.rs` is monolithic (~110 KB)
+Mixes prompt construction, the streaming loop, permission gating, signal dispatch, LoadContext
+handling, and a large test module. Should split into `turn/{prompt,gate,signals,loop}.rs`.
 
-### 4. `PermissionItem` lives in `session/transcript.rs`
-`PermissionItem` is the type the UI renders. It lives in the session layer because it appears in the transcript, but it's consumed primarily by the UI layer. This creates an upward dependency: `ui/permission.rs` imports `session::transcript::PermissionItem`. Acceptable for now, but worth watching.
+### 4. `stream.rs` duplicates the agentic loop without permissions
+A second 50-step loop that calls `tool.execute()` directly with **no permission checks**. Predates
+mature `turn.rs`. Features added to `turn.rs` silently don't apply here. Only `generate.rs` and
+integration tests use it. Either delete it and route callers through `turn.rs`, or rename/document
+it as permission-free generation, not a general agent loop.
+
+### 5. `bin/gait.rs` is growing (~77 KB)
+Command bodies (`cmd_run`, etc.) hold session-creation and turn-invocation logic inline. Business
+logic should live in domain modules so it's testable without the binary.
+
+### 6. `PermissionItem` lives in the session layer but is UI-facing
+`ui/permission.rs` imports `session::transcript::PermissionItem`. It sits in `transcript.rs`
+because it appears in the log, but its primary consumer is the UI — an upward dependency. Tolerable,
+but watch it: if more UI-only fields (like `preview`) accrete on it, consider a UI-side view type.
