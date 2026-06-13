@@ -104,8 +104,10 @@ fn usage() -> ! {
     eprintln!("  allow    <session-id> [--pattern <pat>] [--scope <global|agent|once>] [--gait-dir <path>] [--agent <name>]  (was: approve)");
     eprintln!("  deny     <session-id> [--gait-dir <path>]                                                              (was: reject)");
     eprintln!("  status   <session-id> [--gait-dir <path>] [--json]");
-    eprintln!("  load     <mcp|skill> <name> [flags] [--yes]");
-    eprintln!("  unload   <mcp|skill> <name>");
+    eprintln!("  register   <mcp|skill> <name> [flags] [--yes]            (was: load)");
+    eprintln!("  unregister <mcp|skill> <name>                              (was: unload)");
+    eprintln!("  enable     <mcp|skill> <name>");
+    eprintln!("  disable    <mcp|skill> <name>");
 
     std::process::exit(1);
 }
@@ -138,16 +140,16 @@ async fn main() {
         "allow" | "approve"  => cmd_allow(&args[2..]),
         "deny"  | "reject"   => cmd_deny(&args[2..]),
         "status"   => cmd_status(&args[2..]),
-        "load"     => {
+        "register" | "load" => {
             let rest: Vec<String> = args[2..].to_vec();
-            if let Err(e) = cmd_load(&gait_dir, &rest) {
+            if let Err(e) = cmd_register(&gait_dir, &rest) {
                 eprintln!("[gait] error: {}", e);
                 std::process::exit(1);
             }
         }
-        "unload"   => {
+        "unregister" | "unload" => {
             let rest: Vec<String> = args[2..].to_vec();
-            if let Err(e) = cmd_unload(&gait_dir, &rest) {
+            if let Err(e) = cmd_unregister(&gait_dir, &rest) {
                 eprintln!("[gait] error: {}", e);
                 std::process::exit(1);
             }
@@ -1228,18 +1230,18 @@ fn read_config_as_value(config_path: &std::path::Path) -> anyhow::Result<serde_j
     Ok(serde_json::from_str(&stripped).unwrap_or_default())
 }
 
-fn cmd_load(gait_dir: &std::path::Path, args: &[String]) -> anyhow::Result<()> {
+fn cmd_register(gait_dir: &std::path::Path, args: &[String]) -> anyhow::Result<()> {
     // Supported usage:
-    //   gait load mcp <name> --spawn <cmd>
-    //   gait load mcp <name> --connect <url>
-    //   gait load skill <name> --path <file>
-    //   gait load skill <name> --description <text> --content <text>
-    // Adds to whitelist with enabled=false. Run 'gait enable <kind> <name>' to activate.
+    //   gait register mcp <name> --spawn <cmd>
+    //   gait register mcp <name> --connect <url>
+    //   gait register skill <name> --path <file>
+    //   gait register skill <name> --description <text> --content <text>
+    // Adds to config with enabled=false. Run 'gait enable <kind> <name>' to activate.
 
     let kind = args.get(0).map(|s| s.as_str())
-        .ok_or_else(|| anyhow::anyhow!("usage: gait load <mcp|skill> <name> [flags]"))?;
+        .ok_or_else(|| anyhow::anyhow!("usage: gait register <mcp|skill> <name> [flags]"))?;
     let name = args.get(1).map(|s| s.as_str())
-        .ok_or_else(|| anyhow::anyhow!("usage: gait load <mcp|skill> <name> [flags]"))?;
+        .ok_or_else(|| anyhow::anyhow!("usage: gait register <mcp|skill> <name> [flags]"))?;
     let flags = parse_flags(&args[2..]);
 
     let config_path = gait_dir.join("gait.jsonc");
@@ -1252,19 +1254,19 @@ fn cmd_load(gait_dir: &std::path::Path, args: &[String]) -> anyhow::Result<()> {
             } else if let Some(connect) = flags.get("connect") {
                 serde_json::json!({ "name": name, "connect": connect, "enabled": false })
             } else {
-                return Err(anyhow::anyhow!("gait load mcp: requires --spawn <cmd> or --connect <url>"));
+                return Err(anyhow::anyhow!("gait register mcp: requires --spawn <cmd> or --connect <url>"));
             }
         }
         "skill" => {
             let description = flags.get("description")
-                .ok_or_else(|| anyhow::anyhow!("gait load skill: requires --description <text>"))?;
+                .ok_or_else(|| anyhow::anyhow!("gait register skill: requires --description <text>"))?;
             let content = if let Some(path) = flags.get("path") {
                 std::fs::read_to_string(path)
                     .map_err(|e| anyhow::anyhow!("failed to read skill file '{}': {}", path, e))?
             } else if let Some(content) = flags.get("content") {
                 content.clone()
             } else {
-                return Err(anyhow::anyhow!("gait load skill: requires --path <file> or --content <text>"));
+                return Err(anyhow::anyhow!("gait register skill: requires --path <file> or --content <text>"));
             };
             serde_json::json!({
                 "name": name, "description": description,
@@ -1308,7 +1310,7 @@ fn cmd_enable_disable(gait_dir: &std::path::Path, args: &[String], enable: bool)
         .ok_or_else(|| anyhow::anyhow!("{} is not an array", array_key))?;
     let entry = arr.iter_mut()
         .find(|v| v.get("name").and_then(|n| n.as_str()) == Some(name))
-        .ok_or_else(|| anyhow::anyhow!("{} '{}' not found in whitelist; run 'gait load {} {}' first", kind, name, kind, name))?;
+        .ok_or_else(|| anyhow::anyhow!("{} '{}' not found; run 'gait register {} {}' first", kind, name, kind, name))?;
     entry["enabled"] = serde_json::Value::Bool(enable);
 
     eprintln!("Note: gait.jsonc comments are stripped on rewrite.");
@@ -1317,11 +1319,11 @@ fn cmd_enable_disable(gait_dir: &std::path::Path, args: &[String], enable: bool)
     Ok(())
 }
 
-fn cmd_unload(gait_dir: &std::path::Path, args: &[String]) -> anyhow::Result<()> {
+fn cmd_unregister(gait_dir: &std::path::Path, args: &[String]) -> anyhow::Result<()> {
     let kind = args.get(0).map(|s| s.as_str())
-        .ok_or_else(|| anyhow::anyhow!("usage: gait unload <mcp|skill> <name>"))?;
+        .ok_or_else(|| anyhow::anyhow!("usage: gait unregister <mcp|skill> <name>"))?;
     let name = args.get(1).map(|s| s.as_str())
-        .ok_or_else(|| anyhow::anyhow!("usage: gait unload <mcp|skill> <name>"))?;
+        .ok_or_else(|| anyhow::anyhow!("usage: gait unregister <mcp|skill> <name>"))?;
 
     let array_key = match kind {
         "mcp" => "mcp_servers",
@@ -1372,13 +1374,13 @@ mod tests {
     }
 
     #[test]
-    fn cmd_load_mcp_writes_entry_disabled() {
+    fn cmd_register_mcp_writes_entry_disabled() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("gait.jsonc"),
             r#"{"model":"anthropic/claude-sonnet-4-6","mcp_servers":[]}"#).unwrap();
         let args: Vec<String> = ["mcp", "slack", "--spawn", "node mcp-slack.js"]
             .iter().map(|s| s.to_string()).collect();
-        cmd_load(dir.path(), &args).unwrap();
+        cmd_register(dir.path(), &args).unwrap();
         let val: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap()).unwrap();
         assert_eq!(val["mcp_servers"][0]["name"], "slack");
@@ -1386,13 +1388,13 @@ mod tests {
     }
 
     #[test]
-    fn cmd_load_skill_writes_entry() {
+    fn cmd_register_skill_writes_entry() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("gait.jsonc"),
             r#"{"model":"anthropic/claude-sonnet-4-6","skills":[]}"#).unwrap();
         let args: Vec<String> = ["skill", "tdd", "--description", "tdd workflow",
             "--content", "# TDD"].iter().map(|s| s.to_string()).collect();
-        cmd_load(dir.path(), &args).unwrap();
+        cmd_register(dir.path(), &args).unwrap();
         let val: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap()).unwrap();
         assert_eq!(val["skills"][0]["name"], "tdd");
@@ -1433,23 +1435,23 @@ mod tests {
     }
 
     #[test]
-    fn cmd_unload_removes_entry() {
+    fn cmd_unregister_removes_entry() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("gait.jsonc"),
             r#"{"model":"x","mcp_servers":[{"name":"slack","spawn":"node s.js","enabled":true}]}"#).unwrap();
         let args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
-        cmd_unload(dir.path(), &args).unwrap();
+        cmd_unregister(dir.path(), &args).unwrap();
         let val: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap()).unwrap();
         assert!(val["mcp_servers"].as_array().unwrap().is_empty());
     }
 
     #[test]
-    fn cmd_load_unknown_kind_errors() {
+    fn cmd_register_unknown_kind_errors() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"x"}"#).unwrap();
         let args: Vec<String> = ["plugin", "foo"].iter().map(|s| s.to_string()).collect();
-        assert!(cmd_load(dir.path(), &args).is_err());
+        assert!(cmd_register(dir.path(), &args).is_err());
     }
 
     #[test]
