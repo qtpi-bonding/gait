@@ -217,6 +217,7 @@ impl Projection for ActiveAgent {
                     ToggleKind::Skill => &mut st.skills,
                     ToggleKind::Mcp   => &mut st.mcp,
                     ToggleKind::Tool  => &mut st.tools,
+                    ToggleKind::Plugin => return,  // TODO: Task 2 adds plugins field to AgentState
                     ToggleKind::Unspecified => return,
                 };
                 if t.enabled { set.insert(t.name.clone()); }
@@ -837,13 +838,13 @@ mod tests {
         // Write two Agent events — active_agent_checkpoint should return the second.
         wire::append(&path, wire::body(pb::payload::Kind::Agent(pb::Agent {
             model: "model-a".into(),
-            tools: vec![], mcp_servers: vec![], skills: vec![],
+            tools: vec![], mcp_servers: vec![], skills: vec![], plugins: vec![],
             permissions: Some(pb::PermissionPolicy { allow: vec![], deny: vec![] }),
             instructions: String::new(), through_seq: 0,
         }))).unwrap();
         wire::append(&path, wire::body(pb::payload::Kind::Agent(pb::Agent {
             model: "model-b".into(),
-            tools: vec![], mcp_servers: vec![], skills: vec![],
+            tools: vec![], mcp_servers: vec![], skills: vec![], plugins: vec![],
             permissions: Some(pb::PermissionPolicy { allow: vec![], deny: vec![] }),
             instructions: String::new(), through_seq: 0,
         }))).unwrap();
@@ -890,6 +891,7 @@ mod tests {
             tools: vec!["read".into(), "edit".into()],
             mcp_servers: vec!["slack".into()],
             skills: vec!["tdd".into()],
+            plugins: vec![],
             permissions: Some(pb::PermissionPolicy {
                 allow: vec!["read".into()], deny: vec!["shell:rm *".into()] }),
             through_seq: 0,
@@ -956,7 +958,7 @@ mod tests {
             events::toggle("skill", "old", true),
             wire::body(payload::Kind::Agent(pb::Agent {
                 model: "m2".into(), instructions: "sys2".into(),
-                tools: vec![], mcp_servers: vec!["slack".into()], skills: vec![],
+                tools: vec![], mcp_servers: vec!["slack".into()], skills: vec![], plugins: vec![],
                 permissions: Some(pb::PermissionPolicy { allow: vec![], deny: vec![] }),
                 through_seq: 0,
             })),
@@ -1002,7 +1004,7 @@ mod tests {
         let path = write_events(dir.path(), vec![
             wire::body(pb::payload::Kind::Agent(pb::Agent {
                 model: "gpt-fold".into(),
-                tools: vec![], mcp_servers: vec![], skills: vec![],
+                tools: vec![], mcp_servers: vec![], skills: vec![], plugins: vec![],
                 permissions: Some(pb::PermissionPolicy { allow: vec![], deny: vec![] }),
                 instructions: String::new(), through_seq: 0,
             })),
@@ -1397,6 +1399,7 @@ mod tests {
             tools: vec!["read".into()],
             mcp_servers: vec!["old-mcp".into()],
             skills: vec!["old-skill".into()],
+            plugins: vec![],
             permissions: Some(pb::PermissionPolicy { allow: vec![], deny: vec![] }),
             through_seq: 0,
         };

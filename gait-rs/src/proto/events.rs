@@ -54,13 +54,14 @@ pub fn cwd(path: &str) -> pb::event::Body {
     wire::body(pb::payload::Kind::Cwd(pb::Cwd { path: path.to_string() }))
 }
 
-/// `Toggle` — capability enable/disable delta (skill | mcp | tool), folded by ActiveAgent.
+/// `Toggle` — capability enable/disable delta (skill | mcp | tool | plugin), folded by ActiveAgent.
 pub fn toggle(kind: &str, name: &str, enabled: bool) -> pb::event::Body {
     let k = match kind {
-        "skill" => pb::ToggleKind::Skill,
-        "mcp"   => pb::ToggleKind::Mcp,
-        "tool"  => pb::ToggleKind::Tool,
-        _       => pb::ToggleKind::Unspecified,
+        "skill"  => pb::ToggleKind::Skill,
+        "mcp"    => pb::ToggleKind::Mcp,
+        "tool"   => pb::ToggleKind::Tool,
+        "plugin" => pb::ToggleKind::Plugin,
+        _        => pb::ToggleKind::Unspecified,
     };
     wire::body(pb::payload::Kind::Toggle(pb::Toggle {
         kind: k as i32,
@@ -280,6 +281,7 @@ pub fn agent_msg(resolved: &crate::profile::ResolvedProfile) -> pb::Agent {
         tools: resolved.permissioned.tools().iter().map(|t| t.name().to_string()).collect(),
         mcp_servers,
         skills: resolved.skill_registry.iter().map(|s| s.name.clone()).collect(),
+        plugins: Vec::new(),
         permissions: Some(pb::PermissionPolicy {
             allow: resolved.permissioned.allow.clone(),
             deny: resolved.permissioned.deny.clone(),
@@ -536,6 +538,7 @@ mod tests {
             tools: vec![],
             mcp_servers: vec!["zeta".into(), "alpha".into()],
             skills: vec![],
+            plugins: vec![],
             permissions: Some(pb::PermissionPolicy { allow: vec![], deny: vec![] }),
             instructions: String::new(),
             through_seq: 0,
@@ -616,6 +619,20 @@ mod tests {
         assert_eq!(evs[1].seq, 2);
         assert_eq!(evs[1].parents, vec![evs[0].id.clone()],
             "Toggle must chain off the previous event");
+    }
+
+    #[test]
+    fn toggle_plugin_kind_round_trips() {
+        use crate::proto::gait::log::v1::{ToggleKind, payload};
+        let body = super::toggle("plugin", "myfmt", true);
+        match kind_of(&body) {
+            payload::Kind::Toggle(t) => {
+                assert_eq!(t.kind, ToggleKind::Plugin as i32);
+                assert_eq!(t.name, "myfmt");
+                assert!(t.enabled);
+            }
+            other => panic!("expected Toggle, got {other:?}"),
+        }
     }
 
 
