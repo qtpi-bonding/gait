@@ -4,7 +4,7 @@ use serde::Deserialize;
 use crate::types::Tool;
 use crate::session::transcript::{InitSessionOpts, init_session, now_ms};
 use crate::proto::{events, wire};
-use crate::session::session_json::{SessionJson, TokenTotals, write_session_json};
+use crate::session::session_json::{SessionJson, write_session_json};
 use crate::config::load_config;
 use crate::tools::{make_schema, ToolCtx};
 
@@ -57,7 +57,6 @@ impl Tool for SpawnAgentTool {
             id: new_id.clone(),
             assigned_by: Some(self.ctx.session_id.clone()),
             created_at: now_ms(),
-            token_totals: TokenTotals::default(),
             codebase_path: Some(self.ctx.codebase_path.to_string_lossy().to_string()),
             agent_name: None,
             system_prompt: None,

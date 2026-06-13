@@ -1,22 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct TokenTotals {
-    pub input: u64,
-    pub output: u64,
-    pub cache_read: u64,
-    pub cache_write: u64,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionJson {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assigned_by: Option<String>,
     pub created_at: u64,
-    #[serde(default)]
-    pub token_totals: TokenTotals,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codebase_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -32,7 +22,6 @@ pub fn read_session_json(gait_dir: &Path, session_id: &str) -> SessionJson {
             id: session_id.to_string(),
             assigned_by: None,
             created_at: 0,
-            token_totals: TokenTotals::default(),
             codebase_path: None,
             agent_name: None,
             system_prompt: None,
@@ -43,7 +32,6 @@ pub fn read_session_json(gait_dir: &Path, session_id: &str) -> SessionJson {
         id: session_id.to_string(),
         assigned_by: None,
         created_at: 0,
-        token_totals: TokenTotals::default(),
         codebase_path: None,
         agent_name: None,
         system_prompt: None,
@@ -77,7 +65,6 @@ mod tests {
             id: "stest001".into(),
             assigned_by: Some("sparent".into()),
             created_at: 9999,
-            token_totals: TokenTotals { input: 10, output: 5, cache_read: 0, cache_write: 0 },
             codebase_path: Some("/code".into()),
             agent_name: None,
             system_prompt: None,
@@ -86,7 +73,6 @@ mod tests {
         let loaded = read_session_json(dir.path(), "stest001");
         assert_eq!(loaded.id, "stest001");
         assert_eq!(loaded.assigned_by.as_deref(), Some("sparent"));
-        assert_eq!(loaded.token_totals.input, 10);
     }
 
     #[test]
@@ -106,7 +92,6 @@ mod tests {
             id: "satomic".into(),
             assigned_by: None,
             created_at: 1,
-            token_totals: TokenTotals::default(),
             codebase_path: None,
             agent_name: None,
             system_prompt: None,
