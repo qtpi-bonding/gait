@@ -16,6 +16,7 @@ pub struct Profile {
     pub output_schema_retries: u8,
     pub result_schema: Option<serde_json::Value>,
     pub hooks: Vec<crate::config::HookDef>,
+    pub wasm_plugins: Vec<crate::config::WasmPluginDef>,
 }
 
 /// The live, resolved counterpart of `Profile`: the provider, tools, and
@@ -106,9 +107,13 @@ impl Profile {
         }
         let merged_mcp = disk_mcp;
 
+        // Plugins: scan disk
+        let disk_plugins = crate::wasm_plugins::scan_plugins(gait_dir);
+
         let config_enabled: HashSet<String> = merged_mcp.iter()
             .filter(|s| s.enabled).map(|s| s.name.clone())
             .chain(merged_skills.iter().filter(|s| s.enabled).map(|s| s.name.clone()))
+            .chain(disk_plugins.iter().filter(|p| p.enabled).map(|p| p.name.clone()))
             .collect();
 
         Profile {
@@ -123,6 +128,7 @@ impl Profile {
             output_schema_retries: config.output_schema_retries,
             result_schema: config.result_schema.clone(),
             hooks: config.hooks.clone(),
+            wasm_plugins: disk_plugins,
         }
     }
 
@@ -320,6 +326,7 @@ mod tests {
             output_schema_retries: 3,
             result_schema: None,
             hooks: vec![],
+            wasm_plugins: vec![],
         };
         let resolved = profile.resolve(
             std::path::PathBuf::from("."),
@@ -456,6 +463,24 @@ mod tests {
         let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
         assert_eq!(profile.mcp_servers.len(), 1);
         assert_eq!(profile.mcp_servers[0].name, "remote");
+    }
+
+    #[test]
+    fn disk_plugins_populate_profile() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let plugin_dir = dir.path().join("plugins").join("formatter");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(plugin_dir.join("formatter.wasm"), b"").unwrap();
+        std::fs::write(
+            plugin_dir.join("PLUGIN.md"),
+            "---\nname: formatter\nwasm: formatter.wasm\nenabled: true\n---\n# Formatter\n",
+        ).unwrap();
+        let config = GaitConfig::default();
+        let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
+        assert_eq!(profile.wasm_plugins.len(), 1);
+        assert_eq!(profile.wasm_plugins[0].name, "formatter");
+        assert!(profile.config_enabled.contains("formatter"));
     }
 
 }
