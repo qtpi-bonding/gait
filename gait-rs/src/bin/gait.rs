@@ -1270,9 +1270,9 @@ fn cmd_register(gait_dir: &std::path::Path, args: &[String]) -> anyhow::Result<(
     // Tier 2 (legacy): Skills, old MCPs → gait.jsonc
 
     let kind = args.get(0).map(|s| s.as_str())
-        .ok_or_else(|| anyhow::anyhow!("usage: gait register <mcp|skill> <name> [flags]"))?;
+        .ok_or_else(|| anyhow::anyhow!("usage: gait register <mcp|skill|plugin> <name> [flags]"))?;
     let name = args.get(1).map(|s| s.as_str())
-        .ok_or_else(|| anyhow::anyhow!("usage: gait register <mcp|skill> <name> [flags]"))?;
+        .ok_or_else(|| anyhow::anyhow!("usage: gait register <mcp|skill|plugin> <name> [flags]"))?;
     let flags = parse_flags(&args[2..]);
 
     match kind {
@@ -1352,7 +1352,41 @@ fn cmd_register(gait_dir: &std::path::Path, args: &[String]) -> anyhow::Result<(
             println!("→ Run 'gait enable skill {}' to activate it.", name);
             Ok(())
         }
-        other => Err(anyhow::anyhow!("unknown kind '{}': use mcp or skill", other)),
+        "plugin" => {
+            // Tier 1: create plugins/<name>/ directory + PLUGIN.md scaffold
+            let wasm_src = flags.get("wasm")
+                .ok_or_else(|| anyhow::anyhow!("gait register plugin: requires --wasm <path>"))?;
+            let wasm_src_path = std::path::Path::new(wasm_src);
+            if !wasm_src_path.exists() {
+                return Err(anyhow::anyhow!("wasm file not found: {}", wasm_src));
+            }
+            let plugin_dir = gait_dir.join("plugins").join(name);
+            if plugin_dir.exists() {
+                return Err(anyhow::anyhow!(
+                    "plugin '{}' already registered at {}. Use 'gait unregister plugin {}' first.",
+                    name, plugin_dir.display(), name
+                ));
+            }
+            std::fs::create_dir_all(&plugin_dir)
+                .map_err(|e| anyhow::anyhow!("could not create plugins/{} dir: {e}", name))?;
+            // Copy the .wasm binary into the plugin directory
+            let wasm_filename = wasm_src_path.file_name()
+                .ok_or_else(|| anyhow::anyhow!("invalid wasm path: {}", wasm_src))?;
+            let wasm_dest = plugin_dir.join(wasm_filename);
+            std::fs::copy(wasm_src_path, &wasm_dest)
+                .map_err(|e| anyhow::anyhow!("could not copy wasm file: {e}"))?;
+            let wasm_rel = wasm_filename.to_string_lossy();
+            let description = flags.get("description").map(|s| s.as_str()).unwrap_or("No description.");
+            let plugin_md = plugin_dir.join("PLUGIN.md");
+            std::fs::write(&plugin_md, format!(
+                "---\nname: {}\nwasm: {}\nenabled: false\nallow_exec: []\nallow_fs: []\n---\n\n# {}\n\n{}\n",
+                name, wasm_rel, name, description
+            ))?;
+            println!("Registered plugin '{}'.", name);
+            println!("→ Run 'gait enable plugin {}' to activate it.", name);
+            Ok(())
+        }
+        other => Err(anyhow::anyhow!("unknown kind '{}': use mcp, skill, or plugin", other)),
     }
 }
 
@@ -1560,7 +1594,7 @@ mod tests {
     }
 
     #[test]
-    fn cmd_register_unknown_kind_errors() {
+    fn cmd_register_plugin_missing_wasm_errors() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"x"}"#).unwrap();
         let args: Vec<String> = ["plugin", "foo"].iter().map(|s| s.to_string()).collect();
@@ -1621,6 +1655,53 @@ mod tests {
         let args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
         cmd_unregister(dir.path(), &args).unwrap();
         assert!(!disk_path.exists(), "mcp/slack.json should be deleted");
+    }
+
+    #[test]
+    fn cmd_register_plugin_creates_directory_and_md() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("gait.jsonc"),
+            r#"{"model":"anthropic/claude-sonnet-4-6"}"#).unwrap();
+        // Create a dummy .wasm file to register
+        let wasm_path = dir.path().join("myfmt.wasm");
+        std::fs::write(&wasm_path, b"").unwrap();
+        let args: Vec<String> = ["plugin", "myfmt", "--wasm",
+            wasm_path.to_str().unwrap(), "--description", "A formatter"]
+            .iter().map(|s| s.to_string()).collect();
+        cmd_register(dir.path(), &args).unwrap();
+        let plugin_dir = dir.path().join("plugins").join("myfmt");
+        assert!(plugin_dir.is_dir());
+        assert!(plugin_dir.join("myfmt.wasm").exists(), "wasm should be copied");
+        let md = std::fs::read_to_string(plugin_dir.join("PLUGIN.md")).unwrap();
+        assert!(md.contains("name: myfmt"));
+        assert!(md.contains("enabled: false"));
+        assert!(md.contains("A formatter"));
+    }
+
+    #[test]
+    fn cmd_enable_plugin_sets_flag_in_plugin_md() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugin_dir = dir.path().join("plugins").join("myfmt");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(plugin_dir.join("PLUGIN.md"),
+            "---\nname: myfmt\nwasm: myfmt.wasm\nenabled: false\n---\n# docs\n").unwrap();
+        let args: Vec<String> = ["plugin", "myfmt"].iter().map(|s| s.to_string()).collect();
+        cmd_enable_disable(dir.path(), &args, true).unwrap();
+        let md = std::fs::read_to_string(plugin_dir.join("PLUGIN.md")).unwrap();
+        assert!(md.contains("enabled: true"), "got: {md}");
+        assert!(!md.contains("enabled: false"), "old value should be gone: {md}");
+    }
+
+    #[test]
+    fn cmd_unregister_plugin_removes_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugin_dir = dir.path().join("plugins").join("myfmt");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(plugin_dir.join("PLUGIN.md"),
+            "---\nname: myfmt\nwasm: myfmt.wasm\nenabled: false\n---\n").unwrap();
+        let args: Vec<String> = ["plugin", "myfmt"].iter().map(|s| s.to_string()).collect();
+        cmd_unregister(dir.path(), &args).unwrap();
+        assert!(!plugin_dir.exists(), "plugins/myfmt/ should be deleted");
     }
 
     #[test]
