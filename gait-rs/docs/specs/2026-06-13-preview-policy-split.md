@@ -9,24 +9,36 @@ edit/write diff is computed and then thrown away. This:
 1. Splits preview computation off the gating path into its own `Tool::preview()` method that
    `turn.rs` calls **only when it actually needs the preview**.
 2. Adds a configurable `preview` policy (`gait.jsonc`) with three modes — default keeps previews on
-   the ask path only; `always` also captures previews for auto-run tools in the durable log.
+   the ask path only; `always` also streams previews live for auto-run tools (ephemeral, not logged).
 
 ## Background
 
 - `turn.rs` gating loop (`src/turn.rs:859-924`) calls `tool.permission(&args)` once per tool call to
   classify it: Tier 1 deny → Tier 2 allow (`is_allowed = auto || allow-listed`) → Tier 3 ask.
 - Tier 3 builds a `PermissionItem` (with the preview) and the turn exits awaiting approval.
-- Tier 2 (auto / allow-listed) calls `continue` — the tool runs later via `execute_tool_call`
-  (`src/turn.rs:176-245`), which emits the `ToolCall` event. The preview computed in `permission()`
-  is discarded here.
-- `execute_tool_call(tc, tools, emitter, approval_prefix)` is the single place a `ToolCall` event is
-  emitted. It is called from 4 sites: the resume/approved path (`:604`), the parallel batch (`:1006`),
-  and two serial paths (`:1113`, `:1216`).
-- The gating loop already threads per-call metadata to execution via a `call_id → String` map
-  (`tool_approval_prefixes`). The preview map mirrors this exactly.
+- Tier 2 (auto / allow-listed) calls `continue` — the tool runs later via `execute_tool_call`. The
+  preview computed in `permission()` is discarded here.
+- The `Emitter` (`src/proto/emitter.rs`) has two channels: `emit(body)` writes a durable Event to
+  `log.jsonl` **and** streams it; `delta(content)` streams an ephemeral `TextDelta` with **no
+  transcript write**. `delta` is the existing mechanism for "show the user, don't persist" and renders
+  in every mode (it's the same channel that streams the model's text).
 - Config: `GaitConfig` (`src/config.rs:92-148`) is parsed from `gait.jsonc`. Per-invocation values
   reach the turn through `TurnInput { task, auto, max_iter }` (`src/turn.rs:49-54`), constructed by
   `bin/gait.rs`. `ResolvedProfile` holds resolved provider/tools, not scalar config knobs.
+
+## Why ephemeral (not durable) for `always`
+
+We persisted the **prompt** preview into the log because a turn can pause awaiting approval and a later
+invocation must re-render that prompt without file I/O — the preview had to be frozen in the log. That
+justification **does not exist for an auto-run tool**: it executes immediately, and nothing ever
+re-renders it. Persisting it would mean mutating the durable log format and bloating `log.jsonl` with
+(potentially large) diffs, for data that is purely presentational.
+
+And we lose nothing by not storing it: the `ToolCall` event already records the edit args durably, and
+the pre-edit file state is recoverable from the checkpoint/codebase git — so the diff stays
+**recomputable** after the fact. The durable record of what changed lives in the codebase, not the log.
+`always` therefore streams the diff live (ephemeral) and a future `gait status --diffs` could recompute
+it on read if after-the-fact rendering is ever wanted.
 
 ## Architecture
 
@@ -39,13 +51,9 @@ rule is preserved — the preview string is produced by the tool, never by `turn
 
 | Mode | At the ask prompt (Tier 3) | For auto / allow-listed tools (Tier 2) |
 |------|----------------------------|----------------------------------------|
-| `on-ask` (default) | preview shown | nothing |
-| `always` | preview shown | preview attached to the `ToolCall` event in the log |
+| `on-ask` (default) | preview shown in prompt | nothing |
+| `always` | preview shown in prompt | diff streamed live via `emitter.delta` (ephemeral) |
 | `off` | nothing | nothing |
-
-This is non-duplicative: a gated tool's preview lives in its `PermissionItem`; an auto-run tool's
-preview lives on its `ToolCall` event. `always` captures both paths; `on-ask` captures only the gated
-path; `off` captures neither.
 
 ## Components
 
@@ -55,8 +63,8 @@ path; `off` captures neither.
 - Add:
   ```rust
   /// A rendered preview of what this tool will do (e.g. a diff), shown in the
-  /// permission prompt or attached to the ToolCall event per the preview policy.
-  /// Default: no preview. Cheap tools return None; edit/write override this.
+  /// permission prompt or streamed live per the preview policy. Default: no
+  /// preview. Cheap tools return None; edit/write override this.
   fn preview(&self, _args: &serde_json::Value) -> Option<String> { None }
   ```
 
@@ -64,6 +72,8 @@ path; `off` captures neither.
 
 `PermissionRequest` reverts to `{ display, patterns }`. Every construction site (~24) drops
 `preview: None`. The field moved to a method; the struct is pure gating identity again.
+(`PermissionItem.preview` in `transcript.rs` and the proto `PermissionItem.preview` field **stay** —
+the prompt preview is still persisted for re-render on resume; only `PermissionRequest` loses it.)
 
 ### 3. `EditTool` / `WriteTool` (`src/tools/edit.rs`, `src/tools/write.rs`)
 
@@ -97,85 +107,69 @@ PreviewPolicy::OnAsk` to `GaitConfig::default()` for explicitness.
 
 - Add `pub preview_policy: PreviewPolicy` to `TurnInput`.
 - `bin/gait.rs` populates it from `GaitConfig.preview` when constructing `TurnInput` (next to where
-  `max_iter` is wired).
+  `max_iter` is wired). Update any other `TurnInput { .. }` construction sites (tests) accordingly.
 - `run_turn` extracts `let preview_policy = input.preview_policy;` alongside `max_iter`.
 
 ### 6. Gating loop (`src/turn.rs:859-924`)
 
 - **Tier 3 (ask):** when building the `PermissionItem`, set
   `preview: if preview_policy == PreviewPolicy::Off { None } else { tool.preview(&tc.args) }`.
-  (`tool` = the resolved tool for `tc.tool_name`; if not found, `None`.)
+  (`tool` = the resolved tool for `tc.tool_name`; if not found, `None`.) This replaces the current
+  `preview: req.preview.clone()` (which no longer exists once §2 lands).
 - **Tier 2 (allowed):** in the `is_allowed` branch, when `preview_policy == PreviewPolicy::Always`,
-  compute `tool.preview(&tc.args)` and, if `Some`, insert into a new
-  `tool_previews: HashMap<String, String>` keyed by `tc.tool_call_id` (mirrors
-  `tool_approval_prefixes`).
+  compute `tool.preview(&tc.args)` and, if `Some(p)`, stream it ephemerally:
+  `emitter.delta(format_preview_delta(&p));` — no map, no `execute_tool_call` change, no log write.
 
-### 7. Attach preview to `ToolCall` on the execute path (`src/turn.rs`, proto, `src/proto/events.rs`)
+`format_preview_delta` formats the diff as a dim, framed block string for the stream. Reuse
+`crate::ui::permission::preview_block` (returns the framed `Vec<String>`) joined with `\n`, or a small
+sibling helper. The exact ANSI styling is a plan detail; it must render cleanly as streamed text.
 
-- Proto (`/Users/aicoder/Documents/ideation/gait/proto/log.proto`): add `optional string preview = 4;`
-  to the `ToolCall` message (currently ends at field 3).
-- `events::tool_call` (`src/proto/events.rs:81-88`): add a `preview: Option<String>` parameter, set on
-  the `pb::ToolCall`.
-- `execute_tool_call` (`src/turn.rs:176`): add a `preview: Option<String>` parameter; pass it to
-  `events::tool_call(...)`. The in-memory `AssistantPart::ToolCall` does **not** carry preview (the LLM
-  never needs the diff — preview is human-facing durable metadata only).
-- At each of the 4 `execute_tool_call` call sites:
-  - Auto / allow-listed execution paths (`:1006`, `:1113`, `:1216`): look up
-    `tool_previews.get(&tc.tool_call_id).cloned()` and pass it.
-  - Resume/approved path (`:604`): pass `None` — the preview is already in the `PermissionItem` from
-    when it was asked, so re-attaching to `ToolCall` would duplicate it.
+### 7. Read-back / rendering
 
-### 8. Read-back / rendering
+No proto change. `execute_tool_call` and the `ToolCall` event are untouched. `retrace.rs`'s `ToolCall`
+projection stays preview-blind (the model never sees the diff). The `always`-mode diff is purely an
+ephemeral stream delta — nothing to persist or render from the log.
 
-- `retrace.rs` `ToolCall` projection (`:307`) feeds the LLM message reconstruction and must keep
-  ignoring `preview` (the model doesn't see it).
-- The `preview` on the `ToolCall` event is durable, human-facing metadata for `gait status` /
-  transcript replay. The plan will locate the path that renders tool calls for humans and surface
-  `preview` there (a dim block under the tool-call line). If no such dedicated human render exists yet,
-  the minimum bar is that the field round-trips in the log (verified by a proto round-trip test) — a
-  richer status renderer can follow.
+### 8. Docs
 
-### 9. Docs
-
-- Update `CLAUDE.md` / `docs/architecture.md` boundary rule: preview content is produced by
-  `Tool::preview()`; `turn.rs` decides *when* to call it per the `preview` policy; the UI only renders.
-  (Supersedes the old "preview is populated in `permission()`" wording.)
+Update `CLAUDE.md` / `docs/architecture.md` boundary rule: preview content is produced by
+`Tool::preview()`; `turn.rs` decides *when* to call it per the `preview` policy (prompt, or ephemeral
+`delta` in `always` mode); the UI only renders. (Supersedes the old "preview is populated in
+`permission()`" wording.)
 
 ## Data Flow
 
 ```
-gait.jsonc { "preview": "always" } ──▶ GaitConfig.preview ──▶ TurnInput.preview_policy ──▶ run_turn
-                                                                                              │
-  gating loop, per tool call:                                                                 ▼
-   ├─ Tier 3 ask:   PermissionItem.preview = (policy≠Off) ? tool.preview(args) : None  ──emit──▶ log
-   └─ Tier 2 allow: if policy==Always { tool_previews[call_id] = tool.preview(args) }
-                                                       │
-        execution phase: execute_tool_call(tc, …, preview = tool_previews[call_id]) ──emit──▶ ToolCall{preview} in log
+gait.jsonc { "preview": "always" } ─▶ GaitConfig.preview ─▶ TurnInput.preview_policy ─▶ run_turn
+                                                                                            │
+  gating loop, per tool call:                                                               ▼
+   ├─ Tier 3 ask:   PermissionItem.preview = (policy≠Off) ? tool.preview(args) : None ─emit─▶ log (durable)
+   └─ Tier 2 allow: if policy==Always { emitter.delta(format(tool.preview(args))) }  ─delta─▶ stream (ephemeral)
 ```
 
 ## Error Handling
 
 `tool.preview()` is best-effort and infallible (`-> Option<String>`); any internal IO/parse failure
-returns `None`. The gating and execution paths never block or fail on a missing preview.
+returns `None`. The gating and execution paths never block or fail on a missing preview. A `None`
+preview in `always` mode simply streams nothing for that call.
 
 ## Testing
 
 **Tool trait / tools**
 - `EditTool::preview()` returns `Some` diff for a valid edit, `None` for a stale anchor.
 - `WriteTool::preview()`: existing→diff, new→full content, read-error→None.
-- `EditTool::permission()` / `WriteTool::permission()` now return `{display, patterns}` with no preview
-  (the field no longer exists on `PermissionRequest`).
+- `EditTool::permission()` / `WriteTool::permission()` return `{display, patterns}` and compile without
+  any `preview` field on `PermissionRequest`.
 
 **Config**
 - `gait.jsonc` with `"preview": "always"` / `"off"` / absent parses to the right `PreviewPolicy`
-  (absent → `OnAsk`). Unknown string → parse error surfaced as a warning, falls back to default.
+  (absent → `OnAsk`). Unknown string → parse warning, falls back to default (existing `load_config`
+  behavior).
 
-**Proto round-trip**
-- `ToolCall` with `preview: Some(...)` survives `events::tool_call` → log line → parse.
-
-**Turn behavior (integration)**
-- Policy `on-ask`: an auto-run edit emits a `ToolCall` with `preview == None`.
-- Policy `always`: an auto-run edit emits a `ToolCall` with `preview == Some(diff)`.
+**Turn behavior (integration, via the `Emitter`'s stream receiver — mirror `emitter.rs` tests)**
+- Policy `always`: an auto-run edit produces a `StreamItem::Delta` whose content contains the diff
+  (`-old`/`+new`), and NO preview is written to `log.jsonl`.
+- Policy `on-ask`: an auto-run edit produces no such delta.
 - Policy `off`: a gated edit's `PermissionItem.preview == None`.
 - Policy `on-ask`: a gated edit's `PermissionItem.preview == Some(diff)` (unchanged from today).
 
@@ -183,5 +177,6 @@ returns `None`. The gating and execution paths never block or fail on a missing 
 
 - Per-tool preview policy (one global policy is enough).
 - Showing previews to the LLM (preview is human-facing only).
-- A rich syntax-highlighted status renderer — a plain dim block is enough; durable round-trip is the bar.
+- Durable auto-run previews / `gait status --diffs` recomputation (recomputable later from edit args +
+  codebase git; not built now).
 - Truncation / size caps (consistent with the existing preview feature).
