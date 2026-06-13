@@ -492,9 +492,9 @@ impl Projection for ActivePermissions {
                     let scope = pb::Scope::try_from(item.scope)
                         .unwrap_or(pb::Scope::Unspecified);
                     match (scope, decision) {
-                        (pb::Scope::Session, pb::Decision::Approve) => { state.session.insert(pat); }
+                        (pb::Scope::Session, pb::Decision::Allow) => { state.session.insert(pat); }
                         (pb::Scope::Session, pb::Decision::Deny) => { state.session.remove(&pat); } // forward revoke
-                        (pb::Scope::Once, pb::Decision::Approve) => { state.once.insert(pat); }
+                        (pb::Scope::Once, pb::Decision::Allow) => { state.once.insert(pat); }
                         // agent/global via config seed; once-deny is a no-op.
                         _ => {}
                     }
@@ -773,7 +773,7 @@ mod tests {
                 tool_args: serde_json::Value::Null,
             }]),
             events::permissions_reply("user".into(), &[PermissionsReplyItem {
-                id: "tc1".into(), decision: "approve".into(), text: None, scope: None,
+                id: "tc1".into(), decision: "allow".into(), text: None, scope: None,
             }]),
         ];
         let messages = messages(&mint_events(bodies)).unwrap();
@@ -1108,10 +1108,10 @@ mod tests {
         use std::collections::{HashMap, HashSet};
         let evs = mint_events(vec![
             events::permissions_reply("user".into(), &[PermissionsReplyItem {
-                id: "1".into(), decision: "approve".into(),
+                id: "1".into(), decision: "allow".into(),
                 text: Some("shell:cargo test".into()), scope: Some("session".into()) }]),
             events::permissions_reply("user".into(), &[PermissionsReplyItem {
-                id: "2".into(), decision: "approve".into(),
+                id: "2".into(), decision: "allow".into(),
                 text: Some("shell:ls".into()), scope: Some("once".into()) }]),
             wire::body(payload::Kind::TurnComplete(pb::TurnComplete::default())),
         ]);
@@ -1125,7 +1125,7 @@ mod tests {
         use std::collections::{HashMap, HashSet};
         let evs = mint_events(vec![
             events::permissions_reply("user".into(), &[PermissionsReplyItem {
-                id: "1".into(), decision: "approve".into(),
+                id: "1".into(), decision: "allow".into(),
                 text: Some("shell:rm".into()), scope: Some("session".into()) }]),
             events::permissions_reply("user".into(), &[PermissionsReplyItem {
                 id: "2".into(), decision: "deny".into(),
@@ -1141,7 +1141,7 @@ mod tests {
     fn fold_effective_allow_includes_session_grant() {
         let evs = mint_events(vec![
             events::permissions_reply("user".into(), &[PermissionsReplyItem {
-                id: "1".into(), decision: "approve".into(),
+                id: "1".into(), decision: "allow".into(),
                 text: Some("shell:git status".into()), scope: Some("session".into()) }]),
         ]);
         let res = fold(&evs, AgentState::default()).unwrap();

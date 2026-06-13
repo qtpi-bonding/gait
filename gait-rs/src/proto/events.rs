@@ -409,7 +409,7 @@ fn agent_status(s: &str) -> i32 {
 
 fn decision(s: &str) -> i32 {
     let d = match s {
-        "approve" => pb::Decision::Approve,
+        "allow" | "approve" => pb::Decision::Allow, // "approve" kept for old logs
         "deny" => pb::Decision::Deny,
         _ => pb::Decision::Unspecified,
     };

@@ -162,13 +162,13 @@ impl ReplBuilder {
 
             let perm = match &choice {
                 crate::permission::PermissionChoice::Once(p) =>
-                    PermissionsReplyItem { id: item.id.clone(), decision: "approve".into(), text: Some(p.clone()), scope: Some("once".into()) },
+                    PermissionsReplyItem { id: item.id.clone(), decision: "allow".into(), text: Some(p.clone()), scope: Some("once".into()) },
                 crate::permission::PermissionChoice::Session(p) =>
-                    PermissionsReplyItem { id: item.id.clone(), decision: "approve".into(), text: Some(p.clone()), scope: Some("session".into()) },
+                    PermissionsReplyItem { id: item.id.clone(), decision: "allow".into(), text: Some(p.clone()), scope: Some("session".into()) },
                 crate::permission::PermissionChoice::Agent(p) =>
-                    PermissionsReplyItem { id: item.id.clone(), decision: "approve".into(), text: Some(p.clone()), scope: Some("agent".into()) },
+                    PermissionsReplyItem { id: item.id.clone(), decision: "allow".into(), text: Some(p.clone()), scope: Some("agent".into()) },
                 crate::permission::PermissionChoice::Global(p) =>
-                    PermissionsReplyItem { id: item.id.clone(), decision: "approve".into(), text: Some(p.clone()), scope: Some("global".into()) },
+                    PermissionsReplyItem { id: item.id.clone(), decision: "allow".into(), text: Some(p.clone()), scope: Some("global".into()) },
                 crate::permission::PermissionChoice::Reject =>
                     PermissionsReplyItem { id: item.id.clone(), decision: "deny".into(), text: None, scope: None },
             };

@@ -571,7 +571,7 @@ pub async fn run_turn(
             for (id, items) in &by_id {
                 // All-or-nothing: all segments of this tool_call_id must be approved
                 let all_approved = items.iter().all(|item| {
-                    decisions.get(item.id.as_str()).copied() == Some(Decision::Approve)
+                    decisions.get(item.id.as_str()).copied() == Some(Decision::Allow)
                 });
 
                 if all_approved {
@@ -1834,7 +1834,7 @@ mod tests {
         wire::append(&tx_path, events::user_turn("run echo".into(), None, None)).unwrap();
         wire::append(&tx_path, events::permissions(&[perm_item])).unwrap();
         wire::append(&tx_path, events::permissions_reply("user".into(), &[PermissionsReplyItem {
-            id: "tc-resume-1".into(), decision: "approve".into(),
+            id: "tc-resume-1".into(), decision: "allow".into(),
             text: Some("shell:echo *".into()), scope: None,
         }])).unwrap();
 
@@ -1982,7 +1982,7 @@ mod tests {
         }])).unwrap();
         wire::append(&tx_path, events::permissions_reply("user".into(), &[PermissionsReplyItem {
             id: "tc-scope-1".into(),
-            decision: "approve".into(),
+            decision: "allow".into(),
             text: None,
             scope: Some("agent".into()),
         }])).unwrap();

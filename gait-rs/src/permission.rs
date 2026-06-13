@@ -115,7 +115,7 @@ pub fn execute_approve(
             };
             reply_items.push(crate::session::transcript::PermissionsReplyItem {
                 id: item.id.clone(),
-                decision: "approve".to_string(),
+                decision: "allow".to_string(),
                 text: None,
                 scope: Some(scope_str.to_string()),
             });
