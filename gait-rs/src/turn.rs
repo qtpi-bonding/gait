@@ -366,6 +366,7 @@ async fn apply_curate_filter(
         mcp_registry: vec![],
         mcp_clients: std::collections::HashMap::new(),
         skill_registry: vec![],
+        plugin_registry: vec![],
         config_enabled: std::collections::HashSet::new(),
         output_schema_retries: 3,
         result_schema: None,
@@ -2281,7 +2282,7 @@ mod tests {
             content: "TDD skill content".into(),
             enabled: false,
         };
-        let load_tool = crate::tools::LoadTool::new(vec![], vec![skill]);
+        let load_tool = crate::tools::LoadTool::new(vec![], vec![skill], vec![]);
         let output_tool = OutputTool::new();
 
         run_turn_test_call(

@@ -2,7 +2,7 @@ use serde::Deserialize;
 use schemars::JsonSchema;
 use serde_json::Value;
 use crate::types::{Tool, ToolPermission, PermissionRequest, ExecutionSignal};
-use crate::config::{McpToolDef, SkillDef};
+use crate::config::{McpToolDef, SkillDef, WasmPluginDef};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct LoadParams {
@@ -15,13 +15,14 @@ struct LoadParams {
 pub struct LoadTool {
     mcp_registry: Vec<McpToolDef>,
     skill_registry: Vec<SkillDef>,
+    plugin_registry: Vec<WasmPluginDef>,
     parameters: Value,
 }
 
 impl LoadTool {
-    pub fn new(mcp_registry: Vec<McpToolDef>, skill_registry: Vec<SkillDef>) -> Self {
+    pub fn new(mcp_registry: Vec<McpToolDef>, skill_registry: Vec<SkillDef>, plugin_registry: Vec<WasmPluginDef>) -> Self {
         let parameters = crate::tools::make_schema::<LoadParams>();
-        Self { mcp_registry, skill_registry, parameters }
+        Self { mcp_registry, skill_registry, plugin_registry, parameters }
     }
 }
 
@@ -70,6 +71,13 @@ impl Tool for LoadTool {
             return Ok(Value::String(def.content.clone()));
         }
 
+        if let Some(def) = self.plugin_registry.iter().find(|d| d.name == name) {
+            return Ok(Value::String(format!(
+                "Plugin '{}' enabled (execution stubbed; wasm runtime not yet implemented).",
+                def.name
+            )));
+        }
+
         Err(anyhow::anyhow!(
             "enable: unknown '{}'. Check <loadable-index> for available items.", name
         ))
@@ -108,35 +116,35 @@ mod tests {
 
     #[tokio::test]
     async fn load_mcp_returns_schema() {
-        let tool = LoadTool::new(make_mcp_registry(), make_skill_registry());
+        let tool = LoadTool::new(make_mcp_registry(), make_skill_registry(), vec![]);
         let result = tool.execute(serde_json::json!({"name":"slack_send","enabled":true})).await.unwrap();
         assert!(result.as_str().unwrap().contains("channel"));
     }
 
     #[tokio::test]
     async fn load_skill_returns_content() {
-        let tool = LoadTool::new(make_mcp_registry(), make_skill_registry());
+        let tool = LoadTool::new(make_mcp_registry(), make_skill_registry(), vec![]);
         let result = tool.execute(serde_json::json!({"name":"tdd","enabled":true})).await.unwrap();
         assert!(result.as_str().unwrap().contains("TDD"));
     }
 
     #[tokio::test]
     async fn disable_returns_marker() {
-        let tool = LoadTool::new(make_mcp_registry(), make_skill_registry());
+        let tool = LoadTool::new(make_mcp_registry(), make_skill_registry(), vec![]);
         let result = tool.execute(serde_json::json!({"name":"tdd","enabled":false})).await.unwrap();
         assert_eq!(result.as_str().unwrap(), "disabled: tdd");
     }
 
     #[tokio::test]
     async fn unknown_name_returns_helpful_error() {
-        let tool = LoadTool::new(make_mcp_registry(), make_skill_registry());
+        let tool = LoadTool::new(make_mcp_registry(), make_skill_registry(), vec![]);
         let err = tool.execute(serde_json::json!({"name":"no_such","enabled":true})).await;
         assert!(err.unwrap_err().to_string().contains("unknown"));
     }
 
     #[test]
     fn permission_has_enable_prefix_patterns() {
-        let tool = LoadTool::new(vec![], vec![]);
+        let tool = LoadTool::new(vec![], vec![], vec![]);
         let perm = tool.permission(&serde_json::json!({"name":"tdd","enabled":true}));
         match perm {
             ToolPermission::RequiresApproval(reqs) => {
@@ -148,7 +156,7 @@ mod tests {
 
     #[test]
     fn execution_signal_is_load_context() {
-        assert_eq!(LoadTool::new(vec![], vec![]).execution_signal(),
+        assert_eq!(LoadTool::new(vec![], vec![], vec![]).execution_signal(),
             ExecutionSignal::LoadContext);
     }
     #[tokio::test]
@@ -169,7 +177,7 @@ mod tests {
         assert_eq!(skill_registry[0].description, "Retrospective interview workflow");
 
         // LoadTool returns the markdown body
-        let tool = LoadTool::new(vec![], skill_registry);
+        let tool = LoadTool::new(vec![], skill_registry, vec![]);
         let result = tool.execute(serde_json::json!({"name":"retro","enabled":true})).await.unwrap();
         assert!(result.as_str().unwrap().contains("Retro"));
     }
@@ -196,6 +204,36 @@ mod tests {
         assert!(idx.contains("refactor"), "index must list skill name");
         assert!(idx.contains("Refactoring patterns"), "index must show description");
         assert!(idx.contains("enabled=true"), "disk skill defaults to enabled=true");
+    }
+
+    #[tokio::test]
+    async fn enable_plugin_returns_stub_message() {
+        use crate::config::WasmPluginDef;
+        let plugins = vec![WasmPluginDef {
+            name: "myfmt".into(),
+            path: "/tmp/myfmt.wasm".into(),
+            enabled: false,
+            allow_exec: vec![],
+            allow_fs: vec![],
+        }];
+        let tool = LoadTool::new(vec![], vec![], plugins);
+        let result = tool.execute(serde_json::json!({"name": "myfmt", "enabled": true})).await.unwrap();
+        assert!(result.as_str().unwrap().contains("myfmt"), "stub should mention name: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn disable_plugin_returns_marker() {
+        use crate::config::WasmPluginDef;
+        let plugins = vec![WasmPluginDef {
+            name: "myfmt".into(),
+            path: "/tmp/myfmt.wasm".into(),
+            enabled: true,
+            allow_exec: vec![],
+            allow_fs: vec![],
+        }];
+        let tool = LoadTool::new(vec![], vec![], plugins);
+        let result = tool.execute(serde_json::json!({"name": "myfmt", "enabled": false})).await.unwrap();
+        assert_eq!(result.as_str().unwrap(), "disabled: myfmt");
     }
 
 }

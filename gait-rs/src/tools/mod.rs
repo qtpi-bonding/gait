@@ -110,6 +110,7 @@ pub fn builtin_tools(
     ctx: ToolCtx,
     mcp_tools: Vec<McpToolDef>,
     skills: Vec<SkillDef>,
+    plugins: Vec<crate::config::WasmPluginDef>,
     repos: crate::git::Repos,
 ) -> Vec<Box<dyn Tool>> {
     vec![
@@ -123,7 +124,7 @@ pub fn builtin_tools(
         OutputTool::new().boxed(),
         CodesearchTool::new(ctx.clone()).boxed(),
         WebfetchTool::new().boxed(),
-        LoadTool::new(mcp_tools, skills).boxed(),
+        LoadTool::new(mcp_tools, skills, plugins).boxed(),
         SpawnAgentTool::new(ctx.clone(), repos.clone()).boxed(),
         ListAgentsTool::new(ctx.clone()).boxed(),
         ClarifyTool::new().boxed(),
@@ -141,7 +142,7 @@ mod tests {
     fn builtin_tools_returns_fifteen() {
         let tools = builtin_tools(
             ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "stest".into()),
-            vec![], vec![],
+            vec![], vec![], vec![],
             crate::git::Repos::production(),
         );
         assert_eq!(tools.len(), 15);
@@ -151,7 +152,7 @@ mod tests {
     fn all_tool_names_unique() {
         let tools = builtin_tools(
             ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "stest".into()),
-            vec![], vec![],
+            vec![], vec![], vec![],
             crate::git::Repos::production(),
         );
         let mut names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
@@ -165,7 +166,7 @@ mod tests {
     fn spawn_agent_and_list_agents_present() {
         let tools = builtin_tools(
             ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "stest".into()),
-            vec![], vec![],
+            vec![], vec![], vec![],
             crate::git::Repos::production(),
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
@@ -177,7 +178,7 @@ mod tests {
     fn enable_meta_tool_present() {
         let tools = builtin_tools(
             ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "stest".into()),
-            vec![], vec![],
+            vec![], vec![], vec![],
             crate::git::Repos::production(),
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();

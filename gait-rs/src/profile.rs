@@ -31,6 +31,7 @@ pub struct ResolvedProfile {
     pub mcp_registry: Vec<crate::config::McpToolDef>,
     pub mcp_clients: std::collections::HashMap<String, std::sync::Arc<crate::mcp_client::McpClient>>,
     pub skill_registry: Vec<crate::config::SkillDef>,
+    pub plugin_registry: Vec<crate::config::WasmPluginDef>,
     pub config_enabled: std::collections::HashSet<String>,
     pub output_schema_retries: u8,
     pub result_schema: Option<serde_json::Value>,
@@ -173,6 +174,7 @@ impl Profile {
             crate::tools::ToolCtx::new(codebase_path.clone(), gait_dir.clone(), session_id.clone()),
             mcp_registry.clone(),
             self.skills.clone(),
+            self.wasm_plugins.clone(),
             repos,
         );
         for ct in &self.config_tools {
@@ -205,6 +207,7 @@ impl Profile {
             mcp_registry,
             mcp_clients,
             skill_registry: self.skills,
+            plugin_registry: self.wasm_plugins,
             config_enabled: self.config_enabled,
             output_schema_retries: self.output_schema_retries,
             result_schema: self.result_schema,
@@ -233,6 +236,7 @@ impl ResolvedProfile {
             mcp_registry: vec![],
             mcp_clients: std::collections::HashMap::new(),
             skill_registry: vec![],
+            plugin_registry: vec![],
             config_enabled: std::collections::HashSet::new(),
             output_schema_retries: 3,
             result_schema: None,
@@ -338,6 +342,7 @@ mod tests {
         assert_eq!(resolved.provider.model_id(), "claude-x");
         assert!(resolved.permissioned.tools().len() >= 15, "expected the builtin tools");
         assert_eq!(resolved.permissioned.allow, vec!["read".to_string()]);
+        assert_eq!(resolved.plugin_registry.len(), 0, "expected empty plugin registry");
     }
     #[test]
     fn merge_deny_unions_and_dedups() {

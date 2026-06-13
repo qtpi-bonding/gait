@@ -84,7 +84,7 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
 
     let tools = builtin_tools(
         gait_ai::tools::ToolCtx::new(ws.path().to_path_buf(), ws.path().to_path_buf(), "sparent001".into()),
-        vec![], vec![],
+        vec![], vec![], vec![],
         gait_ai::git::Repos::production(),
     );
 
