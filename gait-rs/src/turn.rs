@@ -245,6 +245,23 @@ async fn execute_tool_call(
     Ok((assistant_part, tool_result))
 }
 
+/// In `always` mode, stream a tool's preview (e.g. a diff) live on the ephemeral
+/// `delta` channel — never written to the log. No-op for other policies or when
+/// the tool has no preview.
+fn stream_preview_if_always(
+    policy: crate::config::PreviewPolicy,
+    tool: Option<&Box<dyn Tool>>,
+    args: &serde_json::Value,
+    emitter: &Emitter,
+) {
+    if policy != crate::config::PreviewPolicy::Always {
+        return;
+    }
+    if let Some(p) = tool.and_then(|t| t.preview(args)) {
+        emitter.delta(format!("\n{}\n", p));
+    }
+}
+
 /// Build a (AssistantPart, ToolResult) pair representing a tool-call error
 /// WITHOUT emitting events. Use when `execute_tool_call` fails — the model
 /// still gets a result back so the turn can continue.
@@ -889,6 +906,7 @@ pub async fn run_turn(
             };
 
             if is_allowed {
+                stream_preview_if_always(preview_policy, tool, &tc.args, emitter);
                 let prefix: Option<String> = if auto {
                     Some("[Auto mode.]".to_string())
                 } else {
@@ -1304,6 +1322,7 @@ mod tests {
     use crate::provider::ProviderError;
     use crate::types::ToolDef;
     use crate::tools::OutputTool;
+    use crate::hashline::compute_line_hash;
     use async_stream::stream;
     #[test]
     fn turn_context_is_wrapped_in_status_tag() {
@@ -2400,4 +2419,51 @@ mod tests {
         assert!(!names.contains(&"shell"), "shell should be filtered; got: {:?}", names);
     }
 
+
+    // ── Task 5: always policy — stream edit preview live (ephemeral delta) ────
+
+    #[tokio::test]
+    async fn always_policy_streams_edit_preview_delta() {
+        use crate::config::PreviewPolicy;
+        use crate::proto::gait::log::v1::stream_item::Item;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.rs");
+        std::fs::write(&path, "fn foo() {\n    bar();\n}").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = content.split('\n').collect();
+        let hash = compute_line_hash(2, lines[1]);
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let emitter = crate::proto::Emitter::new(dir.path().join("log.jsonl"), tx);
+        let ctx = crate::tools::ToolCtx::new(dir.path().to_path_buf(), dir.path().to_path_buf(), "t".into());
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(crate::tools::EditTool::new(ctx))];
+        let args = serde_json::json!({
+            "file_path": "f.rs",
+            "edits": [{"op": "replace", "pos": format!("2#{}", hash), "lines": ["    baz();"]}]
+        });
+
+        stream_preview_if_always(PreviewPolicy::Always, tools.iter().find(|t| t.name() == "edit"), &args, &emitter);
+
+        // No transcript write (ephemeral).
+        assert!(!dir.path().join("log.jsonl").exists());
+        // A Delta carrying the diff was streamed.
+        let item = rx.try_recv().expect("a delta").item.unwrap();
+        let Item::Delta(d) = item else { panic!("expected Delta") };
+        assert!(d.content.contains("-    bar();") && d.content.contains("+    baz();"), "delta: {}", d.content);
+    }
+
+    #[tokio::test]
+    async fn on_ask_policy_streams_nothing() {
+        use crate::config::PreviewPolicy;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.rs"), "fn foo() {}").unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let emitter = crate::proto::Emitter::new(dir.path().join("log.jsonl"), tx);
+        let ctx = crate::tools::ToolCtx::new(dir.path().to_path_buf(), dir.path().to_path_buf(), "t".into());
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(crate::tools::EditTool::new(ctx))];
+        let args = serde_json::json!({"file_path": "f.rs", "edits": []});
+
+        stream_preview_if_always(PreviewPolicy::OnAsk, tools.iter().find(|t| t.name() == "edit"), &args, &emitter);
+        assert!(rx.try_recv().is_err(), "on-ask must stream nothing");
+    }
 }
