@@ -15,7 +15,7 @@ pub enum PermissionChoice {
     /// Approve for the rest of this session (log-derived; no config file).
     Session(String),
     /// Deny — model receives "permission denied" and can react.
-    Reject,
+    Deny,
 }
 
 /// Persist a `PermissionChoice` to its backing store.
@@ -50,29 +50,29 @@ pub fn save_choice(
         PermissionChoice::Session(_pattern) => {
             // No side effect — derived from the PermissionsReply(session) log event.
         }
-        PermissionChoice::Reject => {}
+        PermissionChoice::Deny => {}
     }
     Ok(())
 }
 
 #[derive(Debug, Clone)]
-pub enum ApproveScope {
+pub enum AllowScope {
     Global,
     Agent,
     Once,
 }
 
 #[derive(Debug, Clone)]
-pub struct ApproveParams {
-    pub scope: ApproveScope,
+pub struct AllowParams {
+    pub scope: AllowScope,
     pub pattern: Option<String>,
 }
 
 /// Execute an approval against a session's pending permissions.
-pub fn execute_approve(
+pub fn execute_allow(
     gait_dir: &std::path::Path,
     session_id: &str,
-    params: &ApproveParams,
+    params: &AllowParams,
     agent_path: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
     let tx_path = gait_dir.join("sessions").join(session_id).join("log.jsonl");
@@ -103,15 +103,15 @@ pub fn execute_approve(
 
         if covered {
             let choice = match &params.scope {
-                ApproveScope::Global => PermissionChoice::Global(effective_pattern.clone()),
-                ApproveScope::Agent => PermissionChoice::Agent(effective_pattern.clone()),
-                ApproveScope::Once => PermissionChoice::Once(effective_pattern.clone()),
+                AllowScope::Global => PermissionChoice::Global(effective_pattern.clone()),
+                AllowScope::Agent => PermissionChoice::Agent(effective_pattern.clone()),
+                AllowScope::Once => PermissionChoice::Once(effective_pattern.clone()),
             };
             save_choice(&choice, gait_dir, session_id, agent_path)?;
             let scope_str = match &params.scope {
-                ApproveScope::Global => "global",
-                ApproveScope::Agent => "agent",
-                ApproveScope::Once => "once",
+                AllowScope::Global => "global",
+                AllowScope::Agent => "agent",
+                AllowScope::Once => "once",
             };
             reply_items.push(crate::session::transcript::PermissionsReplyItem {
                 id: item.id.clone(),

@@ -101,8 +101,8 @@ fn usage() -> ! {
     eprintln!("  models   [<filter>]");
     eprintln!("  workflow <run|list|continue|abort|log> [args...]");
     eprintln!("  chat     [--gait-dir <path>] [--codebase <path>] [--agent <name>] [--session <id>]");
-    eprintln!("  approve  <session-id> [--pattern <pat>] [--scope <global|agent|once>] [--gait-dir <path>] [--agent <name>]");
-    eprintln!("  reject   <session-id> [--gait-dir <path>]");
+    eprintln!("  allow    <session-id> [--pattern <pat>] [--scope <global|agent|once>] [--gait-dir <path>] [--agent <name>]  (was: approve)");
+    eprintln!("  deny     <session-id> [--gait-dir <path>]                                                              (was: reject)");
     eprintln!("  status   <session-id> [--gait-dir <path>] [--json]");
     eprintln!("  load     <mcp|skill> <name> [flags] [--yes]");
     eprintln!("  unload   <mcp|skill> <name>");
@@ -135,8 +135,8 @@ async fn main() {
         "models"   => cmd_models(&args[2..]).await,
         "workflow" => cmd_workflow(&args[2..]).await,
         "chat" => cmd_chat(&args[2..]).await,
-        "approve"  => cmd_approve(&args[2..]),
-        "reject"   => cmd_reject(&args[2..]),
+        "allow" | "approve"  => cmd_allow(&args[2..]),
+        "deny"  | "reject"   => cmd_deny(&args[2..]),
         "status"   => cmd_status(&args[2..]),
         "load"     => {
             let rest: Vec<String> = args[2..].to_vec();
@@ -963,13 +963,13 @@ async fn cmd_chat(argv: &[String]) {
         std::process::exit(1);
     }
 }
-fn cmd_approve(argv: &[String]) {
-    use gait_ai::permission::{execute_approve, ApproveParams, ApproveScope};
+fn cmd_allow(argv: &[String]) {
+    use gait_ai::permission::{execute_allow, AllowParams, AllowScope};
     use gait_ai::agent_frontmatter::{resolve_markdown_context_path, MarkdownKind};
 
     let mut session_id: Option<String> = None;
     let mut pattern: Option<String> = None;
-    let mut scope: Option<ApproveScope> = None;
+    let mut scope: Option<AllowScope> = None;
     let mut agent_name: Option<String> = None;
     let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
         eprintln!("[gait] {e}");
@@ -984,9 +984,9 @@ fn cmd_approve(argv: &[String]) {
             "--scope"     => {
                 i += 1;
                 scope = match argv.get(i).map(|s| s.as_str()) {
-                    Some("global") => Some(ApproveScope::Global),
-                    Some("agent")  => Some(ApproveScope::Agent),
-                    Some("once")   => Some(ApproveScope::Once),
+                    Some("global") => Some(AllowScope::Global),
+                    Some("agent")  => Some(AllowScope::Agent),
+                    Some("once")   => Some(AllowScope::Once),
                     Some(other) => {
                         eprintln!("[gait] error: unknown --scope '{}' (expected global|agent|once)", other);
                         std::process::exit(1);
@@ -1007,24 +1007,24 @@ fn cmd_approve(argv: &[String]) {
     let session_id = match session_id {
         Some(id) => id,
         None => {
-            eprintln!("usage: gait approve <session-id> [--pattern <pat>] [--scope <global|agent|once>] [--gait-dir <path>] [--agent <name>]");
+            eprintln!("usage: gait allow <session-id> [--pattern <pat>] [--scope <global|agent|once>] [--gait-dir <path>] [--agent <name>]");
             std::process::exit(1);
         }
     };
 
     // Default scope is Once (single-turn only) when not specified.
-    let scope = scope.unwrap_or(ApproveScope::Once);
+    let scope = scope.unwrap_or(AllowScope::Once);
     let agent_path = agent_name.as_deref()
         .map(|n| resolve_markdown_context_path(&gait_dir, MarkdownKind::Agent, n));
 
-    let params = ApproveParams { scope, pattern };
-    if let Err(e) = execute_approve(&gait_dir, &session_id, &params, agent_path.as_deref()) {
+    let params = AllowParams { scope, pattern };
+    if let Err(e) = execute_allow(&gait_dir, &session_id, &params, agent_path.as_deref()) {
         eprintln!("[gait] error: {}", e);
         std::process::exit(1);
     }
     eprintln!("[gait] approved {} (scope: {:?})", session_id, params.scope);
 }
-fn cmd_reject(argv: &[String]) {
+fn cmd_deny(argv: &[String]) {
     use gait_ai::session::transcript::{session_state, write_permissions_reply, PermissionsReplyItem, SessionState};
 
     let mut session_id: Option<String> = None;
@@ -1046,7 +1046,7 @@ fn cmd_reject(argv: &[String]) {
     let session_id = match session_id {
         Some(id) => id,
         None => {
-            eprintln!("usage: gait reject <session-id> [--gait-dir <path>]");
+            eprintln!("usage: gait deny <session-id> [--gait-dir <path>]");
             std::process::exit(1);
         }
     };
@@ -1081,7 +1081,7 @@ fn cmd_reject(argv: &[String]) {
         eprintln!("[gait] error: {}", e);
         std::process::exit(1);
     }
-    eprintln!("[gait] rejected {} pending permission(s) for session {}", items.len(), session_id);
+    eprintln!("[gait] denied {} pending permission(s) for session {}", items.len(), session_id);
 }
 fn cmd_status(argv: &[String]) {
     use gait_ai::session::transcript::{session_state, SessionState};

@@ -152,7 +152,7 @@ impl ReplBuilder {
                         Some(c) => break c,
                         None => eprintln!("  unrecognized — e.g. 1, s, s1, 1a, r"),
                     },
-                    Err(_) => break crate::permission::PermissionChoice::Reject,
+                    Err(_) => break crate::permission::PermissionChoice::Deny,
                 }
             };
 
@@ -169,7 +169,7 @@ impl ReplBuilder {
                     PermissionsReplyItem { id: item.id.clone(), decision: "allow".into(), text: Some(p.clone()), scope: Some("agent".into()) },
                 crate::permission::PermissionChoice::Global(p) =>
                     PermissionsReplyItem { id: item.id.clone(), decision: "allow".into(), text: Some(p.clone()), scope: Some("global".into()) },
-                crate::permission::PermissionChoice::Reject =>
+                crate::permission::PermissionChoice::Deny =>
                     PermissionsReplyItem { id: item.id.clone(), decision: "deny".into(), text: None, scope: None },
             };
             reply_items.push(perm);

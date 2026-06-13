@@ -18,7 +18,7 @@ pub fn prompt_permission(
         eprintln!("  {}[{}] {}{}", DIM_FG, i + 1, pat, RESET);
     }
     eprintln!();
-    eprintln!("  {}number = once · s = session · a = agent · r = reject   (e.g. s2, 2s){}", DIM_FG, RESET);
+    eprintln!("  {}number = once · s = session · a = agent · r = deny   (e.g. s2, 2s){}", DIM_FG, RESET);
     loop {
         eprint!("  {}>{} {}", theme.accent.fg(), RESET, theme.user_msg.fg());
         let _ = std::io::stderr().flush();
@@ -26,7 +26,7 @@ pub fn prompt_permission(
         match std::io::stdin().lock().read_line(&mut input) {
             Ok(0) | Err(_) => {
                 eprint!("{}", RESET);
-                return crate::permission::PermissionChoice::Reject;
+                return crate::permission::PermissionChoice::Deny;
             }
             Ok(_) => { eprint!("{}", RESET); }
         }
@@ -48,7 +48,7 @@ pub(crate) fn parse_permission_response(
 ) -> Option<crate::permission::PermissionChoice> {
     use crate::permission::PermissionChoice;
     let s = input.trim().to_lowercase();
-    if s == "r" || s == "reject" { return Some(PermissionChoice::Reject); }
+    if s == "r" || s == "deny" || s == "reject" { return Some(PermissionChoice::Deny); }
     if s.is_empty() { return None; }
 
     // Tokenize into at most one scope letter + an optional digit run, any order.
@@ -87,7 +87,7 @@ pub(crate) fn parse_permission_response(
 mod tests {
     use super::*;
 
-    use crate::permission::PermissionChoice::{Once, Session, Agent, Reject};
+    use crate::permission::PermissionChoice::{Once, Session, Agent, Deny};
 
     fn pats() -> Vec<String> {
         vec!["shell:cargo test *".to_string(), "shell:cargo *".to_string()]
@@ -121,8 +121,9 @@ mod tests {
 
     #[test]
     fn reject_short_circuits() {
-        assert_eq!(parse_permission_response("r", &[]), Some(Reject));
-        assert_eq!(parse_permission_response("reject", &pats()), Some(Reject));
+        assert_eq!(parse_permission_response("r", &[]), Some(Deny));
+        assert_eq!(parse_permission_response("deny", &pats()), Some(Deny));
+        assert_eq!(parse_permission_response("reject", &pats()), Some(Deny)); // backward-compat alias
     }
 
     #[test]
