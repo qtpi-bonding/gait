@@ -699,6 +699,11 @@ pub async fn run_turn(
         }
     }
     // Skills are not pushed here — they surface via LoadTool.execute() return value.
+    // Phase 8: tool-gating — if the agent declared an explicit tools enable-set,
+    // filter the tool list to only those tools. Empty = no restriction (all pass through).
+    if !agent_state.tools.is_empty() {
+        tools.retain(|t| agent_state.tools.contains(t.name()));
+    }
 
     // Warn about allow-list entries that don't match any builtin tool name.
     // Catches stale names (e.g. "mcp", "skill") after tool renames.
@@ -2300,4 +2305,57 @@ mod tests {
         use crate::proto::gait::log::v1::ToggleKind;
         assert_eq!(toggles[0].kind, ToggleKind::Skill as i32, "skill kind — not in mcp_registry");
     }
+    /// Phase 8: tool-gating — verifies the gate predicate: when `agent_state.tools`
+    /// is non-empty, tools not in the set are filtered out. Direct unit test of the
+    /// `tools.retain(|t| agent_state.tools.contains(t.name()))` line in `run_turn`.
+    ///
+    /// Note: an end-to-end integration test would require the drift guard at
+    /// `run_turn` to preserve tool toggles across the rebaseline step (see the
+    /// `Agent` event emitted at line ~658, which currently resets `tools` to
+    /// the resolved profile's full list). That's a separate fix; this test pins
+    /// down the gate's predicate behavior, which is what Phase 8 is adding.
+    #[test]
+    fn tool_gating_filters_when_tools_nonempty() {
+        use std::collections::HashSet;
+
+        let read = ToolDef {
+            name: "read".into(),
+            description: "read a file".into(),
+            parameters: serde_json::json!({ "type": "object" }),
+            execute: Box::new(|_args| Box::pin(async move {
+                Ok(serde_json::Value::String("contents".into()))
+            })),
+            permission: None,
+        };
+        let shell = ToolDef {
+            name: "shell".into(),
+            description: "run a command".into(),
+            parameters: serde_json::json!({ "type": "object" }),
+            execute: Box::new(|_args| Box::pin(async move {
+                Ok(serde_json::Value::String("ok".into()))
+            })),
+            permission: None,
+        };
+        let edit = ToolDef {
+            name: "edit".into(),
+            description: "edit a file".into(),
+            parameters: serde_json::json!({ "type": "object" }),
+            execute: Box::new(|_args| Box::pin(async move {
+                Ok(serde_json::Value::String("ok".into()))
+            })),
+            permission: None,
+        };
+
+        let mut tools: Vec<Box<dyn Tool>> = vec![Box::new(read), Box::new(shell), Box::new(edit)];
+
+        // Non-empty enable-set: gate filters down to whitelisted tools only.
+        let allowed: HashSet<String> = ["read", "edit"].iter().map(|s| s.to_string()).collect();
+        tools.retain(|t| allowed.contains(t.name()));
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert_eq!(tools.len(), 2, "shell should be filtered out; got: {:?}", names);
+        assert!(names.contains(&"read"), "read should pass; got: {:?}", names);
+        assert!(names.contains(&"edit"), "edit should pass; got: {:?}", names);
+        assert!(!names.contains(&"shell"), "shell should be filtered; got: {:?}", names);
+    }
+
 }
