@@ -177,6 +177,7 @@ impl Tool for ReadTool {
         ToolPermission::RequiresApproval(vec![PermissionRequest {
             display: rel.clone(),
             patterns: path_patterns("read", &rel),
+            preview: None,
         }])
     }
 }

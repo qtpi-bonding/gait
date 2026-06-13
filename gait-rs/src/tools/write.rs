@@ -60,6 +60,7 @@ impl Tool for WriteTool {
         ToolPermission::RequiresApproval(vec![PermissionRequest {
             display: rel.clone(),
             patterns: path_patterns("write", &rel),
+            preview: None,
         }])
     }
 }

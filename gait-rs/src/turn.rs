@@ -864,6 +864,7 @@ pub async fn run_turn(
                     crate::types::PermissionRequest {
                         display: tc.tool_name.clone(),
                         patterns: vec![tc.tool_name.clone()],
+                        preview: None,
                     }
                 ]));
 
@@ -939,6 +940,7 @@ pub async fn run_turn(
                     crate::types::PermissionRequest {
                         display: tc.tool_name.clone(),
                         patterns: vec![tc.tool_name.clone()],
+                        preview: None,
                     }
                 ]));
             let pattern = if let ToolPermission::RequiresApproval(requests) = &perm {

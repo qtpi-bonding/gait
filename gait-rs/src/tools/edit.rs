@@ -157,6 +157,7 @@ impl Tool for EditTool {
         ToolPermission::RequiresApproval(vec![PermissionRequest {
             display: rel.clone(),
             patterns: path_patterns("edit", &rel),
+            preview: None,
         }])
     }
 }
