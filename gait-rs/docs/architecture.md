@@ -218,9 +218,13 @@ gait_dir/
 | Turn → UI | `TurnResult { Permissions(Vec<PermissionItem>), Clarify, Inform }` |
 | Session → UI | `PermissionItem { id, cmd, reason, patterns, tool_name, tool_args, preview }` |
 
-**The tool layer owns preview content.** `PermissionRequest.preview` is populated in a tool's
-`permission()` method — never in turn.rs or the UI. The UI renders whatever string is there
-without knowing its format (diff, file content, command, …).
+**The tool layer owns preview content.** Preview strings are produced by the `Tool::preview()`
+method (the gating-only `permission()` returns just display+patterns). `turn.rs` decides *when* to
+call `preview()` per the `preview` policy (`gait.jsonc`): at the Tier-3 ask prompt it goes into
+`PermissionItem.preview` (persisted, for re-render on resume); in `always` mode it is streamed live
+for auto/allow-listed tools via the ephemeral `Emitter::delta` channel (never logged — the durable
+record of the change lives in the codebase git). The UI renders whatever string is there without
+knowing its format (diff, file content, command, …).
 
 ---
 
