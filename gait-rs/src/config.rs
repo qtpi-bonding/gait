@@ -20,13 +20,27 @@ fn default_enabled() -> bool { true }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerDef {
     pub name: String,
-    /// Shell command to spawn an MCP server subprocess (stdio transport).
+    /// Ecosystem-standard stdio: executable name (e.g. "npx", "uvx", "node")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Ecosystem-standard stdio: arguments to pass to the command
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
+    /// Ecosystem-standard stdio: environment variables to set
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<std::collections::HashMap<String, String>>,
+    /// Ecosystem-standard HTTP: URL of an already-running MCP server
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Deprecated compat: full "prog args…" string, equivalent to command+args
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn: Option<String>,
-    /// URL of an already-running MCP server (HTTP streamable transport).
+    /// Deprecated compat: HTTP URL, equivalent to url
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connect: Option<String>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
-    /// Optional description for the <loadable-index>. If absent, index shows tool count.
+    /// Optional description for the <loadable-index>.
     #[serde(default)]
     pub description: Option<String>,
 }

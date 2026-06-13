@@ -12,7 +12,21 @@ pub struct McpClient {
 
 impl McpClient {
     pub async fn connect(def: &McpServerDef) -> anyhow::Result<Self> {
-        let handle: RunningService<RoleClient, ()> = if let Some(ref cmd_str) = def.spawn {
+        let handle: RunningService<RoleClient, ()> = if let Some(ref cmd) = def.command {
+            // Ecosystem-standard stdio: command + args + env
+            let args: &[String] = def.args.as_deref().unwrap_or(&[]);
+            let transport = TokioChildProcess::new(
+                tokio::process::Command::new(cmd).configure(|c| {
+                    c.args(args);
+                    if let Some(env) = &def.env {
+                        for (k, v) in env { c.env(k, v); }
+                    }
+                })
+            ).map_err(|e| anyhow::anyhow!("MCP spawn {} failed: {e}", def.name))?;
+            ().serve(transport).await
+                .map_err(|e| anyhow::anyhow!("MCP handshake failed (command {}): {e}", def.name))?
+        } else if let Some(ref cmd_str) = def.spawn {
+            // Compat: split "prog arg1 arg2" into command + args
             let mut parts = cmd_str.split_whitespace();
             let prog = parts.next()
                 .ok_or_else(|| anyhow::anyhow!("empty spawn command for MCP server {}", def.name))?;
@@ -22,12 +36,18 @@ impl McpClient {
             ).map_err(|e| anyhow::anyhow!("MCP spawn {} failed: {e}", def.name))?;
             ().serve(transport).await
                 .map_err(|e| anyhow::anyhow!("MCP handshake failed (spawn {}): {e}", def.name))?
+        } else if let Some(ref url) = def.url {
+            // Ecosystem-standard HTTP transport
+            let transport = StreamableHttpClientTransport::from_uri(url.as_str());
+            ().serve(transport).await
+                .map_err(|e| anyhow::anyhow!("MCP handshake failed (url {}): {e}", def.name))?
         } else if let Some(ref url) = def.connect {
+            // Compat: connect → url
             let transport = StreamableHttpClientTransport::from_uri(url.as_str());
             ().serve(transport).await
                 .map_err(|e| anyhow::anyhow!("MCP handshake failed (connect {}): {e}", def.name))?
         } else {
-            anyhow::bail!("MCP server {} has neither spawn nor connect", def.name);
+            anyhow::bail!("MCP server {} has neither command, spawn, url, nor connect", def.name);
         };
         Ok(Self { server_name: def.name.clone(), handle })
     }
@@ -79,6 +99,10 @@ mod tests {
     async fn connect_fails_gracefully_when_binary_missing() {
         let def = McpServerDef {
             name: "test".into(),
+            command: None,
+            args: None,
+            env: None,
+            url: None,
             spawn: Some("no-such-binary-xyz-abc --foo".into()),
             connect: None,
             enabled: true,
@@ -92,6 +116,10 @@ mod tests {
     async fn connect_fails_gracefully_when_url_unreachable() {
         let def = McpServerDef {
             name: "test".into(),
+            command: None,
+            args: None,
+            env: None,
+            url: None,
             spawn: None,
             connect: Some("http://127.0.0.1:19191/mcp".into()),
             enabled: true,
@@ -103,10 +131,41 @@ mod tests {
 
     #[tokio::test]
     async fn connect_fails_when_neither_spawn_nor_connect() {
-        let def = McpServerDef { name: "test".into(), spawn: None, connect: None, enabled: true, description: None };
+        let def = McpServerDef {
+            name: "test".into(), command: None, args: None, env: None,
+            url: None, spawn: None, connect: None, enabled: true, description: None,
+        };
         let result = McpClient::connect(&def).await;
         match result {
-            Err(e) => assert!(e.to_string().contains("neither spawn nor connect"), "got: {e}"),
+            Err(e) => assert!(e.to_string().contains("neither command"), "got: {e}"),
+            Ok(_) => panic!("expected error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_fails_gracefully_with_command_missing_binary() {
+        let def = McpServerDef {
+            name: "test".into(),
+            command: Some("no-such-binary-xyz-abc".into()),
+            args: Some(vec!["--foo".into()]),
+            env: None,
+            url: None,
+            spawn: None,
+            connect: None,
+            enabled: true,
+            description: None,
+        };
+        assert!(McpClient::connect(&def).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn connect_fails_neither_command_nor_url() {
+        let def = McpServerDef {
+            name: "test".into(), command: None, args: None, env: None,
+            url: None, spawn: None, connect: None, enabled: true, description: None,
+        };
+        match McpClient::connect(&def).await {
+            Err(e) => assert!(e.to_string().contains("neither command"), "got: {e}"),
             Ok(_) => panic!("expected error"),
         }
     }

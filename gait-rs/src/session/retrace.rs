@@ -910,10 +910,10 @@ mod tests {
         let cfg = GaitConfig {
             model: "anthropic/x".into(),
             mcp_servers: vec![
-                McpServerDef { name: "slack".into(), spawn: None, connect: None,
-                    enabled: true, description: None },
-                McpServerDef { name: "off".into(), spawn: None, connect: None,
-                    enabled: false, description: None },
+                McpServerDef { name: "slack".into(), command: None, args: None, env: None,
+                    url: None, spawn: None, connect: None, enabled: true, description: None },
+                McpServerDef { name: "off".into(), command: None, args: None, env: None,
+                    url: None, spawn: None, connect: None, enabled: false, description: None },
             ],
             skills: vec![SkillDef { name: "tdd".into(), description: "d".into(),
                 content: "c".into(), enabled: true }],
