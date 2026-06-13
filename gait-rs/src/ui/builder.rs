@@ -139,6 +139,9 @@ impl ReplBuilder {
             } else {
                 eprintln!("{}⟳ {}{}", self.renderer.theme().accent.fg(), item.cmd, RESET);
             }
+            for line in crate::ui::permission::preview_block(item.preview.as_deref()) {
+                eprintln!("{}{}{}", DIM_FG, line, RESET);
+            }
             eprintln!();
             for (i, pat) in item.patterns.iter().enumerate() {
                 eprintln!("  {}[{}] {}{}", DIM_FG, i + 1, pat, RESET);

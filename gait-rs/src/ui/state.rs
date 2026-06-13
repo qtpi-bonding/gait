@@ -37,6 +37,7 @@ pub(crate) fn perm_to_tx(p: &pb::PermissionItem) -> tx::PermissionItem {
         tool_args: p.tool_args.clone()
             .and_then(|s| serde_json::to_value(s).ok())
             .unwrap_or(serde_json::Value::Null),
+        preview: p.preview.clone(),
     }
 }
 
@@ -311,6 +312,7 @@ mod tests {
             patterns: vec!["cargo *".into(), "cargo test".into()],
             tool_name: "shell".into(),
             tool_args: serde_json::json!({"cmd": "cargo test"}),
+            preview: None,
         }]);
         let ev = crate::proto::envelope::mint(body, None);
         state.apply_event(&ev);
@@ -398,5 +400,20 @@ mod tests {
         state.push_text("para two\n\n");
         assert_eq!(state.all_blocks.len(), 2);
         assert_eq!(state.block_num, 2);
+    }
+
+    #[test]
+    fn perm_to_tx_carries_preview() {
+        let pb_item = pb::PermissionItem {
+            id: "x".into(),
+            cmd: "f.rs".into(),
+            reason: "r".into(),
+            patterns: vec![],
+            tool_name: "edit".into(),
+            tool_args: None,
+            preview: Some("-a\n+b".into()),
+        };
+        let tx = perm_to_tx(&pb_item);
+        assert_eq!(tx.preview.as_deref(), Some("-a\n+b"));
     }
 }

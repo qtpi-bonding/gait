@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Permission Diff Preview — Design
 
 ## Goal

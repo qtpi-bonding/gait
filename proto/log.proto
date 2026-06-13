@@ -263,6 +263,7 @@ message PermissionItem {
   repeated string patterns = 4;        // allow-list entries, broad → specific
   string tool_name = 5;
   google.protobuf.Struct tool_args = 6;
+  optional string preview = 7;         // rendered pending change (diff/content), tool-owned
 }
 message PermissionsReplyItem {
   string id            = 1;

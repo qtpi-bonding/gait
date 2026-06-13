@@ -864,6 +864,7 @@ pub async fn run_turn(
                     crate::types::PermissionRequest {
                         display: tc.tool_name.clone(),
                         patterns: vec![tc.tool_name.clone()],
+                        preview: None,
                     }
                 ]));
 
@@ -916,6 +917,7 @@ pub async fn run_turn(
                         patterns: req.patterns.clone(),
                         tool_name: tc.tool_name.clone(),
                         tool_args: tc.args.clone(),
+                        preview: req.preview.clone(),
                     });
                 }
             }
@@ -939,6 +941,7 @@ pub async fn run_turn(
                     crate::types::PermissionRequest {
                         display: tc.tool_name.clone(),
                         patterns: vec![tc.tool_name.clone()],
+                        preview: None,
                     }
                 ]));
             let pattern = if let ToolPermission::RequiresApproval(requests) = &perm {
@@ -1861,6 +1864,7 @@ mod tests {
             patterns: vec!["echo *".into()],
             tool_name: "shell".into(),
             tool_args: serde_json::json!({"cmd": "echo hello", "reason": "test"}),
+            preview: None,
         };
         wire::append(&tx_path, events::session_start(session_id.into(), None)).unwrap();
         wire::append(&tx_path, events::user_turn("run echo".into(), None, None)).unwrap();
@@ -1920,6 +1924,7 @@ mod tests {
             reason: "shell requires permission".into(), patterns: vec!["rm *".into()],
             tool_name: "shell".into(),
             tool_args: serde_json::json!({"cmd": "rm -rf /", "reason": "cleanup"}),
+            preview: None,
         };
         wire::append(&tx_path, events::session_start(session_id.into(), None)).unwrap();
         wire::append(&tx_path, events::user_turn("clean up".into(), None, None)).unwrap();
@@ -2011,6 +2016,7 @@ mod tests {
             patterns: vec!["shell:ls *".to_string()],
             tool_name: "shell".into(),
             tool_args: shell_args.clone(),
+            preview: None,
         }])).unwrap();
         wire::append(&tx_path, events::permissions_reply("user".into(), &[PermissionsReplyItem {
             id: "tc-scope-1".into(),

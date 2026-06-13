@@ -366,6 +366,7 @@ fn permission_item(p: &tx::PermissionItem) -> pb::PermissionItem {
         patterns: p.patterns.clone(),
         tool_name: p.tool_name.clone(),
         tool_args: to_struct(&p.tool_args),
+        preview: p.preview.clone(),
     }
 }
 

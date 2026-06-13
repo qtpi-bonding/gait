@@ -118,11 +118,14 @@ pub enum ExecutionMode {
 
 /// One thing a tool needs approved. `display` is shown to the user and matched
 /// against the allow list. `patterns` are the full allow-list entries the user
-/// can choose to save, from broadest to most specific.
+/// can choose to save, from broadest to most specific. `preview` is an optional
+/// rendered view of the pending change (e.g. a diff), owned by the tool's
+/// `permission()` method and shown above the patterns.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PermissionRequest {
     pub display: String,
     pub patterns: Vec<String>,
+    pub preview: Option<String>,
 }
 
 /// What permission gating a tool requires.
@@ -205,6 +208,7 @@ pub trait Tool: Send + Sync {
         ToolPermission::RequiresApproval(vec![PermissionRequest {
             display: self.name().to_string(),
             patterns: vec![self.name().to_string()],
+            preview: None,
         }])
     }
 
@@ -248,6 +252,7 @@ impl Tool for ToolDef {
             None => ToolPermission::RequiresApproval(vec![PermissionRequest {
                 display: self.name.clone(),
                 patterns: vec![self.name.clone()],
+                preview: None,
             }]),
         }
     }
@@ -409,7 +414,11 @@ mod tests {
 
     #[test]
     fn permission_request_fields() {
-        let req = PermissionRequest { display: "foo".into(), patterns: vec!["foo".to_string()] };
+        let req = PermissionRequest {
+            display: "foo".into(),
+            patterns: vec!["foo".to_string()],
+            preview: None,
+        };
         assert_eq!(req.display, "foo");
         assert_eq!(req.patterns, vec!["foo"]);
     }
