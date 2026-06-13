@@ -15,7 +15,7 @@ pub async fn exec_prompt_node(
 ) -> anyhow::Result<NodeOutput> {
     let task = substitute(prompt_text, &ctx.vars);
     let full_task = if let Some(schema) = &node.output_schema {
-        format!("{}\n\nYou MUST call the output() tool with this JSON structure:\n{}", task,
+        format!("{}\n\nYou MUST call the {}() tool with this JSON structure:\n{}", task, crate::tools::output::DONE_TOOL_NAME,
             serde_json::to_string_pretty(schema).unwrap_or_default())
     } else { task };
 
