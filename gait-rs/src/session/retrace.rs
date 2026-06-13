@@ -678,6 +678,33 @@ pub fn active_agent(events: &[Event], seed: AgentState) -> AgentState {
 pub fn active_cwd(events: &[Event], root: &std::path::Path) -> std::path::PathBuf {
     run_projection(&ActiveCwd { root: root.to_path_buf() }, events, &HashMap::new())
 }
+
+/// Sum of every `TurnComplete.usage` over the log — the session's cumulative
+/// token usage. Replaces the dead `session.json.token_totals` sidecar; usage is
+/// derived from the log, never stored twice. Folds the whole session (ignores
+/// compaction — total cost includes compacted turns).
+pub fn total_usage(events: &[Event]) -> crate::session::transcript::TurnUsage {
+    use crate::session::transcript::TurnUsage;
+    struct Usage;
+    impl Projection for Usage {
+        type State = TurnUsage;
+        fn seed(&self) -> Self::State {
+            TurnUsage { input: 0, output: 0, cache_read: 0, cache_write: 0 }
+        }
+        fn apply(&self, state: &mut Self::State, _ev: &Event, kind: &payload::Kind) {
+            if let payload::Kind::TurnComplete(tc) = kind {
+                if let Some(u) = &tc.usage {
+                    state.input += u.input;
+                    state.output += u.output;
+                    state.cache_read += u.cache_read;
+                    state.cache_write += u.cache_write;
+                }
+            }
+        }
+    }
+    run_projection(&Usage, events, &HashMap::new())
+}
+
 /// Blocks from the LAST `TurnComplete` event in the log, in source order.
 /// Returns an empty Vec if there is no TurnComplete. Used by the CLI
 /// `>(N)` quote-reply expander, which needs the prior turn's blocks to
@@ -1451,6 +1478,22 @@ mod tests {
         let state = active_agent(&evs, AgentState::default());
         let enabled = state.enabled_loadables();
         assert!(enabled.contains("myfmt"), "plugin in enabled_loadables");
+    }
+
+    #[test]
+    fn total_usage_sums_turn_complete_events() {
+        let usage1 = TurnUsage { input: 100, output: 20, cache_read: 5, cache_write: 2 };
+        let output = TurnOutput { message: "ok".into(), result: None };
+        let usage2 = TurnUsage { input: 50, output: 10, cache_read: 3, cache_write: 1 };
+        let evs = mint_events(vec![
+            events::turn_complete(&usage1, "hash1".into(), false, None, vec![], &output),
+            events::turn_complete(&usage2, "hash2".into(), false, None, vec![], &output),
+        ]);
+        let total = total_usage(&evs);
+        assert_eq!(total.input, 150, "input should sum to 150");
+        assert_eq!(total.output, 30, "output should sum to 30");
+        assert_eq!(total.cache_read, 8, "cache_read should sum to 8");
+        assert_eq!(total.cache_write, 3, "cache_write should sum to 3");
     }
 
 }
