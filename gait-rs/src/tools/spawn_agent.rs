@@ -38,7 +38,7 @@ impl SpawnAgentTool {
 impl Tool for SpawnAgentTool {
     fn name(&self) -> &str { "spawn_agent" }
     fn description(&self) -> &str {
-        "Spawn a new agent session for a subtask. Returns the session ID immediately without blocking. The harness will schedule the new session for execution."
+        "Delegate a subtask to a new background agent session. Returns {session_id} immediately — the child runs detached on the same codebase using the gait.jsonc model and allow/deny, starts a fresh log, and runs --auto. Use list_agents to check status. The child's message and result are in its session log when it calls structured_done."
     }
     fn parameters(&self) -> &Value { &self.parameters }
 
