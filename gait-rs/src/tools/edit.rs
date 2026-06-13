@@ -165,7 +165,6 @@ impl Tool for EditTool {
         ToolPermission::RequiresApproval(vec![PermissionRequest {
             display: rel.clone(),
             patterns: path_patterns("edit", &rel),
-            preview: self.preview(args),
         }])
     }
 
@@ -342,44 +341,6 @@ mod tests {
         assert!(!text.contains("let x = 1"), "removed lines should not appear: {text}");
     }
 
-    #[test]
-    fn permission_includes_diff_preview_for_valid_edit() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("f.rs");
-        std::fs::write(&path, "fn foo() {\n    bar();\n}").unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
-        let lines: Vec<&str> = content.split('\n').collect();
-        let hash = compute_line_hash(2, lines[1]);
-
-        let tool = EditTool::new(make_ctx(&dir));
-        let args = serde_json::json!({
-            "file_path": "f.rs",
-            "edits": [{"op": "replace", "pos": format!("2#{}", hash), "lines": ["    baz();"]}]
-        });
-        let crate::types::ToolPermission::RequiresApproval(reqs) = tool.permission(&args) else {
-            panic!("expected RequiresApproval");
-        };
-        let preview = reqs[0].preview.as_deref().expect("preview should be Some");
-        assert!(preview.contains("-    bar();"), "preview:\n{preview}");
-        assert!(preview.contains("+    baz();"), "preview:\n{preview}");
-    }
-
-    #[test]
-    fn permission_preview_is_none_for_stale_anchor() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("f.rs");
-        std::fs::write(&path, "fn foo() {\n    bar();\n}").unwrap();
-
-        let tool = EditTool::new(make_ctx(&dir));
-        let args = serde_json::json!({
-            "file_path": "f.rs",
-            "edits": [{"op": "replace", "pos": "2#ZZ", "lines": ["    baz();"]}]
-        });
-        let crate::types::ToolPermission::RequiresApproval(reqs) = tool.permission(&args) else {
-            panic!("expected RequiresApproval");
-        };
-        assert_eq!(reqs[0].preview, None);
-    }
 
     #[test]
     fn preview_returns_diff_for_valid_edit() {

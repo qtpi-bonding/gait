@@ -857,14 +857,13 @@ pub async fn run_turn(
         let mut tool_approval_prefixes: HashMap<String, String> = HashMap::new();
 
         for tc in &step_tool_calls {
-            let perm = tools.iter()
-                .find(|t| t.name() == tc.tool_name)
+            let tool = tools.iter().find(|t| t.name() == tc.tool_name);
+            let perm = tool
                 .map(|t| t.permission(&tc.args))
                 .unwrap_or_else(|| ToolPermission::RequiresApproval(vec![
                     crate::types::PermissionRequest {
                         display: tc.tool_name.clone(),
                         patterns: vec![tc.tool_name.clone()],
-                        preview: None,
                     }
                 ]));
 
@@ -917,7 +916,7 @@ pub async fn run_turn(
                         patterns: req.patterns.clone(),
                         tool_name: tc.tool_name.clone(),
                         tool_args: tc.args.clone(),
-                        preview: req.preview.clone(),
+                        preview: tool.and_then(|t| t.preview(&tc.args)),
                     });
                 }
             }
@@ -941,7 +940,6 @@ pub async fn run_turn(
                     crate::types::PermissionRequest {
                         display: tc.tool_name.clone(),
                         patterns: vec![tc.tool_name.clone()],
-                        preview: None,
                     }
                 ]));
             let pattern = if let ToolPermission::RequiresApproval(requests) = &perm {
