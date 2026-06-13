@@ -51,6 +51,7 @@ pub struct TurnInput {
     pub task: Option<String>,   // None on resume
     pub auto: bool,
     pub max_iter: Option<usize>,
+    pub preview_policy: crate::config::PreviewPolicy,
 }
 
 // ── Session lock (RAII PID file) ─────────────────────────────────────────────
@@ -376,7 +377,7 @@ async fn apply_curate_filter(
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
     let curate_emitter = Emitter::for_session(&session.gait_dir, &session.id, tx);
     let _ = run_turn(&session, &curate_emitter, caps,
-        TurnInput { task: Some(task), auto: true, max_iter: Some(1) }).await;
+        TurnInput { task: Some(task), auto: true, max_iter: Some(1), preview_policy: crate::config::PreviewPolicy::default() }).await;
 
     let _ = repos.checkpoints.remove(gait_dir, &session_id);
 
@@ -479,6 +480,7 @@ pub async fn run_turn(
     let task = input.task;
     let auto = input.auto;
     let max_iter = input.max_iter;
+    let preview_policy = input.preview_policy;
 
     repos.traces.create_session_worktree(&gait_dir, &session_id)?;
     repos.checkpoints.init(&gait_dir, &session_id, &codebase_path)?;
@@ -916,7 +918,11 @@ pub async fn run_turn(
                         patterns: req.patterns.clone(),
                         tool_name: tc.tool_name.clone(),
                         tool_args: tc.args.clone(),
-                        preview: tool.and_then(|t| t.preview(&tc.args)),
+                        preview: if preview_policy == crate::config::PreviewPolicy::Off {
+                            None
+                        } else {
+                            tool.and_then(|t| t.preview(&tc.args))
+                        },
                     });
                 }
             }
@@ -1411,7 +1417,7 @@ mod tests {
             ws.path().to_path_buf(), codebase, "stest001".into(),
             provider, vec![Box::new(read_tool)],
             vec!["read".into()], vec![],
-            TurnInput { task: Some("do the thing".into()), auto: true, max_iter: None },
+            TurnInput { task: Some("do the thing".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1466,7 +1472,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "stest_out".into(),
             provider, vec![output_tool.boxed()],
             vec![], vec![],
-            TurnInput { task: Some("fix a bug".into()), auto: true, max_iter: None },
+            TurnInput { task: Some("fix a bug".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1507,7 +1513,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "stest_out2".into(),
             provider, vec![output_tool.boxed()],
             vec![], vec![],
-            TurnInput { task: Some("do it".into()), auto: false, max_iter: None },
+            TurnInput { task: Some("do it".into()), auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1542,7 +1548,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "stest002".into(),
             provider, vec![],
             vec!["read".into()], vec![],
-            TurnInput { task: Some("do something dangerous".into()), auto: false, max_iter: None },
+            TurnInput { task: Some("do something dangerous".into()), auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1616,7 +1622,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "sdone001".into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("do something".into()), auto: true, max_iter: None },
+            TurnInput { task: Some("do something".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1649,7 +1655,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "sperm001".into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("list files".into()), auto: false, max_iter: None },
+            TurnInput { task: Some("list files".into()), auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1676,7 +1682,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "sdelta01".into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("say hello".into()), auto: true, max_iter: None },
+            TurnInput { task: Some("say hello".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1729,7 +1735,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "sdeny001".into(),
             provider, vec![shell_tool.boxed(), output_tool.boxed()],
             vec![], vec!["shell:rm *".to_string()],
-            TurnInput { task: Some("try to destroy".into()), auto: false, max_iter: None },
+            TurnInput { task: Some("try to destroy".into()), auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1782,7 +1788,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "sdeny002".into(),
             provider, vec![shell_tool.boxed(), output_tool.boxed()],
             vec!["shell:rm *".to_string()], vec!["shell:rm *".to_string()],
-            TurnInput { task: Some("try to destroy".into()), auto: false, max_iter: None },
+            TurnInput { task: Some("try to destroy".into()), auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1889,7 +1895,7 @@ mod tests {
             ws.path().to_path_buf(), codebase.path().to_path_buf(), session_id.into(),
             provider, vec![Box::new(shell_tool)],
             vec!["shell:echo *".into()], vec![],
-            TurnInput { task: None, auto: false, max_iter: None },
+            TurnInput { task: None, auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1948,7 +1954,7 @@ mod tests {
             ws.path().to_path_buf(), codebase.path().to_path_buf(), session_id.into(),
             provider, vec![Box::new(shell_tool)],
             vec![], vec![],
-            TurnInput { task: None, auto: false, max_iter: None },
+            TurnInput { task: None, auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -2043,7 +2049,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), session_id.into(),
             provider, vec![Box::new(shell_tool)],
             vec![], vec![],
-            TurnInput { task: None, auto: false, max_iter: None },
+            TurnInput { task: None, auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -2165,7 +2171,7 @@ mod tests {
             ws.path().to_path_buf(), codebase_dir.path().to_path_buf(), session_id.into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("checkpoint test".into()), auto: true, max_iter: None },
+            TurnInput { task: Some("checkpoint test".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -2217,7 +2223,7 @@ mod tests {
             ws.path().to_path_buf(), codebase_dir.path().to_path_buf(), session_id.into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("test codebase_path persistence".into()), auto: true, max_iter: None },
+            TurnInput { task: Some("test codebase_path persistence".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -2276,7 +2282,7 @@ mod tests {
             ws.path().to_path_buf(), codebase_dir.path().to_path_buf(), session_id.into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("checkpoint test".into()), auto: true, max_iter: None },
+            TurnInput { task: Some("checkpoint test".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             repos,
         ).await.unwrap();
 
@@ -2325,7 +2331,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "slogtgl01".into(),
             provider, vec![Box::new(load_tool), Box::new(output_tool)],
             vec!["enable".into()], vec![],
-            TurnInput { task: Some("enable tdd".into()), auto: true, max_iter: None },
+            TurnInput { task: Some("enable tdd".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 

@@ -245,6 +245,7 @@ pub async fn run_chat(
                 task: Some(line.clone()),
                 auto: false,
                 max_iter: config.max_iter,
+                preview_policy: config.preview,
             };
 
             // Spawn the turn; move owned session(Arc)+emitter+caps+input so emitter
