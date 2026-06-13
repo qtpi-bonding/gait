@@ -452,6 +452,15 @@ impl Projection for ActiveMessages {
                 st.phase = MsgPhase::Other;
             }
 
+            // Sidecar events that are NOT model context but MUST stay transparent
+            // to the tool-run coalescing phase: the shell tool emits a `Cwd` event
+            // BETWEEN a tool_call and its tool_result, and hooks emit `HookRun`
+            // around tool execution. Resetting the phase here would make the
+            // following tool_result an orphan (dropped on resume), leaving a
+            // dangling tool_use that providers reject ("tool call result does not
+            // follow tool call"). Leave `phase` untouched so the run survives.
+            payload::Kind::Cwd(_) | payload::Kind::HookRun(_) => {}
+
             // Not part of the model context: SessionStart, TurnComplete, Raw,
             // InformConvergence, Manifest, Permissions/PermissionsReply (audit).
             // Each still resets the coalescing phase (it breaks a tool run).
@@ -776,6 +785,29 @@ mod tests {
             assert!(matches!(&parts[0], AssistantPart::ToolCall(tc) if tc.tool_call_id == "id1"));
         } else { panic!("expected assistant parts"); }
         assert!(matches!(&msgs[1], Message::Tool { .. }));
+    }
+
+    #[test]
+    fn sidecar_event_between_call_and_result_does_not_drop_result() {
+        // The shell tool emits a Cwd event BETWEEN a tool_call and its tool_result
+        // (hooks can emit HookRun similarly). These are non-context sidecar events
+        // and must NOT break the tool-call→tool-result run. If they reset the
+        // coalescing phase, the result is dropped as an orphan on resume, leaving
+        // a dangling tool_use that providers reject ("tool call result does not
+        // follow tool call").
+        let dir = TempDir::new().unwrap();
+        let path = write_events(dir.path(), vec![
+            events::tool_call("c1".into(), "shell".into(), &serde_json::json!({"command":"cd sub && ls"})),
+            events::cwd("/ws/sub"),
+            events::tool_result("c1".into(), "out1".into(), None, None),
+            events::tool_call("c2".into(), "shell".into(), &serde_json::json!({"command":"git status"})),
+            events::hook_run("post_tool", "echo hi", 0, "hi", Some("c2".into())),
+            events::tool_result("c2".into(), "out2".into(), None, None),
+        ]);
+        let msgs = messages_from_path(&path).unwrap();
+        let tool_msgs = msgs.iter().filter(|m| matches!(m, Message::Tool { .. })).count();
+        assert_eq!(tool_msgs, 2,
+            "both tool_results must survive interleaved Cwd/HookRun sidecar events; got {:?}", msgs);
     }
 
     #[test]
