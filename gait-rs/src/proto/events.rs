@@ -277,12 +277,12 @@ pub fn agent_msg(resolved: &crate::profile::ResolvedProfile) -> pb::Agent {
     pb::Agent {
         model: resolved.model.clone(),
         instructions: resolved.instructions.clone(),
-        tools: resolved.tools.iter().map(|t| t.name().to_string()).collect(),
+        tools: resolved.permissioned.tools().iter().map(|t| t.name().to_string()).collect(),
         mcp_servers,
         skills: resolved.skill_registry.iter().map(|s| s.name.clone()).collect(),
         permissions: Some(pb::PermissionPolicy {
-            allow: resolved.allow.clone(),
-            deny: resolved.deny.clone(),
+            allow: resolved.permissioned.allow.clone(),
+            deny: resolved.permissioned.deny.clone(),
         }),
         through_seq: 0,
     }

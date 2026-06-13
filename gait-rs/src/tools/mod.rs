@@ -1,3 +1,6 @@
+pub mod tiers;
+pub use tiers::{RegisteredTools, EnabledTools, PermissionedTools};
+
 pub mod ctx;
 pub mod read;
 pub mod write;

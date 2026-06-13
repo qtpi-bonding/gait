@@ -358,18 +358,18 @@ async fn apply_curate_filter(
     };
     let caps = crate::profile::ResolvedProfile {
         provider,
-        tools: vec![AnnotateTool::new().boxed()],
+        permissioned: crate::tools::RegisteredTools(vec![AnnotateTool::new().boxed()])
+            .into_enabled()
+            .with_permissions(vec![], vec![]),
         model: model.to_string(),
         instructions: CURATE_SYSTEM_PROMPT.to_string(),
-        allow: vec![],
-        deny: vec![],
         mcp_registry: vec![],
         mcp_clients: std::collections::HashMap::new(),
         skill_registry: vec![],
         config_enabled: std::collections::HashSet::new(),
-            output_schema_retries: 3,
-            result_schema: None,
-            hooks: vec![],
+        output_schema_retries: 3,
+        result_schema: None,
+        hooks: vec![],
     };
     // curate is a side turn — transcript only, no live stream consumer.
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
@@ -441,14 +441,12 @@ pub async fn run_turn(
     // Emitted later, under the drift guard.
     let agent = crate::proto::events::agent_msg(&caps);
     let provider = caps.provider.clone();
-    let tools = caps.tools;
+    let (tools, allow, deny) = caps.permissioned.into_parts();
     let session_id = session.id.clone();
     let gait_dir = session.gait_dir.clone();
     let codebase_path = session.codebase_path.clone();
     let model = caps.model.clone();
     let repos = session.repos.clone();
-    let allow = caps.allow;
-    let deny = caps.deny;
     let system_prompt = caps.instructions;
     let mcp_registry = caps.mcp_registry;
     let mcp_clients = caps.mcp_clients;

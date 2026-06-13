@@ -24,11 +24,9 @@ pub struct Profile {
 /// built-in tools, and config-defined tools.
 pub struct ResolvedProfile {
     pub provider: std::sync::Arc<dyn crate::provider::Provider>,
-    pub tools: Vec<Box<dyn crate::types::Tool>>,
+    pub permissioned: crate::tools::PermissionedTools,
     pub model: String,
     pub instructions: String,
-    pub allow: Vec<String>,
-    pub deny: Vec<String>,
     pub mcp_registry: Vec<crate::config::McpToolDef>,
     pub mcp_clients: std::collections::HashMap<String, std::sync::Arc<crate::mcp_client::McpClient>>,
     pub skill_registry: Vec<crate::config::SkillDef>,
@@ -178,13 +176,15 @@ impl Profile {
                 ))
             })
             .collect();
+        let permissioned = crate::tools::RegisteredTools(tools)
+            .into_enabled()
+            .with_permissions(self.allow, self.deny);
+
         Ok(ResolvedProfile {
             provider,
-            tools,
+            permissioned,
             model: self.model,
             instructions: self.instructions,
-            allow: self.allow,
-            deny: self.deny,
             mcp_registry,
             mcp_clients,
             skill_registry: self.skills,
@@ -205,8 +205,12 @@ impl ResolvedProfile {
         allow: Vec<String>,
         deny: Vec<String>,
     ) -> Self {
+        let permissioned = crate::tools::RegisteredTools(tools)
+            .into_enabled()
+            .with_permissions(allow, deny);
         ResolvedProfile {
-            provider, tools, allow, deny,
+            provider,
+            permissioned,
             model: "test/model".into(),
             instructions: String::new(),
             mcp_registry: vec![],
@@ -314,8 +318,8 @@ mod tests {
             Some("test-key".into()),
         ).await.unwrap();
         assert_eq!(resolved.provider.model_id(), "claude-x");
-        assert!(resolved.tools.len() >= 15, "expected the builtin tools");
-        assert_eq!(resolved.allow, vec!["read".to_string()]);
+        assert!(resolved.permissioned.tools().len() >= 15, "expected the builtin tools");
+        assert_eq!(resolved.permissioned.allow, vec!["read".to_string()]);
     }
     #[test]
     fn merge_deny_unions_and_dedups() {
