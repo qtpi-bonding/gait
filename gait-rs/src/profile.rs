@@ -63,7 +63,10 @@ impl Profile {
             .or_else(|| agent_path.and_then(crate::agent_frontmatter::read_agent_model))
             .unwrap_or_else(|| config.model.clone());
 
-        let mut instructions = crate::prompt::compose_system_prompt(gait_dir, codebase, agent_path);
+        let mut instructions = crate::prompt::compose_system_prompt(
+            gait_dir, codebase, agent_path,
+            crate::tools::output::DONE_TOOL_NAME,
+        );
         if let Some(schema) = &config.result_schema {
             let schema_str = serde_json::to_string_pretty(schema).unwrap_or_default();
             instructions.push_str(&format!(

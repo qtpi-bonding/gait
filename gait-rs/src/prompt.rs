@@ -17,16 +17,18 @@ pub fn compose_system_prompt(
     gait_dir: &Path,
     codebase: Option<&Path>,
     agent_path: Option<&Path>,
+    done_tool: &str,
 ) -> String {
     let mut out = String::new();
 
     // <harness> — always present; its "version" is the binary build hash.
     let h_hash = &crate::GAIT_BUILD_GIT_HASH[..crate::GAIT_BUILD_GIT_HASH.len().min(7)];
+    let harness = crate::GAIT_HARNESS_PROMPT.trim_end().replace("{$tool_name}", done_tool);
     out.push_str(&wrap_layer(
         "harness",
         "gait-harness.md",
         h_hash,
-        crate::GAIT_HARNESS_PROMPT.trim_end(),
+        &harness,
     ));
 
     // <agent> — the role.
@@ -105,7 +107,7 @@ mod tests {
     #[test]
     fn compose_harness_only_when_nothing_else() {
         let gait = tempfile::TempDir::new().unwrap();
-        let p = compose_system_prompt(gait.path(), None, None);
+        let p = compose_system_prompt(gait.path(), None, None, "structured_done");
         assert!(p.starts_with("<harness src=\"gait-harness.md\" hash=\""), "got: {p}");
         assert!(p.contains("</harness>"));
         assert!(!p.contains("<agent"));
@@ -147,7 +149,7 @@ mod tests {
         let cb = tempfile::TempDir::new().unwrap();
         std::fs::write(gait.path().join("USER.md"), "I prefer terse output.").unwrap();
 
-        let prompt = compose_system_prompt(gait.path(), Some(cb.path()), None);
+        let prompt = compose_system_prompt(gait.path(), Some(cb.path()), None, "structured_done");
 
         assert!(prompt.contains("<harness src=\"gait-harness.md\""), "harness always present: {prompt}");
         assert!(prompt.contains("</harness>"));

@@ -3,6 +3,10 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
 
+/// The canonical name of the turn-completion tool. Referenced by the harness
+/// prompt template so the two never drift.
+pub const DONE_TOOL_NAME: &str = "structured_done";
+
 #[derive(Deserialize, JsonSchema)]
 struct OutputParams {
     /// What the user reads. Markdown OK, multi-paragraph OK. Required, non-empty.
