@@ -1,4 +1,4 @@
-use crate::types::{Tool, ToolPermission, PermissionRequest, ExecutionSignal};
+use crate::types::{Tool, ToolPermission, ExecutionSignal};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -38,10 +38,7 @@ impl Tool for InformTool {
     fn parameters(&self) -> &Value { &self.parameters }
 
     fn permission(&self, _args: &serde_json::Value) -> ToolPermission {
-        ToolPermission::RequiresApproval(vec![PermissionRequest {
-            display: "inform".to_string(),
-            patterns: vec!["inform".to_string()],
-        }])
+        ToolPermission::Passthrough
     }
     fn execution_signal(&self) -> ExecutionSignal {
         ExecutionSignal::Inform
@@ -78,14 +75,9 @@ mod tests {
     }
 
     #[test]
-    fn inform_permission_requires_approval() {
+    fn inform_permission_is_passthrough() {
         let tool = InformTool::new();
-        match tool.permission(&serde_json::json!({})) {
-            crate::types::ToolPermission::RequiresApproval(reqs) => {
-                assert_eq!(reqs[0].patterns, vec!["inform"]);
-            }
-            other => panic!("expected RequiresApproval, got {:?}", other),
-        }
+        assert!(matches!(tool.permission(&serde_json::json!({})), crate::types::ToolPermission::Passthrough));
     }
 
     #[test]

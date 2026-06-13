@@ -1,4 +1,4 @@
-use crate::types::{Tool, ToolPermission, PermissionRequest, ExecutionSignal};
+use crate::types::{Tool, ToolPermission, ExecutionSignal};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -40,10 +40,7 @@ impl Tool for ClarifyTool {
     fn parameters(&self) -> &Value { &self.parameters }
 
     fn permission(&self, _args: &serde_json::Value) -> ToolPermission {
-        ToolPermission::RequiresApproval(vec![PermissionRequest {
-            display: "clarify".to_string(),
-            patterns: vec!["clarify".to_string()],
-        }])
+        ToolPermission::Passthrough
     }
     fn execution_signal(&self) -> ExecutionSignal {
         ExecutionSignal::Clarify
@@ -81,14 +78,9 @@ mod tests {
     }
 
     #[test]
-    fn clarify_permission_requires_approval() {
+    fn clarify_permission_is_passthrough() {
         let tool = ClarifyTool::new();
-        match tool.permission(&serde_json::json!({})) {
-            crate::types::ToolPermission::RequiresApproval(reqs) => {
-                assert_eq!(reqs[0].patterns, vec!["clarify"]);
-            }
-            other => panic!("expected RequiresApproval, got {:?}", other),
-        }
+        assert!(matches!(tool.permission(&serde_json::json!({})), crate::types::ToolPermission::Passthrough));
     }
 
     #[test]
