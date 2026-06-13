@@ -81,6 +81,26 @@ struct HashlineEditParams {
     edits: Vec<HashlineEditOp>,
 }
 
+/// Resolve `file_path`, read the file, and apply the hashline edits.
+/// Returns `(resolved_path, old_content, new_content)`.
+/// Errors on a missing file or a stale/invalid anchor (apply failure).
+fn compute_edit(
+    ctx: &ToolCtx,
+    params: &HashlineEditParams,
+) -> anyhow::Result<(PathBuf, String, String)> {
+    let resolved = if std::path::Path::new(&params.file_path).is_absolute() {
+        PathBuf::from(&params.file_path)
+    } else {
+        ctx.codebase_path.join(&params.file_path)
+    };
+    if !resolved.exists() {
+        anyhow::bail!("File not found: {}", resolved.display());
+    }
+    let old_content = std::fs::read_to_string(&resolved)?;
+    let new_content = apply_hashline_edits(&old_content, &params.edits)?;
+    Ok((resolved, old_content, new_content))
+}
+
 pub struct EditTool {
     ctx: ToolCtx,
     parameters: Value,
@@ -120,19 +140,7 @@ impl Tool for EditTool {
 
     async fn execute(&self, args: Value) -> anyhow::Result<Value> {
         let params: HashlineEditParams = serde_json::from_value(args)?;
-
-        let resolved = if std::path::Path::new(&params.file_path).is_absolute() {
-            PathBuf::from(&params.file_path)
-        } else {
-            self.ctx.codebase_path.join(&params.file_path)
-        };
-
-        if !resolved.exists() {
-            anyhow::bail!("File not found: {}", resolved.display());
-        }
-
-        let old_content = std::fs::read_to_string(&resolved)?;
-        let new_content = apply_hashline_edits(&old_content, &params.edits)?;
+        let (resolved, old_content, new_content) = compute_edit(&self.ctx, &params)?;
         std::fs::write(&resolved, &new_content)?;
 
         let lines_changed = (new_content.split('\n').count() as i64
@@ -154,10 +162,14 @@ impl Tool for EditTool {
             .strip_prefix(&*self.ctx.codebase_path)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| raw.to_string());
+        let preview = serde_json::from_value::<HashlineEditParams>(args.clone())
+            .ok()
+            .and_then(|params| compute_edit(&self.ctx, &params).ok())
+            .and_then(|(_, old, new)| crate::tools::preview::diff_preview(&old, &new));
         ToolPermission::RequiresApproval(vec![PermissionRequest {
             display: rel.clone(),
             patterns: path_patterns("edit", &rel),
-            preview: None,
+            preview,
         }])
     }
 }
@@ -327,7 +339,46 @@ mod tests {
         assert!(!text.contains("let x = 1"), "removed lines should not appear: {text}");
     }
 
-#[tokio::test]
+    #[test]
+    fn permission_includes_diff_preview_for_valid_edit() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("f.rs");
+        std::fs::write(&path, "fn foo() {\n    bar();\n}").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = content.split('\n').collect();
+        let hash = compute_line_hash(2, lines[1]);
+
+        let tool = EditTool::new(make_ctx(&dir));
+        let args = serde_json::json!({
+            "file_path": "f.rs",
+            "edits": [{"op": "replace", "pos": format!("2#{}", hash), "lines": ["    baz();"]}]
+        });
+        let crate::types::ToolPermission::RequiresApproval(reqs) = tool.permission(&args) else {
+            panic!("expected RequiresApproval");
+        };
+        let preview = reqs[0].preview.as_deref().expect("preview should be Some");
+        assert!(preview.contains("-    bar();"), "preview:\n{preview}");
+        assert!(preview.contains("+    baz();"), "preview:\n{preview}");
+    }
+
+    #[test]
+    fn permission_preview_is_none_for_stale_anchor() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("f.rs");
+        std::fs::write(&path, "fn foo() {\n    bar();\n}").unwrap();
+
+        let tool = EditTool::new(make_ctx(&dir));
+        let args = serde_json::json!({
+            "file_path": "f.rs",
+            "edits": [{"op": "replace", "pos": "2#ZZ", "lines": ["    baz();"]}]
+        });
+        let crate::types::ToolPermission::RequiresApproval(reqs) = tool.permission(&args) else {
+            panic!("expected RequiresApproval");
+        };
+        assert_eq!(reqs[0].preview, None);
+    }
+
+    #[tokio::test]
     async fn returns_error_on_stale_ref_via_snippet_path() {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("f.txt"), "hello\nworld").unwrap();
