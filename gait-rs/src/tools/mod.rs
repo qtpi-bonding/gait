@@ -18,6 +18,7 @@ pub mod list_agents;
 pub mod clarify;
 pub mod inform;
 pub mod annotate;
+pub mod preview;
 
 pub use ctx::ToolCtx;
 pub use read::ReadTool;
