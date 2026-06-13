@@ -212,6 +212,11 @@ pub trait Tool: Send + Sync {
         }])
     }
 
+    /// A rendered preview of what this tool will do (e.g. a diff), shown in the
+    /// permission prompt or streamed live per the preview policy. Default: no
+    /// preview. Cheap tools return None; edit/write override this.
+    fn preview(&self, _args: &serde_json::Value) -> Option<String> { None }
+
     /// How turn.rs should dispatch this tool.
     /// Default: execute normally and continue the inner loop.
     fn execution_signal(&self) -> ExecutionSignal {

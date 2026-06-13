@@ -162,15 +162,18 @@ impl Tool for EditTool {
             .strip_prefix(&*self.ctx.codebase_path)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| raw.to_string());
-        let preview = serde_json::from_value::<HashlineEditParams>(args.clone())
-            .ok()
-            .and_then(|params| compute_edit(&self.ctx, &params).ok())
-            .and_then(|(_, old, new)| crate::tools::preview::diff_preview(&old, &new));
         ToolPermission::RequiresApproval(vec![PermissionRequest {
             display: rel.clone(),
             patterns: path_patterns("edit", &rel),
-            preview,
+            preview: self.preview(args),
         }])
+    }
+
+    fn preview(&self, args: &Value) -> Option<String> {
+        serde_json::from_value::<HashlineEditParams>(args.clone())
+            .ok()
+            .and_then(|params| compute_edit(&self.ctx, &params).ok())
+            .and_then(|(_, old, new)| crate::tools::preview::diff_preview(&old, &new))
     }
 }
 
@@ -376,6 +379,38 @@ mod tests {
             panic!("expected RequiresApproval");
         };
         assert_eq!(reqs[0].preview, None);
+    }
+
+    #[test]
+    fn preview_returns_diff_for_valid_edit() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("f.rs");
+        std::fs::write(&path, "fn foo() {\n    bar();\n}").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = content.split('\n').collect();
+        let hash = compute_line_hash(2, lines[1]);
+
+        let tool = EditTool::new(make_ctx(&dir));
+        let args = serde_json::json!({
+            "file_path": "f.rs",
+            "edits": [{"op": "replace", "pos": format!("2#{}", hash), "lines": ["    baz();"]}]
+        });
+        let preview = tool.preview(&args).expect("preview should be Some");
+        assert!(preview.contains("-    bar();"), "preview:\n{preview}");
+        assert!(preview.contains("+    baz();"), "preview:\n{preview}");
+    }
+
+    #[test]
+    fn preview_is_none_for_stale_anchor() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("f.rs");
+        std::fs::write(&path, "fn foo() {\n    bar();\n}").unwrap();
+        let tool = EditTool::new(make_ctx(&dir));
+        let args = serde_json::json!({
+            "file_path": "f.rs",
+            "edits": [{"op": "replace", "pos": "2#ZZ", "lines": ["    baz();"]}]
+        });
+        assert_eq!(tool.preview(&args), None);
     }
 
     #[tokio::test]
