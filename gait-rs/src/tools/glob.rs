@@ -13,10 +13,15 @@ struct GlobParams {
     /// Directory to search in (relative to codebase root). Omit to search entire codebase.
     path: Option<String>,
 }
+#[derive(schemars::JsonSchema)]
+struct GlobOutput {
+    paths: Vec<String>,
+}
 
 pub struct GlobTool {
     ctx: ToolCtx,
     parameters: Value,
+    output_schema: Value,
 }
 
 impl GlobTool {
@@ -25,7 +30,7 @@ impl GlobTool {
             crate::tools::make_schema::<GlobParams>(),
             crate::types::OutputFilter::Both,
         );
-        Self { ctx, parameters }
+        Self { ctx, parameters, output_schema: crate::tools::make_schema::<GlobOutput>() }
     }
 }
 
@@ -37,6 +42,8 @@ impl Tool for GlobTool {
     }
     fn parameters(&self) -> &Value { &self.parameters }
     fn execution_mode(&self) -> ExecutionMode { ExecutionMode::Parallel }
+
+    fn output_schema(&self) -> Option<&Value> { Some(&self.output_schema) }
 
     fn output_filter(&self) -> crate::types::OutputFilter {
         crate::types::OutputFilter::Parse

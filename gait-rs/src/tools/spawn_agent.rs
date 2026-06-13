@@ -15,16 +15,22 @@ struct SpawnAgentArgs {
     /// Optional files to prepend as context (reserved for future use)
     context_files: Option<Vec<String>>,
 }
+#[derive(schemars::JsonSchema)]
+struct SpawnAgentOutput {
+    message: String,
+    result: Option<serde_json::Value>,
+}
 
 pub struct SpawnAgentTool {
     ctx: ToolCtx,
     repos: crate::git::Repos,
     parameters: Value,
+    output_schema: Value,
 }
 
 impl SpawnAgentTool {
     pub fn new(ctx: ToolCtx, repos: crate::git::Repos) -> Self {
-        Self { ctx, repos, parameters: crate::tools::inject_filter(make_schema::<SpawnAgentArgs>(), crate::types::OutputFilter::Both) }
+        Self { ctx, repos, parameters: crate::tools::inject_filter(make_schema::<SpawnAgentArgs>(), crate::types::OutputFilter::Both), output_schema: crate::tools::make_schema::<SpawnAgentOutput>() }
     }
 }
 
@@ -35,6 +41,8 @@ impl Tool for SpawnAgentTool {
         "Spawn a new agent session for a subtask. Returns the session ID immediately without blocking. The harness will schedule the new session for execution."
     }
     fn parameters(&self) -> &Value { &self.parameters }
+
+    fn output_schema(&self) -> Option<&Value> { Some(&self.output_schema) }
 
     async fn execute(&self, args: Value) -> anyhow::Result<Value> {
         let task = args["task"].as_str()

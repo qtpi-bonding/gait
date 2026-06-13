@@ -20,10 +20,17 @@ struct ShellParams {
     /// A nonexistent path errors and leaves the working directory unchanged.
     cwd: Option<String>,
 }
+#[derive(schemars::JsonSchema)]
+struct ShellOutput {
+    output: String,
+    exit_code: i32,
+    timed_out: bool,
+}
 
 pub struct ShellTool {
     ctx: ToolCtx,
     parameters: Value,
+    output_schema: Value,
 }
 
 impl ShellTool {
@@ -32,7 +39,7 @@ impl ShellTool {
             crate::tools::make_schema::<ShellParams>(),
             crate::types::OutputFilter::Both,
         );
-        Self { ctx, parameters }
+        Self { ctx, parameters, output_schema: crate::tools::make_schema::<ShellOutput>() }
     }
 }
 
@@ -54,6 +61,8 @@ impl Tool for ShellTool {
     fn output_filter(&self) -> crate::types::OutputFilter {
         crate::types::OutputFilter::Parse
     }
+
+    fn output_schema(&self) -> Option<&Value> { Some(&self.output_schema) }
 
     fn permission(&self, args: &serde_json::Value) -> ToolPermission {
         let cmd = args.get("cmd").and_then(|v| v.as_str()).unwrap_or("");

@@ -8,9 +8,22 @@ use crate::proto::gait::log::v1::{event, payload, Event};
 #[derive(Deserialize, JsonSchema)]
 struct ListAgentsParams {}
 
+#[derive(schemars::JsonSchema)]
+struct AgentEntry {
+    id: String,
+    status: String,
+    task: String,
+}
+
+#[derive(schemars::JsonSchema)]
+struct ListAgentsOutput {
+    agents: Vec<AgentEntry>,
+}
+
 pub struct ListAgentsTool {
     ctx: ToolCtx,
     parameters: Value,
+    output_schema: Value,
 }
 
 impl ListAgentsTool {
@@ -19,7 +32,7 @@ impl ListAgentsTool {
             crate::tools::make_schema::<ListAgentsParams>(),
             crate::types::OutputFilter::Both,
         );
-        Self { ctx, parameters }
+        Self { ctx, parameters, output_schema: crate::tools::make_schema::<ListAgentsOutput>() }
     }
 }
 
@@ -31,6 +44,8 @@ impl Tool for ListAgentsTool {
     }
     fn parameters(&self) -> &Value { &self.parameters }
     fn execution_mode(&self) -> ExecutionMode { ExecutionMode::Parallel }
+
+    fn output_schema(&self) -> Option<&Value> { Some(&self.output_schema) }
 
     async fn execute(&self, _args: Value) -> anyhow::Result<Value> {
         // C1 fix: read transcript from the branch's committed git tree, NOT from the filesystem
