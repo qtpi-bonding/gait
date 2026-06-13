@@ -2257,7 +2257,7 @@ mod tests {
                 vec![
                     StreamChunk::ToolCallComplete {
                         tool_call_id: "tc1".into(),
-                        tool_name: "load".into(),
+                        tool_name: "enable".into(),
                         args: serde_json::json!({ "name": "tdd", "enabled": true }),
                     },
                     StreamChunk::Done,
@@ -2286,7 +2286,7 @@ mod tests {
         run_turn_test_call(
             ws.path().to_path_buf(), ws.path().to_path_buf(), "slogtgl01".into(),
             provider, vec![Box::new(load_tool), Box::new(output_tool)],
-            vec!["load".into()], vec![],
+            vec!["enable".into()], vec![],
             TurnInput { task: Some("enable tdd".into()), auto: true, max_iter: None },
             crate::git::Repos::production(),
         ).await.unwrap();

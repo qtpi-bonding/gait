@@ -27,7 +27,7 @@ impl LoadTool {
 
 #[async_trait::async_trait]
 impl Tool for LoadTool {
-    fn name(&self) -> &str { "load" }
+    fn name(&self) -> &str { "enable" }
 
     fn description(&self) -> &str {
         "Enable or disable an MCP tool or skill for this session. \
@@ -41,7 +41,7 @@ impl Tool for LoadTool {
         let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("*");
         ToolPermission::RequiresApproval(vec![PermissionRequest {
             display: name.to_string(),
-            patterns: vec!["load".to_string(), format!("load:{}", name)],
+            patterns: vec!["enable".to_string(), format!("enable:{}", name)],
         }])
     }
 
@@ -49,19 +49,19 @@ impl Tool for LoadTool {
 
     async fn execute(&self, args: Value) -> anyhow::Result<Value> {
         let name = args.get("name").and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("load: missing 'name'"))?;
+            .ok_or_else(|| anyhow::anyhow!("enable: missing 'name'"))?;
         let enabled = args.get("enabled").and_then(|v| v.as_bool())
-            .ok_or_else(|| anyhow::anyhow!("load: missing 'enabled'"))?;
+            .ok_or_else(|| anyhow::anyhow!("enable: missing 'enabled'"))?;
 
         if !enabled {
-            return Ok(Value::String(format!("unloaded: {}", name)));
+            return Ok(Value::String(format!("disabled: {}", name)));
         }
 
         if let Some(def) = self.mcp_registry.iter().find(|d| d.name == name) {
             let schema_str = serde_json::to_string_pretty(&def.schema)
                 .unwrap_or_else(|_| "{}".into());
             return Ok(Value::String(format!(
-                "Tool '{}' loaded.\nDescription: {}\nSchema:\n{}",
+                "Tool '{}' enabled.\nDescription: {}\nSchema:\n{}",
                 name, def.description, schema_str
             )));
         }
@@ -71,7 +71,7 @@ impl Tool for LoadTool {
         }
 
         Err(anyhow::anyhow!(
-            "load: unknown '{}'. Check <loadable-index> for available items.", name
+            "enable: unknown '{}'. Check <loadable-index> for available items.", name
         ))
     }
 }
@@ -121,10 +121,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unload_returns_marker() {
+    async fn disable_returns_marker() {
         let tool = LoadTool::new(make_mcp_registry(), make_skill_registry());
         let result = tool.execute(serde_json::json!({"name":"tdd","enabled":false})).await.unwrap();
-        assert_eq!(result.as_str().unwrap(), "unloaded: tdd");
+        assert_eq!(result.as_str().unwrap(), "disabled: tdd");
     }
 
     #[tokio::test]
@@ -135,12 +135,12 @@ mod tests {
     }
 
     #[test]
-    fn permission_has_load_prefix_patterns() {
+    fn permission_has_enable_prefix_patterns() {
         let tool = LoadTool::new(vec![], vec![]);
         let perm = tool.permission(&serde_json::json!({"name":"tdd","enabled":true}));
         match perm {
             ToolPermission::RequiresApproval(reqs) => {
-                assert!(reqs[0].patterns.contains(&"load:tdd".to_string()));
+                assert!(reqs[0].patterns.contains(&"enable:tdd".to_string()));
             }
             other => panic!("expected RequiresApproval, got {other:?}"),
         }

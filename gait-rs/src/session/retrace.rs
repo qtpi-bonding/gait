@@ -1154,9 +1154,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("tx.jsonl");
 
-        // A load tool_call (will be redacted) + an assistant_text (kept).
+        // An enable tool_call (will be redacted) + an assistant_text (kept).
         let tc = wire::append(&path, events::tool_call(
-            "tc1".into(), "load".into(),
+            "tc1".into(), "enable".into(),
             &serde_json::json!({"name":"slack","enabled":true}))).unwrap();
         wire::append(&path, redact_body(&tc.id)).unwrap();
         wire::append(&path, events::assistant_text("hi".into())).unwrap();
@@ -1166,10 +1166,10 @@ mod tests {
         apply_cascade(&mut muts, &all);
 
         let kinds: Vec<_> = effective_kinds(&all, &muts).collect();
-        // redacted load must NOT appear:
+        // redacted enable must NOT appear:
         assert!(kinds.iter().all(|(_, k)|
-            !matches!(k, payload::Kind::ToolCall(tc) if tc.name == "load")),
-            "redacted load must not appear in effective kinds");
+            !matches!(k, payload::Kind::ToolCall(tc) if tc.name == "enable")),
+            "redacted enable must not appear in effective kinds");
         // the non-redacted assistant_text MUST appear:
         assert!(kinds.iter().any(|(_, k)| matches!(k, payload::Kind::AssistantText(_))),
             "non-redacted event must appear in effective kinds");

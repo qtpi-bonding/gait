@@ -102,7 +102,7 @@ pub fn inject_filter(mut schema: serde_json::Value, filter: crate::types::Output
 /// Names of all built-in tools. Used for allow-list validation without constructing tool instances.
 pub fn builtin_tool_names() -> &'static [&'static str] {
     &["read", "write", "edit", "glob", "grep", "ls", "shell", "structured_done",
-      "codesearch", "webfetch", "load", "spawn_agent", "list_agents", "clarify", "inform"]
+      "codesearch", "webfetch", "enable", "spawn_agent", "list_agents", "clarify", "inform"]
 }
 
 /// Returns all built-in tools.
@@ -174,14 +174,14 @@ mod tests {
     }
 
     #[test]
-    fn load_meta_tool_present() {
+    fn enable_meta_tool_present() {
         let tools = builtin_tools(
             ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "stest".into()),
             vec![], vec![],
             crate::git::Repos::production(),
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-        assert!(names.contains(&"load"), "missing load: {:?}", names);
+        assert!(names.contains(&"enable"), "missing enable: {:?}", names);
     }
 
     #[test]
