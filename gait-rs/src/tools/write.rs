@@ -57,27 +57,27 @@ impl Tool for WriteTool {
             .strip_prefix(&*self.ctx.codebase_path)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| raw.to_string());
-        let preview = serde_json::from_value::<WriteParams>(args.clone()).ok().and_then(|params| {
+        ToolPermission::RequiresApproval(vec![PermissionRequest {
+            display: rel.clone(),
+            patterns: path_patterns("write", &rel),
+        }])
+    }
+
+    fn preview(&self, args: &serde_json::Value) -> Option<String> {
+        serde_json::from_value::<WriteParams>(args.clone()).ok().and_then(|params| {
             let resolved = if std::path::Path::new(&params.file_path).is_absolute() {
                 PathBuf::from(&params.file_path)
             } else {
                 self.ctx.codebase_path.join(&params.file_path)
             };
             if resolved.exists() {
-                // Existing file → diff (None on read error or identical content).
                 std::fs::read_to_string(&resolved)
                     .ok()
                     .and_then(|old| crate::tools::preview::diff_preview(&old, &params.content))
             } else {
-                // New file → show the full content.
                 Some(params.content.clone())
             }
-        });
-        ToolPermission::RequiresApproval(vec![PermissionRequest {
-            display: rel.clone(),
-            patterns: path_patterns("write", &rel),
-            preview,
-        }])
+        })
     }
 }
 
@@ -142,27 +142,22 @@ mod tests {
         }
     }
 
+
     #[test]
-    fn permission_preview_is_full_content_for_new_file() {
+    fn preview_is_full_content_for_new_file() {
         let dir = tempfile::TempDir::new().unwrap();
         let tool = WriteTool::new(make_ctx(&dir));
         let args = serde_json::json!({"file_path": "new.txt", "content": "hello\nworld\n"});
-        let crate::types::ToolPermission::RequiresApproval(reqs) = tool.permission(&args) else {
-            panic!("expected RequiresApproval");
-        };
-        assert_eq!(reqs[0].preview.as_deref(), Some("hello\nworld\n"));
+        assert_eq!(tool.preview(&args).as_deref(), Some("hello\nworld\n"));
     }
 
     #[test]
-    fn permission_preview_is_diff_for_existing_file() {
+    fn preview_is_diff_for_existing_file() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("f.txt"), "one\ntwo\n").unwrap();
         let tool = WriteTool::new(make_ctx(&dir));
         let args = serde_json::json!({"file_path": "f.txt", "content": "one\nTWO\n"});
-        let crate::types::ToolPermission::RequiresApproval(reqs) = tool.permission(&args) else {
-            panic!("expected RequiresApproval");
-        };
-        let preview = reqs[0].preview.as_deref().expect("preview Some");
+        let preview = tool.preview(&args).expect("preview Some");
         assert!(preview.contains("-two"), "preview:\n{preview}");
         assert!(preview.contains("+TWO"), "preview:\n{preview}");
     }

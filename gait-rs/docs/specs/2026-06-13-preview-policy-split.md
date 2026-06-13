@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Preview Policy Split — Design
 
 ## Goal

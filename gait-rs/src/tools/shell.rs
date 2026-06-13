@@ -74,7 +74,6 @@ impl Tool for ShellTool {
                 .into_iter()
                 .map(|p| format!("shell:{}", p))
                 .collect(),
-            preview: None,
         }).collect();
         ToolPermission::RequiresApproval(requests)
     }

@@ -95,7 +95,7 @@ pub async fn exec_prompt_node(
         &session,
         &emitter,
         resolved,
-        crate::turn::TurnInput { task: Some(task), auto, max_iter: None },
+        crate::turn::TurnInput { task: Some(task), auto, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
     ).await?;
 
     match result {

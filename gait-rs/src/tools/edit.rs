@@ -162,15 +162,17 @@ impl Tool for EditTool {
             .strip_prefix(&*self.ctx.codebase_path)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| raw.to_string());
-        let preview = serde_json::from_value::<HashlineEditParams>(args.clone())
-            .ok()
-            .and_then(|params| compute_edit(&self.ctx, &params).ok())
-            .and_then(|(_, old, new)| crate::tools::preview::diff_preview(&old, &new));
         ToolPermission::RequiresApproval(vec![PermissionRequest {
             display: rel.clone(),
             patterns: path_patterns("edit", &rel),
-            preview,
         }])
+    }
+
+    fn preview(&self, args: &Value) -> Option<String> {
+        serde_json::from_value::<HashlineEditParams>(args.clone())
+            .ok()
+            .and_then(|params| compute_edit(&self.ctx, &params).ok())
+            .and_then(|(_, old, new)| crate::tools::preview::diff_preview(&old, &new))
     }
 }
 
@@ -339,8 +341,9 @@ mod tests {
         assert!(!text.contains("let x = 1"), "removed lines should not appear: {text}");
     }
 
+
     #[test]
-    fn permission_includes_diff_preview_for_valid_edit() {
+    fn preview_returns_diff_for_valid_edit() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("f.rs");
         std::fs::write(&path, "fn foo() {\n    bar();\n}").unwrap();
@@ -353,29 +356,22 @@ mod tests {
             "file_path": "f.rs",
             "edits": [{"op": "replace", "pos": format!("2#{}", hash), "lines": ["    baz();"]}]
         });
-        let crate::types::ToolPermission::RequiresApproval(reqs) = tool.permission(&args) else {
-            panic!("expected RequiresApproval");
-        };
-        let preview = reqs[0].preview.as_deref().expect("preview should be Some");
+        let preview = tool.preview(&args).expect("preview should be Some");
         assert!(preview.contains("-    bar();"), "preview:\n{preview}");
         assert!(preview.contains("+    baz();"), "preview:\n{preview}");
     }
 
     #[test]
-    fn permission_preview_is_none_for_stale_anchor() {
+    fn preview_is_none_for_stale_anchor() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("f.rs");
         std::fs::write(&path, "fn foo() {\n    bar();\n}").unwrap();
-
         let tool = EditTool::new(make_ctx(&dir));
         let args = serde_json::json!({
             "file_path": "f.rs",
             "edits": [{"op": "replace", "pos": "2#ZZ", "lines": ["    baz();"]}]
         });
-        let crate::types::ToolPermission::RequiresApproval(reqs) = tool.permission(&args) else {
-            panic!("expected RequiresApproval");
-        };
-        assert_eq!(reqs[0].preview, None);
+        assert_eq!(tool.preview(&args), None);
     }
 
     #[tokio::test]

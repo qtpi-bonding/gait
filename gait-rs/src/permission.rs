@@ -92,7 +92,6 @@ pub fn execute_allow(
         let req = crate::types::PermissionRequest {
             display: item.cmd.clone(),
             patterns: item.patterns.clone(),
-            preview: None,
         };
 
         // When --pattern is supplied, only approve if that pattern would cover the request.
@@ -163,7 +162,6 @@ pub fn mcp_permission(server: &str, tool: &str) -> ToolPermission {
             format!("mcp:{}", server),
             format!("mcp:{}:{}", server, tool),
         ],
-        preview: None,
     }])
 }
 
@@ -414,7 +412,6 @@ mod tests {
         let req = PermissionRequest {
             display: "src/main.rs".into(),
             patterns: vec![],
-            preview: None,
         };
         assert!(is_request_approved("read", &req, &["read".to_string()]));
     }
@@ -425,7 +422,6 @@ mod tests {
         let req = PermissionRequest {
             display: "src/main.rs".into(),
             patterns: vec![],
-            preview: None,
         };
         assert!(is_request_approved("read", &req, &["read:src/main.rs".to_string()]));
         assert!(!is_request_approved("read", &req, &["read:src/lib.rs".to_string()]));
@@ -437,7 +433,6 @@ mod tests {
         let req = PermissionRequest {
             display: "src/main.rs".into(),
             patterns: vec![],
-            preview: None,
         };
         assert!(is_request_approved("read", &req, &["read:src/*".to_string()]));
         assert!(!is_request_approved("read", &req, &["read:tests/*".to_string()]));
@@ -449,7 +444,6 @@ mod tests {
         let req = PermissionRequest {
             display: "cargo test".into(),
             patterns: vec![],
-            preview: None,
         };
         assert!(is_request_approved("shell", &req, &["shell:cargo *".to_string()]));
         assert!(is_request_approved("shell", &req, &["shell:cargo test".to_string()]));
@@ -462,7 +456,6 @@ mod tests {
         let req = PermissionRequest {
             display: "src/main.rs".into(),
             patterns: vec![],
-            preview: None,
         };
         assert!(!is_request_approved("read", &req, &["write".to_string()]));
     }
@@ -472,7 +465,6 @@ mod tests {
         let req = PermissionRequest {
             display: "src/main.rs".into(),
             patterns: vec![],
-            preview: None,
         };
         assert!(is_request_denied("write", &req, &["write".to_string()]));
         assert!(!is_request_denied("read", &req, &["write".to_string()]));
@@ -484,7 +476,6 @@ mod tests {
         let req = PermissionRequest {
             display: "rm -rf /".into(),
             patterns: vec![],
-            preview: None,
         };
         assert!(is_request_denied("shell", &req, &["shell:rm *".to_string()]));
         assert!(!is_request_denied("shell", &req, &["shell:ls *".to_string()]));
@@ -496,7 +487,6 @@ mod tests {
         let req = PermissionRequest {
             display: "rm -rf /".into(),
             patterns: vec![],
-            preview: None,
         };
         let result = find_matched_deny_pattern("shell", &req, &["shell:rm *".to_string()]);
         assert_eq!(result, Some("shell:rm *".to_string()));
@@ -508,7 +498,6 @@ mod tests {
         let req = PermissionRequest {
             display: "ls -la".into(),
             patterns: vec![],
-            preview: None,
         };
         let result = find_matched_deny_pattern("shell", &req, &["shell:rm *".to_string()]);
         assert_eq!(result, None);
@@ -523,7 +512,6 @@ mod tests {
         let req = PermissionRequest {
             display: "rm -rf /".into(),
             patterns: vec![],
-            preview: None,
         };
         let both = vec!["shell:rm *".to_string()];
         assert!(is_request_denied("shell", &req, &both));
@@ -536,7 +524,6 @@ mod tests {
         let req = PermissionRequest {
             display: "list_repos".into(),
             patterns: vec!["list_repos".into(), "mcp:github".into(), "mcp:github:list_repos".into()],
-            preview: None,
         };
         assert!(is_request_denied("list_repos", &req, &["mcp:github".into()]));
         assert!(!is_request_denied("list_repos", &req, &["mcp:gitlab".into()]));
@@ -548,7 +535,6 @@ mod tests {
         let req = PermissionRequest {
             display: "list_repos".into(),
             patterns: vec!["list_repos".into(), "mcp:github".into(), "mcp:github:list_repos".into()],
-            preview: None,
         };
         assert!(is_request_approved("list_repos", &req, &["mcp:github:list_repos".into()]));
     }

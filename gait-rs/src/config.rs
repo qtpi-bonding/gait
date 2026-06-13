@@ -89,6 +89,18 @@ pub struct HookDef {
     pub run: String,
 }
 
+/// When to render edit/write previews. `on-ask` (default): only at the permission
+/// prompt. `always`: also stream the diff live (ephemeral) for auto/allow-listed
+/// tools. `off`: never.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum PreviewPolicy {
+    #[default]
+    OnAsk,
+    Always,
+    Off,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct GaitConfig {
     pub model: String,
@@ -115,6 +127,10 @@ pub struct GaitConfig {
     /// Max turn iterations before giving up. Defaults to 100 when absent.
     #[serde(default)]
     pub max_iter: Option<usize>,
+    /// When to render edit/write previews. Defaults to on-ask.
+    #[serde(default)]
+    pub preview: PreviewPolicy,
+
     /// JSON Schema that `result` in `structured_done` must conform to.
     /// If set, harness validates and retries on mismatch (up to output_schema_retries).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -142,6 +158,7 @@ impl Default for GaitConfig {
             hooks: vec![],
             output_schema_retries: 3,
             max_iter: None,
+            preview: PreviewPolicy::OnAsk,
             result_schema: None,
         }
     }
@@ -464,6 +481,17 @@ mod tests {
     fn output_schema_retries_defaults_to_3() {
         let cfg = GaitConfig::default();
         assert_eq!(cfg.output_schema_retries, 3);
+    }
+
+    #[test]
+    fn preview_policy_parses_from_jsonc() {
+        let cfg: GaitConfig = serde_json::from_str(r#"{"model":"m","preview":"always"}"#).unwrap();
+        assert_eq!(cfg.preview, PreviewPolicy::Always);
+        let cfg: GaitConfig = serde_json::from_str(r#"{"model":"m","preview":"off"}"#).unwrap();
+        assert_eq!(cfg.preview, PreviewPolicy::Off);
+        // absent → default on-ask
+        let cfg: GaitConfig = serde_json::from_str(r#"{"model":"m"}"#).unwrap();
+        assert_eq!(cfg.preview, PreviewPolicy::OnAsk);
     }
 
     #[test]

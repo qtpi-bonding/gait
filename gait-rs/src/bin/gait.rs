@@ -314,7 +314,7 @@ async fn cmd_run(argv: &[String]) {
         tokio::sync::mpsc::unbounded_channel::<gait_ai::proto::gait::log::v1::StreamItem>();
     let emitter = gait_ai::Emitter::for_session(&gait_dir, &session_id, tx);
 
-    let input = gait_ai::turn::TurnInput { task, auto, max_iter: config.max_iter };
+    let input = gait_ai::turn::TurnInput { task, auto, max_iter: config.max_iter, preview_policy: config.preview };
     let turn_handle = tokio::spawn(async move {
         run_turn(&session, &emitter, resolved, input).await
         // emitter drops here → channel closes → rx.recv() yields None

@@ -43,7 +43,6 @@ impl Tool for LoadTool {
         ToolPermission::RequiresApproval(vec![PermissionRequest {
             display: name.to_string(),
             patterns: vec!["enable".to_string(), format!("enable:{}", name)],
-            preview: None,
         }])
     }
 

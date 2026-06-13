@@ -51,6 +51,7 @@ pub struct TurnInput {
     pub task: Option<String>,   // None on resume
     pub auto: bool,
     pub max_iter: Option<usize>,
+    pub preview_policy: crate::config::PreviewPolicy,
 }
 
 // ── Session lock (RAII PID file) ─────────────────────────────────────────────
@@ -244,6 +245,23 @@ async fn execute_tool_call(
     Ok((assistant_part, tool_result))
 }
 
+/// In `always` mode, stream a tool's preview (e.g. a diff) live on the ephemeral
+/// `delta` channel — never written to the log. No-op for other policies or when
+/// the tool has no preview.
+fn stream_preview_if_always(
+    policy: crate::config::PreviewPolicy,
+    tool: Option<&Box<dyn Tool>>,
+    args: &serde_json::Value,
+    emitter: &Emitter,
+) {
+    if policy != crate::config::PreviewPolicy::Always {
+        return;
+    }
+    if let Some(p) = tool.and_then(|t| t.preview(args)) {
+        emitter.delta(format!("\n{}\n", p));
+    }
+}
+
 /// Build a (AssistantPart, ToolResult) pair representing a tool-call error
 /// WITHOUT emitting events. Use when `execute_tool_call` fails — the model
 /// still gets a result back so the turn can continue.
@@ -376,7 +394,7 @@ async fn apply_curate_filter(
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
     let curate_emitter = Emitter::for_session(&session.gait_dir, &session.id, tx);
     let _ = run_turn(&session, &curate_emitter, caps,
-        TurnInput { task: Some(task), auto: true, max_iter: Some(1) }).await;
+        TurnInput { task: Some(task), auto: true, max_iter: Some(1), preview_policy: crate::config::PreviewPolicy::default() }).await;
 
     let _ = repos.checkpoints.remove(gait_dir, &session_id);
 
@@ -479,6 +497,7 @@ pub async fn run_turn(
     let task = input.task;
     let auto = input.auto;
     let max_iter = input.max_iter;
+    let preview_policy = input.preview_policy;
 
     repos.traces.create_session_worktree(&gait_dir, &session_id)?;
     repos.checkpoints.init(&gait_dir, &session_id, &codebase_path)?;
@@ -857,14 +876,13 @@ pub async fn run_turn(
         let mut tool_approval_prefixes: HashMap<String, String> = HashMap::new();
 
         for tc in &step_tool_calls {
-            let perm = tools.iter()
-                .find(|t| t.name() == tc.tool_name)
+            let tool = tools.iter().find(|t| t.name() == tc.tool_name);
+            let perm = tool
                 .map(|t| t.permission(&tc.args))
                 .unwrap_or_else(|| ToolPermission::RequiresApproval(vec![
                     crate::types::PermissionRequest {
                         display: tc.tool_name.clone(),
                         patterns: vec![tc.tool_name.clone()],
-                        preview: None,
                     }
                 ]));
 
@@ -888,6 +906,7 @@ pub async fn run_turn(
             };
 
             if is_allowed {
+                stream_preview_if_always(preview_policy, tool, &tc.args, emitter);
                 let prefix: Option<String> = if auto {
                     Some("[Auto mode.]".to_string())
                 } else {
@@ -917,7 +936,11 @@ pub async fn run_turn(
                         patterns: req.patterns.clone(),
                         tool_name: tc.tool_name.clone(),
                         tool_args: tc.args.clone(),
-                        preview: req.preview.clone(),
+                        preview: if preview_policy == crate::config::PreviewPolicy::Off {
+                            None
+                        } else {
+                            tool.and_then(|t| t.preview(&tc.args))
+                        },
                     });
                 }
             }
@@ -941,7 +964,6 @@ pub async fn run_turn(
                     crate::types::PermissionRequest {
                         display: tc.tool_name.clone(),
                         patterns: vec![tc.tool_name.clone()],
-                        preview: None,
                     }
                 ]));
             let pattern = if let ToolPermission::RequiresApproval(requests) = &perm {
@@ -1300,6 +1322,7 @@ mod tests {
     use crate::provider::ProviderError;
     use crate::types::ToolDef;
     use crate::tools::OutputTool;
+    use crate::hashline::compute_line_hash;
     use async_stream::stream;
     #[test]
     fn turn_context_is_wrapped_in_status_tag() {
@@ -1413,7 +1436,7 @@ mod tests {
             ws.path().to_path_buf(), codebase, "stest001".into(),
             provider, vec![Box::new(read_tool)],
             vec!["read".into()], vec![],
-            TurnInput { task: Some("do the thing".into()), auto: true, max_iter: None },
+            TurnInput { task: Some("do the thing".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1468,7 +1491,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "stest_out".into(),
             provider, vec![output_tool.boxed()],
             vec![], vec![],
-            TurnInput { task: Some("fix a bug".into()), auto: true, max_iter: None },
+            TurnInput { task: Some("fix a bug".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1509,7 +1532,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "stest_out2".into(),
             provider, vec![output_tool.boxed()],
             vec![], vec![],
-            TurnInput { task: Some("do it".into()), auto: false, max_iter: None },
+            TurnInput { task: Some("do it".into()), auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1544,7 +1567,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "stest002".into(),
             provider, vec![],
             vec!["read".into()], vec![],
-            TurnInput { task: Some("do something dangerous".into()), auto: false, max_iter: None },
+            TurnInput { task: Some("do something dangerous".into()), auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1618,7 +1641,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "sdone001".into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("do something".into()), auto: true, max_iter: None },
+            TurnInput { task: Some("do something".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1651,7 +1674,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "sperm001".into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("list files".into()), auto: false, max_iter: None },
+            TurnInput { task: Some("list files".into()), auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1678,7 +1701,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "sdelta01".into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("say hello".into()), auto: true, max_iter: None },
+            TurnInput { task: Some("say hello".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1731,7 +1754,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "sdeny001".into(),
             provider, vec![shell_tool.boxed(), output_tool.boxed()],
             vec![], vec!["shell:rm *".to_string()],
-            TurnInput { task: Some("try to destroy".into()), auto: false, max_iter: None },
+            TurnInput { task: Some("try to destroy".into()), auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1784,7 +1807,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "sdeny002".into(),
             provider, vec![shell_tool.boxed(), output_tool.boxed()],
             vec!["shell:rm *".to_string()], vec!["shell:rm *".to_string()],
-            TurnInput { task: Some("try to destroy".into()), auto: false, max_iter: None },
+            TurnInput { task: Some("try to destroy".into()), auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1891,7 +1914,7 @@ mod tests {
             ws.path().to_path_buf(), codebase.path().to_path_buf(), session_id.into(),
             provider, vec![Box::new(shell_tool)],
             vec!["shell:echo *".into()], vec![],
-            TurnInput { task: None, auto: false, max_iter: None },
+            TurnInput { task: None, auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1950,7 +1973,7 @@ mod tests {
             ws.path().to_path_buf(), codebase.path().to_path_buf(), session_id.into(),
             provider, vec![Box::new(shell_tool)],
             vec![], vec![],
-            TurnInput { task: None, auto: false, max_iter: None },
+            TurnInput { task: None, auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -2045,7 +2068,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), session_id.into(),
             provider, vec![Box::new(shell_tool)],
             vec![], vec![],
-            TurnInput { task: None, auto: false, max_iter: None },
+            TurnInput { task: None, auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -2167,7 +2190,7 @@ mod tests {
             ws.path().to_path_buf(), codebase_dir.path().to_path_buf(), session_id.into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("checkpoint test".into()), auto: true, max_iter: None },
+            TurnInput { task: Some("checkpoint test".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -2219,7 +2242,7 @@ mod tests {
             ws.path().to_path_buf(), codebase_dir.path().to_path_buf(), session_id.into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("test codebase_path persistence".into()), auto: true, max_iter: None },
+            TurnInput { task: Some("test codebase_path persistence".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -2278,7 +2301,7 @@ mod tests {
             ws.path().to_path_buf(), codebase_dir.path().to_path_buf(), session_id.into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("checkpoint test".into()), auto: true, max_iter: None },
+            TurnInput { task: Some("checkpoint test".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             repos,
         ).await.unwrap();
 
@@ -2327,7 +2350,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "slogtgl01".into(),
             provider, vec![Box::new(load_tool), Box::new(output_tool)],
             vec!["enable".into()], vec![],
-            TurnInput { task: Some("enable tdd".into()), auto: true, max_iter: None },
+            TurnInput { task: Some("enable tdd".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -2396,4 +2419,51 @@ mod tests {
         assert!(!names.contains(&"shell"), "shell should be filtered; got: {:?}", names);
     }
 
+
+    // ── Task 5: always policy — stream edit preview live (ephemeral delta) ────
+
+    #[tokio::test]
+    async fn always_policy_streams_edit_preview_delta() {
+        use crate::config::PreviewPolicy;
+        use crate::proto::gait::log::v1::stream_item::Item;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.rs");
+        std::fs::write(&path, "fn foo() {\n    bar();\n}").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = content.split('\n').collect();
+        let hash = compute_line_hash(2, lines[1]);
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let emitter = crate::proto::Emitter::new(dir.path().join("log.jsonl"), tx);
+        let ctx = crate::tools::ToolCtx::new(dir.path().to_path_buf(), dir.path().to_path_buf(), "t".into());
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(crate::tools::EditTool::new(ctx))];
+        let args = serde_json::json!({
+            "file_path": "f.rs",
+            "edits": [{"op": "replace", "pos": format!("2#{}", hash), "lines": ["    baz();"]}]
+        });
+
+        stream_preview_if_always(PreviewPolicy::Always, tools.iter().find(|t| t.name() == "edit"), &args, &emitter);
+
+        // No transcript write (ephemeral).
+        assert!(!dir.path().join("log.jsonl").exists());
+        // A Delta carrying the diff was streamed.
+        let item = rx.try_recv().expect("a delta").item.unwrap();
+        let Item::Delta(d) = item else { panic!("expected Delta") };
+        assert!(d.content.contains("-    bar();") && d.content.contains("+    baz();"), "delta: {}", d.content);
+    }
+
+    #[tokio::test]
+    async fn on_ask_policy_streams_nothing() {
+        use crate::config::PreviewPolicy;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.rs"), "fn foo() {}").unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let emitter = crate::proto::Emitter::new(dir.path().join("log.jsonl"), tx);
+        let ctx = crate::tools::ToolCtx::new(dir.path().to_path_buf(), dir.path().to_path_buf(), "t".into());
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(crate::tools::EditTool::new(ctx))];
+        let args = serde_json::json!({"file_path": "f.rs", "edits": []});
+
+        stream_preview_if_always(PreviewPolicy::OnAsk, tools.iter().find(|t| t.name() == "edit"), &args, &emitter);
+        assert!(rx.try_recv().is_err(), "on-ask must stream nothing");
+    }
 }
