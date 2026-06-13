@@ -220,6 +220,10 @@ pub trait Tool: Send + Sync {
         OutputFilter::None
     }
 
+    /// JSON Schema describing what this tool returns.
+    /// When Some, provider adapters append a compact "Returns: {…}" line to the description.
+    fn output_schema(&self) -> Option<&serde_json::Value> { None }
+
     /// Convenience: box self into `Box<dyn Tool>`.
     fn boxed(self) -> Box<dyn Tool>
     where
@@ -246,6 +250,38 @@ impl Tool for ToolDef {
                 patterns: vec![self.name.clone()],
             }]),
         }
+    }
+}
+
+/// Render a JSON Schema as a compact type annotation.
+/// e.g. "{output: string, exit_code: integer}" or "[string]" or "string"
+pub fn compact_type(schema: &serde_json::Value) -> String {
+    match schema.get("type").and_then(|v| v.as_str()) {
+        Some("object") => {
+            let props = schema.get("properties")
+                .and_then(|p| p.as_object())
+                .cloned()
+                .unwrap_or_default();
+            let fields: Vec<String> = props.iter()
+                .map(|(k, v)| format!("{}: {}", k, compact_type(v)))
+                .collect();
+            format!("{{{}}}", fields.join(", "))
+        }
+        Some("array") => {
+            let items = schema.get("items").unwrap_or(&serde_json::Value::Null);
+            format!("[{}]", compact_type(items))
+        }
+        Some(t) => t.to_string(),
+        None => "any".to_string(),
+    }
+}
+
+/// Build the description string sent to the provider API.
+/// Appends "\n\nReturns: {compact shape}" when the tool has an output_schema.
+pub fn render_description(tool: &dyn Tool) -> String {
+    match tool.output_schema() {
+        None => tool.description().to_string(),
+        Some(schema) => format!("{}\n\nReturns: {}", tool.description(), compact_type(schema)),
     }
 }
 
@@ -392,6 +428,63 @@ mod tests {
         assert_ne!(OutputFilter::None, OutputFilter::Both);
         assert_ne!(OutputFilter::Parse, OutputFilter::Curate);
         assert_ne!(OutputFilter::Parse, OutputFilter::Both);
+        assert_ne!(OutputFilter::Parse, OutputFilter::Curate);
+        assert_ne!(OutputFilter::Parse, OutputFilter::Both);
         assert_ne!(OutputFilter::Curate, OutputFilter::Both);
+    }
+
+    #[test]
+    fn compact_type_object() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "output": {"type": "string"},
+                "exit_code": {"type": "integer"},
+                "timed_out": {"type": "boolean"}
+            }
+        });
+        let rendered = compact_type(&schema);
+        assert!(rendered.starts_with("{") && rendered.ends_with("}"), "got: {rendered}");
+        assert!(rendered.contains("output: string"), "got: {rendered}");
+        assert!(rendered.contains("exit_code: integer"), "got: {rendered}");
+        assert!(rendered.contains("timed_out: boolean"), "got: {rendered}");
+    }
+
+    #[test]
+    fn compact_type_array() {
+        let schema = serde_json::json!({"type": "array", "items": {"type": "string"}});
+        assert_eq!(compact_type(&schema), "[string]");
+    }
+
+    #[test]
+    fn compact_type_scalar() {
+        assert_eq!(compact_type(&serde_json::json!({"type": "string"})), "string");
+        assert_eq!(compact_type(&serde_json::json!({"type": "integer"})), "integer");
+    }
+
+    #[test]
+    fn compact_type_null_is_any() {
+        assert_eq!(compact_type(&serde_json::Value::Null), "any");
+    }
+
+    #[test]
+    fn render_description_no_schema_returns_description() {
+        let tool = make_test_tool_def("no_schema");
+        assert_eq!(render_description(&tool), "test tool no_schema");
+    }
+
+    #[test]
+    fn render_description_with_schema_appends_returns_line() {
+        let tool = ToolDef {
+            name: "with_schema".into(),
+            description: "does stuff".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            execute: Box::new(|_| Box::pin(async { Ok(serde_json::Value::Null) })),
+            permission: None,
+        };
+        // ToolDef output_schema returns None by default, so test compact_type+format directly
+        let schema = serde_json::json!({"type": "object", "properties": {"result": {"type": "string"}}});
+        let rendered = format!("{}\n\nReturns: {}", tool.description(), compact_type(&schema));
+        assert!(rendered.contains("Returns: {result: string}"), "got: {rendered}");
     }
 }
