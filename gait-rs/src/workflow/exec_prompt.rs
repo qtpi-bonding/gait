@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use crate::workflow::schema::{NodeDef, WorkflowDef};
 use crate::workflow::vars::{NodeOutput, substitute};
@@ -14,10 +14,6 @@ pub async fn exec_prompt_node(
     provider: Arc<dyn Provider>,
 ) -> anyhow::Result<NodeOutput> {
     let task = substitute(prompt_text, &ctx.vars);
-    let full_task = if let Some(schema) = &node.output_schema {
-        format!("{}\n\nYou MUST call the {}() tool with this JSON structure:\n{}", task, crate::tools::output::DONE_TOOL_NAME,
-            serde_json::to_string_pretty(schema).unwrap_or_default())
-    } else { task };
 
     let model = node.model.clone()
         .or_else(|| workflow_def.model.clone())
@@ -25,21 +21,56 @@ pub async fn exec_prompt_node(
     let allow = node.allow.clone().unwrap_or_else(|| workflow_def.allow.clone());
     let auto = node.auto.unwrap_or(workflow_def.auto);
 
-    let system_prompt = resolve_system_prompt(node, ctx.gait_dir);
+    // Harness is always present. Agent layer comes from node.agent (file) or
+    // node.system_prompt (inline). Result-schema block appended when declared.
+    let agent_path: Option<PathBuf> = node.agent.as_ref().map(|name| {
+        crate::agent_frontmatter::resolve_markdown_context_path(
+            ctx.gait_dir,
+            crate::agent_frontmatter::MarkdownKind::Agent,
+            name,
+        )
+    }).filter(|p| p.exists());
+
+    let mut instructions = crate::prompt::compose_system_prompt(
+        ctx.gait_dir,
+        None,
+        agent_path.as_deref(),
+        crate::tools::output::DONE_TOOL_NAME,
+    );
+
+    if let Some(sp) = &node.system_prompt {
+        let sp = sp.trim();
+        if !sp.is_empty() {
+            let hash = crate::prompt::content_hash_short(sp);
+            instructions.push_str(&format!(
+                "<agent src=\"system_prompt\" hash=\"{hash}\">\n{sp}\n</agent>\n"
+            ));
+        }
+    }
+
+    if let Some(schema) = &node.output_schema {
+        let schema_str = serde_json::to_string_pretty(schema).unwrap_or_default();
+        instructions.push_str(&format!(
+            "\n<result-schema>\nYour `result` field when calling `{}` must match this JSON Schema:\n{}\nValidation is enforced. If your call fails, you will receive the validation error and must retry with a conforming value.\n</result-schema>\n",
+            crate::tools::output::DONE_TOOL_NAME,
+            schema_str
+        ));
+    }
+
     let codebase = node.codebase.as_ref()
         .map(|cb| PathBuf::from(substitute(cb, &ctx.vars)))
         .unwrap_or_else(|| ctx.codebase.to_path_buf());
 
     let config = crate::config::load_config(ctx.gait_dir);
-
-    // Build the declarative profile for this workflow node, then resolve tools/clients in one place.
-    // codebase: None — workflow nodes overwrite `instructions` below, so the
-    // project layer is irrelevant here.
     let mut profile = crate::profile::Profile::from_config_and_agent(&config, ctx.gait_dir, None, None, Some(model.clone()));
-    profile.instructions = system_prompt;   // workflow body (resolve_system_prompt), not the harness preamble
-    profile.deny = vec![];                   // workflow prompt nodes carry no deny
-    profile.allow = allow;                   // workflow-resolved allow
-    profile.config_tools = vec![];           // PARITY: old exec_prompt used builtins only (no config-tool loop)
+    profile.instructions = instructions;
+    profile.deny = vec![];
+    profile.allow = allow;
+    profile.config_tools = vec![];
+    if let Some(schema) = node.output_schema.clone() {
+        // Wire up OutputTool::with_schema so result validation is enforced at the tool layer.
+        profile.result_schema = Some(schema);
+    }
 
     let api_key = crate::auth::resolve_api_key(model.split_once('/').map(|(p, _)| p).unwrap_or(""));
     let repos = crate::git::Repos::production();
@@ -51,21 +82,20 @@ pub async fn exec_prompt_node(
         api_key,
     ).await?;
 
-    resolved.provider = provider;   // workflow reuses its injected provider, not the freshly-resolved one
+    resolved.provider = provider;
     let session = crate::session::Session::load(
         ctx.gait_dir.to_path_buf(),
         ctx.session_id.to_string(),
         codebase,
         repos,
     );
-    // workflow turns currently discard the live stream; transcript still written. Future work.
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
     let emitter = crate::proto::Emitter::for_session(&session.gait_dir, &session.id, tx);
     let result = run_turn(
         &session,
         &emitter,
         resolved,
-        crate::turn::TurnInput { task: Some(full_task), auto, max_iter: None },
+        crate::turn::TurnInput { task: Some(task), auto, max_iter: None },
     ).await?;
 
     match result {
@@ -82,17 +112,4 @@ pub async fn exec_prompt_node(
             text: "(paused to inform user)".into(), exit_code: None, json: None, routed_to: None,
         }),
     }
-}
-
-fn resolve_system_prompt(node: &NodeDef, gait_dir: &Path) -> String {
-    if let Some(sp) = &node.system_prompt { return sp.clone(); }
-    if let Some(name) = &node.agent {
-        let p = crate::agent_frontmatter::resolve_markdown_context_path(
-            gait_dir,
-            crate::agent_frontmatter::MarkdownKind::Agent,
-            name,
-        );
-        if let Ok(s) = std::fs::read_to_string(&p) { return s; }
-    }
-    String::new()
 }
