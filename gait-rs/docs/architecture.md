@@ -188,7 +188,7 @@ gait_dir/
 └── sessions/<id>/
     ├── .git                               ← worktree pointer
     ├── log.jsonl                          ← the event log (source of truth)
-    ├── session.json                       ← metadata sidecar (see violation #1)
+    ├── session.json                       ← write-once identity metadata
     ├── lock                               ← PID file (RAII during a turn)
     ├── codebase.git/                      ← CheckpointRepo bare shadow DB
     │   └── objects/info/alternates        ← → user's .git/objects (dedup)
@@ -224,37 +224,38 @@ without knowing its format (diff, file content, command, …).
 
 ---
 
+## Resolved (kept for the record)
+
+### ✓ `session.json.token_totals` → `total_usage` projection
+**Resolved** by `docs/plans/2026-06-13-architecture-cleanup.md`. The dead, duplicated
+`token_totals` sidecar is gone; cumulative usage is now `retrace::total_usage(events)` — a
+projection summing every `TurnComplete.usage`. Exposed via `gait cost <session-id>`. `session.json`
+now holds only write-once identity (`id`, `created_at`, `codebase_path`, `assigned_by`, `agent_name`).
+
+### ✓ `compat_rewrite_keys` shim deleted
+**Resolved** by the same plan. The silent legacy-key rewriter (`manifest`→`agent`,
+`compaction`→`summary`) is removed; `read_events` parses lines directly, so old-format logs now fail
+loudly instead of being silently transformed — matching the no-backward-compat policy.
+
+---
+
 ## Known Issues / Boundary Violations
 
-### 1. `session.json` holds state that should be a projection
-`session.json` carries `token_totals` — cumulative input/output/cache tokens. But every
-`TurnComplete` event already records per-turn `usage`. So token totals exist **twice**: as
-appendable events (source of truth) and as a mutable read-modify-write sidecar. This contradicts
-"everything is a projection." The fix is an `ActiveUsage` projection that sums `TurnComplete.usage`
-over the log; `session.json` should keep only write-once identity (`id`, `created_at`,
-`codebase_path`, `assigned_by`).
-
-### 2. `compat_rewrite_keys` is a backward-compat layer we said we don't want
-`proto/wire.rs` rewrites legacy event keys on read (`manifest`→`agent`, `compaction`→`summary`,
-strips `outputSchemaRetries`). The project policy is **no backward compat**. Either commit to a
-log-format version gate (and migrate old logs once) or delete this shim — silently rewriting keys
-hides schema drift.
-
-### 3. `turn.rs` is monolithic (~110 KB)
+### 1. `turn.rs` is monolithic (~110 KB)
 Mixes prompt construction, the streaming loop, permission gating, signal dispatch, LoadContext
 handling, and a large test module. Should split into `turn/{prompt,gate,signals,loop}.rs`.
 
-### 4. `stream.rs` duplicates the agentic loop without permissions
+### 2. `stream.rs` duplicates the agentic loop without permissions
 A second 50-step loop that calls `tool.execute()` directly with **no permission checks**. Predates
 mature `turn.rs`. Features added to `turn.rs` silently don't apply here. Only `generate.rs` and
 integration tests use it. Either delete it and route callers through `turn.rs`, or rename/document
 it as permission-free generation, not a general agent loop.
 
-### 5. `bin/gait.rs` is growing (~77 KB)
+### 3. `bin/gait.rs` is growing (~77 KB)
 Command bodies (`cmd_run`, etc.) hold session-creation and turn-invocation logic inline. Business
 logic should live in domain modules so it's testable without the binary.
 
-### 6. `PermissionItem` lives in the session layer but is UI-facing
+### 4. `PermissionItem` lives in the session layer but is UI-facing
 `ui/permission.rs` imports `session::transcript::PermissionItem`. It sits in `transcript.rs`
 because it appears in the log, but its primary consumer is the UI — an upward dependency. Tolerable,
 but watch it: if more UI-only fields (like `preview`) accrete on it, consider a UI-side view type.
