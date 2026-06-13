@@ -96,7 +96,7 @@ impl Tool for ListAgentsTool {
 
             let events: Vec<Event> = blob_content.lines()
                 .filter(|l| !l.is_empty())
-                .filter_map(|l| serde_json::from_str::<Event>(&crate::proto::wire::compat_rewrite_keys(l)).ok())
+                .filter_map(|l| serde_json::from_str::<Event>(l).ok())
                 .collect();
             if events.is_empty() { continue; }
 
