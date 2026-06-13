@@ -467,6 +467,7 @@ pub async fn run_turn(
             tools: Default::default(),
             skills: skill_registry.iter().map(|sk| sk.name.clone()).collect(),
             mcp: Default::default(),
+            plugins: Default::default(),
             allow: allow.iter().cloned().collect(),
             deny: deny.iter().cloned().collect(),
         };

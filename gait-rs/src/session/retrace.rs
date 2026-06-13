@@ -137,16 +137,17 @@ pub struct AgentState {
     pub tools: std::collections::HashSet<String>,
     pub skills: std::collections::HashSet<String>,
     pub mcp: std::collections::HashSet<String>,
+    pub plugins: std::collections::HashSet<String>,
     pub allow: std::collections::HashSet<String>,
     pub deny: std::collections::HashSet<String>,
 }
 
 impl AgentState {
-    /// Enabled loadable names = skills ∪ mcp. Replaces the deleted `ActiveLoadables`
+    /// Enabled loadable names = skills ∪ mcp ∪ plugins. Replaces the deleted `ActiveLoadables`
     /// state (a flat name-set) so `<loadable-index>` and the MCP-load loop read
     /// identical output.
     pub fn enabled_loadables(&self) -> std::collections::HashSet<String> {
-        self.skills.union(&self.mcp).cloned().collect()
+        self.skills.union(&self.mcp).chain(self.plugins.iter()).cloned().collect()
     }
 
     /// The genesis seed (M3): enabled-set derived from config exactly like
@@ -169,6 +170,7 @@ impl AgentState {
             model, instructions,
             tools: Default::default(),
             skills, mcp,
+            plugins: Default::default(),
             allow: allow.into_iter().collect(),
             deny: deny.into_iter().collect(),
         }
@@ -189,6 +191,7 @@ impl From<&pb::Agent> for AgentState {
             tools: a.tools.iter().cloned().collect(),
             skills: a.skills.iter().cloned().collect(),
             mcp: a.mcp_servers.iter().cloned().collect(),
+            plugins: a.plugins.iter().cloned().collect(),
             allow,
             deny,
         }
@@ -217,7 +220,7 @@ impl Projection for ActiveAgent {
                     ToggleKind::Skill => &mut st.skills,
                     ToggleKind::Mcp   => &mut st.mcp,
                     ToggleKind::Tool  => &mut st.tools,
-                    ToggleKind::Plugin => return,  // TODO: Task 2 adds plugins field to AgentState
+                    ToggleKind::Plugin => &mut st.plugins,
                     ToggleKind::Unspecified => return,
                 };
                 if t.enabled { set.insert(t.name.clone()); }
@@ -649,15 +652,18 @@ pub fn active_agent_checkpoint(events: &[Event]) -> Option<pb::Agent> {
 
 /// Overlay the dynamic capability state from `st` onto the static `live` Agent.
 /// Static fields (model, instructions, tools, permissions, through_seq) come from `live`;
-/// skills and mcp_servers are replaced with the fold-result sets from `st`, sorted for
+/// skills, mcp_servers, and plugins are replaced with the fold-result sets from `st`, sorted for
 /// determinism (the drift guard uses equality, so ordering must be stable).
 pub fn rebaseline_agent(mut live: pb::Agent, st: &AgentState) -> pb::Agent {
     let mut skills: Vec<String> = st.skills.iter().cloned().collect();
     skills.sort();
     let mut mcp_servers: Vec<String> = st.mcp.iter().cloned().collect();
     mcp_servers.sort();
+    let mut plugins: Vec<String> = st.plugins.iter().cloned().collect();
+    plugins.sort();
     live.skills = skills;
     live.mcp_servers = mcp_servers;
+    live.plugins = plugins;
     live
 }
 
@@ -1409,6 +1415,7 @@ mod tests {
             tools: HashSet::new(),
             skills: ["new-skill".to_string()].into(),
             mcp: ["new-mcp".to_string()].into(),
+            plugins: HashSet::new(),
             allow: HashSet::new(),
             deny: HashSet::new(),
         };
@@ -1420,7 +1427,31 @@ mod tests {
         assert_eq!(got.mcp_servers, vec!["new-mcp".to_string()], "mcp overlaid from state");
         let perms = got.permissions.as_ref().expect("permissions preserved");
         assert!(perms.allow.is_empty());
-}
+    }
+
+    #[test]
+    fn plugin_toggle_folds_into_agent_state() {
+        let events = vec![
+            events::toggle("plugin", "myfmt", true),
+            events::toggle("plugin", "other", true),
+            events::toggle("plugin", "myfmt", false),
+        ];
+        let evs = mint_events(events);
+        let state = active_agent(&evs, AgentState::default());
+        assert!(!state.plugins.contains("myfmt"), "LWW: myfmt toggled off");
+        assert!(state.plugins.contains("other"), "other toggled on");
+    }
+
+    #[test]
+    fn plugin_enabled_appears_in_enabled_loadables() {
+        let events = vec![
+            events::toggle("plugin", "myfmt", true),
+        ];
+        let evs = mint_events(events);
+        let state = active_agent(&evs, AgentState::default());
+        let enabled = state.enabled_loadables();
+        assert!(enabled.contains("myfmt"), "plugin in enabled_loadables");
+    }
 
 }
 
