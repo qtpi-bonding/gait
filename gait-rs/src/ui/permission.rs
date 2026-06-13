@@ -1,39 +1,16 @@
-use std::io::{BufRead, Write};
-use crate::session::transcript::PermissionItem;
-use crate::theme::{Theme, RESET, DIM_FG};
-
-pub fn prompt_permission(
-    item: &PermissionItem,
-    label: Option<&str>,
-    theme: &Theme,
-) -> crate::permission::PermissionChoice {
-    eprintln!();
-    if let Some(l) = label {
-        eprintln!("{}⟳ {}  {}({}){}", theme.accent.fg(), item.cmd, DIM_FG, l, RESET);
-    } else {
-        eprintln!("{}⟳ {}{}", theme.accent.fg(), item.cmd, RESET);
-    }
-    eprintln!();
-    for (i, pat) in item.patterns.iter().enumerate() {
-        eprintln!("  {}[{}] {}{}", DIM_FG, i + 1, pat, RESET);
-    }
-    eprintln!();
-    eprintln!("  {}number = once · s = session · a = agent · r = deny   (e.g. s2, 2s){}", DIM_FG, RESET);
-    loop {
-        eprint!("  {}>{} {}", theme.accent.fg(), RESET, theme.user_msg.fg());
-        let _ = std::io::stderr().flush();
-        let mut input = String::new();
-        match std::io::stdin().lock().read_line(&mut input) {
-            Ok(0) | Err(_) => {
-                eprint!("{}", RESET);
-                return crate::permission::PermissionChoice::Deny;
-            }
-            Ok(_) => { eprint!("{}", RESET); }
+/// Lines to render for a permission preview, framed by a leading and trailing
+/// blank entry for spacing. `None` or an empty preview → empty vec (nothing rendered).
+/// The caller applies its own per-line ANSI styling; the blank sentinel entries
+/// render as blank separator lines.
+pub fn preview_block(preview: Option<&str>) -> Vec<String> {
+    match preview {
+        Some(p) if !p.is_empty() => {
+            let mut out = vec![String::new()];
+            out.extend(p.lines().map(|l| l.to_string()));
+            out.push(String::new());
+            out
         }
-        match parse_permission_response(input.trim(), &item.patterns) {
-            Some(c) => return c,
-            None => eprintln!("  unrecognized — e.g. 2, s, s2, 2a, r (patterns 1..{})", item.patterns.len()),
-        }
+        _ => Vec::new(),
     }
 }
 
@@ -135,5 +112,19 @@ mod tests {
         assert_eq!(parse_permission_response("sx", &p), None);  // junk letter
         assert_eq!(parse_permission_response("", &p), None);    // empty
         assert_eq!(parse_permission_response("s", &[]), None);  // no patterns → no broadest
+    }
+
+    #[test]
+    fn preview_block_frames_lines_with_blanks() {
+        assert_eq!(
+            preview_block(Some("-a\n+b")),
+            vec!["".to_string(), "-a".to_string(), "+b".to_string(), "".to_string()]
+        );
+    }
+
+    #[test]
+    fn preview_block_empty_for_none_or_empty() {
+        assert_eq!(preview_block(None), Vec::<String>::new());
+        assert_eq!(preview_block(Some("")), Vec::<String>::new());
     }
 }
