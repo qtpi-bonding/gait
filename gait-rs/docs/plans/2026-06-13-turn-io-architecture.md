@@ -172,10 +172,10 @@ flagged; the only real mapping is `ArgSource`'s one `String → user_turn`.
 Each phase is independently shippable, ordered lowest-risk-first, and each leaves
 the tree green.
 
-**Phase 0 — (optional) `Emitter → Recorder` rename.** Cosmetic; method
-`emit→record`, `delta→publish_delta`. 26 call-sites + tests, zero behavior change.
-Land alone if desired; not a prerequisite for anything. *Defer unless the naming
-is actively wanted.*
+**Phase 0 — `Emitter → Recorder` rename (confirmed).** Method `emit→record`,
+`delta→publish_delta`; the `record = commit + publish` vocabulary. 26 call-sites +
+tests, zero behavior change — landed as its own mechanical commit so later
+behavioral phases stay reviewable. *Decision: keep (do it first).*
 
 **Phase 1 — Output port for `gait run` (the bug fix).** `classify` (read-time) +
 `StdioSink`; rewrite `cmd_run`'s consumer loop to route by class; print
@@ -205,8 +205,7 @@ live. *The payoff the whole boundary was shaped for.*
 
 ## Open decisions
 
-1. **Phase 0 rename** — do it, or keep `Emitter`/`emit`? (Pure preference;
-   reviewers call it churn, you wanted it clean.)
+1. ~~**Phase 0 rename**~~ — **decided: keep** (`Emitter → Recorder`, Phase 0).
 2. **Phase 2 mechanism** — emitter in the `execute` *signature* (per-call,
    cleanest) vs. injected into `ToolCtx` at construction (requires reordering
    construction after emitter creation). Plan assumes the signature.
