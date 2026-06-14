@@ -119,3 +119,42 @@ nodes:
     assert!(content.contains("pass-node") && content.contains("done"), "pass-node must be done");
     assert!(content.contains("fail-node") && content.contains("skipped"), "fail-node must be skipped");
 }
+
+/// Phase 3a proof: `run_workflow` now records its events through a `Recorder` +
+/// a spawned `StdioSink` consumer (no more `wire::emit`/`println!` to stdout).
+/// Two guarantees:
+///   1. `record` still writes the durable transcript — `workflow_start` and
+///      `workflow_complete` Raw events are present in `log.jsonl`.
+///   2. `.await.unwrap()` returns — the run drops the `Recorder` (closing the
+///      channel) and joins the consumer cleanly, i.e. no deadlock on exit.
+#[tokio::test]
+async fn workflow_events_recorded_through_channel_no_stdout_echo() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+    std::fs::create_dir_all(ws.path().join("workflows")).unwrap();
+
+    let yaml = r#"
+name: rec-test
+nodes:
+  - id: greet
+    shell: "echo hi"
+"#;
+    std::fs::write(ws.path().join("workflows/rec-test.yaml"), yaml).unwrap();
+    let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
+    let session_id = "swf_rec01";
+
+    run_workflow(WorkflowRunOpts {
+        workflow_def: wf,
+        yaml_path: "workflows/rec-test.yaml".into(),
+        session_id: session_id.into(),
+        gait_dir: ws.path().to_path_buf(),
+        codebase: ws.path().to_path_buf(),
+        provider: Arc::new(EchoProvider),
+        args: vec![],
+    }).await.unwrap();
+
+    let log = ws.path().join("sessions").join(session_id).join("log.jsonl");
+    let content = std::fs::read_to_string(&log).unwrap();
+    assert!(content.contains("\"type\":\"workflow_start\""), "log must contain workflow_start: {content}");
+    assert!(content.contains("\"type\":\"workflow_complete\""), "log must contain workflow_complete: {content}");
+}
