@@ -403,7 +403,7 @@ mod tests {
     fn emit_writes_to_transcript() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("log.jsonl");
-        wire::emit(&path, events::assistant_text("hello emit".into())).unwrap();
+        wire::append(&path, events::assistant_text("hello emit".into())).unwrap();
         let events = read_events(&path).unwrap();
         assert_eq!(events.len(), 1);
         assert!(matches!(k(&events[0]), payload::Kind::AssistantText(a) if a.content == "hello emit"));

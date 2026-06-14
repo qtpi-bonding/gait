@@ -74,13 +74,6 @@ pub fn append(path: &Path, body: event::Body) -> anyhow::Result<Event> {
     write_to_transcript(path, body)
 }
 
-/// Like [`append`], but also echoes the JSON line to stdout (NDJSON stream for
-/// the REPL / external runners), matching the old `emit_event` behavior.
-pub fn emit(path: &Path, body: event::Body) -> anyhow::Result<Event> {
-    let ev = write_to_transcript(path, body)?;
-    println!("{}", serde_json::to_string(&ev)?);
-    Ok(ev)
-}
 #[cfg(test)]
 pub fn body_to_event_for_test(body: event::Body) -> Event { crate::proto::envelope::mint(body, None) }
 

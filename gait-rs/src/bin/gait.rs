@@ -732,7 +732,7 @@ fn cmd_workflow_abort(argv: &[String], gait_dir: PathBuf) {
         None => { eprintln!("[gait] usage: gait workflow abort <workflow-id>"); std::process::exit(1); }
     };
     let tx_path = gait_dir.join("sessions").join(&workflow_id).join("log.jsonl");
-    let _ = gait_ai::proto::wire::emit(&tx_path, gait_ai::proto::wire::raw("workflow_error", serde_json::json!({
+    let _ = gait_ai::proto::wire::append(&tx_path, gait_ai::proto::wire::raw("workflow_error", serde_json::json!({
         "workflow_id": workflow_id.clone(),
         "failed_node": "(aborted)",
         "error": "user aborted",
