@@ -83,20 +83,52 @@ pub async fn resolve_caps(
 `CliDriver::caps`/`ReplDriver::caps` are refactored to call it (dedupe), proving
 it's the real path, not a parallel one.
 
-### 4. Worked example (the proof)
-`examples/embed_turn.rs` (or `tests/integration_embed.rs`): a minimal embedder that
-implements a `TurnSource` yielding one `Input` body, a `TurnSink` that collects
-items + the result, and a `TurnDriver` returning `resolve_caps(...)`, then calls
-`embed::run_loop` and asserts the turn ran (transcript + a `RunResult`). This is
-the "external consumer" proof — it uses only `gait_ai::embed::*`.
+### 4. pbjson output via a callback sink (`JsonSink`) — FFI-shaped
+gait is already protobuf end-to-end: every event is a prost message serialized as
+**pbjson** (the canonical protobuf→JSON mapping; the proto types derive
+`serde::Serialize` via `pbjson-build`). The log is NDJSON of pbjson and the CLI's
+`StdioSink` emits pbjson — *one* wire format everywhere. The intended consumers
+(Serverpod / Flutter) generate their **own JSON model from the same `.proto`** and
+read that JSON. So the FFI-shaped output is a **pbjson JSON string per frame** —
+exactly what `StdioSink` writes, just handed to a callback instead of stdout:
+```rust
+/// A `TurnSink` that serializes each frame to pbjson (canonical protobuf-JSON,
+/// identical to StdioSink's output) and hands the string to a callback. The
+/// FFI-ready shape: a thin C-ABI shim maps a `extern "C"` fn pointer + opaque ctx
+/// to this closure; the consumer parses the JSON with classes generated from the
+/// SAME .proto (StreamItem / RunResult).
+pub struct JsonSink<F: FnMut(JsonFrame<'_>)> { /* callback + failed flag */ }
+pub enum JsonFrame<'a> {
+    Item(&'a str),             // pbjson StreamItem (a Trace/Error event or delta)
+    Result(&'a str),           // pbjson RunResult ({message,result,changes})
+    Diagnostic(Diag, &'a str),
+}
+```
+`serde_json::to_string(item)` / `serde_json::to_string(&run_result_proto(r))` —
+byte-for-byte the CLI's output. (Raw wire bytes stay a trivial alternative —
+`prost::Message::encode_to_vec` — if binary throughput ever matters; not the
+default.) Input is symmetric: the consumer passes a task **string** →
+`user_turn_body(...)` → `event::Body`. No Rust types cross the boundary — only
+JSON/strings — which is what makes the surface FFI-compatible without *building* an
+FFI here.
+
+### 5. Worked example (the proof)
+`tests/integration_embed.rs`: a minimal embedder that implements a `TurnSource`
+yielding one `Input` body, drives the turn through `embed::run_loop`, and collects
+output via **`JsonSink`** — then **parses the pbjson back** (`serde_json::from_str`
+into the proto type) and asserts the `StreamItem`s + the `RunResult` round-trip.
+This proves the exact path a Serverpod/Flutter consumer uses: drive FFI-style, read
+pbjson. It uses only `gait_ai::embed::*`.
 
 ## Out of scope (explicit)
-- **FFI / C ABI.** A `cdylib` exposing this over a C boundary is a real follow-up,
-  but it is a *separate layer* (owns a tokio runtime, marshals the trait callbacks
-  through `extern "C"` fn pointers + opaque context, and translates `anyhow::Error`
-  to codes). Phase 5 makes the **Rust** embedding API clean and stable; the FFI shim
-  then wraps it without touching the core. Documented as the next step, not built
-  here. *(Flag for review: if FFI is wanted now, it becomes the bulk of the phase.)*
+- **The FFI/C-ABI shim itself is NOT built here** (confirmed with the user). But the
+  surface is deliberately **FFI-shaped**: `JsonSink` takes a closure (→ a C fn
+  pointer + opaque ctx in a future shim), input is a task string, and **output is
+  pbjson JSON** (the protobuf→JSON mapping gait already uses) — no Rust types cross
+  the boundary. So a consumer (Serverpod, Flutter) calls gait FFI-style and parses
+  the JSON with a model generated from the same `.proto`. The shim (cdylib + tokio
+  runtime + `extern "C"` marshalling) is a thin follow-up that wraps this surface
+  without touching the core.
 - **Network transport** (websocket/HTTP/socket) — the original outline; a transport
   is just another `TurnSource`+`TurnSink` pair over `embed::run_loop`, addable later
   with zero core change. Not built here.
