@@ -5,8 +5,8 @@ Companion to [`2026-06-13-stream-output-sink.md`](./2026-06-13-stream-output-sin
 ## 1. Ports & adapters around the log store
 
 The log is the hub. Input adapters feed the input port; the turn reads the store;
-the turn's emissions go through one **emit transaction** that commits to the log
-and tees a live copy to the output sinks.
+the turn's emissions go through one **record transaction** — `commit` to the log
+then `publish` a `Classified` copy to the output sinks (in lockstep).
 
 ```mermaid
 flowchart LR
@@ -18,53 +18,55 @@ flowchart LR
     REPL_IN --> SRC
     REMOTE_IN --> SRC
 
-    SRC["TurnSource<br/>(input port)"] -->|"to_event(Input)"| APPEND["append event"]
+    SRC["TurnSource<br/>(input port)"] -->|"to_event(Input)"| APPEND["append (wire::append)"]
     APPEND --> LOG[("LOG<br/>event store")]
     LOG -->|"read on spawn"| TURN["turn"]
 
-    TURN -->|"emit(body)"| EM["Emitter"]
+    TURN -->|"record(body)"| REC["Recorder"]
 
-    subgraph TX["emit = one transaction"]
+    subgraph TX["record = one transaction (lockstep)"]
         direction LR
-        EM -->|"1 · durable write (COMMIT)"| LOG
-        EM -->|"2 · tee live copy"| CH(["live channel"])
+        REC -->|"1 · commit (durable append)"| LOG
+        REC -->|"2 · publish Classified{class,item}"| CH(["live channel"])
     end
 
-    CH -->|"classify(item)"| SINK["TurnSink<br/>(output port)"]
+    CH -->|"route by item.class"| SINK["TurnSink<br/>(output port)"]
     SINK -->|"Result"| OUT_STD["stdout"]
     SINK -->|"Trace + Error"| OUT_ERR["stderr"]
     SINK -->|"combo · phase 3"| OUT_CLOUD["cloud"]
 
-    TURN -. "keeps emitting until done" .-> EM
+    TURN -. "publish_delta (live only) · keeps recording until done" .-> REC
 ```
 
-## 2. The emit transaction (sequence)
+## 2. The record transaction (sequence)
 
-The durable append is the commit; the channel tee is an at-least-once projection
-derived from the committed event. They are one call so the log and the live
-sinks never diverge — except deltas, which are tee-only and never logged.
+`record` = commit then publish, in lockstep. The durable append is the commit;
+the channel publish is an at-least-once projection of the committed event,
+carrying its class. One call, so the log and the live sinks never diverge —
+except deltas, which go through `publish_delta` (publish only, never committed).
 
 ```mermaid
 sequenceDiagram
     participant T as turn
-    participant E as Emitter
+    participant R as Recorder
     participant L as LOG (store)
     participant C as channel
     participant S as TurnSink
 
     rect rgb(235, 245, 255)
-    Note over T,S: emit(body) — atomic: commit, then project
-    T->>E: emit(body)
-    E->>L: write_to_transcript (durable)
+    Note over T,S: record(body) — always both, in lockstep
+    T->>R: record(body)
+    R->>L: commit (durable append)
     Note right of L: COMMIT — event is now authoritative
-    E-->>C: send(StreamItem) (best-effort tee)
-    C->>S: item(StreamItem)
-    S->>S: classify → stdout / stderr / cloud
+    R->>R: class = classify(event)
+    R-->>C: publish Classified{class, item} (best-effort)
+    C->>S: item(Classified)
+    S->>S: route by class → stdout / stderr / cloud
     end
 
-    Note over T,C: delta(text): tee only — never written to LOG
-    T-->>C: send(Delta)
-    C->>S: item(Delta) → Trace → stderr
+    Note over T,C: publish_delta(text): publish only — never committed
+    T-->>C: publish Classified{Trace, Delta}
+    C->>S: item → Trace → stderr
 ```
 
 ## 3. The unified run loop (CLI and REPL converge)
