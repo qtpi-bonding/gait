@@ -1,5 +1,7 @@
 //! Agnostic turn-output port: classify channel items + the TurnSink contract.
-use crate::proto::gait::log::v1::{event, payload, stream_item, Event, StreamItem};
+use crate::proto::gait::log::v1::{event, payload, stream_item, Event, RunResult, StreamItem, run_result, TurnOutput};
+use crate::proto::events;
+
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum StreamClass { Trace, Error }
@@ -34,6 +36,30 @@ pub async fn drive(mut rx: tokio::sync::mpsc::UnboundedReceiver<StreamItem>, sin
     while let Some(item) = rx.recv().await { sink.item(&item); }
 }
 
+fn extract_kind(body: event::Body) -> Option<payload::Kind> {
+    match body { event::Body::Payload(p) => p.kind, _ => None }
+}
+
+pub fn run_result_proto(r: &crate::turn::TurnResult) -> RunResult {
+    use crate::turn::TurnResult;
+    let result = match r {
+        TurnResult::Done { message, result } => run_result::Result::Done(TurnOutput {
+            message: message.clone(), result: events::to_value_opt(result), changes: None,
+        }),
+        TurnResult::Clarify { items } => match extract_kind(events::clarify(items)) {
+            Some(payload::Kind::Clarify(c)) => run_result::Result::Clarify(c),
+            _ => run_result::Result::Clarify(Default::default()),
+        },
+        TurnResult::Inform { items } => match extract_kind(events::inform(items)) {
+            Some(payload::Kind::Inform(i)) => run_result::Result::Inform(i),
+            _ => run_result::Result::Inform(Default::default()),
+        },
+        TurnResult::Permissions => run_result::Result::Permissions(Default::default()),
+    };
+    RunResult { result: Some(result) }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -49,4 +75,10 @@ mod tests {
     fn tool_call_is_trace() {
         assert_eq!(classify(&ev(events::tool_call("c1".into(), "read".into(), &serde_json::json!({})))), StreamClass::Trace);
     }
+    #[test]
+    fn run_result_permissions_maps() {
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&run_result_proto(&crate::turn::TurnResult::Permissions)).unwrap()).unwrap();
+        assert!(v.get("permissions").is_some());
+    }
 }
+

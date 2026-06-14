@@ -276,6 +276,16 @@ enum Decision { DECISION_UNSPECIFIED = 0; DECISION_ALLOW = 1; DECISION_DENY = 2;
 enum Scope    { SCOPE_UNSPECIFIED = 0; SCOPE_ONCE = 1; SCOPE_AGENT = 2; SCOPE_GLOBAL = 3; SCOPE_SESSION = 4; }
 message Permissions      { repeated PermissionItem items = 1; }
 message PermissionsReply { string from = 1; repeated PermissionsReplyItem items = 2; }  // from = replier id
+message RunResult {
+  oneof result {
+    TurnOutput  done        = 1;
+    Clarify     clarify     = 2;
+    Permissions permissions = 3;
+    Inform      inform      = 4;
+  }
+}
+
+
 
 
 // ── Sandbox ──────────────────────────────────────────────────────────────────
