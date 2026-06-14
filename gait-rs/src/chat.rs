@@ -117,7 +117,7 @@ pub async fn run_chat(
             repos: repos.clone(),
         };
 
-        crate::cli::run_loop::run_loop(source, &mut sink, session, &gait_dir, &session_id, &mut driver).await?;
+        crate::embed::run_loop(source, &mut sink, session, &gait_dir, &session_id, &mut driver).await?;
 
         // The source ended the loop with a control signal (or EOF).
         let control = shared.borrow_mut().control.take();

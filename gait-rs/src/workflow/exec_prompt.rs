@@ -85,7 +85,7 @@ pub async fn exec_prompt_node(
     resolved.provider = provider;
     // Build the prompt's user_turn body before `codebase`/`repos` move into the
     // session (Phase 4 Option A: the caller appends the input, run_turn folds).
-    let user_body = crate::cli::run_loop::user_turn_body(&repos, &codebase, task);
+    let user_body = crate::embed::user_turn_body(&repos, &codebase, task);
     let session = crate::session::Session::load(
         ctx.gait_dir.to_path_buf(),
         ctx.session_id.to_string(),

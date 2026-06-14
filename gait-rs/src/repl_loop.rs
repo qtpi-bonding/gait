@@ -10,7 +10,7 @@ use std::process::Command;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use crate::cli::run_loop::{user_turn_body, LoopConfig, TurnDriver};
+use crate::embed::{user_turn_body, LoopConfig, TurnDriver};
 use crate::port::input::{TurnSource, TurnStart};
 use crate::port::output::{Diag, TurnSink};
 use crate::proto::gait::log::v1::StreamItem;

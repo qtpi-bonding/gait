@@ -1,13 +1,29 @@
-//! The unified turn run-loop shared by the CLI (`cmd_run`) and, later, the REPL.
-//! A `TurnSource` decides whether each iteration appends a new input event or
-//! resumes from the log; the loop runs one `run_turn` per yield and routes its
-//! live stream through a `TurnSink`. (Phase 4 input port.)
+//! Embedding API — drive gait in-process by implementing the I/O ports
+//! (`TurnSource`/`TurnSink`/`TurnDriver`) and calling [`run_loop`]. The CLI and
+//! REPL are themselves embedders built on this surface. Output is pbjson (the
+//! protobuf→JSON gait uses everywhere) via [`JsonSink`], so an FFI-style consumer
+//! (Serverpod/Flutter) parses it with a model generated from the same `.proto`.
+//! (Phase 5 — the in-process boundary the whole turn-I/O track was shaped for.)
+//!
+//! The unified run-loop runs one `run_turn` per `TurnSource` yield and routes its
+//! live stream through a `TurnSink`.
+
+// One-`use` embedding facade: re-export the port surface so a consumer needs only
+// `use gait_ai::embed::*`.
+pub use crate::port::input::{TurnSource, TurnStart};
+pub use crate::port::output::{classify, run_result_proto, Diag, StreamClass, TurnSink};
+pub use crate::turn::{TurnInput, TurnResult};
+pub use crate::profile::ResolvedProfile;
+pub use crate::session::Session;
+pub use crate::Recorder;
+pub use crate::git::Repos;
+pub use crate::config::{load_config, GaitConfig};
+pub use crate::proto::gait::log::v1::{RunResult, StreamItem};
+
+use crate::port::output::drive;
 use std::ops::ControlFlow;
 use std::path::Path;
 use std::sync::Arc;
-use crate::port::input::{TurnSource, TurnStart};
-use crate::port::output::{drive, TurnSink};
-use crate::turn::{TurnInput, TurnResult};
 
 /// Per-turn config the loop can't infer — sourced from `config`/CLI flags/node,
 /// NOT from `caps`. `auto` gates permissions in `run_turn`, so it must be honored

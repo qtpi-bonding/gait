@@ -98,7 +98,7 @@ async fn full_turn_creates_transcript_and_git_commit() {
     let emitter = discard_emitter(ws.path(), "sint001");
     // Phase 4 Option A: the caller appends the user_turn, run_turn folds it.
     repos.traces.create_session_worktree(ws.path(), "sint001").unwrap();
-    emitter.record(gait_ai::cli::run_loop::user_turn_body(&repos, ws.path(), "list the files".into())).unwrap();
+    emitter.record(gait_ai::embed::user_turn_body(&repos, ws.path(), "list the files".into())).unwrap();
     run_turn(
         &session,
         &emitter,

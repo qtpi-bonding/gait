@@ -34,6 +34,7 @@ pub mod mcp_scanner;
 pub mod wasm_plugins;
 pub mod proto;
 pub mod port;
+pub mod embed;
 pub mod cli;
 pub mod sandbox;
 pub mod config_hook;

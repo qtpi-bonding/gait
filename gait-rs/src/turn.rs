@@ -395,7 +395,7 @@ async fn apply_curate_filter(
     // Option A: append the curate prompt as the user_turn, then run_turn folds it.
     // The session worktree must exist before the append (run_turn also creates it).
     let _ = repos.traces.create_session_worktree(gait_dir, &session_id);
-    let _ = curate_emitter.record(crate::cli::run_loop::user_turn_body(&repos, codebase_path, task));
+    let _ = curate_emitter.record(crate::embed::user_turn_body(&repos, codebase_path, task));
     let _ = run_turn(&session, &curate_emitter, caps,
         TurnInput { auto: true, max_iter: Some(1), preview_policy: crate::config::PreviewPolicy::default() }).await;
 
@@ -1383,7 +1383,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
         let emitter = Recorder::for_session(&session.gait_dir, &session.id, tx);
         session.repos.traces.create_session_worktree(&session.gait_dir, &session.id)?;
-        emitter.record(crate::cli::run_loop::user_turn_body(&session.repos, &session.codebase_path, task.into()))?;
+        emitter.record(crate::embed::user_turn_body(&session.repos, &session.codebase_path, task.into()))?;
         run_turn(&session, &emitter, caps, input).await
     }
 

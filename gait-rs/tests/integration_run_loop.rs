@@ -2,7 +2,7 @@
 //! `user_turn` to the log BEFORE the turn folds it, on a fresh session, and runs
 //! exactly one turn per `TurnStart`. This is the end-to-end proof that `cmd_run`
 //! (= ArgSource + CliDriver + run_loop) behaves like the old inline `cmd_run`.
-use gait_ai::cli::run_loop::{run_loop, user_turn_body, LoopConfig, TurnDriver};
+use gait_ai::embed::{run_loop, user_turn_body, LoopConfig, TurnDriver};
 use gait_ai::port::input::ArgSource;
 use gait_ai::port::output::{Diag, TurnSink};
 use gait_ai::proto::gait::log::v1::{event, payload, Event, StreamItem};

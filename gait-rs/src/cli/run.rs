@@ -128,7 +128,7 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
     // The primary input becomes an event the loop appends before the fold (or a
     // bare Resume when there's no --task) — symmetric with the reply path.
     let source = crate::port::input::ArgSource::new(
-        task.map(|t| crate::cli::run_loop::user_turn_body(&repos, &codebase_path, t)),
+        task.map(|t| crate::embed::user_turn_body(&repos, &codebase_path, t)),
     );
     let session = std::sync::Arc::new(crate::session::Session::load(
         gait_dir.clone(),
@@ -148,7 +148,7 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
         preview_policy: config.preview,
     };
 
-    if let Err(e) = crate::cli::run_loop::run_loop(source, &mut sink, session, &gait_dir, &session_id, &mut driver).await {
+    if let Err(e) = crate::embed::run_loop(source, &mut sink, session, &gait_dir, &session_id, &mut driver).await {
         sink.diagnostic(Diag::Error, &format!("error: {}", e));
         std::process::exit(1);
     }
@@ -172,7 +172,7 @@ struct CliDriver {
 }
 
 #[async_trait::async_trait(?Send)]
-impl crate::cli::run_loop::TurnDriver for CliDriver {
+impl crate::embed::TurnDriver for CliDriver {
     async fn caps(&mut self) -> anyhow::Result<crate::profile::ResolvedProfile> {
         // Single-shot: `ArgSource` yields one turn, so this resolves exactly once.
         let profile = self.profile.take()
@@ -186,8 +186,8 @@ impl crate::cli::run_loop::TurnDriver for CliDriver {
         ).await
     }
 
-    fn turn_config(&self) -> crate::cli::run_loop::LoopConfig {
-        crate::cli::run_loop::LoopConfig { auto: self.auto, max_iter: self.max_iter, preview_policy: self.preview_policy }
+    fn turn_config(&self) -> crate::embed::LoopConfig {
+        crate::embed::LoopConfig { auto: self.auto, max_iter: self.max_iter, preview_policy: self.preview_policy }
     }
 
     async fn after_turn(&mut self, sink: &mut dyn crate::port::output::TurnSink, result: &crate::turn::TurnResult) {
