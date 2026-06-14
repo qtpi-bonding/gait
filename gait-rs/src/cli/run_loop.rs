@@ -60,6 +60,10 @@ pub async fn run_loop(
     session_id: &str,
     driver: &mut impl TurnDriver,
 ) -> anyhow::Result<()> {
+    // Ensure the session worktree (and thus the log dir) exists before we append
+    // the first input event — `run_turn` also creates it (idempotent), but the
+    // pre-turn append below would otherwise fail on a fresh session.
+    session.repos.traces.create_session_worktree(gait_dir, session_id)?;
     let tx_path = gait_dir.join("sessions").join(session_id).join("log.jsonl");
     while let Some(start) = source.next().await {
         if let TurnStart::Input(body) = start {
