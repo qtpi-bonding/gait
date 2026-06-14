@@ -132,6 +132,65 @@ async fn full_turn_creates_transcript_and_git_commit() {
     assert!(commit_msg.contains("turn 1"), "unexpected commit message: {commit_msg}");
 }
 
+/// Phase 2 end-to-end: a `cwd`-emitting tool call inside a real `run_turn` must
+/// reach the LIVE channel (not only the transcript) — proving the turn threads
+/// its `Recorder` into `Tool::execute`, so `StdioSink`/REPL see it on stderr.
+#[tokio::test]
+async fn cwd_event_reaches_live_channel_through_turn() {
+    use gait_ai::proto::gait::log::v1::{stream_item, event, StreamItem};
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+
+    let provider = Arc::new(ScriptedProvider {
+        calls: Arc::new(vec![
+            // Step 1: shell `true` with cwd "." → emits a Cwd event through the Recorder.
+            vec![
+                StreamChunk::ToolCallComplete {
+                    tool_call_id: "id1".into(),
+                    tool_name: "shell".into(),
+                    args: serde_json::json!({ "cmd": "true", "reason": "t", "cwd": "." }),
+                },
+                StreamChunk::Done,
+            ],
+            // Step 2: final answer.
+            vec![StreamChunk::Text("done".into()), StreamChunk::Done],
+        ]),
+        idx: Arc::new(AtomicUsize::new(0)),
+    });
+
+    let shell_tool = gait_ai::tools::ShellTool::new(gait_ai::tools::ToolCtx::new(
+        ws.path().to_path_buf(), ws.path().to_path_buf(), "sintcwd".into()));
+
+    // Keep the receiver: we assert the Cwd StreamItem was PUBLISHED, not just logged.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<StreamItem>();
+    let rec = gait_ai::Recorder::for_session(ws.path(), "sintcwd", tx);
+
+    run_turn(
+        &gait_ai::session::Session {
+            id: "sintcwd".into(),
+            gait_dir: ws.path().to_path_buf(),
+            codebase_path: ws.path().to_path_buf(),
+            assigned_by: None,
+            repos: gait_ai::git::Repos::production(),
+        },
+        &rec,
+        gait_ai::profile::ResolvedProfile::for_test(
+            provider, vec![Box::new(shell_tool)], vec!["shell:true".into()], vec![]),
+        gait_ai::turn::TurnInput { task: Some("run true".into()), auto: true, max_iter: None, preview_policy: gait_ai::config::PreviewPolicy::default() },
+    ).await.unwrap();
+
+    drop(rec); // close the channel so the drain terminates
+    let mut saw_cwd = false;
+    while let Some(item) = rx.recv().await {
+        if let Some(stream_item::Item::Event(ev)) = item.item {
+            if let Some(event::Body::Payload(p)) = ev.body {
+                if matches!(p.kind, Some(payload::Kind::Cwd(_))) { saw_cwd = true; }
+            }
+        }
+    }
+    assert!(saw_cwd, "cwd event must reach the live channel through a full turn");
+}
+
 #[tokio::test]
 async fn second_turn_resumes_session() {
     let ws = TempDir::new().unwrap();
