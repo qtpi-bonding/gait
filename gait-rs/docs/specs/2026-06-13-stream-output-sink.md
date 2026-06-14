@@ -1,305 +1,175 @@
-# Turn I/O ports: input + output around the event log
+# Phase 1 spec — Output port for `gait run` (+ Recorder rename + result envelope)
 
-## Problem
+Parent: [`../plans/2026-06-13-turn-io-architecture.md`](../plans/2026-06-13-turn-io-architecture.md).
+Diagrams: [`2026-06-13-turn-io-ports.diagram.md`](./2026-06-13-turn-io-ports.diagram.md).
 
-`gait run` conflates everything on **stdout**. In `cmd_run` (`src/bin/gait.rs`):
+## Goal
 
-- `:217` — `session_id` → `println!` (stdout)
-- `:327` — full event JSONL echo → `println!` (stdout)
-- `:330` — live `text_delta` token stream → `println!` (stdout)
-- diagnostics/errors use `eprintln!("[gait] …")` (stderr)
+Give `gait run` a single, owned stdout contract, fix the stdout/stderr
+conflation, and land the result envelope in one slice so the contract is correct
+on first print. Bundled here (per the architecture plan) because all of it
+touches the same surface (`cmd_run` + the turn-complete path):
 
-The high-volume live stream sits on stdout next to the result, so you can't
-separate "the live noise" from "the result" by redirection. And the final
-`TurnResult` (`:337`) is **never printed** — it only exists implicitly as a
-`turn_complete` event buried in the firehose.
+1. `Emitter → Recorder` rename (`emit→record`, `delta→publish_delta`).
+2. `classify` (read-time) + `TurnSink` + `StdioSink`; route the channel by class.
+3. The result envelope `{message, result, changes}` — extend `TurnResult::Done`
+   / `TurnOutput`; fill `changes` from a new `CheckpointRepo::diff` (+ make the
+   checkpoint shadow work for non-git codebases).
+4. Extract `cmd_run → cli/run.rs` + testable `RunArgs::parse`.
 
-That's the symptom. The deeper issue is that **gait has no I/O boundary**: how
-input enters and how output leaves are scattered inline across `cmd_run`,
-`chat.rs`, `ui/builder.rs`, `harness.rs`, and `spawn_agent.rs`, each doing it its
-own way. There is no port a new driver (a cloud control agent) could implement.
+**Decision resolved:** `turn_complete` is **Trace** (history on stderr). The
+authoritative stdout payload is the returned `TurnResult`, printed once. So
+**no channel event is ever Result** — `classify` only separates Trace from Error
+among channel items; the Result payload is printed out-of-band by the run loop.
+This dissolves the double-emit.
 
-This spec defines that boundary: **two ports around the event log** — an input
-port and an output port — with CLI adapters now and REPL/cloud adapters to
-follow.
-
-Safe to change: nothing consumes `gait run`'s stdout programmatically (the only
-subprocess spawns, `harness.rs:71` / `spawn_agent.rs:93`, use `Stdio::null()`;
-the REPL uses the in-process channel). Events already persist to
-`sessions/<id>/log.jsonl` independently — the stdout echo is a pure duplicate.
-
-## Architecture: ports & adapters around the log
-
-> Diagrams: [`2026-06-13-turn-io-ports.diagram.md`](./2026-06-13-turn-io-ports.diagram.md)
-> — ports & adapters, the emit transaction, and the unified run loop.
-
-The event log is the central **store** — the hub, not a stage in a pipe. It is
-neither downstream of the `Recorder` nor a sink alongside stdout/stderr: the
-`Recorder` *writes* it, the turn *reads* it, and the live sinks are projections
-of a tee off that write. Flow is a loop around the store, not a line:
+## The stdout contract (the point of the phase)
 
 ```
- external in ──▶ TurnSource ──▶ Input ──append──▶ ┌──────────────┐
-  (argv, stdin,                                   │  LOG (store) │──read on spawn──▶ turn
-   cloud cmd)    turn ──record──▶ Recorder ─commit─▶│              │                  │
-                                  │                └──────────────┘                  │
-                                  └─ publish Classified ─▶ TurnSink ─▶ stdout/stderr/cloud
-                            (turn keeps recording until done) ───────────────────────▲
+gait run --task "…"                 > result.json   # stdout = ONE TurnResult JSON
+gait run --task "…" --result-schema schema.json     # .result conforms to schema, or non-zero exit
 ```
 
-- **Input** enters by appending events (`user_turn`, `clarify_reply`,
-  `inform_reply`, `permissions_reply`, `toggle`) straight to the store; the turn
-  reads them on spawn.
-- **Output**: the turn **records** each event → the `Recorder` runs one
-  transaction with two halves in lockstep: **commit** (durable log append, the
-  authoritative point) then **publish** (tee a live `Classified` copy to the
-  channel). One call produces both, so the durable record and the live sinks
-  never diverge. The commit-before-publish order is why the log is the
-  authoritative store and not an async subscriber (a crash must not lose events
-  the turn will later read back).
-- **Sinks** (stdout/stderr/cloud) are projections of the published tee — siblings
-  of the durable commit, both produced by `record`. The log is the *source* they
-  derive from, never a peer sink.
+- **stdout** = exactly the serialized `TurnResult` (one JSON object), plus the
+  `session_id` line for a fresh session. Nothing else.
+- **stderr** = everything live: assistant-text deltas, tool calls/results,
+  `turn_complete`, errors, `[gait] …` diagnostics.
+- A freeform turn still yields a `TurnResult::Done` with `result: null` — stdout
+  is always one parseable object.
 
-The log is the core (the "domain"); `TurnSource` and `TurnSink` are the ports
-(the boundary); CLI/REPL/cloud are adapter **pairs**. The ports are agnostic —
-they assume no stdout, no TUI, no socket — so a cloud agent implements one
-`TurnSource` + one `TurnSink` and works unchanged.
+`TurnResult` serializes as a tagged enum so paused turns compose too:
+```json
+{"type":"done","message":"…","result":{…},"changes":{…}}
+{"type":"clarify","items":[…]}          // turn paused; caller responds next
+{"type":"permissions","items":[…]}
+{"type":"inform","items":[…]}
+```
 
-Note: today input events bypass the channel (appended log-only), so a remote
-observer would not see them live. Teeing input to the channel for the cloud sink
-is a Phase-3 decision; it does not affect Phase 1.
+## 1. Recorder rename
 
-### Recording — the write transaction
+`src/proto/emitter.rs`: `Emitter → Recorder`; `emit → record` (commit + publish),
+`delta → publish_delta` (publish only). Pure rename, zero behavior change. ~26
+call-sites, almost all in `turn.rs`; plus `chat.rs`, `bin/gait.rs`,
+`workflow/exec_prompt.rs`, `proto/mod.rs` re-export. Done as the first commit of
+the phase so the routing diff that follows is clean.
 
-`Emitter` is renamed **`Recorder`** (its own mechanical commit) to name what it
-does: record events. The contract is the lockstep invariant.
+## 2. classify + TurnSink + StdioSink
 
 ```rust
-impl Recorder {
-    /// The transaction: commit + publish, ALWAYS both, in lockstep.
-    /// Commit (durable log append) first, then publish a Classified copy.
-    fn record(&self, body: event::Body) -> anyhow::Result<Event>;
-    /// Publish only — ephemeral, explicitly NOT a record (never committed).
-    fn publish_delta(&self, text: String);
-}
-```
-
-- **`record` always does both.** There is no log-without-publish or
-  publish-without-log through `record`.
-- **Deltas are the named exception.** A delta is a live-only fragment, not
-  history, so it goes through `publish_delta` (publish only). The invariant
-  ("`record` does both") holds because deltas are not records.
-- **`classify` runs once, at publish time.** `record` computes the class and
-  sends a Rust-side `Classified { class, item }` on the channel; sinks route by
-  the carried class without re-deriving. The class is **never** persisted — the
-  durable log stores `payload::Kind` only, which is finer-grained than class and
-  already searchable (`grep kind=error`), so class stays a pure read-time
-  function and proto stays free of routing policy.
-- **`wire::append` stays as a deliberate low-level commit-only escape hatch** for
-  the niche input injections that append without a live channel (subagent task
-  `spawn_agent.rs:78`, replies in `ui/builder.rs`). It is never hidden behind
-  `Recorder`; the `Recorder` contract remains "always both."
-
-```rust
-/// Rust-side wrapper on the channel — proto stays dumb, class carried live.
-pub struct Classified { pub class: StreamClass, pub item: StreamItem }
-```
-
-### Symmetry
-
-| | Input port | Output port |
-|---|---|---|
-| pure mapping | `to_event(&Input) -> event::Body` | `classify(&StreamItem) -> Class` |
-| agnostic trait | `TurnSource { next() -> Option<Input> }` | `TurnSink { item(); diagnostic() }` |
-| substrate op | append event to log (`record`/`wire::append`) | read `Classified` from channel |
-| CLI adapter | `ArgSource` | `StdioSink` |
-| REPL adapter | `ReplSource` (follow-up) | REPL view builder (follow-up) |
-| cloud adapter | `RemoteSource` (future) | `RemoteSink` (future) |
-
-Neither port knows the other exists; they meet only at the log. Request/response
-(clarify, permissions) is **not** wired through a port pairing: the turn surfaces
-the request via the *output* port (a `turn_complete`/clarify result), ends, and
-the client produces the reply via the *input* port on the next iteration. The
-log + the spawn loop do the pairing.
-
-## Output port
-
-### Classes (pure classifier — proto stays dumb)
-
-`classify(&StreamItem) -> StreamClass` labels each live item; it reads
-`payload::Kind` but knows nothing about destinations.
-
-| Class | Meaning | Examples |
-|---|---|---|
-| **Result** | the payload | `session_start`, `turn_complete` |
-| **Trace** | progress / observability | tool calls, tool results, assistant text, `cwd`, `model_change`, **deltas** |
-| **Error** | failures / diagnostics | `error` events, run-path `[gait] …` failures |
-
-Deltas are Trace and **ephemeral** (never logged) — a producer-side fact
-(`Recorder::publish_delta` is channel-only), not a separate class.
-
-### Destinations (each sink subscribes to a class combo)
-
-The `log` column is **not** a sink — it is the emitter's durable store write,
-shown here only to make the routing matrix complete. stdout/stderr/cloud are the
-sinks; they project the live tee by class.
-
-| Class | stdout | stderr | log (store) | cloud | exit code |
-|---|:--:|:--:|:--:|:--:|---|
-| Result | ✓ | | ✓ | cfg | 0 |
-| Trace  | | ✓ | ✓ (deltas excl.) | cfg | — |
-| Error  | | ✓ | ✓ | cfg | ≠0 |
-
-- **stdout = Result** — `gait run … > result.json` yields a clean payload.
-- **stderr = Trace + Error** — Unix has no third output fd; progress and errors
-  share stderr, interleaved in order (like `cargo`/`git`/`docker`). The Error
-  class still earns its keep: drives the **non-zero exit code**, lets cloud flag
-  failures, keeps stdout uncontaminated.
-- **log = unchanged** — durable events only; stays in the `Recorder.commit` half
-  so hash-chain/`seq` integrity is untouched.
-- **cloud** = future sink subscribing to its own combo; zero upstream change.
-
-### Contract + CLI adapter
-
-```rust
-pub enum Diag { Info, Error }
-
-pub trait TurnSink {
-    /// One published item off the channel, class already attached by `record`;
-    /// the impl routes by `item.class` (no re-classify).
-    fn item(&mut self, item: &Classified);
-    /// Out-of-band Result payload not on the channel (e.g. the pre-turn
-    /// session_id line). Routed as Result → stdout.
-    fn result_line(&mut self, value: &serde_json::Value);
-    /// Out-of-band diagnostic not on the channel (e.g. a run-path failure).
-    fn diagnostic(&mut self, level: Diag, msg: &str);
-}
-
-pub async fn drive(mut rx: Receiver<Classified>, sink: &mut impl TurnSink) {
-    while let Some(item) = rx.recv().await { sink.item(&item); }
-}
-
-pub struct StdioSink<O: Write, E: Write> { out: O, err: E, quiet: bool, failed: bool }
-// Result → out; Trace → err (gated by quiet); Error → err + failed=true.
-// Generic over Write so tests inject buffers; prod = StdioSink::stdio(quiet).
-```
-
-## Input port
-
-### Intents (one variant per input-class log event)
-
-```rust
-pub enum Input {
-    Task(String),                                // -> user_turn
-    ClarifyReply(Vec<ClarifyReplyItem>),         // -> clarify_reply
-    InformReply(Vec<InformReplyItem>),           // -> inform_reply
-    PermissionsReply(Vec<PermissionsReplyItem>), // -> permissions_reply
-    Toggle { kind: String, name: String, enabled: bool }, // -> toggle
-}
-
-/// Pure mapping — the input-side dual of `classify`.
-pub fn to_event(input: &Input) -> event::Body { /* match each variant */ }
-```
-
-### Contract + adapters
-
-```rust
-pub trait TurnSource {
-    /// Next input intent, or None when the input stream ends (EOF / single-shot
-    /// done / disconnect). Async so stdin/socket adapters can await.
-    async fn next(&mut self) -> Option<Input>;
-}
-```
-
-- **`ArgSource`** (CLI): yields `Some(Task(--task))` once if given (else `None`
-  immediately → turn resumes from the existing log, matching `--auto` today),
-  then `None`. Single-shot.
-- **`ReplSource`** (follow-up): the `chat.rs` line dispatcher + `ui/builder.rs`
-  reply collection, refactored to yield `Input` intents — task lines, skill
-  toggles, and the interactive clarify/permission replies. Session-control
-  commands (`/n`, `/q`, `/u`) stay client-side, not turn input.
-- **`RemoteSource`** (future): awaits cloud control messages → `Input`.
-
-## The unified run loop
-
-With both ports, `cmd_run` and the REPL collapse to the same shape — only the
-adapter pair differs:
-
-```rust
-async fn run_loop(mut source: impl TurnSource, sink: &mut impl TurnSink, ctx: &RunCtx) {
-    sink.result_line(&session_id_json);                 // Result → stdout
-    while let Some(input) = source.next().await {
-        append_event(&ctx.log_path, to_event(&input))?; // input → log
-        let rx = spawn_turn(ctx);                       // turn reads the log
-        drive(rx, sink).await;                          // output → sink
-        match turn_result {
-            Clarify | Inform | Permissions => continue, // source yields the reply next
-            Done => { /* single-shot: source.next() → None */ }
-        }
-        after_turn_coordination(ctx, &turn_result);     // scheduler/harness
+// src/port/output.rs  (agnostic)
+pub enum StreamClass { Trace, Error }                 // Result is never a channel item
+pub fn classify(item: &StreamItem) -> StreamClass {   // pure, read-time
+    match item {
+        Delta(_)                  => Trace,
+        Event(e) if is_error(e)   => Error,           // payload::Kind::Error
+        Event(_)                  => Trace,           // tool_call/result, text, turn_complete, …
     }
 }
+
+pub enum Diag { Info, Error }
+pub trait TurnSink {
+    fn item(&mut self, item: &StreamItem);             // classify + route
+    fn result(&mut self, r: &TurnResult);              // the stdout payload (once)
+    fn session_id(&mut self, id: &str);                // stdout, pre-turn
+    fn diagnostic(&mut self, level: Diag, msg: &str);  // run-path [gait] … messages
+}
+
+pub async fn drive(mut rx: Receiver<StreamItem>, sink: &mut impl TurnSink) {
+    while let Some(item) = rx.recv().await { sink.item(&item); }
+}
 ```
 
-CLI = `run_loop(ArgSource, &mut StdioSink, …)`; REPL = `run_loop(ReplSource,
-&mut ReplView, …)`. Today these are two divergent ~150-line loops
-(`cmd_run` and `chat.rs`); the ports converge them.
+```rust
+// src/cli/output.rs  (CLI adapter — the only place stdout/stderr is decided)
+pub struct StdioSink<O: Write, E: Write> { out: O, err: E, quiet: bool, failed: bool }
+// item:    Trace → err (gated by quiet); Error → err + failed=true
+// result:  serialize TurnResult → out (one line)
+// session_id: {"type":"session_id","id":…} → out
+// diagnostic: Error always → err + failed=true; Info → err unless quiet
+```
 
-## Module structure
+`out`/`err` are generic over `Write` so tests inject `Vec<u8>`. Production:
+`StdioSink::stdio(quiet)` over `io::stdout()`/`io::stderr()`. `failed` (any Error
+item or `diagnostic(Error)`) drives the process exit code.
+
+Channel type **unchanged** (`StreamItem`); the REPL is untouched (it keeps
+consuming the same channel via its own builder). `classify` is read-time, so no
+consumer is forced to change.
+
+## 3. The result envelope `{message, result, changes}`
+
+### Types
+- `TurnResult::Done { message, result: Option<Value>, changes: Option<Changes> }`
+  (was 2-field, `turn.rs:43`).
+- `TurnOutput` proto / `turn_complete` payload gains `changes` (was 2-field,
+  `transcript.rs:30`). (Proto change — additive, optional field.)
+- `pub struct Changes { added: Vec<String>, modified: Vec<String>, deleted: Vec<String> }`
+  (paths relative to the codebase root).
+
+### Where `changes` is computed
+In `run_turn`, at the turn-complete path where the checkpoint is already taken
+(`turn.rs:846,1201`): after `checkpoint_codebase` produces the new checkpoint
+SHA, diff it against its parent commit and attach to `TurnResult::Done`. `result`
+schema validation/retry is unchanged (`turn.rs:1167-1186`).
+
+### `CheckpointRepo::diff` (new)
+```rust
+// src/git/checkpoint.rs — extend the trait
+fn diff(&self, gait_dir: &Path, session_id: &str, sha: &str) -> anyhow::Result<Option<Changes>>;
+// sha = the new checkpoint commit; baseline = its first parent (checkpoint.rs:112).
+// git2 diff_tree_to_tree(parent.tree, commit.tree) → classify each delta:
+//   Added → added, Modified/Renamed/Typechange → modified, Deleted → deleted.
+// No shadow / no parent (turn-1 root with empty diff) → Ok(None) or empty Changes.
+```
+
+### Non-git shadow (so `changes` is universal)
+Today `init` no-ops for non-git codebases and the shadow borrows the codebase's
+objects via `alternates` (`checkpoint.rs:18-25,59`). Make the shadow
+self-contained:
+- Drop the non-git early-return in `init`; always create the bare shadow.
+- Make the `alternates` borrow **conditional** on the codebase being a git repo
+  (keep it as the blob-sharing optimization when available; skip it otherwise —
+  the shadow then stores its own objects via `add_all`).
+- Unborn HEAD already handled (`checkpoint.rs:70-71`): first checkpoint is the
+  root commit.
+Result: `checkpoint`/`diff` work for any directory; `changes` is `Some` whenever
+a checkpoint exists, `None` only if checkpointing is genuinely unavailable.
+
+## 4. `cmd_run → cli/run.rs` + `RunArgs`
 
 ```
-src/proto/
-  emitter.rs   Emitter → Recorder: record (commit+publish), publish_delta  (rename)
-src/port/
-  mod.rs       pub mod input; pub mod output;
-  input.rs     Input, to_event, trait TurnSource                  (agnostic)
-  output.rs    StreamClass, Classified, classify, Diag, TurnSink, drive  (agnostic)
 src/cli/
-  mod.rs       pub mod run; pub mod output; pub mod input;
-  output.rs    StdioSink: TurnSink                                (CLI adapter)
-  input.rs     ArgSource: TurnSource + RunArgs::parse             (CLI adapter)
-  run.rs       cmd_run → run_loop(ArgSource, StdioSink)           (orchestration)
+  mod.rs       pub mod run; pub mod output;
+  output.rs    StdioSink: TurnSink
+  run.rs       cmd_run + RunArgs::parse
 ```
+- `RunArgs::parse(argv) -> RunArgs` — lift the flag loop (`gait.rs:196-213`) into
+  a pure, unit-tested struct/parser.
+- `cmd_run` body: parse → resolve config/profile → expand task → build sink
+  (`StdioSink::stdio`) → `sink.session_id(id)` → spawn turn → `drive(rx, &mut
+  sink)` → `sink.result(&turn_result)` → after-turn coordination → exit code from
+  `sink.failed`.
+- Run-path `eprintln!("[gait] …")` exits become `sink.diagnostic(Error, …)`.
 
-`cmd_run` moves out of the 1918-line `bin/gait.rs` into `cli/run.rs`; the flag
-loop (`:196–213`) becomes the testable `RunArgs::parse`. The other ~28 `cmd_*`
-handlers stay put.
+Suggested commit split: (a) pure `cli/run.rs` extraction (no behavior change),
+(b) the routing/envelope behavior change. The other ~28 `cmd_*` handlers stay in
+`bin/gait.rs`.
 
-## Phasing
+## Out of scope (later phases)
+- Tools/hooks publishing live (`cwd`/`hook_run` stay log-only) — Phase 2.
+- Workflow stdout (`wire::emit`) — Phase 3. `wire::emit` is **kept**.
+- Input port / `TurnSource` — Phase 4.
+- This phase **adds a read layer**; no write mechanism is removed yet.
 
-0. **Rename `Emitter → Recorder`** (its own mechanical commit, first): method
-   `emit → record` (commit + publish), `delta → publish_delta`. Mechanical, wide,
-   landed alone so the behavioral PR stays reviewable.
-1. **Output port + run extraction** (this PR): `port/output.rs` (`Classified`,
-   `classify`, `TurnSink`, `drive`), `cli/output.rs` (`StdioSink`), `cli/run.rs` +
-   `RunArgs`, `ArgSource` as a thin `port/input.rs` + `cli/input.rs` so `run_loop`
-   is symmetric from day one. `record` publishes `Classified`. Delete dead
-   `wire::emit` (`wire.rs:79`, no non-test callers). Fixes the stdout/stderr bug.
-2. **REPL adapters**: `ReplSource` + REPL `TurnSink`, collapsing `chat.rs` onto
-   `run_loop`. The REPL works today, so this is a deliberate follow-up (tracked
-   with the repl-view-layer plan), not a prerequisite.
-3. **Cloud adapters**: `RemoteSource` + `RemoteSink` over a transport.
-
-## Stays the same
-
-- `Recorder` (née `Emitter`) commit+publish fan-out behavior, `log.jsonl` write
-  path / hash-chain, durable (`record`) vs ephemeral (`publish_delta`) split —
-  the rename changes names, not behavior.
-- The REPL until Phase 2.
-- The 128 `eprintln!` in other `gait.rs` subcommands (status, init, cost…) —
-  command UX, not turn I/O; out of scope.
-
-## Testing
-
-- `classify` / `to_event` — table tests over every kind / variant.
-- `Recorder` — `record` writes the log **and** sends a `Classified` with the
-  right class (existing emitter tests, updated); `publish_delta` sends a channel
-  item and writes **nothing** to the log.
-- `StdioSink` over two `Vec<u8>` buffers: Result→out only; Trace→err, suppressed
-  when `quiet`; Error→err + `failed`, even when `quiet`.
-- `ArgSource` — `--task` yields one `Task` then `None`; no `--task` yields `None`.
-- `drive` / `run_loop` — feed a scripted source + channel of `Classified`, assert
-  log appends and sink receipts in order.
-- `cmd_run` smoke: a run yields parseable JSON on stdout with no Trace mixed in
-  (stderr redirected away); a turn error exits non-zero with clean stdout.
+## Tests
+- `classify` — table over kinds + delta → Trace/Error.
+- `CheckpointRepo::diff` — git fixture: edit/add/delete files across two
+  checkpoints, assert `{added, modified, deleted}`; non-git dir → still produces
+  a diff after the self-contained-shadow change; no-change turn → empty.
+- `StdioSink` over two buffers: Trace→err only (suppressed when `quiet`);
+  Error→err + `failed`; `result`→out (one line); `session_id`→out;
+  `diagnostic(Error)`→err + `failed` even when quiet.
+- `RunArgs::parse` — flags map to fields; absent `--task` → `None`.
+- `cmd_run` smoke: a Done run yields one parseable `{type:"done",…,changes:…}` on
+  stdout, no Trace mixed in (stderr redirected); `--result-schema` mismatch after
+  retries exits non-zero with clean stdout.

@@ -6,7 +6,7 @@ Companion to [`2026-06-13-stream-output-sink.md`](./2026-06-13-stream-output-sin
 
 The log is the hub. Input adapters feed the input port; the turn reads the store;
 the turn's emissions go through one **record transaction** — `commit` to the log
-then `publish` a `Classified` copy to the output sinks (in lockstep).
+then `publish` the event to the channel; sinks `classify` it at read time (in lockstep).
 
 ```mermaid
 flowchart LR
@@ -27,10 +27,10 @@ flowchart LR
     subgraph TX["record = one transaction (lockstep)"]
         direction LR
         REC -->|"1 · commit (durable append)"| LOG
-        REC -->|"2 · publish Classified{class,item}"| CH(["live channel"])
+        REC -->|"2 · publish event (StreamItem)"| CH(["live channel"])
     end
 
-    CH -->|"route by item.class"| SINK["TurnSink<br/>(output port)"]
+    CH -->|"classify(item) at read"| SINK["TurnSink<br/>(output port)"]
     SINK -->|"Result"| OUT_STD["stdout"]
     SINK -->|"Trace + Error"| OUT_ERR["stderr"]
     SINK -->|"combo · phase 3"| OUT_CLOUD["cloud"]
@@ -58,14 +58,13 @@ sequenceDiagram
     T->>R: record(body)
     R->>L: commit (durable append)
     Note right of L: COMMIT — event is now authoritative
-    R->>R: class = classify(event)
-    R-->>C: publish Classified{class, item} (best-effort)
-    C->>S: item(Classified)
-    S->>S: route by class → stdout / stderr / cloud
+    R-->>C: publish event (StreamItem, best-effort)
+    C->>S: item(StreamItem)
+    S->>S: classify(item) at read → stderr (Trace/Error)
     end
 
     Note over T,C: publish_delta(text): publish only — never committed
-    T-->>C: publish Classified{Trace, Delta}
+    T-->>C: publish Delta
     C->>S: item → Trace → stderr
 ```
 

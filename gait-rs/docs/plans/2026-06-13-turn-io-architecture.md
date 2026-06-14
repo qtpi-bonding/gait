@@ -1,9 +1,16 @@
 # Architecture plan: gait's turn I/O boundary
 
-Status: draft for review. Supersedes the narrower framing in
-[`../specs/2026-06-13-stream-output-sink.md`](../specs/2026-06-13-stream-output-sink.md)
-(which becomes the detailed spec for Phase 1). Diagrams:
-[`../specs/2026-06-13-turn-io-ports.diagram.md`](../specs/2026-06-13-turn-io-ports.diagram.md).
+Status: draft for review. This is the umbrella plan; each phase has its own spec:
+
+- Phase 1 — [`../specs/2026-06-13-stream-output-sink.md`](../specs/2026-06-13-stream-output-sink.md) (output port + Recorder rename + result envelope)
+- Phase 2 — [`../specs/2026-06-13-phase-2-tools-hooks-publish.md`](../specs/2026-06-13-phase-2-tools-hooks-publish.md)
+- Phase 3 — [`../specs/2026-06-13-phase-3-workflow-boundary.md`](../specs/2026-06-13-phase-3-workflow-boundary.md)
+- Phase 4 — [`../specs/2026-06-13-phase-4-input-port.md`](../specs/2026-06-13-phase-4-input-port.md)
+- Phase 5 — [`../specs/2026-06-13-phase-5-cloud-adapters.md`](../specs/2026-06-13-phase-5-cloud-adapters.md)
+
+Diagrams: [`../specs/2026-06-13-turn-io-ports.diagram.md`](../specs/2026-06-13-turn-io-ports.diagram.md).
+Process: spec all phases → plan+impl Phase 1 → revisit Phase 2 spec → plan+impl
+Phase 2 → … (each downstream spec is revisited after the prior phase lands).
 
 ## Goal
 
@@ -155,8 +162,8 @@ payload (logged) and the stdout Result:
 {
   "message": "...",            // LLM prose — streamed live to stderr; a string field here
   "result":  { ... },          // LLM-declared structured output
-  "side_effects": {            // HARNESS-filled ground truth from the git checkpoint diff
-    "files_changed": [...], "files_added": [...], "files_deleted": [...]
+  "changes": {                // HARNESS-filled ground truth from the git checkpoint diff
+    "added": [...], "modified": [...], "deleted": [...]
   }
 }
 ```
@@ -167,14 +174,13 @@ payload (logged) and the stdout Result:
   inject-error + retry (`output_schema_retries`) + hard-fail loop already exists
   (`turn.rs` TurnComplete path, structured-done spec). Hard-fail → Error class →
   non-zero exit. No schema → `result` is freeform/optional (the flexible default).
-- **`side_effects`** — ground truth the model cannot fake. **This is net-new
+- **`changes`** — ground truth the model cannot fake. **This is net-new
   work, not free harness data** (corrected from an earlier draft): the per-turn
   delta is `diff(new_checkpoint, its_parent)` in the shadow git the checkpoint
   subsystem maintains. The shadow already commits a per-turn snapshot whose parent
   is the prior state (`git/checkpoint.rs:112`), so the diff is exactly this turn's
   changes — but **no diff method exists today**. Required:
-  - a new `CheckpointRepo::diff(...) -> {files_changed, files_added,
-    files_deleted}` (git2 `diff_tree_to_tree` over the two commits);
+  - a new `CheckpointRepo::diff(...) -> {added, modified, deleted}` (git2 `diff_tree_to_tree` over the two commits);
   - the checkpoint runs at turn **complete** (`turn.rs:846,1201`), not start — the
     baseline is the shadow HEAD seeded at `init` (`turn.rs:503`,
     `checkpoint.rs:72`);
@@ -183,22 +189,22 @@ payload (logged) and the stdout Result:
     (`checkpoint.rs:18-25,59`). Making the shadow self-contained (drop the
     early-return, conditional `alternates`, own object store — the unborn-HEAD
     path already exists at `checkpoint.rs:70-71`) lets it checkpoint *any*
-    directory, so `side_effects` is universal rather than git-only.
-  `side_effects` is always a sibling of `result`, never merged, never schema-bound;
+    directory, so `changes` is universal rather than git-only.
+  `changes` is always a sibling of `result`, never merged, never schema-bound;
   `Option`/empty when no checkpoint is available.
 - **`message`** — prose; the live assistant-text deltas already go to stderr
   (Trace), and the final `message` rides the envelope as a JSON string.
 
 **Composition is the point.** This one envelope is read identically by all three
 consumers — workflow `$node.output.field`, `spawn_agent` parents, and shell
-`gait run | jq .result` / `jq .side_effects.files_changed`. The agent produces
+`gait run | jq .result` / `jq .changes.modified`. The agent produces
 artifacts on disk; the harness certifies what actually changed; everyone
 downstream reads one typed record. This makes the output port's reason to exist
 concrete: deliver the agent's certified, typed result to whoever is composing.
 
 This extends the (already-done) `structured_done` spec
 (`../specs/2026-06-12-structured-done.md`): the schema-enforcement machinery for
-`result` is **reused**; the `side_effects` field, the `CheckpointRepo::diff` +
+`result` is **reused**; the `changes` field, the `CheckpointRepo::diff` +
 non-git work, and the `TurnOutput`/`TurnResult::Done` envelope extension (both are
 2-field today, `turn.rs:43` / `transcript.rs:30`) are **net-new and land with
 Phase 1** (see Phasing) so the stdout contract is correct on first print.
@@ -287,14 +293,14 @@ Phase 1 (same file, same review pass) rather than a separate phase.
 **Phase 1 — Output port for `gait run`, with the Recorder rename and the result
 envelope (the bug fix + the contract).** Bundled because they all touch the same
 surface and Phase 1's stated goal is "stdout has *one* contract" — shipping a
-2-field Result now and adding `side_effects` later would break that contract:
+2-field Result now and adding `changes` later would break that contract:
 - `Emitter → Recorder` rename (`emit→record`, `delta→publish_delta`; ~26 sites,
   mostly `turn.rs`; zero behavior change).
 - `classify` (read-time, pure) + `StdioSink`; rewrite `cmd_run`'s consumer loop to
   route by class. Channel type unchanged; REPL untouched; `wire::emit` untouched.
-- Extend the envelope to `{message, result, side_effects}`: extend `TurnOutput` /
+- Extend the envelope to `{message, result, changes}`: extend `TurnOutput` /
   `TurnResult::Done` (2-field today), add `CheckpointRepo::diff` +
-  the non-git-shadow enhancement, fill `side_effects` from the per-turn checkpoint
+  the non-git-shadow enhancement, fill `changes` from the per-turn checkpoint
   diff. `result` schema-enforcement is reused as-is.
 - Print the `TurnResult` envelope once on stdout (Result); `turn_complete` event
   stays Trace.
@@ -351,7 +357,7 @@ live. *The payoff the whole boundary was shaped for.*
   `workflow/runner.rs` sites); `ui/renderer.rs:187,219-229`.
 - Result paths: `turn.rs:857,1212` (channel) vs `turn.rs:864,1219` (return);
   envelope today 2-field (`turn.rs:43`, `transcript.rs:30`).
-- Checkpoint/side_effects: `git/checkpoint.rs:9` (`checkpoint`, returns SHA, no
+- Checkpoint/changes: `git/checkpoint.rs:9` (`checkpoint`, returns SHA, no
   diff), `:18-25` (non-git no-op), `:59` (alternates borrow), `:70-71` (unborn
   path), `:112` (parent); `turn.rs:503` (init), `:846,1201` (checkpoint at
   turn-complete).
