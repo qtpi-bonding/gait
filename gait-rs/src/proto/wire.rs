@@ -81,6 +81,8 @@ pub fn emit(path: &Path, body: event::Body) -> anyhow::Result<Event> {
     println!("{}", serde_json::to_string(&ev)?);
     Ok(ev)
 }
+#[cfg(test)]
+pub fn body_to_event_for_test(body: event::Body) -> Event { crate::proto::envelope::mint(body, None) }
 
 
 #[cfg(test)]
