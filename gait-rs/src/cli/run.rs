@@ -35,11 +35,18 @@ impl RunArgs {
 /// passes the resolved `gait_dir` + `codebase_path` in; flags are parsed via
 /// [`RunArgs`].
 pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf) {
+    use crate::port::output::{drive, Diag, TurnSink};
     let args = RunArgs::parse(argv);
 
+    // The single owned output boundary: Trace+Error stream to stderr, the final
+    // RunResult prints once to stdout, diagnostics go to stderr (and set `failed`).
+    let mut sink = crate::cli::output::StdioSink::stdio(false);
+
+    // A fresh session announces its id on stdout (proto SessionStart). `--session`
+    // resumes silently (the closure — and thus this line — never runs).
     let session_id = args.session_id.unwrap_or_else(|| {
         let id = format!("s{}", &uuid::Uuid::new_v4().to_string().replace('-', "")[..8]);
-        println!("{}", serde_json::json!({"type": "session_id", "id": id}));
+        sink.session_id(&id);
         id
     });
 
@@ -53,15 +60,15 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
     // Apply --result-schema override: read file, validate JSON Schema, error early if invalid.
     if let Some(ref path) = args.result_schema_path {
         let raw = std::fs::read_to_string(path).unwrap_or_else(|e| {
-            eprintln!("[gait] --result-schema: cannot read '{}': {}", path, e);
+            sink.diagnostic(Diag::Error, &format!("--result-schema: cannot read '{}': {}", path, e));
             std::process::exit(1);
         });
         let schema: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|e| {
-            eprintln!("[gait] --result-schema: '{}' is not valid JSON: {}", path, e);
+            sink.diagnostic(Diag::Error, &format!("--result-schema: '{}' is not valid JSON: {}", path, e));
             std::process::exit(1);
         });
         jsonschema::JSONSchema::compile(&schema).unwrap_or_else(|e| {
-            eprintln!("[gait] --result-schema: '{}' is not a valid JSON Schema: {}", path, e);
+            sink.diagnostic(Diag::Error, &format!("--result-schema: '{}' is not a valid JSON Schema: {}", path, e));
             std::process::exit(1);
         });
         config.result_schema = Some(schema);
@@ -92,7 +99,7 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
     let provider_name = match model.split_once('/') {
         Some((p, _)) => p,
         None => {
-            eprintln!("[gait] error: model must be 'provider/model', got: '{}'", model);
+            sink.diagnostic(Diag::Error, &format!("error: model must be 'provider/model', got: '{}'", model));
             std::process::exit(1);
         }
     };
@@ -109,7 +116,7 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
     ).await {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[gait] error: {}", e);
+            sink.diagnostic(Diag::Error, &format!("error: {}", e));
             std::process::exit(1);
         }
     };
@@ -135,41 +142,34 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
         codebase_path,
         repos,
     );
-    let (tx, mut rx) =
+    let (tx, rx) =
         tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
     let emitter = crate::Recorder::for_session(&gait_dir, &session_id, tx);
 
     let input = crate::turn::TurnInput { task, auto: args.auto, max_iter: config.max_iter, preview_policy: config.preview };
     let turn_handle = tokio::spawn(async move {
         crate::turn::run_turn(&session, &emitter, resolved, input).await
-        // emitter drops here → channel closes → rx.recv() yields None
+        // emitter drops here → channel closes → drive() returns
     });
 
-    use crate::proto::gait::log::v1::stream_item::Item;
-    while let Some(item) = rx.recv().await {
-        match item.item {
-            Some(Item::Event(ev)) => {
-                if let Ok(json) = serde_json::to_string(&ev) { println!("{}", json); }
-            }
-            Some(Item::Delta(d)) => {
-                println!("{}", serde_json::json!(
-                    {"type": "text_delta", "content": d.content, "ts": crate::session::transcript::now_ms()}));
-            }
-            None => {}
-        }
-    }
+    // Live stream → stderr (Trace+Error, classified at read). The result is NOT
+    // in this channel; it is the returned TurnResult, printed once below.
+    drive(rx, &mut sink).await;
 
     let turn_result = match turn_handle.await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
-            eprintln!("[gait] error: {}", e);
+            sink.diagnostic(Diag::Error, &format!("error: {}", e));
             std::process::exit(1);
         }
         Err(e) => {
-            eprintln!("[gait] error: turn task panicked: {}", e);
+            sink.diagnostic(Diag::Error, &format!("error: turn task panicked: {}", e));
             std::process::exit(1);
         }
     };
+
+    // The authoritative payload: the proto RunResult, printed once to stdout.
+    sink.result(&turn_result);
 
     // Drive after-turn coordination via Scheduler (policy) + Harness.execute (mechanism).
     use crate::{HarnessBackend, Scheduler};
@@ -183,9 +183,11 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
     };
     for action in scheduler.next(&ended) {
         if let Err(e) = harness.execute(&action).await {
-            eprintln!("[gait] warning: harness execute failed: {}", e);
+            sink.diagnostic(Diag::Info, &format!("warning: harness execute failed: {}", e));
         }
     }
+
+    if sink.failed { std::process::exit(1); }
 }
 
 #[cfg(test)]
