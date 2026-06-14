@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Phase 4 spec — Input port
 
 Parent: [`../plans/2026-06-13-turn-io-architecture.md`](../plans/2026-06-13-turn-io-architecture.md).
