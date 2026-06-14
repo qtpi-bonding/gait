@@ -35,7 +35,7 @@ impl RunArgs {
 /// passes the resolved `gait_dir` + `codebase_path` in; flags are parsed via
 /// [`RunArgs`].
 pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf) {
-    use crate::port::output::{drive, Diag, TurnSink};
+    use crate::port::output::{Diag, TurnSink};
     let args = RunArgs::parse(argv);
 
     // The single owned output boundary: Trace+Error stream to stderr, the final
@@ -107,19 +107,8 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
 
     let repos = crate::git::Repos::production();
 
-    let resolved = match profile.resolve(
-        codebase_path.clone(),
-        session_id.clone(),
-        gait_dir.clone(),
-        repos.clone(),
-        api_key,
-    ).await {
-        Ok(r) => r,
-        Err(e) => {
-            sink.diagnostic(Diag::Error, &format!("error: {}", e));
-            std::process::exit(1);
-        }
-    };
+    // (Profile is resolved per-turn inside the CliDriver, below — the loop owns
+    // that now. A resolve error surfaces as the run_loop's Err.)
 
     // Expand $(cmd)/$(N) shell, @path files, and >(N) quote-reply in the task
     // string before the turn runs — same expander the REPL uses. Quote-reply
@@ -136,58 +125,92 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
         })
     });
 
-    let session = crate::session::Session::load(
+    // The primary input becomes an event the loop appends before the fold (or a
+    // bare Resume when there's no --task) — symmetric with the reply path.
+    let source = crate::port::input::ArgSource::new(
+        task.map(|t| crate::cli::run_loop::user_turn_body(&repos, &codebase_path, t)),
+    );
+    let session = std::sync::Arc::new(crate::session::Session::load(
         gait_dir.clone(),
         session_id.clone(),
-        codebase_path,
+        codebase_path.clone(),
+        repos.clone(),
+    ));
+    let mut driver = CliDriver {
+        profile: Some(profile),
+        codebase: codebase_path,
+        session_id: session_id.clone(),
+        gait_dir: gait_dir.clone(),
         repos,
-    );
-    let (tx, rx) =
-        tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
-    let emitter = crate::Recorder::for_session(&gait_dir, &session_id, tx);
-
-    let input = crate::turn::TurnInput { task, auto: args.auto, max_iter: config.max_iter, preview_policy: config.preview };
-    let turn_handle = tokio::spawn(async move {
-        crate::turn::run_turn(&session, &emitter, resolved, input).await
-        // emitter drops here → channel closes → drive() returns
-    });
-
-    // Live stream → stderr (Trace+Error, classified at read). The result is NOT
-    // in this channel; it is the returned TurnResult, printed once below.
-    drive(rx, &mut sink).await;
-
-    let turn_result = match turn_handle.await {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => {
-            sink.diagnostic(Diag::Error, &format!("error: {}", e));
-            std::process::exit(1);
-        }
-        Err(e) => {
-            sink.diagnostic(Diag::Error, &format!("error: turn task panicked: {}", e));
-            std::process::exit(1);
-        }
+        api_key,
+        auto: args.auto,
+        max_iter: config.max_iter,
+        preview_policy: config.preview,
     };
 
-    // The authoritative payload: the proto RunResult, printed once to stdout.
-    sink.result(&turn_result);
-
-    // Drive after-turn coordination via Scheduler (policy) + Harness.execute (mechanism).
-    use crate::{HarnessBackend, Scheduler};
-    let sj = crate::session::session_json::read_session_json(&gait_dir, &session_id);
-    let scheduler = crate::scheduler::NativeScheduler;
-    let harness = crate::harness::NativeHarnessBackend::new(gait_dir.clone());
-    let ended = crate::scheduler::TurnEnded {
-        session_id: &session_id,
-        assigned_by: sj.assigned_by.as_deref(),
-        result: &turn_result,
-    };
-    for action in scheduler.next(&ended) {
-        if let Err(e) = harness.execute(&action).await {
-            sink.diagnostic(Diag::Info, &format!("warning: harness execute failed: {}", e));
-        }
+    if let Err(e) = crate::cli::run_loop::run_loop(source, &mut sink, session, &gait_dir, &session_id, &mut driver).await {
+        sink.diagnostic(Diag::Error, &format!("error: {}", e));
+        std::process::exit(1);
     }
 
     if sink.failed { std::process::exit(1); }
+}
+
+/// CLI driver for `run_loop`: single-shot profile resolve, `--auto`/`--max-iter`
+/// config, and the after-turn Scheduler/Harness coordination. A turn error sets
+/// `failed` (via `diagnostic`) and breaks the loop → the post-loop `exit(1)`.
+struct CliDriver {
+    profile: Option<crate::profile::Profile>,
+    codebase: PathBuf,
+    session_id: String,
+    gait_dir: PathBuf,
+    repos: crate::git::Repos,
+    api_key: Option<String>,
+    auto: bool,
+    max_iter: Option<usize>,
+    preview_policy: crate::config::PreviewPolicy,
+}
+
+#[async_trait::async_trait(?Send)]
+impl crate::cli::run_loop::TurnDriver for CliDriver {
+    async fn caps(&mut self) -> anyhow::Result<crate::profile::ResolvedProfile> {
+        // Single-shot: `ArgSource` yields one turn, so this resolves exactly once.
+        let profile = self.profile.take()
+            .ok_or_else(|| anyhow::anyhow!("CLI driver caps() called more than once (single-shot)"))?;
+        profile.resolve(
+            self.codebase.clone(),
+            self.session_id.clone(),
+            self.gait_dir.clone(),
+            self.repos.clone(),
+            self.api_key.clone(),
+        ).await
+    }
+
+    fn turn_config(&self) -> crate::cli::run_loop::LoopConfig {
+        crate::cli::run_loop::LoopConfig { auto: self.auto, max_iter: self.max_iter, preview_policy: self.preview_policy }
+    }
+
+    async fn after_turn(&mut self, sink: &mut dyn crate::port::output::TurnSink, result: &crate::turn::TurnResult) {
+        use crate::{HarnessBackend, Scheduler};
+        let sj = crate::session::session_json::read_session_json(&self.gait_dir, &self.session_id);
+        let scheduler = crate::scheduler::NativeScheduler;
+        let harness = crate::harness::NativeHarnessBackend::new(self.gait_dir.clone());
+        let ended = crate::scheduler::TurnEnded {
+            session_id: &self.session_id,
+            assigned_by: sj.assigned_by.as_deref(),
+            result,
+        };
+        for action in scheduler.next(&ended) {
+            if let Err(e) = harness.execute(&action).await {
+                sink.diagnostic(crate::port::output::Diag::Info, &format!("warning: harness execute failed: {}", e));
+            }
+        }
+    }
+
+    fn on_turn_error(&mut self, sink: &mut dyn crate::port::output::TurnSink, e: anyhow::Error) -> std::ops::ControlFlow<()> {
+        sink.diagnostic(crate::port::output::Diag::Error, &format!("error: {}", e));
+        std::ops::ControlFlow::Break(())
+    }
 }
 
 #[cfg(test)]

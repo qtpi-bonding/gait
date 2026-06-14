@@ -31,6 +31,11 @@ pub trait TurnSink {
     fn result(&mut self, r: &crate::turn::TurnResult);
     fn session_id(&mut self, id: &str);
     fn diagnostic(&mut self, level: Diag, msg: &str);
+    /// Turn lifecycle hooks (default no-op). The unified `run_loop` calls these
+    /// around each turn; the CLI sink ignores them, the REPL sink uses them to
+    /// begin/flush its per-turn view state.
+    fn begin_turn(&mut self) {}
+    fn end_turn(&mut self) {}
 }
 
 pub async fn drive(mut rx: tokio::sync::mpsc::UnboundedReceiver<StreamItem>, sink: &mut impl TurnSink) {
