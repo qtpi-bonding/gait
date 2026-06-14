@@ -6,7 +6,7 @@ Status: draft for review. This is the umbrella plan; each phase has its own spec
 - Phase 2 — [`../specs/2026-06-13-phase-2-tools-hooks-publish.md`](../specs/2026-06-13-phase-2-tools-hooks-publish.md)
 - Phase 3 — [`../specs/2026-06-13-phase-3-workflow-boundary.md`](../specs/2026-06-13-phase-3-workflow-boundary.md)
 - Phase 4 — [`../specs/2026-06-13-phase-4-input-port.md`](../specs/2026-06-13-phase-4-input-port.md)
-- Phase 5 — [`../specs/2026-06-13-phase-5-cloud-adapters.md`](../specs/2026-06-13-phase-5-cloud-adapters.md)
+- Phase 5 — [`../specs/2026-06-13-phase-5-embedding-api.md`](../specs/2026-06-13-phase-5-embedding-api.md) (reframed from cloud adapters → in-process embedding API)
 
 Diagrams: [`../specs/2026-06-13-turn-io-ports.diagram.md`](../specs/2026-06-13-turn-io-ports.diagram.md).
 Process: spec all phases → plan+impl Phase 1 → revisit Phase 2 spec → plan+impl
