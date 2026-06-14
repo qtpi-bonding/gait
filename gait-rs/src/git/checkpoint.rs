@@ -9,6 +9,7 @@ pub trait CheckpointRepo: Send + Sync {
     fn checkpoint(&self, gait_dir: &Path, session_id: &str, codebase: &Path, turn: u32) -> anyhow::Result<String>;
     fn restore_to(&self, gait_dir: &Path, session_id: &str, codebase: &Path, sha: &str) -> anyhow::Result<()>;
     fn remove(&self, gait_dir: &Path, session_id: &str) -> anyhow::Result<()>;
+    fn diff(&self, gait_dir: &Path, session_id: &str, sha: &str) -> anyhow::Result<Option<crate::proto::gait::log::v1::Changes>>;
 }
 
 pub struct GitCheckpointRepo;
@@ -149,6 +150,30 @@ impl CheckpointRepo for GitCheckpointRepo {
         }
         Ok(())
     }
+    fn diff(&self, gait_dir: &Path, session_id: &str, sha: &str) -> anyhow::Result<Option<crate::proto::gait::log::v1::Changes>> {
+        use crate::proto::gait::log::v1::Changes;
+        let git_dir = checkpoint_git_dir(gait_dir, session_id);
+        if !git_dir.join("HEAD").exists() { return Ok(None); }
+        let shadow = Repository::open_bare(&git_dir)?;
+        let commit = shadow.find_commit(Oid::from_str(sha)?)?;
+        let new_tree = commit.tree()?;
+        let parent_tree = match commit.parent(0) { Ok(p) => Some(p.tree()?), Err(_) => None };
+        let diff = shadow.diff_tree_to_tree(parent_tree.as_ref(), Some(&new_tree), None)?;
+        let (mut added, mut modified, mut deleted) = (vec![], vec![], vec![]);
+        diff.foreach(&mut |delta, _| {
+            if let Some(p) = delta.new_file().path().or_else(|| delta.old_file().path())
+                .map(|p| p.to_string_lossy().into_owned()) {
+                match delta.status() {
+                    git2::Delta::Added | git2::Delta::Copied => added.push(p),
+                    git2::Delta::Deleted => deleted.push(p),
+                    _ => modified.push(p),
+                }
+            }
+            true
+        }, None, None, None)?;
+        Ok(Some(Changes { added, modified, deleted }))
+    }
+
 }
 
 #[derive(Default)]
@@ -203,6 +228,7 @@ impl CheckpointRepo for MockCheckpointRepo {
         self.state.lock().unwrap().remove_calls.push(session_id.to_string());
         Ok(())
     }
+    fn diff(&self, _ws: &Path, _session_id: &str, _sha: &str) -> anyhow::Result<Option<crate::proto::gait::log::v1::Changes>> { Ok(None) }
 }
 
 #[cfg(test)]
@@ -382,6 +408,18 @@ mod tests {
     fn remove_safe_when_absent() {
         let ws = TempDir::new().unwrap();
         GitCheckpointRepo.remove(ws.path(), "never-existed").unwrap(); // must not error
+    }
+    #[test]
+    fn diff_reports_added_modified_deleted() {
+        let (ws, cb, id) = fixture();
+        GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
+        std::fs::write(cb.path().join("a.txt"), "two\n").unwrap();
+        std::fs::write(cb.path().join("new.txt"), "x\n").unwrap();
+        let sha = GitCheckpointRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
+        let ch = GitCheckpointRepo.diff(ws.path(), &id, &sha).unwrap().unwrap();
+        assert_eq!(ch.modified, vec!["a.txt".to_string()]);
+        assert_eq!(ch.added, vec!["new.txt".to_string()]);
+        assert!(ch.deleted.is_empty());
     }
 
     #[test]
