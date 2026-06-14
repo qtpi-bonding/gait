@@ -21,6 +21,17 @@ impl Recorder {
         )
     }
 
+    /// A no-op recorder for session-less paths (e.g. `stream_text` generation) and
+    /// for tests that need a `&Recorder` but don't assert on emission. Records are
+    /// dropped: the channel has no receiver and `tx_path` is empty (writes fail
+    /// silently). Do NOT use where the transcript/channel matters — use
+    /// [`for_session`](Self::for_session).
+    pub fn detached() -> Self {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        Self::new(std::path::PathBuf::new(), tx)
+    }
+
+
     /// Durable: write Event to transcript AND send StreamItem{event}. Always both.
     /// `UnboundedSender::send` is sync + non-blocking — safe from anywhere.
     pub fn record(&self, body: event::Body) -> anyhow::Result<Event> {
@@ -84,4 +95,11 @@ mod tests {
             other => panic!("expected Delta, got {other:?}"),
         }
     }
+    #[test]
+    fn detached_record_is_a_noop() {
+        let rec = Recorder::detached();
+        // record returns Err (nowhere to write) and must not panic or create a file
+        assert!(rec.record(crate::proto::events::cwd("/tmp")).is_err());
+    }
+
 }
