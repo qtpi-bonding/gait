@@ -182,7 +182,7 @@ pub trait Hook: Send + Sync {
     /// Before a tool executes. Return Block to prevent execution.
     fn pre_tool(&self, _tc: &ToolCall) -> HookAction { HookAction::Continue }
     /// After a tool returns. Return Some to replace the result seen by the LLM.
-    async fn post_tool(&self, _name: &str, _call_id: &str, _args: &serde_json::Value, _result: &str) -> Option<String> { None }
+    async fn post_tool(&self, _name: &str, _call_id: &str, _args: &serde_json::Value, _result: &str, _rec: &crate::Recorder) -> Option<String> { None }
     /// Once per outer turn, at every exit point (Done, Clarify, Inform, Permissions).
     fn post_turn(&self) {}
 }

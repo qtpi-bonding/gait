@@ -1041,7 +1041,7 @@ pub async fn run_turn(
                 let (part, mut result) = raw.unwrap_or_else(|e| error_tool_result(tc, e));
                 let result_str = result.result.as_str().unwrap_or("").to_string();
                 for h in &hooks {
-                    if let Some(new) = h.post_tool(&tc.tool_name, &tc.tool_call_id, &tc.args, &result_str).await {
+                    if let Some(new) = h.post_tool(&tc.tool_name, &tc.tool_call_id, &tc.args, &result_str, emitter).await {
                         result.result = serde_json::Value::String(new);
                     }
                 }
@@ -1138,7 +1138,7 @@ pub async fn run_turn(
                             .unwrap_or_else(|e| error_tool_result(tc, e));
                         let result_str = result.result.as_str().unwrap_or("").to_string();
                         for h in &hooks {
-                            if let Some(new) = h.post_tool(&tc.tool_name, &tc.tool_call_id, &tc.args, &result_str).await {
+                            if let Some(new) = h.post_tool(&tc.tool_name, &tc.tool_call_id, &tc.args, &result_str, emitter).await {
                                 result.result = serde_json::Value::String(new);
                             }
                         }
@@ -1243,7 +1243,7 @@ pub async fn run_turn(
                             .unwrap_or_else(|e| error_tool_result(tc, e));
                         let result_str = result.result.as_str().unwrap_or("").to_string();
                         for h in &hooks {
-                            if let Some(new) = h.post_tool(&tc.tool_name, &tc.tool_call_id, &tc.args, &result_str).await {
+                            if let Some(new) = h.post_tool(&tc.tool_name, &tc.tool_call_id, &tc.args, &result_str, emitter).await {
                                 result.result = serde_json::Value::String(new);
                             }
                         }

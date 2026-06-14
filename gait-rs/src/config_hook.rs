@@ -2,18 +2,17 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::config::HookDef;
-use crate::proto::{events, wire};
+use crate::proto::events;
 
 pub struct ConfigHook {
     def: HookDef,
-    tx_path: PathBuf,
     gait_dir: PathBuf,
     codebase: PathBuf,
 }
 
 impl ConfigHook {
-    pub fn new(def: HookDef, tx_path: PathBuf, gait_dir: PathBuf, codebase: PathBuf) -> Self {
-        Self { def, tx_path, gait_dir, codebase }
+    pub fn new(def: HookDef, gait_dir: PathBuf, codebase: PathBuf) -> Self {
+        Self { def, gait_dir, codebase }
     }
 }
 
@@ -25,6 +24,7 @@ impl crate::types::Hook for ConfigHook {
         call_id: &str,
         args: &serde_json::Value,
         result: &str,
+        rec: &crate::Recorder,
     ) -> Option<String> {
         if self.def.event != "post_tool" {
             return None;
@@ -55,10 +55,7 @@ impl crate::types::Hook for ConfigHook {
 
         let (exit_code, output) = crate::workflow::hooks::run_hook(&self.def.run, &env).await;
 
-        let _ = wire::append(
-            &self.tx_path,
-            events::hook_run("post_tool", &self.def.run, exit_code, &output, Some(call_id.to_string())),
-        );
+        let _ = rec.record(events::hook_run("post_tool", &self.def.run, exit_code, &output, Some(call_id.to_string())));
 
         if exit_code != 0 {
             Some(format!(
@@ -91,21 +88,19 @@ mod tests {
     #[tokio::test]
     async fn matching_tool_success_returns_none() {
         let dir = TempDir::new().unwrap();
-        let tx = dir.path().join("log.jsonl");
-        let hook = ConfigHook::new(hook_def("post_tool", Some("edit"), "exit 0"), tx, gd(&dir), gd(&dir));
-        let result = hook.post_tool("edit", "call-1", &serde_json::json!({}), "original").await;
+        let hook = ConfigHook::new(hook_def("post_tool", Some("edit"), "exit 0"), gd(&dir), gd(&dir));
+        let result = hook.post_tool("edit", "call-1", &serde_json::json!({}), "original", &crate::Recorder::detached()).await;
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn matching_tool_failure_appends_output() {
         let dir = TempDir::new().unwrap();
-        let tx = dir.path().join("log.jsonl");
         let hook = ConfigHook::new(
             hook_def("post_tool", Some("edit"), "echo 'syntax error'; exit 1"),
-            tx, gd(&dir), gd(&dir),
+            gd(&dir), gd(&dir),
         );
-        let result = hook.post_tool("edit", "call-1", &serde_json::json!({}), "original").await;
+        let result = hook.post_tool("edit", "call-1", &serde_json::json!({}), "original", &crate::Recorder::detached()).await;
         let new = result.expect("failure must return Some");
         assert!(new.contains("original"), "must preserve original: {new}");
         assert!(new.contains("exit 1"), "must include exit code: {new}");
@@ -114,55 +109,72 @@ mod tests {
     #[tokio::test]
     async fn non_matching_tool_skips() {
         let dir = TempDir::new().unwrap();
-        let tx = dir.path().join("log.jsonl");
-        let hook = ConfigHook::new(hook_def("post_tool", Some("edit"), "exit 1"), tx, gd(&dir), gd(&dir));
-        let result = hook.post_tool("shell", "call-1", &serde_json::json!({}), "original").await;
+        let hook = ConfigHook::new(hook_def("post_tool", Some("edit"), "exit 1"), gd(&dir), gd(&dir));
+        let result = hook.post_tool("shell", "call-1", &serde_json::json!({}), "original", &crate::Recorder::detached()).await;
         assert!(result.is_none(), "non-matching tool must return None");
     }
 
     #[tokio::test]
     async fn no_tool_filter_runs_for_all_tools() {
         let dir = TempDir::new().unwrap();
-        let tx = dir.path().join("log.jsonl");
-        let hook = ConfigHook::new(hook_def("post_tool", None, "exit 0"), tx, gd(&dir), gd(&dir));
-        let result = hook.post_tool("shell", "call-1", &serde_json::json!({}), "original").await;
+        let hook = ConfigHook::new(hook_def("post_tool", None, "exit 0"), gd(&dir), gd(&dir));
+        let result = hook.post_tool("shell", "call-1", &serde_json::json!({}), "original", &crate::Recorder::detached()).await;
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn args_exposed_as_env_vars() {
         let dir = TempDir::new().unwrap();
-        let tx = dir.path().join("log.jsonl");
         let hook = ConfigHook::new(
             hook_def("post_tool", Some("edit"), "[ -n \"$GAIT_ARG_FILE_PATH\" ] || exit 1"),
-            tx.clone(), gd(&dir), gd(&dir),
+            gd(&dir), gd(&dir),
         );
         let args = serde_json::json!({"file_path": "src/main.rs"});
-        let result = hook.post_tool("edit", "call-1", &args, "original").await;
+        let result = hook.post_tool("edit", "call-1", &args, "original", &crate::Recorder::detached()).await;
         assert!(result.is_none(), "GAIT_ARG_FILE_PATH must be set: {result:?}");
     }
 
     #[tokio::test]
     async fn gait_dir_and_codebase_exposed_as_env_vars() {
         let dir = TempDir::new().unwrap();
-        let tx = dir.path().join("log.jsonl");
         // The hook fails unless BOTH $GAIT_DIR and $GAIT_CODEBASE are set — the
         // contract that lets a hook reference user-owned scripts portably.
         let hook = ConfigHook::new(
             hook_def("post_tool", Some("edit"),
                 "[ -n \"$GAIT_DIR\" ] && [ -n \"$GAIT_CODEBASE\" ] || exit 1"),
-            tx, gd(&dir), gd(&dir),
+            gd(&dir), gd(&dir),
         );
-        let result = hook.post_tool("edit", "call-1", &serde_json::json!({}), "original").await;
+        let result = hook.post_tool("edit", "call-1", &serde_json::json!({}), "original", &crate::Recorder::detached()).await;
         assert!(result.is_none(), "GAIT_DIR and GAIT_CODEBASE must be set: {result:?}");
     }
 
     #[tokio::test]
     async fn wrong_event_type_skips() {
         let dir = TempDir::new().unwrap();
-        let tx = dir.path().join("log.jsonl");
-        let hook = ConfigHook::new(hook_def("pre_tool", Some("edit"), "exit 1"), tx, gd(&dir), gd(&dir));
-        let result = hook.post_tool("edit", "call-1", &serde_json::json!({}), "original").await;
+        let hook = ConfigHook::new(hook_def("pre_tool", Some("edit"), "exit 1"), gd(&dir), gd(&dir));
+        let result = hook.post_tool("edit", "call-1", &serde_json::json!({}), "original", &crate::Recorder::detached()).await;
         assert!(result.is_none(), "pre_tool hook must not fire in post_tool");
     }
+
+    #[tokio::test]
+    async fn post_tool_publishes_hook_run() {
+        use crate::proto::gait::log::v1::{stream_item, payload, event};
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("sessions").join("h")).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let rec = crate::Recorder::for_session(dir.path(), "h", tx);
+        let hook = ConfigHook::new(hook_def("post_tool", Some("edit"), "exit 0"), gd(&dir), gd(&dir));
+        let _ = hook.post_tool("edit", "c1", &serde_json::json!({}), "orig", &rec).await;
+        drop(rec);
+        let mut saw = false;
+        while let Some(item) = rx.recv().await {
+            if let Some(stream_item::Item::Event(ev)) = item.item {
+                if let Some(event::Body::Payload(p)) = ev.body {
+                    if matches!(p.kind, Some(payload::Kind::HookRun(_))) { saw = true; }
+                }
+            }
+        }
+        assert!(saw, "post_tool must publish hook_run");
+    }
+
 }
