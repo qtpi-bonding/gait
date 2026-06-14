@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Phase 2 spec — Tools & hooks publish
 
 Parent: [`../plans/2026-06-13-turn-io-architecture.md`](../plans/2026-06-13-turn-io-architecture.md).
