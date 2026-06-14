@@ -20,6 +20,7 @@ pub mod permission;
 pub mod ui;
 pub mod repl_input;
 pub mod chat;
+mod repl_loop;
 pub mod shell_history;
 pub mod docker;
 pub mod agent_frontmatter;

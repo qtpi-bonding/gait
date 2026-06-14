@@ -1,20 +1,16 @@
 use std::path::PathBuf;
-use std::process::Command;
 use rustyline::Editor;
 use rustyline::history::DefaultHistory;
 
 use crate::repl_helper::{ReplHelper, ShellNavHandler, ShellNavState};
-use rustyline::error::ReadlineError;
 use rustyline::{EventHandler, KeyCode, KeyEvent, Modifiers};
 use std::sync::{Arc, Mutex};
 
-use crate::proto::{events, wire};
 use crate::theme::{Theme, RESET, DIM_FG};
-use crate::ui::{ReplBuilder, ViewSignal};
-use crate::repl_input::{is_bang_command, bang_command_str, expand_input, ExpandCtx, parse_skill_toggle, run_and_capture_pty_raw, CaptureResult};
+use crate::ui::ReplBuilder;
 
 /// All user-visible hint strings for the REPL, centralised here for easy editing.
-mod hints {
+pub(crate) mod hints {
     pub const STARTUP: &str =
         "ctrl+d or /q to exit  \u{2022}  /n new session  \u{2022}  /u [N] undo  \u{2022}  /skill enable  \u{2022}  !cmd shell";
     pub const UNDO_USAGE: &str =
@@ -27,6 +23,10 @@ pub fn new_session_id() -> String {
     format!("s{}", &uuid::Uuid::new_v4().to_string().replace('-', "")[..8])
 }
 
+/// The REPL: a banner + rustyline editor, then an outer session loop. Each
+/// `run_loop` runs one session's turns through the shared input boundary
+/// (`ReplSource`/`ReplSink`); `/n` ends it and starts a new session (reusing the
+/// same editor/history), `/q`/EOF exits. (Phase 4b — the REPL on `run_loop`.)
 pub async fn run_chat(
     gait_dir: PathBuf,
     codebase: PathBuf,
@@ -53,7 +53,7 @@ pub async fn run_chat(
     let theme = Theme::detect();
 
     let mut session_id = session_id.unwrap_or_else(new_session_id);
-    let mut shell_history_path = gait_dir.join("tmp").join(format!("shell-{}.jsonl", session_id));
+    let shell_history_path = gait_dir.join("tmp").join(format!("shell-{}.jsonl", session_id));
     eprintln!(
         "{}gait{}  {}session {}{}  {}{}{}",
         theme.accent.fg(), RESET,
@@ -79,219 +79,55 @@ pub async fn run_chat(
         EventHandler::Conditional(Box::new(ShellNavHandler { nav: nav.clone(), up: false })),
     );
 
-    let mut builder = ReplBuilder::new(rl, theme.clone());
-    let mut last_turn_blocks: Vec<String> = Vec::new();
+    // One builder, shared by the per-session source + sink. It outlives every
+    // `run_loop` so editor history and view state persist across `/n`.
+    let builder = ReplBuilder::new(rl, theme.clone());
+    let shared: crate::repl_loop::Shared = std::rc::Rc::new(std::cell::RefCell::new(
+        crate::repl_loop::ReplShared { builder, turn_done_blocks: None, control: None }));
+    let repos = crate::git::Repos::production();
 
     loop {
-        nav.lock().unwrap().index = 0;
-        let prompt = format!("{}>{} {}", theme.accent.fg(), RESET, theme.user_msg.fg());
-        let line = match builder.readline(&prompt) {
-            Ok(l) => { eprint!("{}", RESET); l.trim().to_string() }
-            Err(ReadlineError::Eof) | Err(ReadlineError::Interrupted) => break,
-            Err(e) => return Err(e.into()),
+        let shell_history_path = gait_dir.join("tmp").join(format!("shell-{}.jsonl", session_id));
+        nav.lock().unwrap().path = shell_history_path.clone();
+        let config = crate::config::load_config(&gait_dir);
+        let session = std::sync::Arc::new(crate::session::Session::load(
+            gait_dir.clone(), session_id.clone(), codebase.clone(), repos.clone()));
+
+        let source = crate::repl_loop::ReplSource {
+            shared: shared.clone(),
+            gait_dir: gait_dir.clone(),
+            codebase: codebase.clone(),
+            session_id: session_id.clone(),
+            agent_path: agent_path.clone(),
+            repos: repos.clone(),
+            theme: theme.clone(),
+            nav: nav.clone(),
+            shell_history_path,
+            gait_bin: gait_bin.clone(),
+            last_blocks: Vec::new(),
+            ran_turn: false,
         };
-        if line.is_empty() {
-            continue;
-        }
-        if is_bang_command(&line) {
-            let cmd = bang_command_str(&line);
-            let (output, code) = match run_and_capture_pty_raw(cmd, &codebase) {
-                CaptureResult::Output(out, code) => (out, code),
-                CaptureResult::Interactive => (String::new(), Some(0)),
-            };
-            if code != Some(0) {
-                eprintln!("[!] exit {}", code.unwrap_or(1));
-            }
-            let _ = crate::shell_history::append(
-                &shell_history_path,
-                cmd,
-                &output,
-                crate::session::transcript::now_ms(),
-            );
-            continue;
-        }
+        let mut sink = crate::repl_loop::ReplSink { shared: shared.clone() };
+        let mut driver = crate::repl_loop::ReplDriver {
+            gait_dir: gait_dir.clone(),
+            codebase: codebase.clone(),
+            agent_path: agent_path.clone(),
+            session_id: session_id.clone(),
+            config,
+            repos: repos.clone(),
+        };
 
-        // /skillname [off] — emit Toggle{kind:SKILL} event; do NOT forward to model.
-        // Checked on the original line (before the undo block mutates it) so that
-        // a user typing "/tdd" toggles the skill rather than being swallowed by undo.
-        if let Some((skill_name, enabled)) = parse_skill_toggle(&line) {
-            let available = crate::skills::scan_skills(&gait_dir);
-            if !available.iter().any(|s| s.name == skill_name) {
-                eprintln!(
-                    "[gait] no such skill {:?} — is skills/{}/SKILL.md present?",
-                    skill_name, skill_name,
-                );
-            } else {
-                let tx_path = gait_dir
-                    .join("sessions")
-                    .join(&session_id)
-                    .join("log.jsonl");
-                let _ = wire::append(
-                    &tx_path,
-                    events::toggle("skill", &skill_name, enabled),
-                );
-                if enabled {
-                    eprintln!("skill {} enabled", skill_name);
-                } else {
-                    eprintln!("skill {} disabled", skill_name);
-                }
-            }
-            continue;
-        }
+        crate::cli::run_loop::run_loop(source, &mut sink, session, &gait_dir, &session_id, &mut driver).await?;
 
-
-        match line.as_str() {
-            "/n" | "/new" => {
-                session_id = new_session_id();
-                shell_history_path = gait_dir.join("tmp").join(format!("shell-{}.jsonl", session_id));
-                nav.lock().unwrap().path = shell_history_path.clone();
+        // The source ended the loop with a control signal (or EOF).
+        let control = shared.borrow_mut().control.take();
+        match control {
+            Some(crate::repl_loop::Control::NewSession(id)) => {
+                session_id = id;
                 eprintln!("new session {}", session_id);
                 continue;
             }
-            "/q" | "/exit" | "exit" | "quit" => break,
-            _ => {}
-        }
-
-        // /u [N], /uc [N], /ut [N]: undo both axes, code-only, or transcript-only.
-        // Check longest prefix first so /uc and /ut are not consumed by /u.
-        let line: String = if line.starts_with("/uc") || line.starts_with("/ut") || line.starts_with("/u") {
-            let (flags, label, arg_start) = if line.starts_with("/uc") {
-                (["--code"].as_slice(), "code", 3usize)
-            } else if line.starts_with("/ut") {
-                (["--transcript"].as_slice(), "transcript", 3usize)
-            } else {
-                (["--code", "--transcript"].as_slice(), "both", 2usize)
-            };
-            let arg = line[arg_start..].trim().to_owned();
-            if arg.is_empty() {
-                let _ = Command::new(&gait_bin)
-                    .args(["undo", &session_id, "--list",
-                           "--gait-dir", gait_dir.to_str().unwrap_or(".")])
-                    .status();
-                continue;
-            } else if let Ok(n) = arg.parse::<u32>() {
-                let mut cmd_args = vec!["undo", &session_id, "--turn", &arg];
-                cmd_args.extend_from_slice(flags);
-                cmd_args.extend_from_slice(&["--gait-dir", gait_dir.to_str().unwrap_or(".")]);
-                let ok = Command::new(&gait_bin)
-                    .args(&cmd_args)
-                    .status()
-                    .map(|s| s.success())
-                    .unwrap_or(false);
-                if !ok {
-                    eprintln!("[undo] failed — is there a turn {n} for this session?");
-                    continue;
-                }
-                format!("[undo] restored {label} to turn {n}")
-            } else {
-                eprintln!("{}", hints::UNDO_USAGE);
-                continue;
-            }
-        } else {
-            line
-        };
-
-        builder.add_history_entry(&line);
-        // Unified expansion: $(cmd)/$(N) shell, @path files, >(N) quote-reply —
-        // identical to the CLI path. No cascade (see expand_input).
-        let line = expand_input(&line, &ExpandCtx {
-            codebase: &codebase,
-            history: &shell_history_path,
-            last_blocks: &last_turn_blocks,
-        });
-
-        // Build session/config/api_key ONCE per task line (in-process, no subprocess).
-        let repos = crate::git::Repos::production();
-        let session = Arc::new(crate::session::Session::load(
-            gait_dir.clone(),
-            session_id.clone(),
-            codebase.clone(),
-            repos.clone(),
-        ));
-        let config = crate::config::load_config(&gait_dir);
-
-        'spawn: loop {
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<
-                crate::proto::gait::log::v1::StreamItem,
-            >();
-            let emitter = crate::proto::Recorder::for_session(&gait_dir, &session_id, tx);
-
-            // Rebuild Profile per turn (Profile is not Clone) and resolve with OWNED args.
-            let profile = crate::profile::Profile::from_config_and_agent(
-                &config,
-                &gait_dir,
-                Some(codebase.as_path()),
-                agent_path.as_deref(),
-                None,
-            );
-            // Derive provider + api_key from the RESOLVED model (matches gait.rs run
-            // handler): precedence is override > agent frontmatter > config, so the
-            // provider must come from profile.model, not config.model. Compute the
-            // owned api_key in one statement so the &profile.model borrow ends before
-            // profile.resolve(...) moves profile.
-            let api_key = crate::auth::resolve_api_key(
-                profile.model.split_once('/').map(|(p, _)| p).unwrap_or(&profile.model),
-            );
-            let caps = profile
-                .resolve(
-                    codebase.clone(),
-                    session_id.clone(),
-                    gait_dir.clone(),
-                    repos.clone(),
-                    api_key,
-                )
-                .await?;
-            let input = crate::turn::TurnInput {
-                task: Some(line.clone()),
-                auto: false,
-                max_iter: config.max_iter,
-                preview_policy: config.preview,
-            };
-
-            // Spawn the turn; move owned session(Arc)+emitter+caps+input so emitter
-            // drops on completion → channel closes → rx.recv() yields None.
-            let session_for_turn = session.clone();
-            let turn_handle = tokio::spawn(async move {
-                crate::turn::run_turn(&*session_for_turn, &emitter, caps, input).await
-            });
-
-            builder.begin_turn();
-            let mut turn_done_blocks: Option<Vec<String>> = None;
-
-            while let Some(item) = rx.recv().await {
-                match builder.handle_stream_item(item) {
-                    ViewSignal::TurnDone(blocks) => { turn_done_blocks = Some(blocks); }
-                    ViewSignal::Continue => {}
-                }
-            }
-            builder.flush();
-
-            // Graceful turn-error handling: a turn that errors or panics must NOT
-            // kill the REPL (the old subprocess just printed and returned to the
-            // prompt). break 'spawn falls through to the outer loop.
-            match turn_handle.await {
-                Ok(Ok(_)) => {}
-                Ok(Err(e)) => {
-                    eprintln!("[gait] turn error: {e}");
-                    break 'spawn;
-                }
-                Err(e) => {
-                    eprintln!("[gait] turn panicked: {e}");
-                    break 'spawn;
-                }
-            }
-
-            last_turn_blocks = turn_done_blocks.unwrap_or_else(|| builder.take_turn_blocks());
-
-            if builder.has_interaction() {
-                let tx_path = gait_dir.join("sessions").join(&session_id).join("log.jsonl");
-                let outcome = builder.run_interaction(&gait_dir, &session_id, agent_path.as_deref())?;
-                wire::append(&tx_path, outcome.event_body)?;
-                if outcome.respawn { continue 'spawn; }
-            }
-
-            println!();
-            break 'spawn;
+            Some(crate::repl_loop::Control::Quit) | None => break,
         }
     }
 
