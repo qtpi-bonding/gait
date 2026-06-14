@@ -67,11 +67,10 @@ pub struct ReplDriver {
 #[async_trait::async_trait(?Send)]
 impl TurnDriver for ReplDriver {
     async fn caps(&mut self) -> anyhow::Result<crate::profile::ResolvedProfile> {
-        let profile = crate::profile::Profile::from_config_and_agent(
-            &self.config, &self.gait_dir, Some(self.codebase.as_path()), self.agent_path.as_deref(), None);
-        let api_key = crate::auth::resolve_api_key(
-            profile.model.split_once('/').map(|(p, _)| p).unwrap_or(&profile.model));
-        profile.resolve(self.codebase.clone(), self.session_id.clone(), self.gait_dir.clone(), self.repos.clone(), api_key).await
+        // Same resolution as the CLI, via the shared embedding helper (cached config).
+        crate::embed::resolve_caps(
+            &self.config, &self.gait_dir, &self.codebase, &self.session_id,
+            self.agent_path.as_deref(), None, &self.repos).await
     }
     fn turn_config(&self) -> LoopConfig {
         LoopConfig { auto: false, max_iter: self.config.max_iter, preview_policy: self.config.preview }

@@ -106,3 +106,65 @@ pub async fn run_loop(
     }
     Ok(())
 }
+
+/// Resolve a live profile (provider + tools + MCP) for one session from an
+/// already-loaded `config` + optional agent file + optional model override — the
+/// same resolution the CLI and REPL do. Embedders load config via [`load_config`]
+/// and pass it in (reusing it across turns), instead of touching `Profile`.
+pub async fn resolve_caps(
+    config: &crate::config::GaitConfig,
+    gait_dir: &Path,
+    codebase: &Path,
+    session_id: &str,
+    agent_path: Option<&Path>,
+    model_override: Option<String>,
+    repos: &crate::git::Repos,
+) -> anyhow::Result<crate::profile::ResolvedProfile> {
+    let profile = crate::profile::Profile::from_config_and_agent(
+        config, gait_dir, Some(codebase), agent_path, model_override);
+    let api_key = crate::auth::resolve_api_key(
+        profile.model.split_once('/').map(|(p, _)| p).unwrap_or(&profile.model));
+    profile.resolve(codebase.to_path_buf(), session_id.to_string(), gait_dir.to_path_buf(), repos.clone(), api_key).await
+}
+
+/// A frame handed to a [`JsonSink`] callback. Strings are pbjson (canonical
+/// protobuf-JSON) the consumer parses with classes generated from the `.proto`.
+/// Owns `String` (no borrowed lifetime — a borrowed `&str` would force a
+/// higher-ranked `FnMut` bound bare closures fail to infer; the consumer copies
+/// the string out anyway).
+pub enum JsonFrame {
+    /// pbjson `StreamItem` — a Trace/Error event or a text delta.
+    Item(String),
+    /// pbjson `RunResult` — `{message, result, changes}`.
+    Result(String),
+    Diagnostic(Diag, String),
+}
+
+/// A [`TurnSink`] that serializes each frame to pbjson exactly as the CLI's
+/// `StdioSink` serializes a frame, and hands the string to a callback. The
+/// FFI-ready output sink: drive a turn, get pbjson out — a thin C-ABI shim maps an
+/// `extern "C"` fn pointer + opaque ctx to this closure, and the consumer
+/// (Serverpod/Flutter) parses the JSON with a model generated from the same
+/// `.proto`. Unlike `StdioSink` it does not route by `classify` or quiet — it
+/// hands the consumer every item; the consumer classifies on its side. `failed`
+/// is set on an error diagnostic (exit-code parity).
+pub struct JsonSink<F: FnMut(JsonFrame)> {
+    pub f: F,
+    pub failed: bool,
+}
+impl<F: FnMut(JsonFrame)> JsonSink<F> {
+    pub fn new(f: F) -> Self { Self { f, failed: false } }
+}
+impl<F: FnMut(JsonFrame)> TurnSink for JsonSink<F> {
+    fn item(&mut self, item: &StreamItem) {
+        if let Ok(j) = serde_json::to_string(item) { (self.f)(JsonFrame::Item(j)); }
+    }
+    fn result(&mut self, r: &TurnResult) {
+        if let Ok(j) = serde_json::to_string(&run_result_proto(r)) { (self.f)(JsonFrame::Result(j)); }
+    }
+    fn session_id(&mut self, _id: &str) {}   // embedder supplies the id to run_loop; nothing to emit
+    fn diagnostic(&mut self, level: Diag, msg: &str) {
+        if level == Diag::Error { self.failed = true; }
+        (self.f)(JsonFrame::Diagnostic(level, msg.to_string()));
+    }
+}

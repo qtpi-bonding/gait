@@ -174,7 +174,9 @@ struct CliDriver {
 #[async_trait::async_trait(?Send)]
 impl crate::embed::TurnDriver for CliDriver {
     async fn caps(&mut self) -> anyhow::Result<crate::profile::ResolvedProfile> {
-        // Single-shot: `ArgSource` yields one turn, so this resolves exactly once.
+        // Resolves a profile pre-built in cmd_run from flag-merged config
+        // (--allow/--deny/--max-iter/--result-schema), so it can't use the plain
+        // `embed::resolve_caps`. Single-shot: `ArgSource` yields one turn → resolves once.
         let profile = self.profile.take()
             .ok_or_else(|| anyhow::anyhow!("CLI driver caps() called more than once (single-shot)"))?;
         profile.resolve(
