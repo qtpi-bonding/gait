@@ -2,12 +2,12 @@ use std::path::{Path, PathBuf};
 use tokio::sync::mpsc::UnboundedSender;
 use crate::proto::{wire, gait::log::v1::{Event, event, StreamItem, TextDelta, stream_item}};
 
-pub struct Emitter {
+pub struct Recorder {
     pub tx_path: PathBuf,
     sender: UnboundedSender<StreamItem>,
 }
 
-impl Emitter {
+impl Recorder {
     pub fn new(tx_path: PathBuf, sender: UnboundedSender<StreamItem>) -> Self {
         Self { tx_path, sender }
     }
@@ -23,7 +23,7 @@ impl Emitter {
 
     /// Durable: write Event to transcript AND send StreamItem{event}. Always both.
     /// `UnboundedSender::send` is sync + non-blocking — safe from anywhere.
-    pub fn emit(&self, body: event::Body) -> anyhow::Result<Event> {
+    pub fn record(&self, body: event::Body) -> anyhow::Result<Event> {
         let event = wire::write_to_transcript(&self.tx_path, body)?;
         // receiver dropped (e.g. headless / test) — transcript write already succeeded, so ignore.
         let _ = self.sender.send(StreamItem {
@@ -33,7 +33,7 @@ impl Emitter {
     }
 
     /// Ephemeral: send StreamItem{delta} only. No transcript write.
-    pub fn delta(&self, content: String) {
+    pub fn publish_delta(&self, content: String) {
         // channel-only; if the receiver is gone there's nothing to persist, so ignore.
         let _ = self.sender.send(StreamItem {
             item: Some(stream_item::Item::Delta(TextDelta { content })),
@@ -48,24 +48,24 @@ mod tests {
     use tempfile::tempdir;
     use crate::proto::gait::log::v1::stream_item::Item;
 
-    fn make(dir: &std::path::Path) -> (Emitter, mpsc::UnboundedReceiver<StreamItem>) {
+    fn make(dir: &std::path::Path) -> (Recorder, mpsc::UnboundedReceiver<StreamItem>) {
         let (tx, rx) = mpsc::unbounded_channel();
-        (Emitter::new(dir.join("log.jsonl"), tx), rx)
+        (Recorder::new(dir.join("log.jsonl"), tx), rx)
     }
 
     #[test]
     fn for_session_builds_transcript_path() {
         let dir = tempdir().unwrap();
         let (tx, _rx) = mpsc::unbounded_channel();
-        let em = Emitter::for_session(dir.path(), "s1234567", tx);
+        let em = Recorder::for_session(dir.path(), "s1234567", tx);
         assert_eq!(em.tx_path, dir.path().join("sessions/s1234567/log.jsonl"));
     }
 
     #[test]
-    fn emit_writes_file_and_sends_event() {
+    fn record_writes_file_and_sends_event() {
         let dir = tempdir().unwrap();
         let (em, mut rx) = make(dir.path());
-        let returned = em.emit(crate::proto::events::session_start("s1234567".to_string(), None)).unwrap();
+        let returned = em.record(crate::proto::events::session_start("s1234567".to_string(), None)).unwrap();
         assert!(em.tx_path.exists());
         match rx.try_recv().unwrap().item {
             Some(Item::Event(ev)) => assert_eq!(ev.id, returned.id),
@@ -74,10 +74,10 @@ mod tests {
     }
 
     #[test]
-    fn delta_sends_only_channel_no_file() {
+    fn publish_delta_sends_only_channel_no_file() {
         let dir = tempdir().unwrap();
         let (em, mut rx) = make(dir.path());
-        em.delta("hi".to_string());
+        em.publish_delta("hi".to_string());
         assert!(!em.tx_path.exists());
         match rx.try_recv().unwrap().item {
             Some(Item::Delta(d)) => assert_eq!(d.content, "hi"),

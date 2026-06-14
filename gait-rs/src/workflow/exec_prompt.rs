@@ -90,7 +90,7 @@ pub async fn exec_prompt_node(
         repos,
     );
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
-    let emitter = crate::proto::Emitter::for_session(&session.gait_dir, &session.id, tx);
+    let emitter = crate::proto::Recorder::for_session(&session.gait_dir, &session.id, tx);
     let result = run_turn(
         &session,
         &emitter,

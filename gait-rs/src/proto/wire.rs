@@ -57,7 +57,7 @@ pub fn last_event(path: &Path) -> anyhow::Result<Option<Event>> {
 
 /// Mint an [`Event`] for `body` chained after the current tail, write its JSON
 /// line to the file, and return the minted event. Shared by [`append`] and
-/// [`emit`]; also called directly by [`crate::proto::Emitter`].
+/// [`emit`]; also called directly by [`crate::proto::Recorder`].
 pub(crate) fn write_to_transcript(path: &Path, body: event::Body) -> anyhow::Result<Event> {
     let prev = last_event(path)?;
     let ev = mint(body, prev.as_ref());

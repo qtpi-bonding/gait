@@ -11,7 +11,7 @@ use crate::session::transcript::{
     ClarifyItem, InformItem,
 };
 use crate::proto::{events, wire};
-use crate::proto::Emitter;
+use crate::proto::Recorder;
 use crate::session::Ingestor;
 use crate::session::retrace;
 use crate::config::McpToolDef;
@@ -180,11 +180,11 @@ fn make_mcp_tool_def(def: &McpToolDef, client: Arc<McpClient>) -> Box<dyn crate:
 async fn execute_tool_call(
     tc: &ToolCall,
     tools: &[Box<dyn Tool>],
-    emitter: &crate::proto::Emitter,
+    emitter: &crate::proto::Recorder,
     approval_prefix: Option<String>,
 ) -> anyhow::Result<(AssistantPart, ToolResult)> {
     let id = tc.tool_call_id.clone();
-    emitter.emit(events::tool_call(id.clone(), tc.tool_name.clone(), &tc.args))?;
+    emitter.record(events::tool_call(id.clone(), tc.tool_name.clone(), &tc.args))?;
     let assistant_part = AssistantPart::ToolCall(ToolCall {
         tool_call_id: id.clone(),
         tool_name: tc.tool_name.clone(),
@@ -236,7 +236,7 @@ async fn execute_tool_call(
         Some(prefix) => format!("{}\n{}", prefix, raw),
         None => raw,
     };
-    emitter.emit(events::tool_result(id.clone(), output.clone(), duration, process))?;
+    emitter.record(events::tool_result(id.clone(), output.clone(), duration, process))?;
     let tool_result = ToolResult {
         kind: ToolResultKind::ToolResult,
         tool_call_id: id,
@@ -252,13 +252,13 @@ fn stream_preview_if_always(
     policy: crate::config::PreviewPolicy,
     tool: Option<&Box<dyn Tool>>,
     args: &serde_json::Value,
-    emitter: &Emitter,
+    emitter: &Recorder,
 ) {
     if policy != crate::config::PreviewPolicy::Always {
         return;
     }
     if let Some(p) = tool.and_then(|t| t.preview(args)) {
-        emitter.delta(format!("\n{}\n", p));
+        emitter.publish_delta(format!("\n{}\n", p));
     }
 }
 
@@ -392,7 +392,7 @@ async fn apply_curate_filter(
     };
     // curate is a side turn — transcript only, no live stream consumer.
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
-    let curate_emitter = Emitter::for_session(&session.gait_dir, &session.id, tx);
+    let curate_emitter = Recorder::for_session(&session.gait_dir, &session.id, tx);
     let _ = run_turn(&session, &curate_emitter, caps,
         TurnInput { task: Some(task), auto: true, max_iter: Some(1), preview_policy: crate::config::PreviewPolicy::default() }).await;
 
@@ -451,7 +451,7 @@ fn validate_against_schema(schema: &serde_json::Value, value: &serde_json::Value
 
 pub async fn run_turn(
     session: &crate::session::Session,
-    emitter: &Emitter,
+    emitter: &Recorder,
     caps: crate::profile::ResolvedProfile,
     input: TurnInput,
 ) -> anyhow::Result<TurnResult> {
@@ -622,7 +622,7 @@ pub async fn run_turn(
                     };
                     if let Err(e) = execute_tool_call(&tc, &tools, emitter, prefix).await {
                         // Emit error as tool result so model sees it
-                        emitter.emit(events::tool_result(
+                        emitter.record(events::tool_result(
                             id.clone(),
                             format!("error executing approved tool: {e}"),
                             None, None,
@@ -632,12 +632,12 @@ pub async fn run_turn(
                     // At least one segment denied — emit ToolCall FIRST, then ToolResult.
                     // Without a preceding ToolCall, context.rs silently drops the orphan
                     // ToolResult during reconstruction, and the model retries forever (gate loop).
-                    emitter.emit(events::tool_call(
+                    emitter.record(events::tool_call(
                         id.clone(),
                         items[0].tool_name.clone(),
                         &input_value(&items[0].tool_args),
                     ))?;
-                    emitter.emit(events::tool_result(
+                    emitter.record(events::tool_result(
                         id.clone(),
                         "permission denied by user".into(),
                         None, None,
@@ -675,7 +675,7 @@ pub async fn run_turn(
         );
         let rebaselined = retrace::rebaseline_agent(agent.clone(), &guard_state);
         if retrace::active_agent_checkpoint(&events_for_guard) != Some(rebaselined.clone()) {
-            emitter.emit(wire::body(payload::Kind::Agent(rebaselined)))?;
+            emitter.record(wire::body(payload::Kind::Agent(rebaselined)))?;
         }
     }
 
@@ -687,7 +687,7 @@ pub async fn run_turn(
                 dirty_files: if dirty_files.is_empty() { None } else { Some(dirty_files.clone()) },
                 injected_files: None,
             };
-            emitter.emit(events::user_turn(task.clone(), None, Some(&ctx)))?;
+            emitter.record(events::user_turn(task.clone(), None, Some(&ctx)))?;
         }
         let events = ingestor.events()?;
         messages = retrace::messages(&events)?;
@@ -811,7 +811,7 @@ pub async fn run_turn(
                     if seen_tool_complete {
                         post_tool_text.push(t.clone());
                     } else {
-                        emitter.delta(t.clone());
+                        emitter.publish_delta(t.clone());
                     }
                     step_text.push_str(&t);
                 }
@@ -834,7 +834,7 @@ pub async fn run_turn(
         // Parts message below. Writing a separate AssistantText event here would produce
         // two consecutive assistant messages in context reconstruction, which Anthropic rejects.
         if !step_text.is_empty() && step_tool_calls.is_empty() {
-            emitter.emit(events::assistant_text(step_text.clone()))?;
+            emitter.record(events::assistant_text(step_text.clone()))?;
         }
 
         // No tool calls → auto-wrap the text as an implicit output() call.
@@ -854,7 +854,7 @@ pub async fn run_turn(
                 cache_write: total_usage.cache_write_tokens as u64,
             };
             let output = TurnOutput { message: message.clone(), result: None };
-            emitter.emit(events::turn_complete(
+            emitter.record(events::turn_complete(
                 &usage, codebase_hash.clone(), codebase_dirty, code_checkpoint,
                 split_into_blocks(&all_turn_text), &output,
             ))?;
@@ -974,10 +974,10 @@ pub async fn run_turn(
                 tc.tool_name.clone()
             };
             let output = format!("[Blocked by config: {}] permission denied", pattern);
-            emitter.emit(events::tool_call(
+            emitter.record(events::tool_call(
                 tc.tool_call_id.clone(), tc.tool_name.clone(), &tc.args,
             ))?;
-            emitter.emit(events::tool_result(
+            emitter.record(events::tool_result(
                 tc.tool_call_id.clone(), output.clone(),
                 None, None,
             ))?;
@@ -1069,10 +1069,10 @@ pub async fn run_turn(
                     .find_map(|h| if let HookAction::Block { reason } = h.pre_tool(tc) { Some(reason) } else { None })
                 {
                     let output = format!("[Blocked by hook] {}", reason);
-                    emitter.emit(events::tool_call(
+                    emitter.record(events::tool_call(
                         tc.tool_call_id.clone(), tc.tool_name.clone(), &tc.args,
                     ))?;
-                    emitter.emit(events::tool_result(
+                    emitter.record(events::tool_result(
                         tc.tool_call_id.clone(), output.clone(), None, None,
                     ))?;
                     all_results[*i] = Some((
@@ -1129,7 +1129,7 @@ pub async fn run_turn(
                             } else {
                                 "skill"
                             };
-                            emitter.emit(events::toggle(toggle_kind, item_name, on))?;
+                            emitter.record(events::toggle(toggle_kind, item_name, on))?;
                         }
                         let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
                         let (part, mut result) = execute_tool_call(tc, &tools, emitter, prefix).await
@@ -1169,14 +1169,14 @@ pub async fn run_turn(
                             if let Err(errors) = validate_against_schema(schema, &value_to_validate) {
                                 if schema_retries_remaining > 0 {
                                     schema_retries_remaining -= 1;
-                                    emitter.emit(events::tool_call(
+                                    emitter.record(events::tool_call(
                                         tc.tool_call_id.clone(), tc.tool_name.clone(), &tc.args,
                                     ))?;
                                     let error_msg = format!(
                                         "result schema validation failed ({} retries remaining):\n{}",
                                         schema_retries_remaining, errors
                                     );
-                                    emitter.emit(events::tool_result(
+                                    emitter.record(events::tool_result(
                                         tc.tool_call_id.clone(), error_msg, None, None,
                                     ))?;
                                     continue;
@@ -1187,14 +1187,14 @@ pub async fn run_turn(
                         }
 
                         // Emit call+result pair for transcript auditability before ending the turn.
-                        emitter.emit(events::tool_call(
+                        emitter.record(events::tool_call(
                             tc.tool_call_id.clone(), tc.tool_name.clone(), &tc.args,
                         ))?;
-                        emitter.emit(events::tool_result(
+                        emitter.record(events::tool_result(
                             tc.tool_call_id.clone(), "recorded".to_string(), None, None,
                         ))?;
                         for t in post_tool_text.drain(..) {
-                            emitter.delta(t);
+                            emitter.publish_delta(t);
                         }
                         let events_now = ingestor.events()?;
                         let turn_n = count_turn_complete(&events_now) as u32 + 1;
@@ -1209,7 +1209,7 @@ pub async fn run_turn(
                             cache_write: total_usage.cache_write_tokens as u64,
                         };
                         let turn_output = TurnOutput { message: message.clone(), result: result.clone() };
-                        emitter.emit(events::turn_complete(
+                        emitter.record(events::turn_complete(
                             &usage, codebase_hash.clone(), codebase_dirty, code_checkpoint,
                             split_into_blocks(&all_turn_text), &turn_output,
                         ))?;
@@ -1222,14 +1222,14 @@ pub async fn run_turn(
                         let items: Vec<ClarifyItem> = tc.args.get("items")
                             .and_then(|v| serde_json::from_value(v.clone()).ok())
                             .unwrap_or_default();
-                        emitter.emit(events::clarify(&items))?;
+                        emitter.record(events::clarify(&items))?;
                         clarify_signal = Some(items);
                     }
                     ExecutionSignal::Inform => {
                         let items: Vec<InformItem> = tc.args.get("items")
                             .and_then(|v| serde_json::from_value(v.clone()).ok())
                             .unwrap_or_default();
-                        emitter.emit(events::inform(&items))?;
+                        emitter.record(events::inform(&items))?;
                         inform_signal = Some(items);
                     }
                     ExecutionSignal::Continue => {
@@ -1275,13 +1275,13 @@ pub async fn run_turn(
 
         // Emit any model text that arrived after tool calls in this step.
         for t in post_tool_text.drain(..) {
-            emitter.delta(t);
+            emitter.publish_delta(t);
         }
 
         // Gated tools: emit Permissions and exit so the user can decide.
         // (In auto mode gated_ids is always empty — this block is never reached.)
         if !pending_permissions.is_empty() {
-            emitter.emit(events::permissions(&pending_permissions))?;
+            emitter.record(events::permissions(&pending_permissions))?;
             repos.traces.commit_session(&gait_dir, &session_id,
                 &format!("session({}): permissions", session_id))?;
             for h in &hooks { h.post_turn(); }
@@ -1356,7 +1356,7 @@ mod tests {
         };
         let caps = crate::profile::ResolvedProfile::for_test(provider, tools, allow, deny);
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
-        let emitter = Emitter::for_session(&session.gait_dir, &session.id, tx);
+        let emitter = Recorder::for_session(&session.gait_dir, &session.id, tx);
         run_turn(&session, &emitter, caps, input).await
     }
 
@@ -2434,7 +2434,7 @@ mod tests {
         let hash = compute_line_hash(2, lines[1]);
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let emitter = crate::proto::Emitter::new(dir.path().join("log.jsonl"), tx);
+        let emitter = crate::proto::Recorder::new(dir.path().join("log.jsonl"), tx);
         let ctx = crate::tools::ToolCtx::new(dir.path().to_path_buf(), dir.path().to_path_buf(), "t".into());
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(crate::tools::EditTool::new(ctx))];
         let args = serde_json::json!({
@@ -2458,7 +2458,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f.rs"), "fn foo() {}").unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let emitter = crate::proto::Emitter::new(dir.path().join("log.jsonl"), tx);
+        let emitter = crate::proto::Recorder::new(dir.path().join("log.jsonl"), tx);
         let ctx = crate::tools::ToolCtx::new(dir.path().to_path_buf(), dir.path().to_path_buf(), "t".into());
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(crate::tools::EditTool::new(ctx))];
         let args = serde_json::json!({"file_path": "f.rs", "edits": []});

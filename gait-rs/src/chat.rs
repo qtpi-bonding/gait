@@ -214,7 +214,7 @@ pub async fn run_chat(
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<
                 crate::proto::gait::log::v1::StreamItem,
             >();
-            let emitter = crate::proto::Emitter::for_session(&gait_dir, &session_id, tx);
+            let emitter = crate::proto::Recorder::for_session(&gait_dir, &session_id, tx);
 
             // Rebuild Profile per turn (Profile is not Clone) and resolve with OWNED args.
             let profile = crate::profile::Profile::from_config_and_agent(

@@ -18,9 +18,9 @@ use tempfile::TempDir;
 use async_stream::stream;
 
 /// Test emitter: writes transcript, drops the live stream (receiver gone → sends ignored).
-fn discard_emitter(gait_dir: &std::path::Path, id: &str) -> gait_ai::Emitter {
+fn discard_emitter(gait_dir: &std::path::Path, id: &str) -> gait_ai::Recorder {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<gait_ai::proto::gait::log::v1::StreamItem>();
-    gait_ai::Emitter::for_session(gait_dir, id, tx)
+    gait_ai::Recorder::for_session(gait_dir, id, tx)
 }
 
 fn init_git_repo(dir: &std::path::Path) {
