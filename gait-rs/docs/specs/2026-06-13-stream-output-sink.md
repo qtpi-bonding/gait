@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Phase 1 spec — Output port for `gait run` (+ Recorder rename + result envelope)
 
 Parent: [`../plans/2026-06-13-turn-io-architecture.md`](../plans/2026-06-13-turn-io-architecture.md).
