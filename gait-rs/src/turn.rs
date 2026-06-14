@@ -40,7 +40,7 @@ fn input_value(s: &Option<pbjson_types::Struct>) -> serde_json::Value {
 
 #[derive(Debug, Clone)]
 pub enum TurnResult {
-    Done { message: String, result: Option<serde_json::Value> },
+    Done { message: String, result: Option<serde_json::Value>, changes: Option<crate::proto::gait::log::v1::Changes> },
     Permissions,
     Clarify { items: Vec<ClarifyItem> },
     Inform  { items: Vec<InformItem> },
@@ -847,13 +847,15 @@ pub async fn run_turn(
                 repos.checkpoints.as_ref(),
                 &gait_dir, &session_id, &codebase_path, turn_n,
             );
+            let changes = code_checkpoint.as_ref()
+                .and_then(|sha| repos.checkpoints.diff(&gait_dir, &session_id, sha).ok().flatten());
             let usage = TurnUsage {
                 input: total_usage.input_tokens as u64,
                 output: total_usage.output_tokens as u64,
                 cache_read: total_usage.cache_read_tokens as u64,
                 cache_write: total_usage.cache_write_tokens as u64,
             };
-            let output = TurnOutput { message: message.clone(), result: None, changes: None };
+            let output = TurnOutput { message: message.clone(), result: None, changes: changes.clone() };
             emitter.record(events::turn_complete(
                 &usage, codebase_hash.clone(), codebase_dirty, code_checkpoint,
                 split_into_blocks(&all_turn_text), &output,
@@ -861,7 +863,7 @@ pub async fn run_turn(
             repos.traces.commit_session(&gait_dir, &session_id,
                 &format!("session({}): turn {}", session_id, turn_n))?;
             for h in &hooks { h.post_turn(); }
-            return Ok(TurnResult::Done { message, result: None });
+            return Ok(TurnResult::Done { message, result: None, changes });
         }
 
         // Single permission gate: classify all tool calls into allowed vs gated.
@@ -1202,13 +1204,15 @@ pub async fn run_turn(
                             repos.checkpoints.as_ref(),
                             &gait_dir, &session_id, &codebase_path, turn_n,
                         );
+                        let changes = code_checkpoint.as_ref()
+                            .and_then(|sha| repos.checkpoints.diff(&gait_dir, &session_id, sha).ok().flatten());
                         let usage = TurnUsage {
                             input: total_usage.input_tokens as u64,
                             output: total_usage.output_tokens as u64,
                             cache_read: total_usage.cache_read_tokens as u64,
                             cache_write: total_usage.cache_write_tokens as u64,
                         };
-                        let turn_output = TurnOutput { message: message.clone(), result: result.clone(), changes: None };
+                        let turn_output = TurnOutput { message: message.clone(), result: result.clone(), changes: changes.clone() };
                         emitter.record(events::turn_complete(
                             &usage, codebase_hash.clone(), codebase_dirty, code_checkpoint,
                             split_into_blocks(&all_turn_text), &turn_output,
@@ -1216,7 +1220,7 @@ pub async fn run_turn(
                         repos.traces.commit_session(&gait_dir, &session_id,
                             &format!("session({}): turn {}", session_id, turn_n))?;
                         for h in &hooks { h.post_turn(); }
-                        return Ok(TurnResult::Done { message, result });
+                        return Ok(TurnResult::Done { message, result, changes });
                     }
                     ExecutionSignal::Clarify => {
                         let items: Vec<ClarifyItem> = tc.args.get("items")

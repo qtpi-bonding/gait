@@ -43,8 +43,8 @@ fn extract_kind(body: event::Body) -> Option<payload::Kind> {
 pub fn run_result_proto(r: &crate::turn::TurnResult) -> RunResult {
     use crate::turn::TurnResult;
     let result = match r {
-        TurnResult::Done { message, result } => run_result::Result::Done(TurnOutput {
-            message: message.clone(), result: events::to_value_opt(result), changes: None,
+        TurnResult::Done { message, result, changes } => run_result::Result::Done(TurnOutput {
+            message: message.clone(), result: events::to_value_opt(result), changes: changes.clone(),
         }),
         TurnResult::Clarify { items } => match extract_kind(events::clarify(items)) {
             Some(payload::Kind::Clarify(c)) => run_result::Result::Clarify(c),
@@ -80,5 +80,12 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&run_result_proto(&crate::turn::TurnResult::Permissions)).unwrap()).unwrap();
         assert!(v.get("permissions").is_some());
     }
+    #[test]
+    fn run_result_done_serializes_with_changes() {
+        use crate::proto::gait::log::v1::Changes;
+        let r = crate::turn::TurnResult::Done { message: "ok".into(), result: None,
+            changes: Some(Changes { added: vec!["a.rs".into()], modified: vec![], deleted: vec![] }) };
+        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&run_result_proto(&r)).unwrap()).unwrap();
+        assert_eq!(v["done"]["changes"]["added"][0], "a.rs");
+    }
 }
-

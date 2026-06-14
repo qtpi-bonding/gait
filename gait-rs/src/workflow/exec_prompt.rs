@@ -99,7 +99,7 @@ pub async fn exec_prompt_node(
     ).await?;
 
     match result {
-        TurnResult::Done { message, result } => Ok(NodeOutput {
+        TurnResult::Done { message, result, .. } => Ok(NodeOutput {
             text: message, exit_code: None, json: result, routed_to: None,
         }),
         TurnResult::Permissions => Ok(NodeOutput {

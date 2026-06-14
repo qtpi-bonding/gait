@@ -62,14 +62,14 @@ mod tests {
 
     #[test]
     fn no_assigner_yields_no_actions() {
-        let result = TurnResult::Done { message: "ok".into(), result: None };
+        let result = TurnResult::Done { message: "ok".into(), result: None, changes: None };
         let ended = TurnEnded { session_id: "s1", assigned_by: None, result: &result };
         assert!(NativeScheduler.next(&ended).is_empty());
     }
 
     #[test]
     fn assigner_yields_notify_and_resume_with_done_status() {
-        let result = TurnResult::Done { message: "built the parser".into(), result: None };
+        let result = TurnResult::Done { message: "built the parser".into(), result: None, changes: None };
         let ended = TurnEnded { session_id: "child", assigned_by: Some("parent"), result: &result };
         let actions = NativeScheduler.next(&ended);
         assert_eq!(actions, vec![Action::NotifyAndResume {
