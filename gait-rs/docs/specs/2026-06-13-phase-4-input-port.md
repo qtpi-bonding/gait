@@ -148,11 +148,12 @@ into the adapter/loop forces a choice:
   (the primary append still lives in `run_turn`) and the boundary stays asymmetric
   — i.e. a half-measure.
 
-This is the single decision that determines the plan's shape and risk; resolve it
-before planning. The recommendation is **Option A**, split to de-risk the
-`turn.rs` surgery (below).
+**Decision: Option A** (chosen 2026-06-14). It is the symmetric, full-DI boundary
+the whole turn-I/O track is shaped for — Phase 5's `RemoteSource` needs input to be
+event-shaped, so Option B would be a half-measure Phase 5 must later undo. Split to
+de-risk the `turn.rs` surgery (below).
 
-### Suggested split (Option A)
+### Split (Option A)
 - **4a — port + CLI.** Define `TurnSource` + `ArgSource`; extract the
   `UserTurnContext` helper; move the primary `user_turn` build/append out of
   `run_turn` into `run_loop`; put **`cmd_run` on `run_loop(ArgSource, StdioSink)`**.
