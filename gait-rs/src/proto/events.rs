@@ -262,6 +262,7 @@ pub fn turn_complete(
         output: Some(pb::TurnOutput {
             message: output.message.clone(),
             result: to_value_opt(&output.result),
+            changes: output.changes.clone(),
         }),
     }))
 }
@@ -376,7 +377,7 @@ fn to_struct(v: &serde_json::Value) -> Option<pbjson_types::Struct> {
 }
 
 /// An optional JSON value → proto `Value` (any JSON shape).
-fn to_value_opt(v: &Option<serde_json::Value>) -> Option<pbjson_types::Value> {
+pub(crate) fn to_value_opt(v: &Option<serde_json::Value>) -> Option<pbjson_types::Value> {
     v.as_ref().and_then(|x| serde_json::from_value(x.clone()).ok())
 }
 
@@ -635,7 +636,18 @@ mod tests {
             other => panic!("expected Toggle, got {other:?}"),
         }
     }
-
+    #[test]
+    fn turn_complete_carries_changes() {
+        use crate::proto::gait::log::v1::{Changes, payload};
+        use crate::session::transcript::{TurnOutput, TurnUsage};
+        let usage = TurnUsage { input: 0, output: 0, cache_read: 0, cache_write: 0 };
+        let out = TurnOutput { message: "done".into(), result: None,
+            changes: Some(Changes { added: vec!["a.rs".into()], modified: vec![], deleted: vec![] }) };
+        let body = turn_complete(&usage, "h".into(), false, None, vec![], &out);
+        let pb::event::Body::Payload(p) = body else { panic!() };
+        let Some(payload::Kind::TurnComplete(tc)) = p.kind else { panic!() };
+        assert_eq!(tc.output.unwrap().changes.unwrap().added, vec!["a.rs".to_string()]);
+    }
 
     // ── Dummy provider for the mapping test (we never call into it) ──────────
     use async_trait::async_trait;

@@ -83,23 +83,32 @@ pub async fn exec_prompt_node(
     ).await?;
 
     resolved.provider = provider;
+    // Build the prompt's user_turn body before `codebase`/`repos` move into the
+    // session (Phase 4 Option A: the caller appends the input, run_turn folds).
+    let user_body = crate::embed::user_turn_body(&repos, &codebase, task);
     let session = crate::session::Session::load(
         ctx.gait_dir.to_path_buf(),
         ctx.session_id.to_string(),
         codebase,
         repos,
     );
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
-    let emitter = crate::proto::Emitter::for_session(&session.gait_dir, &session.id, tx);
+    // Publish the sub-turn's deltas/events to the WORKFLOW's channel (so the run's
+    // consumer surfaces them), while still writing the sub-turn's own transcript at
+    // `session.id`. The clone is transient — it drops when this node returns, so the
+    // workflow's owning Recorder stays the single channel-close point.
+    let emitter = crate::proto::Recorder::for_session(&session.gait_dir, &session.id, ctx.workflow_tx.clone());
+    // The workflow session worktree already exists (run_workflow created it), so the
+    // append lands in the same log run_turn then folds.
+    emitter.record(user_body)?;
     let result = run_turn(
         &session,
         &emitter,
         resolved,
-        crate::turn::TurnInput { task: Some(task), auto, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+        crate::turn::TurnInput { auto, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
     ).await?;
 
     match result {
-        TurnResult::Done { message, result } => Ok(NodeOutput {
+        TurnResult::Done { message, result, .. } => Ok(NodeOutput {
             text: message, exit_code: None, json: result, routed_to: None,
         }),
         TurnResult::Permissions => Ok(NodeOutput {

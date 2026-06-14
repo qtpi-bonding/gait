@@ -11,7 +11,7 @@ use crate::session::transcript::{
     ClarifyItem, InformItem,
 };
 use crate::proto::{events, wire};
-use crate::proto::Emitter;
+use crate::proto::Recorder;
 use crate::session::Ingestor;
 use crate::session::retrace;
 use crate::config::McpToolDef;
@@ -40,7 +40,7 @@ fn input_value(s: &Option<pbjson_types::Struct>) -> serde_json::Value {
 
 #[derive(Debug, Clone)]
 pub enum TurnResult {
-    Done { message: String, result: Option<serde_json::Value> },
+    Done { message: String, result: Option<serde_json::Value>, changes: Option<crate::proto::gait::log::v1::Changes> },
     Permissions,
     Clarify { items: Vec<ClarifyItem> },
     Inform  { items: Vec<InformItem> },
@@ -48,7 +48,6 @@ pub enum TurnResult {
 
 /// Per-call inputs for one turn (the things that vary every invocation).
 pub struct TurnInput {
-    pub task: Option<String>,   // None on resume
     pub auto: bool,
     pub max_iter: Option<usize>,
     pub preview_policy: crate::config::PreviewPolicy,
@@ -180,11 +179,11 @@ fn make_mcp_tool_def(def: &McpToolDef, client: Arc<McpClient>) -> Box<dyn crate:
 async fn execute_tool_call(
     tc: &ToolCall,
     tools: &[Box<dyn Tool>],
-    emitter: &crate::proto::Emitter,
+    emitter: &crate::proto::Recorder,
     approval_prefix: Option<String>,
 ) -> anyhow::Result<(AssistantPart, ToolResult)> {
     let id = tc.tool_call_id.clone();
-    emitter.emit(events::tool_call(id.clone(), tc.tool_name.clone(), &tc.args))?;
+    emitter.record(events::tool_call(id.clone(), tc.tool_name.clone(), &tc.args))?;
     let assistant_part = AssistantPart::ToolCall(ToolCall {
         tool_call_id: id.clone(),
         tool_name: tc.tool_name.clone(),
@@ -197,7 +196,7 @@ async fn execute_tool_call(
     let (raw, duration, process) = match tools.iter().find(|t| t.name() == tc.tool_name) {
         Some(t) => {
             let started = std::time::Instant::now();
-            let res = t.execute(tc.args.clone()).await;
+            let res = t.execute(tc.args.clone(), emitter).await;
             let elapsed = started.elapsed();
             let duration = Some(pbjson_types::Duration {
                 seconds: elapsed.as_secs() as i64,
@@ -236,7 +235,7 @@ async fn execute_tool_call(
         Some(prefix) => format!("{}\n{}", prefix, raw),
         None => raw,
     };
-    emitter.emit(events::tool_result(id.clone(), output.clone(), duration, process))?;
+    emitter.record(events::tool_result(id.clone(), output.clone(), duration, process))?;
     let tool_result = ToolResult {
         kind: ToolResultKind::ToolResult,
         tool_call_id: id,
@@ -252,13 +251,13 @@ fn stream_preview_if_always(
     policy: crate::config::PreviewPolicy,
     tool: Option<&Box<dyn Tool>>,
     args: &serde_json::Value,
-    emitter: &Emitter,
+    emitter: &Recorder,
 ) {
     if policy != crate::config::PreviewPolicy::Always {
         return;
     }
     if let Some(p) = tool.and_then(|t| t.preview(args)) {
-        emitter.delta(format!("\n{}\n", p));
+        emitter.publish_delta(format!("\n{}\n", p));
     }
 }
 
@@ -392,9 +391,13 @@ async fn apply_curate_filter(
     };
     // curate is a side turn — transcript only, no live stream consumer.
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
-    let curate_emitter = Emitter::for_session(&session.gait_dir, &session.id, tx);
+    let curate_emitter = Recorder::for_session(&session.gait_dir, &session.id, tx);
+    // Option A: append the curate prompt as the user_turn, then run_turn folds it.
+    // The session worktree must exist before the append (run_turn also creates it).
+    let _ = repos.traces.create_session_worktree(gait_dir, &session_id);
+    let _ = curate_emitter.record(crate::embed::user_turn_body(&repos, codebase_path, task));
     let _ = run_turn(&session, &curate_emitter, caps,
-        TurnInput { task: Some(task), auto: true, max_iter: Some(1), preview_policy: crate::config::PreviewPolicy::default() }).await;
+        TurnInput { auto: true, max_iter: Some(1), preview_policy: crate::config::PreviewPolicy::default() }).await;
 
     let _ = repos.checkpoints.remove(gait_dir, &session_id);
 
@@ -451,7 +454,7 @@ fn validate_against_schema(schema: &serde_json::Value, value: &serde_json::Value
 
 pub async fn run_turn(
     session: &crate::session::Session,
-    emitter: &Emitter,
+    emitter: &Recorder,
     caps: crate::profile::ResolvedProfile,
     input: TurnInput,
 ) -> anyhow::Result<TurnResult> {
@@ -494,7 +497,6 @@ pub async fn run_turn(
         for n in &config_enabled { s.skills.insert(n.clone()); s.mcp.insert(n.clone()); }
         s
     };
-    let task = input.task;
     let auto = input.auto;
     let max_iter = input.max_iter;
     let preview_policy = input.preview_policy;
@@ -524,9 +526,13 @@ pub async fn run_turn(
     let dirty_files = repos.codebase.dirty_files(&codebase_path);
     let codebase_dirty = !dirty_files.is_empty();
 
-    // Init transcript on first turn
-    let existing = std::fs::read_to_string(&tx_path).unwrap_or_default();
-    if existing.trim().is_empty() {
+    // Init transcript (SessionStart) once per session. Gate on the SessionStart
+    // event's presence rather than log-emptiness: under Phase 4 Option A the input
+    // adapter appends this turn's user_turn BEFORE run_turn, so the log is no longer
+    // empty on the first turn.
+    let has_session_start = ingestor.events().unwrap_or_default().iter()
+        .any(|e| matches!(event_kind(e), Some(payload::Kind::SessionStart(_))));
+    if !has_session_start {
         init_session(InitSessionOpts {
             transcript_path: tx_path.clone(),
             id: session_id.clone(),
@@ -622,7 +628,7 @@ pub async fn run_turn(
                     };
                     if let Err(e) = execute_tool_call(&tc, &tools, emitter, prefix).await {
                         // Emit error as tool result so model sees it
-                        emitter.emit(events::tool_result(
+                        emitter.record(events::tool_result(
                             id.clone(),
                             format!("error executing approved tool: {e}"),
                             None, None,
@@ -632,12 +638,12 @@ pub async fn run_turn(
                     // At least one segment denied — emit ToolCall FIRST, then ToolResult.
                     // Without a preceding ToolCall, context.rs silently drops the orphan
                     // ToolResult during reconstruction, and the model retries forever (gate loop).
-                    emitter.emit(events::tool_call(
+                    emitter.record(events::tool_call(
                         id.clone(),
                         items[0].tool_name.clone(),
                         &input_value(&items[0].tool_args),
                     ))?;
-                    emitter.emit(events::tool_result(
+                    emitter.record(events::tool_result(
                         id.clone(),
                         "permission denied by user".into(),
                         None, None,
@@ -675,20 +681,13 @@ pub async fn run_turn(
         );
         let rebaselined = retrace::rebaseline_agent(agent.clone(), &guard_state);
         if retrace::active_agent_checkpoint(&events_for_guard) != Some(rebaselined.clone()) {
-            emitter.emit(wire::body(payload::Kind::Agent(rebaselined)))?;
+            emitter.record(wire::body(payload::Kind::Agent(rebaselined)))?;
         }
     }
 
     if !did_resume {
-        if let Some(task) = &task {
-            let ctx = crate::session::transcript::UserTurnContext {
-                codebase_hash: Some(codebase_hash.clone()),
-                codebase_dirty: Some(codebase_dirty),
-                dirty_files: if dirty_files.is_empty() { None } else { Some(dirty_files.clone()) },
-                injected_files: None,
-            };
-            emitter.emit(events::user_turn(task.clone(), None, Some(&ctx)))?;
-        }
+        // The input event (user_turn / reply) is appended by the caller before the
+        // turn (Phase 4 Option A); here we only fold the log into messages.
         let events = ingestor.events()?;
         messages = retrace::messages(&events)?;
         let cwd = retrace::active_cwd(&events, &codebase_path);
@@ -811,7 +810,7 @@ pub async fn run_turn(
                     if seen_tool_complete {
                         post_tool_text.push(t.clone());
                     } else {
-                        emitter.delta(t.clone());
+                        emitter.publish_delta(t.clone());
                     }
                     step_text.push_str(&t);
                 }
@@ -834,7 +833,7 @@ pub async fn run_turn(
         // Parts message below. Writing a separate AssistantText event here would produce
         // two consecutive assistant messages in context reconstruction, which Anthropic rejects.
         if !step_text.is_empty() && step_tool_calls.is_empty() {
-            emitter.emit(events::assistant_text(step_text.clone()))?;
+            emitter.record(events::assistant_text(step_text.clone()))?;
         }
 
         // No tool calls → auto-wrap the text as an implicit output() call.
@@ -847,21 +846,23 @@ pub async fn run_turn(
                 repos.checkpoints.as_ref(),
                 &gait_dir, &session_id, &codebase_path, turn_n,
             );
+            let changes = code_checkpoint.as_ref()
+                .and_then(|sha| repos.checkpoints.diff(&gait_dir, &session_id, sha).ok().flatten());
             let usage = TurnUsage {
                 input: total_usage.input_tokens as u64,
                 output: total_usage.output_tokens as u64,
                 cache_read: total_usage.cache_read_tokens as u64,
                 cache_write: total_usage.cache_write_tokens as u64,
             };
-            let output = TurnOutput { message: message.clone(), result: None };
-            emitter.emit(events::turn_complete(
+            let output = TurnOutput { message: message.clone(), result: None, changes: changes.clone() };
+            emitter.record(events::turn_complete(
                 &usage, codebase_hash.clone(), codebase_dirty, code_checkpoint,
                 split_into_blocks(&all_turn_text), &output,
             ))?;
             repos.traces.commit_session(&gait_dir, &session_id,
                 &format!("session({}): turn {}", session_id, turn_n))?;
             for h in &hooks { h.post_turn(); }
-            return Ok(TurnResult::Done { message, result: None });
+            return Ok(TurnResult::Done { message, result: None, changes });
         }
 
         // Single permission gate: classify all tool calls into allowed vs gated.
@@ -974,10 +975,10 @@ pub async fn run_turn(
                 tc.tool_name.clone()
             };
             let output = format!("[Blocked by config: {}] permission denied", pattern);
-            emitter.emit(events::tool_call(
+            emitter.record(events::tool_call(
                 tc.tool_call_id.clone(), tc.tool_name.clone(), &tc.args,
             ))?;
-            emitter.emit(events::tool_result(
+            emitter.record(events::tool_result(
                 tc.tool_call_id.clone(), output.clone(),
                 None, None,
             ))?;
@@ -1039,7 +1040,7 @@ pub async fn run_turn(
                 let (part, mut result) = raw.unwrap_or_else(|e| error_tool_result(tc, e));
                 let result_str = result.result.as_str().unwrap_or("").to_string();
                 for h in &hooks {
-                    if let Some(new) = h.post_tool(&tc.tool_name, &tc.tool_call_id, &tc.args, &result_str).await {
+                    if let Some(new) = h.post_tool(&tc.tool_name, &tc.tool_call_id, &tc.args, &result_str, emitter).await {
                         result.result = serde_json::Value::String(new);
                     }
                 }
@@ -1069,10 +1070,10 @@ pub async fn run_turn(
                     .find_map(|h| if let HookAction::Block { reason } = h.pre_tool(tc) { Some(reason) } else { None })
                 {
                     let output = format!("[Blocked by hook] {}", reason);
-                    emitter.emit(events::tool_call(
+                    emitter.record(events::tool_call(
                         tc.tool_call_id.clone(), tc.tool_name.clone(), &tc.args,
                     ))?;
-                    emitter.emit(events::tool_result(
+                    emitter.record(events::tool_result(
                         tc.tool_call_id.clone(), output.clone(), None, None,
                     ))?;
                     all_results[*i] = Some((
@@ -1129,14 +1130,14 @@ pub async fn run_turn(
                             } else {
                                 "skill"
                             };
-                            emitter.emit(events::toggle(toggle_kind, item_name, on))?;
+                            emitter.record(events::toggle(toggle_kind, item_name, on))?;
                         }
                         let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
                         let (part, mut result) = execute_tool_call(tc, &tools, emitter, prefix).await
                             .unwrap_or_else(|e| error_tool_result(tc, e));
                         let result_str = result.result.as_str().unwrap_or("").to_string();
                         for h in &hooks {
-                            if let Some(new) = h.post_tool(&tc.tool_name, &tc.tool_call_id, &tc.args, &result_str).await {
+                            if let Some(new) = h.post_tool(&tc.tool_name, &tc.tool_call_id, &tc.args, &result_str, emitter).await {
                                 result.result = serde_json::Value::String(new);
                             }
                         }
@@ -1169,14 +1170,14 @@ pub async fn run_turn(
                             if let Err(errors) = validate_against_schema(schema, &value_to_validate) {
                                 if schema_retries_remaining > 0 {
                                     schema_retries_remaining -= 1;
-                                    emitter.emit(events::tool_call(
+                                    emitter.record(events::tool_call(
                                         tc.tool_call_id.clone(), tc.tool_name.clone(), &tc.args,
                                     ))?;
                                     let error_msg = format!(
                                         "result schema validation failed ({} retries remaining):\n{}",
                                         schema_retries_remaining, errors
                                     );
-                                    emitter.emit(events::tool_result(
+                                    emitter.record(events::tool_result(
                                         tc.tool_call_id.clone(), error_msg, None, None,
                                     ))?;
                                     continue;
@@ -1187,14 +1188,14 @@ pub async fn run_turn(
                         }
 
                         // Emit call+result pair for transcript auditability before ending the turn.
-                        emitter.emit(events::tool_call(
+                        emitter.record(events::tool_call(
                             tc.tool_call_id.clone(), tc.tool_name.clone(), &tc.args,
                         ))?;
-                        emitter.emit(events::tool_result(
+                        emitter.record(events::tool_result(
                             tc.tool_call_id.clone(), "recorded".to_string(), None, None,
                         ))?;
                         for t in post_tool_text.drain(..) {
-                            emitter.delta(t);
+                            emitter.publish_delta(t);
                         }
                         let events_now = ingestor.events()?;
                         let turn_n = count_turn_complete(&events_now) as u32 + 1;
@@ -1202,34 +1203,36 @@ pub async fn run_turn(
                             repos.checkpoints.as_ref(),
                             &gait_dir, &session_id, &codebase_path, turn_n,
                         );
+                        let changes = code_checkpoint.as_ref()
+                            .and_then(|sha| repos.checkpoints.diff(&gait_dir, &session_id, sha).ok().flatten());
                         let usage = TurnUsage {
                             input: total_usage.input_tokens as u64,
                             output: total_usage.output_tokens as u64,
                             cache_read: total_usage.cache_read_tokens as u64,
                             cache_write: total_usage.cache_write_tokens as u64,
                         };
-                        let turn_output = TurnOutput { message: message.clone(), result: result.clone() };
-                        emitter.emit(events::turn_complete(
+                        let turn_output = TurnOutput { message: message.clone(), result: result.clone(), changes: changes.clone() };
+                        emitter.record(events::turn_complete(
                             &usage, codebase_hash.clone(), codebase_dirty, code_checkpoint,
                             split_into_blocks(&all_turn_text), &turn_output,
                         ))?;
                         repos.traces.commit_session(&gait_dir, &session_id,
                             &format!("session({}): turn {}", session_id, turn_n))?;
                         for h in &hooks { h.post_turn(); }
-                        return Ok(TurnResult::Done { message, result });
+                        return Ok(TurnResult::Done { message, result, changes });
                     }
                     ExecutionSignal::Clarify => {
                         let items: Vec<ClarifyItem> = tc.args.get("items")
                             .and_then(|v| serde_json::from_value(v.clone()).ok())
                             .unwrap_or_default();
-                        emitter.emit(events::clarify(&items))?;
+                        emitter.record(events::clarify(&items))?;
                         clarify_signal = Some(items);
                     }
                     ExecutionSignal::Inform => {
                         let items: Vec<InformItem> = tc.args.get("items")
                             .and_then(|v| serde_json::from_value(v.clone()).ok())
                             .unwrap_or_default();
-                        emitter.emit(events::inform(&items))?;
+                        emitter.record(events::inform(&items))?;
                         inform_signal = Some(items);
                     }
                     ExecutionSignal::Continue => {
@@ -1239,7 +1242,7 @@ pub async fn run_turn(
                             .unwrap_or_else(|e| error_tool_result(tc, e));
                         let result_str = result.result.as_str().unwrap_or("").to_string();
                         for h in &hooks {
-                            if let Some(new) = h.post_tool(&tc.tool_name, &tc.tool_call_id, &tc.args, &result_str).await {
+                            if let Some(new) = h.post_tool(&tc.tool_name, &tc.tool_call_id, &tc.args, &result_str, emitter).await {
                                 result.result = serde_json::Value::String(new);
                             }
                         }
@@ -1275,13 +1278,13 @@ pub async fn run_turn(
 
         // Emit any model text that arrived after tool calls in this step.
         for t in post_tool_text.drain(..) {
-            emitter.delta(t);
+            emitter.publish_delta(t);
         }
 
         // Gated tools: emit Permissions and exit so the user can decide.
         // (In auto mode gated_ids is always empty — this block is never reached.)
         if !pending_permissions.is_empty() {
-            emitter.emit(events::permissions(&pending_permissions))?;
+            emitter.record(events::permissions(&pending_permissions))?;
             repos.traces.commit_session(&gait_dir, &session_id,
                 &format!("session({}): permissions", session_id))?;
             for h in &hooks { h.post_turn(); }
@@ -1356,7 +1359,31 @@ mod tests {
         };
         let caps = crate::profile::ResolvedProfile::for_test(provider, tools, allow, deny);
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
-        let emitter = Emitter::for_session(&session.gait_dir, &session.id, tx);
+        let emitter = Recorder::for_session(&session.gait_dir, &session.id, tx);
+        run_turn(&session, &emitter, caps, input).await
+    }
+
+    /// Like [`run_turn_test_call`], but first appends a `user_turn` (Phase 4
+    /// Option A: the caller owns input, `run_turn` folds). For tests that assert
+    /// the `user_turn` lands in the transcript.
+    async fn run_turn_test_call_seeded(
+        gait_dir: std::path::PathBuf,
+        codebase_path: std::path::PathBuf,
+        session_id: String,
+        provider: std::sync::Arc<dyn Provider>,
+        tools: Vec<Box<dyn Tool>>,
+        allow: Vec<String>,
+        deny: Vec<String>,
+        task: &str,
+        input: TurnInput,
+        repos: crate::git::Repos,
+    ) -> anyhow::Result<TurnResult> {
+        let session = crate::session::Session { id: session_id, gait_dir, codebase_path, assigned_by: None, repos };
+        let caps = crate::profile::ResolvedProfile::for_test(provider, tools, allow, deny);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
+        let emitter = Recorder::for_session(&session.gait_dir, &session.id, tx);
+        session.repos.traces.create_session_worktree(&session.gait_dir, &session.id)?;
+        emitter.record(crate::embed::user_turn_body(&session.repos, &session.codebase_path, task.into()))?;
         run_turn(&session, &emitter, caps, input).await
     }
 
@@ -1432,11 +1459,11 @@ mod tests {
             permission: None,
         };
 
-        run_turn_test_call(
+        run_turn_test_call_seeded(
             ws.path().to_path_buf(), codebase, "stest001".into(),
             provider, vec![Box::new(read_tool)],
-            vec!["read".into()], vec![],
-            TurnInput { task: Some("do the thing".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            vec!["read".into()], vec![], "do the thing",
+            TurnInput { auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1491,7 +1518,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "stest_out".into(),
             provider, vec![output_tool.boxed()],
             vec![], vec![],
-            TurnInput { task: Some("fix a bug".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1532,7 +1559,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "stest_out2".into(),
             provider, vec![output_tool.boxed()],
             vec![], vec![],
-            TurnInput { task: Some("do it".into()), auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1567,7 +1594,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "stest002".into(),
             provider, vec![],
             vec!["read".into()], vec![],
-            TurnInput { task: Some("do something dangerous".into()), auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1641,7 +1668,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "sdone001".into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("do something".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1674,7 +1701,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "sperm001".into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("list files".into()), auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1701,7 +1728,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "sdelta01".into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("say hello".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1754,7 +1781,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "sdeny001".into(),
             provider, vec![shell_tool.boxed(), output_tool.boxed()],
             vec![], vec!["shell:rm *".to_string()],
-            TurnInput { task: Some("try to destroy".into()), auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1807,7 +1834,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "sdeny002".into(),
             provider, vec![shell_tool.boxed(), output_tool.boxed()],
             vec!["shell:rm *".to_string()], vec!["shell:rm *".to_string()],
-            TurnInput { task: Some("try to destroy".into()), auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1914,7 +1941,7 @@ mod tests {
             ws.path().to_path_buf(), codebase.path().to_path_buf(), session_id.into(),
             provider, vec![Box::new(shell_tool)],
             vec!["shell:echo *".into()], vec![],
-            TurnInput { task: None, auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1973,7 +2000,7 @@ mod tests {
             ws.path().to_path_buf(), codebase.path().to_path_buf(), session_id.into(),
             provider, vec![Box::new(shell_tool)],
             vec![], vec![],
-            TurnInput { task: None, auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -2068,7 +2095,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), session_id.into(),
             provider, vec![Box::new(shell_tool)],
             vec![], vec![],
-            TurnInput { task: None, auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -2190,7 +2217,7 @@ mod tests {
             ws.path().to_path_buf(), codebase_dir.path().to_path_buf(), session_id.into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("checkpoint test".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -2242,7 +2269,7 @@ mod tests {
             ws.path().to_path_buf(), codebase_dir.path().to_path_buf(), session_id.into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("test codebase_path persistence".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -2301,7 +2328,7 @@ mod tests {
             ws.path().to_path_buf(), codebase_dir.path().to_path_buf(), session_id.into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("checkpoint test".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             repos,
         ).await.unwrap();
 
@@ -2350,7 +2377,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "slogtgl01".into(),
             provider, vec![Box::new(load_tool), Box::new(output_tool)],
             vec!["enable".into()], vec![],
-            TurnInput { task: Some("enable tdd".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -2434,7 +2461,7 @@ mod tests {
         let hash = compute_line_hash(2, lines[1]);
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let emitter = crate::proto::Emitter::new(dir.path().join("log.jsonl"), tx);
+        let emitter = crate::proto::Recorder::new(dir.path().join("log.jsonl"), tx);
         let ctx = crate::tools::ToolCtx::new(dir.path().to_path_buf(), dir.path().to_path_buf(), "t".into());
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(crate::tools::EditTool::new(ctx))];
         let args = serde_json::json!({
@@ -2458,7 +2485,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f.rs"), "fn foo() {}").unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let emitter = crate::proto::Emitter::new(dir.path().join("log.jsonl"), tx);
+        let emitter = crate::proto::Recorder::new(dir.path().join("log.jsonl"), tx);
         let ctx = crate::tools::ToolCtx::new(dir.path().to_path_buf(), dir.path().to_path_buf(), "t".into());
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(crate::tools::EditTool::new(ctx))];
         let args = serde_json::json!({"file_path": "f.rs", "edits": []});

@@ -78,7 +78,7 @@ impl Tool for ShellTool {
         ToolPermission::RequiresApproval(requests)
     }
 
-    async fn execute(&self, args: Value) -> anyhow::Result<Value> {
+    async fn execute(&self, args: Value, rec: &crate::Recorder) -> anyhow::Result<Value> {
         let params: ShellParams = serde_json::from_value(args)?;
         let timeout_ms = params.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
 
@@ -95,13 +95,11 @@ impl Tool for ShellTool {
                 let target = if p.is_absolute() { p.to_path_buf() } else { current.join(p) };
                 match std::fs::canonicalize(&target) {
                     Ok(dir) if dir.is_dir() => {
-                        let log = self.ctx.gait_dir.join("sessions")
-                            .join(&self.ctx.session_id).join("log.jsonl");
-                        if let Some(parent) = log.parent() {
-                            let _ = std::fs::create_dir_all(parent);
-                        }
-                        let _ = crate::proto::wire::append(
-                            &log, crate::proto::events::cwd(&dir.to_string_lossy()));
+                        // Record via the Recorder: this both appends the event to the
+                        // session transcript (so the next call's active_cwd refold sees it)
+                        // AND publishes it on the channel (live to stderr via the StdioSink,
+                        // and to any REPL subscriber). The log-path local is gone.
+                        let _ = rec.record(crate::proto::events::cwd(&dir.to_string_lossy()));
                         dir
                     }
                     _ => return Ok(serde_json::json!({
@@ -185,7 +183,7 @@ mod tests {
         let result = tool.execute(serde_json::json!({
             "cmd": "echo hello",
             "reason": "test"
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         // Shell now returns a structured process-tool shape: { output, exit_code, timed_out }.
         // The model-facing `output` carries the clean command text + file note; the model
         // never sees the JSON wrapper or any "exit N (Xms)" prefix.
@@ -204,7 +202,7 @@ mod tests {
         let result = tool.execute(serde_json::json!({
             "cmd": "false",
             "reason": "test"
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         let exit_code = result.get("exit_code").and_then(|v| v.as_i64()).expect("exit_code field");
         let timed_out = result.get("timed_out").and_then(|v| v.as_bool()).expect("timed_out field");
         assert_eq!(exit_code, 1, "got: {result}");
@@ -219,7 +217,7 @@ mod tests {
         let result = tool.execute(serde_json::json!({
             "cmd": "cat sentinel.txt",
             "reason": "test"
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         let output = result.get("output").and_then(|v| v.as_str()).expect("output field");
         assert!(output.contains("marker"), "got: {output}");
     }
@@ -234,7 +232,7 @@ mod tests {
             "cmd": "cat sentinel.txt",
             "reason": "test",
             "cwd": "sub"
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         let output = result.get("output").and_then(|v| v.as_str()).expect("output field");
         assert!(output.contains("submarker"), "got: {output}");
     }
@@ -243,18 +241,49 @@ mod tests {
     async fn cwd_param_persists_across_calls() {
         let dir = TempDir::new().unwrap();
         std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        // The cwd must PERSIST between calls via the session transcript, so we need
+        // a real for_session recorder (detached() intentionally writes nowhere — its
+        // tx_path is empty, so write_to_transcript errors and the Cwd is dropped).
+        std::fs::create_dir_all(dir.path().join("sessions").join("test")).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let rec = crate::Recorder::for_session(dir.path(), "test", tx);
         let tool = make_tool(&dir);
-        // Call 1: cd into sub (emits a Cwd event).
+        // Call 1: cd into sub (emits a Cwd event into the transcript).
         let _ = tool.execute(serde_json::json!({
             "cmd": "pwd", "reason": "test", "cwd": "sub"
-        })).await.unwrap();
+        }), &rec).await.unwrap();
         // Call 2: no cwd → should refold the emitted Cwd and run in sub.
         let result = tool.execute(serde_json::json!({
             "cmd": "pwd", "reason": "test"
-        })).await.unwrap();
+        }), &rec).await.unwrap();
         let output = result.get("output").and_then(|v| v.as_str()).expect("output field");
         assert!(output.contains("sub"), "expected to run in sub, got: {output}");
     }
+
+    #[tokio::test]
+    async fn shell_cd_publishes_cwd_event() {
+        use crate::proto::gait::log::v1::{stream_item, payload, event};
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("sessions").join("sh1")).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let rec = crate::Recorder::for_session(dir.path(), "sh1", tx);
+        let tool = ShellTool::new(crate::tools::ctx::ToolCtx::new(
+            dir.path().to_path_buf(), dir.path().to_path_buf(), "sh1".into()));
+        // The `cwd` param (not parsing `cd` in `cmd`) is what emits a Cwd event;
+        // "." resolves against the codebase root and succeeds, so a Cwd is produced.
+        let _ = tool.execute(serde_json::json!({"cmd": "true", "reason": "t", "cwd": "."}), &rec).await;
+        drop(rec); // close channel
+        let mut saw_cwd = false;
+        while let Some(item) = rx.recv().await {
+            if let Some(stream_item::Item::Event(ev)) = item.item {
+                if let Some(event::Body::Payload(p)) = ev.body {
+                    if matches!(p.kind, Some(payload::Kind::Cwd(_))) { saw_cwd = true; }
+                }
+            }
+        }
+        assert!(saw_cwd, "shell must PUBLISH the cwd event, not only append it");
+    }
+
 
     #[tokio::test]
     async fn cwd_nonexistent_errors_without_emitting() {
@@ -262,7 +291,7 @@ mod tests {
         let tool = make_tool(&dir);
         let result = tool.execute(serde_json::json!({
             "cmd": "pwd", "reason": "test", "cwd": "nope"
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         let exit_code = result.get("exit_code").and_then(|v| v.as_i64()).expect("exit_code field");
         let output = result.get("output").and_then(|v| v.as_str()).expect("output field");
         assert_eq!(exit_code, 1, "got: {result}");
@@ -281,7 +310,7 @@ mod tests {
             "cmd": "sleep 10",
             "reason": "test timeout",
             "timeout_ms": 100
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         // Timeout branch: exit_code=124, timed_out=true, output carries the TIMED OUT message.
         let exit_code = result.get("exit_code").and_then(|v| v.as_i64()).expect("exit_code field");
         let timed_out = result.get("timed_out").and_then(|v| v.as_bool()).expect("timed_out field");
@@ -298,7 +327,7 @@ mod tests {
         let result = tool.execute(serde_json::json!({
             "cmd": "echo payload",
             "reason": "test"
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         // Result's `output` field references the tmp file (file note is part of display).
         let output = result.get("output").and_then(|v| v.as_str()).expect("output field");
         assert!(output.contains("full output:"), "got: {output}");

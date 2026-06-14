@@ -47,7 +47,7 @@ impl Tool for ListAgentsTool {
 
     fn output_schema(&self) -> Option<&Value> { Some(&self.output_schema) }
 
-    async fn execute(&self, _args: Value) -> anyhow::Result<Value> {
+    async fn execute(&self, _args: Value, _rec: &crate::Recorder) -> anyhow::Result<Value> {
         // C1 fix: read transcript from the branch's committed git tree, NOT from the filesystem
         // working copy. Worktree dirs may be cleaned up after finish_session; the branch remains.
         let repo = match git2::Repository::open(&self.ctx.gait_dir) {
@@ -185,14 +185,14 @@ mod tests {
         GitTraceRepo.create_session_worktree(ws.path(), "sdone1").unwrap();
         let tx2 = ws.path().join("sessions/sdone1/log.jsonl");
         let usage = TurnUsage { input: 1, output: 1, cache_read: 0, cache_write: 0 };
-        let output = TurnOutput { message: "done".into(), result: None };
+        let output = TurnOutput { message: "done".into(), result: None, changes: None };
         wire::append(&tx2, events::turn_complete(
             &usage, "abc".into(), false, None, vec![], &output,
         )).unwrap();
         GitTraceRepo.commit_session(ws.path(), "sdone1", "session(sdone1): done").unwrap();
 
         let tool = ListAgentsTool::new(ToolCtx::new(ws.path().to_path_buf(), ws.path().to_path_buf(), "test".into()));
-        let result = tool.execute(serde_json::json!({})).await.unwrap();
+        let result = tool.execute(serde_json::json!({}), &crate::Recorder::detached()).await.unwrap();
 
         let sessions: Vec<serde_json::Value> = serde_json::from_value(result).unwrap();
         let ids: Vec<&str> = sessions.iter()
@@ -207,7 +207,7 @@ mod tests {
         let ws = TempDir::new().unwrap();
         init_git_repo(ws.path());
         let tool = ListAgentsTool::new(ToolCtx::new(ws.path().to_path_buf(), ws.path().to_path_buf(), "test".into()));
-        let result = tool.execute(serde_json::json!({})).await.unwrap();
+        let result = tool.execute(serde_json::json!({}), &crate::Recorder::detached()).await.unwrap();
         let sessions: Vec<serde_json::Value> = serde_json::from_value(result).unwrap();
         assert!(sessions.is_empty());
     }

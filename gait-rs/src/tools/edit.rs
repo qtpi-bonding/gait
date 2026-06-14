@@ -138,7 +138,7 @@ impl Tool for EditTool {
 
     fn parameters(&self) -> &Value { &self.parameters }
 
-    async fn execute(&self, args: Value) -> anyhow::Result<Value> {
+    async fn execute(&self, args: Value, _rec: &crate::Recorder) -> anyhow::Result<Value> {
         let params: HashlineEditParams = serde_json::from_value(args)?;
         let (resolved, old_content, new_content) = compute_edit(&self.ctx, &params)?;
         std::fs::write(&resolved, &new_content)?;
@@ -236,7 +236,7 @@ mod tests {
         let result = tool.execute(serde_json::json!({
             "file_path": "f.rs",
             "edits": [{"op": "replace", "pos": format!("2#{}", hash), "lines": ["    baz();"]}]
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
 
         assert!(result.as_str().unwrap().contains("baz"), "result: {result}");
         let on_disk = std::fs::read_to_string(&path).unwrap();
@@ -267,7 +267,7 @@ mod tests {
                 // single element, embedded newlines, repeats the anchor line — the snowball shape
                 "lines": ["    match line {\n        \"/u\" => {}\n        _ => {}\n    }"]
             }]
-        })).await;
+        }), &crate::Recorder::detached()).await;
 
         assert!(result.is_err(), "snowball-shaped edit must be rejected, got: {result:?}");
         let msg = result.unwrap_err().to_string();
@@ -285,7 +285,7 @@ mod tests {
         let result = tool.execute(serde_json::json!({
             "file_path": "f.rs",
             "edits": [{"op": "replace", "pos": "1#ZZ", "lines": ["fn bar() {}"]}]
-        })).await;
+        }), &crate::Recorder::detached()).await;
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains(">>>"));
@@ -305,7 +305,7 @@ mod tests {
         let result = tool.execute(serde_json::json!({
             "file_path": "f.txt",
             "edits": [{"op": "replace", "pos": format!("5#{}", hash), "lines": ["REPLACED"]}]
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
 
         let text = result.as_str().unwrap();
         // Must show the changed line and ±2 context
@@ -333,7 +333,7 @@ mod tests {
         let result = tool.execute(serde_json::json!({
             "file_path": "f.rs",
             "edits": [{"op": "replace", "pos": format!("2#{}", h2), "end": format!("4#{}", h4), "lines": ["    let z = 3;"]}]
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
 
         let text = result.as_str().unwrap();
         assert!(text.contains("let z = 3"), "should show replacement: {text}");
@@ -386,7 +386,7 @@ mod tests {
         let result = tool.execute(serde_json::json!({
             "file_path": "f.txt",
             "edits": [{"op": "replace", "pos": format!("1#{}", hash), "lines": ["goodbye"]}]
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
 
         let text = result.as_str().unwrap();
         assert!(text.contains('#'), "should contain hash refs: {text}");

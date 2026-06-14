@@ -44,7 +44,7 @@ impl Tool for SpawnAgentTool {
 
     fn output_schema(&self) -> Option<&Value> { Some(&self.output_schema) }
 
-    async fn execute(&self, args: Value) -> anyhow::Result<Value> {
+    async fn execute(&self, args: Value, _rec: &crate::Recorder) -> anyhow::Result<Value> {
         let task = args["task"].as_str()
             .ok_or_else(|| anyhow::anyhow!("spawn_agent: missing task"))?
             .to_string();
@@ -141,7 +141,7 @@ mod tests {
 
         let result = tool.execute(serde_json::json!({
             "task": "implement feature X"
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
 
         let new_id = result["session_id"].as_str().unwrap();
         assert!(new_id.starts_with('s'));
@@ -185,7 +185,7 @@ mod tests {
             ToolCtx::new(ws.path().to_path_buf(), ws.path().to_path_buf(), "scaller".into()),
             crate::git::Repos::production(),
         );
-        let result = tool.execute(serde_json::json!({ "task": "foo" })).await.unwrap();
+        let result = tool.execute(serde_json::json!({ "task": "foo" }), &crate::Recorder::detached()).await.unwrap();
         let id = result["session_id"].as_str().unwrap();
         assert_eq!(id.len(), 9);
     }

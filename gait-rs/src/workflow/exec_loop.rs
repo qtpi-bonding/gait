@@ -28,6 +28,7 @@ pub async fn exec_loop_node(
             gait_dir: ctx.gait_dir,
             codebase: ctx.codebase,
             vars: vars.clone(),
+            workflow_tx: ctx.workflow_tx,
         };
 
         let result = exec_prompt_node(node, &prompt, &iter_ctx, workflow_def, provider.clone()).await?;

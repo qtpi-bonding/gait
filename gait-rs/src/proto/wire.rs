@@ -57,7 +57,7 @@ pub fn last_event(path: &Path) -> anyhow::Result<Option<Event>> {
 
 /// Mint an [`Event`] for `body` chained after the current tail, write its JSON
 /// line to the file, and return the minted event. Shared by [`append`] and
-/// [`emit`]; also called directly by [`crate::proto::Emitter`].
+/// [`emit`]; also called directly by [`crate::proto::Recorder`].
 pub(crate) fn write_to_transcript(path: &Path, body: event::Body) -> anyhow::Result<Event> {
     let prev = last_event(path)?;
     let ev = mint(body, prev.as_ref());
@@ -74,13 +74,8 @@ pub fn append(path: &Path, body: event::Body) -> anyhow::Result<Event> {
     write_to_transcript(path, body)
 }
 
-/// Like [`append`], but also echoes the JSON line to stdout (NDJSON stream for
-/// the REPL / external runners), matching the old `emit_event` behavior.
-pub fn emit(path: &Path, body: event::Body) -> anyhow::Result<Event> {
-    let ev = write_to_transcript(path, body)?;
-    println!("{}", serde_json::to_string(&ev)?);
-    Ok(ev)
-}
+#[cfg(test)]
+pub fn body_to_event_for_test(body: event::Body) -> Event { crate::proto::envelope::mint(body, None) }
 
 
 #[cfg(test)]

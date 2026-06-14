@@ -8,6 +8,11 @@ pub struct NodeContext<'a> {
     pub gait_dir: &'a Path,
     pub codebase: &'a Path,
     pub vars: VarContext,
+    /// Live channel sender for the workflow run. Sub-turns (prompt nodes) clone
+    /// this so their deltas/events reach the workflow's consumer (Phase 3b). It is
+    /// a borrow of the run's owning `Recorder` sender — never a long-lived clone —
+    /// so dropping that `Recorder` remains the single point that closes the channel.
+    pub workflow_tx: &'a tokio::sync::mpsc::UnboundedSender<crate::proto::gait::log::v1::StreamItem>,
 }
 
 pub async fn exec_shell_node(shell: &ShellConfig, ctx: &NodeContext<'_>) -> anyhow::Result<NodeOutput> {
@@ -60,11 +65,16 @@ mod tests {
 
     fn make_test_ctx(ws: &std::path::Path) -> NodeContext<'static> {
         let ws = Box::leak(Box::new(ws.to_path_buf()));
+        // Leak a sender so the ctx is 'static; the receiver is dropped, so sends are
+        // silently ignored (these tests don't assert on the channel).
+        let tx: &'static _ = Box::leak(Box::new(
+            tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>().0));
         NodeContext {
             workflow_id: "wf1",
             session_id: "s1",
             gait_dir: ws,
             codebase: ws,
+            workflow_tx: tx,
             vars: crate::workflow::vars::VarContext {
                 workflow_id: "wf1".into(), session_id: "s1".into(),
                 gait_dir: ws.clone(), codebase: ws.clone(),

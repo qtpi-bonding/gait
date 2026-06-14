@@ -9,70 +9,41 @@ pub trait CheckpointRepo: Send + Sync {
     fn checkpoint(&self, gait_dir: &Path, session_id: &str, codebase: &Path, turn: u32) -> anyhow::Result<String>;
     fn restore_to(&self, gait_dir: &Path, session_id: &str, codebase: &Path, sha: &str) -> anyhow::Result<()>;
     fn remove(&self, gait_dir: &Path, session_id: &str) -> anyhow::Result<()>;
+    fn diff(&self, gait_dir: &Path, session_id: &str, sha: &str) -> anyhow::Result<Option<crate::proto::gait::log::v1::Changes>>;
 }
 
 pub struct GitCheckpointRepo;
 
 impl CheckpointRepo for GitCheckpointRepo {
     fn init(&self, gait_dir: &Path, session_id: &str, codebase: &Path) -> anyhow::Result<()> {
-        // No-op if the codebase is not a git repo — checkpoint simply unavailable.
-        let cb = match Repository::open(codebase) {
-            Ok(r) => r,
-            Err(_) => {
-                eprintln!("checkpoint: codebase {} is not a git repo; checkpoint unavailable", codebase.display());
-                return Ok(());
-            }
-        };
-
+        let cb = Repository::open(codebase).ok(); // None for non-git — shadow still created
         let git_dir = checkpoint_git_dir(gait_dir, session_id);
-        if git_dir.join("HEAD").exists() {
-            return Ok(()); // idempotent — already initialized
-        }
+        if git_dir.join("HEAD").exists() { return Ok(()); }
         std::fs::create_dir_all(&git_dir)?;
-
         let shadow = Repository::init_bare(&git_dir)?;
-
-        // Borrow the codebase's object store instead of copying it.
-        // Use commondir (not `<codebase>/.git`) so this works when the codebase
-        // is a linked git worktree, and canonicalize so the alternates entry is
-        // absolute (git resolves relative entries against the shadow's objects/info dir).
-        //
-        // git2 0.19 has no `commondir()` method, so we implement the same logic
-        // manually: a linked worktree's git dir contains a `commondir` file with a
-        // relative path back to the main `.git/`. Normal repos don't have that file.
-        let git_path = cb.path(); // e.g. <root>/.git/ or <main>/.git/worktrees/wt/
-        let cb_objects_raw = {
-            let commondir_file = git_path.join("commondir");
-            if commondir_file.exists() {
-                // linked worktree: read the relative commondir and resolve it
-                let rel = std::fs::read_to_string(&commondir_file)
-                    .unwrap_or_default();
-                let rel = rel.trim();
-                git_path.join(rel).join("objects")
-            } else {
-                git_path.join("objects")
-            }
-        };
-        let cb_objects = std::fs::canonicalize(&cb_objects_raw).unwrap_or(cb_objects_raw);
-        let info_dir = git_dir.join("objects").join("info");
-        std::fs::create_dir_all(&info_dir)?;
-        std::fs::write(info_dir.join("alternates"), format!("{}\n", cb_objects.display()))?;
-
-        // Belt-and-suspenders: never track the codebase's own .git directory.
+        if let Some(ref cb) = cb {
+            let git_path = cb.path();
+            let cb_objects_raw = {
+                let commondir_file = git_path.join("commondir");
+                if commondir_file.exists() {
+                    let rel = std::fs::read_to_string(&commondir_file).unwrap_or_default();
+                    git_path.join(rel.trim()).join("objects")
+                } else { git_path.join("objects") }
+            };
+            let cb_objects = std::fs::canonicalize(&cb_objects_raw).unwrap_or(cb_objects_raw);
+            let info_dir = git_dir.join("objects").join("info");
+            std::fs::create_dir_all(&info_dir)?;
+            std::fs::write(info_dir.join("alternates"), format!("{}\n", cb_objects.display()))?;
+        }
         let exclude_dir = git_dir.join("info");
         std::fs::create_dir_all(&exclude_dir)?;
-        // Exclude any .git file or directory anywhere in the tree.
-        // Bare `/.git/` only covers the root dir; `.git` (no slash) also covers
-        // linked-worktree .git FILES nested under dirs like .claude/worktrees/.
         std::fs::write(exclude_dir.join("exclude"), ".git\n")?;
-
-        // Seed the shadow HEAD at the codebase's current commit (if any), so the
-        // first checkpoint is a child of the real HEAD. Empty/unborn repo -> leave
-        // HEAD unborn; the first checkpoint becomes the root commit.
-        if let Ok(head) = cb.head() {
-            if let Ok(commit) = head.peel_to_commit() {
-                shadow.reference("refs/heads/rewind", commit.id(), true, "init checkpoint")?;
-                shadow.set_head("refs/heads/rewind")?;
+        if let Some(ref cb) = cb {
+            if let Ok(head) = cb.head() {
+                if let Ok(commit) = head.peel_to_commit() {
+                    shadow.reference("refs/heads/rewind", commit.id(), true, "init checkpoint")?;
+                    shadow.set_head("refs/heads/rewind")?;
+                }
             }
         }
         Ok(())
@@ -149,6 +120,30 @@ impl CheckpointRepo for GitCheckpointRepo {
         }
         Ok(())
     }
+    fn diff(&self, gait_dir: &Path, session_id: &str, sha: &str) -> anyhow::Result<Option<crate::proto::gait::log::v1::Changes>> {
+        use crate::proto::gait::log::v1::Changes;
+        let git_dir = checkpoint_git_dir(gait_dir, session_id);
+        if !git_dir.join("HEAD").exists() { return Ok(None); }
+        let shadow = Repository::open_bare(&git_dir)?;
+        let commit = shadow.find_commit(Oid::from_str(sha)?)?;
+        let new_tree = commit.tree()?;
+        let parent_tree = match commit.parent(0) { Ok(p) => Some(p.tree()?), Err(_) => None };
+        let diff = shadow.diff_tree_to_tree(parent_tree.as_ref(), Some(&new_tree), None)?;
+        let (mut added, mut modified, mut deleted) = (vec![], vec![], vec![]);
+        diff.foreach(&mut |delta, _| {
+            if let Some(p) = delta.new_file().path().or_else(|| delta.old_file().path())
+                .map(|p| p.to_string_lossy().into_owned()) {
+                match delta.status() {
+                    git2::Delta::Added | git2::Delta::Copied => added.push(p),
+                    git2::Delta::Deleted => deleted.push(p),
+                    _ => modified.push(p),
+                }
+            }
+            true
+        }, None, None, None)?;
+        Ok(Some(Changes { added, modified, deleted }))
+    }
+
 }
 
 #[derive(Default)]
@@ -203,6 +198,7 @@ impl CheckpointRepo for MockCheckpointRepo {
         self.state.lock().unwrap().remove_calls.push(session_id.to_string());
         Ok(())
     }
+    fn diff(&self, _ws: &Path, _session_id: &str, _sha: &str) -> anyhow::Result<Option<crate::proto::gait::log::v1::Changes>> { Ok(None) }
 }
 
 #[cfg(test)]
@@ -266,13 +262,13 @@ mod tests {
     }
 
     #[test]
-    fn init_noop_for_non_git_codebase() {
+    fn init_creates_shadow_for_non_git_codebase() {
         let ws = TempDir::new().unwrap();
         let id = "snogit".to_string();
         std::fs::create_dir_all(ws.path().join("sessions").join(&id)).unwrap();
         let cb = TempDir::new().unwrap(); // not a git repo
         GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
-        assert!(!checkpoint_git_dir(ws.path(), &id).join("HEAD").exists());
+        assert!(checkpoint_git_dir(ws.path(), &id).join("HEAD").exists());
     }
 
     #[test]
@@ -312,14 +308,30 @@ mod tests {
     }
 
     #[test]
-    fn checkpoint_noop_when_no_shadow() {
+    fn checkpoint_works_without_codebase_git() {
         let ws = TempDir::new().unwrap();
         let id = "snogit2".to_string();
         std::fs::create_dir_all(ws.path().join("sessions").join(&id)).unwrap();
         let cb = TempDir::new().unwrap();
         GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
+        std::fs::write(cb.path().join("a.txt"), "v1\n").unwrap();
         let sha = GitCheckpointRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
-        assert!(sha.is_empty());
+        assert_eq!(sha.len(), 40);
+    }
+
+    #[test]
+    fn checkpoint_and_diff_work_for_non_git_codebase() {
+        let ws = TempDir::new().unwrap();
+        let id = "snogit3".to_string();
+        std::fs::create_dir_all(ws.path().join("sessions").join(&id)).unwrap();
+        let cb = TempDir::new().unwrap(); // NOT a git repo
+        GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
+        assert!(checkpoint_git_dir(ws.path(), &id).join("HEAD").exists());
+        std::fs::write(cb.path().join("f.txt"), "v1\n").unwrap();
+        let sha = GitCheckpointRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
+        assert_eq!(sha.len(), 40);
+        let ch = GitCheckpointRepo.diff(ws.path(), &id, &sha).unwrap().unwrap();
+        assert_eq!(ch.added, vec!["f.txt".to_string()]);
     }
 
     #[test]
@@ -382,6 +394,18 @@ mod tests {
     fn remove_safe_when_absent() {
         let ws = TempDir::new().unwrap();
         GitCheckpointRepo.remove(ws.path(), "never-existed").unwrap(); // must not error
+    }
+    #[test]
+    fn diff_reports_added_modified_deleted() {
+        let (ws, cb, id) = fixture();
+        GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
+        std::fs::write(cb.path().join("a.txt"), "two\n").unwrap();
+        std::fs::write(cb.path().join("new.txt"), "x\n").unwrap();
+        let sha = GitCheckpointRepo.checkpoint(ws.path(), &id, cb.path(), 1).unwrap();
+        let ch = GitCheckpointRepo.diff(ws.path(), &id, &sha).unwrap().unwrap();
+        assert_eq!(ch.modified, vec!["a.txt".to_string()]);
+        assert_eq!(ch.added, vec!["new.txt".to_string()]);
+        assert!(ch.deleted.is_empty());
     }
 
     #[test]

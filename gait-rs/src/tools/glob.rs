@@ -49,7 +49,7 @@ impl Tool for GlobTool {
         crate::types::OutputFilter::Parse
     }
 
-    async fn execute(&self, args: Value) -> anyhow::Result<Value> {
+    async fn execute(&self, args: Value, _rec: &crate::Recorder) -> anyhow::Result<Value> {
         let params: GlobParams = serde_json::from_value(args)?;
 
         let search_dir = match &params.path {
@@ -110,7 +110,7 @@ mod tests {
         std::fs::write(dir.path().join("c.rs"), "").unwrap();
 
         let tool = GlobTool::new(make_ctx(&dir));
-        let result = tool.execute(serde_json::json!({ "pattern": "*.rs" })).await.unwrap();
+        let result = tool.execute(serde_json::json!({ "pattern": "*.rs" }), &crate::Recorder::detached()).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(text.contains("a.rs"), "got: {text}");
         assert!(text.contains("c.rs"), "got: {text}");
@@ -125,7 +125,7 @@ mod tests {
         std::fs::write(dir.path().join("README.md"), "").unwrap();
 
         let tool = GlobTool::new(make_ctx(&dir));
-        let result = tool.execute(serde_json::json!({ "pattern": "**/*.rs" })).await.unwrap();
+        let result = tool.execute(serde_json::json!({ "pattern": "**/*.rs" }), &crate::Recorder::detached()).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(text.contains("main.rs"), "got: {text}");
         assert!(!text.contains("README.md"), "got: {text}");
@@ -135,7 +135,7 @@ mod tests {
     async fn returns_no_files_found_when_empty() {
         let dir = TempDir::new().unwrap();
         let tool = GlobTool::new(make_ctx(&dir));
-        let result = tool.execute(serde_json::json!({ "pattern": "*.xyz" })).await.unwrap();
+        let result = tool.execute(serde_json::json!({ "pattern": "*.xyz" }), &crate::Recorder::detached()).await.unwrap();
         assert_eq!(result.as_str().unwrap(), "No files found");
     }
 
@@ -150,7 +150,7 @@ mod tests {
         let result = tool.execute(serde_json::json!({
             "pattern": "*.rs",
             "path": "sub"
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(text.contains("deep.rs"), "got: {text}");
         assert!(!text.contains("root.rs"), "got: {text}");

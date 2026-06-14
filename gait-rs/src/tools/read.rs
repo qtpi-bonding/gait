@@ -83,7 +83,7 @@ impl Tool for ReadTool {
         crate::types::OutputFilter::Parse
     }
 
-    async fn execute(&self, args: Value) -> anyhow::Result<Value> {
+    async fn execute(&self, args: Value, _rec: &crate::Recorder) -> anyhow::Result<Value> {
         let params: ReadParams = serde_json::from_value(args)?;
         let offset = params.offset.unwrap_or(0) as usize;
         let limit = params.limit.unwrap_or(DEFAULT_READ_LIMIT) as usize;
@@ -198,7 +198,7 @@ mod tests {
         std::fs::write(dir.path().join("test.txt"), "line1\nline2\nline3").unwrap();
 
         let tool = ReadTool::new(make_ctx(&dir));
-        let result = tool.execute(serde_json::json!({ "file_path": "test.txt" })).await.unwrap();
+        let result = tool.execute(serde_json::json!({ "file_path": "test.txt" }), &crate::Recorder::detached()).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(text.contains("|line1"), "got: {text}");
         assert!(text.contains("|line2"), "got: {text}");
@@ -211,7 +211,7 @@ mod tests {
     async fn returns_error_for_missing_file() {
         let dir = TempDir::new().unwrap();
         let tool = ReadTool::new(make_ctx(&dir));
-        let result = tool.execute(serde_json::json!({ "file_path": "nonexistent.txt" })).await;
+        let result = tool.execute(serde_json::json!({ "file_path": "nonexistent.txt" }), &crate::Recorder::detached()).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -224,7 +224,7 @@ mod tests {
         let tool = ReadTool::new(make_ctx(&dir));
         let result = tool.execute(serde_json::json!({
             "file_path": "test.txt", "offset": 1, "limit": 2
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(text.contains("|b"), "got: {text}");
         assert!(text.contains("|c"), "got: {text}");
@@ -236,7 +236,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("img.png"), b"\x89PNG\r\n\x1a\n\x00\x00").unwrap();
         let tool = ReadTool::new(make_ctx(&dir));
-        let result = tool.execute(serde_json::json!({ "file_path": "img.png" })).await;
+        let result = tool.execute(serde_json::json!({ "file_path": "img.png" }), &crate::Recorder::detached()).await;
         assert!(result.is_err());
     }
 

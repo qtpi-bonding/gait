@@ -71,7 +71,7 @@ impl Tool for CodesearchTool {
         crate::types::OutputFilter::Curate
     }
 
-    async fn execute(&self, args: Value) -> anyhow::Result<Value> {
+    async fn execute(&self, args: Value, _rec: &crate::Recorder) -> anyhow::Result<Value> {
         let params: CodesearchParams = serde_json::from_value(args)?;
         let case_sensitive = params.case_sensitive.unwrap_or(false);
 
@@ -179,7 +179,7 @@ mod tests {
         std::fs::write(dir.path().join("main.rs"), "fn hello_world() {\n    println!(\"hi\");\n}").unwrap();
 
         let tool = CodesearchTool::new(make_ctx(&dir));
-        let result = tool.execute(serde_json::json!({ "query": "hello_world" })).await.unwrap();
+        let result = tool.execute(serde_json::json!({ "query": "hello_world" }), &crate::Recorder::detached()).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(text.contains("main.rs"), "got: {}", text);
         assert!(text.contains("hello_world"), "got: {}", text);
@@ -191,7 +191,7 @@ mod tests {
         std::fs::write(dir.path().join("code.rs"), "struct MyStruct {}").unwrap();
 
         let tool = CodesearchTool::new(make_ctx(&dir));
-        let result = tool.execute(serde_json::json!({ "query": "mystruct" })).await.unwrap();
+        let result = tool.execute(serde_json::json!({ "query": "mystruct" }), &crate::Recorder::detached()).await.unwrap();
         assert!(result.as_str().unwrap().contains("MyStruct"));
     }
 
@@ -201,7 +201,7 @@ mod tests {
         std::fs::write(dir.path().join("code.rs"), "struct MyStruct {}").unwrap();
 
         let tool = CodesearchTool::new(make_ctx(&dir));
-        let result = tool.execute(serde_json::json!({ "query": "mystruct", "case_sensitive": true })).await.unwrap();
+        let result = tool.execute(serde_json::json!({ "query": "mystruct", "case_sensitive": true }), &crate::Recorder::detached()).await.unwrap();
         assert_eq!(result.as_str().unwrap(), "No matches found.");
     }
 
@@ -211,7 +211,7 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), "hello world").unwrap();
 
         let tool = CodesearchTool::new(make_ctx(&dir));
-        let result = tool.execute(serde_json::json!({ "query": "totally_nonexistent_xyz" })).await.unwrap();
+        let result = tool.execute(serde_json::json!({ "query": "totally_nonexistent_xyz" }), &crate::Recorder::detached()).await.unwrap();
         assert_eq!(result.as_str().unwrap(), "No matches found.");
     }
 
@@ -223,7 +223,7 @@ mod tests {
         }
 
         let tool = CodesearchTool::new(make_ctx(&dir));
-        let result = tool.execute(serde_json::json!({ "query": "target_match" })).await.unwrap();
+        let result = tool.execute(serde_json::json!({ "query": "target_match" }), &crate::Recorder::detached()).await.unwrap();
         let text = result.as_str().unwrap();
         let match_lines = text.lines().filter(|l| l.contains("target_match")).count();
         assert!(match_lines <= MAX_RESULTS, "got {} results, expected ≤ {}", match_lines, MAX_RESULTS);
@@ -234,7 +234,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("a.txt"), "test").unwrap();
         let tool = CodesearchTool::new(make_ctx(&dir));
-        let result = tool.execute(serde_json::json!({ "query": "[invalid_unclosed" })).await.unwrap();
+        let result = tool.execute(serde_json::json!({ "query": "[invalid_unclosed" }), &crate::Recorder::detached()).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(
             text == "No matches found." || text.contains("Invalid search pattern"),
@@ -250,7 +250,7 @@ mod tests {
         std::fs::write(dir.path().join("outside.txt"), "find_me").unwrap();
 
         let tool = CodesearchTool::new(make_ctx(&dir));
-        let result = tool.execute(serde_json::json!({ "query": "find_me", "path": "sub" })).await.unwrap();
+        let result = tool.execute(serde_json::json!({ "query": "find_me", "path": "sub" }), &crate::Recorder::detached()).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(text.contains("inside.txt"), "got: {}", text);
         assert!(!text.contains("outside.txt"), "got: {}", text);

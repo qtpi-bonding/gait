@@ -1,0 +1,55 @@
+use crate::proto::gait::log::v1::event;
+
+/// What begins the next turn. Either a new input event to append to the log
+/// before folding (a `user_turn` from `--task`/a REPL line, or a reply body), or
+/// a bare `Resume` — run a turn that folds the existing log with no new input
+/// (e.g. `gait run` with no `--task`, or a harness re-invocation). `None` from
+/// [`TurnSource::next`] means no more turns.
+pub enum TurnStart {
+    Input(event::Body),
+    Resume,
+}
+
+#[async_trait::async_trait(?Send)]
+pub trait TurnSource {
+    /// The next turn to run, or `None` at EOF (single-shot done / quit / disconnect).
+    async fn next(&mut self) -> Option<TurnStart>;
+}
+
+/// CLI source: yields exactly one turn — `Input(user_turn)` when `--task` was
+/// given, else `Resume` (fold from the log) — then `None`.
+pub struct ArgSource { start: Option<TurnStart> }
+impl ArgSource {
+    /// `Some(body)` → one `Input` turn; `None` → one `Resume` turn.
+    pub fn new(body: Option<event::Body>) -> Self {
+        Self { start: Some(body.map(TurnStart::Input).unwrap_or(TurnStart::Resume)) }
+    }
+}
+#[async_trait::async_trait(?Send)]
+impl TurnSource for ArgSource {
+    async fn next(&mut self) -> Option<TurnStart> { self.start.take() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::gait::log::v1::{event, payload};
+
+    #[tokio::test]
+    async fn arg_source_yields_task_input_once_then_none() {
+        let body = crate::proto::events::user_turn("hi".into(), None, None);
+        let mut s = ArgSource::new(Some(body));
+        match s.next().await.expect("first yield") {
+            TurnStart::Input(event::Body::Payload(p)) => assert!(matches!(p.kind, Some(payload::Kind::UserTurn(_)))),
+            _ => panic!("expected Input(user_turn)"),
+        }
+        assert!(s.next().await.is_none(), "second next() must be None");
+    }
+
+    #[tokio::test]
+    async fn arg_source_no_task_yields_resume_once_then_none() {
+        let mut s = ArgSource::new(None);
+        assert!(matches!(s.next().await, Some(TurnStart::Resume)), "no --task must still run one fold turn");
+        assert!(s.next().await.is_none(), "second next() must be None");
+    }
+}

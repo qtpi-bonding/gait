@@ -27,7 +27,7 @@ pub mod envelope;
 pub mod wire;
 pub mod events;
 pub mod emitter;
-pub use emitter::Emitter;
+pub use emitter::Recorder;
 
 #[cfg(test)]
 mod tests;

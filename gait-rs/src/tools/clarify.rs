@@ -46,7 +46,7 @@ impl Tool for ClarifyTool {
         ExecutionSignal::Clarify
     }
 
-    async fn execute(&self, _args: Value) -> anyhow::Result<Value> {
+    async fn execute(&self, _args: Value, _rec: &crate::Recorder) -> anyhow::Result<Value> {
         // turn.rs intercepts this call before execution and handles the signal.
         // This path only runs in tests or if called outside turn.rs.
         Ok(Value::String("clarify_signal".into()))
@@ -71,7 +71,7 @@ mod tests {
     #[tokio::test]
     async fn execute_returns_signal() {
         let result = ClarifyTool::new()
-            .execute(serde_json::json!({"items": []}))
+            .execute(serde_json::json!({"items": []}), &crate::Recorder::detached())
             .await
             .unwrap();
         assert_eq!(result, Value::String("clarify_signal".into()));

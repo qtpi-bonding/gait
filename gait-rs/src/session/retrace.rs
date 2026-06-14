@@ -855,7 +855,7 @@ mod tests {
     fn compaction_breakpoint_discards_earlier_events() {
         let dir = TempDir::new().unwrap();
         let usage = TurnUsage{input:1,output:1,cache_read:0,cache_write:0};
-        let output = TurnOutput{message:"s".into(),result:None};
+        let output = TurnOutput{message:"s".into(),result:None,changes:None};
         let cu = CompactionUsage{input:10,output:5};
         let path = write_events(dir.path(), vec![
             events::user_turn("old".into(), None, None),
@@ -1416,7 +1416,7 @@ mod tests {
         // Two TurnComplete events with different blocks; the helper must return
         // the second (last) one's blocks, in order.
         let usage = TurnUsage { input: 1, output: 1, cache_read: 0, cache_write: 0 };
-        let output = TurnOutput { message: "ok".into(), result: None };
+        let output = TurnOutput { message: "ok".into(), result: None, changes: None };
         let first = vec!["alpha".to_string(), "beta".to_string()];
         let second = vec!["gamma".to_string(), "delta".to_string(), "epsilon".to_string()];
         let evs = mint_events(vec![
@@ -1519,7 +1519,7 @@ mod tests {
     #[test]
     fn total_usage_sums_turn_complete_events() {
         let usage1 = TurnUsage { input: 100, output: 20, cache_read: 5, cache_write: 2 };
-        let output = TurnOutput { message: "ok".into(), result: None };
+        let output = TurnOutput { message: "ok".into(), result: None, changes: None };
         let usage2 = TurnUsage { input: 50, output: 10, cache_read: 3, cache_write: 1 };
         let evs = mint_events(vec![
             events::turn_complete(&usage1, "hash1".into(), false, None, vec![], &output),
