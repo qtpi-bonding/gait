@@ -45,6 +45,22 @@ gait run --task "…" --result-schema schema.json     # .result conforms to sche
 {"type":"inform","items":[…]}
 ```
 
+### Proto, not ad-hoc JSON
+The core path is already proto-native (the channel is `StreamItem`; events echo as
+pbjson-serialized `Event`; the result is `TurnComplete`/`TurnOutput`). Phase 1
+keeps it that way — **everything on stdout/stderr is a proto message serialized
+via pbjson canonical JSON**, not hand-rolled `serde_json::json!`:
+- The stdout Result is the proto `TurnOutput` (Done) / the relevant proto
+  (`Clarify`/`Permissions`/`Inform`) — serialized canonically. The `{"type":…}`
+  tag above is the pbjson rendering, not a bespoke wrapper. If a single tagged
+  envelope is wanted, add a proto `oneof` for the turn result rather than ad-hoc
+  Rust JSON.
+- Replace the two current ad-hoc spots: `session_id` (`gait.rs:217`) and
+  `text_delta` (`gait.rs:330`) are hand-rolled JSON today. Deltas become the
+  pbjson `StreamItem`/`TextDelta`; the session-id line becomes a proto message
+  (or reuse the `SessionStart` event) — no `serde_json::json!` literals in the
+  output path.
+
 ## 1. Recorder rename
 
 `src/proto/emitter.rs`: `Emitter → Recorder`; `emit → record` (commit + publish),
@@ -82,9 +98,9 @@ pub async fn drive(mut rx: Receiver<StreamItem>, sink: &mut impl TurnSink) {
 ```rust
 // src/cli/output.rs  (CLI adapter — the only place stdout/stderr is decided)
 pub struct StdioSink<O: Write, E: Write> { out: O, err: E, quiet: bool, failed: bool }
-// item:    Trace → err (gated by quiet); Error → err + failed=true
-// result:  serialize TurnResult → out (one line)
-// session_id: {"type":"session_id","id":…} → out
+// item:    Trace → err (gated by quiet); Error → err + failed=true  (serialize proto StreamItem via pbjson)
+// result:  serialize the proto result (TurnOutput / Clarify / …) → out (one pbjson line)
+// session_id: proto message (or SessionStart) → out (pbjson, not serde_json::json!)
 // diagnostic: Error always → err + failed=true; Info → err unless quiet
 ```
 
@@ -98,13 +114,19 @@ consumer is forced to change.
 
 ## 3. The result envelope `{message, result, changes}`
 
-### Types
-- `TurnResult::Done { message, result: Option<Value>, changes: Option<Changes> }`
-  (was 2-field, `turn.rs:43`).
-- `TurnOutput` proto / `turn_complete` payload gains `changes` (was 2-field,
-  `transcript.rs:30`). (Proto change — additive, optional field.)
-- `pub struct Changes { added: Vec<String>, modified: Vec<String>, deleted: Vec<String> }`
-  (paths relative to the codebase root).
+### Types — proto is the source of truth
+`changes` is a **proto message**, not an ad-hoc Rust struct, so the result
+envelope stays canonical (pbjson) and consistent with the log:
+```proto
+// proto/log.proto — additive
+message Changes { repeated string added = 1; repeated string modified = 2; repeated string deleted = 3; }
+message TurnOutput { string message = 1; google.protobuf.Value result = 2; Changes changes = 3; }  // +field 3
+```
+- `TurnOutput` gains `changes` (field 3, additive/optional — `TurnComplete.output`,
+  `log.proto:151,200`). The diff handle already exists: `TurnComplete.checkpoint`
+  (field 3, the shadow SHA, `log.proto:198`).
+- `TurnResult::Done { message, result, changes }` (Rust enum, was 2-field
+  `turn.rs:43`) carries the `Changes` proto through to the run loop.
 
 ### Where `changes` is computed
 In `run_turn`, at the turn-complete path where the checkpoint is already taken
@@ -173,3 +195,6 @@ Suggested commit split: (a) pure `cli/run.rs` extraction (no behavior change),
 - `cmd_run` smoke: a Done run yields one parseable `{type:"done",…,changes:…}` on
   stdout, no Trace mixed in (stderr redirected); `--result-schema` mismatch after
   retries exits non-zero with clean stdout.
+- Proto fidelity: stdout/stderr lines round-trip back into their proto messages
+  via pbjson (no ad-hoc JSON in the output path); `TurnOutput` with `changes`
+  serializes and re-parses.
