@@ -197,7 +197,8 @@ payload (logged) and the stdout Result:
 
 **Composition is the point.** This one envelope is read identically by all three
 consumers — workflow `$node.output.field`, `spawn_agent` parents, and shell
-`gait run | jq .result` / `jq .changes.modified`. The agent produces
+`gait run | jq .done.result` / `jq .done.changes.modified` (stdout is the proto
+`RunResult` oneof). The agent produces
 artifacts on disk; the harness certifies what actually changed; everyone
 downstream reads one typed record. This makes the output port's reason to exist
 concrete: deliver the agent's certified, typed result to whoever is composing.

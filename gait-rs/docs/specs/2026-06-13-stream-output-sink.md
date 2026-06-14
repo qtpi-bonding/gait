@@ -37,13 +37,22 @@ gait run --task "…" --result-schema schema.json     # .result conforms to sche
 - A freeform turn still yields a `TurnResult::Done` with `result: null` — stdout
   is always one parseable object.
 
-`TurnResult` serializes as a tagged enum so paused turns compose too:
+The stdout payload is the proto **`RunResult`** oneof (pbjson), so paused turns
+compose and the shape is discriminated by the oneof field name:
 ```json
-{"type":"done","message":"…","result":{…},"changes":{…}}
-{"type":"clarify","items":[…]}          // turn paused; caller responds next
-{"type":"permissions","items":[…]}
-{"type":"inform","items":[…]}
+{"done":{"message":"…","result":{…},"changes":{…}}}
+{"clarify":{"items":[…]}}        // turn paused; caller responds next
+{"permissions":{"items":[…]}}
+{"inform":{"items":[…]}}
 ```
+Scripts read `jq .done.result`, `jq .done.changes.modified`. (`TurnResult` is a
+Rust enum with no `Serialize`; it is mapped to the proto `RunResult` for output.)
+
+**Exit code:** non-zero **only on hard failure** — the turn returns `Err`, or a
+run-path `diagnostic(Error)` fires (e.g. profile/resolve failure). A mid-turn
+`error` *event* routes to stderr but does **not** flip the exit if the turn still
+completes. (`StdioSink.failed` is set by `diagnostic(Error)`, not by Error-class
+items.)
 
 ### Proto, not ad-hoc JSON
 The core path is already proto-native (the channel is `StreamItem`; events echo as
@@ -98,10 +107,10 @@ pub async fn drive(mut rx: Receiver<StreamItem>, sink: &mut impl TurnSink) {
 ```rust
 // src/cli/output.rs  (CLI adapter — the only place stdout/stderr is decided)
 pub struct StdioSink<O: Write, E: Write> { out: O, err: E, quiet: bool, failed: bool }
-// item:    Trace → err (gated by quiet); Error → err + failed=true  (serialize proto StreamItem via pbjson)
-// result:  serialize the proto result (TurnOutput / Clarify / …) → out (one pbjson line)
-// session_id: proto message (or SessionStart) → out (pbjson, not serde_json::json!)
-// diagnostic: Error always → err + failed=true; Info → err unless quiet
+// item:    Trace → err (gated by quiet); Error → err (NOT failed)  (proto StreamItem via pbjson)
+// result:  run_result_proto(r) → out (one pbjson line: {"done":{…}} etc.)
+// session_id: proto SessionStart → out (pbjson, not serde_json::json!)
+// diagnostic: Error → err + failed=true; Info → err unless quiet   (failed drives exit code)
 ```
 
 `out`/`err` are generic over `Write` so tests inject `Vec<u8>`. Production:
