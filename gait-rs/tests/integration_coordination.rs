@@ -98,7 +98,7 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
         },
         &discard_emitter(ws.path(), "sparent001"),
         gait_ai::profile::ResolvedProfile::for_test(provider, tools, vec!["spawn_agent".into()], vec![]),
-        gait_ai::turn::TurnInput { task: Some("coordinate agents".into()), auto: true, max_iter: None, preview_policy: gait_ai::config::PreviewPolicy::default() },
+        gait_ai::turn::TurnInput { auto: true, max_iter: None, preview_policy: gait_ai::config::PreviewPolicy::default() },
     ).await.unwrap();
 
     assert!(matches!(result, TurnResult::Done { .. }));
@@ -165,7 +165,7 @@ async fn run_turn_permissions_result_integration() {
         },
         &discard_emitter(ws.path(), "spermint"),
         gait_ai::profile::ResolvedProfile::for_test(provider, vec![], vec![], vec![]),
-        gait_ai::turn::TurnInput { task: Some("destroy everything".into()), auto: false, max_iter: None, preview_policy: gait_ai::config::PreviewPolicy::default() },
+        gait_ai::turn::TurnInput { auto: false, max_iter: None, preview_policy: gait_ai::config::PreviewPolicy::default() },
     ).await.unwrap();
 
     assert!(matches!(result, TurnResult::Permissions),

@@ -87,17 +87,23 @@ async fn full_turn_creates_transcript_and_git_commit() {
         permission: None,
     };
 
+    let repos = gait_ai::git::Repos::production();
+    let session = gait_ai::session::Session {
+        id: "sint001".into(),
+        gait_dir: ws.path().to_path_buf(),
+        codebase_path: ws.path().to_path_buf(),
+        assigned_by: None,
+        repos: repos.clone(),
+    };
+    let emitter = discard_emitter(ws.path(), "sint001");
+    // Phase 4 Option A: the caller appends the user_turn, run_turn folds it.
+    repos.traces.create_session_worktree(ws.path(), "sint001").unwrap();
+    emitter.record(gait_ai::cli::run_loop::user_turn_body(&repos, ws.path(), "list the files".into())).unwrap();
     run_turn(
-        &gait_ai::session::Session {
-            id: "sint001".into(),
-            gait_dir: ws.path().to_path_buf(),
-            codebase_path: ws.path().to_path_buf(),
-            assigned_by: None,
-            repos: gait_ai::git::Repos::production(),
-        },
-        &discard_emitter(ws.path(), "sint001"),
+        &session,
+        &emitter,
         gait_ai::profile::ResolvedProfile::for_test(provider, vec![Box::new(ls_tool)], vec!["ls".into()], vec![]),
-        gait_ai::turn::TurnInput { task: Some("list the files".into()), auto: true, max_iter: None, preview_policy: gait_ai::config::PreviewPolicy::default() },
+        gait_ai::turn::TurnInput { auto: true, max_iter: None, preview_policy: gait_ai::config::PreviewPolicy::default() },
     ).await.unwrap();
     // Verify transcript
     let tx = ws.path().join("sessions/sint001/log.jsonl");
@@ -176,7 +182,7 @@ async fn cwd_event_reaches_live_channel_through_turn() {
         &rec,
         gait_ai::profile::ResolvedProfile::for_test(
             provider, vec![Box::new(shell_tool)], vec!["shell:true".into()], vec![]),
-        gait_ai::turn::TurnInput { task: Some("run true".into()), auto: true, max_iter: None, preview_policy: gait_ai::config::PreviewPolicy::default() },
+        gait_ai::turn::TurnInput { auto: true, max_iter: None, preview_policy: gait_ai::config::PreviewPolicy::default() },
     ).await.unwrap();
 
     drop(rec); // close the channel so the drain terminates
@@ -214,7 +220,7 @@ async fn second_turn_resumes_session() {
         },
         &discard_emitter(ws.path(), "sint002"),
         gait_ai::profile::ResolvedProfile::for_test(provider.clone(), vec![], vec![], vec![]),
-        gait_ai::turn::TurnInput { task: Some("task 1".into()), auto: true, max_iter: None, preview_policy: gait_ai::config::PreviewPolicy::default() },
+        gait_ai::turn::TurnInput { auto: true, max_iter: None, preview_policy: gait_ai::config::PreviewPolicy::default() },
     ).await.unwrap();
 
     run_turn(
@@ -227,7 +233,7 @@ async fn second_turn_resumes_session() {
         },
         &discard_emitter(ws.path(), "sint002"),
         gait_ai::profile::ResolvedProfile::for_test(provider, vec![], vec![], vec![]),
-        gait_ai::turn::TurnInput { task: Some("task 2".into()), auto: true, max_iter: None, preview_policy: gait_ai::config::PreviewPolicy::default() },
+        gait_ai::turn::TurnInput { auto: true, max_iter: None, preview_policy: gait_ai::config::PreviewPolicy::default() },
     ).await.unwrap();
 
     let tx = ws.path().join("sessions/sint002/log.jsonl");

@@ -48,7 +48,6 @@ pub enum TurnResult {
 
 /// Per-call inputs for one turn (the things that vary every invocation).
 pub struct TurnInput {
-    pub task: Option<String>,   // None on resume
     pub auto: bool,
     pub max_iter: Option<usize>,
     pub preview_policy: crate::config::PreviewPolicy,
@@ -393,8 +392,12 @@ async fn apply_curate_filter(
     // curate is a side turn — transcript only, no live stream consumer.
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
     let curate_emitter = Recorder::for_session(&session.gait_dir, &session.id, tx);
+    // Option A: append the curate prompt as the user_turn, then run_turn folds it.
+    // The session worktree must exist before the append (run_turn also creates it).
+    let _ = repos.traces.create_session_worktree(gait_dir, &session_id);
+    let _ = curate_emitter.record(crate::cli::run_loop::user_turn_body(&repos, codebase_path, task));
     let _ = run_turn(&session, &curate_emitter, caps,
-        TurnInput { task: Some(task), auto: true, max_iter: Some(1), preview_policy: crate::config::PreviewPolicy::default() }).await;
+        TurnInput { auto: true, max_iter: Some(1), preview_policy: crate::config::PreviewPolicy::default() }).await;
 
     let _ = repos.checkpoints.remove(gait_dir, &session_id);
 
@@ -494,7 +497,6 @@ pub async fn run_turn(
         for n in &config_enabled { s.skills.insert(n.clone()); s.mcp.insert(n.clone()); }
         s
     };
-    let task = input.task;
     let auto = input.auto;
     let max_iter = input.max_iter;
     let preview_policy = input.preview_policy;
@@ -524,9 +526,13 @@ pub async fn run_turn(
     let dirty_files = repos.codebase.dirty_files(&codebase_path);
     let codebase_dirty = !dirty_files.is_empty();
 
-    // Init transcript on first turn
-    let existing = std::fs::read_to_string(&tx_path).unwrap_or_default();
-    if existing.trim().is_empty() {
+    // Init transcript (SessionStart) once per session. Gate on the SessionStart
+    // event's presence rather than log-emptiness: under Phase 4 Option A the input
+    // adapter appends this turn's user_turn BEFORE run_turn, so the log is no longer
+    // empty on the first turn.
+    let has_session_start = ingestor.events().unwrap_or_default().iter()
+        .any(|e| matches!(event_kind(e), Some(payload::Kind::SessionStart(_))));
+    if !has_session_start {
         init_session(InitSessionOpts {
             transcript_path: tx_path.clone(),
             id: session_id.clone(),
@@ -680,15 +686,8 @@ pub async fn run_turn(
     }
 
     if !did_resume {
-        if let Some(task) = &task {
-            let ctx = crate::session::transcript::UserTurnContext {
-                codebase_hash: Some(codebase_hash.clone()),
-                codebase_dirty: Some(codebase_dirty),
-                dirty_files: if dirty_files.is_empty() { None } else { Some(dirty_files.clone()) },
-                injected_files: None,
-            };
-            emitter.record(events::user_turn(task.clone(), None, Some(&ctx)))?;
-        }
+        // The input event (user_turn / reply) is appended by the caller before the
+        // turn (Phase 4 Option A); here we only fold the log into messages.
         let events = ingestor.events()?;
         messages = retrace::messages(&events)?;
         let cwd = retrace::active_cwd(&events, &codebase_path);
@@ -1364,6 +1363,30 @@ mod tests {
         run_turn(&session, &emitter, caps, input).await
     }
 
+    /// Like [`run_turn_test_call`], but first appends a `user_turn` (Phase 4
+    /// Option A: the caller owns input, `run_turn` folds). For tests that assert
+    /// the `user_turn` lands in the transcript.
+    async fn run_turn_test_call_seeded(
+        gait_dir: std::path::PathBuf,
+        codebase_path: std::path::PathBuf,
+        session_id: String,
+        provider: std::sync::Arc<dyn Provider>,
+        tools: Vec<Box<dyn Tool>>,
+        allow: Vec<String>,
+        deny: Vec<String>,
+        task: &str,
+        input: TurnInput,
+        repos: crate::git::Repos,
+    ) -> anyhow::Result<TurnResult> {
+        let session = crate::session::Session { id: session_id, gait_dir, codebase_path, assigned_by: None, repos };
+        let caps = crate::profile::ResolvedProfile::for_test(provider, tools, allow, deny);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
+        let emitter = Recorder::for_session(&session.gait_dir, &session.id, tx);
+        session.repos.traces.create_session_worktree(&session.gait_dir, &session.id)?;
+        emitter.record(crate::cli::run_loop::user_turn_body(&session.repos, &session.codebase_path, task.into()))?;
+        run_turn(&session, &emitter, caps, input).await
+    }
+
 
     fn init_git_repo(dir: &Path) {
         let repo = git2::Repository::init(dir).unwrap();
@@ -1436,11 +1459,11 @@ mod tests {
             permission: None,
         };
 
-        run_turn_test_call(
+        run_turn_test_call_seeded(
             ws.path().to_path_buf(), codebase, "stest001".into(),
             provider, vec![Box::new(read_tool)],
-            vec!["read".into()], vec![],
-            TurnInput { task: Some("do the thing".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            vec!["read".into()], vec![], "do the thing",
+            TurnInput { auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1495,7 +1518,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "stest_out".into(),
             provider, vec![output_tool.boxed()],
             vec![], vec![],
-            TurnInput { task: Some("fix a bug".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1536,7 +1559,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "stest_out2".into(),
             provider, vec![output_tool.boxed()],
             vec![], vec![],
-            TurnInput { task: Some("do it".into()), auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1571,7 +1594,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "stest002".into(),
             provider, vec![],
             vec!["read".into()], vec![],
-            TurnInput { task: Some("do something dangerous".into()), auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1645,7 +1668,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "sdone001".into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("do something".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1678,7 +1701,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "sperm001".into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("list files".into()), auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1705,7 +1728,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "sdelta01".into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("say hello".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1758,7 +1781,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "sdeny001".into(),
             provider, vec![shell_tool.boxed(), output_tool.boxed()],
             vec![], vec!["shell:rm *".to_string()],
-            TurnInput { task: Some("try to destroy".into()), auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1811,7 +1834,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "sdeny002".into(),
             provider, vec![shell_tool.boxed(), output_tool.boxed()],
             vec!["shell:rm *".to_string()], vec!["shell:rm *".to_string()],
-            TurnInput { task: Some("try to destroy".into()), auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1918,7 +1941,7 @@ mod tests {
             ws.path().to_path_buf(), codebase.path().to_path_buf(), session_id.into(),
             provider, vec![Box::new(shell_tool)],
             vec!["shell:echo *".into()], vec![],
-            TurnInput { task: None, auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -1977,7 +2000,7 @@ mod tests {
             ws.path().to_path_buf(), codebase.path().to_path_buf(), session_id.into(),
             provider, vec![Box::new(shell_tool)],
             vec![], vec![],
-            TurnInput { task: None, auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -2072,7 +2095,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), session_id.into(),
             provider, vec![Box::new(shell_tool)],
             vec![], vec![],
-            TurnInput { task: None, auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: false, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -2194,7 +2217,7 @@ mod tests {
             ws.path().to_path_buf(), codebase_dir.path().to_path_buf(), session_id.into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("checkpoint test".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -2246,7 +2269,7 @@ mod tests {
             ws.path().to_path_buf(), codebase_dir.path().to_path_buf(), session_id.into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("test codebase_path persistence".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 
@@ -2305,7 +2328,7 @@ mod tests {
             ws.path().to_path_buf(), codebase_dir.path().to_path_buf(), session_id.into(),
             provider, vec![],
             vec![], vec![],
-            TurnInput { task: Some("checkpoint test".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             repos,
         ).await.unwrap();
 
@@ -2354,7 +2377,7 @@ mod tests {
             ws.path().to_path_buf(), ws.path().to_path_buf(), "slogtgl01".into(),
             provider, vec![Box::new(load_tool), Box::new(output_tool)],
             vec!["enable".into()], vec![],
-            TurnInput { task: Some("enable tdd".into()), auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+            TurnInput { auto: true, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
             crate::git::Repos::production(),
         ).await.unwrap();
 

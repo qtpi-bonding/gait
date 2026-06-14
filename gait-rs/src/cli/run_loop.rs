@@ -73,7 +73,7 @@ pub async fn run_loop(
         let cfg = driver.turn_config();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let emitter = crate::Recorder::for_session(gait_dir, session_id, tx);
-        let input = TurnInput { task: None, auto: cfg.auto, max_iter: cfg.max_iter, preview_policy: cfg.preview_policy };
+        let input = TurnInput { auto: cfg.auto, max_iter: cfg.max_iter, preview_policy: cfg.preview_policy };
         let session_for_turn = session.clone();
         let handle = tokio::spawn(async move {
             crate::turn::run_turn(&*session_for_turn, &emitter, caps, input).await

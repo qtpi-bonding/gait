@@ -83,6 +83,9 @@ pub async fn exec_prompt_node(
     ).await?;
 
     resolved.provider = provider;
+    // Build the prompt's user_turn body before `codebase`/`repos` move into the
+    // session (Phase 4 Option A: the caller appends the input, run_turn folds).
+    let user_body = crate::cli::run_loop::user_turn_body(&repos, &codebase, task);
     let session = crate::session::Session::load(
         ctx.gait_dir.to_path_buf(),
         ctx.session_id.to_string(),
@@ -94,11 +97,14 @@ pub async fn exec_prompt_node(
     // `session.id`. The clone is transient — it drops when this node returns, so the
     // workflow's owning Recorder stays the single channel-close point.
     let emitter = crate::proto::Recorder::for_session(&session.gait_dir, &session.id, ctx.workflow_tx.clone());
+    // The workflow session worktree already exists (run_workflow created it), so the
+    // append lands in the same log run_turn then folds.
+    emitter.record(user_body)?;
     let result = run_turn(
         &session,
         &emitter,
         resolved,
-        crate::turn::TurnInput { task: Some(task), auto, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
+        crate::turn::TurnInput { auto, max_iter: None, preview_policy: crate::config::PreviewPolicy::default() },
     ).await?;
 
     match result {

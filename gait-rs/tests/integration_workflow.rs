@@ -181,6 +181,11 @@ async fn prompt_subturn_publishes_to_workflow_channel() {
     let node = &wf.nodes[0];
     let session_id = "swf_prompt01";
 
+    // exec_prompt_node now pre-appends the prompt as a user_turn (Phase 4 Option A),
+    // so the session worktree must exist (run_workflow creates it in production; here
+    // we drive exec_prompt_node directly).
+    gait_ai::git::Repos::production().traces.create_session_worktree(ws.path(), session_id).unwrap();
+
     // Test owns the channel; assert the sub-turn published to THIS sender. No
     // spawned consumer here, so there is no consumer.await and no deadlock risk.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<StreamItem>();
