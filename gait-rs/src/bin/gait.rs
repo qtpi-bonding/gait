@@ -4,10 +4,7 @@ use gait_ai::{
     config::load_config,
     auth::resolve_api_key,
     factory::load_provider,
-    turn::run_turn,
     workflow::runner::{run_workflow, WorkflowRunOpts},
-    Scheduler,
-    HarnessBackend,
 };
 
 fn extract_path_arg(args: &[String], flag: &str) -> Option<std::path::PathBuf> {
@@ -178,188 +175,12 @@ async fn main() {
 }
 
 async fn cmd_run(argv: &[String]) {
-    let mut session_id: Option<String> = None;
-    let mut task: Option<String> = None;
     let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
         eprintln!("[gait] {e}");
         std::process::exit(1);
     });
-    let codebase_path = resolve_codebase(argv);
-    let mut auto = false;
-    let mut model_override: Option<String> = None;
-    let mut agent_name: Option<String> = None;
-    let mut result_schema_path: Option<String> = None;
-    let mut cli_allow: Vec<String> = vec![];
-    let mut cli_deny: Vec<String> = vec![];
-    let mut cli_max_iter: Option<usize> = None;
-
-    let mut i = 0;
-    while i < argv.len() {
-        match argv[i].as_str() {
-            "--session"       => { i += 1; session_id = argv.get(i).cloned(); }
-            "--task"          => { i += 1; task = argv.get(i).cloned(); }
-            "--gait-dir"      => { i += 1; }
-            "--codebase"      => { i += 1; }
-            "--model"         => { i += 1; model_override = argv.get(i).cloned(); }
-            "--auto"          => { auto = true; }
-            "--agent"         => { i += 1; agent_name = argv.get(i).cloned(); }
-            "--result-schema" => { i += 1; result_schema_path = argv.get(i).cloned(); }
-            "--allow"         => { i += 1; if let Some(p) = argv.get(i) { cli_allow.push(p.clone()); } }
-            "--deny"          => { i += 1; if let Some(p) = argv.get(i) { cli_deny.push(p.clone()); } }
-            "--max-iter"      => { i += 1; cli_max_iter = argv.get(i).and_then(|s| s.parse().ok()); }
-            _ => {}
-        }
-        i += 1;
-    }
-
-    let session_id = session_id.unwrap_or_else(|| {
-        let id = format!("s{}", &uuid::Uuid::new_v4().to_string().replace('-', "")[..8]);
-        println!("{}", serde_json::json!({"type": "session_id", "id": id}));
-        id
-    });
-
-    let mut config = load_config(&gait_dir);
-
-    // Merge CLI --allow / --deny (additive: CLI entries extend, never replace, gait.jsonc lists).
-    for p in cli_allow { if !config.allow.contains(&p) { config.allow.push(p); } }
-    for p in cli_deny  { if !config.deny.contains(&p)  { config.deny.push(p);  } }
-    if let Some(n) = cli_max_iter { config.max_iter = Some(n); }
-
-    // Apply --result-schema override: read file, validate JSON Schema, error early if invalid.
-    if let Some(ref path) = result_schema_path {
-        let raw = std::fs::read_to_string(path).unwrap_or_else(|e| {
-            eprintln!("[gait] --result-schema: cannot read '{}': {}", path, e);
-            std::process::exit(1);
-        });
-        let schema: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|e| {
-            eprintln!("[gait] --result-schema: '{}' is not valid JSON: {}", path, e);
-            std::process::exit(1);
-        });
-        jsonschema::JSONSchema::compile(&schema).unwrap_or_else(|e| {
-            eprintln!("[gait] --result-schema: '{}' is not a valid JSON Schema: {}", path, e);
-            std::process::exit(1);
-        });
-        config.result_schema = Some(schema);
-    }
-
-    // Resolve agent file: explicit --agent name, or fallback to agents/default/AGENT.md
-    let agent_path: Option<PathBuf> = if let Some(ref name) = agent_name {
-        Some(gait_ai::agent_frontmatter::resolve_markdown_context_path(
-            &gait_dir,
-            gait_ai::agent_frontmatter::MarkdownKind::Agent,
-            name,
-        ))
-    } else {
-        let default = gait_ai::agent_frontmatter::resolve_markdown_context_path(
-            &gait_dir,
-            gait_ai::agent_frontmatter::MarkdownKind::Agent,
-            "default",
-        );
-        if default.exists() { Some(default) } else { None }
-    };
-
-    // Build the declarative profile (model precedence: --model > agent frontmatter > config),
-    // then resolve it into a live provider + tools + MCP clients in one place.
-    let profile = gait_ai::profile::Profile::from_config_and_agent(
-        &config, &gait_dir, Some(codebase_path.as_path()), agent_path.as_deref(), model_override.clone());
-    let model = profile.model.clone();
-
-    let provider_name = match model.split_once('/') {
-        Some((p, _)) => p,
-        None => {
-            eprintln!("[gait] error: model must be 'provider/model', got: '{}'", model);
-            std::process::exit(1);
-        }
-    };
-    let api_key = resolve_api_key(provider_name);
-
-    let repos = gait_ai::git::Repos::production();
-
-    let resolved = match profile.resolve(
-        codebase_path.clone(),
-        session_id.clone(),
-        gait_dir.clone(),
-        repos.clone(),
-        api_key,
-    ).await {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("[gait] error: {}", e);
-            std::process::exit(1);
-        }
-    };
-
-    // Expand $(cmd)/$(N) shell, @path files, and >(N) quote-reply in the task
-    // string before the turn runs — same expander the REPL uses. Quote-reply
-    // pulls the prior turn's blocks from the session log (empty for a fresh one).
-    let task = task.map(|t| {
-        let hist = gait_dir.join("tmp").join(format!("shell-{}.jsonl", &session_id));
-        let events = gait_ai::session::ingestor::Ingestor::from_session(&gait_dir, &session_id)
-            .events().unwrap_or_default();
-        let last_blocks = gait_ai::session::retrace::last_turn_blocks(&events);
-        gait_ai::repl_input::expand_input(&t, &gait_ai::repl_input::ExpandCtx {
-            codebase: &codebase_path,
-            history: &hist,
-            last_blocks: &last_blocks,
-        })
-    });
-
-    let session = gait_ai::session::Session::load(
-        gait_dir.clone(),
-        session_id.clone(),
-        codebase_path,
-        repos,
-    );
-    let (tx, mut rx) =
-        tokio::sync::mpsc::unbounded_channel::<gait_ai::proto::gait::log::v1::StreamItem>();
-    let emitter = gait_ai::Recorder::for_session(&gait_dir, &session_id, tx);
-
-    let input = gait_ai::turn::TurnInput { task, auto, max_iter: config.max_iter, preview_policy: config.preview };
-    let turn_handle = tokio::spawn(async move {
-        run_turn(&session, &emitter, resolved, input).await
-        // emitter drops here → channel closes → rx.recv() yields None
-    });
-
-    use gait_ai::proto::gait::log::v1::stream_item::Item;
-    while let Some(item) = rx.recv().await {
-        match item.item {
-            Some(Item::Event(ev)) => {
-                if let Ok(json) = serde_json::to_string(&ev) { println!("{}", json); }
-            }
-            Some(Item::Delta(d)) => {
-                println!("{}", serde_json::json!(
-                    {"type": "text_delta", "content": d.content, "ts": gait_ai::session::transcript::now_ms()}));
-            }
-            None => {}
-        }
-    }
-
-    let turn_result = match turn_handle.await {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => {
-            eprintln!("[gait] error: {}", e);
-            std::process::exit(1);
-        }
-        Err(e) => {
-            eprintln!("[gait] error: turn task panicked: {}", e);
-            std::process::exit(1);
-        }
-    };
-
-    // Drive after-turn coordination via Scheduler (policy) + Harness.execute (mechanism).
-    let sj = gait_ai::session::session_json::read_session_json(&gait_dir, &session_id);
-    let scheduler = gait_ai::scheduler::NativeScheduler;
-    let harness = gait_ai::harness::NativeHarnessBackend::new(gait_dir.clone());
-    let ended = gait_ai::scheduler::TurnEnded {
-        session_id: &session_id,
-        assigned_by: sj.assigned_by.as_deref(),
-        result: &turn_result,
-    };
-    for action in scheduler.next(&ended) {
-        if let Err(e) = harness.execute(&action).await {
-            eprintln!("[gait] warning: harness execute failed: {}", e);
-        }
-    }
+    let codebase = resolve_codebase(argv);
+    gait_ai::cli::run::cmd_run(argv, gait_dir, codebase).await
 }
 
 /// Create the empty, editable layer affordances in the gait-dir (idempotent,
