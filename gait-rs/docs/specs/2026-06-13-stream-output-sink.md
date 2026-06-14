@@ -30,6 +30,9 @@ the REPL uses the in-process channel). Events already persist to
 
 ## Architecture: ports & adapters around the log
 
+> Diagrams: [`2026-06-13-turn-io-ports.diagram.md`](./2026-06-13-turn-io-ports.diagram.md)
+> — ports & adapters, the emit transaction, and the unified run loop.
+
 The event log is the central **store** — the hub, not a stage in a pipe. It is
 neither downstream of the emitter nor a sink alongside stdout/stderr: the emitter
 *writes* it, the turn *reads* it, and the live sinks are projections of a tee off
@@ -47,10 +50,13 @@ that write. Flow is a loop around the store, not a line:
 - **Input** enters by appending events (`user_turn`, `clarify_reply`,
   `inform_reply`, `permissions_reply`, `toggle`) straight to the store; the turn
   reads them on spawn.
-- **Output**: the turn emits → the `Emitter` writes the store **durably first**,
-  then tees a live copy to the channel. The durable-before-tee order is why the
-  log is the authoritative store and not an async subscriber (a crash must not
-  lose events the turn will later read back).
+- **Output**: the turn emits → the `Emitter` runs one **emit transaction** — a
+  durable log append (the **commit**) followed by a best-effort tee of a live
+  copy to the channel (the post-commit projection). One call produces both, so
+  the durable record and the live sinks never diverge. The commit-before-tee
+  order is why the log is the authoritative store and not an async subscriber (a
+  crash must not lose events the turn will later read back). Deltas are the lone
+  exception: tee-only, never committed.
 - **Sinks** (stdout/stderr/cloud) are projections of the live tee — siblings of
   the durable log write, both fanned out by the emitter. The log is the *source*
   they derive from, never a peer sink.
