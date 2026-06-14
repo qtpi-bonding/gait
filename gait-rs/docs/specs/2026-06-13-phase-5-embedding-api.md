@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Phase 5 spec — Embedding API
 
 Parent: [`../plans/2026-06-13-turn-io-architecture.md`](../plans/2026-06-13-turn-io-architecture.md).
