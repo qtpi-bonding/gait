@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Phase 3 spec — Workflow under the I/O boundary
 
 Parent: [`../plans/2026-06-13-turn-io-architecture.md`](../plans/2026-06-13-turn-io-architecture.md).
