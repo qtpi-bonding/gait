@@ -162,7 +162,7 @@ impl Tool for LsTool {
         crate::types::OutputFilter::Parse
     }
 
-    async fn execute(&self, args: Value) -> anyhow::Result<Value> {
+    async fn execute(&self, args: Value, _rec: &crate::Recorder) -> anyhow::Result<Value> {
         let params: LsParams = serde_json::from_value(args)?;
         let extra_ignore = params.ignore.unwrap_or_default();
 
@@ -207,7 +207,7 @@ mod tests {
         std::fs::write(dir.path().join("Cargo.toml"), "").unwrap();
 
         let tool = LsTool::new(make_ctx(&dir));
-        let result = tool.execute(serde_json::json!({})).await.unwrap();
+        let result = tool.execute(serde_json::json!({}), &crate::Recorder::detached()).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(text.contains("main.rs"), "got: {text}");
         assert!(text.contains("Cargo.toml"), "got: {text}");
@@ -221,7 +221,7 @@ mod tests {
         std::fs::write(dir.path().join("index.js"), "").unwrap();
 
         let tool = LsTool::new(make_ctx(&dir));
-        let result = tool.execute(serde_json::json!({})).await.unwrap();
+        let result = tool.execute(serde_json::json!({}), &crate::Recorder::detached()).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(text.contains("index.js"), "got: {text}");
         assert!(!text.contains("pkg.js"), "got: {text}");
@@ -235,7 +235,7 @@ mod tests {
         std::fs::write(dir.path().join("root.rs"), "").unwrap();
 
         let tool = LsTool::new(make_ctx(&dir));
-        let result = tool.execute(serde_json::json!({ "path": "sub" })).await.unwrap();
+        let result = tool.execute(serde_json::json!({ "path": "sub" }), &crate::Recorder::detached()).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(text.contains("file.rs"), "got: {text}");
         assert!(!text.contains("root.rs"), "got: {text}");

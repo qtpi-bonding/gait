@@ -194,7 +194,7 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> &serde_json::Value;
-    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value>;
+    async fn execute(&self, args: serde_json::Value, _rec: &crate::Recorder) -> anyhow::Result<serde_json::Value>;
 
     /// Whether this tool is safe to run concurrently alongside other parallel-mode tools.
     /// Read-only tools (read, glob, grep, ls, codesearch, webfetch) return Parallel.
@@ -245,7 +245,7 @@ impl Tool for ToolDef {
     fn name(&self) -> &str { &self.name }
     fn description(&self) -> &str { &self.description }
     fn parameters(&self) -> &serde_json::Value { &self.parameters }
-    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    async fn execute(&self, args: serde_json::Value, _rec: &crate::Recorder) -> anyhow::Result<serde_json::Value> {
         // (self.execute) with parens = field access, not recursive method call.
         (self.execute)(args).await
     }
@@ -377,7 +377,7 @@ mod tests {
             })),
             permission: None,
         };
-        let result = tool.execute(serde_json::json!({})).await.unwrap();
+        let result = tool.execute(serde_json::json!({}), &crate::Recorder::detached()).await.unwrap();
         assert_eq!(result, serde_json::Value::String("hello".into()));
         assert_eq!(tool.name(), "greet");
     }

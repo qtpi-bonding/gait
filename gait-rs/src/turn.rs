@@ -197,7 +197,7 @@ async fn execute_tool_call(
     let (raw, duration, process) = match tools.iter().find(|t| t.name() == tc.tool_name) {
         Some(t) => {
             let started = std::time::Instant::now();
-            let res = t.execute(tc.args.clone()).await;
+            let res = t.execute(tc.args.clone(), emitter).await;
             let elapsed = started.elapsed();
             let duration = Some(pbjson_types::Duration {
                 seconds: elapsed.as_secs() as i64,

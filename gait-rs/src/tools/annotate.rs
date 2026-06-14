@@ -37,7 +37,7 @@ impl Tool for AnnotateTool {
         ExecutionSignal::TurnComplete
     }
 
-    async fn execute(&self, _args: Value) -> anyhow::Result<Value> {
+    async fn execute(&self, _args: Value, _rec: &crate::Recorder) -> anyhow::Result<Value> {
         Ok(Value::String("recorded".into()))
     }
 }
@@ -78,7 +78,7 @@ mod tests {
         let r = t.execute(serde_json::json!({
             "relevant": ["error on line 3"],
             "irrelevant": ["warning: unused variable"]
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         assert_eq!(r, Value::String("recorded".into()));
     }
 }

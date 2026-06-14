@@ -48,7 +48,7 @@ impl Tool for LoadTool {
 
     fn execution_signal(&self) -> ExecutionSignal { ExecutionSignal::LoadContext }
 
-    async fn execute(&self, args: Value) -> anyhow::Result<Value> {
+    async fn execute(&self, args: Value, _rec: &crate::Recorder) -> anyhow::Result<Value> {
         let name = args.get("name").and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("enable: missing 'name'"))?;
         let enabled = args.get("enabled").and_then(|v| v.as_bool())
@@ -117,28 +117,28 @@ mod tests {
     #[tokio::test]
     async fn load_mcp_returns_schema() {
         let tool = LoadTool::new(make_mcp_registry(), make_skill_registry(), vec![]);
-        let result = tool.execute(serde_json::json!({"name":"slack_send","enabled":true})).await.unwrap();
+        let result = tool.execute(serde_json::json!({"name":"slack_send","enabled":true}), &crate::Recorder::detached()).await.unwrap();
         assert!(result.as_str().unwrap().contains("channel"));
     }
 
     #[tokio::test]
     async fn load_skill_returns_content() {
         let tool = LoadTool::new(make_mcp_registry(), make_skill_registry(), vec![]);
-        let result = tool.execute(serde_json::json!({"name":"tdd","enabled":true})).await.unwrap();
+        let result = tool.execute(serde_json::json!({"name":"tdd","enabled":true}), &crate::Recorder::detached()).await.unwrap();
         assert!(result.as_str().unwrap().contains("TDD"));
     }
 
     #[tokio::test]
     async fn disable_returns_marker() {
         let tool = LoadTool::new(make_mcp_registry(), make_skill_registry(), vec![]);
-        let result = tool.execute(serde_json::json!({"name":"tdd","enabled":false})).await.unwrap();
+        let result = tool.execute(serde_json::json!({"name":"tdd","enabled":false}), &crate::Recorder::detached()).await.unwrap();
         assert_eq!(result.as_str().unwrap(), "disabled: tdd");
     }
 
     #[tokio::test]
     async fn unknown_name_returns_helpful_error() {
         let tool = LoadTool::new(make_mcp_registry(), make_skill_registry(), vec![]);
-        let err = tool.execute(serde_json::json!({"name":"no_such","enabled":true})).await;
+        let err = tool.execute(serde_json::json!({"name":"no_such","enabled":true}), &crate::Recorder::detached()).await;
         assert!(err.unwrap_err().to_string().contains("unknown"));
     }
 
@@ -178,7 +178,7 @@ mod tests {
 
         // LoadTool returns the markdown body
         let tool = LoadTool::new(vec![], skill_registry, vec![]);
-        let result = tool.execute(serde_json::json!({"name":"retro","enabled":true})).await.unwrap();
+        let result = tool.execute(serde_json::json!({"name":"retro","enabled":true}), &crate::Recorder::detached()).await.unwrap();
         assert!(result.as_str().unwrap().contains("Retro"));
     }
 
@@ -217,7 +217,7 @@ mod tests {
             allow_fs: vec![],
         }];
         let tool = LoadTool::new(vec![], vec![], plugins);
-        let result = tool.execute(serde_json::json!({"name": "myfmt", "enabled": true})).await.unwrap();
+        let result = tool.execute(serde_json::json!({"name": "myfmt", "enabled": true}), &crate::Recorder::detached()).await.unwrap();
         assert!(result.as_str().unwrap().contains("myfmt"), "stub should mention name: {:?}", result);
     }
 
@@ -232,7 +232,7 @@ mod tests {
             allow_fs: vec![],
         }];
         let tool = LoadTool::new(vec![], vec![], plugins);
-        let result = tool.execute(serde_json::json!({"name": "myfmt", "enabled": false})).await.unwrap();
+        let result = tool.execute(serde_json::json!({"name": "myfmt", "enabled": false}), &crate::Recorder::detached()).await.unwrap();
         assert_eq!(result.as_str().unwrap(), "disabled: myfmt");
     }
 

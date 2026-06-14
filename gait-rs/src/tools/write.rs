@@ -36,7 +36,7 @@ impl Tool for WriteTool {
         "Write content to a file. Creates the file (and parent directories) if they don't exist. Paths are relative to the codebase root."
     }
     fn parameters(&self) -> &Value { &self.parameters }
-    async fn execute(&self, args: Value) -> anyhow::Result<Value> {
+    async fn execute(&self, args: Value, _rec: &crate::Recorder) -> anyhow::Result<Value> {
         let params: WriteParams = serde_json::from_value(args)?;
         let resolved = if std::path::Path::new(&params.file_path).is_absolute() {
             PathBuf::from(&params.file_path)
@@ -99,7 +99,7 @@ mod tests {
         tool.execute(serde_json::json!({
             "file_path": "output.txt",
             "content": "hello world"
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         let content = std::fs::read_to_string(dir.path().join("output.txt")).unwrap();
         assert_eq!(content, "hello world");
     }
@@ -111,7 +111,7 @@ mod tests {
         tool.execute(serde_json::json!({
             "file_path": "sub/nested/file.txt",
             "content": "deep"
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         let content = std::fs::read_to_string(dir.path().join("sub/nested/file.txt")).unwrap();
         assert_eq!(content, "deep");
     }
@@ -124,7 +124,7 @@ mod tests {
         tool.execute(serde_json::json!({
             "file_path": "existing.txt",
             "content": "new"
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         let content = std::fs::read_to_string(dir.path().join("existing.txt")).unwrap();
         assert_eq!(content, "new");
     }

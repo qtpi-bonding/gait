@@ -41,11 +41,11 @@ async fn read_write_roundtrip_via_builtin_tools() {
     write_tool.execute(serde_json::json!({
         "file_path": "hello.txt",
         "content": "hello from gait-rs"
-    })).await.unwrap();
+    }), &gait_ai::Recorder::detached()).await.unwrap();
 
     let result = read_tool.execute(serde_json::json!({
         "file_path": "hello.txt"
-    })).await.unwrap();
+    }), &gait_ai::Recorder::detached()).await.unwrap();
 
     let text = result.as_str().unwrap();
     assert!(text.contains("hello from gait-rs"), "got: {text}");
@@ -65,10 +65,10 @@ async fn write_then_edit_then_read() {
     write.execute(serde_json::json!({
         "file_path": "code.rs",
         "content": src
-    })).await.unwrap();
+    }), &gait_ai::Recorder::detached()).await.unwrap();
 
     // Read to get the hashline anchor for line 1
-    let read_result = read.execute(serde_json::json!({ "file_path": "code.rs" })).await.unwrap();
+    let read_result = read.execute(serde_json::json!({ "file_path": "code.rs" }), &gait_ai::Recorder::detached()).await.unwrap();
     let read_text = read_result.as_str().unwrap();
     // Extract the anchor: first token before '|'
     let anchor = read_text.lines()
@@ -81,9 +81,9 @@ async fn write_then_edit_then_read() {
     edit.execute(serde_json::json!({
         "file_path": "code.rs",
         "edits": [{"op": "replace", "pos": anchor, "lines": ["fn world() -> &'static str { \"world\" }"]}]
-    })).await.unwrap();
+    }), &gait_ai::Recorder::detached()).await.unwrap();
 
-    let result = read.execute(serde_json::json!({ "file_path": "code.rs" })).await.unwrap();
+    let result = read.execute(serde_json::json!({ "file_path": "code.rs" }), &gait_ai::Recorder::detached()).await.unwrap();
     let text = result.as_str().unwrap();
     assert!(text.contains("world"), "got: {text}");
 }
@@ -95,11 +95,11 @@ async fn glob_finds_written_files() {
     let write = tools.iter().find(|t| t.name() == "write").unwrap();
     let glob  = tools.iter().find(|t| t.name() == "glob").unwrap();
 
-    write.execute(serde_json::json!({ "file_path": "a.rs", "content": "" })).await.unwrap();
-    write.execute(serde_json::json!({ "file_path": "b.rs", "content": "" })).await.unwrap();
-    write.execute(serde_json::json!({ "file_path": "c.ts", "content": "" })).await.unwrap();
+    write.execute(serde_json::json!({ "file_path": "a.rs", "content": "" }), &gait_ai::Recorder::detached()).await.unwrap();
+    write.execute(serde_json::json!({ "file_path": "b.rs", "content": "" }), &gait_ai::Recorder::detached()).await.unwrap();
+    write.execute(serde_json::json!({ "file_path": "c.ts", "content": "" }), &gait_ai::Recorder::detached()).await.unwrap();
 
-    let result = glob.execute(serde_json::json!({ "pattern": "*.rs" })).await.unwrap();
+    let result = glob.execute(serde_json::json!({ "pattern": "*.rs" }), &gait_ai::Recorder::detached()).await.unwrap();
     let text = result.as_str().unwrap();
     assert!(text.contains("a.rs"), "got: {text}");
     assert!(text.contains("b.rs"), "got: {text}");

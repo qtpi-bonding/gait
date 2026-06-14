@@ -80,7 +80,7 @@ where
         for tc in &step_tool_calls {
         let tool = tools.iter().find(|t| t.name() == tc.tool_name);
         let result = match tool {
-            Some(t) => t.execute(tc.args.clone()).await
+            Some(t) => t.execute(tc.args.clone(), &crate::Recorder::detached()).await
                 .unwrap_or_else(|e| serde_json::Value::String(format!("error: {e}"))),
                 None => serde_json::Value::String(format!("unknown tool: {}", tc.tool_name)),
             };

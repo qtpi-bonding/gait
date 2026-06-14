@@ -44,7 +44,7 @@ impl Tool for InformTool {
         ExecutionSignal::Inform
     }
 
-    async fn execute(&self, _args: Value) -> anyhow::Result<Value> {
+    async fn execute(&self, _args: Value, _rec: &crate::Recorder) -> anyhow::Result<Value> {
         // turn.rs intercepts this call before execution and handles the signal.
         Ok(Value::String("inform_signal".into()))
     }
@@ -68,7 +68,7 @@ mod tests {
     #[tokio::test]
     async fn execute_returns_signal() {
         let result = InformTool::new()
-            .execute(serde_json::json!({"items": []}))
+            .execute(serde_json::json!({"items": []}), &crate::Recorder::detached())
             .await
             .unwrap();
         assert_eq!(result, Value::String("inform_signal".into()));

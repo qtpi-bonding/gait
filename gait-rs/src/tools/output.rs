@@ -61,7 +61,7 @@ impl Tool for OutputTool {
         ExecutionSignal::TurnComplete
     }
 
-    async fn execute(&self, _args: Value) -> anyhow::Result<Value> {
+    async fn execute(&self, _args: Value, _rec: &crate::Recorder) -> anyhow::Result<Value> {
         Ok(Value::String("recorded".into()))
     }
 }
@@ -75,7 +75,7 @@ mod tests {
         let tool = OutputTool::new();
         let result = tool.execute(serde_json::json!({
             "message": "added health endpoint"
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         assert_eq!(result, Value::String("recorded".into()));
     }
 
@@ -85,7 +85,7 @@ mod tests {
         let result = tool.execute(serde_json::json!({
             "message": "done",
             "result": { "files_changed": ["a.rs"] }
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         assert_eq!(result, Value::String("recorded".into()));
     }
 

@@ -157,7 +157,7 @@ impl Tool for WebfetchTool {
         crate::types::OutputFilter::Curate
     }
 
-    async fn execute(&self, args: Value) -> anyhow::Result<Value> {
+    async fn execute(&self, args: Value, _rec: &crate::Recorder) -> anyhow::Result<Value> {
         let params: WebfetchParams = serde_json::from_value(args)?;
 
         if !params.url.starts_with("http://") && !params.url.starts_with("https://") {
@@ -312,7 +312,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_non_http_url() {
         let tool = WebfetchTool::new();
-        let result = tool.execute(serde_json::json!({ "url": "ftp://example.com/file" })).await;
+        let result = tool.execute(serde_json::json!({ "url": "ftp://example.com/file" }), &crate::Recorder::detached()).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("http"));
     }
@@ -320,7 +320,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_file_url() {
         let tool = WebfetchTool::new();
-        let result = tool.execute(serde_json::json!({ "url": "file:///etc/passwd" })).await;
+        let result = tool.execute(serde_json::json!({ "url": "file:///etc/passwd" }), &crate::Recorder::detached()).await;
         assert!(result.is_err());
     }
 

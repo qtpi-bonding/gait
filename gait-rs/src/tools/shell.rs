@@ -78,7 +78,7 @@ impl Tool for ShellTool {
         ToolPermission::RequiresApproval(requests)
     }
 
-    async fn execute(&self, args: Value) -> anyhow::Result<Value> {
+    async fn execute(&self, args: Value, _rec: &crate::Recorder) -> anyhow::Result<Value> {
         let params: ShellParams = serde_json::from_value(args)?;
         let timeout_ms = params.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
 
@@ -185,7 +185,7 @@ mod tests {
         let result = tool.execute(serde_json::json!({
             "cmd": "echo hello",
             "reason": "test"
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         // Shell now returns a structured process-tool shape: { output, exit_code, timed_out }.
         // The model-facing `output` carries the clean command text + file note; the model
         // never sees the JSON wrapper or any "exit N (Xms)" prefix.
@@ -204,7 +204,7 @@ mod tests {
         let result = tool.execute(serde_json::json!({
             "cmd": "false",
             "reason": "test"
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         let exit_code = result.get("exit_code").and_then(|v| v.as_i64()).expect("exit_code field");
         let timed_out = result.get("timed_out").and_then(|v| v.as_bool()).expect("timed_out field");
         assert_eq!(exit_code, 1, "got: {result}");
@@ -219,7 +219,7 @@ mod tests {
         let result = tool.execute(serde_json::json!({
             "cmd": "cat sentinel.txt",
             "reason": "test"
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         let output = result.get("output").and_then(|v| v.as_str()).expect("output field");
         assert!(output.contains("marker"), "got: {output}");
     }
@@ -234,7 +234,7 @@ mod tests {
             "cmd": "cat sentinel.txt",
             "reason": "test",
             "cwd": "sub"
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         let output = result.get("output").and_then(|v| v.as_str()).expect("output field");
         assert!(output.contains("submarker"), "got: {output}");
     }
@@ -247,11 +247,11 @@ mod tests {
         // Call 1: cd into sub (emits a Cwd event).
         let _ = tool.execute(serde_json::json!({
             "cmd": "pwd", "reason": "test", "cwd": "sub"
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         // Call 2: no cwd → should refold the emitted Cwd and run in sub.
         let result = tool.execute(serde_json::json!({
             "cmd": "pwd", "reason": "test"
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         let output = result.get("output").and_then(|v| v.as_str()).expect("output field");
         assert!(output.contains("sub"), "expected to run in sub, got: {output}");
     }
@@ -262,7 +262,7 @@ mod tests {
         let tool = make_tool(&dir);
         let result = tool.execute(serde_json::json!({
             "cmd": "pwd", "reason": "test", "cwd": "nope"
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         let exit_code = result.get("exit_code").and_then(|v| v.as_i64()).expect("exit_code field");
         let output = result.get("output").and_then(|v| v.as_str()).expect("output field");
         assert_eq!(exit_code, 1, "got: {result}");
@@ -281,7 +281,7 @@ mod tests {
             "cmd": "sleep 10",
             "reason": "test timeout",
             "timeout_ms": 100
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         // Timeout branch: exit_code=124, timed_out=true, output carries the TIMED OUT message.
         let exit_code = result.get("exit_code").and_then(|v| v.as_i64()).expect("exit_code field");
         let timed_out = result.get("timed_out").and_then(|v| v.as_bool()).expect("timed_out field");
@@ -298,7 +298,7 @@ mod tests {
         let result = tool.execute(serde_json::json!({
             "cmd": "echo payload",
             "reason": "test"
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         // Result's `output` field references the tmp file (file note is part of display).
         let output = result.get("output").and_then(|v| v.as_str()).expect("output field");
         assert!(output.contains("full output:"), "got: {output}");

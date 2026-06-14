@@ -125,7 +125,7 @@ impl Tool for GrepTool {
         crate::types::OutputFilter::Parse
     }
 
-    async fn execute(&self, args: Value) -> anyhow::Result<Value> {
+    async fn execute(&self, args: Value, _rec: &crate::Recorder) -> anyhow::Result<Value> {
         let params: GrepParams = serde_json::from_value(args)?;
 
         let resolved = match &params.path {
@@ -181,7 +181,7 @@ mod tests {
             "fn main() {\n    println!(\"hello world\");\n}").unwrap();
 
         let tool = GrepTool::new(make_ctx(&dir));
-        let result = tool.execute(serde_json::json!({ "pattern": "println" })).await.unwrap();
+        let result = tool.execute(serde_json::json!({ "pattern": "println" }), &crate::Recorder::detached()).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(text.contains("foo.rs"), "got: {text}");
         assert!(text.contains("println"), "got: {text}");
@@ -192,7 +192,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
         let tool = GrepTool::new(make_ctx(&dir));
-        let result = tool.execute(serde_json::json!({ "pattern": "zzz_not_present" })).await.unwrap();
+        let result = tool.execute(serde_json::json!({ "pattern": "zzz_not_present" }), &crate::Recorder::detached()).await.unwrap();
         assert_eq!(result.as_str().unwrap(), "No files found");
     }
 
@@ -207,7 +207,7 @@ mod tests {
         let result = tool.execute(serde_json::json!({
             "pattern": "needle",
             "path": "sub"
-        })).await.unwrap();
+        }), &crate::Recorder::detached()).await.unwrap();
         let text = result.as_str().unwrap();
         assert!(text.contains("a.txt"), "got: {text}");
         assert!(!text.contains("b.txt"), "got: {text}");
