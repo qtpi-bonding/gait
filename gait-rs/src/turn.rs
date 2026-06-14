@@ -853,7 +853,7 @@ pub async fn run_turn(
                 cache_read: total_usage.cache_read_tokens as u64,
                 cache_write: total_usage.cache_write_tokens as u64,
             };
-            let output = TurnOutput { message: message.clone(), result: None };
+            let output = TurnOutput { message: message.clone(), result: None, changes: None };
             emitter.record(events::turn_complete(
                 &usage, codebase_hash.clone(), codebase_dirty, code_checkpoint,
                 split_into_blocks(&all_turn_text), &output,
@@ -1208,7 +1208,7 @@ pub async fn run_turn(
                             cache_read: total_usage.cache_read_tokens as u64,
                             cache_write: total_usage.cache_write_tokens as u64,
                         };
-                        let turn_output = TurnOutput { message: message.clone(), result: result.clone() };
+                        let turn_output = TurnOutput { message: message.clone(), result: result.clone(), changes: None };
                         emitter.record(events::turn_complete(
                             &usage, codebase_hash.clone(), codebase_dirty, code_checkpoint,
                             split_into_blocks(&all_turn_text), &turn_output,

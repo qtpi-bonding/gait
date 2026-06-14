@@ -148,7 +148,8 @@ message CodebaseState {               // environment-worldline stamp (working-tr
 }
 message PermissionPolicy { repeated string allow = 1; repeated string deny = 2; }
 message TurnUsage  { uint64 input = 1; uint64 output = 2; uint64 cache_read = 3; uint64 cache_write = 4; }
-message TurnOutput { string message = 1; google.protobuf.Value result = 2; }   // result: any JSON shape
+message Changes { repeated string added = 1; repeated string modified = 2; repeated string deleted = 3; }
+message TurnOutput { string message = 1; google.protobuf.Value result = 2; Changes changes = 3; }
 message CompactionUsage { uint64 input = 1; uint64 output = 2; }
 message ProcessResult   { int32 exit_code = 1; bool timed_out = 2; }
 message ConvergenceItem { string id = 1; string proposal = 2; optional string response = 3; bool consistent = 4; }

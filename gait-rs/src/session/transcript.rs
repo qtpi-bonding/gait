@@ -30,6 +30,8 @@ pub struct TurnUsage {
 pub struct TurnOutput {
     pub message: String,
     pub result: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changes: Option<crate::proto::gait::log::v1::Changes>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -284,7 +286,7 @@ mod tests {
     #[test]
     fn count_turn_complete_counts_correctly() {
         let usage = TurnUsage { input: 1, output: 1, cache_read: 0, cache_write: 0 };
-        let output = TurnOutput { message: "done".into(), result: None };
+        let output = TurnOutput { message: "done".into(), result: None, changes: None };
         let events = vec![
             mint(events::user_turn("x".into(), None, None)),
             mint(events::turn_complete(&usage, "a".into(), false, None, vec![], &output)),
@@ -376,7 +378,7 @@ mod tests {
     #[test]
     fn all_event_bodies_serialize_roundtrip() {
         let usage = TurnUsage { input: 1, output: 1, cache_read: 0, cache_write: 0 };
-        let output = TurnOutput { message: "s".into(), result: None };
+        let output = TurnOutput { message: "s".into(), result: None, changes: None };
         let bodies: Vec<event::Body> = vec![
             events::session_start("s1".into(), None),
             events::user_turn("t".into(), None, None),

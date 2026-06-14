@@ -334,7 +334,7 @@ mod tests {
         let body = events::turn_complete(
             &TurnUsage { input: 0, output: 0, cache_read: 0, cache_write: 0 },
             "h".into(), false, None, vec!["block one".into()],
-            &TurnOutput { message: "done".into(), result: None },
+            &TurnOutput { message: "done".into(), result: None, changes: None },
         );
         let ev = crate::proto::envelope::mint(body, None);
         match state.apply_event(&ev) {

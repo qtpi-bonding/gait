@@ -185,7 +185,7 @@ mod tests {
         GitTraceRepo.create_session_worktree(ws.path(), "sdone1").unwrap();
         let tx2 = ws.path().join("sessions/sdone1/log.jsonl");
         let usage = TurnUsage { input: 1, output: 1, cache_read: 0, cache_write: 0 };
-        let output = TurnOutput { message: "done".into(), result: None };
+        let output = TurnOutput { message: "done".into(), result: None, changes: None };
         wire::append(&tx2, events::turn_complete(
             &usage, "abc".into(), false, None, vec![], &output,
         )).unwrap();
