@@ -16,6 +16,7 @@ fn classify_event(ev: &Event) -> StreamClass {
     match ev.body.as_ref() {
         Some(event::Body::Payload(p)) => match &p.kind {
             Some(payload::Kind::Error(_)) => StreamClass::Error,
+            Some(payload::Kind::Raw(r)) if r.r#type == "workflow_error" || r.r#type == "node_error" => StreamClass::Error,
             _ => StreamClass::Trace,
         },
         _ => StreamClass::Trace,
@@ -74,6 +75,22 @@ mod tests {
     #[test]
     fn tool_call_is_trace() {
         assert_eq!(classify(&ev(events::tool_call("c1".into(), "read".into(), &serde_json::json!({})))), StreamClass::Trace);
+    }
+    #[test]
+    fn classify_routes_workflow_errors_to_error() {
+        use crate::proto::gait::log::v1::{StreamItem, stream_item, Event, event, Payload, payload, RawEvent};
+        fn raw_item(ty: &str) -> StreamItem {
+            let body = event::Body::Payload(Payload {
+                kind: Some(payload::Kind::Raw(RawEvent { r#type: ty.into(), payload: None })),
+            });
+            StreamItem { item: Some(stream_item::Item::Event(Event { body: Some(body), ..Default::default() })) }
+        }
+        assert_eq!(classify(&raw_item("workflow_error")), StreamClass::Error);
+        assert_eq!(classify(&raw_item("node_error")), StreamClass::Error);
+        // Non-error raw events are Trace.
+        for ty in ["workflow_start", "node_start", "node_skip", "node_complete", "hook_run", "workflow_gate", "workflow_complete"] {
+            assert_eq!(classify(&raw_item(ty)), StreamClass::Trace, "{ty} should be Trace");
+        }
     }
     #[test]
     fn run_result_permissions_maps() {
