@@ -43,6 +43,14 @@ impl Recorder {
         Ok(event)
     }
 
+    /// Borrow the channel sender — e.g. for a child `Recorder` (a workflow sub-turn)
+    /// that should publish to the same channel. A clone of this lives only as long as
+    /// the child; the owning `Recorder` stays the single long-lived sender, so dropping
+    /// it closes the channel (and lets a spawned `drive` consumer finish).
+    pub fn sender(&self) -> &UnboundedSender<StreamItem> {
+        &self.sender
+    }
+
     /// Ephemeral: send StreamItem{delta} only. No transcript write.
     pub fn publish_delta(&self, content: String) {
         // channel-only; if the receiver is gone there's nothing to persist, so ignore.

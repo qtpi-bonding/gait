@@ -89,8 +89,11 @@ pub async fn exec_prompt_node(
         codebase,
         repos,
     );
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
-    let emitter = crate::proto::Recorder::for_session(&session.gait_dir, &session.id, tx);
+    // Publish the sub-turn's deltas/events to the WORKFLOW's channel (so the run's
+    // consumer surfaces them), while still writing the sub-turn's own transcript at
+    // `session.id`. The clone is transient — it drops when this node returns, so the
+    // workflow's owning Recorder stays the single channel-close point.
+    let emitter = crate::proto::Recorder::for_session(&session.gait_dir, &session.id, ctx.workflow_tx.clone());
     let result = run_turn(
         &session,
         &emitter,

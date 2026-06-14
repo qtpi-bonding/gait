@@ -137,7 +137,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<()> {
             loop_iter: None, loop_max: None, loop_output: None,
             loop_signal: None, node_exit: None, failed_node: state.failed_node.clone(),
         };
-        let ctx = NodeContext { workflow_id: &workflow_id, session_id: &session_id, gait_dir: &gait_dir, codebase: &codebase, vars };
+        let ctx = NodeContext { workflow_id: &workflow_id, session_id: &session_id, gait_dir: &gait_dir, codebase: &codebase, vars, workflow_tx: rec.sender() };
 
         let retry_max = node.retry.as_ref().map(|r| r.max).unwrap_or(1);
         let retry_delay = node.retry.as_ref().map(|r| r.delay).unwrap_or(0);

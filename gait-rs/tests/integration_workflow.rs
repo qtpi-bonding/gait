@@ -158,3 +158,63 @@ nodes:
     assert!(content.contains("\"type\":\"workflow_start\""), "log must contain workflow_start: {content}");
     assert!(content.contains("\"type\":\"workflow_complete\""), "log must contain workflow_complete: {content}");
 }
+
+/// Phase 3b proof: a prompt node's sub-turn must publish its events to the
+/// WORKFLOW's channel (the dropped-receiver fix), not into a discarded receiver.
+/// We drive `exec_prompt_node` directly with a test-owned sender and assert at
+/// least one sub-turn event arrives on it. A dummy api key lets the provider
+/// construct; `EchoProvider` overrides it, so no network call is made.
+#[tokio::test]
+async fn prompt_subturn_publishes_to_workflow_channel() {
+    use gait_ai::workflow::exec_shell::NodeContext;
+    use gait_ai::workflow::exec_prompt::exec_prompt_node;
+    use gait_ai::workflow::vars::VarContext;
+    use gait_ai::proto::gait::log::v1::{StreamItem, stream_item, event, payload};
+
+    std::env::set_var("MINIMAX_API_KEY", "test-key-not-used");
+
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+
+    let yaml = "name: prompt-test\nnodes:\n  - id: p\n    prompt: \"say hi\"\n";
+    let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
+    let node = &wf.nodes[0];
+    let session_id = "swf_prompt01";
+
+    // Test owns the channel; assert the sub-turn published to THIS sender. No
+    // spawned consumer here, so there is no consumer.await and no deadlock risk.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<StreamItem>();
+
+    {
+        let ctx = NodeContext {
+            workflow_id: "wf1",
+            session_id,
+            gait_dir: ws.path(),
+            codebase: ws.path(),
+            workflow_tx: &tx,
+            vars: VarContext {
+                workflow_id: "wf1".into(), session_id: session_id.into(),
+                gait_dir: ws.path().to_path_buf(), codebase: ws.path().to_path_buf(),
+                args: "".into(), node_id: "p".into(),
+                node_outputs: Default::default(), loop_iter: None, loop_max: None,
+                loop_output: None, loop_signal: None, node_exit: None, failed_node: None,
+            },
+        };
+        exec_prompt_node(node, "say hi", &ctx, &wf, Arc::new(EchoProvider)).await.unwrap();
+    } // ctx drops here, releasing the &tx borrow
+
+    let mut saw_event = false;
+    while let Ok(item) = rx.try_recv() {
+        if let Some(stream_item::Item::Event(ev)) = item.item {
+            if let Some(event::Body::Payload(p)) = ev.body {
+                if matches!(p.kind,
+                    Some(payload::Kind::UserTurn(_))
+                    | Some(payload::Kind::AssistantText(_))
+                    | Some(payload::Kind::ToolCall(_))) {
+                    saw_event = true;
+                }
+            }
+        }
+    }
+    assert!(saw_event, "prompt sub-turn must publish events to the workflow channel (3b)");
+}
