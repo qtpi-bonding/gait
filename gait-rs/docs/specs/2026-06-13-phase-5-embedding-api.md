@@ -57,14 +57,16 @@ the rest so a consumer needs exactly one `use`:
 ```rust
 pub mod embed {
     pub use crate::port::input::{TurnSource, TurnStart};
-    pub use crate::port::output::{TurnSink, classify, StreamClass, Diag};
+    pub use crate::port::output::{TurnSink, classify, run_result_proto, StreamClass, Diag};
     pub use crate::turn::{TurnInput, TurnResult};
     pub use crate::profile::ResolvedProfile;
     pub use crate::session::Session;
     pub use crate::Recorder;
+    pub use crate::git::Repos;
+    pub use crate::config::{load_config, GaitConfig};
     pub use crate::proto::gait::log::v1::{StreamItem, RunResult};
     // owned here (moved from cli):
-    // run_loop, TurnDriver, LoopConfig, user_turn_body, resolve_caps
+    // run_loop, TurnDriver, LoopConfig, user_turn_body, resolve_caps, JsonSink, JsonFrame
 }
 ```
 The CLI/REPL keep using the same items via `embed` (or directly) — no duplication.
@@ -76,12 +78,14 @@ Add `embed::resolve_caps` so an embedder gets a `ResolvedProfile` without touchi
 /// Resolve a live profile (provider + tools + MCP) for one session, from config +
 /// optional agent + optional model override. The same resolution the CLI/REPL do.
 pub async fn resolve_caps(
-    gait_dir: &Path, codebase: &Path, session_id: &str,
-    agent: Option<&str>, model_override: Option<String>, repos: &Repos,
+    config: &GaitConfig, gait_dir: &Path, codebase: &Path, session_id: &str,
+    agent_path: Option<&Path>, model_override: Option<String>, repos: &Repos,
 ) -> anyhow::Result<ResolvedProfile>;
 ```
-`CliDriver::caps`/`ReplDriver::caps` are refactored to call it (dedupe), proving
-it's the real path, not a parallel one.
+It takes the **already-loaded `config`** (not a `gait_dir` to re-read per turn) so a
+caller's cached config is preserved — `ReplDriver::caps` dedupes onto it with no
+behavior change. `CliDriver::caps` stays bespoke (it merges `--allow/--deny/
+--max-iter/--result-schema` into `config` first — `resolve_caps` is the plain path).
 
 ### 4. pbjson output via a callback sink (`JsonSink`) — FFI-shaped
 gait is already protobuf end-to-end: every event is a prost message serialized as
@@ -97,11 +101,11 @@ exactly what `StdioSink` writes, just handed to a callback instead of stdout:
 /// FFI-ready shape: a thin C-ABI shim maps a `extern "C"` fn pointer + opaque ctx
 /// to this closure; the consumer parses the JSON with classes generated from the
 /// SAME .proto (StreamItem / RunResult).
-pub struct JsonSink<F: FnMut(JsonFrame<'_>)> { /* callback + failed flag */ }
-pub enum JsonFrame<'a> {
-    Item(&'a str),             // pbjson StreamItem (a Trace/Error event or delta)
-    Result(&'a str),           // pbjson RunResult ({message,result,changes})
-    Diagnostic(Diag, &'a str),
+pub struct JsonSink<F: FnMut(JsonFrame)> { /* callback + failed flag */ }
+pub enum JsonFrame {           // owns String — a borrowed &str forces an un-inferrable HRTB
+    Item(String),              // pbjson StreamItem (a Trace/Error event or delta)
+    Result(String),            // pbjson RunResult ({message,result,changes})
+    Diagnostic(Diag, String),
 }
 ```
 `serde_json::to_string(item)` / `serde_json::to_string(&run_result_proto(r))` —
