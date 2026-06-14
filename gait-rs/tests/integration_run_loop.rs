@@ -55,12 +55,12 @@ impl TurnSink for CountSink {
     fn diagnostic(&mut self, _level: Diag, _msg: &str) {}
 }
 
-/// Minimal driver: hands back a scripted `caps` once, never errors.
+/// Minimal driver: hands back a scripted profile once, never errors.
 struct TestDriver { caps: Option<gait_ai::profile::ResolvedProfile>, auto: bool }
 #[async_trait::async_trait(?Send)]
 impl TurnDriver for TestDriver {
-    async fn caps(&mut self) -> anyhow::Result<gait_ai::profile::ResolvedProfile> {
-        self.caps.take().ok_or_else(|| anyhow::anyhow!("caps already taken"))
+    async fn resolve_profile(&mut self) -> anyhow::Result<gait_ai::profile::ResolvedProfile> {
+        self.caps.take().ok_or_else(|| anyhow::anyhow!("profile already taken"))
     }
     fn turn_config(&self) -> LoopConfig {
         LoopConfig { auto: self.auto, max_iter: None, preview_policy: Default::default() }

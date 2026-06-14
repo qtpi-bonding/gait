@@ -18,8 +18,8 @@ Everything you need is under one module: **`gait_ai::embed`**.
 - **`TurnSink`** — *output*. `item`/`result`/`session_id`/`diagnostic` (+ no-op
   `begin_turn`/`end_turn` lifecycle hooks). Implement it, or use the ready-made
   **`JsonSink`** (below).
-- **`TurnDriver`** — *per-turn machinery*. `caps()` builds the `ResolvedProfile`
-  for the turn (use `embed::resolve_caps(...)`), `turn_config()` returns
+- **`TurnDriver`** — *per-turn machinery*. `resolve_profile()` builds the `ResolvedProfile`
+  for the turn (use `embed::resolve_profile(...)`), `turn_config()` returns
   `LoopConfig { auto, max_iter, preview_policy }`, `after_turn`/`on_turn_error` are
   policy hooks.
 
@@ -63,8 +63,8 @@ impl TurnSource for OneShot {
 struct Driver { caps: Option<embed::ResolvedProfile> }
 #[async_trait::async_trait(?Send)]
 impl TurnDriver for Driver {
-    async fn caps(&mut self) -> anyhow::Result<embed::ResolvedProfile> {
-        self.caps.take().ok_or_else(|| anyhow::anyhow!("caps taken"))
+    async fn resolve_profile(&mut self) -> anyhow::Result<embed::ResolvedProfile> {
+        self.caps.take().ok_or_else(|| anyhow::anyhow!("profile taken"))
     }
     fn turn_config(&self) -> LoopConfig {
         LoopConfig { auto: true, max_iter: None, preview_policy: Default::default() }
@@ -76,12 +76,12 @@ impl TurnDriver for Driver {
 # async fn run(gait_dir: &std::path::Path, codebase: &std::path::Path) -> anyhow::Result<()> {
 let repos = embed::Repos::production();
 let config = embed::load_config(gait_dir);
-let caps = embed::resolve_caps(&config, gait_dir, codebase, "s00000001",
+let profile = embed::resolve_profile(&config, gait_dir, codebase, "s00000001",
     None /* agent_path */, None /* model override */, &repos).await?;
 
 let source = OneShot { start: Some(TurnStart::Input(
     user_turn_body(&repos, codebase, "summarise the README".into()))) };
-let mut driver = Driver { caps: Some(caps) };
+let mut driver = Driver { caps: Some(profile) };
 let mut sink = JsonSink::new(|f| if let JsonFrame::Result(j) = f { println!("{j}") });
 let session = Arc::new(embed::Session {
     id: "s00000001".into(), gait_dir: gait_dir.into(), codebase_path: codebase.into(),

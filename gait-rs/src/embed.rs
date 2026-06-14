@@ -39,8 +39,8 @@ pub struct LoopConfig {
 /// non-`Send` view state.
 #[async_trait::async_trait(?Send)]
 pub trait TurnDriver {
-    /// Build `caps` for this turn (`ResolvedProfile` is not `Clone`).
-    async fn caps(&mut self) -> anyhow::Result<crate::profile::ResolvedProfile>;
+    /// Resolve the `ResolvedProfile` for this turn (`ResolvedProfile` is not `Clone`).
+    async fn resolve_profile(&mut self) -> anyhow::Result<crate::profile::ResolvedProfile>;
     /// `auto`/`max_iter`/`preview` for this turn.
     fn turn_config(&self) -> LoopConfig;
     /// After-turn policy (CLI: Scheduler/Harness; REPL: none). Runs on success only.
@@ -85,14 +85,14 @@ pub async fn run_loop(
         if let TurnStart::Input(body) = start {
             crate::proto::wire::append(&tx_path, body)?;   // append-then-fold
         }
-        let caps = driver.caps().await?;
+        let profile = driver.resolve_profile().await?;
         let cfg = driver.turn_config();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let emitter = crate::Recorder::for_session(gait_dir, session_id, tx);
         let input = TurnInput { auto: cfg.auto, max_iter: cfg.max_iter, preview_policy: cfg.preview_policy };
         let session_for_turn = session.clone();
         let handle = tokio::spawn(async move {
-            crate::turn::run_turn(&*session_for_turn, &emitter, caps, input).await
+            crate::turn::run_turn(&*session_for_turn, &emitter, profile, input).await
             // emitter drops here → channel closes → drive() returns
         });
         sink.begin_turn();
@@ -111,7 +111,7 @@ pub async fn run_loop(
 /// already-loaded `config` + optional agent file + optional model override — the
 /// same resolution the CLI and REPL do. Embedders load config via [`load_config`]
 /// and pass it in (reusing it across turns), instead of touching `Profile`.
-pub async fn resolve_caps(
+pub async fn resolve_profile(
     config: &crate::config::GaitConfig,
     gait_dir: &Path,
     codebase: &Path,

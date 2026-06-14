@@ -45,7 +45,15 @@ impl TurnSink for ReplSink {
             s.turn_done_blocks = Some(b);
         }
     }
-    fn result(&mut self, _r: &TurnResult) {}      // REPL never prints the proto RunResult
+    fn result(&mut self, r: &TurnResult) {
+        // Print structured JSON from `structured_done`; the prose message is already
+        // streamed live, so only the machine-readable result needs a post-turn render.
+        if let TurnResult::Done { result: Some(json), .. } = r {
+            let pretty = serde_json::to_string_pretty(json)
+                .unwrap_or_else(|_| json.to_string());
+            println!("\n{pretty}");
+        }
+    }
     fn session_id(&mut self, _id: &str) {}
     fn diagnostic(&mut self, level: Diag, msg: &str) {
         if level == Diag::Error { eprintln!("[gait] {msg}"); }
@@ -66,9 +74,9 @@ pub struct ReplDriver {
 }
 #[async_trait::async_trait(?Send)]
 impl TurnDriver for ReplDriver {
-    async fn caps(&mut self) -> anyhow::Result<crate::profile::ResolvedProfile> {
+    async fn resolve_profile(&mut self) -> anyhow::Result<crate::profile::ResolvedProfile> {
         // Same resolution as the CLI, via the shared embedding helper (cached config).
-        crate::embed::resolve_caps(
+        crate::embed::resolve_profile(
             &self.config, &self.gait_dir, &self.codebase, &self.session_id,
             self.agent_path.as_deref(), None, &self.repos).await
     }

@@ -60,12 +60,12 @@ impl TurnSource for MySource {
     async fn next(&mut self) -> Option<TurnStart> { self.start.take() }
 }
 
-/// External embedder's driver port: hand back caps once; never error.
+/// External embedder's driver port: hand back the resolved profile once; never error.
 struct MyDriver { caps: Option<embed::ResolvedProfile> }
 #[async_trait(?Send)]
 impl TurnDriver for MyDriver {
-    async fn caps(&mut self) -> anyhow::Result<embed::ResolvedProfile> {
-        self.caps.take().ok_or_else(|| anyhow::anyhow!("caps already taken"))
+    async fn resolve_profile(&mut self) -> anyhow::Result<embed::ResolvedProfile> {
+        self.caps.take().ok_or_else(|| anyhow::anyhow!("profile already taken"))
     }
     fn turn_config(&self) -> LoopConfig {
         LoopConfig { auto: true, max_iter: None, preview_policy: Default::default() }
@@ -87,8 +87,8 @@ async fn embed_drives_a_turn_and_emits_pbjson() {
     let body = user_turn_body(&repos, ws.path(), "embed me".into());
     let source = MySource { start: Some(TurnStart::Input(body)) };
 
-    // Hermetic caps: no api key, no tools/MCP. This is a proof of the *embedding
-    // loop*, not provider resolution (resolve_caps is exercised by the REPL).
+    // Hermetic profile: no api key, no tools/MCP. This is a proof of the *embedding
+    // loop*, not provider resolution (resolve_profile is exercised by the REPL).
     let caps = embed::ResolvedProfile::for_test(Arc::new(TextProvider), vec![], vec![], vec![]);
     let mut driver = MyDriver { caps: Some(caps) };
 
