@@ -143,6 +143,47 @@ The marquee `Result` payload on stdout is the **`TurnResult`** (the return
 value), printed once by the run loop — *not* the channel `turn_complete` event,
 which stays Trace (history/observability). This resolves the double-emit.
 
+### 3a. `structured_done` is the first-class Result payload
+
+The Result payload is not an ad-hoc blob — it is the **`structured_done`** turn
+output (`tools/output.rs`, formerly `output`), promoted to first-class. The
+turn's output is a single envelope, the same value that is the `turn_complete`
+payload (logged) and the stdout Result:
+
+```json
+{
+  "message": "...",            // LLM prose — streamed live to stderr; a string field here
+  "result":  { ... },          // LLM-declared structured output
+  "side_effects": {            // HARNESS-filled ground truth from the git checkpoint diff
+    "files_changed": [...], "files_added": [...], "files_deleted": [...]
+  }
+}
+```
+
+- **`result`** — the LLM's declared output. When `--result-schema X` (or
+  `gait.jsonc result_schema`) is set, the harness validates *this field* against
+  `X` and **will not let the turn end until it conforms** — the validate +
+  inject-error + retry (`output_schema_retries`) + hard-fail loop already exists
+  (`turn.rs` TurnComplete path, structured-done spec). Hard-fail → Error class →
+  non-zero exit. No schema → `result` is freeform/optional (the flexible default).
+- **`side_effects`** — ground truth the model cannot fake: the harness diffs the
+  codebase checkpoint it already takes at turn start (`turn.rs:92`
+  `checkpoint_codebase`, `git/trace.rs`) against the end state. Always a sibling
+  of `result`, never merged into it, never schema-bound.
+- **`message`** — prose; the live assistant-text deltas already go to stderr
+  (Trace), and the final `message` rides the envelope as a JSON string.
+
+**Composition is the point.** This one envelope is read identically by all three
+consumers — workflow `$node.output.field`, `spawn_agent` parents, and shell
+`gait run | jq .result` / `jq .side_effects.files_changed`. The agent produces
+artifacts on disk; the harness certifies what actually changed; everyone
+downstream reads one typed record. This makes the output port's reason to exist
+concrete: deliver the agent's certified, typed result to whoever is composing.
+
+This extends the (already-done) `structured_done` spec
+(`../specs/2026-06-12-structured-done.md`) with the `side_effects` field and the
+stdout wiring; the schema-enforcement machinery is reused, not rebuilt.
+
 ### 4. Input port — currency is `event::Body`, not a bespoke intent enum
 
 Because replies already produce `event::Body` (`ui/builder.rs`), the input
@@ -154,6 +195,42 @@ the next `event::Body` to append; each adapter maps its native input:
 
 This avoids the circular `String → Input → to_event → Body` round-trip the review
 flagged; the only real mapping is `ArgSource`'s one `String → user_turn`.
+
+### 4a. The machinery's input is two sources folded through the log
+
+The input port is only *half* the input side. The machinery (the LLM loop) does
+not consume the new input directly — its prompt is built from **two sources**:
+
+1. **New input** — from the input port (cli/repl/cloud), and
+2. **`retrace(log)`** — the deterministic fold of the event log into conversation
+   state (`retrace::messages`, `active_agent`, `active_cwd`,
+   `active_permissions`, `active_mutations`, `fold()`).
+
+These compose into **"the folded thing we send"** — the actual message list +
+state handed to the provider. The composition is **append-then-fold**: the new
+input is appended to the log as an `event::Body`, then `retrace(log)` folds the
+*whole* log (now including it) into the prompt. So there is exactly one
+prompt-builder (`retrace`), one source of truth (the log), and the new input is
+simply the newest event — the same way the output side records events *back* to
+the log. The cloud API is not special: it appends like everyone else and
+`retrace` folds it.
+
+This exposes the system's core duality — **two projections of one log, with the
+machinery between them:**
+
+| | Input side | Output side |
+|---|---|---|
+| external thing | new input (port) | rendered output (sink) |
+| projection of the log | **`retrace` / fold** → prompt state | **`classify`** → class → destinations |
+| substrate | LOG (store) | LOG (store) |
+| machinery boundary | "folded thing" → LLM | events ← LLM (via `record`) |
+
+`retrace` is to input what `classify`/sinks is to output: both read the one log
+and project it — one *forward* into a prompt for the model, one *outward* into
+destinations for consumers. Everything else (history, state, routing) is derived;
+only the new input and the rendered output cross the boundary. The input port
+(§4) is just the adapter that gets the new event *into* the log; `retrace` —
+which already exists — does the fold. No new prompt path is introduced.
 
 ### Invariants (honestly scoped)
 
