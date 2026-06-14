@@ -31,7 +31,7 @@ use a different one:
 
 | Mechanism | What it does | Used by |
 |---|---|---|
-| `Emitter::emit` / `delta` (`proto/emitter.rs:26,36`) | durable log **+** live mpsc channel | the **turn** (`turn.rs`, ~30 sites) |
+| `Emitter::emit` / `delta` (`proto/emitter.rs:26,36`) | durable log **+** live mpsc channel | the **turn** (`turn.rs`, 26 sites) |
 | `wire::emit` (`proto/wire.rs:79`) | durable log **+ `println!` to stdout**, no channel | the **workflow runner** (`workflow/runner.rs` ×11, `exec_gate.rs:15`, `gait.rs:914`) |
 | `wire::append` (`proto/wire.rs:73`) | durable log **only** | tools, hooks, harness, replies, toggles, init |
 
@@ -105,10 +105,11 @@ structural change and it's what makes "every event reaches subscribers" true.
 
 - Give `Tool::execute` (and the `Hook` methods) access to the emitter — the
   principled option is to thread it through the call (the turn already holds it
-  at `turn.rs:200`). 16 `Tool` impls take a mechanical signature edit; most
-  ignore it. This **deletes** the `shell.rs:98` log-path-reconstruct hack and the
-  `config_hook.rs` baked `tx_path`, replacing both `wire::append` bypasses with
-  real `emit` — so `cwd`/`hook_run` finally reach live viewers.
+  at `turn.rs:200`). 17 trait impls take a mechanical signature edit (16 concrete
+  tools + the `ToolDef` blanket impl; ~23 `execute` fns incl. tests); most ignore
+  it. This replaces the `shell.rs:98` log-path-reconstruct append and the
+  `config_hook.rs` baked-`tx_path` append with a real `record` — so `cwd`/`hook_run`
+  finally reach live viewers (`shell` keeps its `ctx`, used for `active_cwd`).
 - After this, `wire::append` survives **only** for genuinely out-of-band writes
   where there is no live channel to publish to: **cross-session** injection
   (`harness.rs:61`, `spawn_agent.rs:78` writing a *different* session's log) and
@@ -166,10 +167,25 @@ payload (logged) and the stdout Result:
   inject-error + retry (`output_schema_retries`) + hard-fail loop already exists
   (`turn.rs` TurnComplete path, structured-done spec). Hard-fail → Error class →
   non-zero exit. No schema → `result` is freeform/optional (the flexible default).
-- **`side_effects`** — ground truth the model cannot fake: the harness diffs the
-  codebase checkpoint it already takes at turn start (`turn.rs:92`
-  `checkpoint_codebase`, `git/trace.rs`) against the end state. Always a sibling
-  of `result`, never merged into it, never schema-bound.
+- **`side_effects`** — ground truth the model cannot fake. **This is net-new
+  work, not free harness data** (corrected from an earlier draft): the per-turn
+  delta is `diff(new_checkpoint, its_parent)` in the shadow git the checkpoint
+  subsystem maintains. The shadow already commits a per-turn snapshot whose parent
+  is the prior state (`git/checkpoint.rs:112`), so the diff is exactly this turn's
+  changes — but **no diff method exists today**. Required:
+  - a new `CheckpointRepo::diff(...) -> {files_changed, files_added,
+    files_deleted}` (git2 `diff_tree_to_tree` over the two commits);
+  - the checkpoint runs at turn **complete** (`turn.rs:846,1201`), not start — the
+    baseline is the shadow HEAD seeded at `init` (`turn.rs:503`,
+    `checkpoint.rs:72`);
+  - **non-git universality** (per design intent): today `init` no-ops for non-git
+    codebases and the shadow borrows the codebase's git objects via `alternates`
+    (`checkpoint.rs:18-25,59`). Making the shadow self-contained (drop the
+    early-return, conditional `alternates`, own object store — the unborn-HEAD
+    path already exists at `checkpoint.rs:70-71`) lets it checkpoint *any*
+    directory, so `side_effects` is universal rather than git-only.
+  `side_effects` is always a sibling of `result`, never merged, never schema-bound;
+  `Option`/empty when no checkpoint is available.
 - **`message`** — prose; the live assistant-text deltas already go to stderr
   (Trace), and the final `message` rides the envelope as a JSON string.
 
@@ -181,8 +197,11 @@ downstream reads one typed record. This makes the output port's reason to exist
 concrete: deliver the agent's certified, typed result to whoever is composing.
 
 This extends the (already-done) `structured_done` spec
-(`../specs/2026-06-12-structured-done.md`) with the `side_effects` field and the
-stdout wiring; the schema-enforcement machinery is reused, not rebuilt.
+(`../specs/2026-06-12-structured-done.md`): the schema-enforcement machinery for
+`result` is **reused**; the `side_effects` field, the `CheckpointRepo::diff` +
+non-git work, and the `TurnOutput`/`TurnResult::Done` envelope extension (both are
+2-field today, `turn.rs:43` / `transcript.rs:30`) are **net-new and land with
+Phase 1** (see Phasing) so the stdout contract is correct on first print.
 
 ### 4. Input port — currency is `event::Body`, not a bespoke intent enum
 
@@ -203,34 +222,43 @@ not consume the new input directly — its prompt is built from **two sources**:
 
 1. **New input** — from the input port (cli/repl/cloud), and
 2. **`retrace(log)`** — the deterministic fold of the event log into conversation
-   state (`retrace::messages`, `active_agent`, `active_cwd`,
-   `active_permissions`, `active_mutations`, `fold()`).
+   state (`retrace::messages`, `active_agent`, `active_cwd`, `active_mutations`,
+   `fold()`; permissions via the `ActivePermissions` projection surfaced through
+   `fold()`'s `effective_allow`, not a free function).
 
 These compose into **"the folded thing we send"** — the actual message list +
 state handed to the provider. The composition is **append-then-fold**: the new
 input is appended to the log as an `event::Body`, then `retrace(log)` folds the
-*whole* log (now including it) into the prompt. So there is exactly one
-prompt-builder (`retrace`), one source of truth (the log), and the new input is
-simply the newest event — the same way the output side records events *back* to
-the log. The cloud API is not special: it appends like everyone else and
-`retrace` folds it.
+*whole* log (now including it) into the prompt. The new input is simply the newest
+event — the same way the output side records events *back* to the log; the cloud
+API is not special.
 
-This exposes the system's core duality — **two projections of one log, with the
-machinery between them:**
+**Two honest exceptions** the clean picture hides (named here like deltas are on
+the output side):
+- The `<status>` turn-context block (codebase hash, dirty files, cwd) is
+  **prepended to the folded messages but never logged** (`turn.rs:696`) — an
+  ephemeral prompt prefix, not part of the fold.
+- The fold can trigger a **write back**: when agent state has drifted, the turn
+  records a reconciling `Agent` event after folding (`turn.rs:677-679`). So the
+  input side is read→fold→(sometimes)record, not purely read.
 
-| | Input side | Output side |
+This exposes the system's structure — **two log-derived read paths with the
+machinery between them.** They are symmetric in *direction* but asymmetric in
+*nature*, and the difference matters:
+
+| | Input side (`retrace`) | Output side (`classify`) |
 |---|---|---|
-| external thing | new input (port) | rendered output (sink) |
-| projection of the log | **`retrace` / fold** → prompt state | **`classify`** → class → destinations |
-| substrate | LOG (store) | LOG (store) |
-| machinery boundary | "folded thing" → LLM | events ← LLM (via `record`) |
+| shape | stateful **fold** over the whole log | stateless **map** per event |
+| cost | O(log length), order-dependent | O(1) per event |
+| obligation | **deterministic / bit-reproducible** (feeds the drift-equality check, `turn.rs:677`) — change-controlled | presentation only — free to change without corrupting history |
+| path | correctness / replay | presentation / routing |
 
-`retrace` is to input what `classify`/sinks is to output: both read the one log
-and project it — one *forward* into a prompt for the model, one *outward* into
-destinations for consumers. Everything else (history, state, routing) is derived;
-only the new input and the rendered output cross the boundary. The input port
-(§4) is just the adapter that gets the new event *into* the log; `retrace` —
-which already exists — does the fold. No new prompt path is introduced.
+So: `retrace` and `classify` are both projections of the one log — one *forward*
+into a prompt for the model, one *outward* into destinations for consumers — but
+`retrace` is a reduction in the trust path and `classify` is a map in the
+presentation path. Not interchangeable duals; siblings of different weight. The
+input port (§4) only gets the new event *into* the log; `retrace`, which already
+exists, does the fold.
 
 ### Invariants (honestly scoped)
 
@@ -246,30 +274,52 @@ which already exists — does the fold. No new prompt path is introduced.
 
 ## Phased migration
 
-Each phase is independently shippable, ordered lowest-risk-first, and each leaves
-the tree green.
+Each phase is independently shippable and leaves the tree green. Ordering note
+(per review): Phase 1 is the highest-value slice; **Phase 3 (workflow) is the
+riskiest**, not Phase 2. The `Emitter → Recorder` rename is reviewability, not
+risk-reduction — its blast radius is `turn.rs`, exactly what Phases 1–2 rewrite,
+so a standalone rename creates a rebase seam; it is therefore folded **into**
+Phase 1 (same file, same review pass) rather than a separate phase.
 
-**Phase 0 — `Emitter → Recorder` rename (confirmed).** Method `emit→record`,
-`delta→publish_delta`; the `record = commit + publish` vocabulary. 26 call-sites +
-tests, zero behavior change — landed as its own mechanical commit so later
-behavioral phases stay reviewable. *Decision: keep (do it first).*
+**Decision to close first:** open-decision #3 (`turn_complete` → Trace, the
+`TurnResult` return value is the sole stdout Result). Phase 1 depends on it.
 
-**Phase 1 — Output port for `gait run` (the bug fix).** `classify` (read-time) +
-`StdioSink`; rewrite `cmd_run`'s consumer loop to route by class; print
-`TurnResult` once on stdout; extract `cmd_run → cli/run.rs` + testable
-`RunArgs::parse`. Channel type unchanged; `wire::emit` untouched; REPL untouched.
-Fixes the originating stdout/stderr bug. *Smallest valuable slice.*
+**Phase 1 — Output port for `gait run`, with the Recorder rename and the result
+envelope (the bug fix + the contract).** Bundled because they all touch the same
+surface and Phase 1's stated goal is "stdout has *one* contract" — shipping a
+2-field Result now and adding `side_effects` later would break that contract:
+- `Emitter → Recorder` rename (`emit→record`, `delta→publish_delta`; ~26 sites,
+  mostly `turn.rs`; zero behavior change).
+- `classify` (read-time, pure) + `StdioSink`; rewrite `cmd_run`'s consumer loop to
+  route by class. Channel type unchanged; REPL untouched; `wire::emit` untouched.
+- Extend the envelope to `{message, result, side_effects}`: extend `TurnOutput` /
+  `TurnResult::Done` (2-field today), add `CheckpointRepo::diff` +
+  the non-git-shadow enhancement, fill `side_effects` from the per-turn checkpoint
+  diff. `result` schema-enforcement is reused as-is.
+- Print the `TurnResult` envelope once on stdout (Result); `turn_complete` event
+  stays Trace.
+- Extract `cmd_run → cli/run.rs` + testable `RunArgs::parse`.
+- *Note:* this phase **adds a read layer without removing any write mechanism** —
+  the 3→1 write-path consolidation lands in Phases 2–3. Consider splitting the
+  pure `cli/run.rs` extraction from the behavioral routing change into two commits.
 
-**Phase 2 — Tools & hooks publish.** Thread the emitter into `Tool::execute` /
-`Hook` methods; replace the `shell`/`config_hook` `wire::append` bypasses with
-`emit`. Now `cwd`/`hook_run` reach subscribers; `StdioSink` shows them live on
-stderr. Mechanical across 16 impls; behavior-additive. *Makes the "one write
-path" invariant real.*
+**Phase 2 — Tools & hooks publish.** Thread the `Recorder` into `Tool::execute` /
+`Hook` methods (the handle is already in scope at the call site, `turn.rs:200`;
+`Emitter` is `Send+Sync`, so `&Recorder` threads through the async call cleanly);
+replace the `shell`/`config_hook` `wire::append` bypasses with `record`. Now
+`cwd`/`hook_run` reach subscribers. Mechanical across **17 trait impls** (16
+concrete tools + the `ToolDef` blanket impl; ~23 `execute` fns incl. tests);
+`shell` keeps its `ctx` (used for `active_cwd`), only the append is replaced.
+*Makes the "one write path" invariant real.*
 
-**Phase 3 — Workflow under the boundary.** Replace `workflow/runner.rs`'s
-`wire::emit`→stdout with the channel + a `WorkflowSink` (or `StdioSink` reused).
-Fixes the workflow stdout conflation; gives sub-turn deltas a live consumer
-instead of a dropped receiver. *Brings the third entrypoint into the boundary.*
+**Phase 3 — Workflow under the boundary (riskiest; split 3a/3b).** The workflow
+emits via inline synchronous `wire::emit`→stdout with no channel.
+- **3a:** stand up a channel + a consumer task in `run_workflow` (it's `async`);
+  rewrite the 11 `wire::emit` raw-event sites to `record`; add `classify` arms for
+  the opaque `wire::raw` workflow events (`workflow_start`, `node_*`, …).
+- **3b (the load-bearing change):** re-plumb the dropped-receiver sub-turn emitter
+  (`exec_prompt.rs:92`) so sub-turn deltas/events reach the same channel.
+*Brings the third entrypoint into the boundary.*
 
 **Phase 4 — Input port.** `TurnSource` (currency `event::Body`) + `ArgSource`;
 then `ReplSource`, collapsing `chat.rs` and `cmd_run` onto one run loop — done
@@ -282,25 +332,35 @@ live. *The payoff the whole boundary was shaped for.*
 
 ## Open decisions
 
-1. ~~**Phase 0 rename**~~ — **decided: keep** (`Emitter → Recorder`, Phase 0).
-2. **Phase 2 mechanism** — emitter in the `execute` *signature* (per-call,
-   cleanest) vs. injected into `ToolCtx` at construction (requires reordering
-   construction after emitter creation). Plan assumes the signature.
-3. **`turn_complete` class** — confirm it becomes Trace and the `TurnResult`
-   return value is the sole stdout Result. (Recommended; resolves double-emit.)
-4. **Phase scope to commit to now** — is Phase 1 the next implementation target,
-   or do we want Phases 1–3 specced together before writing code?
+1. ~~**Phase 0 rename**~~ — **decided: keep**, folded into Phase 1 (not a
+   standalone phase — avoids a `turn.rs` rebase seam).
+2. **Phase 2 mechanism** — `Recorder` in the `execute` *signature* (per-call,
+   cleanest; async-safe — verified) vs. injected into `ToolCtx` at construction
+   (requires reordering construction after emitter creation). Plan assumes the
+   signature.
+3. **`turn_complete` class** — **close before Phase 1**: confirm it becomes Trace
+   and the `TurnResult` envelope is the sole stdout Result. (Recommended; resolves
+   double-emit.)
+4. **Phase scope to commit to now** — Phase 1 (now including rename + envelope) as
+   the next implementation target, or spec Phases 1–3 together before code?
 
 ## Appendix: key file:line references
 
 - Write primitives: `proto/emitter.rs:26,36`; `proto/wire.rs:73,79`.
-- stdout offenders: `bin/gait.rs:217,327,330`; `proto/wire.rs:81` (+ all
+- stdout offenders: `bin/gait.rs:217,328,330`; `proto/wire.rs:81` (+ all
   `workflow/runner.rs` sites); `ui/renderer.rs:187,219-229`.
-- Result paths: `turn.rs:857,1212` (channel) vs `turn.rs:864,1219` (return).
+- Result paths: `turn.rs:857,1212` (channel) vs `turn.rs:864,1219` (return);
+  envelope today 2-field (`turn.rs:43`, `transcript.rs:30`).
+- Checkpoint/side_effects: `git/checkpoint.rs:9` (`checkpoint`, returns SHA, no
+  diff), `:18-25` (non-git no-op), `:59` (alternates borrow), `:70-71` (unborn
+  path), `:112` (parent); `turn.rs:503` (init), `:846,1201` (checkpoint at
+  turn-complete).
 - Tool/hook bypass: `types.rs:197` (no emitter); `shell.rs:103`;
   `config_hook.rs:58`; tool call site holding emitter `turn.rs:200`.
-- Input surfaces: `gait.rs:317` / `turn.rs:690` (task); `ui/builder.rs:18,80`
-  (replies → `event::Body`); `chat.rs:129` (toggle); `permission.rs:132`,
-  `gait.rs:1084` (perm CLI); `spawn_agent.rs:78`, `harness.rs:61` (cross-session).
+- Input surfaces: `gait.rs:317` / `turn.rs:690` (task); `turn.rs:696` (`<status>`
+  prompt prefix, unlogged); `turn.rs:677-679` (Agent drift write-back);
+  `ui/builder.rs:18,80` (replies → `event::Body`); `chat.rs:129` (toggle);
+  `permission.rs:132`, `gait.rs:1084` (perm CLI); `spawn_agent.rs:78`,
+  `harness.rs:61` (cross-session).
 - Channel construct/consume: `gait.rs:314/324`; `chat.rs:214/261`;
   dropped-rx `turn.rs:394`, `exec_prompt.rs:92`.
