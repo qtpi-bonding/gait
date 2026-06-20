@@ -465,7 +465,17 @@ pub async fn run_turn(
                             _ => Some("[User approved.]".to_string()),
                         }
                     };
-                    if let Err(e) = execute_tool_call(&tc, &tools, emitter, prefix).await {
+                    if let Err(e) = execute_tool_call(
+                        &tc,
+                        &tools,
+                        emitter,
+                        prefix,
+                        &codebase_path,
+                        &gait_dir,
+                        &session_id,
+                    )
+                    .await
+                    {
                         // Emit error as tool result so model sees it
                         emitter.record(events::tool_result(
                             id.clone(),
@@ -1123,11 +1133,23 @@ pub async fn run_turn(
                 let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
                 let tc = *tc;
                 let tools = &tools;
+                let codebase_path = codebase_path.clone();
+                let gait_dir = gait_dir.clone();
+                let session_id = session_id.clone();
                 async move {
                     if let Some(reason) = block_reason {
                         Err(anyhow::anyhow!("[Blocked by hook] {}", reason))
                     } else {
-                        execute_tool_call(tc, tools, emitter, prefix).await
+                        execute_tool_call(
+                            tc,
+                            tools,
+                            emitter,
+                            prefix,
+                            &codebase_path,
+                            &gait_dir,
+                            &session_id,
+                        )
+                        .await
                     }
                 }
             }))
@@ -1268,9 +1290,17 @@ pub async fn run_turn(
                             emitter.record(events::toggle(toggle_kind, item_name, on))?;
                         }
                         let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
-                        let mut exec = execute_tool_call(tc, &tools, emitter, prefix)
-                            .await
-                            .unwrap_or_else(|e| error_tool_result(tc, e));
+                        let mut exec = execute_tool_call(
+                            tc,
+                            &tools,
+                            emitter,
+                            prefix,
+                            &codebase_path,
+                            &gait_dir,
+                            &session_id,
+                        )
+                        .await
+                        .unwrap_or_else(|e| error_tool_result(tc, e));
                         {
                             let raw_result = exec.result.result.as_str().unwrap_or("").to_string();
                             let post_tool_ctx = HookContext {
@@ -1455,9 +1485,17 @@ pub async fn run_turn(
                     ExecutionSignal::Continue => {
                         // skill (default) and any other serial tool
                         let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
-                        let mut exec = execute_tool_call(tc, &tools, emitter, prefix)
-                            .await
-                            .unwrap_or_else(|e| error_tool_result(tc, e));
+                        let mut exec = execute_tool_call(
+                            tc,
+                            &tools,
+                            emitter,
+                            prefix,
+                            &codebase_path,
+                            &gait_dir,
+                            &session_id,
+                        )
+                        .await
+                        .unwrap_or_else(|e| error_tool_result(tc, e));
                         {
                             let raw_result = exec.result.result.as_str().unwrap_or("").to_string();
                             let post_tool_ctx = HookContext {

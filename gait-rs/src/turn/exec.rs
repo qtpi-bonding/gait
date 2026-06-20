@@ -33,6 +33,9 @@ pub(super) async fn execute_tool_call(
     tools: &[Box<dyn Tool>],
     emitter: &Recorder,
     approval_prefix: Option<String>,
+    codebase: &std::path::Path,
+    gait_dir: &std::path::Path,
+    session_id: &str,
 ) -> anyhow::Result<ToolExecResult> {
     let id = tc.tool_call_id.clone();
     emitter.record(events::tool_call(
@@ -55,14 +58,42 @@ pub(super) async fn execute_tool_call(
             let res = if t.access().touches_world() {
                 // Hand path: run via the synapse, then replay the returned events
                 // into the real log (between ToolCall and ToolResult).
-                use crate::turn::synapse::{InProcessSynapse, ScopeRequest, Synapse as _};
-                let fired = InProcessSynapse
-                    .fire(
+                // Fall back to InProcessSynapse when not running as the `gait` binary
+                // (test binaries have different names and lack the `__run-tool` subcommand).
+                // The subprocess path is covered end-to-end by gait-bin/tests/run_tool_hand.rs.
+                use crate::turn::synapse::{ScopeRequest, Synapse as _};
+                let is_gait_binary = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.file_stem().map(|n| n == "gait"))
+                    .unwrap_or(false);
+                let fired = if is_gait_binary {
+                    use crate::session::log::read_events;
+                    use crate::session::retrace::active_cwd;
+                    use crate::turn::synapse::SubprocessSynapse;
+                    let events = read_events(&emitter.tx_path).unwrap_or_default();
+                    let cwd = active_cwd(&events, codebase);
+                    let syn = SubprocessSynapse {
+                        gait_dir: gait_dir.to_path_buf(),
+                        codebase: codebase.to_path_buf(),
+                        session_id: session_id.to_string(),
+                        cwd: cwd.to_string_lossy().into_owned(),
+                    };
+                    syn.fire(
                         t.as_ref(),
                         tc.args.clone(),
                         ScopeRequest { access: t.access() },
                     )
-                    .await;
+                    .await
+                } else {
+                    use crate::turn::synapse::InProcessSynapse;
+                    InProcessSynapse
+                        .fire(
+                            t.as_ref(),
+                            tc.args.clone(),
+                            ScopeRequest { access: t.access() },
+                        )
+                        .await
+                };
                 match fired {
                     Ok((value, events)) => {
                         for event in events {
@@ -364,7 +395,9 @@ mod synapse_routing_tests {
             args: serde_json::json!({}),
         };
 
-        let out = execute_tool_call(&tc, &tools, &rec, None).await.unwrap();
+        let out = execute_tool_call(&tc, &tools, &rec, None, dir.path(), dir.path(), "stest123")
+            .await
+            .unwrap();
         assert_eq!(out.result.result, serde_json::Value::String("ok".into()));
 
         // The cwd event the tool emitted must be present in the real log.
