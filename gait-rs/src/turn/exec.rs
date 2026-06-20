@@ -244,67 +244,6 @@ pub(crate) fn apply_parse_filter(raw: &str, ops: &serde_json::Value) -> String {
     current
 }
 
-#[cfg(test)]
-mod synapse_routing_tests {
-    use super::*;
-    use crate::types::{Tool, ToolAccess, ToolCall};
-    use tempfile::tempdir;
-
-    struct TouchTool;
-    #[async_trait::async_trait]
-    impl Tool for TouchTool {
-        fn name(&self) -> &str {
-            "touch"
-        }
-        fn description(&self) -> &str {
-            ""
-        }
-        fn parameters(&self) -> &serde_json::Value {
-            static P: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
-            P.get_or_init(|| serde_json::json!({"type":"object"}))
-        }
-        async fn execute(
-            &self,
-            _a: serde_json::Value,
-            rec: &crate::proto::Recorder,
-        ) -> Result<serde_json::Value, crate::tools::ToolError> {
-            rec.record(crate::proto::events::cwd("/from-tool")).ok();
-            Ok(serde_json::Value::String("ok".into()))
-        }
-        fn access(&self) -> ToolAccess {
-            ToolAccess {
-                reads: true,
-                ..Default::default()
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn world_tool_events_are_recorded_by_caller() {
-        let dir = tempdir().unwrap();
-        // Create session directory so the log file can be written.
-        std::fs::create_dir_all(dir.path().join("sessions/stest123")).unwrap();
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let rec = crate::proto::Recorder::for_session(dir.path(), "stest123", tx);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(TouchTool)];
-        let tc = ToolCall {
-            tool_call_id: "c1".into(),
-            tool_name: "touch".into(),
-            args: serde_json::json!({}),
-        };
-
-        let out = execute_tool_call(&tc, &tools, &rec, None).await.unwrap();
-        assert_eq!(out.result.result, serde_json::Value::String("ok".into()));
-
-        // The cwd event the tool emitted must be present in the real log.
-        let log = std::fs::read_to_string(&rec.tx_path).unwrap();
-        assert!(
-            log.contains("/from-tool"),
-            "tool-emitted event must be replayed into the log"
-        );
-    }
-}
-
 /// Apply the post-tool pipeline to a single tool result.
 /// Calls `post_tool` hooks first (they may rewrite the result), then runs the
 /// in-memory output filter (`parse` regex ops or `curate_prompt` side-turn).
@@ -373,5 +312,66 @@ pub(super) async fn apply_output_filter(
                 None,
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod synapse_routing_tests {
+    use super::*;
+    use crate::types::{Tool, ToolAccess, ToolCall};
+    use tempfile::tempdir;
+
+    struct TouchTool;
+    #[async_trait::async_trait]
+    impl Tool for TouchTool {
+        fn name(&self) -> &str {
+            "touch"
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn parameters(&self) -> &serde_json::Value {
+            static P: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+            P.get_or_init(|| serde_json::json!({"type":"object"}))
+        }
+        async fn execute(
+            &self,
+            _a: serde_json::Value,
+            rec: &crate::proto::Recorder,
+        ) -> Result<serde_json::Value, crate::tools::ToolError> {
+            rec.record(crate::proto::events::cwd("/from-tool")).ok();
+            Ok(serde_json::Value::String("ok".into()))
+        }
+        fn access(&self) -> ToolAccess {
+            ToolAccess {
+                reads: true,
+                ..Default::default()
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn world_tool_events_are_recorded_by_caller() {
+        let dir = tempdir().unwrap();
+        // Create session directory so the log file can be written.
+        std::fs::create_dir_all(dir.path().join("sessions/stest123")).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let rec = crate::proto::Recorder::for_session(dir.path(), "stest123", tx);
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(TouchTool)];
+        let tc = ToolCall {
+            tool_call_id: "c1".into(),
+            tool_name: "touch".into(),
+            args: serde_json::json!({}),
+        };
+
+        let out = execute_tool_call(&tc, &tools, &rec, None).await.unwrap();
+        assert_eq!(out.result.result, serde_json::Value::String("ok".into()));
+
+        // The cwd event the tool emitted must be present in the real log.
+        let log = std::fs::read_to_string(&rec.tx_path).unwrap();
+        assert!(
+            log.contains("/from-tool"),
+            "tool-emitted event must be replayed into the log"
+        );
     }
 }
