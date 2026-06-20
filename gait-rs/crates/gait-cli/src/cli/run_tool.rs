@@ -98,10 +98,16 @@ pub async fn cmd_run_tool(argv: &[String]) {
 
     // Convert serde_json::Value → pbjson_types::Value.
     // pbjson_types::Value implements serde Deserialize, so we round-trip via JSON.
-    // Any shape that doesn't deserialize cleanly collapses to a null Value — better
-    // than panicking inside the hand.
-    let result_proto: pbjson_types::Value =
-        serde_json::from_value(result_json).unwrap_or(pbjson_types::Value { kind: None });
+    // Any shape that doesn't deserialize cleanly collapses to a null Value — the
+    // brain then sees null from a tool call that actually succeeded. Log so that
+    // the fallback is detectable.
+    let result_proto: pbjson_types::Value = serde_json::from_value(result_json.clone())
+        .unwrap_or_else(|e| {
+            eprintln!(
+                "[hand] result→proto conversion failed ({e}); returning null. raw: {result_json}"
+            );
+            pbjson_types::Value { kind: None }
+        });
 
     let feedback = Feedback {
         result: Some(result_proto),

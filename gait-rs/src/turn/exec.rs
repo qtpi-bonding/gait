@@ -66,6 +66,12 @@ pub(super) async fn execute_tool_call(
                     .ok()
                     .and_then(|p| p.file_stem().map(|n| n == "gait"))
                     .unwrap_or(false);
+                if !is_gait_binary {
+                    eprintln!(
+                        "[gait] world tool '{}' running in-process (binary-name guard did not match 'gait')",
+                        tc.tool_name
+                    );
+                }
                 let fired = if is_gait_binary {
                     use crate::session::log::read_events;
                     use crate::session::retrace::active_cwd;

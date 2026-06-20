@@ -84,9 +84,9 @@ impl Synapse for SubprocessSynapse {
         // empty object — the hand can still see the call.
         let args_struct: pbjson_types::Struct = serde_json::from_value(args).unwrap_or_default();
 
-        // Phase 2a scope mapping is coarse: `reads` flips `read_all`, everything else
-        // empty. Phase 2b fills `readable[]`/`writable[]` from the resolved paths and
-        // `network` from the tool's host allowlist.
+        // TODO(phase-2b): scope mapping is coarse — `reads` maps to `read_all` (permits
+        // everything), which is overly permissive. Phase 2b fills `readable[]`/`writable[]`
+        // from resolved codebase-relative paths and `network` from the tool's host allowlist.
         let requested = Scope {
             read_all: scope.access.reads,
             readable: vec![],
@@ -114,6 +114,10 @@ impl Synapse for SubprocessSynapse {
         // which tool instance to execute inside its own `ToolCtx`.
         let exe = std::env::current_exe()
             .map_err(|e| ToolError::Internal(anyhow::anyhow!("current_exe: {e}")))?;
+        // Scrub the hand's environment so it cannot read API keys or other
+        // brain-side secrets from the process environment. The allowlist mirrors
+        // the shell tool's own spawn guard; extended in Phase 2b when the spine
+        // relay enforces a per-runner environment capsule.
         let mut child = tokio::process::Command::new(&exe)
             .arg("__run-tool")
             .arg("--gait-dir")
@@ -127,6 +131,13 @@ impl Synapse for SubprocessSynapse {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
+            .env_clear()
+            .envs(std::env::vars().filter(|(k, _)| {
+                matches!(
+                    k.as_str(),
+                    "PATH" | "HOME" | "USER" | "SHELL" | "TERM" | "LANG" | "LC_ALL" | "TMPDIR"
+                )
+            }))
             .spawn()
             .map_err(|e| ToolError::Internal(anyhow::anyhow!("spawn __run-tool: {e}")))?;
 
