@@ -55,6 +55,7 @@ mod curate;
 mod exec;
 mod gate;
 mod prompt;
+pub(crate) mod synapse;
 
 // Re-exports
 #[allow(unused_imports)] // used by `#[cfg(test)]` in tests.rs
