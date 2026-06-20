@@ -2,6 +2,36 @@ use super::*;
 use tempfile::TempDir;
 
 #[test]
+fn sandbox_config_defaults_to_strict_on() {
+    let c = GaitConfig::default();
+    assert!(c.sandbox.on);
+    assert!(c.sandbox.readable.is_empty());
+    assert!(matches!(c.sandbox.network, NetworkConfig::Off));
+}
+
+#[test]
+fn sandbox_config_parses_block() {
+    let json = r##"{"model":"x/y","sandbox":{"readable":["~/.cargo"],"network":"*"}}"##;
+    let c: GaitConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(c.sandbox.readable, vec!["~/.cargo"]);
+    assert!(matches!(c.sandbox.network, NetworkConfig::All));
+}
+
+#[test]
+fn sandbox_network_config_parses_false_as_off() {
+    let json = r##"{"model":"x/y","sandbox":{"network":false}}"##;
+    let c: GaitConfig = serde_json::from_str(json).unwrap();
+    assert!(matches!(c.sandbox.network, NetworkConfig::Off));
+}
+
+#[test]
+fn sandbox_network_config_parses_string_host_as_hosts() {
+    let json = r##"{"model":"x/y","sandbox":{"network":"github.com"}}"##;
+    let c: GaitConfig = serde_json::from_str(json).unwrap();
+    assert!(matches!(c.sandbox.network, NetworkConfig::Hosts(ref h) if h == &["github.com"]));
+}
+
+#[test]
 fn loads_default_when_no_file() {
     let dir = TempDir::new().unwrap();
     let cfg = load_config(dir.path());

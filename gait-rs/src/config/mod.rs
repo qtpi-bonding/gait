@@ -93,6 +93,111 @@ pub struct HookDef {
     pub run: String,
 }
 
+// ── Sandbox ────────────────────────────────────────────────────────────────
+// `NetworkConfig` deliberately uses a custom Deserialize (NOT `#[serde(untagged)]`)
+// so that a bare hostname string like "github.com" is treated as an allowlist of
+// one host — not silently coerced into the All-egress variant by serde's untagged
+// matching.
+
+/// Network policy for the sandbox.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NetworkConfig {
+    /// No network access (default).
+    Off,
+    /// Allow-list of hostnames.
+    Hosts(Vec<String>),
+    /// Allow all egress.
+    All,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        NetworkConfig::Off
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for NetworkConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::{self, Unexpected};
+        struct V;
+        impl<'de> de::Visitor<'de> for V {
+            type Value = NetworkConfig;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(
+                    f,
+                    "false, \"*\", a hostname string, or an array of hostnames"
+                )
+            }
+            fn visit_bool<E: de::Error>(self, v: bool) -> Result<NetworkConfig, E> {
+                if !v {
+                    Ok(NetworkConfig::Off)
+                } else {
+                    Err(E::invalid_value(Unexpected::Bool(v), &self))
+                }
+            }
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<NetworkConfig, E> {
+                if v == "*" {
+                    Ok(NetworkConfig::All)
+                } else {
+                    Ok(NetworkConfig::Hosts(vec![v.to_owned()]))
+                }
+            }
+            fn visit_seq<A: de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<NetworkConfig, A::Error> {
+                let mut hosts = Vec::new();
+                while let Some(h) = seq.next_element::<String>()? {
+                    hosts.push(h);
+                }
+                Ok(NetworkConfig::Hosts(hosts))
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+impl serde::Serialize for NetworkConfig {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            NetworkConfig::Off => s.serialize_bool(false),
+            NetworkConfig::All => s.serialize_str("*"),
+            NetworkConfig::Hosts(h) => h.serialize(s),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SandboxConfig {
+    /// Whether the sandbox is engaged. Default: true (strict).
+    #[serde(default = "default_true")]
+    pub on: bool,
+    /// Paths the sandbox allows reading from.
+    #[serde(default)]
+    pub readable: Vec<String>,
+    /// Paths the sandbox allows writing to.
+    #[serde(default)]
+    pub writable: Vec<String>,
+    /// Network policy applied to sandboxed processes.
+    #[serde(default)]
+    pub network: NetworkConfig,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            on: true,
+            readable: vec![],
+            writable: vec![],
+            network: NetworkConfig::default(),
+        }
+    }
+}
+
 // ── LLM parameter surface ─────────────────────────────────────────────────────
 // These serde structs are the JSON-facing layer (gait.jsonc + agent frontmatter).
 // The proto `LlmParams` message family is the log-facing layer.
@@ -250,6 +355,12 @@ pub struct GaitConfig {
     /// to the session log regardless of this flag. Default: false.
     #[serde(default)]
     pub show_thinking: bool,
+
+    /// Sandbox policy for shell/process/file execution. Strict-by-default
+    /// (`on: true`, empty allow-lists, network off) so that engagement is
+    /// safe unless the user explicitly opts in.
+    #[serde(default)]
+    pub sandbox: SandboxConfig,
 }
 
 fn default_compaction_threshold() -> f64 {
@@ -285,6 +396,7 @@ impl Default for GaitConfig {
             result_schema: None,
             llm_params: LlmParamsConfig::default(),
             show_thinking: false,
+            sandbox: SandboxConfig::default(),
         }
     }
 }
