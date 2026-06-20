@@ -5,7 +5,7 @@ use std::path::PathBuf;
 /// Result of applying the sandbox to this process.
 #[derive(Debug, Clone)]
 pub enum SandboxStatus {
-    /// Kernel enforcement active — writes outside `enforcement_scope` will be rejected at the
+    /// Kernel enforcement active — writes outside `scope.writable` will be rejected at the
     /// syscall level (Landlock on Linux, Seatbelt on macOS).
     Active,
     /// Kernel enforcement unavailable on this platform / kernel version. Tier-0 scope gate
@@ -15,11 +15,35 @@ pub enum SandboxStatus {
     Noop,
 }
 
+/// Network access policy for the sandboxed process.
+#[derive(Debug, Clone, Default)]
+pub enum NetworkPolicy {
+    /// No network access (default — most restrictive).
+    #[default]
+    Deny,
+    /// Allow network access to the listed hosts (port 443 typically; TBD).
+    Hosts(Vec<String>),
+    /// Allow all network access (least restrictive).
+    All,
+}
+
+/// Scope of filesystem and network access for the sandboxed process.
+#[derive(Debug, Clone, Default)]
+pub struct SandboxScope {
+    /// Paths the process may read. Empty means "no read restriction" only when `read_all` is set.
+    pub readable: Vec<PathBuf>,
+    /// Paths the process may write. Writes outside this set are rejected at the syscall level.
+    pub writable: Vec<PathBuf>,
+    /// `true` when config readable contains `"*"` — disables read restrictions entirely.
+    pub read_all: bool,
+    pub network: NetworkPolicy,
+}
+
 /// Kernel write-enforcement sandbox. Injected at process start (once, before the turn loop).
 /// Implemented per-platform; [`NoopSandbox`] is the fallback for tests / Windows.
 pub trait Sandbox: Send + Sync {
     /// Apply enforcement before the turn loop. Called once at process start.
-    fn apply(&self, enforcement_scope: &[PathBuf]) -> anyhow::Result<SandboxStatus>;
+    fn apply(&self, scope: &SandboxScope) -> anyhow::Result<SandboxStatus>;
 }
 
 // ── NoopSandbox ──────────────────────────────────────────────────────────────
@@ -29,7 +53,7 @@ pub trait Sandbox: Send + Sync {
 pub struct NoopSandbox;
 
 impl Sandbox for NoopSandbox {
-    fn apply(&self, _enforcement_scope: &[PathBuf]) -> anyhow::Result<SandboxStatus> {
+    fn apply(&self, _scope: &SandboxScope) -> anyhow::Result<SandboxStatus> {
         Ok(SandboxStatus::Noop)
     }
 }
@@ -42,7 +66,7 @@ impl Sandbox for NoopSandbox {
 pub struct LandlockSandbox;
 
 impl Sandbox for LandlockSandbox {
-    fn apply(&self, _enforcement_scope: &[PathBuf]) -> anyhow::Result<SandboxStatus> {
+    fn apply(&self, _scope: &SandboxScope) -> anyhow::Result<SandboxStatus> {
         Ok(SandboxStatus::Unavailable {
             reason: "Landlock not yet implemented".to_string(),
         })
@@ -51,13 +75,13 @@ impl Sandbox for LandlockSandbox {
 
 // ── SeatbeltSandbox ──────────────────────────────────────────────────────────
 
-/// macOS Seatbelt sandbox via `sandbox-exec` subprocess wrapper.
+/// macOS Seatbelt sandbox — in-process self-seal via sandbox_compile_string/sandbox_apply.
 /// Deprecated since macOS Sierra but still used by Chrome/Firefox; revisit if Apple removes it.
 /// Stub — not yet implemented; returns [`SandboxStatus::Unavailable`].
 pub struct SeatbeltSandbox;
 
 impl Sandbox for SeatbeltSandbox {
-    fn apply(&self, _enforcement_scope: &[PathBuf]) -> anyhow::Result<SandboxStatus> {
+    fn apply(&self, _scope: &SandboxScope) -> anyhow::Result<SandboxStatus> {
         Ok(SandboxStatus::Unavailable {
             reason: "Seatbelt not yet implemented".to_string(),
         })
@@ -84,25 +108,43 @@ mod tests {
 
     #[test]
     fn noop_returns_noop() {
-        let s = NoopSandbox.apply(&[PathBuf::from("src/")]).unwrap();
+        let scope = SandboxScope {
+            writable: vec![PathBuf::from("src/")],
+            ..Default::default()
+        };
+        let s = NoopSandbox.apply(&scope).unwrap();
         assert!(matches!(s, SandboxStatus::Noop));
     }
 
     #[test]
     fn landlock_stub_returns_unavailable() {
-        let s = LandlockSandbox.apply(&[PathBuf::from("src/")]).unwrap();
+        let scope = SandboxScope {
+            writable: vec![PathBuf::from("src/")],
+            ..Default::default()
+        };
+        let s = LandlockSandbox.apply(&scope).unwrap();
         assert!(matches!(s, SandboxStatus::Unavailable { .. }));
     }
 
     #[test]
     fn seatbelt_stub_returns_unavailable() {
-        let s = SeatbeltSandbox.apply(&[PathBuf::from("src/")]).unwrap();
+        let scope = SandboxScope {
+            writable: vec![PathBuf::from("src/")],
+            ..Default::default()
+        };
+        let s = SeatbeltSandbox.apply(&scope).unwrap();
         assert!(matches!(s, SandboxStatus::Unavailable { .. }));
     }
 
     #[test]
     fn platform_sandbox_is_box_dyn_sandbox() {
         let sb = platform_sandbox();
-        let _ = sb.apply(&[]).unwrap();
+        let _ = sb.apply(&SandboxScope::default()).unwrap();
+    }
+
+    #[test]
+    fn noop_sandbox_with_default_scope_returns_noop() {
+        let s = NoopSandbox.apply(&SandboxScope::default()).unwrap();
+        assert!(matches!(s, SandboxStatus::Noop));
     }
 }
