@@ -296,6 +296,30 @@ pub trait Hook: Send + Sync {
     fn post_turn(&self, _ctx: &HookContext, _rec: &crate::Recorder) {}
 }
 
+/// What a tool needs from the sandbox, in the same dimensions as the sandbox scope.
+/// `reads`/`writes` are CODEBASE/world filesystem access; gait-dir access is implicit
+/// and brain-side. Used to route a call (brain vs hand) and, later, to seal the hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ToolAccess {
+    pub reads: bool,
+    pub writes: bool,
+    pub network: bool,
+    pub spawns: bool,
+}
+
+impl ToolAccess {
+    /// A tool with no world access — runs in the brain (in-process).
+    pub fn brain_side() -> Self {
+        Self::default()
+    }
+    /// True if the call must run in a sealed hand. `spawns` is deliberately
+    /// excluded: spawn-capable tools (spawn_agent/run_workflow) stay brain-side
+    /// and delegate the actual process launch.
+    pub fn touches_world(&self) -> bool {
+        self.reads || self.writes || self.network
+    }
+}
+
 /// Extensible tool interface. Implement this to define a callable tool for `run_turn`.
 /// `ToolDef` implements this for ad-hoc closure-based tools.
 #[async_trait::async_trait]
@@ -308,6 +332,12 @@ pub trait Tool: Send + Sync {
         args: serde_json::Value,
         _rec: &crate::Recorder,
     ) -> Result<serde_json::Value, crate::tools::ToolError>;
+
+    /// What this tool needs from the sandbox. Drives routing (brain vs hand) and,
+    /// in later phases, the per-call seal. Default: brain-side (no world access).
+    fn access(&self) -> ToolAccess {
+        ToolAccess::brain_side()
+    }
 
     /// Whether this tool is safe to run concurrently alongside other parallel-mode tools.
     /// Read-only tools (read, glob, grep, ls, codesearch, webfetch) return Parallel.
@@ -753,5 +783,36 @@ mod tests {
         let json = serde_json::to_string(&part).unwrap();
         let back: AssistantPart = serde_json::from_str(&json).unwrap();
         assert_eq!(part, back);
+    }
+
+    #[test]
+    fn tool_access_defaults_to_brain_side() {
+        let a = ToolAccess::default();
+        assert_eq!(
+            a,
+            ToolAccess {
+                reads: false,
+                writes: false,
+                network: false,
+                spawns: false
+            }
+        );
+        assert!(!a.touches_world());
+        assert_eq!(ToolAccess::brain_side(), a);
+    }
+
+    #[test]
+    fn tool_access_touches_world_ignores_spawns() {
+        // spawns alone is NOT world-touching (spawn_agent stays brain-side; it delegates the launch).
+        let spawns_only = ToolAccess {
+            spawns: true,
+            ..ToolAccess::default()
+        };
+        assert!(!spawns_only.touches_world());
+        let reads = ToolAccess {
+            reads: true,
+            ..ToolAccess::default()
+        };
+        assert!(reads.touches_world());
     }
 }
