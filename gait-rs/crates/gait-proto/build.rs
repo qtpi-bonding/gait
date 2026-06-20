@@ -7,6 +7,7 @@ fn main() {
         proto_dir.join("log.proto"),
         proto_dir.join("state.proto"),
         proto_dir.join("workflow.proto"),
+        proto_dir.join("sandbox.proto"),
     ];
     for p in &protos {
         println!("cargo:rerun-if-changed={}", p.display());

@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package gait.sandbox.v1;
+
+import "google/protobuf/struct.proto";
+import "log.proto";
+
+// Sent brain→hand: one tool invocation request.
+message Impulse {
+  string tool = 1;
+  google.protobuf.Struct args = 2;
+  string cwd = 3;
+  Scope requested = 4;
+}
+
+// Sent hand→brain: one tool invocation response.
+message Feedback {
+  google.protobuf.Value result = 1;
+  repeated gait.log.v1.Event events = 2;
+  // reserved 3: was `gait.log.v1.UnlockItem denied = 3;` (Phase 2c).
+  // UnlockItem does not exist in log.proto yet; field number reserved so
+  // future assignment does not renumber the wire format.
+  reserved 3;
+}
+
+// Capability scope for one tool call.
+message Scope {
+  bool read_all = 1;
+  repeated string readable = 2;
+  repeated string writable = 3;
+  NetworkScope network = 4;
+}
+
+message NetworkScope {
+  enum Mode {
+    DENY = 0;
+    HOSTS = 1;
+    ALL = 2;
+  }
+  Mode mode = 1;
+  repeated string hosts = 2;
+}
+
+// Future: framing envelope for the brain↔spine nerve channel (Phase 3).
+message Signal {
+  uint64 corr_id = 1;
+  oneof body {
+    Impulse impulse = 2;
+    Feedback feedback = 3;
+    Spawn spawn = 4;
+  }
+}
+
+message Spawn {
+  repeated string argv = 1;
+}

@@ -3,6 +3,9 @@
 //!   1. JSON round-trips (pbjson serde is live);
 //!   2. the wire is proto3-canonical (camelCase, externally-tagged oneof);
 //!   3. `content_hash` recomputes stably and is sensitive to body + version.
+//!
+//! Phase 2a (Task 1) extends this with binary-protobuf round-trip tests for the
+//! new `gait.sandbox.v1` wire types (Impulse/Feedback/Scope/Signal).
 
 use super::envelope::body_json;
 use super::gait::log::v1::{event, payload, Event, Payload, UserText};
@@ -173,4 +176,121 @@ fn agent_carries_llm_params_field() {
         back.llm_params.as_ref().and_then(|p| p.max_tokens),
         Some(512)
     );
+}
+
+// ============================================================================
+// Phase 2a — sandbox wire types (Task 1)
+// ============================================================================
+//
+// Proves the binary protobuf hop works end-to-end: an `Impulse` constructed
+// in Rust round-trips through `prost::Message::encode_to_vec` / `decode`. This
+// is the foundation for the brain↔hand subprocess boundary; everything later
+// in Phase 2a (Scope enforcement, NetworkScope) is layered on top of these
+// generated types.
+
+#[test]
+fn impulse_round_trips_via_binary_prost() {
+    use crate::gait::sandbox::v1::Impulse;
+    use prost::Message as _;
+
+    let impulse = Impulse {
+        tool: "read".into(),
+        cwd: "/repo".into(),
+        args: None,
+        requested: None,
+    };
+
+    let bytes = prost::Message::encode_to_vec(&impulse);
+    assert!(!bytes.is_empty(), "encoded Impulse must be non-empty");
+
+    let decoded = Impulse::decode(&bytes[..]).expect("decode Impulse");
+    assert_eq!(decoded.tool, "read");
+    assert_eq!(decoded.cwd, "/repo");
+    assert_eq!(decoded.args, None);
+    assert_eq!(decoded.requested, None);
+}
+
+#[test]
+fn feedback_carries_value_and_events() {
+    use crate::gait::log::v1::Event;
+    use crate::gait::sandbox::v1::Feedback;
+    use pbjson_types::Value;
+    use prost::Message as _;
+
+    // Build a small log::v1::Event so we can verify the cross-package
+    // repeated Event field actually decodes (it imports `gait.log.v1.Event`).
+    let event = Event {
+        version: 1,
+        id: "00000000-0000-4000-8000-000000000002".into(),
+        seq: 7,
+        ts: 1_700_000_000_000,
+        ..Default::default()
+    };
+
+    let feedback = Feedback {
+        result: Some(Value {
+            kind: Some(pbjson_types::value::Kind::StringValue("ok".into())),
+        }),
+        events: vec![event],
+    };
+
+    let bytes = prost::Message::encode_to_vec(&feedback);
+    let decoded = Feedback::decode(&bytes[..]).expect("decode Feedback");
+    assert_eq!(decoded.events.len(), 1);
+    assert_eq!(decoded.events[0].id, "00000000-0000-4000-8000-000000000002");
+    assert_eq!(decoded.events[0].seq, 7);
+}
+
+#[test]
+fn scope_serializes_network_scope() {
+    use crate::gait::sandbox::v1::{network_scope::Mode, Impulse, NetworkScope, Scope};
+    use prost::Message as _;
+
+    let impulse = Impulse {
+        tool: "fetch".into(),
+        cwd: "/repo".into(),
+        requested: Some(Scope {
+            read_all: true,
+            readable: vec!["/repo".into()],
+            writable: vec![],
+            network: Some(NetworkScope {
+                mode: Mode::Hosts as i32,
+                hosts: vec!["example.com".into()],
+            }),
+        }),
+        ..Default::default()
+    };
+
+    let bytes = prost::Message::encode_to_vec(&impulse);
+    let decoded = Impulse::decode(&bytes[..]).expect("decode Impulse with Scope");
+    let scope = decoded.requested.expect("scope present");
+    assert!(scope.read_all);
+    assert_eq!(scope.readable, vec!["/repo".to_string()]);
+    assert!(scope.writable.is_empty());
+    let net = scope.network.expect("network scope present");
+    assert_eq!(net.mode, Mode::Hosts as i32);
+    assert_eq!(net.hosts, vec!["example.com".to_string()]);
+}
+
+#[test]
+fn signal_envelope_discriminates_oneof() {
+    use crate::gait::sandbox::v1::{signal::Body, Impulse, Signal};
+    use prost::Message as _;
+
+    let signal = Signal {
+        corr_id: 42,
+        body: Some(Body::Impulse(Impulse {
+            tool: "read".into(),
+            cwd: "/repo".into(),
+            ..Default::default()
+        })),
+    };
+
+    let bytes = prost::Message::encode_to_vec(&signal);
+    let decoded = Signal::decode(&bytes[..]).expect("decode Signal");
+    assert_eq!(decoded.corr_id, 42);
+    match decoded.body {
+        Some(Body::Impulse(imp)) => assert_eq!(imp.tool, "read"),
+        other => panic!("expected Impulse arm, got {other:?}"),
+    }
 }

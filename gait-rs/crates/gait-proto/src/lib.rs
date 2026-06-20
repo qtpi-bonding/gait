@@ -19,9 +19,17 @@ pub mod gait {
         }
     }
     pub mod workflow {
+        #[allow(clippy::large_enum_variant)] // generated prost code
         pub mod v1 {
             include!(concat!(env!("OUT_DIR"), "/gait.workflow.v1.rs"));
             include!(concat!(env!("OUT_DIR"), "/gait.workflow.v1.serde.rs"));
+        }
+    }
+    pub mod sandbox {
+        #[allow(clippy::large_enum_variant)] // generated prost code
+        pub mod v1 {
+            include!(concat!(env!("OUT_DIR"), "/gait.sandbox.v1.rs"));
+            include!(concat!(env!("OUT_DIR"), "/gait.sandbox.v1.serde.rs"));
         }
     }
 }
