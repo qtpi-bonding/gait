@@ -88,7 +88,7 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-        "__run-tool" => gait_cli::cli::run_tool::cmd_run_tool(&args[2..].to_vec()).await,
+        "__run-tool" => gait_cli::cli::run_tool::cmd_run_tool(&args[2..]).await,
         _ => {
             eprintln!("[gait] unknown command: {}", args[1]);
             usage();
