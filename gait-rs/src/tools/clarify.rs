@@ -30,6 +30,12 @@ pub struct ClarifyTool {
     parameters: Value,
 }
 
+impl Default for ClarifyTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ClarifyTool {
     pub fn new() -> Self {
         let parameters = crate::tools::make_schema::<ClarifyParams>();

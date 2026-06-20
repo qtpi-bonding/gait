@@ -16,6 +16,12 @@ pub struct AnnotateTool {
     parameters: Value,
 }
 
+impl Default for AnnotateTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AnnotateTool {
     pub fn new() -> Self {
         Self {

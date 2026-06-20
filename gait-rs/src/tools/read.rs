@@ -167,8 +167,7 @@ impl Tool for ReadTool {
         let mut truncated_by_bytes = false;
         let end = lines.len().min(offset + limit);
 
-        for i in offset..end {
-            let annotated = &annotated_all[i];
+        for annotated in annotated_all.iter().take(end).skip(offset) {
             // Strip the `#XY|` (or `#XY-N|`) prefix, then truncate content if too long,
             // then re-stamp with the same prefix so the truncated line is still anchorable.
             let (prefix, content) = match annotated.find('|') {

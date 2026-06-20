@@ -76,13 +76,6 @@ pub struct AnthropicSystemBlock {
 }
 
 impl AnthropicSystemBlock {
-    pub fn text(text: impl Into<String>) -> Self {
-        Self {
-            kind: "text".into(),
-            text: text.into(),
-            cache_control: None,
-        }
-    }
     pub fn text_cached(text: impl Into<String>) -> Self {
         Self {
             kind: "text".into(),
@@ -178,6 +171,7 @@ pub enum AnthropicEvent {
         index: u32,
     },
     MessageDelta {
+        #[allow(dead_code)] // wire-format mirror; not consumed
         delta: MessageDeltaData,
         usage: Option<DeltaUsage>,
     },
@@ -197,6 +191,7 @@ pub struct MessageStartData {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
     Text {
+        #[allow(dead_code)] // wire-format mirror; not consumed
         text: String,
     },
     ToolUse {
@@ -204,8 +199,10 @@ pub enum ContentBlock {
         name: String,
     },
     Thinking {
+        #[allow(dead_code)] // wire-format mirror; not consumed
         thinking: String,
         #[serde(default)]
+        #[allow(dead_code)] // wire-format mirror; not consumed
         signature: Option<String>,
     },
     #[serde(other)]
@@ -233,6 +230,7 @@ pub enum ContentDelta {
 
 #[derive(Debug, Deserialize)]
 pub struct MessageDeltaData {
+    #[allow(dead_code)] // wire-format mirror; not consumed
     pub stop_reason: Option<String>,
 }
 
@@ -247,6 +245,7 @@ pub struct DeltaUsage {
 #[derive(Debug, Deserialize)]
 pub struct AnthropicErrorData {
     #[serde(rename = "type")]
+    #[allow(dead_code)] // wire-format mirror; not consumed
     pub kind: String,
     pub message: String,
 }

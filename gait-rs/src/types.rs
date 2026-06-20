@@ -90,6 +90,7 @@ pub struct ToolDef {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value, // JSON Schema object
+    #[allow(clippy::type_complexity)]
     pub execute: Box<
         dyn Fn(
                 serde_json::Value,
@@ -102,6 +103,7 @@ pub struct ToolDef {
             > + Send
             + Sync,
     >,
+    #[allow(clippy::type_complexity)]
     pub permission: Option<Box<dyn Fn(&serde_json::Value) -> ToolPermission + Send + Sync>>,
 }
 

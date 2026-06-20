@@ -1,0 +1,28 @@
+#!/bin/sh
+# gait pre-push hook: enforce clippy (zero warnings) before code leaves the machine.
+# This is the heavier check (it compiles the workspace), so it runs on push
+# rather than on every commit. Formatting is checked in .githooks/pre-commit.
+#
+# Read-only: clippy only reports — it never modifies your code. On a warning the
+# push is rejected and nothing is sent to the remote.
+#
+# Activate (once per clone) with either:
+#   git config core.hooksPath .githooks
+# or:
+#   make -C gait-rs hooks
+#
+# Skip a single push with: git push --no-verify
+set -e
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root/gait-rs"
+
+echo "pre-push: cargo clippy (-D warnings)"
+if ! cargo clippy --workspace --all-targets -- -D warnings; then
+    echo
+    echo "✗ clippy found issues. Fix them (or run 'cargo clippy --fix'), commit, and push again." >&2
+    echo "  To push anyway: git push --no-verify" >&2
+    exit 1
+fi
+
+echo "pre-push: ok"

@@ -101,7 +101,7 @@ pub fn compute_allow_decisions(
         // When --pattern is supplied, only approve if that pattern would cover the request.
         // When --pattern is absent, default to approving every pending item.
         let covered = match params.pattern.as_ref() {
-            Some(p) => is_request_approved(&item.tool_name, &req, &[p.clone()]),
+            Some(p) => is_request_approved(&item.tool_name, &req, std::slice::from_ref(p)),
             None => true,
         };
 

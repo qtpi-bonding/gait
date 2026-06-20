@@ -35,24 +35,24 @@ fn print_init_summary(gait_dir: &std::path::Path) {
     let display = gait_dir.display();
     eprintln!("[gait] initialized gait-dir at {display}");
     eprintln!();
-    eprintln!("  {:<32} {:<46} {}", "file", "purpose", "git");
+    eprintln!("  {:<32} {:<46} git", "file", "purpose");
     eprintln!(
-        "  {:<32} {:<46} {}",
-        "gait.jsonc", "model + tool-permission config", "committed"
+        "  {:<32} {:<46} committed",
+        "gait.jsonc", "model + tool-permission config"
     );
     eprintln!(
-        "  {:<32} {:<46} {}",
-        "agents/default/AGENT.md", "the agent's role and instructions", "committed"
+        "  {:<32} {:<46} committed",
+        "agents/default/AGENT.md", "the agent's role and instructions"
     );
     eprintln!(
-        "  {:<32} {:<46} {}",
-        "USER.md", "your personal instructions (not shared)", "ignored"
+        "  {:<32} {:<46} ignored",
+        "USER.md", "your personal instructions (not shared)"
     );
     eprintln!(
-        "  {:<32} {:<46} {}",
-        "skills/", "installed skills  (skills/<n>/SKILL.md)", "committed*"
+        "  {:<32} {:<46} committed*",
+        "skills/", "installed skills  (skills/<n>/SKILL.md)"
     );
-    eprintln!("  {:<32} {:<46} {}", "sessions/", "turn history", "ignored");
+    eprintln!("  {:<32} {:<46} ignored", "sessions/", "turn history");
     eprintln!();
     eprintln!("  * empty dir; git-tracked when you add skills");
     eprintln!();

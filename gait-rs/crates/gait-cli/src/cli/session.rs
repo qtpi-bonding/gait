@@ -117,8 +117,8 @@ fn undo_command(
         .clone();
 
     // Default (neither flag) = both axes.
-    let do_code = code || (!code && !transcript);
-    let do_transcript = transcript || (!code && !transcript);
+    let do_code = code || !transcript;
+    let do_transcript = transcript || !code;
 
     let _lock = gait_core::turn::SessionLock::acquire(&session_dir)
         .map_err(|e| anyhow::anyhow!("cannot undo: {} (is a turn in progress?)", e))?;

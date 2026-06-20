@@ -73,7 +73,7 @@ impl Default for OnErrorConfig {
 
 impl OnErrorConfig {
     pub fn is_abort(&self) -> bool {
-        self.goto.as_deref().map_or(true, |g| g == "abort")
+        self.goto.as_deref().is_none_or(|g| g == "abort")
     }
     pub fn is_continue(&self) -> bool {
         self.goto.as_deref() == Some("continue")

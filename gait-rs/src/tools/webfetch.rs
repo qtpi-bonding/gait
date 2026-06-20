@@ -52,16 +52,12 @@ const MAX_TIMEOUT_SECS: u64 = 120;
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 enum FetchFormat {
     Text,
+    #[default]
     Markdown,
     Html,
-}
-
-impl Default for FetchFormat {
-    fn default() -> Self {
-        FetchFormat::Markdown
-    }
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -76,6 +72,12 @@ struct WebfetchParams {
 
 pub struct WebfetchTool {
     parameters: Value,
+}
+
+impl Default for WebfetchTool {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WebfetchTool {

@@ -109,7 +109,7 @@ pub async fn run_loop(
         };
         let session_for_turn = session.clone();
         let handle = tokio::spawn(async move {
-            crate::turn::run_turn(&*session_for_turn, &emitter, profile, input).await
+            crate::turn::run_turn(&session_for_turn, &emitter, profile, input).await
             // emitter drops here → channel closes → drive() returns
         });
         sink.begin_turn();
@@ -142,6 +142,7 @@ pub async fn run_loop(
 /// already-loaded `config` + optional agent file + optional model override — the
 /// same resolution the CLI and REPL do. Embedders load config via [`load_config`]
 /// and pass it in (reusing it across turns), instead of touching `Profile`.
+#[allow(clippy::too_many_arguments)]
 pub async fn resolve_profile(
     config: &crate::config::GaitConfig,
     gait_dir: &Path,

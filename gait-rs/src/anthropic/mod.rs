@@ -42,20 +42,12 @@ pub struct AnthropicProvider {
 }
 
 impl AnthropicProvider {
-    pub fn new(api_key: String, model: String) -> Self {
+    pub fn new(api_key: String, model: String, base_url: Option<String>, cache: bool) -> Self {
         Self {
             api_key,
             model,
-            base_url: None,
-            cache: false,
-        }
-    }
-    pub fn with_base_url(api_key: String, model: String, base_url: String) -> Self {
-        Self {
-            api_key,
-            model,
-            base_url: Some(base_url),
-            cache: false,
+            base_url,
+            cache,
         }
     }
 }
@@ -115,7 +107,7 @@ fn build_anthropic_messages(
             match &mut last_msg.content {
                 AnthropicContent::Text(existing) => {
                     // Replace the bare-text variant with a Blocks vec [original_text, tail].
-                    let prev = std::mem::replace(existing, String::new());
+                    let prev = std::mem::take(existing);
                     last_msg.content = AnthropicContent::Blocks(vec![
                         AnthropicBlock::Text {
                             text: prev,
@@ -291,7 +283,10 @@ mod cache_prefix_tests {
 
         // The tail is the final block: it carries the volatile text and NO cache_control.
         match blocks.last().unwrap() {
-            AnthropicBlock::Text { text, cache_control } => {
+            AnthropicBlock::Text {
+                text,
+                cache_control,
+            } => {
                 assert_eq!(text, "STATUS A");
                 assert!(cache_control.is_none(), "tail block must NOT be cached");
             }

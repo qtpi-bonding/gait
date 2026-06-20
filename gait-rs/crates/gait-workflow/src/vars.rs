@@ -47,9 +47,9 @@ pub fn substitute(template: &str, ctx: &VarContext) -> String {
             let field_path = &caps[2];
             if let Some(out) = ctx.node_outputs.get(node_id) {
                 if let Some(json) = &out.json {
-                    let value: Option<&serde_json::Value> = field_path.split('.').fold(
-                        Some(json as &serde_json::Value),
-                        |acc: Option<&serde_json::Value>, k: &str| acc.and_then(|v| v.get(k)),
+                    let value: Option<&serde_json::Value> = field_path.split('.').try_fold(
+                        json as &serde_json::Value,
+                        |acc: &serde_json::Value, k: &str| acc.get(k),
                     );
                     return value
                         .map(|v| match v {

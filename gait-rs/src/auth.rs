@@ -122,7 +122,7 @@ pub fn remove_api_key(provider: &str) -> Result<(), AuthError> {
 pub fn list_credentials_from(path: &std::path::Path) -> HashMap<String, String> {
     read_raw_auth(path)
         .into_iter()
-        .filter_map(|(k, v)| {
+        .map(|(k, v)| {
             let display = match v.get("type").and_then(|t| t.as_str()) {
                 Some("api") => {
                     let key = v.get("key").and_then(|k| k.as_str()).unwrap_or("");
@@ -135,7 +135,7 @@ pub fn list_credentials_from(path: &std::path::Path) -> HashMap<String, String> 
                 Some("wellknown") => "wellknown".to_string(),
                 other => other.unwrap_or("unknown").to_string(),
             };
-            Some((k, display))
+            (k, display)
         })
         .collect()
 }

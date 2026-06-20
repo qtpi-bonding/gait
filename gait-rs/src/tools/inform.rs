@@ -24,6 +24,12 @@ pub struct InformTool {
     parameters: Value,
 }
 
+impl Default for InformTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InformTool {
     pub fn new() -> Self {
         let parameters = crate::tools::make_schema::<InformParams>();

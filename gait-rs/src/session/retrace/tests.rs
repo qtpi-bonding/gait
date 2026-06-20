@@ -633,7 +633,7 @@ fn active_messages_resets_on_compaction() {
     };
     let evs = mint_events(vec![
         events::user_text("before".into(), None),
-        events::summary("the summary".into(), 1, cu.clone()),
+        events::summary("the summary".into(), 1, cu),
         events::user_text("after".into(), None),
     ]);
     let msgs = run_projection(&ActiveMessages, &evs, &HashMap::new()).msgs;
@@ -659,9 +659,9 @@ fn active_messages_two_compactions_second_wins() {
     };
     let evs = mint_events(vec![
         events::user_text("before-first".into(), None),
-        events::summary("first summary".into(), 1, cu.clone()),
+        events::summary("first summary".into(), 1, cu),
         events::user_text("between".into(), None),
-        events::summary("second summary".into(), 1, cu.clone()),
+        events::summary("second summary".into(), 1, cu),
         events::user_text("after-second".into(), None),
     ]);
     let msgs = run_projection(&ActiveMessages, &evs, &HashMap::new()).msgs;
@@ -1007,7 +1007,7 @@ fn loadables_projection_full_session_and_mutation_aware() {
     };
     let with_comp = mint_events(vec![
         events::toggle("mcp", "slack", true),
-        events::summary("summary".into(), 1, cu.clone()),
+        events::summary("summary".into(), 1, cu),
     ]);
     let p = ActiveAgent {
         seed: AgentState::default(),
@@ -1046,13 +1046,13 @@ fn last_turn_blocks_returns_last_complete() {
     ];
     let evs = mint_events(vec![
         events::turn_complete(events::TurnCompleteParams {
-            usage: usage.clone(),
+            usage,
             blocks: first.clone(),
             message: "ok".into(),
             ..Default::default()
         }),
         events::turn_complete(events::TurnCompleteParams {
-            usage: usage.clone(),
+            usage,
             blocks: second.clone(),
             message: "ok".into(),
             ..Default::default()
@@ -1441,7 +1441,11 @@ fn inject_appears_in_base() {
     use crate::proto::envelope::mint;
     use std::collections::HashMap;
     let ev = mint(events::inject("user", "injected".into()), None, 1, 0);
-    let raw = run_projection(&ActiveRawMessages, &[ev.clone()], &HashMap::new());
+    let raw = run_projection(
+        &ActiveRawMessages,
+        std::slice::from_ref(&ev),
+        &HashMap::new(),
+    );
     assert_eq!(raw.base.len(), 1, "Inject must go into base (Design A)");
     assert_eq!(raw.base[0].id(), ev.id.as_str());
 }

@@ -1,6 +1,6 @@
 use crate::agent_frontmatter::split_frontmatter;
 use crate::config::WasmPluginDef;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Scan `<gait_dir>/plugins/<name>/PLUGIN.md` and return one `WasmPluginDef` per valid file.
 ///
@@ -45,7 +45,7 @@ pub fn scan_plugins(gait_dir: &Path) -> Vec<WasmPluginDef> {
     out
 }
 
-fn parse_plugin_file(path: &Path, plugin_dir: &PathBuf) -> Option<WasmPluginDef> {
+fn parse_plugin_file(path: &Path, plugin_dir: &Path) -> Option<WasmPluginDef> {
     let content = std::fs::read_to_string(path).ok()?;
     let (fm, _body) = split_frontmatter(&content);
     if fm.is_empty() {

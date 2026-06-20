@@ -19,7 +19,13 @@ async fn anthropic_streams_hello() {
     }];
 
     let mut stream = provider
-        .stream("You are helpful.", &messages, &[], &Default::default(), None)
+        .stream(
+            "You are helpful.",
+            &messages,
+            &[],
+            &Default::default(),
+            None,
+        )
         .await
         .unwrap();
     let mut text = String::new();

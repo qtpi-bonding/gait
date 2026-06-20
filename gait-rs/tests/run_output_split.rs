@@ -43,7 +43,7 @@ fn stdout_is_only_the_result_stream_goes_to_stderr() {
         }),
     });
 
-    drop(sink); // release the &mut borrows on out/err
+    let _ = sink; // release the &mut borrows on out/err
     let out_s = String::from_utf8(out).unwrap();
     let err_s = String::from_utf8(err).unwrap();
 

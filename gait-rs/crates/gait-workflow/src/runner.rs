@@ -148,6 +148,7 @@ async fn run_single_node(params: NodeRunParams) -> anyhow::Result<(String, NodeT
 
 /// Prepare and push a node onto the ready queue.
 /// Calls before-hooks, emits node_start, sets Running status, builds VarContext.
+#[allow(clippy::too_many_arguments)]
 async fn enqueue_node_task(
     node: NodeDef,
     wf: &Arc<WorkflowDef>,
@@ -694,6 +695,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<WorkflowOutco
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn emit_workflow_start(
     rec: &Recorder,
     repos: &gait_core::git::Repos,
@@ -749,6 +751,7 @@ async fn emit_workflow_start(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn emit_workflow_complete(
     rec: &Recorder,
     repos: &gait_core::git::Repos,
@@ -856,7 +859,7 @@ fn propagate_branch_skips(
             inactive.push(else_.clone());
         }
     }
-    for (_key, target) in &branch_cfg.cases {
+    for target in branch_cfg.cases.values() {
         if target != routed_to {
             inactive.push(target.clone());
         }

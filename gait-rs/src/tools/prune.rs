@@ -36,6 +36,12 @@ pub struct PruneTool {
     parameters: Value,
 }
 
+impl Default for PruneTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PruneTool {
     pub fn new() -> Self {
         let parameters = crate::tools::make_schema::<PruneParams>();
@@ -45,10 +51,7 @@ impl PruneTool {
 
 /// Returns (tool_call_event_id, tool_result_event_id, tool_name) for a given call_id,
 /// scanning `events` for the *latest* ToolCall/ToolResult pair.
-fn resolve_call_id(
-    call_id: &str,
-    events: &[Event],
-) -> Option<(String, String, String)> {
+fn resolve_call_id(call_id: &str, events: &[Event]) -> Option<(String, String, String)> {
     let mut call_event_id: Option<String> = None;
     let mut call_name: Option<String> = None;
     let mut result_event_id: Option<String> = None;
@@ -91,7 +94,10 @@ fn recency_boundary(events: &[Event]) -> u64 {
 
 /// Returns the seq of the ToolResult event for `result_event_id`, or None if not found.
 fn event_seq(result_event_id: &str, events: &[Event]) -> Option<u64> {
-    events.iter().find(|e| e.id == result_event_id).map(|e| e.seq)
+    events
+        .iter()
+        .find(|e| e.id == result_event_id)
+        .map(|e| e.seq)
 }
 
 #[async_trait::async_trait]
@@ -125,8 +131,8 @@ impl Tool for PruneTool {
 
         // Read the current log to resolve call_ids and compute the recency boundary.
         let log_path = &rec.tx_path;
-        let all_events =
-            read_events(log_path).map_err(|e| ToolError::Execute(format!("prune: read log: {e}")))?;
+        let all_events = read_events(log_path)
+            .map_err(|e| ToolError::Execute(format!("prune: read log: {e}")))?;
 
         let boundary_seq = recency_boundary(&all_events);
 
@@ -190,7 +196,11 @@ impl Tool for PruneTool {
         // Compose result message
         let mut parts: Vec<String> = Vec::new();
         if !pruned.is_empty() {
-            parts.push(format!("pruned {} result(s): {}", pruned.len(), pruned.join(", ")));
+            parts.push(format!(
+                "pruned {} result(s): {}",
+                pruned.len(),
+                pruned.join(", ")
+            ));
         }
         if !skipped.is_empty() {
             parts.push(format!("skipped: {}", skipped.join("; ")));
@@ -227,7 +237,10 @@ mod tests {
     #[test]
     fn resolve_finds_latest_tool_result() {
         let (_dir, path) = make_log_with_events();
-        append_event(&path, ev::tool_call("call_abc".into(), "grep".into(), &serde_json::json!({})));
+        append_event(
+            &path,
+            ev::tool_call("call_abc".into(), "grep".into(), &serde_json::json!({})),
+        );
         append_event(
             &path,
             ev::tool_result("call_abc".into(), "first output".into(), None, None),
@@ -247,7 +260,10 @@ mod tests {
     #[test]
     fn resolve_unknown_call_id_returns_none() {
         let (_dir, path) = make_log_with_events();
-        append_event(&path, ev::tool_call("call_abc".into(), "grep".into(), &serde_json::json!({})));
+        append_event(
+            &path,
+            ev::tool_call("call_abc".into(), "grep".into(), &serde_json::json!({})),
+        );
         let events = read_events(&path).unwrap();
         assert!(resolve_call_id("call_xyz", &events).is_none());
     }
@@ -257,7 +273,10 @@ mod tests {
     #[test]
     fn recency_boundary_zero_when_fewer_than_two_turn_completes() {
         let (_dir, path) = make_log_with_events();
-        append_event(&path, ev::tool_call("c1".into(), "grep".into(), &serde_json::json!({})));
+        append_event(
+            &path,
+            ev::tool_call("c1".into(), "grep".into(), &serde_json::json!({})),
+        );
         // One TurnComplete
         append_event(&path, ev::turn_complete(TurnCompleteParams::default()));
         let events = read_events(&path).unwrap();
@@ -269,13 +288,25 @@ mod tests {
         let (_dir, path) = make_log_with_events();
 
         // Turn 1 result
-        append_event(&path, ev::tool_call("c1".into(), "grep".into(), &serde_json::json!({})));
-        append_event(&path, ev::tool_result("c1".into(), "old".into(), None, None));
+        append_event(
+            &path,
+            ev::tool_call("c1".into(), "grep".into(), &serde_json::json!({})),
+        );
+        append_event(
+            &path,
+            ev::tool_result("c1".into(), "old".into(), None, None),
+        );
         let tc1 = append_event(&path, ev::turn_complete(TurnCompleteParams::default()));
 
         // Turn 2 result
-        append_event(&path, ev::tool_call("c2".into(), "read".into(), &serde_json::json!({})));
-        let tr2 = append_event(&path, ev::tool_result("c2".into(), "new".into(), None, None));
+        append_event(
+            &path,
+            ev::tool_call("c2".into(), "read".into(), &serde_json::json!({})),
+        );
+        let tr2 = append_event(
+            &path,
+            ev::tool_result("c2".into(), "new".into(), None, None),
+        );
         append_event(&path, ev::turn_complete(TurnCompleteParams::default()));
 
         let events = read_events(&path).unwrap();
@@ -295,7 +326,10 @@ mod tests {
         let (_dir, log_path) = make_log_with_events();
 
         // Old result (before second-to-last TurnComplete)
-        append_event(&log_path, ev::tool_call("c_old".into(), "grep".into(), &serde_json::json!({})));
+        append_event(
+            &log_path,
+            ev::tool_call("c_old".into(), "grep".into(), &serde_json::json!({})),
+        );
         let old_tr = append_event(
             &log_path,
             ev::tool_result("c_old".into(), "stale data".into(), None, None),
@@ -303,8 +337,14 @@ mod tests {
         let tc1 = append_event(&log_path, ev::turn_complete(TurnCompleteParams::default()));
 
         // New result (after last TurnComplete)
-        append_event(&log_path, ev::tool_call("c_new".into(), "read".into(), &serde_json::json!({})));
-        append_event(&log_path, ev::tool_result("c_new".into(), "fresh".into(), None, None));
+        append_event(
+            &log_path,
+            ev::tool_call("c_new".into(), "read".into(), &serde_json::json!({})),
+        );
+        append_event(
+            &log_path,
+            ev::tool_result("c_new".into(), "fresh".into(), None, None),
+        );
         append_event(&log_path, ev::turn_complete(TurnCompleteParams::default()));
 
         // Verify old_tr is before boundary
@@ -318,10 +358,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let rec = crate::Recorder::new(log_path.clone(), tx);
         let result = rt
-            .block_on(tool.execute(
-                serde_json::json!({ "call_ids": ["c_old"] }),
-                &rec,
-            ))
+            .block_on(tool.execute(serde_json::json!({ "call_ids": ["c_old"] }), &rec))
             .unwrap();
         let msg = result.as_str().unwrap();
         assert!(msg.contains("too old to prune"), "got: {msg}");
@@ -349,8 +386,14 @@ mod tests {
         let (_dir, log_path) = make_log_with_events();
 
         for id in ["c1", "c2", "c3"] {
-            append_event(&log_path, ev::tool_call(id.into(), "grep".into(), &serde_json::json!({})));
-            append_event(&log_path, ev::tool_result(id.into(), "data".into(), None, None));
+            append_event(
+                &log_path,
+                ev::tool_call(id.into(), "grep".into(), &serde_json::json!({})),
+            );
+            append_event(
+                &log_path,
+                ev::tool_result(id.into(), "data".into(), None, None),
+            );
         }
 
         let tool = PruneTool::new();
@@ -371,13 +414,25 @@ mod tests {
         let (_dir, log_path) = make_log_with_events();
 
         // Old result
-        append_event(&log_path, ev::tool_call("c_old".into(), "grep".into(), &serde_json::json!({})));
-        append_event(&log_path, ev::tool_result("c_old".into(), "stale".into(), None, None));
+        append_event(
+            &log_path,
+            ev::tool_call("c_old".into(), "grep".into(), &serde_json::json!({})),
+        );
+        append_event(
+            &log_path,
+            ev::tool_result("c_old".into(), "stale".into(), None, None),
+        );
         append_event(&log_path, ev::turn_complete(TurnCompleteParams::default()));
 
         // Recent result
-        append_event(&log_path, ev::tool_call("c_new".into(), "read".into(), &serde_json::json!({})));
-        append_event(&log_path, ev::tool_result("c_new".into(), "fresh".into(), None, None));
+        append_event(
+            &log_path,
+            ev::tool_call("c_new".into(), "read".into(), &serde_json::json!({})),
+        );
+        append_event(
+            &log_path,
+            ev::tool_result("c_new".into(), "fresh".into(), None, None),
+        );
         append_event(&log_path, ev::turn_complete(TurnCompleteParams::default()));
 
         let tool = PruneTool::new();

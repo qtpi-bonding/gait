@@ -12,6 +12,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 
 /// Bridges old per-field test call sites to the new run_turn(&Session, ResolvedProfile, TurnInput).
+#[allow(clippy::too_many_arguments)]
 async fn run_turn_test_call(
     gait_dir: std::path::PathBuf,
     codebase_path: std::path::PathBuf,
@@ -40,6 +41,7 @@ async fn run_turn_test_call(
 /// Like [`run_turn_test_call`], but first appends a `user_turn` (Phase 4
 /// Option A: the caller owns input, `run_turn` folds). For tests that assert
 /// the `user_turn` lands in the transcript.
+#[allow(clippy::too_many_arguments)]
 async fn run_turn_test_call_seeded(
     gait_dir: std::path::PathBuf,
     codebase_path: std::path::PathBuf,
@@ -89,8 +91,8 @@ impl Provider for MockProvider {
         _system: &str,
         _messages: &[Message],
         _tools: &[Box<dyn Tool>],
-        params: &crate::config::LlmParamsConfig,
-            _tail_context: Option<&str>,
+        _params: &crate::config::LlmParamsConfig,
+        _tail_context: Option<&str>,
     ) -> Result<
         std::pin::Pin<
             Box<dyn futures_util::Stream<Item = Result<StreamChunk, ProviderError>> + Send>,
@@ -138,8 +140,8 @@ impl Provider for FakeProvider {
         _system: &str,
         _messages: &[Message],
         _tools: &[Box<dyn Tool>],
-        params: &crate::config::LlmParamsConfig,
-            _tail_context: Option<&str>,
+        _params: &crate::config::LlmParamsConfig,
+        _tail_context: Option<&str>,
     ) -> Result<
         std::pin::Pin<
             Box<dyn futures_util::Stream<Item = Result<StreamChunk, ProviderError>> + Send>,
@@ -1321,7 +1323,10 @@ async fn always_policy_streams_edit_preview_delta() {
 
     stream_preview_if_always(
         PreviewPolicy::Always,
-        tools.iter().find(|t| t.name() == "edit"),
+        tools
+            .iter()
+            .find(|t| t.name() == "edit")
+            .map(|t| t.as_ref()),
         &args,
         &emitter,
     );
@@ -1357,7 +1362,10 @@ async fn on_ask_policy_streams_nothing() {
 
     stream_preview_if_always(
         PreviewPolicy::OnAsk,
-        tools.iter().find(|t| t.name() == "edit"),
+        tools
+            .iter()
+            .find(|t| t.name() == "edit")
+            .map(|t| t.as_ref()),
         &args,
         &emitter,
     );

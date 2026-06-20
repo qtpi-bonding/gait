@@ -1,0 +1,31 @@
+#!/bin/sh
+# gait pre-commit hook: enforce rustfmt on the Rust workspace (fast).
+# Clippy runs in the pre-push hook instead — see .githooks/pre-push.
+#
+# Activate (once per clone) with either:
+#   git config core.hooksPath .githooks
+# or:
+#   make -C gait-rs hooks
+#
+# Skip a single commit with: git commit --no-verify
+set -e
+
+root="$(git rev-parse --show-toplevel)"
+
+# Only run when Rust sources or manifests are staged — keeps doc-only /
+# config-only commits instant.
+if ! git diff --cached --name-only --diff-filter=ACMR \
+    | grep -qE '\.rs$|(^|/)Cargo\.(toml|lock)$|(^|/)rustfmt\.toml$'; then
+    exit 0
+fi
+
+cd "$root/gait-rs"
+
+echo "pre-commit: cargo fmt --check"
+if ! cargo fmt --all -- --check; then
+    echo
+    echo "✗ formatting check failed. Run 'make -C gait-rs fmt' (or 'cargo fmt --all') and re-stage." >&2
+    exit 1
+fi
+
+echo "pre-commit: ok"

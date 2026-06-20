@@ -57,12 +57,12 @@ fn count_turn_complete_counts_correctly() {
     let events = vec![
         mint(events::user_text("x".into(), None)),
         mint(events::turn_complete(events::TurnCompleteParams {
-            usage: usage.clone(),
+            usage,
             ..Default::default()
         })),
         mint(events::user_text("y".into(), None)),
         mint(events::turn_complete(events::TurnCompleteParams {
-            usage: usage.clone(),
+            usage,
             ..Default::default()
         })),
     ];
@@ -77,7 +77,7 @@ fn last_compaction_index_finds_last() {
     };
     let events = vec![
         mint(events::user_text("x".into(), None)),
-        mint(events::summary("s1".into(), 1, cu.clone())),
+        mint(events::summary("s1".into(), 1, cu)),
         mint(events::user_text("y".into(), None)),
     ];
     assert_eq!(last_compaction_index(&events), Some(1));

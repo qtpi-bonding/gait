@@ -199,7 +199,10 @@ impl ReplRenderer {
         // Prefix widths: "  ┌─ result " = 12, "  └" = 3 — subtract each so both lines = usable.
         let top_bar = "\u{2500}".repeat(usable.saturating_sub(12));
         let bot_bar = "\u{2500}".repeat(usable.saturating_sub(3));
-        eprint!("{}  \u{2500}\u{2500} result {}{}\r\n", DIM_FG, top_bar, RESET);
+        eprint!(
+            "{}  \u{2500}\u{2500} result {}{}\r\n",
+            DIM_FG, top_bar, RESET
+        );
         for line in json.lines() {
             eprint!("    {}{}{}\r\n", self.theme.accent.fg(), line, RESET);
         }

@@ -46,8 +46,14 @@ fn build_loadable_catalog_shows_all_kinds() {
     // We check that no entry line ends with an enabled= flag.
     for line in idx.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("mcp ") || trimmed.starts_with("skill ") || trimmed.starts_with("plugin ") {
-            assert!(!trimmed.contains("enabled="), "entry line must not contain enabled= flag: {trimmed}");
+        if trimmed.starts_with("mcp ")
+            || trimmed.starts_with("skill ")
+            || trimmed.starts_with("plugin ")
+        {
+            assert!(
+                !trimmed.contains("enabled="),
+                "entry line must not contain enabled= flag: {trimmed}"
+            );
         }
     }
 }
@@ -261,7 +267,7 @@ mod exec_replace_tests {
             _system: &str,
             _messages: &[Message],
             _tools: &[Box<dyn crate::types::Tool>],
-            params: &crate::config::LlmParamsConfig,
+            _params: &crate::config::LlmParamsConfig,
             _tail_context: Option<&str>,
         ) -> Result<
             std::pin::Pin<

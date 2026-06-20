@@ -70,6 +70,12 @@ pub struct ReplState {
     pub(crate) saw_structured_done: bool,
 }
 
+impl Default for ReplState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ReplState {
     pub fn new() -> Self {
         Self {
@@ -185,7 +191,7 @@ impl ReplState {
                     .duration
                     .as_ref()
                     .map(|d| (d.seconds as u64) * 1000 + (d.nanos as u64) / 1_000_000);
-                let ok = tr.process.as_ref().map_or(true, |pr| pr.exit_code == 0);
+                let ok = tr.process.as_ref().is_none_or(|pr| pr.exit_code == 0);
                 let name = self.pending_tool.take().unwrap_or_else(|| "?".to_string());
                 // Revert status line to "thinking…" while LLM processes the result.
                 if let Some(t) = &self.timer {

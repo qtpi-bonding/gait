@@ -60,7 +60,10 @@ mod prompt;
 #[allow(unused_imports)] // used by `#[cfg(test)]` in tests.rs
 pub(crate) use exec::apply_parse_filter;
 pub(crate) use prompt::build_turn_context;
-pub use prompt::{build_loadable_catalog, build_loadable_enabled_state, build_permission_status, build_session_state};
+pub use prompt::{
+    build_loadable_catalog, build_loadable_enabled_state, build_permission_status,
+    build_session_state,
+};
 
 // Internal call-site imports — let run_turn reach the moved helpers
 // without prefixing every call. `super::*` would re-export our own
@@ -384,7 +387,7 @@ pub async fn run_turn(
     // has context from the prior turn.
     let mut turn_ctx: Option<String> = None;
     let did_resume = if matches!(
-        pre_events.last().and_then(|e| event_kind(e)),
+        pre_events.last().and_then(event_kind),
         Some(payload::Kind::PermissionsReply(_))
     ) {
         // Find the Permissions event immediately preceding the reply
@@ -613,11 +616,7 @@ pub async fn run_turn(
             enabled: enabled_names.contains(&plugin.name),
         });
     }
-    let mut system_prompt = prompt::build_dynamic_system_prompt(
-        &system_prompt,
-        &entries,
-        &hooks,
-    );
+    let mut system_prompt = prompt::build_dynamic_system_prompt(&system_prompt, &entries, &hooks);
 
     // MUST happen AFTER `build_dynamic_system_prompt` so `Agent.instructions`
     // captures the effective prompt (loadable index + permissions included),
@@ -666,7 +665,7 @@ pub async fn run_turn(
             system_prompt: system_prompt.clone(),
             ..Default::default()
         };
-        if let Some(new_sp) = h.pre_turn(&ctx, &emitter) {
+        if let Some(new_sp) = h.pre_turn(&ctx, emitter) {
             system_prompt = new_sp;
         }
     }
@@ -703,6 +702,8 @@ pub async fn run_turn(
     let mut inform_signal: Option<Vec<pb::InformItem>> = None;
     let mut all_turn_text = String::new();
 
+    // 0 covers the zero-iteration case; the loop overwrites it each iteration.
+    #[allow(unused_assignments)]
     let mut final_step_index = 0usize;
     for step_index in 0..max_iter.unwrap_or(100) {
         // Check cancellation before starting this step
@@ -750,7 +751,7 @@ pub async fn run_turn(
                 last_role: last_role.clone(),
                 ..Default::default()
             };
-            if let Some(mutations) = h.pre_step(&ctx, &emitter, &outgoing_raw) {
+            if let Some(mutations) = h.pre_step(&ctx, emitter, &outgoing_raw) {
                 for m in &mutations {
                     match m {
                         MessageMutation::Redact { id } => {
@@ -789,7 +790,7 @@ pub async fn run_turn(
         }
 
         // 3. Coalesce for LLM
-        let mut outgoing = coalesce(outgoing_raw);
+        let outgoing = coalesce(outgoing_raw);
 
         // 4. Build the session-state tail message (cache-safe). The status
         // (`<status>`) was previously prepended as a synthetic message at index
@@ -906,7 +907,7 @@ pub async fn run_turn(
                 ..Default::default()
             };
             for h in &hooks {
-                h.post_step(&ctx, &emitter);
+                h.post_step(&ctx, emitter);
             }
         }
 
@@ -972,7 +973,7 @@ pub async fn run_turn(
                     ..Default::default()
                 };
                 for h in &hooks {
-                    h.post_turn(&post_turn_ctx, &emitter);
+                    h.post_turn(&post_turn_ctx, emitter);
                 }
             }
             return Ok(TurnResult::Done {
@@ -994,7 +995,10 @@ pub async fn run_turn(
         let mut tool_approval_prefixes: HashMap<String, String> = HashMap::new();
 
         for tc in &step_tool_calls {
-            let tool = tools.iter().find(|t| t.name() == tc.tool_name);
+            let tool = tools
+                .iter()
+                .find(|t| t.name() == tc.tool_name)
+                .map(|t| t.as_ref());
             match gate_classify(tc, tool, &effective_allow, &deny, auto) {
                 GateDecision::Deny => {
                     denied_ids.insert(tc.tool_call_id.clone());
@@ -1079,7 +1083,6 @@ pub async fn run_turn(
                 })
                 .collect();
 
-
             // Everything else with ExecutionMode::Parallel runs as a concurrent batch.
             let is_parallel_eligible = |tc: &ToolCall| -> bool {
                 tools
@@ -1109,7 +1112,6 @@ pub async fn run_turn(
                     tool_args: tc.args.clone(),
                     ..Default::default()
                 };
-                let emitter = emitter;
                 let block_reason = hooks.iter().find_map(|h| {
                     if let HookAction::Block { reason } = h.pre_tool(&pre_tool_ctx, emitter) {
                         Some(reason)
@@ -1180,7 +1182,7 @@ pub async fn run_turn(
                     ..Default::default()
                 };
                 if let Some(reason) = hooks.iter().find_map(|h| {
-                    if let HookAction::Block { reason } = h.pre_tool(&serial_pre_tool_ctx, &emitter)
+                    if let HookAction::Block { reason } = h.pre_tool(&serial_pre_tool_ctx, emitter)
                     {
                         Some(reason)
                     } else {
@@ -1403,7 +1405,7 @@ pub async fn run_turn(
                                 ..Default::default()
                             };
                             for h in &hooks {
-                                h.post_turn(&post_turn_ctx, &emitter);
+                                h.post_turn(&post_turn_ctx, emitter);
                             }
                         }
                         return Ok(TurnResult::Done {
@@ -1486,11 +1488,9 @@ pub async fn run_turn(
                 }
             }
 
-            for r in all_results {
-                if let Some((part, result)) = r {
-                    assistant_parts.push(part);
-                    tool_results.push(result);
-                }
+            for (part, result) in all_results.into_iter().flatten() {
+                assistant_parts.push(part);
+                tool_results.push(result);
             }
         }
 
@@ -1520,7 +1520,7 @@ pub async fn run_turn(
                     ..Default::default()
                 };
                 for h in &hooks {
-                    h.post_turn(&post_turn_ctx, &emitter);
+                    h.post_turn(&post_turn_ctx, emitter);
                 }
             }
             return Ok(TurnResult::Permissions);
@@ -1545,7 +1545,7 @@ pub async fn run_turn(
                     ..Default::default()
                 };
                 for h in &hooks {
-                    h.post_turn(&post_turn_ctx, &emitter);
+                    h.post_turn(&post_turn_ctx, emitter);
                 }
             }
             return Ok(TurnResult::Clarify { items });
@@ -1568,7 +1568,7 @@ pub async fn run_turn(
                     ..Default::default()
                 };
                 for h in &hooks {
-                    h.post_turn(&post_turn_ctx, &emitter);
+                    h.post_turn(&post_turn_ctx, emitter);
                 }
             }
             return Ok(TurnResult::Inform { items });

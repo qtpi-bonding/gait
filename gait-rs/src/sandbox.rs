@@ -1,3 +1,5 @@
+#![allow(dead_code)] // planned feature: kernel write-enforcement sandbox; wired up in a future change
+
 use std::path::PathBuf;
 
 /// Result of applying the sandbox to this process.

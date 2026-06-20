@@ -552,7 +552,29 @@ cd gait-rs
 cargo test --workspace    # run all tests
 cargo build               # debug build
 cargo build --release     # release build
+make fmt                  # format the workspace
+make lint                 # rustfmt --check + clippy -D warnings
+make check                # lint + test (what CI/the hook enforce)
 ```
+
+### Git hooks
+
+Two hooks live in [`.githooks/`](.githooks/):
+
+- **pre-commit** runs `cargo fmt --check` (fast; only when Rust sources or
+  manifests are staged).
+- **pre-push** runs `cargo clippy -D warnings` (the heavier check — it compiles
+  the workspace — so it runs once before pushing rather than on every commit).
+  clippy is read-only and never modifies your code; a warning just rejects the
+  push.
+
+Activate both once per clone:
+
+```bash
+make -C gait-rs hooks      # or: git config core.hooksPath .githooks
+```
+
+Bypass for a single action with `git commit --no-verify` / `git push --no-verify`.
 
 ---
 

@@ -54,9 +54,7 @@ pub fn build_loadable_catalog(entries: &[LoadableEntry]) -> String {
     }
     let lines: Vec<String> = entries
         .iter()
-        .map(|e| {
-            format!("  {} {} — {}", e.kind.as_str(), e.name, e.description)
-        })
+        .map(|e| format!("  {} {} — {}", e.kind.as_str(), e.name, e.description))
         .collect();
     format!(
         "\n<loadable-catalog>\nCall load(name, enabled=true/false) to enable or disable.\n{}\n</loadable-catalog>",
@@ -111,11 +109,7 @@ pub fn build_permission_status(allow: &[String], deny: &[String]) -> String {
 /// `<status>`-style status block, the optional `<permission-status>`, and
 /// the loadable enabled-state. When `permission_status` is empty it is
 /// omitted entirely (no blank line).
-pub fn build_session_state(
-    status: &str,
-    permission_status: &str,
-    enabled_state: &str,
-) -> String {
+pub fn build_session_state(status: &str, permission_status: &str, enabled_state: &str) -> String {
     let mut out = String::from("<session-state>\n");
     out.push_str(status);
     if !permission_status.is_empty() {

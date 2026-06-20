@@ -30,7 +30,7 @@ pub fn resolve_quote_range(range: &str, blocks: &[String]) -> Option<String> {
         let v: Vec<&str> = blocks
             .iter()
             .enumerate()
-            .filter(|(i, _)| *i + 1 >= start && *i + 1 <= end)
+            .filter(|(i, _)| *i + 1 >= start && *i < end)
             .map(|(_, b)| b.as_str())
             .collect();
         if v.is_empty() {

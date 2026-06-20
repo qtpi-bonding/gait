@@ -111,7 +111,7 @@ impl Tool for SpawnAgentTool {
         // Append the initial user message (task) so the child session has input to fold.
         let from = format!("agent:{}", self.ctx.session_id);
         wire::append(&tx_path, events::user_text(task, Some(from)))
-            .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
+            .map_err(crate::tools::ToolError::Internal)?;
 
         self.repos
             .traces

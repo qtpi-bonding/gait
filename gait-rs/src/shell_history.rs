@@ -36,7 +36,7 @@ pub fn recall(path: &Path, n: usize) -> anyhow::Result<Option<ShellEntry>> {
     let reader = BufReader::new(f);
     let lines: Vec<String> = reader
         .lines()
-        .filter_map(|l| l.ok())
+        .map_while(Result::ok)
         .filter(|l| !l.is_empty())
         .collect();
     if n == 0 || n > lines.len() {

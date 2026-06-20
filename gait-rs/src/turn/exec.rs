@@ -121,7 +121,7 @@ pub(super) async fn execute_tool_call(
 /// the tool has no preview.
 pub(super) fn stream_preview_if_always(
     policy: PreviewPolicy,
-    tool: Option<&Box<dyn Tool>>,
+    tool: Option<&dyn Tool>,
     args: &serde_json::Value,
     emitter: &Recorder,
 ) {

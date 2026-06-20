@@ -41,7 +41,7 @@ pub enum MutationState {
         reason: Option<String>,
     },
     Replaced {
-        payload: pb::Payload,
+        payload: Box<pb::Payload>,
         reason: Option<String>,
     },
 }
@@ -870,7 +870,7 @@ pub fn coalesce(raw: Vec<Message>) -> Vec<Message> {
             // Text assistant message following a Thinking-only Part: merge.
             Message::Assistant {
                 content: AssistantContent::Text(text),
-                id,
+                id: _,
             } => {
                 if let Some(Message::Assistant {
                     content: AssistantContent::Parts(existing),
@@ -888,7 +888,7 @@ pub fn coalesce(raw: Vec<Message>) -> Vec<Message> {
             // Parts assistant message following a Thinking-only Part: merge.
             Message::Assistant {
                 content: AssistantContent::Parts(parts),
-                id,
+                id: _,
             } => {
                 if let Some(Message::Assistant {
                     content: AssistantContent::Parts(existing),
@@ -1007,7 +1007,7 @@ pub fn active_mutations(events: &[Event]) -> HashMap<String, MutationState> {
                     (
                         r.target.clone(),
                         MutationState::Replaced {
-                            payload,
+                            payload: Box::new(payload),
                             reason: r.reason.clone(),
                         },
                     )
@@ -1239,7 +1239,6 @@ pub fn last_turn_blocks(events: &[Event]) -> Vec<String> {
 mod tests;
 
 #[cfg(test)]
-
 mod cancel_tests {
 
     use crate::proto::{envelope, events};

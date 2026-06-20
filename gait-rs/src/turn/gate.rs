@@ -37,7 +37,7 @@ pub(super) enum GateDecision {
 /// `unwrap_or_else(...)` fallback).
 pub(super) fn classify(
     tc: &ToolCall,
-    tool: Option<&Box<dyn Tool>>,
+    tool: Option<&dyn Tool>,
     effective_allow: &[String],
     deny: &[String],
     auto: bool,

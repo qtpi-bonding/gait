@@ -411,10 +411,10 @@ pub fn llm_params_to_proto(p: &crate::config::LlmParamsConfig) -> pb::LlmParams 
         Some(ProviderParams::Anthropic(anthropic_llm_params_to_proto(a)))
     } else if let Some(o) = &p.openai {
         Some(ProviderParams::Openai(openai_llm_params_to_proto(o)))
-    } else if let Some(g) = &p.gemini {
-        Some(ProviderParams::Gemini(gemini_llm_params_to_proto(g)))
     } else {
-        None
+        p.gemini
+            .as_ref()
+            .map(|g| ProviderParams::Gemini(gemini_llm_params_to_proto(g)))
     };
 
     pb::LlmParams {
@@ -781,7 +781,7 @@ mod tests {
 
     #[test]
     fn replace_body_targets_correct_event() {
-        use crate::proto::gait::log::v1::{event, payload, Replace};
+        use crate::proto::gait::log::v1::{event, payload};
         let payload = pb::Payload {
             kind: Some(payload::Kind::AssistantText(pb::AssistantText {
                 content: "new".into(),
@@ -800,7 +800,7 @@ mod tests {
 
     #[test]
     fn redact_body_targets_correct_event() {
-        use crate::proto::gait::log::v1::{event, Redact};
+        use crate::proto::gait::log::v1::event;
         let body = super::redact("target-id-456".into(), None);
         match body {
             event::Body::Redact(r) => {

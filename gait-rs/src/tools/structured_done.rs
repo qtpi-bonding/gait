@@ -32,6 +32,12 @@ pub struct StructuredDoneTool {
     result_schema: Option<Value>,
 }
 
+impl Default for StructuredDoneTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StructuredDoneTool {
     pub fn new() -> Self {
         let parameters = crate::tools::make_schema::<OutputParams>();

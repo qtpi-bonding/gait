@@ -203,7 +203,7 @@ impl Profile {
 
         // LLM params: merge config baseline with agent-specific override (agent wins per-field).
         let agent_llm_params = agent_path
-            .and_then(|p| crate::agent_frontmatter::read_agent_llm_params(p))
+            .and_then(crate::agent_frontmatter::read_agent_llm_params)
             .unwrap_or_default();
         let llm_params = config.llm_params.clone().merged_with(agent_llm_params);
 

@@ -79,7 +79,8 @@ impl TurnSink for ReplSink {
     fn end_turn(&mut self) {
         let handle = {
             let mut s = self.shared.borrow_mut();
-            s.watcher_done.store(true, std::sync::atomic::Ordering::SeqCst);
+            s.watcher_done
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             s.watcher_handle.take()
         };
         // block_in_place joins the spawn_blocking watcher synchronously.
@@ -396,7 +397,10 @@ impl TurnSource for ReplSource {
                     }
                     format!("[undo] restored {label} to turn {n}")
                 } else {
-                    eprint!("{}\r\n", crate::chat::hints::UNDO_USAGE.replace('\n', "\r\n"));
+                    eprint!(
+                        "{}\r\n",
+                        crate::chat::hints::UNDO_USAGE.replace('\n', "\r\n")
+                    );
                     continue;
                 }
             } else {
@@ -481,8 +485,8 @@ mod tests {
     #[test]
     #[ignore]
     fn watcher_raw_mode_off_after_teardown() {
-        use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
         use tokio::runtime::Runtime;
 
         // multi-thread runtime is required for block_in_place

@@ -91,9 +91,13 @@ pub(crate) fn clean_repl_item(item: crate::ui::state::ReplItem) -> Vec<ReplViewI
         ReplItem::DoneMessage { content } => {
             let mut lines = content.lines();
             if let Some(first) = lines.next() {
-                let mut out = vec![ReplViewItem::DoneStart { text: first.to_string() }];
+                let mut out = vec![ReplViewItem::DoneStart {
+                    text: first.to_string(),
+                }];
                 for line in lines {
-                    out.push(ReplViewItem::BlockCont { text: line.to_string() });
+                    out.push(ReplViewItem::BlockCont {
+                        text: line.to_string(),
+                    });
                 }
                 out
             } else {

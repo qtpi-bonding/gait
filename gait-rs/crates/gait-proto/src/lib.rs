@@ -6,6 +6,7 @@
 //! / camelCase) via pbjson — each `log.jsonl` line is one `gait::log::v1::Event`.
 pub mod gait {
     pub mod log {
+        #[allow(clippy::large_enum_variant)] // generated prost code
         pub mod v1 {
             include!(concat!(env!("OUT_DIR"), "/gait.log.v1.rs"));
             include!(concat!(env!("OUT_DIR"), "/gait.log.v1.serde.rs"));

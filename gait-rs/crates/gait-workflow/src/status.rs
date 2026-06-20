@@ -78,7 +78,7 @@ pub fn workflow_status_block(workflow_runs_dir: &Path) -> String {
     });
 
     // Within "recent": newest first, capped at 5.
-    recents.sort_by(|a, b| entry_ts(b).cmp(&entry_ts(a)));
+    recents.sort_by_key(|b| std::cmp::Reverse(entry_ts(b)));
     recents.truncate(5);
 
     let mut out = String::new();

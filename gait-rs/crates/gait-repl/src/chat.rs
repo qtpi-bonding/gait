@@ -61,24 +61,15 @@ pub async fn run_chat(
 
     // rustyline and interactive input still behave better in cooked mode.
 
-    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
-
-        if crossterm::terminal::is_raw_mode_enabled().unwrap_or(false) {
-
-            let _ = std::process::Command::new("stty")
-
-                .arg("sane")
-
-                .stdout(std::process::Stdio::null())
-
-                .stderr(std::process::Stdio::null())
-
-                .status();
-
-        }
-
+    if std::io::IsTerminal::is_terminal(&std::io::stderr())
+        && crossterm::terminal::is_raw_mode_enabled().unwrap_or(false)
+    {
+        let _ = std::process::Command::new("stty")
+            .arg("sane")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
     }
-
 
     let mut session_id = session_id.unwrap_or_else(gait_core::session::new_session_id);
     let shell_history_path = gait_dir

@@ -154,8 +154,8 @@ fn to_chat_messages(system: &str, messages: &[Message]) -> Vec<ChatMessage> {
                     MessageContent::Text(t) => t.clone(),
                     MessageContent::Parts(parts) => parts
                         .iter()
-                        .filter_map(|p| match p {
-                            crate::types::ContentPart::Text { text } => Some(text.as_str()),
+                        .map(|p| match p {
+                            crate::types::ContentPart::Text { text } => text.as_str(),
                         })
                         .collect::<Vec<_>>()
                         .join(""),
@@ -394,7 +394,6 @@ impl Provider for OpenAIProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn chat_request_serializes_all_optional_params() {

@@ -105,7 +105,10 @@ impl ReplBuilder {
         let mut replies = Vec::new();
 
         let bar = "\u{2500}".repeat(56);
-        eprint!("\r\n{}  \u{2500}\u{2500} clarify {}{}\r\n", DIM_FG, bar, RESET);
+        eprint!(
+            "\r\n{}  \u{2500}\u{2500} clarify {}{}\r\n",
+            DIM_FG, bar, RESET
+        );
 
         for item in &items {
             eprint!("\r\n");
@@ -157,7 +160,10 @@ impl ReplBuilder {
         let mut replies = Vec::new();
 
         let bar = "\u{2500}".repeat(57);
-        eprint!("\r\n{}  \u{2500}\u{2500} inform {}{}\r\n", DIM_FG, bar, RESET);
+        eprint!(
+            "\r\n{}  \u{2500}\u{2500} inform {}{}\r\n",
+            DIM_FG, bar, RESET
+        );
 
         for item in &items {
             eprint!("\r\n");
@@ -326,15 +332,19 @@ impl ReplBuilder {
     }
 }
 
-enum BulkScope { Once, Session, Agent }
+enum BulkScope {
+    Once,
+    Session,
+    Agent,
+}
 
 impl BulkScope {
     fn to_choice(&self, pattern: String) -> gait_core::permission::PermissionChoice {
         use gait_core::permission::PermissionChoice;
         match self {
-            BulkScope::Once    => PermissionChoice::Once(pattern),
+            BulkScope::Once => PermissionChoice::Once(pattern),
             BulkScope::Session => PermissionChoice::Session(pattern),
-            BulkScope::Agent   => PermissionChoice::Agent(pattern),
+            BulkScope::Agent => PermissionChoice::Agent(pattern),
         }
     }
 }
@@ -351,7 +361,9 @@ fn parse_bulk_scope(input: &str) -> Option<BulkScope> {
             _ => return None,
         }
     }
-    if !has_zero { return None; }
+    if !has_zero {
+        return None;
+    }
     Some(match letter {
         Some('s') => BulkScope::Session,
         Some('a') => BulkScope::Agent,

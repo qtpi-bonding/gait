@@ -160,7 +160,7 @@ pub fn cmd_register(gait_dir: &std::path::Path, args: &[String]) -> anyhow::Resu
     // Tier 2 (legacy): Skills, old MCPs → gait.jsonc
 
     let kind = args
-        .get(0)
+        .first()
         .map(|s| s.as_str())
         .ok_or_else(|| anyhow::anyhow!("usage: gait register <mcp|skill|plugin> <name> [flags]"))?;
     let name = args
@@ -319,7 +319,7 @@ pub fn cmd_enable_disable(
     enable: bool,
 ) -> anyhow::Result<()> {
     let kind = args
-        .get(0)
+        .first()
         .map(|s| s.as_str())
         .ok_or_else(|| anyhow::anyhow!("usage: gait enable/disable <mcp|skill|plugin> <name>"))?;
     let name = args
@@ -414,7 +414,7 @@ pub fn cmd_enable_disable(
 
 pub fn cmd_unregister(gait_dir: &std::path::Path, args: &[String]) -> anyhow::Result<()> {
     let kind = args
-        .get(0)
+        .first()
         .map(|s| s.as_str())
         .ok_or_else(|| anyhow::anyhow!("usage: gait unregister <mcp|skill|plugin> <name>"))?;
     let name = args
