@@ -208,6 +208,10 @@ mod tests {
             "Hosts mode must allow outbound"
         );
         assert!(p.contains("(allow system-socket)"));
+        assert!(
+            p.contains("mDNSResponder"),
+            "Hosts mode must emit DNS stanza for mDNSResponder"
+        );
     }
 }
 
