@@ -33,7 +33,7 @@ pub(crate) mod hook_runner;
 pub(crate) mod mcp;
 pub(crate) mod openai;
 pub(crate) mod prompt;
-pub(crate) mod sandbox;
+pub mod sandbox;
 #[cfg(test)]
 mod test_utils;
 pub(crate) mod text;

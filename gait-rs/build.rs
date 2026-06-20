@@ -1,5 +1,8 @@
 fn main() {
     capture_git_hash();
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rustc-link-lib=sandbox");
+    }
 }
 
 /// Capture git hash at compile time for attribution in the system prompt.

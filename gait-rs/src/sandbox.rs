@@ -77,14 +77,57 @@ impl Sandbox for LandlockSandbox {
 
 /// macOS Seatbelt sandbox — in-process self-seal via sandbox_compile_string/sandbox_apply.
 /// Deprecated since macOS Sierra but still used by Chrome/Firefox; revisit if Apple removes it.
-/// Stub — not yet implemented; returns [`SandboxStatus::Unavailable`].
 pub struct SeatbeltSandbox;
 
+#[cfg(target_os = "macos")]
+#[link(name = "sandbox")]
+extern "C" {
+    fn sandbox_compile_string(
+        profile: *const libc::c_char,
+        params: *const libc::c_void,
+        err: *mut *mut libc::c_char,
+    ) -> *mut libc::c_void;
+    fn sandbox_apply(profile: *mut libc::c_void) -> libc::c_int;
+    fn sandbox_free_profile(profile: *mut libc::c_void);
+    fn sandbox_free_error(err: *mut libc::c_char);
+}
+
 impl Sandbox for SeatbeltSandbox {
-    fn apply(&self, _scope: &SandboxScope) -> anyhow::Result<SandboxStatus> {
-        Ok(SandboxStatus::Unavailable {
-            reason: "Seatbelt not yet implemented".to_string(),
-        })
+    fn apply(&self, scope: &SandboxScope) -> anyhow::Result<SandboxStatus> {
+        #[cfg(target_os = "macos")]
+        {
+            let profile = crate::sandbox::sbpl::build_sbpl(scope);
+            let c = std::ffi::CString::new(profile)
+                .map_err(|e| anyhow::anyhow!("SBPL contained null byte: {e}"))?;
+            let mut err: *mut libc::c_char = std::ptr::null_mut();
+            let handle = unsafe { sandbox_compile_string(c.as_ptr(), std::ptr::null(), &mut err) };
+            if handle.is_null() {
+                let reason = if err.is_null() {
+                    "sandbox_compile_string returned null (no error string)".to_owned()
+                } else {
+                    let s = unsafe { std::ffi::CStr::from_ptr(err).to_string_lossy().into_owned() };
+                    unsafe { sandbox_free_error(err) };
+                    s
+                };
+                return Ok(SandboxStatus::Unavailable { reason });
+            }
+            let rc = unsafe { sandbox_apply(handle) };
+            unsafe { sandbox_free_profile(handle) };
+            if rc == 0 {
+                Ok(SandboxStatus::Active)
+            } else {
+                Ok(SandboxStatus::Unavailable {
+                    reason: format!("sandbox_apply returned {rc}"),
+                })
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = scope;
+            Ok(SandboxStatus::Unavailable {
+                reason: "Seatbelt is macOS-only".into(),
+            })
+        }
     }
 }
 
@@ -127,13 +170,27 @@ mod tests {
     }
 
     #[test]
-    fn seatbelt_stub_returns_unavailable() {
+    fn seatbelt_returns_unavailable_on_non_macos() {
+        // On Linux/Windows the cfg branch returns Unavailable; on macOS the
+        // FFI branch returns either Active (sandboxed) or Unavailable (no
+        // permission to call the syscall). Either is acceptable in unit tests —
+        // a real enforcement test lives in tests/seatbelt_seal.rs.
         let scope = SandboxScope {
             writable: vec![PathBuf::from("src/")],
             ..Default::default()
         };
         let s = SeatbeltSandbox.apply(&scope).unwrap();
-        assert!(matches!(s, SandboxStatus::Unavailable { .. }));
+        // On Linux we expect Unavailable; on macOS allow either outcome
+        // (sandbox_apply needs entitlements; will be Unavailable in a non-sandboxed
+        // test runner).
+        if cfg!(target_os = "macos") {
+            assert!(matches!(
+                s,
+                SandboxStatus::Active | SandboxStatus::Unavailable { .. }
+            ));
+        } else {
+            assert!(matches!(s, SandboxStatus::Unavailable { .. }));
+        }
     }
 
     #[test]
@@ -294,4 +351,6 @@ pub(crate) mod sbpl {
     }
 }
 
-pub use sbpl::build_sbpl;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use sbpl::build_sbpl;
