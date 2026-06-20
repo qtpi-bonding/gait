@@ -60,6 +60,10 @@ pub async fn cmd_run_tool(argv: &[String]) {
         .map(|s| serde_json::to_value(&s).unwrap_or(serde_json::Value::Object(Default::default())))
         .unwrap_or(serde_json::Value::Object(Default::default()));
 
+    // impulse.cwd is the session's active working directory. For non-shell tools, paths
+    // are relative to the codebase root so cwd doesn't affect them here. For `shell`,
+    // Task 5 injects impulse.cwd into args as `__cwd` before this call so the shell
+    // tool receives it explicitly.
     let ctx = ToolCtx::new(a.codebase.clone(), a.gait_dir.clone(), a.session.clone());
     let tools = builtin_tools(ctx, vec![], vec![], vec![], Repos::production());
     let tool = match tools.iter().find(|t| t.name() == a.tool) {
