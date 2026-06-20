@@ -9,7 +9,7 @@ use crate::proto::gait::log::v1::Event;
 use crate::proto::Recorder;
 use crate::tools::ToolError;
 use crate::types::{Tool, ToolAccess};
-use gait_proto::gait::sandbox::v1::{network_scope, Feedback, Impulse, NetworkScope, Scope};
+use gait_proto::gait::sandbox::v1::{network_scope::Mode, Feedback, Impulse, NetworkScope, Scope};
 use prost::Message;
 use tokio::io::AsyncWriteExt;
 /// What the brain requests for a tool call. Phase 1 carries only the access
@@ -93,7 +93,7 @@ impl Synapse for SubprocessSynapse {
             writable: vec![],
             network: if scope.access.network {
                 Some(NetworkScope {
-                    mode: gait_proto::gait::sandbox::v1::network_scope::Mode::All as i32,
+                    mode: Mode::All as i32,
                     hosts: vec![],
                 })
             } else {
@@ -115,17 +115,15 @@ impl Synapse for SubprocessSynapse {
         let exe = std::env::current_exe()
             .map_err(|e| ToolError::Internal(anyhow::anyhow!("current_exe: {e}")))?;
         let mut child = tokio::process::Command::new(&exe)
-            .args([
-                "__run-tool",
-                "--gait-dir",
-                self.gait_dir.to_str().unwrap_or("."),
-                "--codebase",
-                self.codebase.to_str().unwrap_or("."),
-                "--session",
-                &self.session_id,
-                "--tool",
-                tool.name(),
-            ])
+            .arg("__run-tool")
+            .arg("--gait-dir")
+            .arg(&self.gait_dir)
+            .arg("--codebase")
+            .arg(&self.codebase)
+            .arg("--session")
+            .arg(&self.session_id)
+            .arg("--tool")
+            .arg(tool.name())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
