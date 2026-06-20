@@ -7,11 +7,13 @@
 
 use crate::proto::gait::log::v1::Event;
 use crate::proto::Recorder;
+use crate::sandbox::SandboxScope;
 use crate::tools::ToolError;
 use crate::types::{Tool, ToolAccess};
 use gait_proto::gait::sandbox::v1::{network_scope::Mode, Feedback, Impulse, NetworkScope, Scope};
 use prost::Message;
 use tokio::io::AsyncWriteExt;
+
 /// What the brain requests for a tool call. Phase 1 carries only the access
 /// dimensions; Phase 2 adds resolved paths + network targets bounded by the spine.
 #[derive(Debug, Clone)]
@@ -68,6 +70,44 @@ pub struct SubprocessSynapse {
     pub codebase: std::path::PathBuf,
     pub session_id: String,
     pub cwd: String,
+    /// Sandbox config used to compute the per-call scope ceiling. Defaults to the
+    /// strict default (off, empty allow-lists); Task 6 threads the real config from
+    /// `GaitConfig.sandbox`.
+    pub sandbox_cfg: crate::config::SandboxConfig,
+}
+
+/// Serialize a `SandboxScope` into the proto `Scope` carried by `Impulse.requested`.
+/// Paths are lossy-stringified (matches Phase 2a wire format). Phase 2d will tighten
+/// read_all to false and emit per-path subpath rules; this helper stays stable.
+fn scope_to_proto(s: &SandboxScope) -> Scope {
+    use crate::sandbox::NetworkPolicy;
+    Scope {
+        read_all: s.read_all,
+        readable: s
+            .readable
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect(),
+        writable: s
+            .writable
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect(),
+        network: Some(match &s.network {
+            NetworkPolicy::Deny => NetworkScope {
+                mode: Mode::Deny as i32,
+                hosts: vec![],
+            },
+            NetworkPolicy::All => NetworkScope {
+                mode: Mode::All as i32,
+                hosts: vec![],
+            },
+            NetworkPolicy::Hosts(h) => NetworkScope {
+                mode: Mode::Hosts as i32,
+                hosts: h.clone(),
+            },
+        }),
+    }
 }
 
 #[async_trait::async_trait]
@@ -84,22 +124,16 @@ impl Synapse for SubprocessSynapse {
         // empty object — the hand can still see the call.
         let args_struct: pbjson_types::Struct = serde_json::from_value(args).unwrap_or_default();
 
-        // TODO(phase-2b): scope mapping is coarse — `reads` maps to `read_all` (permits
-        // everything), which is overly permissive. Phase 2b fills `readable[]`/`writable[]`
-        // from resolved codebase-relative paths and `network` from the tool's host allowlist.
-        let requested = Scope {
-            read_all: scope.access.reads,
-            readable: vec![],
-            writable: vec![],
-            network: if scope.access.network {
-                Some(NetworkScope {
-                    mode: Mode::All as i32,
-                    hosts: vec![],
-                })
-            } else {
-                None
-            },
-        };
+        // Phase 2b: compute proper per-tool scope ceiling.
+        // temp_jail is a placeholder here; Task 6 creates a real per-runner jail.
+        let temp_jail = std::env::temp_dir().join("gait-hand-tmp");
+        let sand_scope = crate::sandbox::ceiling::compute_scope(
+            scope.access,
+            &self.sandbox_cfg,
+            &self.codebase,
+            &temp_jail,
+        );
+        let requested = scope_to_proto(&sand_scope);
 
         let impulse = Impulse {
             tool: tool.name().to_string(),
@@ -262,6 +296,7 @@ mod tests {
             codebase: dir.path().to_path_buf(),
             session_id: "stest123".into(),
             cwd: dir.path().to_string_lossy().into_owned(),
+            sandbox_cfg: crate::config::SandboxConfig::default(),
         };
         let tool = crate::tools::read::ReadTool::new(crate::tools::ToolCtx::new(
             dir.path().into(),

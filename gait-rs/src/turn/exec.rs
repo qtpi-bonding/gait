@@ -83,6 +83,9 @@ pub(super) async fn execute_tool_call(
                         codebase: codebase.to_path_buf(),
                         session_id: session_id.to_string(),
                         cwd: cwd.to_string_lossy().into_owned(),
+                        // Task 5: pass the default config through as a placeholder.
+                        // Task 6 will thread the real GaitConfig.sandbox here.
+                        sandbox_cfg: crate::config::SandboxConfig::default(),
                     };
                     syn.fire(
                         t.as_ref(),

@@ -270,6 +270,66 @@ mod tests {
             "Hosts mode must emit DNS stanza for mDNSResponder"
         );
     }
+
+    #[test]
+    fn read_only_tool_gets_no_writable() {
+        use crate::config::SandboxConfig;
+        use crate::types::ToolAccess;
+        use std::path::Path;
+        let cfg = SandboxConfig::default();
+        let scope = super::ceiling::compute_scope(
+            ToolAccess {
+                reads: true,
+                ..Default::default()
+            },
+            &cfg,
+            Path::new("/repo"),
+            Path::new("/tmp/jail"),
+        );
+        assert!(
+            scope.writable.is_empty(),
+            "read-only tool must not be granted writes"
+        );
+        assert!(scope.readable.iter().any(|p| p == Path::new("/repo")));
+    }
+
+    #[test]
+    fn write_tool_gets_codebase_and_jail_writable() {
+        use crate::config::SandboxConfig;
+        use crate::types::ToolAccess;
+        use std::path::{Path, PathBuf};
+        let cfg = SandboxConfig::default();
+        let scope = super::ceiling::compute_scope(
+            ToolAccess {
+                reads: true,
+                writes: true,
+                ..Default::default()
+            },
+            &cfg,
+            Path::new("/repo"),
+            Path::new("/tmp/jail"),
+        );
+        assert!(scope.writable.contains(&PathBuf::from("/repo")));
+        assert!(scope.writable.contains(&PathBuf::from("/tmp/jail")));
+    }
+
+    #[test]
+    fn network_tool_denied_when_config_off() {
+        use crate::config::SandboxConfig;
+        use crate::types::ToolAccess;
+        use std::path::Path;
+        let cfg = SandboxConfig::default(); // network: Off
+        let scope = super::ceiling::compute_scope(
+            ToolAccess {
+                network: true,
+                ..Default::default()
+            },
+            &cfg,
+            Path::new("/repo"),
+            Path::new("/tmp/jail"),
+        );
+        assert!(matches!(scope.network, NetworkPolicy::Deny));
+    }
 }
 
 pub(crate) mod sbpl {
@@ -354,3 +414,94 @@ pub(crate) mod sbpl {
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use sbpl::build_sbpl;
+
+pub mod ceiling {
+    //!
+    //! Pure ceiling computation for one tool call's sandbox scope.
+    //!
+    //! Inputs: the tool's `ToolAccess` (what it needs), the user's `SandboxConfig`
+    //! (what's globally permitted), the codebase root, and the per-runner temp jail.
+    //! Output: a `SandboxScope` that is *bounded* by both — the config can only widen,
+    //! the access flags can only narrow. No I/O, no FFI: same inputs → same output.
+
+    use super::{NetworkPolicy, SandboxScope};
+    use crate::config::{NetworkConfig, SandboxConfig};
+    use crate::types::ToolAccess;
+    use std::path::{Path, PathBuf};
+
+    /// Compute the per-call sandbox scope ceiling.
+    ///
+    /// Base: `{codebase, temp_jail}` for reads + writes the tool needs.
+    /// Extended with: config `readable` (always) and config `writable` (when writes
+    /// are permitted by the tool). `~/` is tilde-expanded against `dirs_next::home_dir()`.
+    /// Network: config `Off` always denies; `Hosts`/`All` honored only when
+    /// `access.network` is true. `read_all` defaults to true in Phase 2b; Phase 2d
+    /// will flip it to false and emit per-path subpath rules instead.
+    pub fn compute_scope(
+        access: ToolAccess,
+        cfg: &SandboxConfig,
+        codebase: &Path,
+        temp_jail: &Path,
+    ) -> SandboxScope {
+        // Base readable + writable: codebase + temp_jail (bound by access).
+        let mut readable: Vec<PathBuf> = Vec::new();
+        let mut writable: Vec<PathBuf> = Vec::new();
+
+        if access.reads {
+            readable.push(codebase.to_path_buf());
+            readable.push(temp_jail.to_path_buf());
+        }
+        if access.writes {
+            writable.push(codebase.to_path_buf());
+            writable.push(temp_jail.to_path_buf());
+        }
+
+        // Extend from config (tilde-expand "~" prefix paths).
+        let home = dirs_next::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+        for p in &cfg.readable {
+            readable.push(expand_tilde(p, &home));
+        }
+        if access.writes {
+            for p in &cfg.writable {
+                writable.push(expand_tilde(p, &home));
+            }
+        }
+
+        // Network policy from config (gated on tool access).
+        let network = match &cfg.network {
+            NetworkConfig::Off => NetworkPolicy::Deny,
+            NetworkConfig::All => NetworkPolicy::All,
+            NetworkConfig::Hosts(h) => {
+                if access.network {
+                    NetworkPolicy::Hosts(h.clone())
+                } else {
+                    NetworkPolicy::Deny
+                }
+            }
+        };
+        // If tool doesn't access network, deny regardless of config.
+        let network = if access.network {
+            network
+        } else {
+            NetworkPolicy::Deny
+        };
+
+        // Phase 2b: read_all defaults to true (Phase 2d will flip to false + per-path reads).
+        SandboxScope {
+            readable,
+            writable,
+            read_all: true,
+            network,
+        }
+    }
+
+    fn expand_tilde(p: &str, home: &Path) -> PathBuf {
+        if let Some(rest) = p.strip_prefix("~/") {
+            home.join(rest)
+        } else if p == "~" {
+            home.to_path_buf()
+        } else {
+            PathBuf::from(p)
+        }
+    }
+}
