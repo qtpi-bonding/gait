@@ -147,4 +147,147 @@ mod tests {
         let s = NoopSandbox.apply(&SandboxScope::default()).unwrap();
         assert!(matches!(s, SandboxStatus::Noop));
     }
+
+    #[test]
+    fn sbpl_denies_by_default_and_allows_writable_subpaths() {
+        let scope = SandboxScope {
+            writable: vec![PathBuf::from("/repo"), PathBuf::from("/tmp/gait-hand-abc")],
+            readable: vec![],
+            read_all: true,
+            network: NetworkPolicy::Deny,
+        };
+        let p = build_sbpl(&scope);
+        assert!(p.contains("(deny default)"));
+        assert!(
+            p.contains("(allow file-read*)"),
+            "read_all=true must emit blanket read"
+        );
+        assert!(
+            p.contains("(subpath \"/repo\")"),
+            "writable root must appear"
+        );
+        assert!(p.contains("(subpath \"/tmp/gait-hand-abc\")"));
+        assert!(
+            !p.contains("network-outbound"),
+            "deny network must not emit network rules"
+        );
+    }
+
+    #[test]
+    fn sbpl_allows_network_with_dns_stanza() {
+        let scope = SandboxScope {
+            writable: vec![PathBuf::from("/repo")],
+            readable: vec![],
+            read_all: true,
+            network: NetworkPolicy::All,
+        };
+        let p = build_sbpl(&scope);
+        assert!(p.contains("(allow network-outbound)"));
+        assert!(
+            p.contains("(allow system-socket)"),
+            "DNS requires system-socket"
+        );
+        assert!(
+            p.contains("mDNSResponder"),
+            "DNS requires mach-lookup mDNSResponder"
+        );
+    }
+
+    #[test]
+    fn sbpl_hosts_allowlist_emits_network_rules() {
+        // Hosts allowlist: kernel-level = allow-all egress (app-level host check is separate)
+        let scope = SandboxScope {
+            writable: vec![],
+            readable: vec![],
+            read_all: true,
+            network: NetworkPolicy::Hosts(vec!["github.com".to_owned()]),
+        };
+        let p = build_sbpl(&scope);
+        assert!(
+            p.contains("(allow network-outbound)"),
+            "Hosts mode must allow outbound"
+        );
+        assert!(p.contains("(allow system-socket)"));
+    }
 }
+
+pub(crate) mod sbpl {
+    //!
+    //! Profile structure modeled after Chromium's sandbox policies.
+    //!
+    //! Note (correction #6): path canonicalization happens in the brain (scope
+    //! construction), not here. We emit paths verbatim.
+
+    use super::{NetworkPolicy, SandboxScope};
+    use std::fmt::Write;
+
+    /// Build a macOS Seatbelt SBPL profile string from a [`SandboxScope`].
+    ///
+    /// Pure: no I/O, no FFI. Same input → same output on every platform.
+    pub fn build_sbpl(scope: &SandboxScope) -> String {
+        let mut s = String::new();
+        writeln!(s, "(version 1)").unwrap();
+        writeln!(s, "(deny default)").unwrap();
+
+        // exec + fork so the shell can run subprocesses (they inherit this seal).
+        writeln!(s, "(allow process-exec)").unwrap();
+        writeln!(s, "(allow process-fork)").unwrap();
+        writeln!(s, "(allow sysctl-read)").unwrap();
+
+        // Reads. Phase 2b ships (allow file-read*) unconditionally as a blanket
+        // when scope.read_all is true (correction #2). Phase 2d will flip the default.
+        if scope.read_all {
+            writeln!(s, "(allow file-read*)").unwrap();
+        } else {
+            for p in &scope.readable {
+                writeln!(s, r#"(allow file-read* (subpath "{}"))"#, p.display()).unwrap();
+            }
+        }
+
+        // Writes (and reads under writable, so tools can read what they write).
+        for p in &scope.writable {
+            writeln!(
+                s,
+                r#"(allow file-write* file-read* (subpath "{}"))"#,
+                p.display()
+            )
+            .unwrap();
+        }
+
+        // /dev/null always writable for output redirection.
+        writeln!(s, r#"(allow file-write-data (literal "/dev/null"))"#).unwrap();
+
+        // Network. DNS stanza required for hostname resolution (correction #3):
+        // omitting system-socket/mach-lookup mDNSResponder makes DNS fail
+        // (connect times out). Validated on Darwin 24.5.0.
+        match &scope.network {
+            NetworkPolicy::Deny => {}
+            NetworkPolicy::All => {
+                writeln!(s, "(allow network-outbound)").unwrap();
+                writeln!(s, "(allow network-inbound)").unwrap();
+                writeln!(s, "(allow system-socket)").unwrap();
+                writeln!(
+                    s,
+                    r#"(allow mach-lookup (global-name "com.apple.mDNSResponder"))"#
+                )
+                .unwrap();
+            }
+            NetworkPolicy::Hosts(_hosts) => {
+                // SBPL host-granular filtering is limited. v1 = allow all egress
+                // when an allowlist is present; rely on app-level webfetch host
+                // check (spec §4). Documented.
+                writeln!(s, "(allow network-outbound)").unwrap();
+                writeln!(s, "(allow system-socket)").unwrap();
+                writeln!(
+                    s,
+                    r#"(allow mach-lookup (global-name "com.apple.mDNSResponder"))"#
+                )
+                .unwrap();
+            }
+        }
+
+        s
+    }
+}
+
+pub use sbpl::build_sbpl;
