@@ -7,8 +7,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-gait-core = { path = "../.." }
+gait-core    = { path = "../.." }
 gait-workflow = { path = "../gait-workflow" }
+gait-proto   = { path = "../gait-proto" }
+prost        = "0.13"
+pbjson-types = "0.7"
 
 clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["full"] }
