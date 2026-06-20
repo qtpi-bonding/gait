@@ -52,7 +52,32 @@ pub(super) async fn execute_tool_call(
     let (raw, duration, process) = match tools.iter().find(|t| t.name() == tc.tool_name) {
         Some(t) => {
             let started = std::time::Instant::now();
-            let res = t.execute(tc.args.clone(), emitter).await;
+            let res = if t.access().touches_world() {
+                // Hand path: run via the synapse, then replay the returned events
+                // into the real log (between ToolCall and ToolResult).
+                use crate::turn::synapse::{InProcessSynapse, ScopeRequest, Synapse as _};
+                let fired = InProcessSynapse
+                    .fire(
+                        t.as_ref(),
+                        tc.args.clone(),
+                        ScopeRequest { access: t.access() },
+                    )
+                    .await;
+                match fired {
+                    Ok((value, events)) => {
+                        for event in events {
+                            if let Some(body) = event.body {
+                                emitter.record(body)?;
+                            }
+                        }
+                        Ok(value)
+                    }
+                    Err(e) => Err(e),
+                }
+            } else {
+                // Brain path: control/transcript tool, runs in-process as before.
+                t.execute(tc.args.clone(), emitter).await
+            };
             let elapsed = started.elapsed();
             let duration = Some(pbjson_types::Duration {
                 seconds: elapsed.as_secs() as i64,
@@ -217,6 +242,67 @@ pub(crate) fn apply_parse_filter(raw: &str, ops: &serde_json::Value) -> String {
         eprintln!("[gait] parse-filter: {}/{} lines kept", out_lines, in_lines);
     }
     current
+}
+
+#[cfg(test)]
+mod synapse_routing_tests {
+    use super::*;
+    use crate::types::{Tool, ToolAccess, ToolCall};
+    use tempfile::tempdir;
+
+    struct TouchTool;
+    #[async_trait::async_trait]
+    impl Tool for TouchTool {
+        fn name(&self) -> &str {
+            "touch"
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn parameters(&self) -> &serde_json::Value {
+            static P: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+            P.get_or_init(|| serde_json::json!({"type":"object"}))
+        }
+        async fn execute(
+            &self,
+            _a: serde_json::Value,
+            rec: &crate::proto::Recorder,
+        ) -> Result<serde_json::Value, crate::tools::ToolError> {
+            rec.record(crate::proto::events::cwd("/from-tool")).ok();
+            Ok(serde_json::Value::String("ok".into()))
+        }
+        fn access(&self) -> ToolAccess {
+            ToolAccess {
+                reads: true,
+                ..Default::default()
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn world_tool_events_are_recorded_by_caller() {
+        let dir = tempdir().unwrap();
+        // Create session directory so the log file can be written.
+        std::fs::create_dir_all(dir.path().join("sessions/stest123")).unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let rec = crate::proto::Recorder::for_session(dir.path(), "stest123", tx);
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(TouchTool)];
+        let tc = ToolCall {
+            tool_call_id: "c1".into(),
+            tool_name: "touch".into(),
+            args: serde_json::json!({}),
+        };
+
+        let out = execute_tool_call(&tc, &tools, &rec, None).await.unwrap();
+        assert_eq!(out.result.result, serde_json::Value::String("ok".into()));
+
+        // The cwd event the tool emitted must be present in the real log.
+        let log = std::fs::read_to_string(&rec.tx_path).unwrap();
+        assert!(
+            log.contains("/from-tool"),
+            "tool-emitted event must be replayed into the log"
+        );
+    }
 }
 
 /// Apply the post-tool pipeline to a single tool result.

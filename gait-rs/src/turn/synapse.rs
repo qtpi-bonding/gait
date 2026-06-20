@@ -1,7 +1,7 @@
 //! The Synapse seam — the motor pathway from a decided tool call to a hand.
 //! Phase 1 ships only `InProcessSynapse` (runs in-process, identical behavior);
 //! Phase 2/3 add subprocess + spine-relay impls behind the same trait.
-#![allow(dead_code)] // planned seam: InProcessSynapse/Synapse/ScopeRequest used in Phase 2+
+#![allow(dead_code)] // planned seam: ScopeRequest.access used in Phase 2+ (spine scope enforcement)
 
 use crate::proto::gait::log::v1::Event;
 use crate::proto::Recorder;
