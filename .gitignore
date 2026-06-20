@@ -23,6 +23,9 @@ gait-rs/docs/plans/
 gait-rs/docs/specs/
 gait-rs/docs/superpowers/
 
+# Subagent-driven-development scratch ledgers (briefs/reports/progress).
+.superpowers/
+
 # Claude Code / AI assistant artifacts — kept local, never committed.
 # Solo project: the whole .claude/ workspace stays out of the tree. If you ever
 # want to share config with contributors, un-ignore specific files below,
