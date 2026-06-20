@@ -44,7 +44,7 @@ portable-pty = "0.8"
 grep-regex = "0.1.14"
 grep-searcher = "0.1.16"
 gait-proto     = { path = "crates/gait-proto" }
-
+prost          = "0.13"
 pbjson-types   = "0.7"
 # content_hash pipeline: SHA-256 over JCS(RFC 8785) of the canonical body JSON.
 serde_jcs      = "0.1"

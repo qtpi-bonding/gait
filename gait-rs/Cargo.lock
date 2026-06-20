@@ -1021,6 +1021,7 @@ dependencies = [
  "libc",
  "pbjson-types",
  "portable-pty",
+ "prost",
  "regex",
  "reqwest 0.12.28",
  "rmcp",

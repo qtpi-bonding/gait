@@ -1,13 +1,17 @@
 //! The Synapse seam — the motor pathway from a decided tool call to a hand.
-//! Phase 1 ships only `InProcessSynapse` (runs in-process, identical behavior);
-//! Phase 2/3 add subprocess + spine-relay impls behind the same trait.
+//! Phase 1 ships `InProcessSynapse` (runs in-process, identical behavior);
+//! Phase 2a adds `SubprocessSynapse` (spawns `gait __run-tool` as a sealed hand
+//! and crosses the binary `Impulse`/`Feedback` protobuf hop); Phase 3 layers the
+//! spine-relay impl behind the same trait.
 #![allow(dead_code)] // planned seam: ScopeRequest.access used in Phase 2+ (spine scope enforcement)
 
 use crate::proto::gait::log::v1::Event;
 use crate::proto::Recorder;
 use crate::tools::ToolError;
 use crate::types::{Tool, ToolAccess};
-
+use gait_proto::gait::sandbox::v1::{network_scope, Feedback, Impulse, NetworkScope, Scope};
+use prost::Message;
+use tokio::io::AsyncWriteExt;
 /// What the brain requests for a tool call. Phase 1 carries only the access
 /// dimensions; Phase 2 adds resolved paths + network targets bounded by the spine.
 #[derive(Debug, Clone)]
@@ -47,6 +51,124 @@ impl Synapse for InProcessSynapse {
         let buf = Recorder::buffering();
         let result = tool.execute(args, &buf).await?;
         Ok((result, buf.take_buffer()))
+    }
+}
+
+/// Phase 2a impl: spawn `gait __run-tool` as a child process, encode the call as a
+/// binary `Impulse` on stdin, decode the binary `Feedback` from stdout. This is the
+/// first out-of-process hand: same `Synapse` contract as `InProcessSynapse`, but the
+/// tool runs in a fresh process whose entire input/output crosses the wire.
+///
+/// The hand is a *sealed* binary — it has no terminal, no REPL, no transcript of its
+/// own — so the subprocess hop is what guarantees the tool can't reach brain-side
+/// state. Phase 2b will move the actual routing decision into `turn.rs`; this struct
+/// only knows how to fire one call.
+pub struct SubprocessSynapse {
+    pub gait_dir: std::path::PathBuf,
+    pub codebase: std::path::PathBuf,
+    pub session_id: String,
+    pub cwd: String,
+}
+
+#[async_trait::async_trait]
+impl Synapse for SubprocessSynapse {
+    async fn fire(
+        &self,
+        tool: &dyn Tool,
+        args: serde_json::Value,
+        scope: ScopeRequest,
+    ) -> Result<(serde_json::Value, Vec<Event>), ToolError> {
+        // Convert serde_json::Value → pbjson_types::Struct.
+        // pbjson_types::Struct implements serde Deserialize, so a round-trip via JSON
+        // is the cleanest portable conversion. An unparseable value collapses to an
+        // empty object — the hand can still see the call.
+        let args_struct: pbjson_types::Struct = serde_json::from_value(args).unwrap_or_default();
+
+        // Phase 2a scope mapping is coarse: `reads` flips `read_all`, everything else
+        // empty. Phase 2b fills `readable[]`/`writable[]` from the resolved paths and
+        // `network` from the tool's host allowlist.
+        let requested = Scope {
+            read_all: scope.access.reads,
+            readable: vec![],
+            writable: vec![],
+            network: if scope.access.network {
+                Some(NetworkScope {
+                    mode: gait_proto::gait::sandbox::v1::network_scope::Mode::All as i32,
+                    hosts: vec![],
+                })
+            } else {
+                None
+            },
+        };
+
+        let impulse = Impulse {
+            tool: tool.name().to_string(),
+            args: Some(args_struct),
+            cwd: self.cwd.clone(),
+            requested: Some(requested),
+        };
+        let bytes = impulse.encode_to_vec();
+
+        // Spawn the hand. The same binary (`current_exe`) runs the hidden `__run-tool`
+        // subcommand; `--gait-dir` / `--codebase` / `--session` / `--tool` tell it
+        // which tool instance to execute inside its own `ToolCtx`.
+        let exe = std::env::current_exe()
+            .map_err(|e| ToolError::Internal(anyhow::anyhow!("current_exe: {e}")))?;
+        let mut child = tokio::process::Command::new(&exe)
+            .args([
+                "__run-tool",
+                "--gait-dir",
+                self.gait_dir.to_str().unwrap_or("."),
+                "--codebase",
+                self.codebase.to_str().unwrap_or("."),
+                "--session",
+                &self.session_id,
+                "--tool",
+                tool.name(),
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| ToolError::Internal(anyhow::anyhow!("spawn __run-tool: {e}")))?;
+
+        // Write the binary Impulse to stdin, then drop the handle so the pipe closes
+        // and the hand reads EOF (allowing it to write its Feedback on stdout). Do
+        // NOT call `take()` again on `child.stdin` after this — it's `None`.
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| ToolError::Internal(anyhow::anyhow!("hand stdin already taken")))?;
+        stdin
+            .write_all(&bytes)
+            .await
+            .map_err(|e| ToolError::Internal(anyhow::anyhow!("write Impulse: {e}")))?;
+        drop(stdin);
+
+        let out = child
+            .wait_with_output()
+            .await
+            .map_err(|e| ToolError::Internal(anyhow::anyhow!("wait __run-tool: {e}")))?;
+
+        if !out.status.success() {
+            return Err(ToolError::Internal(anyhow::anyhow!(
+                "hand exited {}: stderr={}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr)
+            )));
+        }
+
+        let feedback = Feedback::decode(out.stdout.as_slice())
+            .map_err(|e| ToolError::Internal(anyhow::anyhow!("decode Feedback: {e}")))?;
+
+        // pbjson_types::Value → serde_json::Value (any non-Value variant collapses to Null).
+        let result_json = feedback
+            .result
+            .as_ref()
+            .and_then(|v| serde_json::to_value(v).ok())
+            .unwrap_or(serde_json::Value::Null);
+
+        Ok((result_json, feedback.events))
     }
 }
 
@@ -106,6 +228,51 @@ mod tests {
         assert!(
             events[0].body.is_some(),
             "buffered event must carry its body"
+        );
+    }
+
+    /// Documents the full subprocess round-trip. Requires the `gait` binary to be
+    /// built first (`cargo build -p gait-bin`) — under `cargo test -p gait-core`
+    /// alone the binary at `current_exe()` is a test harness that lacks the
+    /// `__run-tool` subcommand, so the test is `#[ignore]`d. Run manually with:
+    ///
+    ///     cargo build -p gait-bin
+    ///     cargo test -p gait-core -- --ignored subprocess_synapse
+    ///
+    /// The Task 2 integration test (`tests/run_tool_hand.rs`) already covers this
+    /// path end-to-end without the ignore, so the unit-test variant here exists to
+    /// pin the API and document Phase 2b's intent.
+    #[tokio::test]
+    #[ignore = "requires `gait` binary built; the end-to-end path is covered by tests/run_tool_hand.rs"]
+    async fn subprocess_synapse_runs_read_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "payload-xyz").unwrap();
+
+        let syn = SubprocessSynapse {
+            gait_dir: dir.path().to_path_buf(),
+            codebase: dir.path().to_path_buf(),
+            session_id: "stest123".into(),
+            cwd: dir.path().to_string_lossy().into_owned(),
+        };
+        let tool = crate::tools::read::ReadTool::new(crate::tools::ToolCtx::new(
+            dir.path().into(),
+            dir.path().into(),
+            "stest123".into(),
+        ));
+        let (result, _events) = syn
+            .fire(
+                &tool,
+                serde_json::json!({"file_path": "f.txt"}),
+                ScopeRequest {
+                    access: tool.access(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            result.as_str().unwrap_or("").contains("payload-xyz"),
+            "file content must survive the subprocess hop; got: {:?}",
+            result
         );
     }
 }
