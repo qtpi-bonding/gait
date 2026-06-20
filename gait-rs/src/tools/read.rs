@@ -227,6 +227,13 @@ impl Tool for ReadTool {
             patterns: path_patterns("read", &rel),
         }])
     }
+
+    fn access(&self) -> crate::types::ToolAccess {
+        crate::types::ToolAccess {
+            reads: true,
+            ..Default::default()
+        }
+    }
 }
 
 #[cfg(test)]

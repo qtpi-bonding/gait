@@ -106,6 +106,13 @@ impl Tool for GlobTool {
 
         Ok(Value::String(lines.join("\n")))
     }
+
+    fn access(&self) -> crate::types::ToolAccess {
+        crate::types::ToolAccess {
+            reads: true,
+            ..Default::default()
+        }
+    }
 }
 
 #[cfg(test)]

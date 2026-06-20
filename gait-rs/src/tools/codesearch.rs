@@ -146,6 +146,13 @@ impl Tool for CodesearchTool {
         }
         Ok(Value::String(results.join("\n")))
     }
+
+    fn access(&self) -> crate::types::ToolAccess {
+        crate::types::ToolAccess {
+            reads: true,
+            ..Default::default()
+        }
+    }
 }
 
 #[cfg(test)]

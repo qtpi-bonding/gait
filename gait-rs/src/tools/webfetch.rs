@@ -322,6 +322,13 @@ impl Tool for WebfetchTool {
 
         Ok(Value::String(output))
     }
+
+    fn access(&self) -> crate::types::ToolAccess {
+        crate::types::ToolAccess {
+            network: true,
+            ..Default::default()
+        }
+    }
 }
 
 #[cfg(test)]

@@ -248,6 +248,13 @@ impl Tool for LsTool {
 
         Ok(Value::String(render_tree(&search_dir, &files)))
     }
+
+    fn access(&self) -> crate::types::ToolAccess {
+        crate::types::ToolAccess {
+            reads: true,
+            ..Default::default()
+        }
+    }
 }
 
 #[cfg(test)]

@@ -96,6 +96,14 @@ impl Tool for WriteTool {
                 }
             })
     }
+
+    fn access(&self) -> crate::types::ToolAccess {
+        crate::types::ToolAccess {
+            reads: true,
+            writes: true,
+            ..Default::default()
+        }
+    }
 }
 
 #[cfg(test)]

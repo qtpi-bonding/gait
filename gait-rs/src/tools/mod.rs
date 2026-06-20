@@ -325,4 +325,78 @@ mod tests {
             tools.iter().map(|t| t.name()).collect::<Vec<_>>()
         );
     }
+
+    #[test]
+    fn world_touching_tools_declare_access() {
+        use crate::types::ToolAccess;
+        let tools = builtin_tools(
+            ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "stest".into()),
+            vec![],
+            vec![],
+            vec![],
+            crate::git::Repos::production(),
+        );
+        let by = |n: &str| tools.iter().find(|t| t.name() == n).unwrap().access();
+
+        assert!(
+            by("read").touches_world()
+                && by("read")
+                    == ToolAccess {
+                        reads: true,
+                        ..Default::default()
+                    }
+        );
+        assert_eq!(
+            by("write"),
+            ToolAccess {
+                reads: true,
+                writes: true,
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            by("edit"),
+            ToolAccess {
+                reads: true,
+                writes: true,
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            by("shell"),
+            ToolAccess {
+                reads: true,
+                writes: true,
+                spawns: true,
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            by("webfetch"),
+            ToolAccess {
+                network: true,
+                ..Default::default()
+            }
+        );
+        for n in ["glob", "grep", "ls", "codesearch"] {
+            assert_eq!(
+                by(n),
+                ToolAccess {
+                    reads: true,
+                    ..Default::default()
+                },
+                "{n}"
+            );
+        }
+        // Control tools stay brain-side.
+        for n in [
+            "structured_done",
+            "spawn_agent",
+            "clarify",
+            "inform",
+            "prune",
+        ] {
+            assert!(!by(n).touches_world(), "{n} must be brain-side");
+        }
+    }
 }

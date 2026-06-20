@@ -214,6 +214,15 @@ impl Tool for ShellTool {
             "timed_out": false,
         }))
     }
+
+    fn access(&self) -> crate::types::ToolAccess {
+        crate::types::ToolAccess {
+            reads: true,
+            writes: true,
+            spawns: true,
+            ..Default::default()
+        }
+    }
 }
 
 #[cfg(test)]
