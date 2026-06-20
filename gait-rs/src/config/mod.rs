@@ -1,0 +1,369 @@
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+
+pub const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4-6";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigTool {
+    pub name: String,
+    pub description: String,
+    pub cmd: String,
+    #[serde(default = "default_cwd")]
+    pub cwd: String,
+}
+
+fn default_cwd() -> String {
+    "codebase".into()
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+/// Config-level: how to connect to one MCP server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerDef {
+    pub name: String,
+    /// Ecosystem-standard stdio: executable name (e.g. "npx", "uvx", "node")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Ecosystem-standard stdio: arguments to pass to the command
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
+    /// Ecosystem-standard stdio: environment variables to set
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<std::collections::HashMap<String, String>>,
+    /// Ecosystem-standard HTTP: URL of an already-running MCP server
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Deprecated compat: full "prog args…" string, equivalent to command+args
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn: Option<String>,
+    /// Deprecated compat: HTTP URL, equivalent to url
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connect: Option<String>,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    /// Optional description for the <loadable-index>.
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// Runtime: one tool discovered from an MCP server via tools/list.
+/// Populated by McpClient::discover_tools(), not from config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpToolDef {
+    pub server_name: String,
+    pub name: String,
+    pub description: String,
+    pub schema: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillDef {
+    pub name: String,
+    pub description: String,
+    pub content: String,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+/// Stub for future WASM plugin support.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasmPluginDef {
+    pub name: String,
+    pub path: String,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub allow_exec: Vec<String>,
+    #[serde(default)]
+    pub allow_fs: Vec<String>,
+}
+/// One entry in the `gait.jsonc` `"hooks"` array.
+/// `event` is the lifecycle point: "pre_turn" | "pre_step" | "post_step" | "pre_tool" | "post_tool" | "post_turn".
+/// `tool` filters to a specific tool name (pre_tool / post_tool only); absent means all tools.
+/// `run` is a shell command. All `GAIT_*` env vars are set before execution — see docs/hooks.md.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookDef {
+    pub event: String,
+    #[serde(default)]
+    pub tool: Option<String>,
+    pub run: String,
+}
+
+// ── LLM parameter surface ─────────────────────────────────────────────────────
+// These serde structs are the JSON-facing layer (gait.jsonc + agent frontmatter).
+// The proto `LlmParams` message family is the log-facing layer.
+// Conversion: events::llm_params_to_proto(&LlmParamsConfig) → pb::LlmParams.
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AnthropicThinkingConfig {
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>, // "adaptive"|"disabled"|"enabled"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>, // "summarized"|"omitted"
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AnthropicLlmParamsConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>, // "low"|"medium"|"high"|"xhigh"|"max"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<AnthropicThinkingConfig>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OpenAILlmParamsConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>, // "none"|"minimal"|"low"|"medium"|"high"|"xhigh"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frequency_penalty: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence_penalty: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<i64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stop: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GeminiThinkingConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_thoughts: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>, // "minimal"|"low"|"medium"|"high"
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GeminiLlmParamsConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_count: Option<i32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stop_sequences: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frequency_penalty: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence_penalty: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<GeminiThinkingConfig>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LlmParamsConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    // NOTE: show_thinking is intentionally absent here — it belongs to GaitConfig
+    // as a pure UI render toggle. ThinkingBlock events are always written to the log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anthropic: Option<AnthropicLlmParamsConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai: Option<OpenAILlmParamsConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gemini: Option<GeminiLlmParamsConfig>,
+}
+
+impl LlmParamsConfig {
+    /// Merge config-level params with agent-level params. Agent fields win
+    /// (agent-specific settings override the workspace defaults).
+    pub fn merged_with(self, agent: LlmParamsConfig) -> LlmParamsConfig {
+        LlmParamsConfig {
+            max_tokens: agent.max_tokens.or(self.max_tokens),
+            temperature: agent.temperature.or(self.temperature),
+            top_p: agent.top_p.or(self.top_p),
+            anthropic: agent.anthropic.or(self.anthropic),
+            openai: agent.openai.or(self.openai),
+            gemini: agent.gemini.or(self.gemini),
+        }
+    }
+}
+
+/// When to render edit/write previews. `on-ask` (default): only at the permission
+/// prompt. `always`: also stream the diff live (ephemeral) for auto/allow-listed
+/// tools. `off`: never.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum PreviewPolicy {
+    #[default]
+    OnAsk,
+    Always,
+    Off,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GaitConfig {
+    pub model: String,
+    #[serde(default)]
+    pub allow: Vec<String>,
+    #[serde(default)]
+    pub deny: Vec<String>,
+    #[serde(default)]
+    pub tools: Vec<ConfigTool>,
+    #[serde(default = "default_compaction_threshold")]
+    pub compaction_threshold: f64,
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerDef>,
+    #[serde(default)]
+    /// Deprecated (O4): skill bodies should live in skills/<name>/SKILL.md.
+    pub skills: Vec<SkillDef>,
+    #[serde(default)]
+    pub wasm_plugins: Vec<WasmPluginDef>,
+    #[serde(default)]
+    pub hooks: Vec<HookDef>,
+    /// Max retries when an LLM result fails output_schema validation.
+    #[serde(default = "default_output_schema_retries")]
+    pub output_schema_retries: u8,
+    /// Max turn iterations before giving up. Defaults to 100 when absent.
+    #[serde(default)]
+    pub max_iter: Option<usize>,
+    /// When to render edit/write previews. Defaults to on-ask.
+    #[serde(default)]
+    pub preview: PreviewPolicy,
+
+    /// JSON Schema that `result` in `structured_done` must conform to.
+    /// If set, harness validates and retries on mismatch (up to output_schema_retries).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_schema: Option<serde_json::Value>,
+
+    /// LLM parameter overrides: temperature, max_tokens, thinking, effort, etc.
+    /// Merged with agent frontmatter (agent wins per-field).
+    #[serde(default)]
+    pub llm_params: LlmParamsConfig,
+
+    /// Whether to render thinking/reasoning blocks in the terminal output.
+    /// This is a pure UI preference — ThinkingBlock events are ALWAYS written
+    /// to the session log regardless of this flag. Default: false.
+    #[serde(default)]
+    pub show_thinking: bool,
+}
+
+fn default_compaction_threshold() -> f64 {
+    0.8
+}
+
+fn default_output_schema_retries() -> u8 {
+    3
+}
+
+impl Default for GaitConfig {
+    fn default() -> Self {
+        Self {
+            model: DEFAULT_MODEL.into(),
+            allow: vec![
+                "read".into(),
+                "glob".into(),
+                "grep".into(),
+                "ls".into(),
+                "clarify".into(),
+                "inform".into(),
+            ],
+            deny: vec![],
+            tools: vec![],
+            compaction_threshold: 0.8,
+            mcp_servers: vec![],
+            skills: vec![],
+            wasm_plugins: vec![],
+            hooks: vec![],
+            output_schema_retries: 3,
+            max_iter: None,
+            preview: PreviewPolicy::OnAsk,
+            result_schema: None,
+            llm_params: LlmParamsConfig::default(),
+            show_thinking: false,
+        }
+    }
+}
+
+pub fn strip_jsonc_comments(input: &str) -> String {
+    input
+        .lines()
+        .map(|line| {
+            // Find // that isn't inside a string (count unescaped " before pos)
+            let mut in_string = false;
+            let mut prev_char = '\0';
+            let chars: Vec<char> = line.chars().collect();
+            for i in 0..chars.len() {
+                if chars[i] == '"' && prev_char != '\\' {
+                    in_string = !in_string;
+                }
+                if !in_string && i + 1 < chars.len() && chars[i] == '/' && chars[i + 1] == '/' {
+                    return line[..i].trim_end().to_string();
+                }
+                prev_char = chars[i];
+            }
+            line.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn load_config(gait_dir: &Path) -> GaitConfig {
+    let path = gait_dir.join("gait.jsonc");
+    if !path.exists() {
+        return GaitConfig::default();
+    }
+    let raw = std::fs::read_to_string(&path).unwrap_or_default();
+    let stripped = strip_jsonc_comments(&raw);
+    // Parse failures silently fall back to defaults; the library must not write to stderr.
+    let config: GaitConfig =
+        serde_json::from_str(&stripped).unwrap_or_else(|_| GaitConfig::default());
+    // O4: the `skills:` field is deprecated. Dropped silently — a library must not write to stderr.
+    let _ = &config.skills;
+    config
+}
+
+fn append_list_field(field: &str, pattern: &str, path: &Path) -> anyhow::Result<()> {
+    let mut obj: serde_json::Map<String, serde_json::Value> = if path.exists() {
+        let raw = std::fs::read_to_string(path)?;
+        let stripped = strip_jsonc_comments(&raw);
+        match serde_json::from_str::<serde_json::Value>(&stripped) {
+            Ok(serde_json::Value::Object(m)) => m,
+            Ok(_) => anyhow::bail!("gait.jsonc root is not a JSON object"),
+            Err(e) => anyhow::bail!("gait.jsonc parse error: {e}"),
+        }
+    } else {
+        let mut m = serde_json::Map::new();
+        m.insert(
+            "model".into(),
+            serde_json::Value::String(DEFAULT_MODEL.into()),
+        );
+        m
+    };
+    let list = obj
+        .entry(field)
+        .or_insert_with(|| serde_json::Value::Array(vec![]))
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("{field} field is not an array"))?;
+    if !list.iter().any(|v| v.as_str() == Some(pattern)) {
+        list.push(serde_json::Value::String(pattern.to_string()));
+    }
+    let pretty = serde_json::to_string_pretty(&serde_json::Value::Object(obj))?;
+    std::fs::write(path, pretty + "\n")?;
+    Ok(())
+}
+
+pub fn append_allow_pattern(gait_dir: &Path, pattern: &str) -> anyhow::Result<()> {
+    append_list_field("allow", pattern, &gait_dir.join("gait.jsonc"))
+}
+
+pub fn append_deny_pattern(gait_dir: &Path, pattern: &str) -> anyhow::Result<()> {
+    append_list_field("deny", pattern, &gait_dir.join("gait.jsonc"))
+}
+
+#[cfg(test)]
+mod tests;

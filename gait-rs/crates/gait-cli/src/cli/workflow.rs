@@ -1,0 +1,241 @@
+//! `gait workflow <run|list|continue|abort|log>` commands.
+//! Pulled out of gait-bin so the bin can become a thin dispatcher.
+
+use std::path::PathBuf;
+
+use gait_workflow::progress;
+use gait_workflow::runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
+use gait_workflow::schema::WorkflowDef;
+
+use crate::cli::args::resolve_gait_dir;
+
+pub async fn cmd_workflow(argv: &[String]) {
+    let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
+        eprintln!("[gait] {e}");
+        std::process::exit(1);
+    });
+    let sub = argv.first().map(|s| s.as_str()).unwrap_or("");
+    match sub {
+        "run" => cmd_workflow_run(&argv[1..], gait_dir).await,
+        "list" => cmd_workflow_list(&argv[1..], gait_dir),
+        "continue" => cmd_workflow_continue(&argv[1..], gait_dir).await,
+        "abort" => cmd_workflow_abort(&argv[1..], gait_dir),
+        "log" => cmd_workflow_log(&argv[1..], gait_dir),
+        _ => {
+            eprintln!("[gait] usage: gait workflow <run|list|continue|abort|log>");
+            std::process::exit(1);
+        }
+    }
+}
+
+pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) {
+    let name = match argv.first() {
+        Some(n) => n.clone(),
+        None => {
+            eprintln!("[gait] usage: gait workflow run <name> [args...]");
+            std::process::exit(1);
+        }
+    };
+    let args: Vec<String> = argv[1..].to_vec();
+
+    let yaml_path = gait_dir.join("workflows").join(format!("{}.yaml", name));
+    let yaml_content = match std::fs::read_to_string(&yaml_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[gait] cannot read {}: {}", yaml_path.display(), e);
+            std::process::exit(1);
+        }
+    };
+    let wf: WorkflowDef = match serde_yaml::from_str(&yaml_content) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("[gait] invalid workflow YAML: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let session_id = format!(
+        "wf{}",
+        &uuid::Uuid::new_v4().to_string().replace('-', "")[..8]
+    );
+    eprintln!(
+        "[gait workflow] starting {} as session {}",
+        name, session_id
+    );
+
+    match run_workflow(WorkflowRunOpts {
+        workflow_def: wf,
+        yaml_path: yaml_path.to_string_lossy().to_string(),
+        session_id,
+        gait_dir: gait_dir.clone(),
+        codebase: gait_dir.join("codebase"),
+        args,
+    })
+    .await
+    {
+        Ok(WorkflowOutcome::Completed) => {}
+        Ok(WorkflowOutcome::GatePaused) => {
+            eprintln!("[gait workflow] paused at gate");
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("[gait workflow] error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+pub fn cmd_workflow_list(_argv: &[String], gait_dir: PathBuf) {
+    let sessions = gait_core::git::Repos::production()
+        .traces
+        .list_active_sessions(&gait_dir)
+        .unwrap_or_default();
+    let mut found = false;
+    for session_id in &sessions {
+        if let Some(progress) = progress::read_progress(&gait_dir, session_id) {
+            println!("{} — {} ({})", session_id, progress.name, progress.status);
+            found = true;
+        }
+    }
+    if !found {
+        println!("(no active workflow sessions)");
+    }
+}
+
+pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) {
+    let workflow_id = match argv.first() {
+        Some(id) => id.clone(),
+        None => {
+            eprintln!("[gait] usage: gait workflow continue <workflow-id>");
+            std::process::exit(1);
+        }
+    };
+    let progress = match progress::read_progress(&gait_dir, &workflow_id) {
+        Some(p) => p,
+        None => {
+            eprintln!("[gait] no progress.yaml found for workflow {}", workflow_id);
+            std::process::exit(1);
+        }
+    };
+    let tx_path = gait_dir
+        .join("sessions")
+        .join(&workflow_id)
+        .join("log.jsonl");
+    let events = gait_core::session::log::read_events(&tx_path).unwrap_or_default();
+    let yaml_path_str = events
+        .iter()
+        .find_map(|e| {
+            use gait_core::proto::gait::log::v1::{event, payload};
+            if let Some(event::Body::Payload(p)) = &e.body {
+                if let Some(payload::Kind::Raw(r)) = &p.kind {
+                    if r.r#type == "workflow_start" {
+                        let v = r
+                            .payload
+                            .as_ref()
+                            .and_then(|s| serde_json::to_value(s).ok())
+                            .unwrap_or(serde_json::Value::Null);
+                        return v
+                            .get("yaml_path")
+                            .and_then(|x| x.as_str())
+                            .map(|s| s.to_string());
+                    }
+                }
+            }
+            None
+        })
+        .unwrap_or_default();
+
+    if yaml_path_str.is_empty() {
+        eprintln!("[gait] cannot find workflow YAML path in transcript");
+        std::process::exit(1);
+    }
+    let yaml_content = match std::fs::read_to_string(&yaml_path_str) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[gait] cannot read {}: {}", yaml_path_str, e);
+            std::process::exit(1);
+        }
+    };
+    let wf: WorkflowDef = match serde_yaml::from_str(&yaml_content) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("[gait] invalid workflow YAML: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    eprintln!(
+        "[gait workflow] resuming {} ({})",
+        progress.name, workflow_id
+    );
+
+    match run_workflow(WorkflowRunOpts {
+        workflow_def: wf,
+        yaml_path: yaml_path_str,
+        session_id: workflow_id,
+        gait_dir: gait_dir.clone(),
+        codebase: gait_dir.join("codebase"),
+        args: vec![],
+    })
+    .await
+    {
+        Ok(WorkflowOutcome::Completed) => {}
+        Ok(WorkflowOutcome::GatePaused) => {
+            eprintln!("[gait workflow] paused at gate");
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("[gait workflow] error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+pub fn cmd_workflow_abort(argv: &[String], gait_dir: PathBuf) {
+    let workflow_id = match argv.first() {
+        Some(id) => id.clone(),
+        None => {
+            eprintln!("[gait] usage: gait workflow abort <workflow-id>");
+            std::process::exit(1);
+        }
+    };
+    let tx_path = gait_dir
+        .join("sessions")
+        .join(&workflow_id)
+        .join("log.jsonl");
+    let _ = gait_core::proto::wire::append(
+        &tx_path,
+        gait_core::proto::wire::raw(
+            "workflow_error",
+            serde_json::json!({
+                "workflow_id": workflow_id.clone(),
+                "failed_node": "(aborted)",
+                "error": "user aborted",
+            }),
+        ),
+    );
+    let _ = gait_core::git::Repos::production().traces.commit_session(
+        &gait_dir,
+        &workflow_id,
+        "workflow: aborted",
+    );
+    println!("[gait workflow] aborted {}", workflow_id);
+}
+
+pub fn cmd_workflow_log(argv: &[String], gait_dir: PathBuf) {
+    let workflow_id = match argv.first() {
+        Some(id) => id.clone(),
+        None => {
+            eprintln!("[gait] usage: gait workflow log <workflow-id>");
+            std::process::exit(1);
+        }
+    };
+    let tx_path = gait_dir
+        .join("sessions")
+        .join(&workflow_id)
+        .join("log.jsonl");
+    let events = gait_core::session::log::read_events(&tx_path).unwrap_or_default();
+    for event in &events {
+        println!("{}", serde_json::to_string(event).unwrap_or_default());
+    }
+}

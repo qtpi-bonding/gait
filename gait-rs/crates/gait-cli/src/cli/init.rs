@@ -1,0 +1,332 @@
+//! `gait init` — scaffold a gait-dir and make an initial commit.
+
+pub struct InitArgs {
+    /// Target gait-dir. None = use cwd.
+    path: Option<std::path::PathBuf>,
+    /// User passed -h or --help.
+    help: bool,
+}
+
+/// Pure: parse `gait init [<path>] [-h|--help]`. No I/O, no side effects.
+pub fn parse_init_args(argv: &[String]) -> InitArgs {
+    let help = argv.iter().any(|a| a == "--help" || a == "-h");
+    let path = if help {
+        None
+    } else {
+        argv.iter()
+            .find(|a| !a.starts_with('-'))
+            .map(std::path::PathBuf::from)
+    };
+    InitArgs { path, help }
+}
+
+fn init_usage() -> ! {
+    eprintln!("usage: gait init [<path>]");
+    eprintln!();
+    eprintln!("Initialize a gait-dir at <path> (default: current directory).");
+    eprintln!("Like 'git init': creates the path if needed, safe to re-run.");
+    eprintln!();
+    eprintln!("Options:");
+    eprintln!("  -h, --help    Print this help");
+    std::process::exit(0);
+}
+
+fn print_init_summary(gait_dir: &std::path::Path) {
+    let display = gait_dir.display();
+    eprintln!("[gait] initialized gait-dir at {display}");
+    eprintln!();
+    eprintln!("  {:<32} {:<46} {}", "file", "purpose", "git");
+    eprintln!(
+        "  {:<32} {:<46} {}",
+        "gait.jsonc", "model + tool-permission config", "committed"
+    );
+    eprintln!(
+        "  {:<32} {:<46} {}",
+        "agents/default/AGENT.md", "the agent's role and instructions", "committed"
+    );
+    eprintln!(
+        "  {:<32} {:<46} {}",
+        "USER.md", "your personal instructions (not shared)", "ignored"
+    );
+    eprintln!(
+        "  {:<32} {:<46} {}",
+        "skills/", "installed skills  (skills/<n>/SKILL.md)", "committed*"
+    );
+    eprintln!("  {:<32} {:<46} {}", "sessions/", "turn history", "ignored");
+    eprintln!();
+    eprintln!("  * empty dir; git-tracked when you add skills");
+    eprintln!();
+    eprintln!("  next: gait run --task \"...\"");
+}
+
+/// Create the empty, editable layer affordances in the gait-dir (idempotent,
+/// never clobbers) and ensure USER.md and sessions/ are gitignored.
+pub fn scaffold_gait_dir(gait_dir: &std::path::Path) -> std::io::Result<()> {
+    // agents/default/ — Phase 4 directory form
+    let default_agent_dir = gait_dir.join("agents").join("default");
+    std::fs::create_dir_all(&default_agent_dir)?;
+    let default_agent = default_agent_dir.join("AGENT.md");
+    if !default_agent.exists() {
+        std::fs::write(&default_agent, "")?;
+    }
+
+    // USER.md — personal instructions, gitignored
+    let user_md = gait_dir.join("USER.md");
+    if !user_md.exists() {
+        std::fs::write(&user_md, "")?;
+    }
+
+    // skills/ — installed skills (disk presence = available)
+    std::fs::create_dir_all(gait_dir.join("skills"))?;
+
+    // sessions/ — turn history
+    std::fs::create_dir_all(gait_dir.join("sessions"))?;
+
+    // gait.jsonc — default config (never clobber)
+    let config_path = gait_dir.join("gait.jsonc");
+    if !config_path.exists() {
+        std::fs::write(&config_path,
+            "{\n  // gait configuration\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  // Allow list: tools that run without approval. Default empty = everything gated.\n  \"allow\": [],\n  // Tier 1 config-defined tools: shell commands the LLM can call by name\n  \"tools\": []\n}\n")?;
+    }
+
+    // .gitignore — merge required entries, no duplicates
+    let gi_path = gait_dir.join(".gitignore");
+    let mut gi = std::fs::read_to_string(&gi_path).unwrap_or_default();
+    let required = ["sessions/", "USER.md", ".gait-ws.lock"];
+    let mut changed = false;
+    for entry in &required {
+        if !gi.lines().any(|l| l.trim() == *entry) {
+            if !gi.is_empty() && !gi.ends_with('\n') {
+                gi.push('\n');
+            }
+            gi.push_str(entry);
+            gi.push('\n');
+            changed = true;
+        }
+    }
+    if changed {
+        std::fs::write(&gi_path, &gi)?;
+    }
+
+    Ok(())
+}
+
+pub fn cmd_init(argv: &[String]) {
+    let args = parse_init_args(argv);
+    if args.help {
+        init_usage();
+    }
+
+    let gait_dir = match args.path {
+        Some(p) => p,
+        None => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+    };
+
+    if let Err(e) = std::fs::create_dir_all(&gait_dir) {
+        eprintln!(
+            "[gait] cannot create directory {}: {}",
+            gait_dir.display(),
+            e
+        );
+        std::process::exit(1);
+    }
+
+    if let Err(e) = gait_core::git::Repos::production()
+        .traces
+        .init_workspace(&gait_dir)
+    {
+        eprintln!("[gait] git init failed: {}", e);
+        std::process::exit(1);
+    }
+
+    if let Err(e) = scaffold_gait_dir(&gait_dir) {
+        eprintln!("[gait] scaffold failed: {}", e);
+        std::process::exit(1);
+    }
+
+    // Stage and initial commit via git2
+    let repo = match git2::Repository::open(&gait_dir) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[gait] cannot open repo: {e}");
+            std::process::exit(1);
+        }
+    };
+    let sig = repo
+        .signature()
+        .or_else(|_| git2::Signature::now("gait", "gait@localhost"))
+        .unwrap();
+    let mut index = repo.index().unwrap();
+
+    // Stage exactly what scaffold created (relative paths from gait_dir root)
+    let to_stage = ["gait.jsonc", ".gitignore", "agents/default/AGENT.md"];
+    for f in &to_stage {
+        if gait_dir.join(f).exists() {
+            let _ = index.add_path(std::path::Path::new(f));
+        }
+    }
+    index.write().unwrap();
+    let tree_id = index.write_tree().unwrap();
+    let tree = repo.find_tree(tree_id).unwrap();
+
+    let parent_commits: Vec<git2::Commit> = repo
+        .head()
+        .ok()
+        .and_then(|h| h.peel_to_commit().ok())
+        .into_iter()
+        .collect();
+    let parents: Vec<&git2::Commit> = parent_commits.iter().collect();
+    repo.commit(
+        Some("HEAD"),
+        &sig,
+        &sig,
+        "gait: init gait_dir",
+        &tree,
+        &parents,
+    )
+    .unwrap();
+
+    print_init_summary(&gait_dir);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scaffold_creates_empty_affordances_and_gitignores_user() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "sessions/\n").unwrap();
+        scaffold_gait_dir(dir.path()).unwrap();
+        assert!(dir
+            .path()
+            .join("agents")
+            .join("default")
+            .join("AGENT.md")
+            .exists());
+        assert!(dir.path().join("USER.md").exists());
+        let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(
+            gi.lines().any(|l| l.trim() == "USER.md"),
+            "USER.md gitignored: {gi}"
+        );
+        // Idempotent + non-clobbering:
+        std::fs::write(dir.path().join("USER.md"), "mine").unwrap();
+        scaffold_gait_dir(dir.path()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("USER.md")).unwrap(),
+            "mine"
+        );
+        assert_eq!(
+            gi.matches("USER.md").count(),
+            1,
+            "no duplicate gitignore entry"
+        );
+    }
+
+    mod init_tests {
+        use super::*;
+
+        #[test]
+        fn parse_init_args_no_args_returns_cwd_and_no_help() {
+            let args: Vec<String> = vec![];
+            let a = parse_init_args(&args);
+            assert!(!a.help, "no --help flag");
+            assert!(a.path.is_none(), "no path -> None (caller resolves to cwd)");
+        }
+
+        #[test]
+        fn parse_init_args_with_path() {
+            let args = vec!["/tmp/myws".to_string()];
+            let a = parse_init_args(&args);
+            assert_eq!(a.path, Some(std::path::PathBuf::from("/tmp/myws")));
+            assert!(!a.help);
+        }
+
+        #[test]
+        fn parse_init_args_help_flag_long() {
+            let args = vec!["--help".to_string()];
+            let a = parse_init_args(&args);
+            assert!(a.help);
+        }
+
+        #[test]
+        fn parse_init_args_help_flag_short() {
+            let args = vec!["-h".to_string()];
+            let a = parse_init_args(&args);
+            assert!(a.help);
+        }
+
+        #[test]
+        fn parse_init_args_help_with_path_help_wins() {
+            let args = vec!["/tmp/x".to_string(), "--help".to_string()];
+            let a = parse_init_args(&args);
+            assert!(a.help, "--help anywhere in argv sets help=true");
+        }
+
+        #[test]
+        fn scaffold_creates_new_dir_layout() {
+            let dir = tempfile::TempDir::new().unwrap();
+            scaffold_gait_dir(dir.path()).unwrap();
+
+            assert!(
+                dir.path()
+                    .join("agents")
+                    .join("default")
+                    .join("AGENT.md")
+                    .exists(),
+                "agents/default/AGENT.md must exist"
+            );
+            assert!(
+                !dir.path().join("agents").join("default.md").exists(),
+                "agents/default.md (flat, old) must not be created"
+            );
+            assert!(dir.path().join("skills").is_dir(), "skills/ dir must exist");
+            assert!(dir.path().join("USER.md").exists());
+            let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap_or_default();
+            assert!(
+                gi.lines().any(|l| l.trim() == "USER.md"),
+                "USER.md in .gitignore"
+            );
+            assert!(
+                gi.lines().any(|l| l.trim() == "sessions/"),
+                "sessions/ in .gitignore"
+            );
+        }
+
+        #[test]
+        fn scaffold_is_idempotent_and_does_not_clobber() {
+            let dir = tempfile::TempDir::new().unwrap();
+            std::fs::create_dir_all(dir.path().join("agents").join("default")).unwrap();
+            std::fs::write(
+                dir.path().join("agents").join("default").join("AGENT.md"),
+                "my instructions",
+            )
+            .unwrap();
+            std::fs::write(dir.path().join("USER.md"), "personal").unwrap();
+
+            scaffold_gait_dir(dir.path()).unwrap();
+
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("agents/default/AGENT.md")).unwrap(),
+                "my instructions",
+                "must not clobber existing AGENT.md"
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("USER.md")).unwrap(),
+                "personal",
+                "must not clobber existing USER.md"
+            );
+        }
+
+        #[test]
+        fn scaffold_gitignore_no_duplicate_entries() {
+            let dir = tempfile::TempDir::new().unwrap();
+            scaffold_gait_dir(dir.path()).unwrap();
+            scaffold_gait_dir(dir.path()).unwrap();
+            let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+            assert_eq!(gi.matches("USER.md").count(), 1, "USER.md appears once");
+            assert_eq!(gi.matches("sessions/").count(), 1, "sessions/ appears once");
+        }
+    }
+}

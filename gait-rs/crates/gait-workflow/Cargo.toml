@@ -1,0 +1,24 @@
+[package]
+name = "gait-workflow"
+description = "YAML DAG workflow runner for gait."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gait-core  = { path = "../.." }
+gait-proto = { path = "../gait-proto" }
+tokio      = { version = "1", features = ["full"] }
+anyhow     = "1"
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+async-trait = "0.1"
+futures-util = "0.3"
+regex = "1"
+
+
+[dev-dependencies]
+tempfile = "3"
+tokio    = { version = "1", features = ["full", "test-util"] }

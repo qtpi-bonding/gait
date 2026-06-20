@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package gait.state.v1;
+
+import "log.proto";
+
+// ============================================================================
+// gait session-state — the `gait state` query contract.
+//
+// A DERIVED projection, NOT a log event: computed by the Retrace from the Log
+// tail (the first unresolved request before its reply/TurnComplete wins). It is
+// the typed output the broker/Flutter polls to learn what a session is waiting
+// on — never appended to the Log.
+//
+// Split from log.proto (its own package + envelope) so the state-query API and
+// the log format evolve independently. It REFERENCES the log item types
+// (gait.log.v1.{PermissionItem,ClarifyItem,InformItem}) rather than copying them
+// — a clarify item is a clarify item in both worlds.
+// ============================================================================
+
+// The state envelope returned by `gait state`.
+message SessionStateReport {
+  string       session_id = 1;
+  SessionState state      = 2;
+}
+
+message SessionState {
+  oneof state {
+    Idle               idle                = 1;
+    AwaitingPermission awaiting_permission = 2;
+    AwaitingClarify    awaiting_clarify    = 3;
+    AwaitingInform     awaiting_inform     = 4;
+  }
+}
+
+message Idle {}
+message AwaitingPermission { repeated gait.log.v1.PermissionItem items = 1; }
+message AwaitingClarify    { repeated gait.log.v1.ClarifyItem    items = 1; }
+message AwaitingInform     { repeated gait.log.v1.InformItem     items = 1; }

@@ -1,0 +1,7 @@
+name: smoke-cycle
+nodes:
+  - id: producer
+    shell: "echo PRODUCED"
+    goto: consumer
+  - id: consumer
+    shell: "echo CONSUMED"

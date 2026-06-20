@@ -1,0 +1,24 @@
+# cargo-deny configuration — https://embarkstudios.github.io/cargo-deny/
+#
+# License policy for the gait dependency graph. gait itself is AGPL-3.0-or-later;
+# every third-party dependency must be under a permissive license that is
+# compatible with redistribution under the AGPL. Run `cargo deny check licenses`.
+
+[licenses]
+# SPDX identifiers explicitly permitted in the dependency tree. All entries below
+# are permissive / AGPLv3-compatible. AGPL-3.0-or-later is gait's own license.
+allow = [
+    "AGPL-3.0-or-later",
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "Unlicense",
+]
+confidence-threshold = 0.8

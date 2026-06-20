@@ -1,0 +1,35 @@
+node_modules/
+dist/
+bun.lockb
+/target/
+/gait-rs/target/
+
+sessions/
+tmp/
+.gait-ws.lock
+.worktrees/
+
+# Competitive research scratch (not tracked)
+competitive-research/
+
+# Internal AI planning / workflow docs — kept out of the public tree.
+# (architecture.md and embedding.md under gait-rs/docs/ ARE tracked.)
+docs/superpowers/
+docs/plans/
+docs/specs/
+docs/feedback/
+docs/notes/
+gait-rs/docs/plans/
+gait-rs/docs/specs/
+gait-rs/docs/superpowers/
+
+# Claude Code / AI assistant artifacts — kept local, never committed.
+# Solo project: the whole .claude/ workspace stays out of the tree. If you ever
+# want to share config with contributors, un-ignore specific files below,
+# e.g. add `!.claude/settings.json` or `!.claude/commands/`.
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+GEMINI.md
+.mcp.json

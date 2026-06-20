@@ -1,0 +1,9 @@
+name: smoke-parallel
+nodes:
+  - id: branch-a
+    shell: "echo BRANCH_A"
+  - id: branch-b
+    shell: "echo BRANCH_B"
+  - id: join
+    depends_on: [branch-a, branch-b]
+    shell: "echo DONE"

@@ -1,0 +1,459 @@
+syntax = "proto3";
+
+package gait.log.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/duration.proto";
+
+// ============================================================================
+// gait event log — the system worldline.
+//
+//   * Append-only, CRDT-shaped: a grow-only set of immutable events + LWW-per-
+//     target mutations. The fold (Retrace) is a pure function of the event SET
+//     ordered by (seq, id), so merged/rebased/resynced logs converge.
+//   * Content-addressed: every event carries a UUID identity + a content hash.
+//   * JSON on the wire (proto3 canonical / pbjson, camelCase). Each line of
+//     transcript.jsonl is exactly one Event.
+//
+// proto is the SOURCE OF TRUTH for the log format (generated Rust replaces the
+// hand-written AnyEvent). Field numbers only matter for schema identity here —
+// the wire is JSON, not binary proto.
+// ============================================================================
+
+
+// ── Envelope ────────────────────────────────────────────────────────────────
+// Every log line is an Event. Fields 1–6 are universal; the body (16–18) is
+// either a substantive Payload or a mutation operating on a prior event.
+message Event {
+  uint32 version          = 1;  // format generation; selects decode + hash scheme. Metadata.
+  string id               = 2;  // UUIDv4 — identity (dedup + LWW tiebreak). CRDT key = (seq, id).
+  uint64 seq              = 3;  // Lamport clock = max(parents.seq)+1 — THE order key.
+  uint64 ts               = 4;  // wall-clock ms — display/metadata only, never ordering.
+  string content_hash     = 5;  // hash(JCS(body)) — integrity; recorded at creation, recompute-to-verify.
+  repeated string parents = 6;  // causal DAG: [] root · [prev] linear · [a,b] merge. Populated now; folded later.
+
+  uint32 turn               = 7;  // 0-indexed turn ordinal within the session; stamped by emitter
+  uint32 step               = 8;  // 0-indexed step ordinal within the current turn; stamped by emitter
+  reserved 9 to 15;             // future envelope fields (origin/writer-id, Merkle prev-hash)
+
+  // NOTE: an unset `body` is a malformed event — the Retrace MUST reject body==None as a hard error
+  // (proto3 cannot enforce "exactly one oneof arm set").
+  oneof body {
+    Payload payload = 16;       // a substantive event ("what happened")
+    Redact  redact  = 17;       // a mutation: remove a prior event from the working Transcript
+    Replace replace = 18;       // a mutation: rewrite a prior event with a fully-typed payload
+  }
+}
+
+
+// ── Live-stream types (ephemeral, never persisted) ───────────────────────────
+
+// Ephemeral live-typing fragment. NOT a log event — no envelope, never persisted.
+message TextDelta {
+  string content = 1;
+}
+
+// Live-stream envelope. Carries either a durable log Event or an ephemeral
+// TextDelta. Never persisted; produced+consumed within a single session.
+message StreamItem {
+  oneof item {
+    Event     event = 1;
+    TextDelta delta = 2;
+  }
+}
+
+
+// ── Payload: the substantive worldline events ────────────────────────────────
+// Reused by Event.body AND by Replace.replacement, so a Replace is fully typed.
+// Contains ONLY substantive events (no mutations) — that prevents Replace-of-a-
+// Replace recursion.
+message Payload {
+  oneof kind {
+    SessionStart       session_start       = 1;
+    Agent              agent               = 2;
+    UserText           user_text           = 3;
+    AssistantText      assistant_text      = 4;
+    ToolCall           tool_call           = 5;
+    ToolResult         tool_result         = 6;
+    Clarify            clarify             = 7;
+    ClarifyReply       clarify_reply       = 8;
+    ClarifyConvergence clarify_convergence = 9;
+    Inform             inform              = 10;
+    InformReply        inform_reply        = 11;
+    InformConvergence  inform_convergence  = 12;
+    Permissions        permissions         = 13;
+    PermissionsReply   permissions_reply   = 14;
+    AgentUpdate        agent_update        = 15;
+    TurnComplete       turn_complete       = 16;
+    Summary            summary             = 17;
+    Error              error               = 18;
+    RawEvent           raw                 = 19;  // opaque holder: legacy / not-yet-modeled events (incl. workflow today)
+    SandboxApplied     sandbox_applied     = 50;
+    HookRun         hook_run            = 51;
+    Cwd                cwd                 = 52;
+    Toggle      toggle       = 53;
+    ModelChange model_change = 54;
+CancellationSignal cancellation_signal = 55;
+    Inject             inject              = 56;
+    ContextStatus      context_status      = 57;
+    ThinkingBlock      thinking_block      = 58;
+
+  }
+  reserved 20 to 49;  // workflow family (WorkflowHook* / WorkflowNode* / WorkflowStart …) — deferred to the workflow-subsystem redo
+}
+
+// working-directory change; ActiveCwd LWW-folds to the last one
+message Cwd { string path = 1; }
+
+// capability enable/disable delta — OR-Set per kind; folded by ActiveAgent.
+enum ToggleKind {
+  TOGGLE_KIND_UNSPECIFIED = 0;
+  TOGGLE_KIND_SKILL       = 1;
+  TOGGLE_KIND_MCP         = 2;
+  TOGGLE_KIND_TOOL        = 3;
+  TOGGLE_KIND_PLUGIN      = 4;
+}
+message Toggle {
+  ToggleKind kind    = 1;
+  string     name    = 2;
+  bool       enabled = 3;
+}
+// model-swap delta — LWW-Register; folded by ActiveAgent.
+message ModelChange { string model = 1; }
+// User-initiated turn cancellation (Esc key). ActiveMessages folds this into
+// [turn interrupted by user] in the next turn's transcript.
+message CancellationSignal {}
+
+
+
+
+// ── Mutations ────────────────────────────────────────────────────────────────
+message Redact {
+  string target = 1;            // envelope id of the event to remove from the working Transcript
+  optional string reason = 2;
+}
+message Replace {
+  string  target      = 1;      // envelope id of the event to rewrite
+  Payload replacement = 2;      // a fully-typed new payload (same-type by convention; validated in code)
+  optional string reason = 3;
+}
+
+
+// ── Opaque catch-all ─────────────────────────────────────────────────────────
+// Keeps logs fully decodable across legacy/unmodeled events (incl. current
+// workflow events) until they get real messages.
+message RawEvent {
+  string type                    = 1;  // original event tag (e.g. "node_start")
+  google.protobuf.Struct payload = 2;  // original JSON body, verbatim
+}
+
+
+// ── Reusable value objects ───────────────────────────────────────────────────
+message CodebaseState {               // environment-worldline stamp (working-tree state)
+  string hash                 = 1;
+  bool   dirty                = 2;
+  repeated string dirty_files = 3;
+}
+message PermissionPolicy { repeated string allow = 1; repeated string deny = 2; }
+message TurnTokenUsage  { uint64 input = 1; uint64 output = 2; uint64 cache_read = 3; uint64 cache_write = 4; }
+message Changes { repeated string added = 1; repeated string modified = 2; repeated string deleted = 3; }
+message StructuredDoneOutput { string message = 1; google.protobuf.Value result = 2; Changes changes = 3; }
+message CompactionTokenUsage { uint64 input = 1; uint64 output = 2; }
+message ProcessResult   { int32 exit_code = 1; bool timed_out = 2; }
+message ConvergenceItem { string id = 1; string proposal = 2; optional string response = 3; bool consistent = 4; }
+
+
+// ── Core conversation ────────────────────────────────────────────────────────
+message SessionStart {                // root event — identity ONLY
+  string session_id           = 1;
+  optional string assigned_by = 2;
+}
+
+message Agent {                       // the live agent config from this seq forward; first instance = opening.
+  string model                 = 1;   // LWW-projected (LWW-Register). "provider/model-id".
+  string instructions          = 2;   // composed system prompt — FULL (replay-complete). Re-emitted whole on any drift.
+  repeated string tools        = 3;   // resolved tool names
+  repeated string mcp_servers  = 4;
+  repeated string skills       = 5;
+  repeated string plugins      = 6;   // resolved plugin names
+  PermissionPolicy permissions = 7;
+  uint64 through_seq           = 8;   // audit: seq of the last event this config was derived from
+  optional LlmParams llm_params = 9;
+}
+
+message UserText {
+  string content                 = 1;
+  optional string from           = 2;  // sender id (open → string)
+  reserved 3, 4;                   // formerly: CodebaseState codebase, repeated string injected_files
+}
+
+message Inject {
+  string role    = 1;   // "user" | "assistant"
+  string content = 2;
+}
+
+message ContextStatus {
+  CodebaseState   codebase       = 1;
+  repeated string injected_files = 2;
+}
+
+message AssistantText { string content = 1; }
+
+message ToolCall {
+  string call_id               = 1;    // correlation id (cascade + ToolResult pairing match on this)
+  string name                  = 2;
+  google.protobuf.Struct input = 3;    // tool args — always a JSON object
+}
+message ToolResult {
+  string call_id                    = 1;
+  string output                     = 2;
+  google.protobuf.Duration duration = 3;  // generic — every tool; JSON "0.123s"
+  ProcessResult process             = 4;  // present only for shell/process tools
+}
+
+message TurnComplete {
+  TurnTokenUsage     usage        = 1;
+  CodebaseState codebase     = 2;
+  optional string checkpoint = 3;      // shadow-git SHA (environment snapshot handle)
+  repeated string blocks     = 4;      // numbered render blocks (quote-reply UI)
+  StructuredDoneOutput    output       = 5;
+}
+
+message Summary {
+  string summary        = 1;
+  uint32 turns_covered  = 2;
+  CompactionTokenUsage usage = 3;
+  optional uint64 through_seq = 4;      // seq boundary it compacts through (the fold coordinate); unset = none
+}
+
+message Error {
+  string     message = 1;
+  ErrorPhase phase   = 2;
+}
+enum ErrorPhase {
+  ERROR_PHASE_UNSPECIFIED = 0;
+  ERROR_PHASE_LLM         = 1;
+  ERROR_PHASE_TOOL        = 2;
+  ERROR_PHASE_GIT         = 3;
+  ERROR_PHASE_INIT        = 4;
+}
+
+
+// ── Dialogue ─────────────────────────────────────────────────────────────────
+message ClarifyItem {
+  string id        = 1;                // correlation slug — links request↔reply↔convergence
+  string content   = 2;                // the question
+  string why       = 3;                // what changes based on the answer
+  ClarifyKind kind = 4;
+  repeated string options = 5;
+}
+enum ClarifyKind {
+  CLARIFY_KIND_UNSPECIFIED = 0;
+  CLARIFY_KIND_IS          = 1;        // factual
+  CLARIFY_KIND_OUGHT       = 2;        // judgment/preference
+}
+message ClarifyReplyItem { string id = 1; string content = 2; optional string reasoning = 3; }
+message InformItem       { string id = 1; string content = 2; optional string context = 3; }
+message InformReplyItem  { string id = 1; string content = 2; }
+
+message Clarify            { repeated ClarifyItem      items = 1; }
+message ClarifyReply       { repeated ClarifyReplyItem items = 1; }
+message ClarifyConvergence { repeated ConvergenceItem  items = 1; }
+message Inform             { repeated InformItem       items = 1; }
+message InformReply        { repeated InformReplyItem  items = 1; }
+message InformConvergence  { repeated ConvergenceItem  items = 1; }
+
+message AgentUpdate {
+  string session_id = 1;               // cross-agent reference — names ANOTHER session (the one exception)
+  AgentStatus status = 2;
+  string summary = 3;
+  google.protobuf.Value items = 4;     // any JSON
+}
+enum AgentStatus {
+  AGENT_STATUS_UNSPECIFIED = 0;
+  AGENT_STATUS_DONE        = 1;
+  AGENT_STATUS_CLARIFY     = 2;
+  AGENT_STATUS_INFORM      = 3;
+}
+
+message PermissionItem {
+  string id        = 1;
+  string cmd       = 2;
+  string reason    = 3;
+  repeated string patterns = 4;        // allow-list entries, broad → specific
+  string tool_name = 5;
+  google.protobuf.Struct tool_args = 6;
+  optional string preview = 7;         // rendered pending change (diff/content), tool-owned
+}
+message PermissionsReplyItem {
+  string id            = 1;
+  Decision decision    = 2;
+  optional string text = 3;
+  Scope scope          = 4;            // legacy null → SCOPE_UNSPECIFIED
+}
+enum Decision { DECISION_UNSPECIFIED = 0; DECISION_ALLOW = 1; DECISION_DENY = 2; }
+enum Scope    { SCOPE_UNSPECIFIED = 0; SCOPE_ONCE = 1; SCOPE_AGENT = 2; SCOPE_GLOBAL = 3; SCOPE_SESSION = 4; }
+message Permissions      { repeated PermissionItem items = 1; }
+message PermissionsReply { string from = 1; repeated PermissionsReplyItem items = 2; }  // from = replier id
+message RunResult {
+  oneof result {
+    StructuredDoneOutput  done        = 1;
+    Clarify     clarify     = 2;
+    Permissions permissions = 3;
+    Inform      inform      = 4;
+    CancellationSignal cancelled = 5;
+  }
+}
+
+
+
+
+// ── Sandbox ──────────────────────────────────────────────────────────────────
+message SandboxApplied {
+  SandboxEnforcement enforcement = 1;  // active kernel enforcement or fallback
+  repeated string scope_paths    = 2;  // the enforcement scope paths
+  optional string reason         = 3;  // why enforcement is unavailable (enforcement=UNAVAILABLE)
+}
+enum SandboxEnforcement {
+  SANDBOX_ENFORCEMENT_UNSPECIFIED = 0;
+  SANDBOX_ENFORCEMENT_ACTIVE      = 1;  // Landlock (Linux) or Seatbelt (macOS) applied
+  SANDBOX_ENFORCEMENT_UNAVAILABLE = 2;  // kernel enforcement unavailable; tier-0 gate still active
+  SANDBOX_ENFORCEMENT_NOOP        = 3;  // no scope declared or explicitly disabled (tests/unscoped)
+}
+
+
+// ── Hooks ────────────────────────────────────────────────────────────────────
+// Emitted by config-driven hooks (gait.jsonc "hooks": [...]).
+// Workflow-subsystem hook events are WorkflowHook* in the reserved 20-49 range.
+// Snapshot of everything a hook process saw — mirrors HookContext in gait-rs.
+// Embedded in HookRun.env so the transcript is self-describing for replay and debugging.
+message HookEnv {
+string event           = 1;
+string session_id      = 2;
+string gait_dir        = 3;
+string codebase        = 4;
+string system_prompt   = 5;
+uint32 step_index      = 6;
+uint32 step_count      = 7;
+uint32 message_count   = 8;
+string last_role       = 9;
+string response_text   = 10;
+uint32 tool_count      = 11;
+repeated string tool_names = 12;
+string tool_name       = 13;
+string tool_call_id    = 14;
+string tool_result     = 15;
+string turn_outcome    = 16;
+string final_response  = 17;
+map<string, string> tool_args = 18;   // per-argument expansion (GAIT_ARG_*)
+}
+message HookRun {
+HookPhase phase         = 1;  // lifecycle point where this hook fired
+string    command       = 2;  // the shell command string
+int32     exit_code     = 3;  // 0 = pass; non-zero = failure
+string    output        = 4;  // combined stdout+stderr from the command
+optional string call_id = 5;  // deprecated: prefer env.tool_call_id; kept for backward compat
+HookEnv   env           = 6;  // full snapshot of what the hook process saw
+}
+enum HookPhase {
+HOOK_PHASE_UNSPECIFIED = 0;
+HOOK_PHASE_POST_TOOL   = 1;
+HOOK_PHASE_PRE_TOOL    = 2;
+HOOK_PHASE_POST_TURN   = 3;
+HOOK_PHASE_PRE_TURN    = 4;
+HOOK_PHASE_PRE_STEP    = 5;
+HOOK_PHASE_POST_STEP   = 6;
+}
+
+
+
+// ── Projections live in their own contract ───────────────────────────────────
+// `SessionState` / `gait state` output is NOT part of the log vocabulary. It has
+// its own package + envelope in `proto/state.proto` (gait.state.v1), which imports
+// this file and references the item types above. Split so the state-query API and
+// the log format evolve independently.
+
+// ── LLM Parameters ───────────────────────────────────────────────────────────
+// LlmParams flows from gait.jsonc / agent frontmatter through the session log.
+// The `oneof provider_params` enforces that only one provider's extras are set.
+
+message LlmParams {
+  optional uint32 max_tokens    = 1;  // universal override; Anthropic: max_tokens; OpenAI: max_completion_tokens
+  optional float  temperature   = 2;  // Anthropic: 0-1; OpenAI/Gemini: 0-2
+  optional float  top_p         = 3;  // 0-1; all providers
+  // NOTE: show_thinking is NOT here — it lives in GaitConfig as a render toggle only.
+  // Field 4 is intentionally skipped to prevent future confusion.
+
+  oneof provider_params {
+    AnthropicLlmParams anthropic = 10;
+    OpenAILlmParams    openai    = 11;
+    GeminiLlmParams    gemini    = 12;
+  }
+}
+
+message AnthropicLlmParams {
+  optional uint32            top_k    = 1;
+  optional string            effort   = 2;  // "low"|"medium"|"high"|"xhigh"|"max"
+  optional AnthropicThinking thinking = 3;
+}
+
+message AnthropicThinking {
+  AnthropicThinkingType    type          = 1;
+  optional uint32          budget_tokens = 2;
+  AnthropicThinkingDisplay display       = 3;
+}
+
+enum AnthropicThinkingType {
+  ANTHROPIC_THINKING_TYPE_UNSPECIFIED = 0;
+  ANTHROPIC_THINKING_TYPE_ADAPTIVE    = 1;
+  ANTHROPIC_THINKING_TYPE_DISABLED    = 2;
+  ANTHROPIC_THINKING_TYPE_ENABLED     = 3;
+}
+
+enum AnthropicThinkingDisplay {
+  ANTHROPIC_THINKING_DISPLAY_UNSPECIFIED = 0;
+  ANTHROPIC_THINKING_DISPLAY_SUMMARIZED  = 1;
+  ANTHROPIC_THINKING_DISPLAY_OMITTED     = 2;
+}
+
+message OpenAILlmParams {
+  optional string reasoning_effort  = 1;  // "none"|"minimal"|"low"|"medium"|"high"|"xhigh"
+  optional float  frequency_penalty = 2;
+  optional float  presence_penalty  = 3;
+  optional int64  seed              = 4;
+  repeated string stop              = 5;
+}
+
+message GeminiLlmParams {
+  optional int32   top_k             = 1;
+  optional int32   candidate_count   = 2;
+  repeated string  stop_sequences    = 3;
+  optional int32   seed              = 4;
+  optional float   frequency_penalty = 5;
+  optional float   presence_penalty  = 6;
+  optional GeminiThinking thinking   = 7;
+}
+
+message GeminiThinking {
+  optional bool include_thoughts = 1;
+  oneof depth {
+    int32               budget = 2;
+    GeminiThinkingLevel level  = 3;
+  }
+}
+
+enum GeminiThinkingLevel {
+  GEMINI_THINKING_LEVEL_UNSPECIFIED = 0;
+  GEMINI_THINKING_LEVEL_MINIMAL     = 1;
+  GEMINI_THINKING_LEVEL_LOW         = 2;
+  GEMINI_THINKING_LEVEL_MEDIUM      = 3;
+  GEMINI_THINKING_LEVEL_HIGH        = 4;
+}
+
+// IMPORTANT: signature is required for Anthropic multi-turn replay.
+// Anthropic requires thinking blocks to be passed back verbatim (including
+// signature) in subsequent turns. Always log it — never discard it.
+message ThinkingBlock {
+  string content   = 1;
+  string signature = 2;  // Anthropic opaque signature; empty for non-Anthropic providers
+}

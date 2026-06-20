@@ -1,0 +1,26 @@
+[package]
+name = "gait-repl"
+description = "Interactive REPL frontend for gait."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gait-core = { path = "../.." }
+gait-workflow = { path = "../gait-workflow" }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+serde_json = "1"
+serde_yaml = "0.9"
+async-trait = "0.1"
+glob = "0.3"
+rustyline = "14"
+termimad = "0.23"
+termbg = "0.5"
+crossterm = "0.27"
+tokio-util = "0.7"
+
+[dev-dependencies]
+tempfile = "3"
+pbjson-types = "0.7"

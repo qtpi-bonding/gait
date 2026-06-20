@@ -1,0 +1,77 @@
+syntax = "proto3";
+
+package gait.workflow.v1;
+
+// ============================================================================
+// gait workflow run log — append-only event stream for a workflow execution.
+//
+//   * One WorkflowEvent per line in workflow-runs/{run_id}/log.jsonl.
+//   * JSON on the wire (pbjson, camelCase) — same pattern as gait.log.v1.
+//   * Single-writer, append-only. State is reconstructed by replaying events.
+//   * Each node turn is a full gait session; this log ties them together.
+// ============================================================================
+
+message WorkflowEvent {
+  uint32 version = 1;  // format generation; increment on breaking schema changes
+  uint64 ts      = 2;  // wall-clock ms
+
+  oneof kind {
+    WorkflowStart    workflow_start    = 3;
+    NodeStart        node_start        = 4;
+    NodeComplete     node_complete     = 5;
+    NodeError        node_error        = 6;
+    NodeSkip         node_skip         = 7;
+    WorkflowGate     workflow_gate     = 8;
+    WorkflowComplete workflow_complete = 9;
+    WorkflowError    workflow_error    = 10;
+  }
+}
+
+message WorkflowStart {
+  string          run_id    = 1;  // e.g. "analyze-pr-20260616-143022"
+  string          workflow  = 2;  // workflow name from yaml
+  string          yaml_path = 3;  // path to the workflow yaml
+  repeated string args      = 4;  // CLI args passed to the run
+}
+
+message NodeStart {
+  string node_id    = 1;
+  string node_type  = 2;  // "shell" | "prompt" | "branch" | "gate"
+  uint32 attempt    = 3;  // 1-based; >1 on retries
+  string session_id = 4;  // gait session ID for this node's turn (empty for shell-only nodes)
+}
+
+message NodeComplete {
+  string node_id    = 1;
+  string session_id = 2;
+  string output     = 3;  // captured stdout / agent output() text
+  optional int32 exit_code  = 4;  // set for shell nodes
+  string json_output         = 5;  // JSON string; empty if none
+  string routed_to           = 6;  // set for branch nodes; target node id
+}
+
+message NodeError {
+  string node_id = 1;
+  string error   = 2;
+  uint32 attempt = 3;
+}
+
+message NodeSkip {
+  string node_id = 1;
+  string reason  = 2;  // e.g. "inactive branch (routed to pass-node)"
+}
+
+message WorkflowGate {
+  string node_id = 1;
+  string message = 2;
+}
+
+message WorkflowComplete {
+  string run_id = 1;
+}
+
+message WorkflowError {
+  string run_id     = 1;
+  string failed_node = 2;
+  string error      = 3;
+}
