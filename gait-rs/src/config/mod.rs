@@ -100,20 +100,15 @@ pub struct HookDef {
 // matching.
 
 /// Network policy for the sandbox.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum NetworkConfig {
     /// No network access (default).
+    #[default]
     Off,
     /// Allow-list of hostnames.
     Hosts(Vec<String>),
     /// Allow all egress.
     All,
-}
-
-impl Default for NetworkConfig {
-    fn default() -> Self {
-        NetworkConfig::Off
-    }
 }
 
 impl<'de> serde::Deserialize<'de> for NetworkConfig {
