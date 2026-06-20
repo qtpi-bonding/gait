@@ -12,6 +12,9 @@ pub struct Recorder {
     /// (turn, step) stamped onto every event produced by `record`.
     /// Defaults to (0, 0); updated via [`set_position`] as the turn loop advances.
     position: Arc<Mutex<(u32, u32)>>,
+    /// When `Some`, `record` appends the Event here and skips file+channel.
+    /// Holds `Vec<Event>` (not `Vec<event::Body>`) so Phase 2a can serialize and pipe events over the wire.
+    buffer: Option<Arc<Mutex<Vec<Event>>>>,
 }
 
 impl Recorder {
@@ -20,6 +23,7 @@ impl Recorder {
             tx_path,
             sender,
             position: Arc::new(Mutex::new((0, 0))),
+            buffer: None,
         }
     }
 
@@ -51,10 +55,47 @@ impl Recorder {
         Self::new(std::path::PathBuf::new(), tx)
     }
 
+    /// A recorder that buffers full `Event`s in memory instead of writing the
+    /// log/channel. The caller drains it with [`take_buffer`](Self::take_buffer).
+    /// Holds `Vec<Event>` (not `Vec<event::Body>`) so Phase 2a can serialize and
+    /// pipe events over the wire.
+    pub fn buffering() -> Self {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        Self {
+            tx_path: std::path::PathBuf::new(),
+            sender: tx,
+            position: Arc::new(Mutex::new((0, 0))),
+            buffer: Some(Arc::new(Mutex::new(Vec::new()))),
+        }
+    }
+
+    /// Drain the buffered events. Empty for non-buffering recorders.
+    pub fn take_buffer(&self) -> Vec<Event> {
+        match &self.buffer {
+            Some(b) => std::mem::take(&mut *b.lock().expect("buffer mutex poisoned")),
+            None => Vec::new(),
+        }
+    }
+
     /// Durable: write Event to the log AND send StreamItem{event}. Always both.
     /// `UnboundedSender::send` is sync + non-blocking — safe from anywhere.
+    /// When this recorder is in buffering mode, appends a full `Event` to the
+    /// in-memory buffer instead and skips the file and channel entirely.
     pub fn record(&self, body: event::Body) -> anyhow::Result<Event> {
         let (turn, step) = *self.position.lock().expect("position mutex poisoned");
+        if let Some(buf) = &self.buffer {
+            // Store a full Event (body embedded). The caller re-mints on replay
+            // (calling emitter.record(event.body) on the real recorder chains proper seq/parents).
+            // Holding Event (not Body) lets Phase 2a serialize and pipe events over the wire.
+            let evt = Event {
+                turn,
+                step,
+                body: Some(body),
+                ..Default::default()
+            };
+            buf.lock().expect("buffer mutex poisoned").push(evt.clone());
+            return Ok(evt);
+        }
         let event = wire::write_to_transcript(&self.tx_path, body, turn, step)?;
         // receiver dropped (e.g. headless / test) — transcript write already succeeded, so ignore.
         let _ = self.sender.send(StreamItem {
@@ -145,5 +186,23 @@ mod tests {
             .unwrap();
         assert_eq!(ev.turn, 2);
         assert_eq!(ev.step, 3);
+    }
+
+    #[test]
+    fn buffering_recorder_collects_bodies_and_writes_nothing() {
+        let rec = Recorder::buffering();
+        let _ = rec.record(crate::proto::events::cwd("/tmp/x")).unwrap();
+        let _ = rec.record(crate::proto::events::cwd("/tmp/y")).unwrap();
+        assert!(
+            rec.tx_path.as_os_str().is_empty(),
+            "buffering recorder must not point at a file"
+        );
+        let events = rec.take_buffer();
+        assert_eq!(events.len(), 2);
+        assert!(
+            events[0].body.is_some(),
+            "buffered event must carry its body"
+        );
+        assert!(rec.take_buffer().is_empty(), "take_buffer drains");
     }
 }
