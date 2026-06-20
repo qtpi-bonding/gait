@@ -97,20 +97,20 @@ impl Tool for ShellTool {
     }
 
     async fn execute(&self, args: Value, rec: &crate::Recorder) -> Result<Value, ToolError> {
+        // Extract __cwd BEFORE deserializing ShellParams so the reserved key (which
+        // ShellParams silently ignores) is available. __cwd is injected by cmd_run_tool
+        // from the brain's active-cwd state, replacing the old Ingestor refold.
+        // Falls back to the codebase root for in-process calls (brain path).
+        let current = args
+            .get("__cwd")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| self.ctx.codebase_path.clone());
+
         let params: ShellParams = serde_json::from_value(args)
             .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
         let timeout_ms = params.timeout;
-
-        // Refold the sticky cwd from the log (seeded at the codebase root). A `cwd`
-        // param resolves against it (relative joins, absolute as-is), and on success
-        // emits a `Cwd` event so the change persists across calls — like `cd`.
-        let events = crate::session::ingestor::Ingestor::from_session(
-            &self.ctx.gait_dir,
-            &self.ctx.session_id,
-        )
-        .events()
-        .unwrap_or_default();
-        let current = crate::session::retrace::active_cwd(&events, &self.ctx.codebase_path);
 
         let run_dir = match params
             .cwd
@@ -148,7 +148,7 @@ impl Tool for ShellTool {
         };
         let cwd = run_dir;
 
-        let tmp_dir = self.ctx.gait_dir.join("tmp");
+        let tmp_dir = std::env::temp_dir().join("gait-hand");
         let _ = std::fs::create_dir_all(&tmp_dir);
 
         let run_id = {
@@ -162,6 +162,13 @@ impl Tool for ShellTool {
             .current_dir(&cwd)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
+            .env_clear()
+            .envs(std::env::vars().filter(|(k, _)| {
+                matches!(
+                    k.as_str(),
+                    "PATH" | "HOME" | "USER" | "SHELL" | "TERM" | "LANG" | "LC_ALL" | "TMPDIR"
+                )
+            }))
             .spawn()
             .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
 

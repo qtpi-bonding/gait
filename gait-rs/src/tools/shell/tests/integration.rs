@@ -120,30 +120,23 @@ async fn cwd_param_runs_in_subdir() {
 async fn cwd_param_persists_across_calls() {
     let dir = TempDir::new().unwrap();
     std::fs::create_dir_all(dir.path().join("sub")).unwrap();
-    // The cwd must PERSIST between calls via the session transcript, so we need
-    // a real for_session recorder (detached() intentionally writes nowhere — its
-    // tx_path is empty, so write_to_transcript errors and the Cwd is dropped).
-    std::fs::create_dir_all(dir.path().join("sessions").join("test")).unwrap();
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let rec = crate::Recorder::for_session(dir.path(), "test", tx);
     let tool = make_tool(&dir);
-    // Call 1: cd into sub (emits a Cwd event into the transcript).
+    // Call 1: cd into sub via the cwd param (emits a Cwd event).
     let _ = tool
         .execute(
-            serde_json::json!({
-                "cmd": "pwd", "reason": "test", "cwd": "sub"
-            }),
-            &rec,
+            serde_json::json!({"cmd": "pwd", "reason": "test", "cwd": "sub"}),
+            &crate::Recorder::detached(),
         )
         .await
         .unwrap();
-    // Call 2: no cwd → should refold the emitted Cwd and run in sub.
+    // Call 2: simulate what cmd_run_tool does — inject __cwd (the active cwd from the
+    // brain's session state) so the tool knows where to run. Shell no longer refolids
+    // the session log itself; the caller tracks cwd and injects it per call.
+    let sub_path = dir.path().join("sub").to_string_lossy().into_owned();
     let result = tool
         .execute(
-            serde_json::json!({
-                "cmd": "pwd", "reason": "test"
-            }),
-            &rec,
+            serde_json::json!({"cmd": "pwd", "reason": "test", "__cwd": sub_path}),
+            &crate::Recorder::detached(),
         )
         .await
         .unwrap();
@@ -281,9 +274,11 @@ async fn writes_output_to_tmp_file() {
         .expect("output field");
     assert!(output.contains("full output:"), "got: {output}");
     assert!(output.contains("shell-"), "got: {output}");
-    // Tmp file actually exists with the content
-    let tmp_dir = dir.path().join("tmp");
-    assert!(tmp_dir.exists(), "tmp dir not created");
-    let files: Vec<_> = std::fs::read_dir(&tmp_dir).unwrap().collect();
-    assert!(!files.is_empty(), "no tmp file written");
+    // Scratch goes to the system temp dir under gait-hand/ (not the gait-dir).
+    assert!(
+        output.contains("gait-hand"),
+        "expected gait-hand in output path, got: {output}"
+    );
+    let tmp_dir = std::env::temp_dir().join("gait-hand");
+    assert!(tmp_dir.exists(), "gait-hand tmp dir not created");
 }
