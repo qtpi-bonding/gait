@@ -28,6 +28,7 @@ pub(super) struct ToolExecResult {
 /// Execute one tool call: emit ToolCall event, run the tool, emit ToolResult event.
 /// Used identically by the normal execution loop and the permission-resume path.
 /// Does NOT handle output/mcp/skill special tools — those are never gated.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn execute_tool_call(
     tc: &ToolCall,
     tools: &[Box<dyn Tool>],
