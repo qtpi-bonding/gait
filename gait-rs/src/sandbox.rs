@@ -399,8 +399,10 @@ mod tests {
         use crate::config::SandboxConfig;
         use crate::types::ToolAccess;
         use std::path::Path;
-        let mut cfg = SandboxConfig::default();
-        cfg.readable = vec!["*".into()];
+        let cfg = SandboxConfig {
+            readable: vec!["*".into()],
+            ..Default::default()
+        };
         let scope = super::ceiling::compute_scope(
             ToolAccess {
                 reads: true,
