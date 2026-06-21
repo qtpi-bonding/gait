@@ -10,7 +10,7 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use gait_proto::gait::sandbox::v1::{Feedback, Impulse};
+use gait_proto::gait::sandbox::v1::{network_scope::Mode, Feedback, Impulse, NetworkScope, Scope};
 use prost::Message;
 
 #[test]
@@ -23,11 +23,23 @@ fn run_tool_executes_read_in_subprocess() {
     // tools/read.rs), so the args object must match that schema exactly.
     let args_struct: pbjson_types::Struct =
         serde_json::from_value(serde_json::json!({"file_path": "hello.txt"})).unwrap();
+    let dir_str = dir.path().to_string_lossy().into_owned();
     let impulse = Impulse {
         tool: "read".into(),
         args: Some(args_struct),
-        cwd: dir.path().to_string_lossy().into_owned(),
-        requested: None,
+        cwd: dir_str.clone(),
+        // Task 6: ship a `requested` scope that lists the tempdir as writable
+        // so the hand applies a SandboxApplied seal end-to-end (read_all=true
+        // means reads anywhere succeed, so the file_path lookup works).
+        requested: Some(Scope {
+            read_all: true,
+            readable: vec![dir_str.clone()],
+            writable: vec![dir_str.clone()],
+            network: Some(NetworkScope {
+                mode: Mode::Deny as i32,
+                hosts: vec![],
+            }),
+        }),
     };
     let impulse_bytes = impulse.encode_to_vec();
 

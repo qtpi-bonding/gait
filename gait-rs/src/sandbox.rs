@@ -169,34 +169,28 @@ mod tests {
         assert!(matches!(s, SandboxStatus::Unavailable { .. }));
     }
 
+    // Seatbelt.apply() irreversibly seals the calling process on macOS; calling
+    // it in a unit test poisons all subsequent tests in the same binary. The
+    // enforcement is exercised by the ignored integration test in
+    // tests/seatbelt_seal.rs. Only run the in-process call on non-macOS
+    // where the Landlock stub safely returns Unavailable without side effects.
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn seatbelt_returns_unavailable_on_non_macos() {
-        // On Linux/Windows the cfg branch returns Unavailable; on macOS the
-        // FFI branch returns either Active (sandboxed) or Unavailable (no
-        // permission to call the syscall). Either is acceptable in unit tests —
-        // a real enforcement test lives in tests/seatbelt_seal.rs.
         let scope = SandboxScope {
             writable: vec![PathBuf::from("src/")],
             ..Default::default()
         };
         let s = SeatbeltSandbox.apply(&scope).unwrap();
-        // On Linux we expect Unavailable; on macOS allow either outcome
-        // (sandbox_apply needs entitlements; will be Unavailable in a non-sandboxed
-        // test runner).
-        if cfg!(target_os = "macos") {
-            assert!(matches!(
-                s,
-                SandboxStatus::Active | SandboxStatus::Unavailable { .. }
-            ));
-        } else {
-            assert!(matches!(s, SandboxStatus::Unavailable { .. }));
-        }
+        assert!(matches!(s, SandboxStatus::Unavailable { .. }));
     }
 
     #[test]
     fn platform_sandbox_is_box_dyn_sandbox() {
-        let sb = platform_sandbox();
-        let _ = sb.apply(&SandboxScope::default()).unwrap();
+        // Just verifies the constructor compiles and returns the right trait object.
+        // Calling .apply() here on macOS would irreversibly seal the test process;
+        // enforcement is tested in tests/seatbelt_seal.rs (ignored by default).
+        let _sb: Box<dyn Sandbox> = platform_sandbox();
     }
 
     #[test]

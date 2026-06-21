@@ -125,13 +125,20 @@ impl Synapse for SubprocessSynapse {
         let args_struct: pbjson_types::Struct = serde_json::from_value(args).unwrap_or_default();
 
         // Phase 2b: compute proper per-tool scope ceiling.
-        // temp_jail is a placeholder here; Task 6 creates a real per-runner jail.
-        let temp_jail = std::env::temp_dir().join("gait-hand-tmp");
+        // Create a fresh per-runner temp jail (canonicalize handles /tmp → /private/tmp on macOS)
+        let jail_raw = std::env::temp_dir().join(format!(
+            "gait-hand-{}",
+            uuid::Uuid::new_v4().to_string().replace('-', "")
+        ));
+        std::fs::create_dir_all(&jail_raw)
+            .map_err(|e| ToolError::Internal(anyhow::anyhow!("create temp jail: {e}")))?;
+        let temp_jail = jail_raw.canonicalize().unwrap_or_else(|_| jail_raw.clone());
+
         let sand_scope = crate::sandbox::ceiling::compute_scope(
             scope.access,
             &self.sandbox_cfg,
             &self.codebase,
-            &temp_jail,
+            &temp_jail, // <-- real canonical path now
         );
         let requested = scope_to_proto(&sand_scope);
 
@@ -144,8 +151,8 @@ impl Synapse for SubprocessSynapse {
         let bytes = impulse.encode_to_vec();
 
         // Spawn the hand. The same binary (`current_exe`) runs the hidden `__run-tool`
-        // subcommand; `--gait-dir` / `--codebase` / `--session` / `--tool` tell it
-        // which tool instance to execute inside its own `ToolCtx`.
+        // subcommand; `--gait-dir` / `--codebase` / `--session` / `--tool` / `--temp-jail`
+        // tell it which tool instance to execute inside its own `ToolCtx`.
         let exe = std::env::current_exe()
             .map_err(|e| ToolError::Internal(anyhow::anyhow!("current_exe: {e}")))?;
         // Scrub the hand's environment so it cannot read API keys or other
@@ -162,6 +169,8 @@ impl Synapse for SubprocessSynapse {
             .arg(&self.session_id)
             .arg("--tool")
             .arg(tool.name())
+            .arg("--temp-jail")
+            .arg(&temp_jail)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -172,6 +181,9 @@ impl Synapse for SubprocessSynapse {
                     "PATH" | "HOME" | "USER" | "SHELL" | "TERM" | "LANG" | "LC_ALL" | "TMPDIR"
                 )
             }))
+            // Override TMPDIR so the hand's subprocesses (e.g. `mktemp`) cannot
+            // escape the per-runner jail via the host's /tmp.
+            .env("TMPDIR", &temp_jail)
             .spawn()
             .map_err(|e| ToolError::Internal(anyhow::anyhow!("spawn __run-tool: {e}")))?;
 
@@ -192,6 +204,9 @@ impl Synapse for SubprocessSynapse {
             .wait_with_output()
             .await
             .map_err(|e| ToolError::Internal(anyhow::anyhow!("wait __run-tool: {e}")))?;
+
+        // Cleanup temp jail (best-effort; don't fail the tool call if this errors)
+        let _ = std::fs::remove_dir_all(&temp_jail);
 
         if !out.status.success() {
             return Err(ToolError::Internal(anyhow::anyhow!(

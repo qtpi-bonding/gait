@@ -1,8 +1,8 @@
 //! Hidden `gait __run-tool` — the ephemeral "hand".
 //!
-//! Reads one binary `Impulse` on stdin, runs one built-in tool against a buffering
-//! `Recorder` (under NoopSandbox semantics — the tool's own access checks are what
-//! actually gates reads/writes/network), writes a binary `Feedback` on stdout, exits.
+//! Reads one binary `Impulse` on stdin, applies the per-call Seatbelt/Landlock
+//! seal based on the `Impulse.requested` scope, then runs the requested tool
+//! against a buffering `Recorder`, writes a binary `Feedback` on stdout, exits.
 //!
 //! This is the Phase 2a subprocess boundary between the brain (turn loop) and a sealed
 //! hand. It is intentionally hidden from `usage()` — there is no user-facing reason
@@ -19,8 +19,9 @@ use prost::Message;
 
 use gait_core::git::Repos;
 use gait_core::proto::Recorder;
+use gait_core::sandbox::{NetworkPolicy, SandboxScope};
 use gait_core::tools::{builtin_tools, ToolCtx};
-use gait_proto::gait::sandbox::v1::{Feedback, Impulse};
+use gait_proto::gait::sandbox::v1::{network_scope::Mode, Feedback, Impulse};
 
 #[derive(Parser)]
 #[command(no_binary_name = true)]
@@ -33,6 +34,8 @@ struct RunToolArgs {
     session: String,
     #[arg(long)]
     tool: String,
+    #[arg(long)]
+    temp_jail: Option<PathBuf>,
 }
 
 pub async fn cmd_run_tool(argv: &[String]) {
@@ -55,9 +58,11 @@ pub async fn cmd_run_tool(argv: &[String]) {
     // Convert Impulse.args (Option<pbjson_types::Struct>) → serde_json::Value.
     // pbjson_types::Struct serializes as a plain JSON object via its serde impl,
     // so a round-trip through serde_json is the cleanest portable conversion.
+    // Borrow via `as_ref` so the `impulse` value remains whole for the seal build below.
     let args_json: serde_json::Value = impulse
         .args
-        .map(|s| serde_json::to_value(&s).unwrap_or(serde_json::Value::Object(Default::default())))
+        .as_ref()
+        .map(|s| serde_json::to_value(s).unwrap_or(serde_json::Value::Object(Default::default())))
         .unwrap_or(serde_json::Value::Object(Default::default()));
 
     // For `shell`, inject impulse.cwd into args as `__cwd` so the tool reads the
@@ -91,6 +96,38 @@ pub async fn cmd_run_tool(argv: &[String]) {
     };
 
     let rec = Recorder::buffering();
+
+    // Build the SandboxScope from Impulse.requested and apply the seal BEFORE any
+    // tool I/O. Phase 2b: the hand enforces the kernel sandbox itself — this is
+    // irreversible, so it must happen before tool.execute().
+    let seal_scope = build_scope_from_impulse(&impulse);
+    let seal_status = gait_core::sandbox::platform_sandbox()
+        .apply(&seal_scope)
+        .unwrap_or(gait_core::sandbox::SandboxStatus::Unavailable {
+            reason: "sandbox apply error".into(),
+        });
+
+    // Emit the SandboxApplied event so the brain can log it. Tools will see the
+    // event appear alongside their own events in the feedback stream.
+    let scope_paths: Vec<String> = seal_scope
+        .writable
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let (enforcement_str, reason) = match &seal_status {
+        gait_core::sandbox::SandboxStatus::Active => ("active", None),
+        gait_core::sandbox::SandboxStatus::Unavailable { reason } => {
+            ("unavailable", Some(reason.clone()))
+        }
+        gait_core::sandbox::SandboxStatus::Noop => ("noop", None),
+    };
+    rec.record(gait_core::proto::events::sandbox_applied(
+        enforcement_str,
+        scope_paths,
+        reason,
+    ))
+    .ok();
+
     let result_json = match tool.execute(args_json, &rec).await {
         Ok(v) => v,
         Err(e) => serde_json::Value::String(format!("error: {e}")),
@@ -118,5 +155,42 @@ pub async fn cmd_run_tool(argv: &[String]) {
     if let Err(e) = std::io::Write::write_all(&mut std::io::stdout(), &bytes) {
         eprintln!("[hand] stdout write failed: {e}");
         std::process::exit(1);
+    }
+}
+
+/// Build a `SandboxScope` from `Impulse.requested` for the seal. The brain computes
+/// the ceiling and ships it over the wire; the hand is responsible for turning it
+/// into the kernel-level scope (Seatbelt profile on macOS, Landlock on Linux) and
+/// applying it. Defaults to a Deny-network empty scope if the Impulse carries no
+/// request (defensive — should not happen in practice).
+fn build_scope_from_impulse(impulse: &Impulse) -> SandboxScope {
+    let Some(s) = impulse.requested.as_ref() else {
+        return SandboxScope::default();
+    };
+
+    let network = s
+        .network
+        .as_ref()
+        .map(|n| match Mode::try_from(n.mode).unwrap_or(Mode::Deny) {
+            Mode::All => NetworkPolicy::All,
+            Mode::Hosts => NetworkPolicy::Hosts(n.hosts.clone()),
+            Mode::Deny => NetworkPolicy::Deny,
+        })
+        .unwrap_or(NetworkPolicy::Deny);
+
+    let mut read_all = s.read_all;
+    if s.readable.is_empty() {
+        // Default to read_all=true when the brain ships no explicit readable list —
+        // Phase 2d will tighten to false and emit per-path subpath rules. A read-only
+        // default (read_all=false, empty readable) would deny the very reads the brain
+        // asked for, breaking tools even in the no-Impulse-requested fallback path.
+        read_all = true;
+    }
+
+    SandboxScope {
+        readable: s.readable.iter().map(PathBuf::from).collect(),
+        writable: s.writable.iter().map(PathBuf::from).collect(),
+        read_all,
+        network,
     }
 }
