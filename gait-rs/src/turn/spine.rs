@@ -27,6 +27,7 @@ use crate::turn::nerve;
 /// * `Terminated`    → parse `TurnResult`, `sink.end_turn()`, `sink.result()`, return
 ///
 /// Returns `Ok(true)` if the brain signalled failure, `Ok(false)` on success.
+#[allow(clippy::too_many_arguments)]
 pub async fn relay_brain_turn(
     brain_args: &[String],
     gait_dir: &Path,
