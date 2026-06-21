@@ -362,6 +362,44 @@ mod tests {
         );
         assert!(matches!(scope.network, NetworkPolicy::Deny));
     }
+
+    #[test]
+    fn strict_config_confines_reads_by_default() {
+        use crate::config::SandboxConfig;
+        use crate::types::ToolAccess;
+        use std::path::{Path, PathBuf};
+        let cfg = SandboxConfig::default(); // readable: []
+        let scope = super::ceiling::compute_scope(
+            ToolAccess {
+                reads: true,
+                ..Default::default()
+            },
+            &cfg,
+            Path::new("/repo"),
+            Path::new("/tmp/jail"),
+        );
+        assert!(!scope.read_all, "default must confine reads");
+        assert!(scope.readable.contains(&PathBuf::from("/repo")));
+    }
+
+    #[test]
+    fn star_readable_opens_reads() {
+        use crate::config::SandboxConfig;
+        use crate::types::ToolAccess;
+        use std::path::Path;
+        let mut cfg = SandboxConfig::default();
+        cfg.readable = vec!["*".into()];
+        let scope = super::ceiling::compute_scope(
+            ToolAccess {
+                reads: true,
+                ..Default::default()
+            },
+            &cfg,
+            Path::new("/repo"),
+            Path::new("/tmp/jail"),
+        );
+        assert!(scope.read_all);
+    }
 }
 
 pub(crate) mod sbpl {
@@ -546,8 +584,11 @@ pub mod ceiling {
         }
 
         // Extend from config (tilde-expand "~" prefix paths).
+        // `"*"` is the open-read sentinel — it sets read_all=true and must not be
+        // added as a literal path, so filter it out before tilde-expanding.
         let home = dirs_next::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-        for p in &cfg.readable {
+        let read_all = cfg.readable.iter().any(|r| r == "*");
+        for p in cfg.readable.iter().filter(|r| *r != "*") {
             readable.push(expand_tilde(p, &home));
         }
         if access.writes {
@@ -575,11 +616,13 @@ pub mod ceiling {
             NetworkPolicy::Deny
         };
 
-        // Phase 2b: read_all defaults to true (Phase 2d will flip to false + per-path reads).
+        // Phase 2d: read_all is derived from config — only `"*"` in cfg.readable opens reads.
+        // When read_all=false, codebase and temp_jail are already in `readable` (added above
+        // when access.reads=true), so the SBPL confined-read subpath rules will cover them.
         SandboxScope {
             readable,
             writable,
-            read_all: true,
+            read_all,
             network,
         }
     }
