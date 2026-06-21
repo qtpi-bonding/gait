@@ -15,6 +15,11 @@ pub struct Recorder {
     /// When `Some`, `record` appends the Event here and skips file+channel.
     /// Holds `Vec<Event>` (not `Vec<event::Body>`) so Phase 2a can serialize and pipe events over the wire.
     buffer: Option<Arc<Mutex<Vec<Event>>>>,
+    /// Phase 3 `Sink::Remote`: when `Some`, `record` sends the event here instead
+    /// of writing the log file. A brain-side relay task reads from this channel and
+    /// sends `Append` signals to the spine over the Nerve. The brain never writes
+    /// the gait-dir with this mode active.
+    remote: Option<UnboundedSender<Event>>,
 }
 
 impl Recorder {
@@ -24,6 +29,24 @@ impl Recorder {
             sender,
             position: Arc::new(Mutex::new((0, 0))),
             buffer: None,
+            remote: None,
+        }
+    }
+
+    /// Phase 3 `Sink::Remote`: `record()` sends events to `event_tx` instead of
+    /// writing the gait-dir. A brain-side relay task reads from the channel and
+    /// forwards each event to the spine as an `Append` signal over the Nerve.
+    /// The returned `Recorder` produces no file I/O; the spine is the sole writer.
+    pub fn remote_sink(
+        stream_sender: UnboundedSender<StreamItem>,
+        event_tx: UnboundedSender<Event>,
+    ) -> Self {
+        Self {
+            tx_path: std::path::PathBuf::new(),
+            sender: stream_sender,
+            position: Arc::new(Mutex::new((0, 0))),
+            buffer: None,
+            remote: Some(event_tx),
         }
     }
 
@@ -66,6 +89,7 @@ impl Recorder {
             sender: tx,
             position: Arc::new(Mutex::new((0, 0))),
             buffer: Some(Arc::new(Mutex::new(Vec::new()))),
+            remote: None,
         }
     }
 
@@ -79,14 +103,17 @@ impl Recorder {
 
     /// Durable: write Event to the log AND send StreamItem{event}. Always both.
     /// `UnboundedSender::send` is sync + non-blocking — safe from anywhere.
-    /// When this recorder is in buffering mode, appends a full `Event` to the
-    /// in-memory buffer instead and skips the file and channel entirely.
+    ///
+    /// Three modes, checked in priority order:
+    /// 1. **Buffer** (`Sink::Buffer`): appends to in-memory Vec, skips file + channel.
+    /// 2. **Remote** (`Sink::Remote`): sends Event to the spine-relay channel (no file write).
+    ///    A brain-side relay task reads from the channel and sends `Append` Nerve signals.
+    /// 3. **Live** (default): writes to `tx_path` and sends `StreamItem{event}` on the channel.
     pub fn record(&self, body: event::Body) -> anyhow::Result<Event> {
         let (turn, step) = *self.position.lock().expect("position mutex poisoned");
+
+        // Mode 1: buffering (hand-side recorder in Phase 2).
         if let Some(buf) = &self.buffer {
-            // Store a full Event (body embedded). The caller re-mints on replay
-            // (calling emitter.record(event.body) on the real recorder chains proper seq/parents).
-            // Holding Event (not Body) lets Phase 2a serialize and pipe events over the wire.
             let evt = Event {
                 turn,
                 step,
@@ -96,6 +123,21 @@ impl Recorder {
             buf.lock().expect("buffer mutex poisoned").push(evt.clone());
             return Ok(evt);
         }
+
+        // Mode 2: remote sink (brain in Phase 3 — DISK-WRITE-FREE).
+        if let Some(remote_tx) = &self.remote {
+            // Mint a local event so callers can use event.id for Replace targeting.
+            // The brain has no log file, so mint with prev=None (seq=1, no parents).
+            // The spine's append_with_id() will update seq/parents when persisting.
+            let evt = crate::proto::envelope::mint(body, None, turn, step);
+            let _ = remote_tx.send(evt.clone()); // channel receiver is the relay task
+            let _ = self.sender.send(StreamItem {
+                item: Some(stream_item::Item::Event(evt.clone())),
+            });
+            return Ok(evt);
+        }
+
+        // Mode 3: live file write (default).
         let event = wire::write_to_transcript(&self.tx_path, body, turn, step)?;
         // receiver dropped (e.g. headless / test) — transcript write already succeeded, so ignore.
         let _ = self.sender.send(StreamItem {
@@ -186,6 +228,30 @@ mod tests {
             .unwrap();
         assert_eq!(ev.turn, 2);
         assert_eq!(ev.step, 3);
+    }
+
+    #[test]
+    fn remote_sink_sends_event_without_writing_file() {
+        let (stream_tx, _stream_rx) = mpsc::unbounded_channel::<StreamItem>();
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
+        let rec = Recorder::remote_sink(stream_tx, event_tx);
+
+        let ev = rec
+            .record(crate::proto::events::assistant_text("hello".into()))
+            .unwrap();
+        assert!(
+            rec.tx_path.as_os_str().is_empty(),
+            "remote sink must not have a file path"
+        );
+        assert!(!ev.id.is_empty(), "record must return an event with a UUID");
+
+        let received = event_rx
+            .try_recv()
+            .expect("event must reach remote channel");
+        assert_eq!(
+            received.id, ev.id,
+            "channel event must match returned event"
+        );
     }
 
     #[test]

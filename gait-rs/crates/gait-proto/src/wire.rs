@@ -87,6 +87,34 @@ pub fn append(path: &Path, body: event::Body) -> anyhow::Result<Event> {
     write_to_transcript(path, body, 0, 0)
 }
 
+/// Append a brain-minted event preserving its `id`, `body`, `turn`, `step`,
+/// and `content_hash`, but updating `seq`/`parents` from the log's current
+/// tail. Used by the spine in Phase 3: the brain mints a UUID for the event
+/// (needed for Replace targeting), then sends the event via `Append`; the
+/// spine chains it into the log without changing the ID.
+pub fn append_with_id(path: &Path, incoming: &Event) -> anyhow::Result<Event> {
+    use crate::envelope::stamp_hash;
+    let prev = last_event(path)?;
+    let (seq, parents) = match prev.as_ref() {
+        None => (1u64, Vec::new()),
+        Some(p) => (p.seq + 1, vec![p.id.clone()]),
+    };
+    let mut ev = incoming.clone();
+    ev.seq = seq;
+    ev.parents = parents;
+    // Re-stamp the content hash (body, version, turn, step are preserved; seq/parents
+    // don't affect the content hash since it covers only the body arm).
+    stamp_hash(&mut ev);
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    let json = serde_json::to_string(&ev)?;
+    use std::io::Write;
+    writeln!(file, "{}", json)?;
+    Ok(ev)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
