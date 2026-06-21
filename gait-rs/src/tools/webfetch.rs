@@ -235,16 +235,20 @@ impl Tool for WebfetchTool {
         if let Some(ref allowlist) = self.network_allowlist {
             let host = reqwest::Url::parse(&params.url)
                 .ok()
-                .and_then(|u: reqwest::Url| u.host_str().map(|h: &str| h.to_lowercase()))
-                .unwrap_or_default();
-            if !host.is_empty()
-                && !allowlist.iter().any(|allowed| {
+                .and_then(|u: reqwest::Url| u.host_str().map(|h: &str| h.to_lowercase()));
+            let permitted = host.as_deref().map_or(false, |h| {
+                allowlist.iter().any(|allowed| {
                     let allowed = allowed.to_lowercase();
-                    allowed == host || allowed.starts_with("*.") && host.ends_with(&allowed[1..])
+                    allowed == h
+                        || (allowed.starts_with("*.")
+                            && !allowed[2..].is_empty()
+                            && h.ends_with(&allowed[1..]))
                 })
-            {
+            });
+            if !permitted {
+                let display = host.as_deref().unwrap_or("<no host>");
                 return Err(crate::tools::ToolError::Execute(format!(
-                    "egress denied: host '{host}' not in sandbox.network allowlist"
+                    "egress denied: host '{display}' not in sandbox.network allowlist"
                 )));
             }
         }
@@ -552,5 +556,22 @@ mod tests {
                 "no-allowlist tool should not block: {e}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn allowlist_star_does_not_bypass() {
+        // A bare "*" wildcard should NOT bypass the allowlist (fail-closed).
+        let tool = WebfetchTool::new().with_network_allowlist(vec!["*".to_string()]);
+        let result = tool
+            .execute(
+                serde_json::json!({ "url": "https://evil.com/" }),
+                &crate::Recorder::detached(),
+            )
+            .await;
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("egress denied"),
+            "bare * should not permit any host: {err}"
+        );
     }
 }

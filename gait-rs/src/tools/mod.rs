@@ -156,7 +156,14 @@ pub fn builtin_tools(
         ShellTool::new(ctx.clone()).boxed(),
         StructuredDoneTool::new().boxed(),
         CodesearchTool::new(ctx.clone()).boxed(),
-        WebfetchTool::new().boxed(),
+        {
+            let wf = if let Some(ref hosts) = ctx.network_allowlist {
+                WebfetchTool::new().with_network_allowlist(hosts.clone())
+            } else {
+                WebfetchTool::new()
+            };
+            wf.boxed()
+        },
         LoadTool::new(mcp_tools, skills, plugins).boxed(),
         SpawnAgentTool::new(ctx.clone(), repos.clone()).boxed(),
         ListAgentsTool::new(ctx.clone()).boxed(),
@@ -323,6 +330,30 @@ mod tests {
             17,
             "expected 17 tools with runner: {:?}",
             tools.iter().map(|t| t.name()).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn builtin_tools_wires_network_allowlist_to_webfetch() {
+        let ctx = ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "stest".into())
+            .with_network_allowlist(vec!["github.com".to_string()]);
+        let tools = builtin_tools(ctx, vec![], vec![], vec![], crate::git::Repos::production());
+
+        let webfetch = tools
+            .iter()
+            .find(|t| t.name() == "webfetch")
+            .expect("webfetch tool not found");
+        let result = webfetch
+            .execute(
+                serde_json::json!({"url": "https://example.com/"}),
+                &crate::Recorder::detached(),
+            )
+            .await;
+
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("egress denied"),
+            "allowlist not applied: {err}"
         );
     }
 
