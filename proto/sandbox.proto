@@ -50,6 +50,7 @@ message Signal {
     Append append = 5;
     Terminated terminated = 6;
     StreamForward stream_forward = 7;
+    Notify notify = 8;
   }
 }
 
@@ -76,4 +77,14 @@ message Terminated {
 // in real-time. BrainSink does NOT render locally when StreamForward is active.
 message StreamForward {
   gait.log.v1.StreamItem item = 1;
+}
+
+// Brain → spine: write an agent_update event to a parent session and resume it.
+// Spine acquires the parent's session lock, appends the event, commits, and
+// releases. The following Spawn signal triggers the actual child-resume spawn.
+message Notify {
+  string target_session = 1;
+  string from_session   = 2;
+  string status         = 3;
+  string summary        = 4;
 }

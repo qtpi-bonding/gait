@@ -72,13 +72,14 @@ impl TurnDriver for PromptNodeDriver {
     }
 
     fn turn_config(&mut self) -> LoopConfig {
+        let config = gait_core::config::load_config(&self.gait_dir);
         LoopConfig {
             auto: self.opts.auto,
             max_iter: None,
             preview_policy: gait_core::config::PreviewPolicy::default(),
             cancel: None,
             sandbox_on: true,
-            sandbox_cfg: gait_core::config::SandboxConfig::default(),
+            sandbox_cfg: config.sandbox,
             relay: None,
         }
     }

@@ -24,7 +24,7 @@ use crate::proto::Recorder;
 use crate::turn::nerve::{self, NerveWriter};
 use crate::workflow_runner::WorkflowRunner;
 
-use gait_proto::gait::sandbox::v1::{signal, Append, Signal, StreamForward, Terminated};
+use gait_proto::gait::sandbox::v1::{signal, Append, Notify, Signal, StreamForward, Terminated};
 
 // ── brain_scope ───────────────────────────────────────────────────────────────
 
@@ -153,6 +153,25 @@ pub async fn run_brain(
         }
     });
 
+    // Notify relay: harness sends NotifyPayload here; relay task forwards as
+    // Notify Signals so the spine (not the sealed brain) performs the write.
+    let (notify_tx, mut notify_rx) = mpsc::unbounded_channel::<crate::harness::NotifyPayload>();
+    let notify_relay_writer = nerve_writer.clone();
+    tokio::spawn(async move {
+        while let Some(payload) = notify_rx.recv().await {
+            let sig = Signal {
+                corr_id: 0,
+                body: Some(signal::Body::Notify(Notify {
+                    target_session: payload.target_session,
+                    from_session: payload.from_session,
+                    status: payload.status,
+                    summary: payload.summary,
+                })),
+            };
+            notify_relay_writer.send_one_way(&sig).await.ok();
+        }
+    });
+
     let session_id = match config.session_id.clone() {
         Some(id) => id,
         None => {
@@ -242,6 +261,7 @@ pub async fn run_brain(
         event_tx,
         stream_fwd_tx,
         spawn_tx,
+        notify_tx,
         workflow_runner,
     };
 
@@ -336,6 +356,7 @@ struct BrainDriver {
     event_tx: mpsc::UnboundedSender<Event>,
     stream_fwd_tx: mpsc::UnboundedSender<StreamItem>,
     spawn_tx: mpsc::UnboundedSender<Vec<String>>,
+    notify_tx: mpsc::UnboundedSender<crate::harness::NotifyPayload>,
     workflow_runner: Option<Arc<dyn WorkflowRunner>>,
 }
 
@@ -401,7 +422,8 @@ impl TurnDriver for BrainDriver {
         let harness = crate::NativeHarnessBackend::new_with_spawn(
             self.gait_dir.clone(),
             self.spawn_tx.clone(),
-        );
+        )
+        .with_notify_tx(self.notify_tx.clone());
         let ended = crate::TurnEnded {
             session_id: &self.session_id,
             assigned_by: sj.assigned_by.as_deref(),

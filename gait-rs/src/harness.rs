@@ -19,11 +19,21 @@ impl HarnessBackend for NoopHarnessBackend {
     }
 }
 
+pub struct NotifyPayload {
+    pub target_session: String,
+    pub from_session: String,
+    pub status: String,
+    pub summary: String,
+}
+
 pub struct NativeHarnessBackend {
     gait_dir: PathBuf,
     /// When `Some`, route `gait run` spawns via the Nerve's Spawn signal instead
     /// of calling `Command::spawn` directly (required when brain is sealed).
     spawn_tx: Option<mpsc::UnboundedSender<Vec<String>>>,
+    /// When `Some`, route NotifyAndResume writes via the Nerve's Notify signal
+    /// instead of writing directly to disk (required when brain is sealed).
+    notify_tx: Option<tokio::sync::mpsc::UnboundedSender<NotifyPayload>>,
 }
 
 impl NativeHarnessBackend {
@@ -31,6 +41,7 @@ impl NativeHarnessBackend {
         Self {
             gait_dir,
             spawn_tx: None,
+            notify_tx: None,
         }
     }
 
@@ -38,7 +49,13 @@ impl NativeHarnessBackend {
         Self {
             gait_dir,
             spawn_tx: Some(spawn_tx),
+            notify_tx: None,
         }
+    }
+
+    pub fn with_notify_tx(mut self, tx: tokio::sync::mpsc::UnboundedSender<NotifyPayload>) -> Self {
+        self.notify_tx = Some(tx);
+        self
     }
 }
 
@@ -52,49 +69,61 @@ impl HarnessBackend for NativeHarnessBackend {
                 status,
                 summary,
             } => {
-                let event =
-                    events::agent_update(from_session.clone(), status, summary.clone(), None);
+                if let Some(ref tx) = self.notify_tx {
+                    // Sealed brain path: delegate write + commit to spine via Nerve.
+                    let payload = NotifyPayload {
+                        target_session: target_session.clone(),
+                        from_session: from_session.clone(),
+                        status: status.clone(),
+                        summary: summary.clone(),
+                    };
+                    let _ = tx.send(payload);
+                } else {
+                    // Non-sealed path (embed/REPL without relay): write directly.
+                    let event =
+                        events::agent_update(from_session.clone(), status, summary.clone(), None);
 
-                let target_dir = self.gait_dir.join("sessions").join(target_session);
-                let tx_path = target_dir.join("log.jsonl");
+                    let target_dir = self.gait_dir.join("sessions").join(target_session);
+                    let tx_path = target_dir.join("log.jsonl");
 
-                // Only retry on "already running" — fail fast on I/O errors.
-                let mut lock: Option<SessionLock> = None;
-                for _ in 0..20 {
-                    match SessionLock::acquire(&target_dir) {
-                        Ok(l) => {
-                            lock = Some(l);
-                            break;
-                        }
-                        Err(e) => {
-                            if !e.to_string().contains("already running") {
-                                return Err(e.context(format!(
-                                    "unexpected error acquiring lock on session {}",
-                                    target_session
-                                )));
+                    // Only retry on "already running" — fail fast on I/O errors.
+                    let mut lock: Option<SessionLock> = None;
+                    for _ in 0..20 {
+                        match SessionLock::acquire(&target_dir) {
+                            Ok(l) => {
+                                lock = Some(l);
+                                break;
                             }
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            Err(e) => {
+                                if !e.to_string().contains("already running") {
+                                    return Err(e.context(format!(
+                                        "unexpected error acquiring lock on session {}",
+                                        target_session
+                                    )));
+                                }
+                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            }
                         }
                     }
-                }
-                let _lock = lock.ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "failed to acquire lock on session {} after 20 attempts",
-                        target_session
-                    )
-                })?;
+                    let _lock = lock.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "failed to acquire lock on session {} after 20 attempts",
+                            target_session
+                        )
+                    })?;
 
-                wire::append(&tx_path, event)?;
-                let repos = crate::git::Repos::production();
-                repos.traces.commit_session(
-                    &self.gait_dir,
-                    target_session,
-                    &format!(
-                        "session({}): agent_update from {}",
-                        target_session, from_session
-                    ),
-                )?;
-                drop(_lock);
+                    wire::append(&tx_path, event)?;
+                    let repos = crate::git::Repos::production();
+                    repos.traces.commit_session(
+                        &self.gait_dir,
+                        target_session,
+                        &format!(
+                            "session({}): agent_update from {}",
+                            target_session, from_session
+                        ),
+                    )?;
+                    drop(_lock);
+                }
 
                 let argv = vec![
                     "run".to_string(),

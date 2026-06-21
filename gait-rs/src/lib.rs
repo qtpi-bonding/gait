@@ -47,7 +47,7 @@ pub use types::{
 };
 
 pub use factory::load_provider;
-pub use harness::{HarnessBackend, NativeHarnessBackend, NoopHarnessBackend};
+pub use harness::{HarnessBackend, NativeHarnessBackend, NoopHarnessBackend, NotifyPayload};
 pub use profile::{Profile, ResolvedProfile};
 pub use proto::Recorder;
 pub use scheduler::{Action, NativeScheduler, Scheduler, TurnEnded};

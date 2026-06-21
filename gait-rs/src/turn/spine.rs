@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use crate::config::SandboxConfig;
 use crate::port::output::TurnSink;
 use crate::proto::gait::sandbox::v1::{
-    network_scope::Mode, signal, Feedback, Impulse, NetworkScope, Scope, Signal,
+    network_scope::Mode, signal, Feedback, Impulse, NetworkScope, Notify, Scope, Signal,
 };
 use crate::proto::wire;
 use crate::sandbox::{NetworkPolicy, SandboxScope};
@@ -147,6 +147,8 @@ pub async fn relay_brain_turn(
                     };
                     let mut w = stdin_writer.lock().await;
                     nerve::write_signal(&mut *w, &resp).await.ok();
+                    use tokio::io::AsyncWriteExt;
+                    w.flush().await.ok();
                 });
             }
             Some(signal::Body::Append(append)) => {
@@ -177,6 +179,55 @@ pub async fn relay_brain_turn(
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
                     .spawn();
+            }
+            Some(signal::Body::Notify(Notify {
+                target_session,
+                from_session,
+                status,
+                summary,
+            })) => {
+                // Spine is sole gait-dir writer: write agent_update to parent session.
+                let event = crate::proto::events::agent_update(
+                    from_session.clone(),
+                    &status,
+                    summary.clone(),
+                    None,
+                );
+                let target_dir = gait_dir.join("sessions").join(&target_session);
+                let tx_path = target_dir.join("log.jsonl");
+                // Acquire lock with retry (parent may be running).
+                let mut lock: Option<crate::turn::SessionLock> = None;
+                for _ in 0..20 {
+                    match crate::turn::SessionLock::acquire(&target_dir) {
+                        Ok(l) => {
+                            lock = Some(l);
+                            break;
+                        }
+                        Err(e) if e.to_string().contains("already running") => {
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        }
+                        Err(e) => {
+                            eprintln!("[spine] warning: failed to acquire lock for notify: {e}");
+                            break;
+                        }
+                    }
+                }
+                if let Some(_lock) = lock {
+                    wire::append(&tx_path, event).ok();
+                    let repos = crate::git::Repos::production();
+                    repos
+                        .traces
+                        .commit_session(
+                            gait_dir,
+                            &target_session,
+                            &format!(
+                                "session({}): agent_update from {}",
+                                target_session, from_session
+                            ),
+                        )
+                        .ok();
+                }
+                // No Feedback needed — one-way signal like Append.
             }
             _ => {}
         }
