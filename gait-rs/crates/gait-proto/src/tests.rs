@@ -232,6 +232,7 @@ fn feedback_carries_value_and_events() {
             kind: Some(pbjson_types::value::Kind::StringValue("ok".into())),
         }),
         events: vec![event],
+        denied: None,
     };
 
     let bytes = prost::Message::encode_to_vec(&feedback);

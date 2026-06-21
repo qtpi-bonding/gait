@@ -155,6 +155,7 @@ pub async fn cmd_run_tool(argv: &[String]) {
     let feedback = Feedback {
         result: Some(result_proto),
         events: rec.take_buffer(),
+        denied: None,
     };
 
     let bytes = feedback.encode_to_vec();
