@@ -1465,6 +1465,85 @@ async fn supervised_write_outside_ceiling_pauses_with_unlock() {
     );
 }
 
+/// Regression test for I1 (canonicalization mismatch): a supervised write to a
+/// relative in-codebase path (e.g. `"foo.txt"`) must NOT trigger an Unlock pause.
+///
+/// On macOS `tempfile::TempDir` lives under `/tmp`, which is a symlink to
+/// `/private/tmp`. `compute_scope` canonicalizes the codebase path to
+/// `/private/tmp/...`, but without the fix in `check_own_tool_scope` the
+/// resolved path `codebase.join("foo.txt")` is `/tmp/.../foo.txt` and fails
+/// `starts_with(/private/tmp/...)`, spuriously returning `TurnResult::Unlock`.
+#[tokio::test]
+async fn supervised_write_inside_codebase_returns_done() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+
+    // The model writes "foo.txt" — a relative path inside the codebase.
+    let provider = Arc::new(MockProvider {
+        responses: Arc::new(vec![
+            vec![
+                StreamChunk::ToolCallComplete {
+                    tool_call_id: "tc-scope-write-rel".into(),
+                    tool_name: "write".into(),
+                    args: serde_json::json!({
+                        "file_path": "foo.txt",
+                        "content": "hello from in-codebase write"
+                    }),
+                },
+                StreamChunk::Done,
+            ],
+            // After write completes, model finishes with a text response.
+            vec![StreamChunk::Text("wrote foo.txt".into()), StreamChunk::Done],
+        ]),
+        call_idx: Arc::new(AtomicUsize::new(0)),
+    });
+
+    let write_tool = crate::tools::WriteTool::new(crate::tools::ToolCtx::new(
+        ws.path().to_path_buf(),
+        ws.path().to_path_buf(),
+        "test".into(),
+    ));
+
+    let result = run_turn_test_call(
+        ws.path().to_path_buf(),
+        ws.path().to_path_buf(),
+        "sscope-write-inbounds-01".into(),
+        provider,
+        vec![write_tool.boxed()],
+        // write is in the allow list so permission gating won't trigger first
+        vec!["write".into()],
+        vec![],
+        TurnInput {
+            auto: false, // supervised mode — in-codebase write must NOT pause
+            max_iter: None,
+            preview_policy: crate::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: true,
+        },
+        crate::git::Repos::production(),
+    )
+    .await
+    .unwrap();
+
+    // Must NOT return TurnResult::Unlock — the write is inside the codebase.
+    assert!(
+        matches!(result, TurnResult::Done { .. }),
+        "in-codebase write must return Done, not Unlock (canonicalization bug); got: {result:?}"
+    );
+
+    // The file must actually have been written.
+    let written_path = ws.path().join("foo.txt");
+    assert!(
+        written_path.exists(),
+        "foo.txt must be written to the codebase dir"
+    );
+    let contents = std::fs::read_to_string(&written_path).unwrap();
+    assert_eq!(
+        contents, "hello from in-codebase write",
+        "foo.txt contents must match what the model wrote"
+    );
+}
+
 // ── Task 6: shell EACCES → unlock (supervised) / failure (auto) ──────────────
 
 /// Auto mode: a shell command whose output contains "Permission denied" must

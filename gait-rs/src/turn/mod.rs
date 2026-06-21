@@ -1763,11 +1763,24 @@ fn check_own_tool_scope(
 
     let mut items = vec![];
     for (path, dim) in targets {
+        // Canonicalize the target so the starts_with comparison works correctly
+        // on macOS where /tmp → /private/tmp. compute_scope already canonicalizes
+        // the codebase path, so a non-canonical target path will spuriously fail
+        // starts_with and trigger a false-positive TurnResult::Unlock.
+        let target = if path.exists() {
+            path.canonicalize().unwrap_or_else(|_| path.clone())
+        } else {
+            // For not-yet-existing targets, canonicalize the parent directory.
+            path.parent()
+                .and_then(|p| p.canonicalize().ok())
+                .map(|p| p.join(path.file_name().unwrap_or_default()))
+                .unwrap_or_else(|| path.clone())
+        };
         let in_scope = match dim {
             Dimension::Write => ceiling
                 .writable
                 .iter()
-                .any(|allowed| path.starts_with(allowed)),
+                .any(|allowed| target.starts_with(allowed)),
             Dimension::Read => {
                 // Phase 2b: read_all is always true → reads are never blocked.
                 if ceiling.read_all {
@@ -1776,7 +1789,7 @@ fn check_own_tool_scope(
                     ceiling
                         .readable
                         .iter()
-                        .any(|allowed| path.starts_with(allowed))
+                        .any(|allowed| target.starts_with(allowed))
                 }
             }
         };
