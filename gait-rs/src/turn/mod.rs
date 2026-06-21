@@ -56,6 +56,7 @@ pub mod brain;
 mod curate;
 mod exec;
 mod gate;
+pub mod hand;
 pub mod nerve;
 mod prompt;
 pub mod spine;
