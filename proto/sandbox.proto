@@ -51,6 +51,7 @@ message Signal {
     Terminated terminated = 6;
     StreamForward stream_forward = 7;
     Notify notify = 8;
+    BrainInit brain_init = 9;          // spine→brain: first frame, replaces startup+log+git disk reads
   }
 }
 
@@ -87,4 +88,19 @@ message Notify {
   string from_session   = 2;
   string status         = 3;
   string summary        = 4;
+}
+
+// Spine → brain: the first signal, sent immediately after the brain starts and
+// before the relay loop. Carries everything the brain would otherwise read from
+// disk at startup: config, the full session log (events), and the turn's git
+// snapshot. The brain reads this raw before start_nerve takes stdin.
+message BrainInit {
+  string config_json = 1;                  // serialized gait_core::config::Config (JSON)
+  repeated gait.log.v1.Event events = 2;   // full session log (includes this turn's user input + SessionStart)
+  GitStatus git = 3;                       // turn-start codebase git snapshot
+}
+
+message GitStatus {
+  string head_hash = 1;
+  repeated string dirty_files = 2;
 }

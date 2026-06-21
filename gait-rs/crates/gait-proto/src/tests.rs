@@ -295,3 +295,29 @@ fn signal_envelope_discriminates_oneof() {
         other => panic!("expected Impulse arm, got {other:?}"),
     }
 }
+
+#[test]
+fn brain_init_signal_round_trips() {
+    use crate::gait::sandbox::v1::{signal, BrainInit, GitStatus, Signal};
+    use prost::Message;
+    let sig = Signal {
+        corr_id: 0,
+        body: Some(signal::Body::BrainInit(BrainInit {
+            config_json: "{}".to_string(),
+            events: vec![],
+            git: Some(GitStatus {
+                head_hash: "abc123".to_string(),
+                dirty_files: vec!["src/main.rs".to_string()],
+            }),
+        })),
+    };
+    let bytes = sig.encode_to_vec();
+    let back = Signal::decode(bytes.as_slice()).unwrap();
+    match back.body {
+        Some(signal::Body::BrainInit(b)) => {
+            assert_eq!(b.config_json, "{}");
+            assert_eq!(b.git.unwrap().head_hash, "abc123");
+        }
+        other => panic!("expected BrainInit, got {other:?}"),
+    }
+}
