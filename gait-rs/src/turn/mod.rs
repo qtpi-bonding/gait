@@ -1639,5 +1639,49 @@ pub async fn run_turn(
     )
 }
 
+/// Emit the sandbox-unlock pause and return `TurnResult::Unlock`.
+///
+/// Mirrors the Permissions pause block in `run_turn` (near "Gated tools"):
+/// records an `unlock` event, commits the session worktree, fires the
+/// `post_turn` hook with `turn_outcome: "unlock"`, then returns
+/// `TurnResult::Unlock { items }`.
+///
+/// Called by Tasks 5 (pre-check path) and 6 (EACCES path). Not called
+/// in auto-mode (caller must gate on `sandbox_on && !auto`).
+pub(crate) fn pause_for_unlock(
+    emitter: &Recorder,
+    items: Vec<pb::UnlockItem>,
+    repos: &crate::git::Repos,
+    gait_dir: &std::path::Path,
+    session_id: &str,
+    codebase_path: &std::path::Path,
+    system_prompt: &str,
+    hooks: &[Box<dyn crate::types::Hook>],
+    step_count: usize,
+) -> anyhow::Result<TurnResult> {
+    emitter.record(events::unlock(&items))?;
+    repos.traces.commit_session(
+        gait_dir,
+        session_id,
+        &format!("session({}): unlock", session_id),
+    )?;
+    {
+        let post_turn_ctx = HookContext {
+            event: "post_turn".to_string(),
+            session_id: session_id.to_string(),
+            gait_dir: gait_dir.to_path_buf(),
+            codebase: codebase_path.to_path_buf(),
+            system_prompt: system_prompt.to_string(),
+            step_count,
+            turn_outcome: "unlock".to_string(),
+            ..Default::default()
+        };
+        for h in hooks {
+            h.post_turn(&post_turn_ctx, emitter);
+        }
+    }
+    Ok(TurnResult::Unlock { items })
+}
+
 #[cfg(test)]
 mod tests;
