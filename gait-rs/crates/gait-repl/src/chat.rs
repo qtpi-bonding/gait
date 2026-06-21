@@ -129,6 +129,7 @@ pub async fn run_chat(
             control: None,
             watcher_done: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             watcher_handle: None,
+            sandbox_on: gait_core::config::load_config(&gait_dir).sandbox.on,
         }));
     let repos = gait_core::git::Repos::production();
 

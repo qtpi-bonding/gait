@@ -72,6 +72,7 @@ pub(super) async fn apply_curate_filter(
             max_iter: Some(1),
             preview_policy: crate::config::PreviewPolicy::default(),
             cancel: None,
+            sandbox_on: true,
         },
     )
     .await;

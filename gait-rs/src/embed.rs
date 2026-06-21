@@ -33,6 +33,10 @@ pub struct LoopConfig {
     pub max_iter: Option<usize>,
     pub cancel: Option<tokio_util::sync::CancellationToken>,
     pub preview_policy: crate::config::PreviewPolicy,
+    /// Whether the per-call Seatbelt/Landlock seal is engaged this turn.
+    /// Defaults to `true` (config default); overridden by `--sandbox`/`--no-sandbox`
+    /// or the `/sandbox on|off` REPL toggle.
+    pub sandbox_on: bool,
 }
 
 /// Per-turn machinery the loop can't own generically. `?Send`: the driver runs on
@@ -106,6 +110,7 @@ pub async fn run_loop(
             max_iter: cfg.max_iter,
             preview_policy: cfg.preview_policy,
             cancel: cfg.cancel,
+            sandbox_on: cfg.sandbox_on,
         };
         let session_for_turn = session.clone();
         let handle = tokio::spawn(async move {

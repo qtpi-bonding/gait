@@ -214,6 +214,7 @@ async fn run_turn_writes_transcript_and_commits() {
             max_iter: None,
             preview_policy: crate::config::PreviewPolicy::default(),
             cancel: None,
+            sandbox_on: true,
         },
         crate::git::Repos::production(),
     )
@@ -288,6 +289,7 @@ async fn output_tool_result_used_in_turn_complete() {
             max_iter: None,
             preview_policy: crate::config::PreviewPolicy::default(),
             cancel: None,
+            sandbox_on: true,
         },
         crate::git::Repos::production(),
     )
@@ -341,6 +343,7 @@ async fn output_tool_exempt_from_permission_gating() {
             max_iter: None,
             preview_policy: crate::config::PreviewPolicy::default(),
             cancel: None,
+            sandbox_on: true,
         },
         crate::git::Repos::production(),
     )
@@ -392,6 +395,7 @@ async fn permission_gating_pauses_turn_in_non_auto_mode() {
             max_iter: None,
             preview_policy: crate::config::PreviewPolicy::default(),
             cancel: None,
+            sandbox_on: true,
         },
         crate::git::Repos::production(),
     )
@@ -439,6 +443,7 @@ async fn run_turn_returns_done_result_on_completion() {
             max_iter: None,
             preview_policy: crate::config::PreviewPolicy::default(),
             cancel: None,
+            sandbox_on: true,
         },
         crate::git::Repos::production(),
     )
@@ -485,6 +490,7 @@ async fn run_turn_returns_permissions_when_paused() {
             max_iter: None,
             preview_policy: crate::config::PreviewPolicy::default(),
             cancel: None,
+            sandbox_on: true,
         },
         crate::git::Repos::production(),
     )
@@ -525,6 +531,7 @@ async fn streaming_text_does_not_produce_extra_transcript_events() {
             max_iter: None,
             preview_policy: crate::config::PreviewPolicy::default(),
             cancel: None,
+            sandbox_on: true,
         },
         crate::git::Repos::production(),
     )
@@ -592,6 +599,7 @@ async fn denied_tool_gets_blocked_result_without_prompting() {
             max_iter: None,
             preview_policy: crate::config::PreviewPolicy::default(),
             cancel: None,
+            sandbox_on: true,
         },
         crate::git::Repos::production(),
     )
@@ -669,6 +677,7 @@ async fn deny_wins_when_tool_in_both_allow_and_deny() {
             max_iter: None,
             preview_policy: crate::config::PreviewPolicy::default(),
             cancel: None,
+            sandbox_on: true,
         },
         crate::git::Repos::production(),
     )
@@ -766,6 +775,7 @@ async fn resume_executes_approved_tool_directly() {
             max_iter: None,
             preview_policy: crate::config::PreviewPolicy::default(),
             cancel: None,
+            sandbox_on: true,
         },
         crate::git::Repos::production(),
     )
@@ -870,6 +880,7 @@ async fn resume_emits_denied_tool_result_for_rejected_call() {
             max_iter: None,
             preview_policy: crate::config::PreviewPolicy::default(),
             cancel: None,
+            sandbox_on: true,
         },
         crate::git::Repos::production(),
     )
@@ -991,6 +1002,7 @@ async fn resume_with_scope_agent_shows_whitelist_prefix() {
             max_iter: None,
             preview_policy: crate::config::PreviewPolicy::default(),
             cancel: None,
+            sandbox_on: true,
         },
         crate::git::Repos::production(),
     )
@@ -1059,6 +1071,7 @@ async fn run_turn_records_code_checkpoint_for_git_codebase() {
             max_iter: None,
             preview_policy: crate::config::PreviewPolicy::default(),
             cancel: None,
+            sandbox_on: true,
         },
         crate::git::Repos::production(),
     )
@@ -1129,6 +1142,7 @@ async fn run_turn_persists_codebase_path_in_session_json() {
             max_iter: None,
             preview_policy: crate::config::PreviewPolicy::default(),
             cancel: None,
+            sandbox_on: true,
         },
         crate::git::Repos::production(),
     )
@@ -1204,6 +1218,7 @@ async fn run_turn_calls_rewind_init_and_checkpoint_via_injected_repo() {
             max_iter: None,
             preview_policy: crate::config::PreviewPolicy::default(),
             cancel: None,
+            sandbox_on: true,
         },
         repos,
     )
@@ -1271,6 +1286,7 @@ async fn load_skill_emits_toggle_event() {
             max_iter: None,
             preview_policy: crate::config::PreviewPolicy::default(),
             cancel: None,
+            sandbox_on: true,
         },
         crate::git::Repos::production(),
     )

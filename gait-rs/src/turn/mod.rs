@@ -111,6 +111,7 @@ pub struct TurnInput {
     pub max_iter: Option<usize>,
     pub preview_policy: crate::config::PreviewPolicy,
     pub cancel: Option<tokio_util::sync::CancellationToken>,
+    pub sandbox_on: bool,
 }
 
 // ── Session lock (RAII PID file) ─────────────────────────────────────────────
@@ -306,6 +307,7 @@ pub async fn run_turn(
     let max_iter = input.max_iter;
     let preview_policy = input.preview_policy;
     let cancel = input.cancel;
+    let sandbox_on = input.sandbox_on;
 
     repos
         .traces
@@ -473,6 +475,7 @@ pub async fn run_turn(
                         &codebase_path,
                         &gait_dir,
                         &session_id,
+                        sandbox_on,
                     )
                     .await
                     {
@@ -1148,6 +1151,7 @@ pub async fn run_turn(
                             &codebase_path,
                             &gait_dir,
                             &session_id,
+                            sandbox_on,
                         )
                         .await
                     }
@@ -1298,6 +1302,7 @@ pub async fn run_turn(
                             &codebase_path,
                             &gait_dir,
                             &session_id,
+                            sandbox_on,
                         )
                         .await
                         .unwrap_or_else(|e| error_tool_result(tc, e));
@@ -1493,6 +1498,7 @@ pub async fn run_turn(
                             &codebase_path,
                             &gait_dir,
                             &session_id,
+                            sandbox_on,
                         )
                         .await
                         .unwrap_or_else(|e| error_tool_result(tc, e));

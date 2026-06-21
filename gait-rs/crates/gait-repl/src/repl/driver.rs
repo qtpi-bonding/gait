@@ -47,6 +47,9 @@ pub struct ReplShared {
     // Watcher lifecycle — written by ReplDriver::turn_config, torn down by ReplSink::end_turn
     pub(crate) watcher_done: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub(crate) watcher_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Per-session sandbox engagement, toggled by `/sandbox on|off`. Initialized
+    /// from `config.sandbox.on`; takes effect on the next turn.
+    pub sandbox_on: bool,
 }
 pub type Shared = Rc<RefCell<ReplShared>>;
 
@@ -162,6 +165,7 @@ impl TurnDriver for ReplDriver {
             max_iter: self.config.max_iter,
             preview_policy: self.config.preview,
             cancel: Some(token),
+            sandbox_on: self.shared.borrow().sandbox_on,
         }
     }
 
@@ -300,6 +304,21 @@ impl TurnSource for ReplSource {
                     &output,
                     gait_core::session::log::now_ms(),
                 );
+                continue;
+            }
+
+            // /sandbox [off|on] — toggle per-session sandbox engagement. Takes effect on
+            // the next turn (ephemeral: never mutates a live sealed process).
+            // Must be checked before parse_skill_toggle so "sandbox" isn't treated as
+            // a skill name.
+            if line.trim() == "/sandbox" || line.trim() == "/sandbox on" {
+                self.shared.borrow_mut().sandbox_on = true;
+                eprint!("sandbox enabled\r\n");
+                continue;
+            }
+            if line.trim() == "/sandbox off" {
+                self.shared.borrow_mut().sandbox_on = false;
+                eprint!("sandbox disabled\r\n");
                 continue;
             }
 

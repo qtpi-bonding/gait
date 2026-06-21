@@ -98,6 +98,7 @@ impl TurnDriver for TestDriver {
             max_iter: None,
             preview_policy: Default::default(),
             cancel: None,
+            sandbox_on: true,
         }
     }
 

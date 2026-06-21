@@ -23,6 +23,12 @@ pub struct RunArgs {
     pub deny: Vec<String>,
     #[arg(long)]
     pub max_iter: Option<usize>,
+    // Task 7: sandbox engagement flags. `--sandbox` forces on, `--no-sandbox` forces off.
+    // When neither is passed, the config default (`config.sandbox.on`) applies.
+    #[arg(long)]
+    pub sandbox: bool,
+    #[arg(long = "no-sandbox")]
+    pub no_sandbox: bool,
     // Consumed by caller (args.rs); included to prevent "unexpected argument" errors.
     #[arg(long, hide = true)]
     gait_dir: Option<PathBuf>,
@@ -71,6 +77,15 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
     }
     if let Some(n) = args.max_iter {
         config.max_iter = Some(n);
+    }
+    // Task 7: resolve effective sandbox engagement. --no-sandbox wins over --sandbox
+    // when both are passed (off-first semantics: a paranoid user can always force-disable).
+    // Mutate the loaded config's sandbox flag in place — the resolved `config` is the
+    // single source of truth for everything downstream (LoopConfig, the CliDriver, etc.).
+    if args.no_sandbox {
+        config.sandbox.on = false;
+    } else if args.sandbox {
+        config.sandbox.on = true;
     }
 
     // Apply --result-schema override: read file, validate JSON Schema, error early if invalid.
@@ -199,6 +214,7 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
         auto: args.auto,
         max_iter: config.max_iter,
         preview_policy: config.preview,
+        sandbox_on: config.sandbox.on,
     };
 
     if let Err(e) = gait_core::embed::run_loop(
@@ -233,6 +249,7 @@ struct CliDriver {
     auto: bool,
     max_iter: Option<usize>,
     preview_policy: gait_core::config::PreviewPolicy,
+    sandbox_on: bool,
 }
 
 #[async_trait::async_trait(?Send)]
@@ -266,6 +283,7 @@ impl gait_core::embed::TurnDriver for CliDriver {
             max_iter: self.max_iter,
             preview_policy: self.preview_policy,
             cancel: None,
+            sandbox_on: self.sandbox_on,
         }
     }
 

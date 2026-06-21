@@ -70,10 +70,11 @@ pub struct SubprocessSynapse {
     pub codebase: std::path::PathBuf,
     pub session_id: String,
     pub cwd: String,
-    /// Sandbox config used to compute the per-call scope ceiling. Defaults to the
-    /// strict default (off, empty allow-lists); Task 6 threads the real config from
-    /// `GaitConfig.sandbox`.
+    /// Sandbox config used to compute the per-call scope ceiling.
     pub sandbox_cfg: crate::config::SandboxConfig,
+    /// When false the hand skips `platform_sandbox().apply()` (NoopSandbox). Controlled
+    /// by `--sandbox`/`--no-sandbox` CLI flags or the `/sandbox on|off` REPL toggle.
+    pub seal: bool,
 }
 
 /// Serialize a `SandboxScope` into the proto `Scope` carried by `Impulse.requested`.
@@ -171,6 +172,8 @@ impl Synapse for SubprocessSynapse {
             .arg(tool.name())
             .arg("--temp-jail")
             .arg(&temp_jail)
+            .arg("--seal")
+            .arg(if self.seal { "true" } else { "false" })
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -312,6 +315,7 @@ mod tests {
             session_id: "stest123".into(),
             cwd: dir.path().to_string_lossy().into_owned(),
             sandbox_cfg: crate::config::SandboxConfig::default(),
+            seal: true,
         };
         let tool = crate::tools::read::ReadTool::new(crate::tools::ToolCtx::new(
             dir.path().into(),

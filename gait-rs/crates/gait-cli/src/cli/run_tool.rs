@@ -36,6 +36,10 @@ struct RunToolArgs {
     tool: String,
     #[arg(long)]
     temp_jail: Option<PathBuf>,
+    /// When false, skip platform_sandbox().apply() and use NoopSandbox instead.
+    /// Set by SubprocessSynapse based on the per-turn sandbox engagement flag.
+    #[arg(long, default_value = "true")]
+    seal: bool,
 }
 
 pub async fn cmd_run_tool(argv: &[String]) {
@@ -101,11 +105,15 @@ pub async fn cmd_run_tool(argv: &[String]) {
     // tool I/O. Phase 2b: the hand enforces the kernel sandbox itself — this is
     // irreversible, so it must happen before tool.execute().
     let seal_scope = build_scope_from_impulse(&impulse);
-    let seal_status = gait_core::sandbox::platform_sandbox()
-        .apply(&seal_scope)
-        .unwrap_or(gait_core::sandbox::SandboxStatus::Unavailable {
-            reason: "sandbox apply error".into(),
-        });
+    let seal_status = if a.seal {
+        gait_core::sandbox::platform_sandbox()
+            .apply(&seal_scope)
+            .unwrap_or(gait_core::sandbox::SandboxStatus::Unavailable {
+                reason: "sandbox apply error".into(),
+            })
+    } else {
+        gait_core::sandbox::SandboxStatus::Noop
+    };
 
     // Emit the SandboxApplied event so the brain can log it. Tools will see the
     // event appear alongside their own events in the feedback stream.

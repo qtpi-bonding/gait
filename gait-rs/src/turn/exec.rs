@@ -36,6 +36,7 @@ pub(super) async fn execute_tool_call(
     codebase: &std::path::Path,
     gait_dir: &std::path::Path,
     session_id: &str,
+    sandbox_on: bool,
 ) -> anyhow::Result<ToolExecResult> {
     let id = tc.tool_call_id.clone();
     emitter.record(events::tool_call(
@@ -83,9 +84,8 @@ pub(super) async fn execute_tool_call(
                         codebase: codebase.to_path_buf(),
                         session_id: session_id.to_string(),
                         cwd: cwd.to_string_lossy().into_owned(),
-                        // Task 5: pass the default config through as a placeholder.
-                        // Task 6 will thread the real GaitConfig.sandbox here.
                         sandbox_cfg: crate::config::SandboxConfig::default(),
+                        seal: sandbox_on,
                     };
                     syn.fire(
                         t.as_ref(),
@@ -404,9 +404,18 @@ mod synapse_routing_tests {
             args: serde_json::json!({}),
         };
 
-        let out = execute_tool_call(&tc, &tools, &rec, None, dir.path(), dir.path(), "stest123")
-            .await
-            .unwrap();
+        let out = execute_tool_call(
+            &tc,
+            &tools,
+            &rec,
+            None,
+            dir.path(),
+            dir.path(),
+            "stest123",
+            true,
+        )
+        .await
+        .unwrap();
         assert_eq!(out.result.result, serde_json::Value::String("ok".into()));
 
         // The cwd event the tool emitted must be present in the real log.

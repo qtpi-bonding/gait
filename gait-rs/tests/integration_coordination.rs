@@ -136,6 +136,7 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
             max_iter: None,
             preview_policy: gait_core::config::PreviewPolicy::default(),
             cancel: None,
+            sandbox_on: true,
         },
     )
     .await
@@ -221,6 +222,7 @@ async fn run_turn_permissions_result_integration() {
             max_iter: None,
             preview_policy: gait_core::config::PreviewPolicy::default(),
             cancel: None,
+            sandbox_on: true,
         },
     )
     .await
