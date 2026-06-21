@@ -987,6 +987,66 @@ impl Projection for ActivePermissions {
     }
 }
 
+/// State for active sandbox unlock grants: paths granted this session or once.
+#[derive(Default)]
+pub struct ActiveUnlockState {
+    /// Paths granted for the entire session (survive `TurnComplete`).
+    pub session: std::collections::HashSet<std::path::PathBuf>,
+    /// Paths granted for a single turn (cleared on `TurnComplete`).
+    pub once: std::collections::HashSet<std::path::PathBuf>,
+}
+
+/// Fold all `UnlockReply` events, cross-referencing `Unlock` events to resolve
+/// resource paths, into an `ActiveUnlockState`. `once` grants are cleared on
+/// each `TurnComplete`; `session` grants persist for the session.
+/// `global`/`agent` grants are config-backed and not tracked here.
+pub fn active_unlock_state(events: &[Event]) -> ActiveUnlockState {
+    // Build a map: unlock_item_id → resource from Unlock events
+    let mut id_to_resource: std::collections::HashMap<String, String> = Default::default();
+    for e in events {
+        if let Some(payload::Kind::Unlock(u)) = crate::proto::event_kind(e) {
+            for item in &u.items {
+                id_to_resource.insert(item.id.clone(), item.resource.clone());
+            }
+        }
+    }
+
+    let mut state = ActiveUnlockState::default();
+    for e in events {
+        match crate::proto::event_kind(e) {
+            Some(payload::Kind::TurnComplete(_)) => {
+                state.once.clear();
+            }
+            Some(payload::Kind::UnlockReply(r)) => {
+                for item in &r.items {
+                    let decision =
+                        pb::Decision::try_from(item.decision).unwrap_or(pb::Decision::Unspecified);
+                    let scope = pb::Scope::try_from(item.scope).unwrap_or(pb::Scope::Unspecified);
+                    if decision != pb::Decision::Allow {
+                        continue;
+                    }
+                    let Some(resource) = id_to_resource.get(&item.id) else {
+                        continue;
+                    };
+                    let path = std::path::PathBuf::from(resource);
+                    match scope {
+                        pb::Scope::Once => {
+                            state.once.insert(path);
+                        }
+                        pb::Scope::Session => {
+                            state.session.insert(path);
+                        }
+                        // global/agent: config-backed, not tracked here
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    state
+}
+
 /// Fold all Redact/Replace event bodies into a LWW map keyed by target id.
 /// For each target, the mutation with the highest `(seq, id)` wins.
 /// Events that are not Redact/Replace bodies are ignored.
@@ -1098,6 +1158,10 @@ pub struct RetraceResult {
     /// LWW-converged mutations (Redact/Replace) keyed by target event id,
     /// with ToolCall↔ToolResult cascade applied.
     pub mutations: HashMap<String, MutationState>,
+    /// Runtime-only sandbox unlock grants (once/session scope). `once` paths
+    /// expire each TurnComplete; `session` paths persist for the session.
+    /// `global`/`agent` grants are in gait.jsonc / agent files and not here.
+    pub active_unlock: ActiveUnlockState,
 }
 
 /// Fold the full event log into all projections in a single pass.
@@ -1127,12 +1191,14 @@ pub fn fold(all_events: &[Event], agent_seed: AgentState) -> Result<RetraceResul
         .cloned()
         .collect();
     let messages = run_projection(&ActiveMessages, all_events, &mutations).msgs;
+    let active_unlock = active_unlock_state(all_events);
 
     Ok(RetraceResult {
         messages,
         agent,
         effective_allow,
         mutations,
+        active_unlock,
     })
 }
 

@@ -472,5 +472,109 @@ pub fn append_deny_pattern(gait_dir: &Path, pattern: &str) -> anyhow::Result<()>
     append_list_field("deny", pattern, &gait_dir.join("gait.jsonc"))
 }
 
+/// Append a value to a list nested at `obj["sandbox"][field]`, creating the
+/// sandbox block and/or array if absent. Strips JSONC comments (consistent
+/// with pre-existing behavior of `append_list_field`).
+fn append_sandbox_field(field: &str, value: &str, path: &Path) -> anyhow::Result<()> {
+    let mut obj: serde_json::Map<String, serde_json::Value> = if path.exists() {
+        let raw = std::fs::read_to_string(path)?;
+        let stripped = strip_jsonc_comments(&raw);
+        match serde_json::from_str::<serde_json::Value>(&stripped) {
+            Ok(serde_json::Value::Object(m)) => m,
+            Ok(_) => anyhow::bail!("gait.jsonc root is not a JSON object"),
+            Err(e) => anyhow::bail!("gait.jsonc parse error: {e}"),
+        }
+    } else {
+        let mut m = serde_json::Map::new();
+        m.insert(
+            "model".into(),
+            serde_json::Value::String(DEFAULT_MODEL.into()),
+        );
+        m
+    };
+
+    // Navigate/create sandbox block
+    let sandbox = obj
+        .entry("sandbox")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("gait.jsonc 'sandbox' is not an object"))?;
+
+    let list = sandbox
+        .entry(field)
+        .or_insert_with(|| serde_json::Value::Array(vec![]))
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("sandbox.{field} is not an array"))?;
+
+    if !list.iter().any(|v| v.as_str() == Some(value)) {
+        list.push(serde_json::Value::String(value.to_string()));
+    }
+
+    let pretty = serde_json::to_string_pretty(&serde_json::Value::Object(obj))?;
+    std::fs::write(path, pretty + "\n")?;
+    Ok(())
+}
+
+/// Append a path to `gait.jsonc` → `sandbox.writable` (global grant persistence).
+pub fn append_sandbox_writable(gait_dir: &Path, path: &str) -> anyhow::Result<()> {
+    append_sandbox_field("writable", path, &gait_dir.join("gait.jsonc"))
+}
+
+/// Append a path to `gait.jsonc` → `sandbox.readable` (global grant persistence).
+pub fn append_sandbox_readable(gait_dir: &Path, path: &str) -> anyhow::Result<()> {
+    append_sandbox_field("readable", path, &gait_dir.join("gait.jsonc"))
+}
+
+/// Append a host to `gait.jsonc` → `sandbox.network` (global grant persistence).
+/// If `sandbox.network` is currently `false` (Off), it becomes `[host]`.
+/// If it is `"*"` (All), it stays `"*"` (already maximally permissive).
+pub fn append_sandbox_network_host(gait_dir: &Path, host: &str) -> anyhow::Result<()> {
+    let path = gait_dir.join("gait.jsonc");
+    let mut obj: serde_json::Map<String, serde_json::Value> = if path.exists() {
+        let raw = std::fs::read_to_string(&path)?;
+        let stripped = strip_jsonc_comments(&raw);
+        match serde_json::from_str::<serde_json::Value>(&stripped) {
+            Ok(serde_json::Value::Object(m)) => m,
+            Ok(_) => anyhow::bail!("gait.jsonc root is not a JSON object"),
+            Err(e) => anyhow::bail!("gait.jsonc parse error: {e}"),
+        }
+    } else {
+        let mut m = serde_json::Map::new();
+        m.insert(
+            "model".into(),
+            serde_json::Value::String(DEFAULT_MODEL.into()),
+        );
+        m
+    };
+
+    let sandbox = obj
+        .entry("sandbox")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("gait.jsonc 'sandbox' is not an object"))?;
+
+    // If network is "*" (All), nothing to do — already maximally permissive.
+    if sandbox.get("network").and_then(|v| v.as_str()) == Some("*") {
+        return Ok(());
+    }
+
+    // Normalize to an array (handles false / absent / existing array)
+    let list = match sandbox.get_mut("network") {
+        Some(serde_json::Value::Array(arr)) => arr,
+        _ => {
+            sandbox.insert("network".to_string(), serde_json::Value::Array(vec![]));
+            sandbox["network"].as_array_mut().unwrap()
+        }
+    };
+
+    if !list.iter().any(|v| v.as_str() == Some(host)) {
+        list.push(serde_json::Value::String(host.to_string()));
+    }
+
+    let pretty = serde_json::to_string_pretty(&serde_json::Value::Object(obj))?;
+    std::fs::write(&path, pretty + "\n")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests;

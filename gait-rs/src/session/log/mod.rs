@@ -162,6 +162,29 @@ pub fn write_permissions_reply(
     Ok(())
 }
 
+/// Append an `UnlockReply` event to the transcript.
+///
+/// `from` identifies the source of the decision (e.g. "user").
+/// Each `UnlockReplyItem.id` corresponds to an `UnlockItem.id` in
+/// the preceding `Unlock` request.
+pub fn write_unlock_reply(
+    tx_path: &std::path::Path,
+    from: &str,
+    items: Vec<pb::UnlockReplyItem>,
+) -> Result<(), SessionError> {
+    let body = crate::proto::events::unlock_reply(from.to_string(), &items);
+    let prev = last_event(tx_path)?;
+    let ev = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(tx_path)?;
+    let json = serde_json::to_string(&ev)?;
+    use std::io::Write;
+    writeln!(file, "{}", json)?;
+    Ok(())
+}
+
 pub fn init_session(opts: InitSessionOpts) -> Result<(), SessionError> {
     // SessionStart is identity-only; model/codebase fields on `opts` are unused here.
     let body = crate::proto::events::session_start(opts.id, None);

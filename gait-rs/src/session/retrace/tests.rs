@@ -1476,3 +1476,74 @@ fn outgoing_for_step_includes_injected_messages() {
     assert!(texts.contains(&"hello"));
     assert!(texts.contains(&"context from RAG"));
 }
+
+#[test]
+fn active_unlock_folds_once_grants_and_clears_on_turn_complete() {
+    use std::path::PathBuf;
+
+    let unlock_item = pb::UnlockItem {
+        id: "u1".to_string(),
+        tool_name: "write".to_string(),
+        resource: "/external/path/foo.txt".to_string(),
+        dimension: "write".to_string(),
+        preview: None,
+    };
+    let reply_item = pb::UnlockReplyItem {
+        id: "u1".to_string(),
+        decision: pb::Decision::Allow as i32,
+        scope: pb::Scope::Once as i32,
+    };
+
+    let evs = mint_events(vec![
+        events::unlock(&[unlock_item]),
+        events::unlock_reply("user".to_string(), &[reply_item]),
+    ]);
+
+    let result = active_unlock_state(&evs);
+    assert!(
+        result
+            .once
+            .contains(&PathBuf::from("/external/path/foo.txt")),
+        "once grant should be in active_unlock.once"
+    );
+    assert!(result.session.is_empty());
+}
+
+#[test]
+fn active_unlock_session_grant_survives_turn_complete() {
+    use std::path::PathBuf;
+
+    let unlock_item = pb::UnlockItem {
+        id: "u2".to_string(),
+        tool_name: "write".to_string(),
+        resource: "/external/dir".to_string(),
+        dimension: "write".to_string(),
+        preview: None,
+    };
+    let reply_item = pb::UnlockReplyItem {
+        id: "u2".to_string(),
+        decision: pb::Decision::Allow as i32,
+        scope: pb::Scope::Session as i32,
+    };
+    let usage = pb::TurnTokenUsage {
+        input: 1,
+        output: 1,
+        cache_read: 0,
+        cache_write: 0,
+    };
+
+    let evs = mint_events(vec![
+        events::unlock(&[unlock_item]),
+        events::unlock_reply("user".to_string(), &[reply_item]),
+        events::turn_complete(events::TurnCompleteParams {
+            usage,
+            ..Default::default()
+        }),
+    ]);
+
+    let result = active_unlock_state(&evs);
+    // session grant survives TurnComplete
+    assert!(result.session.contains(&PathBuf::from("/external/dir")));
+    // once was cleared by TurnComplete
+    assert!(result.once.is_empty());
+}

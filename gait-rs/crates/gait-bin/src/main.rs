@@ -24,6 +24,7 @@ fn usage() -> ! {
     );
     eprintln!("  allow    <session-id> [--pattern <pat>] [--scope <global|agent|once>] [--gait-dir <path>] [--agent <name>]  (was: approve)");
     eprintln!("  deny     <session-id> [--gait-dir <path>]                                                              (was: reject)");
+    eprintln!("  unlock   <session-id> [--scope once|session|global|agent] [--agent <name>] [--gait-dir <path>]");
     eprintln!("  status   <session-id> [--gait-dir <path>] [--json]");
     eprintln!("  cost     <session-id> [--gait-dir <path>] [--json]");
     eprintln!("  register   <mcp|skill> <name> [flags] [--yes]            (was: load)");
@@ -58,6 +59,7 @@ async fn main() {
         "chat" => cmd_chat(&args[2..]).await,
         "allow" | "approve" => gait_cli::cli::session::cmd_allow(&args[2..]),
         "deny" | "reject" => gait_cli::cli::session::cmd_deny(&args[2..]),
+        "unlock" => gait_cli::cli::session::cmd_unlock(&args[2..]),
         "status" => gait_cli::cli::session::cmd_status(&args[2..]),
         "cost" => gait_cli::cli::session::cmd_cost(&args[2..]),
         "register" | "load" => {

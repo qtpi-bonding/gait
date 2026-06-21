@@ -2,6 +2,9 @@ use super::*;
 use crate::proto::gait::log::v1::event;
 use tempfile::TempDir;
 
+// Re-export for integration assertions
+use crate::session::retrace::active_unlock_state;
+
 /// The substantive payload kind for a proto event, for test assertions.
 fn k(e: &Event) -> &payload::Kind {
     match &e.body {
@@ -293,4 +296,127 @@ fn session_state_unlock_reply_returns_idle() {
         matches!(state, SessionState::Idle),
         "expected Idle after unlock_reply, got {state:?}"
     );
+}
+
+#[test]
+fn unlock_once_grant_round_trip_no_config_change() {
+    use std::path::PathBuf;
+
+    let dir = TempDir::new().unwrap();
+    let gait_dir = dir.path();
+    let session_id = "test-unlock-rt".to_string();
+    let session_dir = gait_dir.join("sessions").join(&session_id);
+    std::fs::create_dir_all(&session_dir).unwrap();
+    let tx_path = session_dir.join("log.jsonl");
+
+    // Step 1: Write an Unlock event (simulating pause_for_unlock)
+    let resource_path = "/some/external/path.txt";
+    let unlock_item = pb::UnlockItem {
+        id: "unlock-rt-1".to_string(),
+        tool_name: "write".to_string(),
+        resource: resource_path.to_string(),
+        dimension: "write".to_string(),
+        preview: None,
+    };
+    wire::append(&tx_path, events::unlock(&[unlock_item])).unwrap();
+
+    // Step 2: Verify session is AwaitingUnlock
+    assert!(matches!(
+        session_state(&tx_path).unwrap(),
+        SessionState::AwaitingUnlock { .. }
+    ));
+
+    // Step 3: Write the UnlockReply with Once scope (simulating cmd_unlock once)
+    let reply_item = pb::UnlockReplyItem {
+        id: "unlock-rt-1".to_string(),
+        decision: pb::Decision::Allow as i32,
+        scope: pb::Scope::Once as i32,
+    };
+    write_unlock_reply(&tx_path, "user", vec![reply_item]).unwrap();
+
+    // Step 4: Assert gait.jsonc was NOT created (once = log only)
+    assert!(
+        !gait_dir.join("gait.jsonc").exists(),
+        "once grant must not write gait.jsonc"
+    );
+
+    // Step 5: Assert session state is now Idle
+    assert!(matches!(
+        session_state(&tx_path).unwrap(),
+        SessionState::Idle
+    ));
+
+    // Step 6: Assert ActiveUnlock projection contains the granted path
+    let evs = read_events(&tx_path).unwrap();
+    let unlock_state = active_unlock_state(&evs);
+    assert!(
+        unlock_state.once.contains(&PathBuf::from(resource_path)),
+        "once grant should be in active_unlock.once; got: {:?}",
+        unlock_state.once
+    );
+    assert!(unlock_state.session.is_empty());
+
+    // Step 7: Assert that after a TurnComplete, the once grant is cleared
+    let usage = pb::TurnTokenUsage {
+        input: 1,
+        output: 1,
+        cache_read: 0,
+        cache_write: 0,
+    };
+    wire::append(
+        &tx_path,
+        events::turn_complete(events::TurnCompleteParams {
+            usage,
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    let evs_after = read_events(&tx_path).unwrap();
+    let unlock_state_after = active_unlock_state(&evs_after);
+    assert!(
+        unlock_state_after.once.is_empty(),
+        "once grant should clear after TurnComplete"
+    );
+}
+
+#[test]
+fn write_unlock_reply_appends_and_state_becomes_idle() {
+    let dir = TempDir::new().unwrap();
+    let tx_path = dir.path().join("log.jsonl");
+
+    // Write an Unlock event first (so session_state returns AwaitingUnlock)
+    let unlock_item = pb::UnlockItem {
+        id: "item-1".to_string(),
+        tool_name: "write".to_string(),
+        resource: "/outside/path/foo.txt".to_string(),
+        dimension: "write".to_string(),
+        preview: None,
+    };
+    wire::append(&tx_path, events::unlock(&[unlock_item])).unwrap();
+    // Verify session is awaiting unlock
+    assert!(matches!(
+        session_state(&tx_path).unwrap(),
+        SessionState::AwaitingUnlock { .. }
+    ));
+
+    // Write the reply
+    let reply_item = pb::UnlockReplyItem {
+        id: "item-1".to_string(),
+        decision: pb::Decision::Allow as i32,
+        scope: pb::Scope::Once as i32,
+    };
+    write_unlock_reply(&tx_path, "user", vec![reply_item]).unwrap();
+
+    // State should now be Idle
+    assert!(matches!(
+        session_state(&tx_path).unwrap(),
+        SessionState::Idle
+    ));
+    // Log should have 2 events
+    let events = read_events(&tx_path).unwrap();
+    assert_eq!(events.len(), 2);
+    assert!(matches!(
+        crate::proto::event_kind(&events[1]),
+        Some(crate::proto::gait::log::v1::payload::Kind::UnlockReply(_))
+    ));
 }

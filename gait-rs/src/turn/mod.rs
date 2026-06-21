@@ -16,7 +16,8 @@ use crate::proto::Recorder;
 use crate::proto::{events, wire};
 use crate::session::log::{count_turn_complete, init_session, now_ms, InitSessionOpts};
 use crate::session::retrace::{
-    self, active_mutations, apply_cascade, coalesce, run_projection, ActiveRawMessages,
+    self, active_mutations, active_unlock_state, apply_cascade, coalesce, run_projection,
+    ActiveRawMessages,
 };
 use crate::session::Ingestor;
 
@@ -1007,11 +1008,26 @@ pub async fn run_turn(
         // is NOT run. In auto mode the kernel seal (EACCES) handles out-of-scope writes
         // via Task 6; the pre-check is a supervised-only UX feature.
         if !auto && sandbox_on {
+            // Build the active unlock set from the session log so that
+            // once/session grants (not persisted to config) pass through.
+            let active_unlock = {
+                let evs = ingestor.events().unwrap_or_default();
+                active_unlock_state(&evs)
+            };
             let mut pending_unlocks: Vec<pb::UnlockItem> = vec![];
             for tc in &step_tool_calls {
                 if let Some(tool) = tools.iter().find(|t| t.name() == tc.tool_name) {
                     let items = check_own_tool_scope(tc, tool.as_ref(), &codebase_path);
-                    pending_unlocks.extend(items);
+                    // Filter out items whose resource path is already granted
+                    // by a prior unlock reply (once or session scope).
+                    for item in items {
+                        let path = std::path::PathBuf::from(&item.resource);
+                        let already_granted = active_unlock.once.contains(&path)
+                            || active_unlock.session.contains(&path);
+                        if !already_granted {
+                            pending_unlocks.push(item);
+                        }
+                    }
                 }
             }
             if !pending_unlocks.is_empty() {

@@ -65,8 +65,25 @@ impl TurnSink for ReplSink {
         }
     }
     fn result(&mut self, r: &TurnResult) {
-        if matches!(r, TurnResult::Cancelled) {
-            eprint!("\x1b[2m⊘ interrupted\x1b[0m\r\n");
+        match r {
+            TurnResult::Cancelled => {
+                eprint!("\x1b[2m⊘ interrupted\x1b[0m\r\n");
+            }
+            TurnResult::Unlock { items } => {
+                eprint!(
+                    "\r\n\x1b[33msandbox: {} item(s) need unlock\x1b[0m\r\n",
+                    items.len()
+                );
+                for item in items {
+                    eprint!(
+                        "  \x1b[2m[{dim}] {resource}\x1b[0m\r\n",
+                        dim = item.dimension,
+                        resource = item.resource
+                    );
+                }
+                eprint!("  \x1b[2mrun: /unlock [once|session|global|agent]\x1b[0m\r\n");
+            }
+            _ => {}
         }
         // structured_done rendered via ReplItem::StructuredResult (existing behaviour)
     }
@@ -322,6 +339,40 @@ impl TurnSource for ReplSource {
                 continue;
             }
 
+            // /unlock [scope] — delegate to `gait unlock` for the current session.
+            // Scope defaults to "once". Mirrors /u N → gait undo.
+            if let Some(scope_str) = line.strip_prefix("/unlock") {
+                let scope = scope_str.trim();
+                let scope = if scope.is_empty() { "once" } else { scope };
+                match scope {
+                    "once" | "session" | "global" | "agent" => {
+                        let ok = Command::new(&self.gait_bin)
+                            .args([
+                                "unlock",
+                                &self.session_id,
+                                "--scope",
+                                scope,
+                                "--gait-dir",
+                                self.gait_dir.to_str().unwrap_or("."),
+                            ])
+                            .status()
+                            .map(|s| s.success())
+                            .unwrap_or(false);
+                        if !ok {
+                            eprint!(
+                                "[gait] unlock failed — check: gait status {} --gait-dir {}\r\n",
+                                self.session_id,
+                                self.gait_dir.display()
+                            );
+                        }
+                    }
+                    _ => {
+                        eprint!("[gait] usage: /unlock [once|session|global|agent]\r\n");
+                    }
+                }
+                continue;
+            }
+
             // /skillname [off] — emit a Toggle event; do NOT forward to the model.
             if let Some((skill_name, enabled)) = parse_skill_toggle(&line) {
                 let available = gait_core::skills::scan_skills(&self.gait_dir);
@@ -444,7 +495,9 @@ impl TurnSource for ReplSource {
 }
 
 /// Reserved REPL built-in prefixes that must NOT be treated as skill names.
-const BUILTIN_PREFIXES: &[&str] = &["n", "new", "q", "exit", "quit", "u", "uc", "ut", "workflow"];
+const BUILTIN_PREFIXES: &[&str] = &[
+    "n", "new", "q", "exit", "quit", "u", "uc", "ut", "workflow", "unlock", "sandbox",
+];
 
 /// Parse a REPL line as a skill-toggle command.
 ///

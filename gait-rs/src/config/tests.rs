@@ -485,3 +485,76 @@ fn gait_config_deserializes_llm_params() {
     assert_eq!(config.llm_params.max_tokens, Some(4096));
     assert_eq!(config.llm_params.temperature, Some(0.7));
 }
+
+#[test]
+fn append_sandbox_writable_creates_nested_entry() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("gait.jsonc"),
+        r#"{"model": "test/model", "sandbox": {"on": true, "writable": []}}"#,
+    )
+    .unwrap();
+
+    super::append_sandbox_writable(dir.path(), "/some/external/path").unwrap();
+
+    let raw = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
+    let val: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let writable = val["sandbox"]["writable"].as_array().unwrap();
+    assert_eq!(writable.len(), 1);
+    assert_eq!(writable[0].as_str().unwrap(), "/some/external/path");
+}
+
+#[test]
+fn append_sandbox_writable_idempotent() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("gait.jsonc"),
+        r#"{"model": "test/model", "sandbox": {"on": true, "writable": ["/already/here"]}}"#,
+    )
+    .unwrap();
+
+    super::append_sandbox_writable(dir.path(), "/already/here").unwrap();
+
+    let raw = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
+    let val: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let writable = val["sandbox"]["writable"].as_array().unwrap();
+    assert_eq!(writable.len(), 1); // no duplicate
+}
+
+#[test]
+fn append_sandbox_writable_creates_sandbox_block_if_absent() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("gait.jsonc"), r#"{"model": "test/model"}"#).unwrap();
+
+    super::append_sandbox_writable(dir.path(), "/new/path").unwrap();
+
+    let raw = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
+    let val: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let writable = val["sandbox"]["writable"].as_array().unwrap();
+    assert_eq!(writable[0].as_str().unwrap(), "/new/path");
+}
+
+#[test]
+fn append_sandbox_readable_creates_nested_entry() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"m"}"#).unwrap();
+    super::append_sandbox_readable(dir.path(), "/read/path").unwrap();
+    let raw = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
+    let val: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(
+        val["sandbox"]["readable"][0].as_str().unwrap(),
+        "/read/path"
+    );
+}
+
+#[test]
+fn append_sandbox_network_host_creates_nested_entry() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"m"}"#).unwrap();
+    super::append_sandbox_network_host(dir.path(), "api.example.com").unwrap();
+    let raw = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
+    let val: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    // network is an array of host strings when it was formerly Off
+    let hosts = val["sandbox"]["network"].as_array().unwrap();
+    assert_eq!(hosts[0].as_str().unwrap(), "api.example.com");
+}

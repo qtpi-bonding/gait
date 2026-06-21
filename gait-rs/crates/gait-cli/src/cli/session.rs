@@ -367,6 +367,134 @@ pub fn cmd_deny(argv: &[String]) {
 
 #[derive(Parser)]
 #[command(no_binary_name = true)]
+struct UnlockArgs {
+    session_id: String,
+    /// Grant scope: once (default, log only) | session (log only) | global (→ gait.jsonc) | agent (→ agent file)
+    #[arg(long, default_value = "once")]
+    scope: String,
+    /// Agent name for agent-scoped grants (resolves to agents/<name>.md)
+    #[arg(long)]
+    agent: Option<String>,
+    #[arg(long, env = "GAIT_DIR")]
+    gait_dir: PathBuf,
+}
+
+pub fn cmd_unlock(argv: &[String]) {
+    use gait_core::config::{
+        append_sandbox_network_host, append_sandbox_readable, append_sandbox_writable,
+    };
+    use gait_core::proto::gait::log::v1 as pb;
+    use gait_core::session::log::{session_state, write_unlock_reply, SessionState};
+
+    let args = UnlockArgs::parse_from(argv);
+
+    let scope = match args.scope.as_str() {
+        "global" => pb::Scope::Global,
+        "agent" => pb::Scope::Agent,
+        "session" => pb::Scope::Session,
+        _ => pb::Scope::Once,
+    };
+
+    let tx_path = args
+        .gait_dir
+        .join("sessions")
+        .join(&args.session_id)
+        .join("log.jsonl");
+
+    let state = match session_state(&tx_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[gait] error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let items = match state {
+        SessionState::AwaitingUnlock { items } => items,
+        _ => {
+            eprintln!("[gait] no pending unlock for session {}", args.session_id);
+            std::process::exit(1);
+        }
+    };
+
+    if items.is_empty() {
+        eprintln!(
+            "[gait] no pending unlock items for session {}",
+            args.session_id
+        );
+        return;
+    }
+
+    // For global grants, persist to config first
+    if matches!(scope, pb::Scope::Global) {
+        for item in &items {
+            let result = match item.dimension.as_str() {
+                "write" => append_sandbox_writable(&args.gait_dir, &item.resource),
+                "read" => append_sandbox_readable(&args.gait_dir, &item.resource),
+                "network" => append_sandbox_network_host(&args.gait_dir, &item.resource),
+                other => {
+                    eprintln!(
+                        "[gait] warning: unknown dimension {:?}, skipping config write",
+                        other
+                    );
+                    continue;
+                }
+            };
+            if let Err(e) = result {
+                eprintln!("[gait] warning: could not persist grant to config: {e}");
+            }
+        }
+    } else if matches!(scope, pb::Scope::Agent) {
+        // Agent-scoped: write to agent gait_dir sandbox block
+        if let Some(agent_name) = &args.agent {
+            use gait_core::agent_frontmatter::{resolve_markdown_context_path, MarkdownKind};
+            let agent_path =
+                resolve_markdown_context_path(&args.gait_dir, MarkdownKind::Agent, agent_name);
+            if let Some(parent) = agent_path.parent() {
+                for item in &items {
+                    let result = match item.dimension.as_str() {
+                        "write" => append_sandbox_writable(parent, &item.resource),
+                        "read" => append_sandbox_readable(parent, &item.resource),
+                        "network" => append_sandbox_network_host(parent, &item.resource),
+                        _ => continue,
+                    };
+                    if let Err(e) = result {
+                        eprintln!("[gait] warning: could not persist agent grant: {e}");
+                    }
+                }
+            }
+        } else {
+            eprintln!(
+                "[gait] warning: --agent required for agent-scope grants; writing to log only"
+            );
+        }
+    }
+
+    // Always write the UnlockReply to the log
+    let reply_items: Vec<pb::UnlockReplyItem> = items
+        .iter()
+        .map(|it| pb::UnlockReplyItem {
+            id: it.id.clone(),
+            decision: pb::Decision::Allow as i32,
+            scope: scope as i32,
+        })
+        .collect();
+
+    if let Err(e) = write_unlock_reply(&tx_path, "user", reply_items) {
+        eprintln!("[gait] error: {}", e);
+        std::process::exit(1);
+    }
+
+    eprintln!(
+        "[gait] unlocked {} item(s) for session {} (scope: {})",
+        items.len(),
+        args.session_id,
+        args.scope,
+    );
+}
+
+#[derive(Parser)]
+#[command(no_binary_name = true)]
 struct StatusArgs {
     session_id: String,
     #[arg(long)]
