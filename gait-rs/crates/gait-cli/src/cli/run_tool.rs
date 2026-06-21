@@ -215,14 +215,11 @@ fn build_scope_from_impulse(impulse: &Impulse) -> SandboxScope {
         })
         .unwrap_or(NetworkPolicy::Deny);
 
-    let mut read_all = s.read_all;
-    if s.readable.is_empty() {
-        // Default to read_all=true when the brain ships no explicit readable list —
-        // Phase 2d will tighten to false and emit per-path subpath rules. A read-only
-        // default (read_all=false, empty readable) would deny the very reads the brain
-        // asked for, breaking tools even in the no-Impulse-requested fallback path.
-        read_all = true;
-    }
+    // Phase 2d: brain computes read_all (from cfg.readable.contains("*")) and ships it
+    // in Impulse. Honor whatever the brain sends: with read_all=false + empty readable,
+    // platform defaults (dyld, /usr, /private, /etc, /dev, /System, /Library) + metadata
+    // still apply, sufficient for tools like webfetch that only exec + TLS/DNS.
+    let read_all = s.read_all;
 
     SandboxScope {
         readable: s.readable.iter().map(PathBuf::from).collect(),
