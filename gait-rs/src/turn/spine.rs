@@ -221,10 +221,26 @@ pub async fn run_tool_as_spine(
     let scope = crate::sandbox::ceiling::bound_request(&impulse.tool, sandbox_cfg, codebase, &jail);
     let requested = scope_to_proto(&scope);
 
+    // Resolve cwd: if the brain sent a cwd in the Impulse, use it; otherwise
+    // read active_cwd from the session log (same as SubprocessSynapse did).
+    // RelaySynapse sends empty cwd because the brain doesn't read the session
+    // log for cwd — the spine owns it.
+    let cwd = if impulse.cwd.is_empty() {
+        let events = crate::session::log::read_events(
+            &gait_dir.join("sessions").join(session_id).join("log.jsonl"),
+        )
+        .unwrap_or_default();
+        crate::session::retrace::active_cwd(&events, codebase)
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        impulse.cwd.clone()
+    };
+
     let impulse_with_scope = Impulse {
         tool: impulse.tool.clone(),
         args: impulse.args,
-        cwd: impulse.cwd,
+        cwd,
         requested: Some(requested),
     };
     let bytes = impulse_with_scope.encode_to_vec();

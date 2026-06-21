@@ -19,10 +19,10 @@ struct RunToolArgs {
     session: String,
     #[arg(long)]
     tool: String,
-    /// When false, skip platform_sandbox().apply() and use NoopSandbox instead.
+    /// When "false", skip platform_sandbox().apply() and use NoopSandbox instead.
     /// Set by the spine based on the per-turn sandbox engagement flag.
     #[arg(long, default_value = "true")]
-    seal: bool,
+    seal: String,
 }
 
 pub async fn cmd_run_tool(argv: &[String]) {
@@ -33,7 +33,7 @@ pub async fn cmd_run_tool(argv: &[String]) {
         codebase: a.codebase,
         session: a.session,
         tool: a.tool,
-        seal: a.seal,
+        seal: a.seal != "false",
     };
 
     run_hand(config).await;
