@@ -236,7 +236,7 @@ impl Tool for WebfetchTool {
             let host = reqwest::Url::parse(&params.url)
                 .ok()
                 .and_then(|u: reqwest::Url| u.host_str().map(|h: &str| h.to_lowercase()));
-            let permitted = host.as_deref().map_or(false, |h| {
+            let permitted = host.as_deref().is_some_and(|h| {
                 allowlist.iter().any(|allowed| {
                     let allowed = allowed.to_lowercase();
                     allowed == h
