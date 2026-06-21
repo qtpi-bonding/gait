@@ -88,7 +88,9 @@ impl NerveWriter {
     /// Write a one-way signal that does NOT expect a reply (e.g. `Append`).
     pub async fn send_one_way(&self, signal: &Signal) -> anyhow::Result<()> {
         let mut w = self.inner.lock().await;
-        write_signal(&mut *w, signal).await
+        write_signal(&mut *w, signal).await?;
+        w.flush().await.context("flush nerve")?;
+        Ok(())
     }
 }
 

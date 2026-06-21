@@ -183,7 +183,52 @@ pub async fn relay_brain_turn(
     }
     sink.end_turn();
 
+    // Drop the brain's stdin writer to signal EOF — the brain's Nerve reader
+    // task is blocking on read_signal from stdin and will exit on EOF, which
+    // lets the brain's tokio runtime shut down and the process exit.
+    drop(child_stdin);
+
     let _ = child.wait().await;
+
+    if let Some(result) = &run_result {
+        // The spine is the sole gait-dir writer. The brain skipped
+        // commit_session and checkpoint_codebase (writable: []) — the spine
+        // does both here, after the brain exits, so the session worktree and
+        // shadow checkpoint repo reflect the transcript at this exitable
+        // boundary.
+        let msg = match result {
+            crate::turn::TurnResult::Done { .. } => {
+                format!("session({}): turn complete", session_id)
+            }
+            crate::turn::TurnResult::Cancelled => {
+                format!("session({}): cancelled", session_id)
+            }
+            crate::turn::TurnResult::Permissions => {
+                format!("session({}): permissions", session_id)
+            }
+            crate::turn::TurnResult::Clarify { .. } => {
+                format!("session({}): clarify", session_id)
+            }
+            crate::turn::TurnResult::Inform { .. } => {
+                format!("session({}): inform", session_id)
+            }
+            crate::turn::TurnResult::Unlock { .. } => {
+                format!("session({}): unlock", session_id)
+            }
+        };
+
+        // Checkpoint the codebase (shadow repo in gait-dir). Best-effort — a
+        // failure means `gait rewind` won't have a snapshot for this turn,
+        // but the turn itself is complete.
+        let events = crate::session::log::read_events(&log_path).unwrap_or_default();
+        let turn_n = crate::session::log::count_turn_complete(&events) as u32;
+        let _ = repos
+            .checkpoints
+            .checkpoint(gait_dir, session_id, codebase, turn_n);
+
+        // Commit the transcript to the session worktree.
+        let _ = repos.traces.commit_session(gait_dir, session_id, &msg);
+    }
 
     if let Some(result) = run_result {
         sink.result(&result);

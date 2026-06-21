@@ -14,6 +14,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
 use crate::embed::{LoopConfig, TurnDriver};
@@ -278,8 +279,12 @@ pub async fn run_brain(
         })),
     };
     nerve_writer.send_one_way(&terminated).await.ok();
+    // Drop the nerve writer to close stdout — this signals EOF to the spine's
+    // relay loop, which breaks on pipe-closed. The spine then drops child_stdin
+    // to signal EOF to the brain's nerve reader, allowing the brain to exit.
+    drop(nerve_writer);
+    let _ = tokio::io::stdout().flush().await;
 }
-
 // ── BrainSink ─────────────────────────────────────────────────────────────────
 
 /// A TurnSink that routes output to stderr (brain's stdout is the Nerve pipe)

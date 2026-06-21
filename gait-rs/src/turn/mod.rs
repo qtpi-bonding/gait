@@ -971,13 +971,17 @@ pub async fn run_turn(
             let message = step_text.clone();
             let events_now = ingestor.events()?;
             let turn_n = count_turn_complete(&events_now) as u32 + 1;
-            let code_checkpoint = checkpoint_codebase(
-                repos.checkpoints.as_ref(),
-                &gait_dir,
-                &session_id,
-                &codebase_path,
-                turn_n,
-            );
+            let code_checkpoint = if relay.is_none() {
+                checkpoint_codebase(
+                    repos.checkpoints.as_ref(),
+                    &gait_dir,
+                    &session_id,
+                    &codebase_path,
+                    turn_n,
+                )
+            } else {
+                None // spine will checkpoint after the brain exits
+            };
             let changes = code_checkpoint.as_ref().and_then(|sha| {
                 repos
                     .checkpoints
@@ -1511,13 +1515,17 @@ pub async fn run_turn(
                         }
                         let events_now = ingestor.events()?;
                         let turn_n = count_turn_complete(&events_now) as u32 + 1;
-                        let code_checkpoint = checkpoint_codebase(
-                            repos.checkpoints.as_ref(),
-                            &gait_dir,
-                            &session_id,
-                            &codebase_path,
-                            turn_n,
-                        );
+                        let code_checkpoint = if relay.is_none() {
+                            checkpoint_codebase(
+                                repos.checkpoints.as_ref(),
+                                &gait_dir,
+                                &session_id,
+                                &codebase_path,
+                                turn_n,
+                            )
+                        } else {
+                            None // spine will checkpoint after the brain exits
+                        };
                         let changes = code_checkpoint.as_ref().and_then(|sha| {
                             repos
                                 .checkpoints
