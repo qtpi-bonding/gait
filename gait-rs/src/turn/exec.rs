@@ -43,10 +43,10 @@ pub(super) async fn execute_tool_call(
     tools: &[Box<dyn Tool>],
     emitter: &Recorder,
     approval_prefix: Option<String>,
-    codebase: &std::path::Path,
-    gait_dir: &std::path::Path,
-    session_id: &str,
-    sandbox_on: bool,
+    _codebase: &std::path::Path,
+    _gait_dir: &std::path::Path,
+    _session_id: &str,
+    _sandbox_on: bool,
     relay: Option<&crate::turn::nerve::NerveWriter>,
 ) -> anyhow::Result<ToolExecResult> {
     let id = tc.tool_call_id.clone();
@@ -68,121 +68,95 @@ pub(super) async fn execute_tool_call(
     // `synapse_denied` carries a seal-denial signal from the hand (Phase 2c Task 6):
     // set when the hand detects EACCES/EPERM in a `shell` command's output while
     // running under Seatbelt. The turn loop inspects it after execute_tool_call returns.
-    let (raw, duration, process, synapse_denied) = match tools
-        .iter()
-        .find(|t| t.name() == tc.tool_name)
-    {
-        Some(t) => {
-            let started = std::time::Instant::now();
-            // `denied` is extracted only on the world-tool (synapse) path; it stays
-            // None on the brain path (control/transcript tools never touch the kernel).
-            let (res, denied) = if t.access().touches_world() {
-                // Hand path: run via the synapse, then replay the returned events
-                // into the real log (between ToolCall and ToolResult).
-                // Fall back to InProcessSynapse when not running as the `gait` binary
-                // (test binaries have different names and lack the `__run-tool` subcommand).
-                // The subprocess path is covered end-to-end by gait-bin/tests/run_tool_hand.rs.
-                use crate::turn::synapse::{ScopeRequest, Synapse as _};
-                let scope_req = ScopeRequest { access: t.access() };
-                let fired = if let Some(nerve_writer) = relay {
-                    // Phase 3: brain is under a spine — delegate via Nerve.
-                    use crate::turn::synapse::RelaySynapse;
-                    RelaySynapse {
-                        writer: nerve_writer.clone(),
-                    }
-                    .fire(t.as_ref(), tc.args.clone(), scope_req)
-                    .await
-                } else {
-                    let is_gait_binary = std::env::current_exe()
-                        .ok()
-                        .and_then(|p| p.file_stem().map(|n| n == "gait"))
-                        .unwrap_or(false);
-                    if !is_gait_binary {
-                        eprintln!(
-                            "[gait] world tool '{}' running in-process (binary-name guard did not match 'gait')",
-                            tc.tool_name
-                        );
-                    }
-                    if is_gait_binary {
-                        use crate::session::log::read_events;
-                        use crate::session::retrace::active_cwd;
-                        use crate::turn::synapse::SubprocessSynapse;
-                        let events = read_events(&emitter.tx_path).unwrap_or_default();
-                        let cwd = active_cwd(&events, codebase);
-                        let syn = SubprocessSynapse {
-                            gait_dir: gait_dir.to_path_buf(),
-                            codebase: codebase.to_path_buf(),
-                            session_id: session_id.to_string(),
-                            cwd: cwd.to_string_lossy().into_owned(),
-                            sandbox_cfg: crate::config::SandboxConfig::default(),
-                            seal: sandbox_on,
-                        };
-                        syn.fire(t.as_ref(), tc.args.clone(), scope_req).await
+    let (raw, duration, process, synapse_denied) =
+        match tools.iter().find(|t| t.name() == tc.tool_name) {
+            Some(t) => {
+                let started = std::time::Instant::now();
+                // `denied` is extracted only on the world-tool (synapse) path; it stays
+                // None on the brain path (control/transcript tools never touch the kernel).
+                let (res, denied) = if t.access().touches_world() {
+                    // Hand path: run via the synapse, then replay the returned events
+                    // into the real log (between ToolCall and ToolResult).
+                    // Fall back to InProcessSynapse when not running as the `gait` binary
+                    // (test binaries have different names and lack the `__run-tool` subcommand).
+                    // The subprocess path is covered end-to-end by gait-bin/tests/run_tool_hand.rs.
+                    use crate::turn::synapse::{ScopeRequest, Synapse as _};
+                    let scope_req = ScopeRequest { access: t.access() };
+                    let fired = if let Some(nerve_writer) = relay {
+                        // Phase 3: brain is under a spine — delegate via Nerve.
+                        use crate::turn::synapse::RelaySynapse;
+                        RelaySynapse {
+                            writer: nerve_writer.clone(),
+                        }
+                        .fire(t.as_ref(), tc.args.clone(), scope_req)
+                        .await
                     } else {
+                        // No spine (tests, direct cargo test) — run in-process.
+                        // SubprocessSynapse was removed; the production path always
+                        // has a relay handle. The in-process path covers tests.
                         use crate::turn::synapse::InProcessSynapse;
                         InProcessSynapse
                             .fire(t.as_ref(), tc.args.clone(), scope_req)
                             .await
-                    }
-                };
-                match fired {
-                    Ok((value, events, denied_item)) => {
-                        for event in events {
-                            if let Some(body) = event.body {
-                                emitter.record(body)?;
+                    };
+                    match fired {
+                        Ok((value, events, denied_item)) => {
+                            for event in events {
+                                if let Some(body) = event.body {
+                                    emitter.record(body)?;
+                                }
                             }
+                            (Ok(value), denied_item)
                         }
-                        (Ok(value), denied_item)
+                        Err(e) => (Err(e), None),
                     }
-                    Err(e) => (Err(e), None),
-                }
-            } else {
-                // Brain path: control/transcript tool, runs in-process as before.
-                (t.execute(tc.args.clone(), emitter).await, None)
-            };
-            let elapsed = started.elapsed();
-            let duration = Some(pbjson_types::Duration {
-                seconds: elapsed.as_secs() as i64,
-                nanos: elapsed.subsec_nanos() as i32,
-            });
-            match res {
-                Ok(v) => {
-                    // Process-tool shape (set by shell today): unwrap to model-facing
-                    // text and lift process metadata. The model never sees the JSON
-                    // wrapper — turn.rs is the single place that bridges Value → ToolResult.
-                    if let (Some(output), Some(exit_code), Some(timed_out)) =
-                        (v.get("output"), v.get("exit_code"), v.get("timed_out"))
-                    {
-                        let output = output.as_str().unwrap_or("").to_string();
-                        let exit_code = exit_code.as_i64().unwrap_or(0) as i32;
-                        let timed_out = timed_out.as_bool().unwrap_or(false);
-                        (
-                            output,
-                            duration,
-                            Some(pb::ProcessResult {
-                                exit_code,
-                                timed_out,
-                            }),
-                            denied,
-                        )
-                    } else if v.is_string() {
-                        (
-                            v.as_str()
-                                .expect("guarded by v.is_string() check above")
-                                .to_owned(),
-                            duration,
-                            None,
-                            denied,
-                        )
-                    } else {
-                        (v.to_string(), duration, None, denied)
+                } else {
+                    // Brain path: control/transcript tool, runs in-process as before.
+                    (t.execute(tc.args.clone(), emitter).await, None)
+                };
+                let elapsed = started.elapsed();
+                let duration = Some(pbjson_types::Duration {
+                    seconds: elapsed.as_secs() as i64,
+                    nanos: elapsed.subsec_nanos() as i32,
+                });
+                match res {
+                    Ok(v) => {
+                        // Process-tool shape (set by shell today): unwrap to model-facing
+                        // text and lift process metadata. The model never sees the JSON
+                        // wrapper — turn.rs is the single place that bridges Value → ToolResult.
+                        if let (Some(output), Some(exit_code), Some(timed_out)) =
+                            (v.get("output"), v.get("exit_code"), v.get("timed_out"))
+                        {
+                            let output = output.as_str().unwrap_or("").to_string();
+                            let exit_code = exit_code.as_i64().unwrap_or(0) as i32;
+                            let timed_out = timed_out.as_bool().unwrap_or(false);
+                            (
+                                output,
+                                duration,
+                                Some(pb::ProcessResult {
+                                    exit_code,
+                                    timed_out,
+                                }),
+                                denied,
+                            )
+                        } else if v.is_string() {
+                            (
+                                v.as_str()
+                                    .expect("guarded by v.is_string() check above")
+                                    .to_owned(),
+                                duration,
+                                None,
+                                denied,
+                            )
+                        } else {
+                            (v.to_string(), duration, None, denied)
+                        }
                     }
+                    Err(e) => (format!("error: {e}"), duration, None, denied),
                 }
-                Err(e) => (format!("error: {e}"), duration, None, denied),
             }
-        }
-        None => (format!("unknown tool: {}", tc.tool_name), None, None, None),
-    };
+            None => (format!("unknown tool: {}", tc.tool_name), None, None, None),
+        };
     let output = match approval_prefix {
         Some(prefix) => format!("{}\n{}", prefix, raw),
         None => raw,
