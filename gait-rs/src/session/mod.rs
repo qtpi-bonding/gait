@@ -5,12 +5,10 @@ pub mod ingestor;
 pub mod log;
 pub mod retrace;
 pub use ingestor::Ingestor;
-pub mod session_json;
 pub mod session_meta;
 pub mod session_obj;
 pub use log::*;
 pub use retrace::messages_from_path;
-pub use session_json::{read_session_json, write_session_json, SessionJson};
 pub use session_meta::{read_session_meta, SessionMeta};
 pub use session_obj::Session;
 

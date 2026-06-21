@@ -1,7 +1,6 @@
 use crate::config::load_config;
 use crate::proto::{events, wire};
-use crate::session::log::{init_session, now_ms, InitSessionOpts};
-use crate::session::session_json::{write_session_json, SessionJson};
+use crate::session::log::{init_session, InitSessionOpts};
 use crate::tools::ToolError;
 use crate::tools::{make_schema, ToolCtx};
 use crate::types::Tool;
@@ -76,16 +75,6 @@ impl Tool for SpawnAgentTool {
             .create_session_worktree(&self.ctx.gait_dir, &new_id)
             .map_err(crate::tools::ToolError::Internal)?;
 
-        let sj = SessionJson {
-            id: new_id.clone(),
-            assigned_by: Some(self.ctx.session_id.clone()),
-            created_at: now_ms(),
-            codebase_path: Some(self.ctx.codebase_path.to_string_lossy().to_string()),
-            agent_name: None,
-            system_prompt: None,
-        };
-        write_session_json(&self.ctx.gait_dir, &sj).map_err(crate::tools::ToolError::Internal)?;
-
         let config = load_config(&self.ctx.gait_dir);
         let codebase_hash = self
             .repos
@@ -145,7 +134,7 @@ mod tests {
     use super::*;
     use crate::proto::gait::log::v1::{event, payload};
     use crate::session::log::read_events;
-    use crate::session::session_json::read_session_json;
+    use crate::session::read_session_meta;
     use crate::test_utils::init_git_repo;
     use tempfile::TempDir;
 
@@ -211,8 +200,8 @@ mod tests {
         assert_eq!(user_turn.content, "implement feature X");
         assert_eq!(user_turn.from.as_deref(), Some("agent:scaller001"));
 
-        let sj = read_session_json(ws.path(), new_id).unwrap();
-        assert_eq!(sj.assigned_by.as_deref(), Some("scaller001"));
+        let meta = read_session_meta(ws.path(), new_id).unwrap();
+        assert_eq!(meta.assigned_by.as_deref(), Some("scaller001"));
     }
 
     #[tokio::test]

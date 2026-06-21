@@ -1135,7 +1135,7 @@ async fn run_turn_records_code_checkpoint_for_git_codebase() {
 }
 
 #[tokio::test]
-async fn run_turn_persists_codebase_path_in_session_json() {
+async fn run_turn_persists_codebase_path_in_session_start() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
 
@@ -1189,15 +1189,15 @@ async fn run_turn_persists_codebase_path_in_session_json() {
     .await
     .unwrap();
 
-    // After the turn, session.json should have codebase_path persisted
-    use crate::session::session_json::read_session_json;
-    let sj = read_session_json(ws.path(), session_id).unwrap();
+    // After the turn, the log's SessionStart should carry codebase_path.
+    use crate::session::read_session_meta;
+    let meta = read_session_meta(ws.path(), session_id).unwrap();
     assert!(
-        sj.codebase_path.is_some(),
-        "codebase_path should be persisted in session.json"
+        meta.codebase_path.is_some(),
+        "codebase_path should be persisted in the log SessionStart"
     );
     assert_eq!(
-        sj.codebase_path.as_deref(),
+        meta.codebase_path.as_deref(),
         Some(codebase_dir.path().to_string_lossy().as_ref()),
         "codebase_path value should match the input"
     );

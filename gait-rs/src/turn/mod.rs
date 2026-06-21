@@ -14,7 +14,7 @@ use crate::config::McpToolDef;
 use crate::proto::gait::log::v1::TurnTokenUsage;
 use crate::proto::Recorder;
 use crate::proto::{events, wire};
-use crate::session::log::{count_turn_complete, init_session, now_ms, InitSessionOpts};
+use crate::session::log::{count_turn_complete, init_session, InitSessionOpts};
 use crate::session::retrace::{
     self, active_mutations, active_unlock_state, apply_cascade, coalesce, run_projection,
     ActiveRawMessages,
@@ -337,20 +337,6 @@ pub async fn run_turn(
         repos
             .checkpoints
             .init(&gait_dir, &session_id, &codebase_path)?;
-
-        // Persist codebase_path (write-once) so `gait rewind` can locate the codebase.
-        {
-            use crate::session::session_json::{read_session_json, write_session_json};
-            let mut sj = read_session_json(&gait_dir, &session_id)?;
-            if sj.codebase_path.is_none() {
-                sj.id = session_id.clone();
-                if sj.created_at == 0 {
-                    sj.created_at = now_ms();
-                }
-                sj.codebase_path = Some(codebase_path.to_string_lossy().to_string());
-                write_session_json(&gait_dir, &sj)?;
-            }
-        }
     }
 
     let session_dir = gait_dir.join("sessions").join(&session_id);

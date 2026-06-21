@@ -59,7 +59,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn load_defaults_when_no_session_json() {
+    fn load_defaults_when_no_session_log() {
         let dir = TempDir::new().unwrap();
         let s = Session::load(
             dir.path().to_path_buf(),

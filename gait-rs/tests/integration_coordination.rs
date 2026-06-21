@@ -1,7 +1,7 @@
 use gait_core::proto::gait::log::v1::{event, payload, Event};
 use gait_core::{
     session::log::read_events,
-    session::session_json::read_session_json,
+    session::read_session_meta,
     tools::builtin_tools,
     turn::{run_turn, TurnResult},
 };
@@ -165,12 +165,12 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
     }
     let child_id = child_id.expect("child session should have been created");
 
-    // Verify child session.json has assigned_by = sparent001
-    let sj = read_session_json(ws.path(), &child_id).unwrap();
+    // Verify child log's SessionStart has assigned_by = sparent001
+    let meta = read_session_meta(ws.path(), &child_id).unwrap();
     assert_eq!(
-        sj.assigned_by.as_deref(),
+        meta.assigned_by.as_deref(),
         Some("sparent001"),
-        "child session.json must have assigned_by"
+        "child SessionStart must have assigned_by"
     );
 
     // Verify child transcript has user_turn with from = agent:sparent001

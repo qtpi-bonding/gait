@@ -59,22 +59,7 @@ pub async fn relay_brain_turn(
     // 2. Checkpoint repo init (idempotent — checks if HEAD exists).
     repos.checkpoints.init(gait_dir, session_id, codebase)?;
 
-    // 3. session.json: persist codebase_path write-once.
-    {
-        use crate::session::log::now_ms;
-        use crate::session::session_json::{read_session_json, write_session_json};
-        let mut sj = read_session_json(gait_dir, session_id)?;
-        if sj.codebase_path.is_none() {
-            sj.id = session_id.to_string();
-            if sj.created_at == 0 {
-                sj.created_at = now_ms();
-            }
-            sj.codebase_path = Some(codebase.to_string_lossy().to_string());
-            write_session_json(gait_dir, &sj)?;
-        }
-    }
-
-    // 4. Session lock — held for the duration of the brain process.
+    // 3. Session lock — held for the duration of the brain process.
     let _lock = crate::turn::SessionLock::acquire(&session_dir)?;
 
     // 5. SessionStart event — write once per session (idempotent via event check).
