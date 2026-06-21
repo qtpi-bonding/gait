@@ -52,6 +52,7 @@ struct InformArg {
     context: Option<String>,
 }
 
+pub mod brain;
 mod curate;
 mod exec;
 mod gate;

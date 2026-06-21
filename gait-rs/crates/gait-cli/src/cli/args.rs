@@ -52,12 +52,41 @@ pub async fn cmd_spine(argv: &[String]) {
 }
 
 pub async fn cmd_brain(argv: &[String]) {
+    use clap::Parser;
+    use std::sync::Arc;
+
+    use crate::cli::run::RunArgs;
+    use gait_core::turn::brain::{run_brain, BrainConfig};
+
     let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
         eprintln!("[gait] {e}");
         std::process::exit(1);
     });
     let codebase = resolve_codebase(argv);
-    crate::cli::spine::cmd_brain(argv, gait_dir, codebase).await
+    let args = RunArgs::parse_from(argv);
+
+    let api_key = std::env::var("GAIT_BRAIN_API_KEY").ok();
+
+    let workflow_runner: Option<Arc<dyn gait_core::workflow_runner::WorkflowRunner>> =
+        Some(Arc::new(gait_workflow::GaitWorkflowRunner::new(
+            gait_dir.clone(),
+            codebase.clone(),
+        )));
+
+    let config = BrainConfig {
+        session_id: args.session_id,
+        auto: args.auto,
+        model_override: args.model_override,
+        agent_name: args.agent_name,
+        allow: args.allow,
+        deny: args.deny,
+        max_iter: args.max_iter,
+        sandbox_locked: args.sandbox_locked,
+        no_sandbox: args.no_sandbox,
+        sandbox: args.sandbox,
+    };
+
+    run_brain(config, gait_dir, codebase, api_key, workflow_runner).await;
 }
 
 #[cfg(test)]
