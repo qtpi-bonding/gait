@@ -195,6 +195,7 @@ impl TurnDriver for ReplDriver {
             preview_policy: self.config.preview,
             cancel: Some(token),
             sandbox_on: self.shared.borrow().sandbox_on,
+            sandbox_cfg: self.config.sandbox.clone(),
             relay: None,
         }
     }

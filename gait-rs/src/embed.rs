@@ -33,12 +33,8 @@ pub struct LoopConfig {
     pub max_iter: Option<usize>,
     pub cancel: Option<tokio_util::sync::CancellationToken>,
     pub preview_policy: crate::config::PreviewPolicy,
-    /// Whether the per-call Seatbelt/Landlock seal is engaged this turn.
-    /// Defaults to `true` (config default); overridden by `--sandbox`/`--no-sandbox`
-    /// or the `/sandbox on|off` REPL toggle.
     pub sandbox_on: bool,
-    /// Phase 3 Task 4a: when Some, execute_tool_call uses RelaySynapse.
-    /// None for direct (non-spine) runs; set by BrainDriver::turn_config.
+    pub sandbox_cfg: crate::config::SandboxConfig,
     pub relay: Option<crate::turn::nerve::NerveWriter>,
 }
 
@@ -125,6 +121,7 @@ pub async fn run_loop(
             preview_policy: cfg.preview_policy,
             cancel: cfg.cancel,
             sandbox_on: cfg.sandbox_on,
+            sandbox_cfg: cfg.sandbox_cfg.clone(),
             relay: cfg.relay,
         };
         let session_for_turn = session.clone();

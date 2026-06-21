@@ -120,6 +120,10 @@ pub struct TurnInput {
     pub preview_policy: crate::config::PreviewPolicy,
     pub cancel: Option<tokio_util::sync::CancellationToken>,
     pub sandbox_on: bool,
+    /// The sandbox config from gait.jsonc — used by the pre-check
+    /// (`check_own_tool_scope`) to respect user-configured `readable`/`writable`
+    /// entries instead of always using defaults.
+    pub sandbox_cfg: crate::config::SandboxConfig,
     /// Phase 3 Task 4a: when Some, execute_tool_call uses RelaySynapse.
     /// None for direct runs (spine path sets this from LoopConfig).
     pub relay: Option<crate::turn::nerve::NerveWriter>,
@@ -319,6 +323,7 @@ pub async fn run_turn(
     let preview_policy = input.preview_policy;
     let cancel = input.cancel;
     let sandbox_on = input.sandbox_on;
+    let sandbox_cfg = input.sandbox_cfg;
     let relay = input.relay;
 
     // When running under a spine (relay.is_some()), the spine performs all
@@ -1051,7 +1056,8 @@ pub async fn run_turn(
             let mut pending_unlocks: Vec<pb::UnlockItem> = vec![];
             for tc in &step_tool_calls {
                 if let Some(tool) = tools.iter().find(|t| t.name() == tc.tool_name) {
-                    let items = check_own_tool_scope(tc, tool.as_ref(), &codebase_path);
+                    let items =
+                        check_own_tool_scope(tc, tool.as_ref(), &codebase_path, &sandbox_cfg);
                     // Filter out items whose resource path is already granted
                     // by a prior unlock reply (once or session scope).
                     for item in items {
@@ -1793,15 +1799,11 @@ pub async fn run_turn(
 /// Returns a list of `UnlockItem`s — one per out-of-scope target. Returns an
 /// empty vec when all targets are within scope (or the tool exposes no resolvable
 /// targets via `scope_targets`).
-///
-/// Uses `SandboxConfig::default()` for the ceiling (no extra config-level
-/// widening beyond codebase + temp_jail). The `temp_jail` path is `/tmp/gait-jail`
-/// as a placeholder — for the pre-check we only care whether the target is under
-/// the codebase, which `compute_scope` delivers correctly for default config.
 fn check_own_tool_scope(
     tc: &ToolCall,
     tool: &dyn Tool,
     codebase: &std::path::Path,
+    sandbox_cfg: &crate::config::SandboxConfig,
 ) -> Vec<pb::UnlockItem> {
     use crate::sandbox::ceiling::compute_scope;
     use crate::types::Dimension;
@@ -1812,8 +1814,7 @@ fn check_own_tool_scope(
     }
 
     let temp_jail = std::path::Path::new("/tmp/gait-jail");
-    let cfg = crate::config::SandboxConfig::default();
-    let ceiling = compute_scope(tool.access(), &cfg, codebase, temp_jail);
+    let ceiling = compute_scope(tool.access(), sandbox_cfg, codebase, temp_jail);
 
     let mut items = vec![];
     for (path, dim) in targets {

@@ -220,6 +220,7 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
         max_iter: config.max_iter,
         preview_policy: config.preview,
         sandbox_on: config.sandbox.on,
+        sandbox_cfg: config.sandbox.clone(),
     };
 
     if let Err(e) = gait_core::embed::run_loop(
@@ -255,6 +256,7 @@ struct CliDriver {
     max_iter: Option<usize>,
     preview_policy: gait_core::config::PreviewPolicy,
     sandbox_on: bool,
+    sandbox_cfg: gait_core::config::SandboxConfig,
 }
 
 #[async_trait::async_trait(?Send)]
@@ -289,6 +291,7 @@ impl gait_core::embed::TurnDriver for CliDriver {
             preview_policy: self.preview_policy,
             cancel: None,
             sandbox_on: self.sandbox_on,
+            sandbox_cfg: self.sandbox_cfg.clone(),
             relay: None,
         }
     }

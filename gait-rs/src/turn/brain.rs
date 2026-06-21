@@ -237,6 +237,7 @@ pub async fn run_brain(
         max_iter: cfg.max_iter,
         preview_policy: cfg.preview,
         sandbox_on: cfg.sandbox.on,
+        sandbox_cfg: cfg.sandbox.clone(),
         nerve_writer: nerve_writer.clone(),
         event_tx,
         stream_fwd_tx,
@@ -330,6 +331,7 @@ struct BrainDriver {
     max_iter: Option<usize>,
     preview_policy: crate::config::PreviewPolicy,
     sandbox_on: bool,
+    sandbox_cfg: crate::config::SandboxConfig,
     nerve_writer: NerveWriter,
     event_tx: mpsc::UnboundedSender<Event>,
     stream_fwd_tx: mpsc::UnboundedSender<StreamItem>,
@@ -362,6 +364,7 @@ impl TurnDriver for BrainDriver {
             preview_policy: self.preview_policy,
             cancel: None,
             sandbox_on: self.sandbox_on,
+            sandbox_cfg: self.sandbox_cfg.clone(),
             relay: Some(self.nerve_writer.clone()),
         }
     }
