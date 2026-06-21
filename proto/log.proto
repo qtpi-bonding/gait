@@ -169,6 +169,7 @@ message ConvergenceItem { string id = 1; string proposal = 2; optional string re
 message SessionStart {                // root event — identity ONLY
   string session_id           = 1;
   optional string assigned_by = 2;
+  optional string codebase_path = 3;
 }
 
 message Agent {                       // the live agent config from this seq forward; first instance = opening.

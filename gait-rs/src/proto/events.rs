@@ -3,10 +3,15 @@ use crate::proto::wire;
 use crate::types::HookContext;
 
 /// `SessionStart` — identity only (model / codebase history dropped per design).
-pub fn session_start(session_id: String, assigned_by: Option<String>) -> pb::event::Body {
+pub fn session_start(
+    session_id: String,
+    assigned_by: Option<String>,
+    codebase_path: Option<String>,
+) -> pb::event::Body {
     wire::body(pb::payload::Kind::SessionStart(pb::SessionStart {
         session_id,
         assigned_by,
+        codebase_path,
     }))
 }
 
@@ -895,6 +900,26 @@ mod tests {
                 assert_eq!(item.scope, pb::Scope::Once as i32);
             }
             other => panic!("expected UnlockReply payload, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_start_carries_codebase_path() {
+        let body = super::session_start(
+            "s1234567".to_string(),
+            Some("sparent0".to_string()),
+            Some("/code".to_string()),
+        );
+        match body {
+            crate::proto::gait::log::v1::event::Body::Payload(p) => match p.kind {
+                Some(crate::proto::gait::log::v1::payload::Kind::SessionStart(s)) => {
+                    assert_eq!(s.session_id, "s1234567");
+                    assert_eq!(s.assigned_by.as_deref(), Some("sparent0"));
+                    assert_eq!(s.codebase_path.as_deref(), Some("/code"));
+                }
+                other => panic!("expected SessionStart, got {other:?}"),
+            },
+            other => panic!("expected Payload body, got {other:?}"),
         }
     }
 

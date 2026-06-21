@@ -105,6 +105,8 @@ impl Tool for SpawnAgentTool {
             model: config.model,
             codebase_hash,
             codebase_dirty: false,
+            assigned_by: Some(self.ctx.session_id.clone()),
+            codebase_path: Some(self.ctx.codebase_path.to_string_lossy().to_string()),
         })
         .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
 

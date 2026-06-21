@@ -750,7 +750,11 @@ async fn resume_executes_approved_tool_directly() {
         ),
         preview: None,
     };
-    wire::append(&tx_path, events::session_start(session_id.into(), None)).unwrap();
+    wire::append(
+        &tx_path,
+        events::session_start(session_id.into(), None, None),
+    )
+    .unwrap();
     wire::append(&tx_path, events::user_text("run echo".into(), None)).unwrap();
     wire::append(&tx_path, events::permissions(&[perm_item])).unwrap();
     wire::append(
@@ -857,7 +861,11 @@ async fn resume_emits_denied_tool_result_for_rejected_call() {
         ),
         preview: None,
     };
-    wire::append(&tx_path, events::session_start(session_id.into(), None)).unwrap();
+    wire::append(
+        &tx_path,
+        events::session_start(session_id.into(), None, None),
+    )
+    .unwrap();
     wire::append(&tx_path, events::user_text("clean up".into(), None)).unwrap();
     wire::append(&tx_path, events::permissions(&[perm_item])).unwrap();
     wire::append(
@@ -966,7 +974,11 @@ async fn resume_with_scope_agent_shows_whitelist_prefix() {
     // simulating a previous turn that was interrupted mid-permission-prompt.
     // The PermissionsReply has scope="agent" to indicate it was saved to agent config.
     let shell_args = serde_json::json!({ "cmd": "ls", "reason": "list files" });
-    wire::append(&tx_path, events::session_start(session_id.into(), None)).unwrap();
+    wire::append(
+        &tx_path,
+        events::session_start(session_id.into(), None, None),
+    )
+    .unwrap();
     wire::append(&tx_path, events::user_text("list files".into(), None)).unwrap();
     wire::append(
         &tx_path,

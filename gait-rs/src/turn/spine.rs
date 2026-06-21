@@ -100,6 +100,8 @@ pub async fn relay_brain_turn(
                 model: String::new(),
                 codebase_hash,
                 codebase_dirty,
+                assigned_by: None,
+                codebase_path: Some(codebase.to_string_lossy().into_owned()),
             })?;
         }
     }

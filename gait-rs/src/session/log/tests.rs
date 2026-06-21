@@ -38,6 +38,8 @@ fn init_session_writes_session_start() {
         model: "anthropic/claude-sonnet-4-6".into(),
         codebase_hash: "abc123".into(),
         codebase_dirty: false,
+        assigned_by: None,
+        codebase_path: None,
     })
     .unwrap();
     let events = read_events(&path).unwrap();
@@ -172,7 +174,7 @@ fn all_event_bodies_serialize_roundtrip() {
         cache_write: 0,
     };
     let bodies: Vec<event::Body> = vec![
-        events::session_start("s1".into(), None),
+        events::session_start("s1".into(), None, None),
         events::user_text("t".into(), None),
         events::assistant_text("a".into()),
         events::tool_call("i".into(), "read".into(), &serde_json::json!({})),
@@ -419,4 +421,32 @@ fn write_unlock_reply_appends_and_state_becomes_idle() {
         crate::proto::event_kind(&events[1]),
         Some(crate::proto::gait::log::v1::payload::Kind::UnlockReply(_))
     ));
+}
+
+#[test]
+fn init_session_writes_codebase_path_into_session_start() {
+    use crate::proto::gait::log::v1::{event, payload};
+    let dir = TempDir::new().unwrap();
+    let log_path = dir.path().join("log.jsonl");
+    super::init_session(super::InitSessionOpts {
+        log_path: log_path.clone(),
+        id: "s1234567".to_string(),
+        model: String::new(),
+        codebase_hash: String::new(),
+        codebase_dirty: false,
+        assigned_by: Some("sparent0".to_string()),
+        codebase_path: Some("/code".to_string()),
+    })
+    .unwrap();
+    let events = super::read_events(&log_path).unwrap();
+    let s = events.iter().find_map(|e| match &e.body {
+        Some(event::Body::Payload(p)) => match &p.kind {
+            Some(payload::Kind::SessionStart(s)) => Some(s.clone()),
+            _ => None,
+        },
+        _ => None,
+    });
+    let s = s.expect("SessionStart present");
+    assert_eq!(s.codebase_path.as_deref(), Some("/code"));
+    assert_eq!(s.assigned_by.as_deref(), Some("sparent0"));
 }

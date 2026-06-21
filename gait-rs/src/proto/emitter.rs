@@ -223,6 +223,7 @@ mod tests {
             .record(crate::proto::events::session_start(
                 "s1234567".to_string(),
                 None,
+                None,
             ))
             .unwrap();
         assert!(em.tx_path.exists());

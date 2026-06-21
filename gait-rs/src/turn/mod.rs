@@ -388,6 +388,8 @@ pub async fn run_turn(
                 model: model.clone(),
                 codebase_hash: codebase_hash.clone(),
                 codebase_dirty,
+                assigned_by: None,
+                codebase_path: Some(codebase_path.to_string_lossy().to_string()),
             })?;
         }
     }
