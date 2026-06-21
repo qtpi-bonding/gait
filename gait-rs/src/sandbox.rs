@@ -266,6 +266,24 @@ mod tests {
     }
 
     #[test]
+    fn confined_reads_include_platform_defaults_and_scope() {
+        let scope = SandboxScope {
+            read_all: false,
+            readable: vec![PathBuf::from("/repo")],
+            writable: vec![PathBuf::from("/repo")],
+            network: NetworkPolicy::Deny,
+        };
+        let p = build_sbpl(&scope);
+        assert!(
+            !p.contains("(allow file-read*)\n"),
+            "must NOT blanket-allow reads"
+        );
+        assert!(p.contains("(subpath \"/usr/lib\")"));
+        assert!(p.contains("(subpath \"/private/var/db/dyld\")"));
+        assert!(p.contains("(subpath \"/repo\")")); // scope readable
+    }
+
+    #[test]
     fn sbpl_escapes_quotes_and_backslashes_in_paths() {
         // Paths with " or \ are legal on macOS and must not break the SBPL profile.
         let scope = SandboxScope {
@@ -356,6 +374,38 @@ pub(crate) mod sbpl {
     use super::{NetworkPolicy, SandboxScope};
     use std::fmt::Write;
 
+    /// Minimum set of read-only paths a sealed macOS process needs to exec,
+    /// resolve DNS, and do TLS. These are emitted as `(allow file-read* (subpath …))`
+    /// when `scope.read_all` is false (confined-read mode, Phase 2d+).
+    #[cfg(target_os = "macos")]
+    fn platform_read_defaults() -> &'static [&'static str] {
+        &[
+            "/usr/lib",
+            "/usr/share",
+            "/System",
+            "/Library/Frameworks",
+            "/private/var/db/dyld", // dyld shared cache
+            "/dev/null",
+            "/dev/random",
+            "/dev/urandom",
+            "/dev/dtracehelper",
+            "/etc", // resolv.conf, hosts, ssl (symlink → /private/etc)
+            "/private/etc",
+            "/private/var/db/timezone",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+        ]
+    }
+
+    /// On non-macOS platforms SBPL is never applied, so no platform defaults are needed.
+    /// The `else` branch in `build_sbpl` still compiles correctly, yielding an empty list.
+    #[cfg(not(target_os = "macos"))]
+    fn platform_read_defaults() -> &'static [&'static str] {
+        &[]
+    }
+
     /// Escape a path string for embedding in an SBPL double-quoted literal.
     /// Escapes backslash and double-quote (the only SBPL-significant chars in a path).
     fn sbpl_escape(path: &std::path::Path) -> String {
@@ -377,14 +427,24 @@ pub(crate) mod sbpl {
         writeln!(s, "(allow process-fork)").unwrap();
         writeln!(s, "(allow sysctl-read)").unwrap();
 
-        // Reads. Phase 2b ships (allow file-read*) unconditionally as a blanket
-        // when scope.read_all is true (correction #2). Phase 2d will flip the default.
+        // Reads. Phase 2b blanket-allows reads when read_all=true.
+        // Phase 2d (confined-read): when read_all=false, emit per-path subpath
+        // rules for platform defaults + scope.readable instead of a blanket allow.
         if scope.read_all {
             writeln!(s, "(allow file-read*)").unwrap();
         } else {
-            for p in &scope.readable {
-                writeln!(s, r#"(allow file-read* (subpath "{}"))"#, sbpl_escape(p)).unwrap();
+            // Platform defaults: paths every sealed macOS process must read to exec,
+            // resolve DNS, and do TLS. Empty on non-macOS (SBPL never applied there).
+            for root in platform_read_defaults() {
+                writeln!(s, r#"(allow file-read* (subpath "{root}"))"#).unwrap();
             }
+            // Explicit scope paths (canonicalized by caller or best-effort here).
+            for p in &scope.readable {
+                let c = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+                writeln!(s, r#"(allow file-read* (subpath "{}"))"#, sbpl_escape(&c)).unwrap();
+            }
+            // Broad stat/readdir — needed by many tools even when read content is restricted.
+            writeln!(s, "(allow file-read-metadata)").unwrap();
         }
 
         // Writes (and reads under writable, so tools can read what they write).
