@@ -81,17 +81,17 @@ fn pause_for_unlock_returns_unlock_result_and_records_event() {
         preview: Some("write outside declared scope".into()),
     }];
 
-    let result = pause_for_unlock(
-        &emitter,
-        items.clone(),
-        &repos,
-        std::path::Path::new("/tmp/gait-test"),
-        "test-session-1",
-        std::path::Path::new("/tmp/codebase"),
-        "system-prompt",
-        &[],
-        1,
-    )
+    let result = pause_for_unlock(UnlockPauseCtx {
+        emitter: &emitter,
+        items: items.clone(),
+        repos: &repos,
+        gait_dir: std::path::Path::new("/tmp/gait-test"),
+        session_id: "test-session-1",
+        codebase_path: std::path::Path::new("/tmp/codebase"),
+        system_prompt: "system-prompt",
+        hooks: &[],
+        step_count: 1,
+    })
     .expect("pause_for_unlock must succeed");
 
     // 1. Must return TurnResult::Unlock with the same items.

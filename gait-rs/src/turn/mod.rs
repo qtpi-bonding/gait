@@ -1031,17 +1031,17 @@ pub async fn run_turn(
                 }
             }
             if !pending_unlocks.is_empty() {
-                return pause_for_unlock(
+                return pause_for_unlock(UnlockPauseCtx {
                     emitter,
-                    pending_unlocks,
-                    &repos,
-                    &gait_dir,
-                    &session_id,
-                    &codebase_path,
-                    &system_prompt,
-                    &hooks,
-                    step_index + 1,
-                );
+                    items: pending_unlocks,
+                    repos: &repos,
+                    gait_dir: &gait_dir,
+                    session_id: &session_id,
+                    codebase_path: &codebase_path,
+                    system_prompt: &system_prompt,
+                    hooks: &hooks,
+                    step_count: step_index + 1,
+                });
             }
         }
 
@@ -1244,17 +1244,17 @@ pub async fn run_turn(
                 // In auto mode the tool failure result propagates normally.
                 if !auto && sandbox_on {
                     if let Some(denial) = exec.denied.take() {
-                        return pause_for_unlock(
+                        return pause_for_unlock(UnlockPauseCtx {
                             emitter,
-                            vec![denial],
-                            &repos,
-                            &gait_dir,
-                            &session_id,
-                            &codebase_path,
-                            &system_prompt,
-                            &hooks,
-                            step_index + 1,
-                        );
+                            items: vec![denial],
+                            repos: &repos,
+                            gait_dir: &gait_dir,
+                            session_id: &session_id,
+                            codebase_path: &codebase_path,
+                            system_prompt: &system_prompt,
+                            hooks: &hooks,
+                            step_count: step_index + 1,
+                        });
                     }
                 }
                 all_results[*i] = Some((exec.part, exec.result));
@@ -1401,17 +1401,17 @@ pub async fn run_turn(
                         // Task 6: seal denial in supervised mode → pause for unlock.
                         if !auto && sandbox_on {
                             if let Some(denial) = exec.denied.take() {
-                                return pause_for_unlock(
+                                return pause_for_unlock(UnlockPauseCtx {
                                     emitter,
-                                    vec![denial],
-                                    &repos,
-                                    &gait_dir,
-                                    &session_id,
-                                    &codebase_path,
-                                    &system_prompt,
-                                    &hooks,
-                                    step_index + 1,
-                                );
+                                    items: vec![denial],
+                                    repos: &repos,
+                                    gait_dir: &gait_dir,
+                                    session_id: &session_id,
+                                    codebase_path: &codebase_path,
+                                    system_prompt: &system_prompt,
+                                    hooks: &hooks,
+                                    step_count: step_index + 1,
+                                });
                             }
                         }
                         all_results[*i] = Some((exec.part, exec.result));
@@ -1613,17 +1613,17 @@ pub async fn run_turn(
                         // Task 6: seal denial in supervised mode → pause for unlock.
                         if !auto && sandbox_on {
                             if let Some(denial) = exec.denied.take() {
-                                return pause_for_unlock(
+                                return pause_for_unlock(UnlockPauseCtx {
                                     emitter,
-                                    vec![denial],
-                                    &repos,
-                                    &gait_dir,
-                                    &session_id,
-                                    &codebase_path,
-                                    &system_prompt,
-                                    &hooks,
-                                    step_index + 1,
-                                );
+                                    items: vec![denial],
+                                    repos: &repos,
+                                    gait_dir: &gait_dir,
+                                    session_id: &session_id,
+                                    codebase_path: &codebase_path,
+                                    system_prompt: &system_prompt,
+                                    hooks: &hooks,
+                                    step_count: step_index + 1,
+                                });
                             }
                         }
                         all_results[*i] = Some((exec.part, exec.result));
@@ -1793,6 +1793,19 @@ fn check_own_tool_scope(
     items
 }
 
+/// Context for `pause_for_unlock` to reduce argument count.
+pub(crate) struct UnlockPauseCtx<'a> {
+    emitter: &'a Recorder,
+    items: Vec<pb::UnlockItem>,
+    repos: &'a crate::git::Repos,
+    gait_dir: &'a std::path::Path,
+    session_id: &'a str,
+    codebase_path: &'a std::path::Path,
+    system_prompt: &'a str,
+    hooks: &'a [Box<dyn crate::types::Hook>],
+    step_count: usize,
+}
+
 /// Emit the sandbox-unlock pause and return `TurnResult::Unlock`.
 ///
 /// Mirrors the Permissions pause block in `run_turn` (near "Gated tools"):
@@ -1802,39 +1815,29 @@ fn check_own_tool_scope(
 ///
 /// Called by Tasks 5 (pre-check path) and 6 (EACCES path). Not called
 /// in auto-mode (caller must gate on `sandbox_on && !auto`).
-pub(crate) fn pause_for_unlock(
-    emitter: &Recorder,
-    items: Vec<pb::UnlockItem>,
-    repos: &crate::git::Repos,
-    gait_dir: &std::path::Path,
-    session_id: &str,
-    codebase_path: &std::path::Path,
-    system_prompt: &str,
-    hooks: &[Box<dyn crate::types::Hook>],
-    step_count: usize,
-) -> anyhow::Result<TurnResult> {
-    emitter.record(events::unlock(&items))?;
-    repos.traces.commit_session(
-        gait_dir,
-        session_id,
-        &format!("session({}): unlock", session_id),
+pub(crate) fn pause_for_unlock(ctx: UnlockPauseCtx) -> anyhow::Result<TurnResult> {
+    ctx.emitter.record(events::unlock(&ctx.items))?;
+    ctx.repos.traces.commit_session(
+        ctx.gait_dir,
+        ctx.session_id,
+        &format!("session({}): unlock", ctx.session_id),
     )?;
     {
         let post_turn_ctx = HookContext {
             event: "post_turn".to_string(),
-            session_id: session_id.to_string(),
-            gait_dir: gait_dir.to_path_buf(),
-            codebase: codebase_path.to_path_buf(),
-            system_prompt: system_prompt.to_string(),
-            step_count,
+            session_id: ctx.session_id.to_string(),
+            gait_dir: ctx.gait_dir.to_path_buf(),
+            codebase: ctx.codebase_path.to_path_buf(),
+            system_prompt: ctx.system_prompt.to_string(),
+            step_count: ctx.step_count,
             turn_outcome: "unlock".to_string(),
             ..Default::default()
         };
-        for h in hooks {
-            h.post_turn(&post_turn_ctx, emitter);
+        for h in ctx.hooks {
+            h.post_turn(&post_turn_ctx, ctx.emitter);
         }
     }
-    Ok(TurnResult::Unlock { items })
+    Ok(TurnResult::Unlock { items: ctx.items })
 }
 
 #[cfg(test)]
