@@ -147,6 +147,10 @@ pub async fn run_loop(
 /// already-loaded `config` + optional agent file + optional model override — the
 /// same resolution the CLI and REPL do. Embedders load config via [`load_config`]
 /// and pass it in (reusing it across turns), instead of touching `Profile`.
+///
+/// `api_key` must already be resolved by the caller (the spine in Phase 3, the
+/// REPL driver before that). Keeping key resolution outside this function ensures
+/// the brain never needs to read `auth.json` directly.
 #[allow(clippy::too_many_arguments)]
 pub async fn resolve_profile(
     config: &crate::config::GaitConfig,
@@ -157,6 +161,7 @@ pub async fn resolve_profile(
     model_override: Option<String>,
     repos: &crate::git::Repos,
     workflow_runner: Option<std::sync::Arc<dyn crate::workflow_runner::WorkflowRunner>>,
+    api_key: Option<String>,
 ) -> anyhow::Result<crate::profile::ResolvedProfile> {
     let profile = crate::profile::Profile::from_config_and_agent(
         config,
@@ -164,13 +169,6 @@ pub async fn resolve_profile(
         Some(codebase),
         agent_path,
         model_override,
-    );
-    let api_key = crate::auth::resolve_api_key(
-        profile
-            .model
-            .split_once('/')
-            .map(|(p, _)| p)
-            .unwrap_or(&profile.model),
     );
     profile
         .resolve(

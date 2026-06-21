@@ -135,6 +135,14 @@ impl TurnDriver for ReplDriver {
             self.gait_dir.clone(),
             self.codebase.clone(),
         ));
+        let provider_name = self
+            .config
+            .model
+            .split_once('/')
+            .map(|(p, _)| p)
+            .unwrap_or(&self.config.model)
+            .to_string();
+        let api_key = gait_core::auth::resolve_api_key(&provider_name);
         gait_core::embed::resolve_profile(
             &self.config,
             &self.gait_dir,
@@ -144,6 +152,7 @@ impl TurnDriver for ReplDriver {
             None,
             &self.repos,
             Some(runner),
+            api_key,
         )
         .await
     }
