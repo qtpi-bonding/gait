@@ -316,6 +316,49 @@ mod tests {
     }
 
     #[test]
+    fn bound_request_ignores_brain_claimed_scope() {
+        use crate::config::SandboxConfig;
+        use std::path::Path;
+        // A read tool with a bogus claimed writable must get empty writable.
+        let cfg = SandboxConfig::default();
+        let scope =
+            super::ceiling::bound_request("read", &cfg, Path::new("/repo"), Path::new("/tmp/jail"));
+        assert!(scope.writable.is_empty(), "read tool must not get writable");
+        assert!(!scope.read_all, "default config must confine reads");
+    }
+
+    #[test]
+    fn bound_request_shell_gets_writes_and_spawns() {
+        use crate::config::SandboxConfig;
+        use std::path::{Path, PathBuf};
+        let cfg = SandboxConfig::default();
+        let scope = super::ceiling::bound_request(
+            "shell",
+            &cfg,
+            Path::new("/repo"),
+            Path::new("/tmp/jail"),
+        );
+        assert!(scope.writable.contains(&PathBuf::from("/repo")));
+        assert!(scope.writable.contains(&PathBuf::from("/tmp/jail")));
+    }
+
+    #[test]
+    fn bound_request_unknown_tool_gets_no_access() {
+        use crate::config::SandboxConfig;
+        use std::path::Path;
+        let cfg = SandboxConfig::default();
+        let scope = super::ceiling::bound_request(
+            "spawn_agent",
+            &cfg,
+            Path::new("/repo"),
+            Path::new("/tmp/jail"),
+        );
+        assert!(scope.writable.is_empty());
+        assert!(scope.readable.is_empty());
+        assert!(matches!(scope.network, NetworkPolicy::Deny));
+    }
+
+    #[test]
     fn read_only_tool_gets_no_writable() {
         use crate::config::SandboxConfig;
         use crate::types::ToolAccess;
@@ -684,6 +727,49 @@ pub mod ceiling {
     use crate::config::{NetworkConfig, SandboxConfig};
     use crate::types::ToolAccess;
     use std::path::{Path, PathBuf};
+
+    /// Return the `ToolAccess` declared by the named builtin tool.
+    /// Unknown tools get the zero value (no access) — they are brain-side control tools
+    /// and must never run in a hand. This is the spine's authoritative source for scope
+    /// computation; the brain's claimed scope is ignored.
+    pub fn access_for_tool(tool_name: &str) -> ToolAccess {
+        match tool_name {
+            "read" | "grep" | "glob" | "ls" | "codesearch" => ToolAccess {
+                reads: true,
+                ..Default::default()
+            },
+            "write" | "edit" => ToolAccess {
+                reads: true,
+                writes: true,
+                ..Default::default()
+            },
+            "shell" => ToolAccess {
+                reads: true,
+                writes: true,
+                spawns: true,
+                ..Default::default()
+            },
+            "webfetch" => ToolAccess {
+                network: true,
+                ..Default::default()
+            },
+            _ => ToolAccess::default(),
+        }
+    }
+
+    /// Compute the authoritative per-call scope for `tool_name` without trusting
+    /// anything the brain claimed. The spine calls this after receiving an `Impulse`
+    /// — it derives access from the builtin tool registry and intersects with config.
+    /// A brain that sends a bogus claimed scope (e.g., `writable: ["/"]` on a read
+    /// tool) cannot widen past what `access_for_tool` permits.
+    pub fn bound_request(
+        tool_name: &str,
+        cfg: &SandboxConfig,
+        codebase: &Path,
+        jail: &Path,
+    ) -> SandboxScope {
+        compute_scope(access_for_tool(tool_name), cfg, codebase, jail)
+    }
 
     /// Compute the per-call sandbox scope ceiling.
     ///
