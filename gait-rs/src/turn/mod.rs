@@ -1223,6 +1223,24 @@ pub async fn run_turn(
                     )
                     .await;
                 }
+                // Task 6: if the hand signalled a seal denial and we're in supervised
+                // mode, pause immediately so the user can grant the unlock.
+                // In auto mode the tool failure result propagates normally.
+                if !auto && sandbox_on {
+                    if let Some(denial) = exec.denied.take() {
+                        return pause_for_unlock(
+                            emitter,
+                            vec![denial],
+                            &repos,
+                            &gait_dir,
+                            &session_id,
+                            &codebase_path,
+                            &system_prompt,
+                            &hooks,
+                            step_index + 1,
+                        );
+                    }
+                }
                 all_results[*i] = Some((exec.part, exec.result));
             }
 
@@ -1363,6 +1381,22 @@ pub async fn run_turn(
                                 provider.clone(),
                             )
                             .await;
+                        }
+                        // Task 6: seal denial in supervised mode → pause for unlock.
+                        if !auto && sandbox_on {
+                            if let Some(denial) = exec.denied.take() {
+                                return pause_for_unlock(
+                                    emitter,
+                                    vec![denial],
+                                    &repos,
+                                    &gait_dir,
+                                    &session_id,
+                                    &codebase_path,
+                                    &system_prompt,
+                                    &hooks,
+                                    step_index + 1,
+                                );
+                            }
                         }
                         all_results[*i] = Some((exec.part, exec.result));
                     }
@@ -1559,6 +1593,22 @@ pub async fn run_turn(
                                 provider.clone(),
                             )
                             .await;
+                        }
+                        // Task 6: seal denial in supervised mode → pause for unlock.
+                        if !auto && sandbox_on {
+                            if let Some(denial) = exec.denied.take() {
+                                return pause_for_unlock(
+                                    emitter,
+                                    vec![denial],
+                                    &repos,
+                                    &gait_dir,
+                                    &session_id,
+                                    &codebase_path,
+                                    &system_prompt,
+                                    &hooks,
+                                    step_index + 1,
+                                );
+                            }
                         }
                         all_results[*i] = Some((exec.part, exec.result));
                     }

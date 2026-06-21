@@ -425,6 +425,7 @@ mod exec_replace_tests {
                 result: serde_json::Value::String("line1\nline2\nline3".into()),
             },
             log_event_id: raw_event.id.clone(),
+            denied: None,
         };
         let tc = ToolCall {
             tool_call_id: "cid-1".into(),

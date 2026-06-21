@@ -18,6 +18,7 @@ use clap::Parser;
 use prost::Message;
 
 use gait_core::git::Repos;
+use gait_core::proto::gait::log::v1::UnlockItem;
 use gait_core::proto::Recorder;
 use gait_core::sandbox::{NetworkPolicy, SandboxScope};
 use gait_core::tools::{builtin_tools, ToolCtx};
@@ -139,6 +140,35 @@ pub async fn cmd_run_tool(argv: &[String]) {
         Err(e) => serde_json::Value::String(format!("error: {e}")),
     };
 
+    // Phase 2c Task 6: detect kernel-level permission denial from sealed `shell`
+    // commands. Scan the combined output (stdout+stderr, stored in the `output`
+    // field of the shell's JSON result) for POSIX error strings that indicate
+    // EACCES or EPERM. This is best-effort — false positives are low-harm in
+    // supervised mode (the user sees an unlock prompt they can decline).
+    // In auto mode the turn loop ignores `denied` and lets the tool failure
+    // propagate normally, so false positives there have zero effect.
+    let denied: Option<UnlockItem> = if a.tool == "shell" {
+        let output_str = result_json
+            .get("output")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let has_denial = output_str.contains("Permission denied")
+            || output_str.contains("Operation not permitted");
+        if has_denial {
+            Some(UnlockItem {
+                id: uuid::Uuid::new_v4().to_string(),
+                tool_name: "shell".to_string(),
+                resource: "(shell)".to_string(),
+                dimension: "write".to_string(),
+                preview: None,
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // Convert serde_json::Value → pbjson_types::Value.
     // pbjson_types::Value implements serde Deserialize, so we round-trip via JSON.
     // Any shape that doesn't deserialize cleanly collapses to a null Value — the
@@ -155,7 +185,7 @@ pub async fn cmd_run_tool(argv: &[String]) {
     let feedback = Feedback {
         result: Some(result_proto),
         events: rec.take_buffer(),
-        denied: None,
+        denied,
     };
 
     let bytes = feedback.encode_to_vec();

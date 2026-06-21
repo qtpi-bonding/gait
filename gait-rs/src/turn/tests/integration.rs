@@ -1464,3 +1464,146 @@ async fn supervised_write_outside_ceiling_pauses_with_unlock() {
         "/etc/x must not be created by the pre-check"
     );
 }
+
+// ── Task 6: shell EACCES → unlock (supervised) / failure (auto) ──────────────
+
+/// Auto mode: a shell command whose output contains "Permission denied" must
+/// NOT trigger an unlock pause — the tool failure propagates normally and the
+/// turn completes. This test runs in-process (no gait binary required) and
+/// verifies the auto-mode guard in the turn loop.
+///
+/// Note: in the test environment the binary-name guard detects a non-`gait`
+/// test harness and falls back to `InProcessSynapse`, which always returns
+/// `denied = None`. The auto-mode assertion here is therefore testing that
+/// the loop handles `denied = None` in auto mode correctly (no-op) — the
+/// supervised-mode path is covered by the `#[ignore]` test below.
+#[tokio::test]
+async fn auto_mode_shell_denial_propagates_as_tool_failure() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+
+    // The model: (1) issues a shell command, (2) finishes after seeing the result.
+    let provider = Arc::new(MockProvider {
+        responses: Arc::new(vec![
+            vec![
+                StreamChunk::ToolCallComplete {
+                    tool_call_id: "tc-shell-deny".into(),
+                    tool_name: "shell".into(),
+                    args: serde_json::json!({
+                        "command": "echo 'Permission denied' && exit 1"
+                    }),
+                },
+                StreamChunk::Done,
+            ],
+            vec![StreamChunk::Text("done".into()), StreamChunk::Done],
+        ]),
+        call_idx: Arc::new(AtomicUsize::new(0)),
+    });
+
+    let shell_tool = crate::tools::ShellTool::new(crate::tools::ToolCtx::new(
+        ws.path().to_path_buf(),
+        ws.path().to_path_buf(),
+        "test".into(),
+    ));
+
+    let result = run_turn_test_call(
+        ws.path().to_path_buf(),
+        ws.path().to_path_buf(),
+        "sshell-auto-deny-01".into(),
+        provider,
+        vec![shell_tool.boxed()],
+        vec!["shell".into()],
+        vec![],
+        TurnInput {
+            auto: true, // auto mode — denial must NOT pause
+            max_iter: None,
+            preview_policy: crate::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: true,
+        },
+        crate::git::Repos::production(),
+    )
+    .await
+    .unwrap();
+
+    // In auto mode with InProcessSynapse (test environment) the turn always
+    // continues — even if the output contains "Permission denied". The denial
+    // scanning only triggers via the real hand subprocess (`gait __run-tool`).
+    assert!(
+        matches!(result, TurnResult::Done { .. }),
+        "auto mode must continue after tool failure, not pause; got: {result:?}"
+    );
+}
+
+/// Supervised mode: a sealed `shell` command that attempts an out-of-scope write
+/// (e.g. `echo hi > /etc/gait-probe`) causes the hand to detect EACCES/EPERM
+/// in the output and set `Feedback.denied`. The turn loop must then return
+/// `TurnResult::Unlock` instead of continuing.
+///
+/// **Requires the `gait` binary to be built first** (the hand is `gait __run-tool`):
+///
+///     cargo build -p gait-bin
+///     cargo test -p gait-core -- --ignored shell_eacces_supervised_pause
+///
+/// On macOS the Seatbelt seal enforces the out-of-scope write denial (EPERM).
+/// On Linux the test is also useful for Landlock, but `shell` writing to `/etc`
+/// may fail due to OS-level permissions rather than Seatbelt, which still
+/// produces "Permission denied" in stderr and satisfies the detection logic.
+#[tokio::test]
+#[ignore = "requires `gait` binary + Seatbelt seal on macOS; build with `cargo build -p gait-bin`"]
+#[cfg(target_os = "macos")]
+async fn shell_eacces_supervised_pause() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+
+    // The model issues a shell write to /etc — EPERM under Seatbelt seal.
+    let provider = Arc::new(MockProvider {
+        responses: Arc::new(vec![vec![
+            StreamChunk::ToolCallComplete {
+                tool_call_id: "tc-eacces".into(),
+                tool_name: "shell".into(),
+                args: serde_json::json!({
+                    "command": "echo hi > /etc/gait-probe"
+                }),
+            },
+            StreamChunk::Done,
+        ]]),
+        call_idx: Arc::new(AtomicUsize::new(0)),
+    });
+
+    let shell_tool = crate::tools::ShellTool::new(crate::tools::ToolCtx::new(
+        ws.path().to_path_buf(),
+        ws.path().to_path_buf(),
+        "test".into(),
+    ));
+
+    let result = run_turn_test_call(
+        ws.path().to_path_buf(),
+        ws.path().to_path_buf(),
+        "sshell-eacces-sup-01".into(),
+        provider,
+        vec![shell_tool.boxed()],
+        vec!["shell".into()],
+        vec![],
+        TurnInput {
+            auto: false, // supervised — denial must pause
+            max_iter: None,
+            preview_policy: crate::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: true,
+        },
+        crate::git::Repos::production(),
+    )
+    .await
+    .unwrap();
+
+    match &result {
+        TurnResult::Unlock { items } => {
+            assert!(!items.is_empty(), "expected at least one unlock item");
+            let item = &items[0];
+            assert_eq!(item.tool_name, "shell", "tool_name should be shell");
+            assert_eq!(item.dimension, "write", "dimension should be write");
+        }
+        other => panic!("expected TurnResult::Unlock (shell EACCES → denied), got: {other:?}"),
+    }
+}

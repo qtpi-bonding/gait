@@ -23,6 +23,11 @@ pub(super) struct ToolExecResult {
     /// UUID of the `ToolResult` event written to the log. Empty if no event
     /// was written (error path via `error_tool_result`).
     pub log_event_id: String,
+    /// Set when the hand detected a kernel-level permission denial (EACCES /
+    /// EPERM) from a sealed `shell` command. The turn loop checks this in
+    /// supervised mode and calls `pause_for_unlock`; in auto mode it is ignored
+    /// (the tool failure result propagates normally). Phase 2c Task 6.
+    pub denied: Option<pb::UnlockItem>,
 }
 
 /// Execute one tool call: emit ToolCall event, run the tool, emit ToolResult event.
@@ -54,10 +59,19 @@ pub(super) async fn execute_tool_call(
     // its output string — duration lives in the proto `ToolResult.duration` field
     // and process exit/timed_out live in `ToolResult.process`. We measure the full
     // tool.execute() call so the timing matches what the model observed.
-    let (raw, duration, process) = match tools.iter().find(|t| t.name() == tc.tool_name) {
+    //
+    // `synapse_denied` carries a seal-denial signal from the hand (Phase 2c Task 6):
+    // set when the hand detects EACCES/EPERM in a `shell` command's output while
+    // running under Seatbelt. The turn loop inspects it after execute_tool_call returns.
+    let (raw, duration, process, synapse_denied) = match tools
+        .iter()
+        .find(|t| t.name() == tc.tool_name)
+    {
         Some(t) => {
             let started = std::time::Instant::now();
-            let res = if t.access().touches_world() {
+            // `denied` is extracted only on the world-tool (synapse) path; it stays
+            // None on the brain path (control/transcript tools never touch the kernel).
+            let (res, denied) = if t.access().touches_world() {
                 // Hand path: run via the synapse, then replay the returned events
                 // into the real log (between ToolCall and ToolResult).
                 // Fall back to InProcessSynapse when not running as the `gait` binary
@@ -105,19 +119,19 @@ pub(super) async fn execute_tool_call(
                         .await
                 };
                 match fired {
-                    Ok((value, events)) => {
+                    Ok((value, events, denied_item)) => {
                         for event in events {
                             if let Some(body) = event.body {
                                 emitter.record(body)?;
                             }
                         }
-                        Ok(value)
+                        (Ok(value), denied_item)
                     }
-                    Err(e) => Err(e),
+                    Err(e) => (Err(e), None),
                 }
             } else {
                 // Brain path: control/transcript tool, runs in-process as before.
-                t.execute(tc.args.clone(), emitter).await
+                (t.execute(tc.args.clone(), emitter).await, None)
             };
             let elapsed = started.elapsed();
             let duration = Some(pbjson_types::Duration {
@@ -142,6 +156,7 @@ pub(super) async fn execute_tool_call(
                                 exit_code,
                                 timed_out,
                             }),
+                            denied,
                         )
                     } else if v.is_string() {
                         (
@@ -150,15 +165,16 @@ pub(super) async fn execute_tool_call(
                                 .to_owned(),
                             duration,
                             None,
+                            denied,
                         )
                     } else {
-                        (v.to_string(), duration, None)
+                        (v.to_string(), duration, None, denied)
                     }
                 }
-                Err(e) => (format!("error: {e}"), duration, None),
+                Err(e) => (format!("error: {e}"), duration, None, denied),
             }
         }
-        None => (format!("unknown tool: {}", tc.tool_name), None, None),
+        None => (format!("unknown tool: {}", tc.tool_name), None, None, None),
     };
     let output = match approval_prefix {
         Some(prefix) => format!("{}\n{}", prefix, raw),
@@ -179,6 +195,7 @@ pub(super) async fn execute_tool_call(
         part: assistant_part,
         result: tool_result,
         log_event_id: tr_event.id,
+        denied: synapse_denied,
     })
 }
 
@@ -213,6 +230,7 @@ pub(super) fn error_tool_result(tc: &ToolCall, e: anyhow::Error) -> ToolExecResu
             result: serde_json::Value::String(output),
         },
         log_event_id: String::new(),
+        denied: None,
     }
 }
 
