@@ -85,6 +85,8 @@ pub enum SessionState {
     AwaitingInform {
         items: Vec<crate::proto::gait::log::v1::InformItem>,
     },
+    /// A tool access unlock request is awaiting a decision.
+    AwaitingUnlock { items: Vec<pb::UnlockItem> },
 }
 
 /// Walk the transcript backwards to determine the current session state.
@@ -118,6 +120,14 @@ pub fn session_state(tx_path: &std::path::Path) -> Result<SessionState, SessionE
                 });
             }
             Some(payload::Kind::InformReply(_)) => {
+                return Ok(SessionState::Idle);
+            }
+            Some(payload::Kind::Unlock(u)) => {
+                return Ok(SessionState::AwaitingUnlock {
+                    items: u.items.clone(),
+                });
+            }
+            Some(payload::Kind::UnlockReply(_)) => {
                 return Ok(SessionState::Idle);
             }
             Some(payload::Kind::TurnComplete(_)) => {

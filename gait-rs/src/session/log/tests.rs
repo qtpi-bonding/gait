@@ -237,3 +237,60 @@ fn permission_preview_survives_proto_round_trip() {
         other => panic!("expected Permissions kind, got {other:?}"),
     }
 }
+
+#[test]
+fn session_state_awaiting_unlock() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("log.jsonl");
+
+    // Create a log ending with an unlock event
+    let items = vec![pb::UnlockItem {
+        id: "lock-1".into(),
+        tool_name: "edit".into(),
+        resource: "/path/to/file".into(),
+        dimension: "write".into(),
+        preview: None,
+    }];
+    wire::append(&path, events::unlock(&items)).unwrap();
+
+    let state = session_state(&path).unwrap();
+    match state {
+        SessionState::AwaitingUnlock {
+            items: result_items,
+        } => {
+            assert_eq!(result_items.len(), 1);
+            assert_eq!(result_items[0].id, "lock-1");
+            assert_eq!(result_items[0].tool_name, "edit");
+        }
+        other => panic!("expected AwaitingUnlock state, got {other:?}"),
+    }
+}
+
+#[test]
+fn session_state_unlock_reply_returns_idle() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("log.jsonl");
+
+    // Create a log with unlock then unlock_reply
+    let items = vec![pb::UnlockItem {
+        id: "lock-1".into(),
+        tool_name: "edit".into(),
+        resource: "/path/to/file".into(),
+        dimension: "write".into(),
+        preview: None,
+    }];
+    wire::append(&path, events::unlock(&items)).unwrap();
+
+    let reply_items = vec![pb::UnlockReplyItem {
+        id: "lock-1".into(),
+        decision: pb::Decision::Allow as i32,
+        scope: pb::Scope::Once as i32,
+    }];
+    wire::append(&path, events::unlock_reply("user".into(), &reply_items)).unwrap();
+
+    let state = session_state(&path).unwrap();
+    assert!(
+        matches!(state, SessionState::Idle),
+        "expected Idle after unlock_reply, got {state:?}"
+    );
+}
