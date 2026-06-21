@@ -102,6 +102,9 @@ pub enum TurnResult {
     Inform {
         items: Vec<pb::InformItem>,
     },
+    Unlock {
+        items: Vec<pb::UnlockItem>,
+    },
     Cancelled,
 }
 

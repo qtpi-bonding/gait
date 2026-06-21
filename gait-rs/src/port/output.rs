@@ -2,7 +2,7 @@
 use crate::proto::events;
 use crate::proto::gait::log::v1::{
     event, payload, run_result, stream_item, Event, RunResult, SessionStart, StreamItem,
-    StructuredDoneOutput,
+    StructuredDoneOutput, Unlock,
 };
 use crate::turn::TurnResult;
 use std::io::Write;
@@ -89,6 +89,9 @@ pub fn run_result_proto(r: &crate::turn::TurnResult) -> RunResult {
             _ => run_result::Result::Inform(Default::default()),
         },
         TurnResult::Permissions => run_result::Result::Permissions(Default::default()),
+        TurnResult::Unlock { items } => run_result::Result::Unlock(Unlock {
+            items: items.clone(),
+        }),
         TurnResult::Cancelled => run_result::Result::Cancelled(Default::default()),
     };
     RunResult {

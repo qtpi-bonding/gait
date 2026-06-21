@@ -257,6 +257,12 @@ pub async fn exec_prompt_node(
             json: None,
             routed_to: None,
         },
+        TurnResult::Unlock { .. } => NodeOutput {
+            text: "(paused for sandbox unlock)".into(),
+            exit_code: None,
+            json: None,
+            routed_to: None,
+        },
         TurnResult::Cancelled => NodeOutput {
             text: "(turn cancelled by user)".into(),
             exit_code: None,

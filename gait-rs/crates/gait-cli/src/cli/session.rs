@@ -413,6 +413,11 @@ pub fn cmd_status(argv: &[String]) {
                         items: items.clone(),
                     })
                 }
+                SessionState::AwaitingUnlock { items } => {
+                    sv1::session_state::State::AwaitingUnlock(sv1::AwaitingUnlock {
+                        items: items.clone(),
+                    })
+                }
             }),
         };
         let report = sv1::SessionStateReport {
@@ -476,6 +481,18 @@ pub fn cmd_status(argv: &[String]) {
                 if let Some(ctx) = &it.context {
                     println!("      ctx:   {}", ctx);
                 }
+            }
+        }
+        SessionState::AwaitingUnlock { items } => {
+            println!("Session: {}", args.session_id);
+            println!("State:   awaiting_unlock ({} item(s))", items.len());
+            for (n, it) in items.iter().enumerate() {
+                println!("  [{}] id:        {}", n + 1, it.id);
+                if !it.tool_name.is_empty() {
+                    println!("      tool:      {}", it.tool_name);
+                }
+                println!("      resource:  {}", it.resource);
+                println!("      dimension: {}", it.dimension);
             }
         }
     }
