@@ -1,8 +1,8 @@
 //! The Synapse seam — the motor pathway from a decided tool call to a hand.
 //! Phase 1 ships `InProcessSynapse` (runs in-process, identical behavior);
 //! Phase 2a adds `SubprocessSynapse` (spawns `gait __run-tool` as a sealed hand
-//! and crosses the binary `Impulse`/`Feedback` protobuf hop); Phase 3 layers the
-//! spine-relay impl behind the same trait.
+//! and crosses the binary `Impulse`/`Feedback` protobuf hop); Phase 3 swaps in
+//! `RelaySynapse` (fires through the spine over the Nerve) behind the same trait.
 #![allow(dead_code)] // planned seam: ScopeRequest.access used in Phase 2+ (spine scope enforcement)
 
 use crate::proto::gait::log::v1::Event;
@@ -243,6 +243,71 @@ impl Synapse for SubprocessSynapse {
     }
 }
 
+// ── RelaySynapse ──────────────────────────────────────────────────────────────
+
+/// Phase 3 impl: send an `Impulse` Signal to the spine via the Nerve and await
+/// the matching `Feedback` Signal by `corr_id`. The spine bounds the scope,
+/// spawns the sealed hand, and returns `{result, events, denied}`.
+///
+/// Selected in `exec.rs` when the brain has a relay handle; falls back to
+/// `SubprocessSynapse` for non-spine paths (direct `cargo test` runs).
+pub struct RelaySynapse {
+    pub writer: crate::turn::nerve::NerveWriter,
+}
+
+#[async_trait::async_trait]
+impl Synapse for RelaySynapse {
+    async fn fire(
+        &self,
+        tool: &dyn Tool,
+        args: serde_json::Value,
+        _scope: ScopeRequest,
+    ) -> Result<(serde_json::Value, Vec<Event>, Option<UnlockItem>), ToolError> {
+        // Convert args to proto Struct for the Impulse.
+        let args_struct: pbjson_types::Struct = serde_json::from_value(args).unwrap_or_default();
+
+        let corr_id = self.writer.alloc_corr_id();
+        let signal = gait_proto::gait::sandbox::v1::Signal {
+            corr_id,
+            body: Some(gait_proto::gait::sandbox::v1::signal::Body::Impulse(
+                Impulse {
+                    tool: tool.name().to_string(),
+                    args: Some(args_struct),
+                    cwd: String::new(), // spine reads cwd from session for hands
+                    requested: None,    // spine re-derives scope via bound_request
+                },
+            )),
+        };
+
+        let rx = self
+            .writer
+            .send_and_register(&signal)
+            .await
+            .map_err(|e| ToolError::Internal(anyhow::anyhow!("nerve send: {e}")))?;
+
+        let response = rx
+            .await
+            .map_err(|_| ToolError::Internal(anyhow::anyhow!("nerve: spine dropped reply")))?;
+
+        let feedback = match response.body {
+            Some(gait_proto::gait::sandbox::v1::signal::Body::Feedback(f)) => f,
+            other => {
+                return Err(ToolError::Internal(anyhow::anyhow!(
+                    "nerve: expected Feedback, got {other:?}"
+                )));
+            }
+        };
+
+        let result_json = feedback
+            .result
+            .as_ref()
+            .and_then(|v| serde_json::to_value(v).ok())
+            .unwrap_or(serde_json::Value::Null);
+
+        Ok((result_json, feedback.events, feedback.denied))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,5 +413,53 @@ mod tests {
             "file content must survive the subprocess hop; got: {:?}",
             result
         );
+    }
+
+    /// RelaySynapse: a fake spine reads the Impulse from the Nerve and echoes back
+    /// a canned Feedback. Verifies the brain-side demux returns the right result.
+    #[tokio::test]
+    async fn relay_synapse_fake_spine_returns_feedback() {
+        use crate::turn::nerve;
+        use gait_proto::gait::sandbox::v1::{signal, Feedback};
+
+        let (brain_read, spine_write_half) = tokio::io::duplex(4096);
+        let (spine_read_half, brain_write) = tokio::io::duplex(4096);
+        let (writer, _handle) = nerve::start_nerve(brain_read, brain_write);
+
+        // Fake spine task: read one Impulse and echo a canned Feedback.
+        tokio::spawn(async move {
+            let mut r = spine_read_half;
+            let mut w = spine_write_half;
+            let sig = nerve::read_signal(&mut r).await.unwrap();
+            let canned = gait_proto::gait::sandbox::v1::Signal {
+                corr_id: sig.corr_id,
+                body: Some(signal::Body::Feedback(Feedback {
+                    result: Some(pbjson_types::Value {
+                        kind: Some(pbjson_types::value::Kind::StringValue(
+                            "relay-ok".to_string(),
+                        )),
+                    }),
+                    events: vec![],
+                    denied: None,
+                })),
+            };
+            nerve::write_signal(&mut w, &canned).await.unwrap();
+        });
+
+        let syn = RelaySynapse { writer };
+        let (result, events, denied) = syn
+            .fire(
+                &EchoTool,
+                serde_json::json!({"k": "v"}),
+                ScopeRequest {
+                    access: EchoTool.access(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.as_str().unwrap_or(""), "relay-ok");
+        assert!(events.is_empty());
+        assert!(denied.is_none());
     }
 }

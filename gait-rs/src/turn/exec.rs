@@ -33,6 +33,10 @@ pub(super) struct ToolExecResult {
 /// Execute one tool call: emit ToolCall event, run the tool, emit ToolResult event.
 /// Used identically by the normal execution loop and the permission-resume path.
 /// Does NOT handle output/mcp/skill special tools — those are never gated.
+///
+/// `relay`: when `Some`, the brain is running under a spine — use `RelaySynapse`
+/// (fires the tool through the spine over the Nerve). When `None`, falls back to
+/// `SubprocessSynapse` (direct spawn of `gait __run-tool`, Phase 2).
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn execute_tool_call(
     tc: &ToolCall,
@@ -43,6 +47,7 @@ pub(super) async fn execute_tool_call(
     gait_dir: &std::path::Path,
     session_id: &str,
     sandbox_on: bool,
+    relay: Option<&crate::turn::nerve::NerveWriter>,
 ) -> anyhow::Result<ToolExecResult> {
     let id = tc.tool_call_id.clone();
     emitter.record(events::tool_call(
@@ -78,45 +83,47 @@ pub(super) async fn execute_tool_call(
                 // (test binaries have different names and lack the `__run-tool` subcommand).
                 // The subprocess path is covered end-to-end by gait-bin/tests/run_tool_hand.rs.
                 use crate::turn::synapse::{ScopeRequest, Synapse as _};
-                let is_gait_binary = std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.file_stem().map(|n| n == "gait"))
-                    .unwrap_or(false);
-                if !is_gait_binary {
-                    eprintln!(
-                        "[gait] world tool '{}' running in-process (binary-name guard did not match 'gait')",
-                        tc.tool_name
-                    );
-                }
-                let fired = if is_gait_binary {
-                    use crate::session::log::read_events;
-                    use crate::session::retrace::active_cwd;
-                    use crate::turn::synapse::SubprocessSynapse;
-                    let events = read_events(&emitter.tx_path).unwrap_or_default();
-                    let cwd = active_cwd(&events, codebase);
-                    let syn = SubprocessSynapse {
-                        gait_dir: gait_dir.to_path_buf(),
-                        codebase: codebase.to_path_buf(),
-                        session_id: session_id.to_string(),
-                        cwd: cwd.to_string_lossy().into_owned(),
-                        sandbox_cfg: crate::config::SandboxConfig::default(),
-                        seal: sandbox_on,
-                    };
-                    syn.fire(
-                        t.as_ref(),
-                        tc.args.clone(),
-                        ScopeRequest { access: t.access() },
-                    )
+                let scope_req = ScopeRequest { access: t.access() };
+                let fired = if let Some(nerve_writer) = relay {
+                    // Phase 3: brain is under a spine — delegate via Nerve.
+                    use crate::turn::synapse::RelaySynapse;
+                    RelaySynapse {
+                        writer: nerve_writer.clone(),
+                    }
+                    .fire(t.as_ref(), tc.args.clone(), scope_req)
                     .await
                 } else {
-                    use crate::turn::synapse::InProcessSynapse;
-                    InProcessSynapse
-                        .fire(
-                            t.as_ref(),
-                            tc.args.clone(),
-                            ScopeRequest { access: t.access() },
-                        )
-                        .await
+                    let is_gait_binary = std::env::current_exe()
+                        .ok()
+                        .and_then(|p| p.file_stem().map(|n| n == "gait"))
+                        .unwrap_or(false);
+                    if !is_gait_binary {
+                        eprintln!(
+                            "[gait] world tool '{}' running in-process (binary-name guard did not match 'gait')",
+                            tc.tool_name
+                        );
+                    }
+                    if is_gait_binary {
+                        use crate::session::log::read_events;
+                        use crate::session::retrace::active_cwd;
+                        use crate::turn::synapse::SubprocessSynapse;
+                        let events = read_events(&emitter.tx_path).unwrap_or_default();
+                        let cwd = active_cwd(&events, codebase);
+                        let syn = SubprocessSynapse {
+                            gait_dir: gait_dir.to_path_buf(),
+                            codebase: codebase.to_path_buf(),
+                            session_id: session_id.to_string(),
+                            cwd: cwd.to_string_lossy().into_owned(),
+                            sandbox_cfg: crate::config::SandboxConfig::default(),
+                            seal: sandbox_on,
+                        };
+                        syn.fire(t.as_ref(), tc.args.clone(), scope_req).await
+                    } else {
+                        use crate::turn::synapse::InProcessSynapse;
+                        InProcessSynapse
+                            .fire(t.as_ref(), tc.args.clone(), scope_req)
+                            .await
+                    }
                 };
                 match fired {
                     Ok((value, events, denied_item)) => {
@@ -432,6 +439,7 @@ mod synapse_routing_tests {
             dir.path(),
             "stest123",
             true,
+            None, // no relay in test
         )
         .await
         .unwrap();

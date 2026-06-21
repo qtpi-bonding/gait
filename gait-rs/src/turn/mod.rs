@@ -481,6 +481,7 @@ pub async fn run_turn(
                         &gait_dir,
                         &session_id,
                         sandbox_on,
+                        None, // relay: None until __brain wires up NerveWriter (Phase 3 Task 4a)
                     )
                     .await
                     {
@@ -1201,6 +1202,7 @@ pub async fn run_turn(
                             &gait_dir,
                             &session_id,
                             sandbox_on,
+                            None,
                         )
                         .await
                     }
@@ -1370,6 +1372,7 @@ pub async fn run_turn(
                             &gait_dir,
                             &session_id,
                             sandbox_on,
+                            None,
                         )
                         .await
                         .unwrap_or_else(|e| error_tool_result(tc, e));
@@ -1582,6 +1585,7 @@ pub async fn run_turn(
                             &gait_dir,
                             &session_id,
                             sandbox_on,
+                            None,
                         )
                         .await
                         .unwrap_or_else(|e| error_tool_result(tc, e));
