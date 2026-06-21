@@ -296,6 +296,24 @@ pub trait Hook: Send + Sync {
     fn post_turn(&self, _ctx: &HookContext, _rec: &crate::Recorder) {}
 }
 
+/// The filesystem dimension a tool operates on for a specific path argument.
+/// Used by `Tool::scope_targets` to declare what kind of access each target needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dimension {
+    Read,
+    Write,
+}
+
+impl Dimension {
+    /// Returns `"read"` or `"write"` — the string used in `UnlockItem.dimension`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Dimension::Read => "read",
+            Dimension::Write => "write",
+        }
+    }
+}
+
 /// What a tool needs from the sandbox, in the same dimensions as the sandbox scope.
 /// `reads`/`writes` are CODEBASE/world filesystem access; gait-dir access is implicit
 /// and brain-side. Used to route a call (brain vs hand) and, later, to seal the hand.
@@ -378,6 +396,16 @@ pub trait Tool: Send + Sync {
     /// When Some, provider adapters append a compact "Returns: {…}" line to the description.
     fn output_schema(&self) -> Option<&serde_json::Value> {
         None
+    }
+
+    /// Return the filesystem paths this call will access and the access dimension
+    /// for each, extracted from `args`. Used by the scope pre-check in `turn.rs`
+    /// (Task 5) to detect out-of-ceiling accesses before running the tool.
+    ///
+    /// `shell` is excluded (opaque — handled via the EACCES path in Task 6).
+    /// Default: `vec![]` — tools that don't operate on known paths pass through.
+    fn scope_targets(&self, _args: &serde_json::Value) -> Vec<(std::path::PathBuf, Dimension)> {
+        vec![]
     }
 
     /// Convenience: box self into `Box<dyn Tool>`.

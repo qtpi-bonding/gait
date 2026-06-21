@@ -113,6 +113,17 @@ impl Tool for GlobTool {
             ..Default::default()
         }
     }
+
+    fn scope_targets(&self, args: &serde_json::Value) -> Vec<(PathBuf, crate::types::Dimension)> {
+        // `path` constrains the search root. No explicit path = codebase root (in ceiling).
+        // `pattern` is a glob pattern, not a concrete path — not checked here.
+        let resolved = match args.get("path").and_then(|v| v.as_str()) {
+            Some(p) if std::path::Path::new(p).is_absolute() => PathBuf::from(p),
+            Some(p) => self.ctx.codebase_path.join(p),
+            None => return vec![],
+        };
+        vec![(resolved, crate::types::Dimension::Read)]
+    }
 }
 
 #[cfg(test)]

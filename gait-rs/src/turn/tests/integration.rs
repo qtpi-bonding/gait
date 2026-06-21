@@ -1387,3 +1387,80 @@ async fn on_ask_policy_streams_nothing() {
     );
     assert!(rx.try_recv().is_err(), "on-ask must stream nothing");
 }
+
+// ── Task 5: supervised mode scope pre-check ────────────────────────────────────
+
+/// Supervised mode: write tool targeting a path outside the sandbox ceiling
+/// (e.g. /etc/x, which is outside the codebase root) must return
+/// TurnResult::Unlock with one item naming that path, and the file must NOT
+/// be written.
+#[tokio::test]
+async fn supervised_write_outside_ceiling_pauses_with_unlock() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+
+    // The model issues a write to /etc/x — outside the codebase ceiling.
+    let provider = Arc::new(MockProvider {
+        responses: Arc::new(vec![vec![
+            StreamChunk::ToolCallComplete {
+                tool_call_id: "tc-scope-write".into(),
+                tool_name: "write".into(),
+                args: serde_json::json!({
+                    "file_path": "/etc/x",
+                    "content": "should not be written"
+                }),
+            },
+            StreamChunk::Done,
+        ]]),
+        call_idx: Arc::new(AtomicUsize::new(0)),
+    });
+
+    let write_tool = crate::tools::WriteTool::new(crate::tools::ToolCtx::new(
+        ws.path().to_path_buf(),
+        ws.path().to_path_buf(),
+        "test".into(),
+    ));
+
+    let result = run_turn_test_call(
+        ws.path().to_path_buf(),
+        ws.path().to_path_buf(),
+        "sscope-write-01".into(),
+        provider,
+        vec![write_tool.boxed()],
+        // write is in the allow list so permission gating won't trigger first
+        vec!["write".into()],
+        vec![],
+        TurnInput {
+            auto: false, // supervised mode — pre-check must pause
+            max_iter: None,
+            preview_policy: crate::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: true,
+        },
+        crate::git::Repos::production(),
+    )
+    .await
+    .unwrap();
+
+    // Must return TurnResult::Unlock, not Done/Permissions.
+    match &result {
+        TurnResult::Unlock { items } => {
+            assert_eq!(items.len(), 1, "expected one unlock item, got {items:?}");
+            let item = &items[0];
+            assert!(
+                item.resource.contains("/etc/x"),
+                "unlock item resource should name /etc/x, got: {}",
+                item.resource
+            );
+            assert_eq!(item.tool_name, "write", "tool_name should be write");
+            assert_eq!(item.dimension, "write", "dimension should be write");
+        }
+        other => panic!("expected TurnResult::Unlock, got: {other:?}"),
+    }
+
+    // The file must NOT have been written.
+    assert!(
+        !std::path::Path::new("/etc/x").exists(),
+        "/etc/x must not be created by the pre-check"
+    );
+}

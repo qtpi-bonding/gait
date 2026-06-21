@@ -1000,6 +1000,35 @@ pub async fn run_turn(
             });
         }
 
+        // Scope pre-check (supervised mode + sandbox on only): for each world-touching
+        // tool call that exposes resolvable path targets, verify every target falls
+        // within the sandbox ceiling (codebase root + default config). If any target
+        // is outside the ceiling, pause immediately with TurnResult::Unlock — the tool
+        // is NOT run. In auto mode the kernel seal (EACCES) handles out-of-scope writes
+        // via Task 6; the pre-check is a supervised-only UX feature.
+        if !auto && sandbox_on {
+            let mut pending_unlocks: Vec<pb::UnlockItem> = vec![];
+            for tc in &step_tool_calls {
+                if let Some(tool) = tools.iter().find(|t| t.name() == tc.tool_name) {
+                    let items = check_own_tool_scope(tc, tool.as_ref(), &codebase_path);
+                    pending_unlocks.extend(items);
+                }
+            }
+            if !pending_unlocks.is_empty() {
+                return pause_for_unlock(
+                    emitter,
+                    pending_unlocks,
+                    &repos,
+                    &gait_dir,
+                    &session_id,
+                    &codebase_path,
+                    &system_prompt,
+                    &hooks,
+                    step_index + 1,
+                );
+            }
+        }
+
         // Single permission gate: classify all tool calls into allowed vs gated.
         // Allowed tools execute below (parallel batch + serial). Gated tools either
         // trigger a Permissions exit (non-auto) or never exist (auto mode, where
@@ -1637,6 +1666,65 @@ pub async fn run_turn(
         "reached max steps ({}) without turn_complete",
         max_iter.unwrap_or(100)
     )
+}
+
+/// Check whether a single tool call targets any path outside its sandbox ceiling.
+///
+/// Returns a list of `UnlockItem`s — one per out-of-scope target. Returns an
+/// empty vec when all targets are within scope (or the tool exposes no resolvable
+/// targets via `scope_targets`).
+///
+/// Uses `SandboxConfig::default()` for the ceiling (no extra config-level
+/// widening beyond codebase + temp_jail). The `temp_jail` path is `/tmp/gait-jail`
+/// as a placeholder — for the pre-check we only care whether the target is under
+/// the codebase, which `compute_scope` delivers correctly for default config.
+fn check_own_tool_scope(
+    tc: &ToolCall,
+    tool: &dyn Tool,
+    codebase: &std::path::Path,
+) -> Vec<pb::UnlockItem> {
+    use crate::sandbox::ceiling::compute_scope;
+    use crate::types::Dimension;
+
+    let targets = tool.scope_targets(&tc.args);
+    if targets.is_empty() {
+        return vec![];
+    }
+
+    let temp_jail = std::path::Path::new("/tmp/gait-jail");
+    let cfg = crate::config::SandboxConfig::default();
+    let ceiling = compute_scope(tool.access(), &cfg, codebase, temp_jail);
+
+    let mut items = vec![];
+    for (path, dim) in targets {
+        let in_scope = match dim {
+            Dimension::Write => ceiling
+                .writable
+                .iter()
+                .any(|allowed| path.starts_with(allowed)),
+            Dimension::Read => {
+                // Phase 2b: read_all is always true → reads are never blocked.
+                if ceiling.read_all {
+                    true
+                } else {
+                    ceiling
+                        .readable
+                        .iter()
+                        .any(|allowed| path.starts_with(allowed))
+                }
+            }
+        };
+        if !in_scope {
+            items.push(pb::UnlockItem {
+                id: uuid::Uuid::new_v4().to_string(),
+                tool_name: tc.tool_name.clone(),
+                resource: path.to_string_lossy().into_owned(),
+                dimension: dim.as_str().to_string(),
+                preview: None,
+            });
+        }
+    }
+    items
 }
 
 /// Emit the sandbox-unlock pause and return `TurnResult::Unlock`.

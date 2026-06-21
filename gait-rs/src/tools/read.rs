@@ -234,6 +234,21 @@ impl Tool for ReadTool {
             ..Default::default()
         }
     }
+
+    fn scope_targets(
+        &self,
+        args: &serde_json::Value,
+    ) -> Vec<(std::path::PathBuf, crate::types::Dimension)> {
+        let Some(raw) = args.get("file_path").and_then(|v| v.as_str()) else {
+            return vec![];
+        };
+        let resolved = if std::path::Path::new(raw).is_absolute() {
+            PathBuf::from(raw)
+        } else {
+            self.ctx.codebase_path.join(raw)
+        };
+        vec![(resolved, crate::types::Dimension::Read)]
+    }
 }
 
 #[cfg(test)]

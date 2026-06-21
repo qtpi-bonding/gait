@@ -255,6 +255,16 @@ impl Tool for LsTool {
             ..Default::default()
         }
     }
+
+    fn scope_targets(&self, args: &serde_json::Value) -> Vec<(PathBuf, crate::types::Dimension)> {
+        // `path` is optional; None means codebase root (always in ceiling).
+        let resolved = match args.get("path").and_then(|v| v.as_str()) {
+            Some(p) if std::path::Path::new(p).is_absolute() => PathBuf::from(p),
+            Some(p) => self.ctx.codebase_path.join(p),
+            None => return vec![],
+        };
+        vec![(resolved, crate::types::Dimension::Read)]
+    }
 }
 
 #[cfg(test)]
