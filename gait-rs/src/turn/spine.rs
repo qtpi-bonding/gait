@@ -26,6 +26,11 @@ use crate::turn::nerve;
 /// * `StreamForward` → `sink.item()` (REPL TUI rendering)
 /// * `Terminated`    → parse `TurnResult`, `sink.end_turn()`, `sink.result()`, return
 ///
+/// The spine is the sole gait-dir writer. Before spawning the brain, it performs
+/// all startup disk writes (worktree, checkpoint, session.json, lock, SessionStart)
+/// so the brain can run with `writable: []`. The brain's `run_turn` skips these
+/// when `relay.is_some()`.
+///
 /// Returns `Ok(true)` if the brain signalled failure, `Ok(false)` on success.
 #[allow(clippy::too_many_arguments)]
 pub async fn relay_brain_turn(
@@ -41,6 +46,65 @@ pub async fn relay_brain_turn(
 ) -> anyhow::Result<bool> {
     use tokio::process::Command;
 
+    // ── Spine-owned startup writes (brain is disk-write-free) ───────────────
+    // These all write to gait-dir; the brain's seal has writable: [] so it
+    // cannot do them. The spine does them before spawning the brain.
+    let repos = crate::git::Repos::production();
+    let session_dir = gait_dir.join("sessions").join(session_id);
+    let tx_path = session_dir.join("log.jsonl");
+
+    // 1. Session worktree (idempotent — callers may have already done this).
+    repos.traces.create_session_worktree(gait_dir, session_id)?;
+
+    // 2. Checkpoint repo init (idempotent — checks if HEAD exists).
+    repos.checkpoints.init(gait_dir, session_id, codebase)?;
+
+    // 3. session.json: persist codebase_path write-once.
+    {
+        use crate::session::log::now_ms;
+        use crate::session::session_json::{read_session_json, write_session_json};
+        let mut sj = read_session_json(gait_dir, session_id)?;
+        if sj.codebase_path.is_none() {
+            sj.id = session_id.to_string();
+            if sj.created_at == 0 {
+                sj.created_at = now_ms();
+            }
+            sj.codebase_path = Some(codebase.to_string_lossy().to_string());
+            write_session_json(gait_dir, &sj)?;
+        }
+    }
+
+    // 4. Session lock — held for the duration of the brain process.
+    let _lock = crate::turn::SessionLock::acquire(&session_dir)?;
+
+    // 5. SessionStart event — write once per session (idempotent via event check).
+    {
+        use crate::proto::gait::log::v1::{event, payload};
+        let ingestor = crate::session::Ingestor::from_session(gait_dir, session_id);
+        let has_start = ingestor.events().unwrap_or_default().iter().any(|e| {
+            matches!(
+                e.body.as_ref().and_then(|b| match b {
+                    event::Body::Payload(p) => p.kind.as_ref(),
+                    _ => None,
+                }),
+                Some(payload::Kind::SessionStart(_))
+            )
+        });
+        if !has_start {
+            let codebase_hash = repos.codebase.head_hash(codebase).unwrap_or_default();
+            let dirty_files = repos.codebase.dirty_files(codebase);
+            let codebase_dirty = !dirty_files.is_empty();
+            crate::session::log::init_session(crate::session::log::InitSessionOpts {
+                log_path: tx_path.clone(),
+                id: session_id.to_string(),
+                model: String::new(),
+                codebase_hash,
+                codebase_dirty,
+            })?;
+        }
+    }
+
+    // ── Spawn brain ─────────────────────────────────────────────────────────
     let mut child = Command::new(exe)
         .arg("__brain")
         .args(brain_args)

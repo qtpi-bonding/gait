@@ -319,24 +319,30 @@ pub async fn run_turn(
     let sandbox_on = input.sandbox_on;
     let relay = input.relay;
 
-    repos
-        .traces
-        .create_session_worktree(&gait_dir, &session_id)?;
-    repos
-        .checkpoints
-        .init(&gait_dir, &session_id, &codebase_path)?;
+    // When running under a spine (relay.is_some()), the spine performs all
+    // startup disk writes before spawning the brain. The brain's seal has
+    // writable: [] so it cannot write to gait-dir. Skip these writes to avoid
+    // EPERM — the spine already did (or will do) them.
+    if relay.is_none() {
+        repos
+            .traces
+            .create_session_worktree(&gait_dir, &session_id)?;
+        repos
+            .checkpoints
+            .init(&gait_dir, &session_id, &codebase_path)?;
 
-    // Persist codebase_path (write-once) so `gait rewind` can locate the codebase.
-    {
-        use crate::session::session_json::{read_session_json, write_session_json};
-        let mut sj = read_session_json(&gait_dir, &session_id)?;
-        if sj.codebase_path.is_none() {
-            sj.id = session_id.clone();
-            if sj.created_at == 0 {
-                sj.created_at = now_ms();
+        // Persist codebase_path (write-once) so `gait rewind` can locate the codebase.
+        {
+            use crate::session::session_json::{read_session_json, write_session_json};
+            let mut sj = read_session_json(&gait_dir, &session_id)?;
+            if sj.codebase_path.is_none() {
+                sj.id = session_id.clone();
+                if sj.created_at == 0 {
+                    sj.created_at = now_ms();
+                }
+                sj.codebase_path = Some(codebase_path.to_string_lossy().to_string());
+                write_session_json(&gait_dir, &sj)?;
             }
-            sj.codebase_path = Some(codebase_path.to_string_lossy().to_string());
-            write_session_json(&gait_dir, &sj)?;
         }
     }
 
@@ -344,7 +350,12 @@ pub async fn run_turn(
     let tx_path = session_dir.join("log.jsonl");
     let ingestor = Ingestor::from_session(&gait_dir, &session_id);
 
-    let _lock = SessionLock::acquire(&session_dir)?;
+    // SessionLock: brain doesn't hold the lock when under a spine (the spine holds it).
+    let _lock = if relay.is_none() {
+        Some(SessionLock::acquire(&session_dir)?)
+    } else {
+        None
+    };
 
     let codebase_hash = repos.codebase.head_hash(&codebase_path).unwrap_or_default();
 
@@ -355,19 +366,23 @@ pub async fn run_turn(
     // event's presence rather than log-emptiness: under Phase 4 Option A the input
     // adapter appends this turn's user_turn BEFORE run_turn, so the log is no longer
     // empty on the first turn.
-    let has_session_start = ingestor
-        .events()
-        .unwrap_or_default()
-        .iter()
-        .any(|e| matches!(event_kind(e), Some(payload::Kind::SessionStart(_))));
-    if !has_session_start {
-        init_session(InitSessionOpts {
-            log_path: tx_path.clone(),
-            id: session_id.clone(),
-            model: model.clone(),
-            codebase_hash: codebase_hash.clone(),
-            codebase_dirty,
-        })?;
+    // When running under a spine, the spine writes SessionStart — skip to avoid
+    // disk writes (brain has writable: []).
+    if relay.is_none() {
+        let has_session_start = ingestor
+            .events()
+            .unwrap_or_default()
+            .iter()
+            .any(|e| matches!(event_kind(e), Some(payload::Kind::SessionStart(_))));
+        if !has_session_start {
+            init_session(InitSessionOpts {
+                log_path: tx_path.clone(),
+                id: session_id.clone(),
+                model: model.clone(),
+                codebase_hash: codebase_hash.clone(),
+                codebase_dirty,
+            })?;
+        }
     }
 
     // Effective allow = config baseline (global+agent, in `allow`) + log-derived
@@ -738,11 +753,13 @@ pub async fn run_turn(
         emitter.set_position(current_turn, step_index as u32);
         if cancel.as_ref().map(|c| c.is_cancelled()).unwrap_or(false) {
             emitter.record(events::cancellation_signal())?;
-            repos.traces.commit_session(
-                &gait_dir,
-                &session_id,
-                &format!("session({}): cancelled", session_id),
-            )?;
+            if relay.is_none() {
+                repos.traces.commit_session(
+                    &gait_dir,
+                    &session_id,
+                    &format!("session({}): cancelled", session_id),
+                )?;
+            }
             return Ok(TurnResult::Cancelled);
         }
 
@@ -906,11 +923,13 @@ pub async fn run_turn(
         // Was Esc pressed during this step's stream?
         if cancel.as_ref().map(|c| c.is_cancelled()).unwrap_or(false) {
             emitter.record(events::cancellation_signal())?;
-            repos.traces.commit_session(
-                &gait_dir,
-                &session_id,
-                &format!("session({}): cancelled", session_id),
-            )?;
+            if relay.is_none() {
+                repos.traces.commit_session(
+                    &gait_dir,
+                    &session_id,
+                    &format!("session({}): cancelled", session_id),
+                )?;
+            }
             return Ok(TurnResult::Cancelled);
         }
         {
@@ -980,11 +999,13 @@ pub async fn run_turn(
                 result: None,
                 changes: changes.clone(),
             }))?;
-            repos.traces.commit_session(
-                &gait_dir,
-                &session_id,
-                &format!("session({}): turn {}", session_id, turn_n),
-            )?;
+            if relay.is_none() {
+                repos.traces.commit_session(
+                    &gait_dir,
+                    &session_id,
+                    &format!("session({}): turn {}", session_id, turn_n),
+                )?;
+            }
             {
                 let post_turn_ctx = HookContext {
                     event: "post_turn".to_string(),
@@ -1048,6 +1069,7 @@ pub async fn run_turn(
                     system_prompt: &system_prompt,
                     hooks: &hooks,
                     step_count: step_index + 1,
+                    skip_commit: relay.is_some(),
                 });
             }
         }
@@ -1263,6 +1285,7 @@ pub async fn run_turn(
                             system_prompt: &system_prompt,
                             hooks: &hooks,
                             step_count: step_index + 1,
+                            skip_commit: relay.is_some(),
                         });
                     }
                 }
@@ -1421,6 +1444,7 @@ pub async fn run_turn(
                                     system_prompt: &system_prompt,
                                     hooks: &hooks,
                                     step_count: step_index + 1,
+                                    skip_commit: relay.is_some(),
                                 });
                             }
                         }
@@ -1515,11 +1539,13 @@ pub async fn run_turn(
                             result: result.clone(),
                             changes: changes.clone(),
                         }))?;
-                        repos.traces.commit_session(
-                            &gait_dir,
-                            &session_id,
-                            &format!("session({}): turn {}", session_id, turn_n),
-                        )?;
+                        if relay.is_none() {
+                            repos.traces.commit_session(
+                                &gait_dir,
+                                &session_id,
+                                &format!("session({}): turn {}", session_id, turn_n),
+                            )?;
+                        }
                         {
                             let post_turn_ctx = HookContext {
                                 event: "post_turn".to_string(),
@@ -1634,6 +1660,7 @@ pub async fn run_turn(
                                     system_prompt: &system_prompt,
                                     hooks: &hooks,
                                     step_count: step_index + 1,
+                                    skip_commit: relay.is_some(),
                                 });
                             }
                         }
@@ -1657,11 +1684,13 @@ pub async fn run_turn(
         // (In auto mode gated_ids is always empty — this block is never reached.)
         if !pending_permissions.is_empty() {
             emitter.record(events::permissions(&pending_permissions))?;
-            repos.traces.commit_session(
-                &gait_dir,
-                &session_id,
-                &format!("session({}): permissions", session_id),
-            )?;
+            if relay.is_none() {
+                repos.traces.commit_session(
+                    &gait_dir,
+                    &session_id,
+                    &format!("session({}): permissions", session_id),
+                )?;
+            }
             {
                 let post_turn_ctx = HookContext {
                     event: "post_turn".to_string(),
@@ -1682,11 +1711,13 @@ pub async fn run_turn(
 
         // Exit turn for clarify/inform — event already in transcript+stdout via emit_event
         if let Some(items) = clarify_signal.take() {
-            repos.traces.commit_session(
-                &gait_dir,
-                &session_id,
-                &format!("session({}): clarify", session_id),
-            )?;
+            if relay.is_none() {
+                repos.traces.commit_session(
+                    &gait_dir,
+                    &session_id,
+                    &format!("session({}): clarify", session_id),
+                )?;
+            }
             {
                 let post_turn_ctx = HookContext {
                     event: "post_turn".to_string(),
@@ -1705,11 +1736,13 @@ pub async fn run_turn(
             return Ok(TurnResult::Clarify { items });
         }
         if let Some(items) = inform_signal.take() {
-            repos.traces.commit_session(
-                &gait_dir,
-                &session_id,
-                &format!("session({}): inform", session_id),
-            )?;
+            if relay.is_none() {
+                repos.traces.commit_session(
+                    &gait_dir,
+                    &session_id,
+                    &format!("session({}): inform", session_id),
+                )?;
+            }
             {
                 let post_turn_ctx = HookContext {
                     event: "post_turn".to_string(),
@@ -1829,6 +1862,9 @@ pub(crate) struct UnlockPauseCtx<'a> {
     system_prompt: &'a str,
     hooks: &'a [Box<dyn crate::types::Hook>],
     step_count: usize,
+    /// When Some, the brain is running under a spine — skip commit_session
+    /// (the spine owns all gait-dir writes).
+    skip_commit: bool,
 }
 
 /// Emit the sandbox-unlock pause and return `TurnResult::Unlock`.
@@ -1842,11 +1878,13 @@ pub(crate) struct UnlockPauseCtx<'a> {
 /// in auto-mode (caller must gate on `sandbox_on && !auto`).
 pub(crate) fn pause_for_unlock(ctx: UnlockPauseCtx) -> anyhow::Result<TurnResult> {
     ctx.emitter.record(events::unlock(&ctx.items))?;
-    ctx.repos.traces.commit_session(
-        ctx.gait_dir,
-        ctx.session_id,
-        &format!("session({}): unlock", ctx.session_id),
-    )?;
+    if !ctx.skip_commit {
+        ctx.repos.traces.commit_session(
+            ctx.gait_dir,
+            ctx.session_id,
+            &format!("session({}): unlock", ctx.session_id),
+        )?;
+    }
     {
         let post_turn_ctx = HookContext {
             event: "post_turn".to_string(),

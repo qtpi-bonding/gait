@@ -91,6 +91,7 @@ fn pause_for_unlock_returns_unlock_result_and_records_event() {
         system_prompt: "system-prompt",
         hooks: &[],
         step_count: 1,
+        skip_commit: false,
     })
     .expect("pause_for_unlock must succeed");
 
