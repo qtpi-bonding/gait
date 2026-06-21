@@ -4,4 +4,5 @@ pub mod init;
 pub mod run;
 pub mod run_tool;
 pub mod session;
+pub mod spine;
 pub mod workflow;

@@ -48,6 +48,7 @@ message Signal {
     Feedback feedback = 3;
     Spawn spawn = 4;
     Append append = 5;
+    Terminated terminated = 6;
   }
 }
 
@@ -60,4 +61,11 @@ message Spawn {
 // The spine mints seq/parents and appends to sessions/<id>/log.jsonl.
 message Append {
   gait.log.v1.Event event = 1;
+}
+
+// Brain → spine: the turn is complete.
+// Spine writes run_result_json to stdout and exits with the appropriate code.
+message Terminated {
+  string run_result_json = 1;
+  bool failed = 2;
 }

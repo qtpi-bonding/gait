@@ -42,6 +42,24 @@ pub async fn cmd_run(argv: &[String]) {
     crate::cli::run::cmd_run(argv, gait_dir, codebase).await
 }
 
+pub async fn cmd_spine(argv: &[String]) {
+    let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
+        eprintln!("[gait] {e}");
+        std::process::exit(1);
+    });
+    let codebase = resolve_codebase(argv);
+    crate::cli::spine::cmd_spine(argv, gait_dir, codebase).await
+}
+
+pub async fn cmd_brain(argv: &[String]) {
+    let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
+        eprintln!("[gait] {e}");
+        std::process::exit(1);
+    });
+    let codebase = resolve_codebase(argv);
+    crate::cli::spine::cmd_brain(argv, gait_dir, codebase).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

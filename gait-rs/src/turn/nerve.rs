@@ -113,21 +113,17 @@ where
 
     let handle = tokio::spawn(async move {
         let mut r = read_half;
-        loop {
-            match read_signal(&mut r).await {
-                Ok(sig) => {
-                    let sender = {
-                        let mut p = pending.lock().await;
-                        p.remove(&sig.corr_id)
-                    };
-                    if let Some(tx) = sender {
-                        let _ = tx.send(sig);
-                    }
-                    // Unknown corr_id: silently drop (e.g. one-way Append acks from spine).
-                }
-                Err(_) => break, // EOF or pipe broken — reader exits cleanly.
+        while let Ok(sig) = read_signal(&mut r).await {
+            let sender = {
+                let mut p = pending.lock().await;
+                p.remove(&sig.corr_id)
+            };
+            if let Some(tx) = sender {
+                let _ = tx.send(sig);
             }
+            // Unknown corr_id: silently drop (e.g. one-way Append acks from spine).
         }
+        // EOF or pipe broken — reader exits cleanly.
     });
 
     (writer, handle)

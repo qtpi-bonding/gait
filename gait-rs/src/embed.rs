@@ -37,6 +37,9 @@ pub struct LoopConfig {
     /// Defaults to `true` (config default); overridden by `--sandbox`/`--no-sandbox`
     /// or the `/sandbox on|off` REPL toggle.
     pub sandbox_on: bool,
+    /// Phase 3 Task 4a: when Some, execute_tool_call uses RelaySynapse.
+    /// None for direct (non-spine) runs; set by BrainDriver::turn_config.
+    pub relay: Option<crate::turn::nerve::NerveWriter>,
 }
 
 /// Per-turn machinery the loop can't own generically. `?Send`: the driver runs on
@@ -48,6 +51,17 @@ pub trait TurnDriver {
     async fn resolve_profile(&mut self) -> anyhow::Result<crate::profile::ResolvedProfile>;
     /// `auto`/`max_iter`/`preview` for this turn.
     fn turn_config(&mut self) -> LoopConfig;
+    /// Create the Recorder for this turn.
+    /// Default: writes to the session log file (direct/spine-less runs).
+    /// BrainDriver overrides to return `Recorder::remote_sink` (no disk write).
+    fn make_recorder(
+        &self,
+        gait_dir: &std::path::Path,
+        session_id: &str,
+        stream_tx: tokio::sync::mpsc::UnboundedSender<crate::proto::gait::log::v1::StreamItem>,
+    ) -> crate::Recorder {
+        crate::Recorder::for_session(gait_dir, session_id, stream_tx)
+    }
     /// After-turn policy (CLI: Scheduler/Harness; REPL: none). Runs on success only.
     async fn after_turn(&mut self, _sink: &mut dyn TurnSink, _result: &TurnResult) {}
     /// Turn error/panic policy. CLI → `diagnostic` + `Break` (the post-loop
@@ -104,13 +118,14 @@ pub async fn run_loop(
         let profile = driver.resolve_profile().await?;
         let cfg = driver.turn_config();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let emitter = crate::Recorder::for_session(gait_dir, session_id, tx);
+        let emitter = driver.make_recorder(gait_dir, session_id, tx);
         let input = TurnInput {
             auto: cfg.auto,
             max_iter: cfg.max_iter,
             preview_policy: cfg.preview_policy,
             cancel: cfg.cancel,
             sandbox_on: cfg.sandbox_on,
+            relay: cfg.relay,
         };
         let session_for_turn = session.clone();
         let handle = tokio::spawn(async move {

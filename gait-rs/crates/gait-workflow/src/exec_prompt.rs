@@ -78,6 +78,7 @@ impl TurnDriver for PromptNodeDriver {
             preview_policy: gait_core::config::PreviewPolicy::default(),
             cancel: None,
             sandbox_on: true,
+            relay: None,
         }
     }
 

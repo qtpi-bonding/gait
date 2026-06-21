@@ -47,7 +47,7 @@ async fn main() {
         .unwrap_or_else(cwd_or_dot);
 
     match args[1].as_str() {
-        "run" => gait_cli::cli::args::cmd_run(&args[2..]).await,
+        "run" => gait_cli::cli::args::cmd_spine(&args[2..]).await,
 
         "init" => gait_cli::cli::init::cmd_init(&args[2..]),
         "finish" => gait_cli::cli::session::cmd_finish(&args[2..]),
@@ -90,6 +90,7 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        "__brain" => gait_cli::cli::args::cmd_brain(&args[2..]).await,
         "__run-tool" => gait_cli::cli::run_tool::cmd_run_tool(&args[2..]).await,
         _ => {
             eprintln!("[gait] unknown command: {}", args[1]);

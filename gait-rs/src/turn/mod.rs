@@ -55,7 +55,7 @@ struct InformArg {
 mod curate;
 mod exec;
 mod gate;
-pub(crate) mod nerve;
+pub mod nerve;
 mod prompt;
 pub(crate) mod synapse;
 
@@ -117,6 +117,9 @@ pub struct TurnInput {
     pub preview_policy: crate::config::PreviewPolicy,
     pub cancel: Option<tokio_util::sync::CancellationToken>,
     pub sandbox_on: bool,
+    /// Phase 3 Task 4a: when Some, execute_tool_call uses RelaySynapse.
+    /// None for direct runs (spine path sets this from LoopConfig).
+    pub relay: Option<crate::turn::nerve::NerveWriter>,
 }
 
 // ── Session lock (RAII PID file) ─────────────────────────────────────────────
@@ -313,6 +316,7 @@ pub async fn run_turn(
     let preview_policy = input.preview_policy;
     let cancel = input.cancel;
     let sandbox_on = input.sandbox_on;
+    let relay = input.relay;
 
     repos
         .traces
@@ -481,7 +485,7 @@ pub async fn run_turn(
                         &gait_dir,
                         &session_id,
                         sandbox_on,
-                        None, // relay: None until __brain wires up NerveWriter (Phase 3 Task 4a)
+                        relay.as_ref(),
                     )
                     .await
                     {
@@ -1189,6 +1193,7 @@ pub async fn run_turn(
                 let codebase_path = codebase_path.clone();
                 let gait_dir = gait_dir.clone();
                 let session_id = session_id.clone();
+                let relay_clone = relay.clone();
                 async move {
                     if let Some(reason) = block_reason {
                         Err(anyhow::anyhow!("[Blocked by hook] {}", reason))
@@ -1202,7 +1207,7 @@ pub async fn run_turn(
                             &gait_dir,
                             &session_id,
                             sandbox_on,
-                            None,
+                            relay_clone.as_ref(),
                         )
                         .await
                     }
@@ -1372,7 +1377,7 @@ pub async fn run_turn(
                             &gait_dir,
                             &session_id,
                             sandbox_on,
-                            None,
+                            relay.as_ref(),
                         )
                         .await
                         .unwrap_or_else(|e| error_tool_result(tc, e));
@@ -1585,7 +1590,7 @@ pub async fn run_turn(
                             &gait_dir,
                             &session_id,
                             sandbox_on,
-                            None,
+                            relay.as_ref(),
                         )
                         .await
                         .unwrap_or_else(|e| error_tool_result(tc, e));

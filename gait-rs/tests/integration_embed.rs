@@ -97,6 +97,7 @@ impl TurnDriver for MyDriver {
             preview_policy: Default::default(),
             cancel: None,
             sandbox_on: true,
+            relay: None,
         }
     }
 

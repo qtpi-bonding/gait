@@ -284,6 +284,7 @@ impl gait_core::embed::TurnDriver for CliDriver {
             preview_policy: self.preview_policy,
             cancel: None,
             sandbox_on: self.sandbox_on,
+            relay: None,
         }
     }
 
