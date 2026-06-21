@@ -195,6 +195,23 @@ pub fn permissions_reply(from: String, items: &[pb::PermissionsReplyItem]) -> pb
     }))
 }
 
+/// `Unlock` — raised by the hand when a tool access exceeds the declared scope.
+/// The brain pauses and surfaces these items for human review.
+pub fn unlock(items: &[pb::UnlockItem]) -> pb::event::Body {
+    wire::body(pb::payload::Kind::Unlock(pb::Unlock {
+        items: items.to_vec(),
+    }))
+}
+
+/// `UnlockReply` — the human's decision for each `UnlockItem`.
+/// `from` is the replier id; each item carries a `decision` and `scope`.
+pub fn unlock_reply(from: String, items: &[pb::UnlockReplyItem]) -> pb::event::Body {
+    wire::body(pb::payload::Kind::UnlockReply(pb::UnlockReply {
+        from,
+        items: items.to_vec(),
+    }))
+}
+
 /// Parameters for [`turn_complete`].
 #[derive(Debug, Default)]
 pub struct TurnCompleteParams {
@@ -808,6 +825,76 @@ mod tests {
                 assert_eq!(r.reason, None);
             }
             other => panic!("expected Redact, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unlock_round_trips_items() {
+        use crate::proto::wire;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("log.jsonl");
+
+        let items = vec![pb::UnlockItem {
+            id: "req-1".into(),
+            tool_name: "write".into(),
+            resource: "/etc/secrets".into(),
+            dimension: "write".into(),
+            preview: Some("--- old\n+++ new".into()),
+        }];
+        wire::append(&path, super::unlock(&items)).expect("append unlock");
+
+        let evs = wire::read_events(&path).expect("read events");
+        assert_eq!(evs.len(), 1);
+        match evs[0].body.as_ref().and_then(|b| match b {
+            crate::proto::gait::log::v1::event::Body::Payload(p) => p.kind.as_ref(),
+            _ => None,
+        }) {
+            Some(pb::payload::Kind::Unlock(u)) => {
+                assert_eq!(u.items.len(), 1);
+                let item = &u.items[0];
+                assert_eq!(item.id, "req-1");
+                assert_eq!(item.tool_name, "write");
+                assert_eq!(item.resource, "/etc/secrets");
+                assert_eq!(item.dimension, "write");
+                assert_eq!(item.preview, Some("--- old\n+++ new".into()));
+            }
+            other => panic!("expected Unlock payload, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unlock_reply_round_trips_items() {
+        use crate::proto::wire;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("log.jsonl");
+
+        let items = vec![pb::UnlockReplyItem {
+            id: "req-1".into(),
+            decision: pb::Decision::Allow as i32,
+            scope: pb::Scope::Once as i32,
+        }];
+        wire::append(&path, super::unlock_reply("human".into(), &items))
+            .expect("append unlock_reply");
+
+        let evs = wire::read_events(&path).expect("read events");
+        assert_eq!(evs.len(), 1);
+        match evs[0].body.as_ref().and_then(|b| match b {
+            crate::proto::gait::log::v1::event::Body::Payload(p) => p.kind.as_ref(),
+            _ => None,
+        }) {
+            Some(pb::payload::Kind::UnlockReply(ur)) => {
+                assert_eq!(ur.from, "human");
+                assert_eq!(ur.items.len(), 1);
+                let item = &ur.items[0];
+                assert_eq!(item.id, "req-1");
+                assert_eq!(item.decision, pb::Decision::Allow as i32);
+                assert_eq!(item.scope, pb::Scope::Once as i32);
+            }
+            other => panic!("expected UnlockReply payload, got {other:?}"),
         }
     }
 

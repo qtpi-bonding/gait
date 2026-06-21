@@ -17,10 +17,7 @@ message Impulse {
 message Feedback {
   google.protobuf.Value result = 1;
   repeated gait.log.v1.Event events = 2;
-  // reserved 3: was `gait.log.v1.UnlockItem denied = 3;` (Phase 2c).
-  // UnlockItem does not exist in log.proto yet; field number reserved so
-  // future assignment does not renumber the wire format.
-  reserved 3;
+  optional gait.log.v1.UnlockItem denied = 3;  // set when the hand signals a seal denial (Phase 2c)
 }
 
 // Capability scope for one tool call.
