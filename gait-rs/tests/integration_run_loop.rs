@@ -99,6 +99,7 @@ impl TurnDriver for TestDriver {
             preview_policy: Default::default(),
             cancel: None,
             sandbox_on: true,
+            sandbox_cfg: Default::default(),
             relay: None,
         }
     }

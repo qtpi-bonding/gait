@@ -72,6 +72,9 @@ struct WebfetchParams {
 
 pub struct WebfetchTool {
     parameters: Value,
+    /// When `Some`, only requests to these hosts are allowed. Enforced at the
+    /// app level because the kernel SBPL can't do host-level filtering.
+    network_allowlist: Option<Vec<String>>,
 }
 
 impl Default for WebfetchTool {
@@ -86,7 +89,15 @@ impl WebfetchTool {
             crate::tools::make_schema::<WebfetchParams>(),
             crate::types::OutputFilter::Both,
         );
-        Self { parameters }
+        Self {
+            parameters,
+            network_allowlist: None,
+        }
+    }
+
+    pub fn with_network_allowlist(mut self, hosts: Vec<String>) -> Self {
+        self.network_allowlist = Some(hosts);
+        self
     }
 }
 
@@ -216,6 +227,26 @@ impl Tool for WebfetchTool {
             return Err(crate::tools::ToolError::Execute(
                 "URL must start with http:// or https://".to_string(),
             ));
+        }
+
+        // App-level egress allowlist: when sandbox.network is in Hosts mode,
+        // the kernel SBPL allows all outbound (can't filter by host). Check
+        // the URL's host against the allowlist here to close the gap.
+        if let Some(ref allowlist) = self.network_allowlist {
+            let host = reqwest::Url::parse(&params.url)
+                .ok()
+                .and_then(|u: reqwest::Url| u.host_str().map(|h: &str| h.to_lowercase()))
+                .unwrap_or_default();
+            if !host.is_empty()
+                && !allowlist.iter().any(|allowed| {
+                    let allowed = allowed.to_lowercase();
+                    allowed == host || allowed.starts_with("*.") && host.ends_with(&allowed[1..])
+                })
+            {
+                return Err(crate::tools::ToolError::Execute(format!(
+                    "egress denied: host '{host}' not in sandbox.network allowlist"
+                )));
+            }
         }
 
         let timeout_secs = params
@@ -449,5 +480,77 @@ mod tests {
                 .unwrap(),
             "string"
         );
+    }
+
+    #[tokio::test]
+    async fn allowlist_blocks_unlisted_host() {
+        let tool = WebfetchTool::new().with_network_allowlist(vec!["github.com".to_string()]);
+        let result = tool
+            .execute(
+                serde_json::json!({ "url": "https://example.com/page" }),
+                &crate::Recorder::detached(),
+            )
+            .await;
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("egress denied") && err.contains("example.com"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn allowlist_permits_listed_host_past_check() {
+        let tool = WebfetchTool::new().with_network_allowlist(vec!["example.com".to_string()]);
+        // The host passes the allowlist check; it then fails at the network
+        // layer (no real connection in tests). We confirm the error is NOT
+        // "egress denied".
+        let result = tool
+            .execute(
+                serde_json::json!({ "url": "https://example.com/page" }),
+                &crate::Recorder::detached(),
+            )
+            .await;
+        // May succeed or fail at network, but must NOT be an allowlist error.
+        if let Err(e) = result {
+            assert!(
+                !e.to_string().contains("egress denied"),
+                "should not be blocked by allowlist: {e}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn allowlist_wildcard_permits_subdomain() {
+        let tool = WebfetchTool::new().with_network_allowlist(vec!["*.github.com".to_string()]);
+        let result = tool
+            .execute(
+                serde_json::json!({ "url": "https://api.github.com/repos" }),
+                &crate::Recorder::detached(),
+            )
+            .await;
+        if let Err(e) = result {
+            assert!(
+                !e.to_string().contains("egress denied"),
+                "wildcard should permit subdomain: {e}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn no_allowlist_allows_any_host() {
+        // Without an allowlist, no egress filtering is applied.
+        let tool = WebfetchTool::new();
+        let result = tool
+            .execute(
+                serde_json::json!({ "url": "https://example.com/page" }),
+                &crate::Recorder::detached(),
+            )
+            .await;
+        if let Err(e) = result {
+            assert!(
+                !e.to_string().contains("egress denied"),
+                "no-allowlist tool should not block: {e}"
+            );
+        }
     }
 }

@@ -86,11 +86,26 @@ pub async fn run_hand(config: HandConfig) {
         args_json
     };
 
-    let ctx = ToolCtx::new(
-        config.codebase.clone(),
-        config.gait_dir.clone(),
-        config.session.clone(),
-    );
+    let ctx = {
+        let mut ctx = ToolCtx::new(
+            config.codebase.clone(),
+            config.gait_dir.clone(),
+            config.session.clone(),
+        );
+        // Extract the network allowlist from the Impulse scope so webfetch
+        // can enforce host-level filtering (the kernel SBPL allows all outbound
+        // when Hosts mode is set — the app-level check closes the gap).
+        if let Some(s) = impulse.requested.as_ref() {
+            if let Some(n) = s.network.as_ref() {
+                if let Ok(gait_proto::gait::sandbox::v1::network_scope::Mode::Hosts) =
+                    gait_proto::gait::sandbox::v1::network_scope::Mode::try_from(n.mode)
+                {
+                    ctx = ctx.with_network_allowlist(n.hosts.clone());
+                }
+            }
+        }
+        ctx
+    };
     let tools = builtin_tools(ctx, vec![], vec![], vec![], Repos::production());
     let tool = match tools.iter().find(|t| t.name() == config.tool) {
         Some(t) => t,
