@@ -57,6 +57,7 @@ mod exec;
 mod gate;
 pub mod nerve;
 mod prompt;
+pub mod spine;
 pub(crate) mod synapse;
 
 // Re-exports

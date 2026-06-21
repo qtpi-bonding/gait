@@ -49,6 +49,7 @@ message Signal {
     Spawn spawn = 4;
     Append append = 5;
     Terminated terminated = 6;
+    StreamForward stream_forward = 7;
   }
 }
 
@@ -68,4 +69,11 @@ message Append {
 message Terminated {
   string run_result_json = 1;
   bool failed = 2;
+}
+
+// Brain → spine: forward one live-stream item for REPL/TUI rendering.
+// The REPL spine receives these and calls sink.item() so ReplBuilder renders
+// in real-time. BrainSink does NOT render locally when StreamForward is active.
+message StreamForward {
+  gait.log.v1.StreamItem item = 1;
 }

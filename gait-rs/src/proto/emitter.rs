@@ -20,6 +20,10 @@ pub struct Recorder {
     /// sends `Append` signals to the spine over the Nerve. The brain never writes
     /// the gait-dir with this mode active.
     remote: Option<UnboundedSender<Event>>,
+    /// Phase 3 Task 7 `Spawn`: when `Some`, `spawn_process` sends the argv here
+    /// instead of directly calling `Command::spawn`. A brain-side relay task reads
+    /// from this channel and sends `Spawn` signals to the spine over the Nerve.
+    spawn_tx: Option<UnboundedSender<Vec<String>>>,
 }
 
 impl Recorder {
@@ -30,6 +34,7 @@ impl Recorder {
             position: Arc::new(Mutex::new((0, 0))),
             buffer: None,
             remote: None,
+            spawn_tx: None,
         }
     }
 
@@ -47,7 +52,33 @@ impl Recorder {
             position: Arc::new(Mutex::new((0, 0))),
             buffer: None,
             remote: Some(event_tx),
+            spawn_tx: None,
         }
+    }
+
+    /// Builder: attach a spawn relay channel so `spawn_process` sends argv over
+    /// the Nerve (brain mode) rather than calling `Command::spawn` directly.
+    pub fn with_spawn_tx(mut self, tx: UnboundedSender<Vec<String>>) -> Self {
+        self.spawn_tx = Some(tx);
+        self
+    }
+
+    /// Fire-and-forget process launch. In remote (brain) mode, sends argv to
+    /// the spine via a Spawn signal. In live mode, calls `Command::spawn` directly.
+    /// `argv` = subcommand + args (e.g. `["run", "--session", id, ...]`); the caller
+    /// (brain relay or this fallback) prepends `current_exe()` as the program.
+    pub fn spawn_process(&self, argv: Vec<String>) {
+        if let Some(tx) = &self.spawn_tx {
+            let _ = tx.send(argv);
+            return;
+        }
+        let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("gait"));
+        let _ = std::process::Command::new(&exe)
+            .args(&argv)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
     }
 
     /// Stamp subsequent `record` calls with this (turn, step). Reads the
@@ -90,6 +121,7 @@ impl Recorder {
             position: Arc::new(Mutex::new((0, 0))),
             buffer: Some(Arc::new(Mutex::new(Vec::new()))),
             remote: None,
+            spawn_tx: None,
         }
     }
 
@@ -252,6 +284,25 @@ mod tests {
             received.id, ev.id,
             "channel event must match returned event"
         );
+    }
+
+    #[test]
+    fn spawn_process_uses_channel_when_spawn_tx_set() {
+        let (stream_tx, _) = mpsc::unbounded_channel::<StreamItem>();
+        let (event_tx, _) = mpsc::unbounded_channel::<Event>();
+        let (spawn_tx, mut spawn_rx) = mpsc::unbounded_channel::<Vec<String>>();
+        let rec = Recorder::remote_sink(stream_tx, event_tx).with_spawn_tx(spawn_tx);
+        rec.spawn_process(vec![
+            "run".to_string(),
+            "--session".to_string(),
+            "s12345678".to_string(),
+        ]);
+        let argv = spawn_rx
+            .try_recv()
+            .expect("spawn argv must arrive in channel");
+        assert_eq!(argv[0], "run");
+        assert_eq!(argv[1], "--session");
+        assert_eq!(argv[2], "s12345678");
     }
 
     #[test]

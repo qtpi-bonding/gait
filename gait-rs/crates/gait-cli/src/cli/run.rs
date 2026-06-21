@@ -25,10 +25,14 @@ pub struct RunArgs {
     pub max_iter: Option<usize>,
     // Task 7: sandbox engagement flags. `--sandbox` forces on, `--no-sandbox` forces off.
     // When neither is passed, the config default (`config.sandbox.on`) applies.
+    // `--sandbox-locked` is set by a parent spine when spawning a child; it forces
+    // sandbox on and makes `--no-sandbox` a no-op so the child cannot escape.
     #[arg(long)]
     pub sandbox: bool,
     #[arg(long = "no-sandbox")]
     pub no_sandbox: bool,
+    #[arg(long = "sandbox-locked", hide = true)]
+    pub sandbox_locked: bool,
     // Consumed by caller (args.rs); included to prevent "unexpected argument" errors.
     #[arg(long, hide = true)]
     gait_dir: Option<PathBuf>,
@@ -78,11 +82,12 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
     if let Some(n) = args.max_iter {
         config.max_iter = Some(n);
     }
-    // Task 7: resolve effective sandbox engagement. --no-sandbox wins over --sandbox
-    // when both are passed (off-first semantics: a paranoid user can always force-disable).
-    // Mutate the loaded config's sandbox flag in place — the resolved `config` is the
-    // single source of truth for everything downstream (LoopConfig, the CliDriver, etc.).
-    if args.no_sandbox {
+    // Resolve sandbox engagement. --sandbox-locked (set by a parent spine) forces sandbox
+    // on and ignores --no-sandbox so spawned children cannot escape the parent's policy.
+    // Without --sandbox-locked, --no-sandbox wins over --sandbox (off-first semantics).
+    if args.sandbox_locked {
+        config.sandbox.on = true;
+    } else if args.no_sandbox {
         config.sandbox.on = false;
     } else if args.sandbox {
         config.sandbox.on = true;
@@ -363,5 +368,11 @@ mod tests {
     #[test]
     fn parse_no_task_is_none() {
         assert!(RunArgs::parse_from(&["--auto".to_string()]).task.is_none());
+    }
+    #[test]
+    fn sandbox_locked_parsed() {
+        let a = RunArgs::parse_from(&["--sandbox-locked".to_string()]);
+        assert!(a.sandbox_locked);
+        assert!(!a.no_sandbox);
     }
 }

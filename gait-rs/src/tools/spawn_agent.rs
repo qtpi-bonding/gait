@@ -61,7 +61,7 @@ impl Tool for SpawnAgentTool {
         Some(&self.output_schema)
     }
 
-    async fn execute(&self, args: Value, _rec: &crate::Recorder) -> Result<Value, ToolError> {
+    async fn execute(&self, args: Value, rec: &crate::Recorder) -> Result<Value, ToolError> {
         let task = args["task"]
             .as_str()
             .ok_or_else(|| {
@@ -122,21 +122,17 @@ impl Tool for SpawnAgentTool {
             )
             .map_err(crate::tools::ToolError::Internal)?;
 
-        // I1 fix: immediately schedule the child for execution (detached, fire-and-forget).
-        let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("gait"));
-        let _ = std::process::Command::new(&exe)
-            .args([
-                "run",
-                "--session",
-                &new_id,
-                "--gait-dir",
-                self.ctx.gait_dir.to_str().unwrap_or("."),
-                "--auto",
-            ])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn(); // best-effort; spawn failure is non-fatal
+        // Schedule child for execution — via Spawn signal if in brain (sealed) mode,
+        // or direct Command::spawn otherwise. Spine appends --sandbox-locked when
+        // sandbox is active so the child cannot disable sandboxing.
+        rec.spawn_process(vec![
+            "run".to_string(),
+            "--session".to_string(),
+            new_id.clone(),
+            "--gait-dir".to_string(),
+            self.ctx.gait_dir.to_str().unwrap_or(".").to_string(),
+            "--auto".to_string(),
+        ]);
 
         Ok(serde_json::json!({ "session_id": new_id }))
     }

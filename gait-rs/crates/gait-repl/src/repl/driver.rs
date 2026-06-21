@@ -24,6 +24,7 @@ use gait_core::pty::{run_and_capture_pty_raw, CaptureResult};
 use gait_core::turn::TurnResult;
 
 /// RAII guard: disables crossterm raw mode on drop.
+#[allow(dead_code)]
 struct RawModeGuard;
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
@@ -119,6 +120,8 @@ impl TurnSink for ReplSink {
 
 /// Per-turn driver: rebuilds the Profile each turn (matches the old REPL), no
 /// after-turn coordination, and keeps the REPL alive on a turn error.
+/// Retained for ESC-key watcher infrastructure; not constructed in spine mode.
+#[allow(dead_code)]
 pub struct ReplDriver {
     pub gait_dir: PathBuf,
     pub codebase: PathBuf,

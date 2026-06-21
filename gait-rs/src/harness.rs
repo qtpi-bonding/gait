@@ -2,6 +2,7 @@ use crate::proto::{events, wire};
 use crate::scheduler::Action;
 use crate::turn::SessionLock;
 use std::path::PathBuf;
+use tokio::sync::mpsc;
 
 #[async_trait::async_trait]
 pub trait HarnessBackend: Send + Sync {
@@ -20,11 +21,24 @@ impl HarnessBackend for NoopHarnessBackend {
 
 pub struct NativeHarnessBackend {
     gait_dir: PathBuf,
+    /// When `Some`, route `gait run` spawns via the Nerve's Spawn signal instead
+    /// of calling `Command::spawn` directly (required when brain is sealed).
+    spawn_tx: Option<mpsc::UnboundedSender<Vec<String>>>,
 }
 
 impl NativeHarnessBackend {
     pub fn new(gait_dir: PathBuf) -> Self {
-        Self { gait_dir }
+        Self {
+            gait_dir,
+            spawn_tx: None,
+        }
+    }
+
+    pub fn new_with_spawn(gait_dir: PathBuf, spawn_tx: mpsc::UnboundedSender<Vec<String>>) -> Self {
+        Self {
+            gait_dir,
+            spawn_tx: Some(spawn_tx),
+        }
     }
 }
 
@@ -82,20 +96,25 @@ impl HarnessBackend for NativeHarnessBackend {
                 )?;
                 drop(_lock);
 
-                let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gait"));
-                std::process::Command::new(&exe)
-                    .args([
-                        "run",
-                        "--session",
-                        target_session.as_str(),
-                        "--gait-dir",
-                        self.gait_dir.to_str().unwrap_or("."),
-                        "--auto",
-                    ])
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()?;
+                let argv = vec![
+                    "run".to_string(),
+                    "--session".to_string(),
+                    target_session.clone(),
+                    "--gait-dir".to_string(),
+                    self.gait_dir.to_str().unwrap_or(".").to_string(),
+                    "--auto".to_string(),
+                ];
+                if let Some(tx) = &self.spawn_tx {
+                    let _ = tx.send(argv);
+                } else {
+                    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gait"));
+                    std::process::Command::new(&exe)
+                        .args(&argv)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()?;
+                }
                 Ok(())
             }
         }

@@ -16,7 +16,7 @@ use gait_core::proto::gait::log::v1::{Event, StreamItem};
 use gait_core::proto::Recorder;
 use gait_core::turn::nerve::{self, NerveWriter};
 use gait_proto::gait::sandbox::v1::{
-    network_scope::Mode, signal, Append, NetworkScope, Scope, Signal, Terminated,
+    network_scope::Mode, signal, Append, NetworkScope, Scope, Signal, StreamForward, Terminated,
 };
 
 use crate::cli::run::RunArgs;
@@ -52,7 +52,9 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
     if let Some(n) = args.max_iter {
         config.max_iter = Some(n);
     }
-    if args.no_sandbox {
+    if args.sandbox_locked {
+        config.sandbox.on = true;
+    } else if args.no_sandbox {
         config.sandbox.on = false;
     } else if args.sandbox {
         config.sandbox.on = true;
@@ -219,12 +221,34 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
                     gait_proto::wire::append_with_id(&log_path, &evt).ok();
                 }
             }
+            Some(signal::Body::StreamForward(fwd)) => {
+                // Brain sends all streaming items via StreamForward so that any
+                // spine (CLI or REPL) can render them. CLI spine forwards to its
+                // CliSink; REPL spine (relay_brain_turn) forwards to ReplSink.
+                if let Some(item) = fwd.item {
+                    sink.item(&item);
+                }
+            }
             Some(signal::Body::Terminated(t)) => {
                 run_result_json = t.run_result_json;
                 brain_failed = t.failed;
                 break;
             }
-            _ => {} // Spawn or unknown — no-op for now
+            Some(signal::Body::Spawn(sp)) => {
+                // Brain delegates process-spawn to spine (brain may be sealed).
+                // Append --sandbox-locked so the child cannot disable sandboxing.
+                let mut argv = sp.argv;
+                if sandbox_on {
+                    argv.push("--sandbox-locked".to_string());
+                }
+                let _ = Command::new(&exe)
+                    .args(&argv)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+            }
+            _ => {}
         }
     }
 
@@ -402,6 +426,22 @@ fn scope_to_proto(s: &gait_core::sandbox::SandboxScope) -> Scope {
 
 // ── Brain ─────────────────────────────────────────────────────────────────────
 
+/// Build the brain's self-seal scope: read-all + zero writes + full outbound network.
+///
+/// Validated spike (macOS 15 / Darwin 24.5.0):
+///   `(deny default)(allow file-read*)(allow process*)(allow network-outbound)
+///    (allow system-socket)(allow mach-lookup …)`
+/// DNS + TCP to api.anthropic.com:443 succeed under this policy with
+/// reqwest+rustls+bundled webpki-roots (no cert-store reads needed).
+fn brain_scope() -> gait_core::sandbox::SandboxScope {
+    gait_core::sandbox::SandboxScope {
+        read_all: true,
+        readable: vec![],
+        writable: vec![],
+        network: gait_core::sandbox::NetworkPolicy::All,
+    }
+}
+
 pub async fn cmd_brain(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf) {
     use clap::Parser;
 
@@ -410,11 +450,41 @@ pub async fn cmd_brain(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
     // API key passed from spine via env.
     let api_key = std::env::var("GAIT_BRAIN_API_KEY").ok();
 
+    // ── Apply brain seal ──────────────────────────────────────────────────────
+    // Self-seal before any I/O: read-all + zero writes + outbound network.
+    // After this point the brain cannot write the codebase or gait-dir
+    // (all log events go via Append signals to the spine which owns the log).
+    let seal_status = gait_core::sandbox::platform_sandbox()
+        .apply(&brain_scope())
+        .unwrap_or(gait_core::sandbox::SandboxStatus::Unavailable {
+            reason: "apply() returned Err".to_string(),
+        });
+    let _seal_enforcement = match &seal_status {
+        gait_core::sandbox::SandboxStatus::Active => "active",
+        gait_core::sandbox::SandboxStatus::Noop => "noop",
+        gait_core::sandbox::SandboxStatus::Unavailable { .. } => "unavailable",
+    };
+    // The SandboxApplied event is emitted via the event_tx after the Nerve is
+    // wired — we capture it here and emit it once the recorder is live.
+    // ──────────────────────────────────────────────────────────────────────────
+
     // Brain reads Feedback from stdin (spine→brain), writes Signals to stdout (brain→spine).
     let (nerve_writer, _nerve_handle) = nerve::start_nerve(tokio::io::stdin(), tokio::io::stdout());
 
     // Channel for AppendRelay: Recorder sends Events here; relay task forwards as Append signals.
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
+
+    // Emit the brain-seal SandboxApplied event as the first Append signal.
+    {
+        let reason = match &seal_status {
+            gait_core::sandbox::SandboxStatus::Unavailable { reason } => Some(reason.clone()),
+            _ => None,
+        };
+        let evt_body = gait_core::proto::events::sandbox_applied(_seal_enforcement, vec![], reason);
+        // Mint with prev=None (brain has no log); spine's append_with_id updates seq/parents.
+        let evt = gait_proto::envelope::mint(evt_body, None, 0, 0);
+        let _ = event_tx.send(evt);
+    }
 
     // AppendRelay task: drain event channel, send Append Signals to spine.
     let relay_writer = nerve_writer.clone();
@@ -425,6 +495,40 @@ pub async fn cmd_brain(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
                 body: Some(signal::Body::Append(Append { event: Some(evt) })),
             };
             relay_writer.send_one_way(&sig).await.ok();
+        }
+    });
+
+    // Channel for StreamForward: Recorder's stream_tx feeds this; relay task
+    // sends StreamForward Signals to the spine so it can call sink.item().
+    // BrainSink::item() is a no-op — the spine owns all streaming rendering.
+    let (stream_fwd_tx, mut stream_fwd_rx) = mpsc::unbounded_channel::<StreamItem>();
+    let stream_relay_writer = nerve_writer.clone();
+    tokio::spawn(async move {
+        while let Some(item) = stream_fwd_rx.recv().await {
+            let sig = Signal {
+                corr_id: 0,
+                body: Some(signal::Body::StreamForward(StreamForward {
+                    item: Some(item),
+                })),
+            };
+            stream_relay_writer.send_one_way(&sig).await.ok();
+        }
+    });
+
+    // Channel for Spawn: tools (spawn_agent) and harness send argv here; relay
+    // task forwards as Spawn Signals so the spine (not the sealed brain) executes
+    // the child process. Spine appends --sandbox-locked when sandbox_on.
+    let (spawn_tx, mut spawn_rx) = mpsc::unbounded_channel::<Vec<String>>();
+    let spawn_relay_writer = nerve_writer.clone();
+    tokio::spawn(async move {
+        while let Some(argv) = spawn_rx.recv().await {
+            let sig = Signal {
+                corr_id: 0,
+                body: Some(signal::Body::Spawn(gait_proto::gait::sandbox::v1::Spawn {
+                    argv,
+                })),
+            };
+            spawn_relay_writer.send_one_way(&sig).await.ok();
         }
     });
 
@@ -450,7 +554,9 @@ pub async fn cmd_brain(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
     if let Some(n) = args.max_iter {
         config.max_iter = Some(n);
     }
-    if args.no_sandbox {
+    if args.sandbox_locked {
+        config.sandbox.on = true;
+    } else if args.no_sandbox {
         config.sandbox.on = false;
     } else if args.sandbox {
         config.sandbox.on = true;
@@ -513,6 +619,8 @@ pub async fn cmd_brain(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
         sandbox_on: config.sandbox.on,
         nerve_writer: nerve_writer.clone(),
         event_tx,
+        stream_fwd_tx,
+        spawn_tx,
     };
 
     // Brain's UI/trace output goes to stderr (stdout is the Nerve pipe).
@@ -564,8 +672,9 @@ struct BrainSink {
 }
 
 impl TurnSink for BrainSink {
-    fn item(&mut self, item: &StreamItem) {
-        self.inner.item(item);
+    fn item(&mut self, _item: &StreamItem) {
+        // No-op: brain routes StreamItems via StreamForward Signals to the spine.
+        // The spine's sink (CliSink or ReplSink) owns all streaming rendering.
     }
     fn result(&mut self, r: &gait_core::turn::TurnResult) {
         if let Ok(j) = serde_json::to_string(&gait_core::port::output::run_result_proto(r)) {
@@ -602,6 +711,12 @@ struct BrainDriver {
     sandbox_on: bool,
     nerve_writer: NerveWriter,
     event_tx: mpsc::UnboundedSender<Event>,
+    /// StreamForward relay: brain sends stream items here; relay task forwards
+    /// them as StreamForward Signals so the spine's sink renders them.
+    stream_fwd_tx: mpsc::UnboundedSender<StreamItem>,
+    /// Spawn relay: tools and harness send argv here; relay task forwards as
+    /// Spawn Signals so the sealed brain never calls Command::spawn directly.
+    spawn_tx: mpsc::UnboundedSender<Vec<String>>,
 }
 
 #[async_trait::async_trait(?Send)]
@@ -641,9 +756,15 @@ impl TurnDriver for BrainDriver {
         &self,
         _gait_dir: &std::path::Path,
         _session_id: &str,
-        stream_tx: mpsc::UnboundedSender<StreamItem>,
+        _stream_tx: mpsc::UnboundedSender<StreamItem>,
     ) -> Recorder {
-        Recorder::remote_sink(stream_tx, self.event_tx.clone())
+        // Use stream_fwd_tx instead of the run_loop's internal stream_tx.
+        // This routes StreamItems → StreamForward Signals → spine's sink.item().
+        // The run_loop's drive(rx, BrainSink) will drain an empty channel and
+        // return immediately; BrainSink::item() is intentionally a no-op.
+        // Attach spawn_tx so tools like spawn_agent delegate process-launch to spine.
+        Recorder::remote_sink(self.stream_fwd_tx.clone(), self.event_tx.clone())
+            .with_spawn_tx(self.spawn_tx.clone())
     }
 
     async fn after_turn(
@@ -666,7 +787,10 @@ impl TurnDriver for BrainDriver {
                     }
                 });
         let scheduler = gait_core::NativeScheduler;
-        let harness = gait_core::NativeHarnessBackend::new(self.gait_dir.clone());
+        let harness = gait_core::NativeHarnessBackend::new_with_spawn(
+            self.gait_dir.clone(),
+            self.spawn_tx.clone(),
+        );
         let ended = gait_core::TurnEnded {
             session_id: &self.session_id,
             assigned_by: sj.assigned_by.as_deref(),
