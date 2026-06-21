@@ -1686,3 +1686,86 @@ async fn shell_eacces_supervised_pause() {
         other => panic!("expected TurnResult::Unlock (shell EACCES → denied), got: {other:?}"),
     }
 }
+
+// ── Task 4 (Phase 2d): supervised read of out-of-scope path → Unlock ─────────
+
+/// Supervised mode: when the model issues a `read` of an absolute path that lies
+/// outside the sandbox ceiling (i.e. not under the codebase root), the pre-check
+/// must return `TurnResult::Unlock` with `dimension = "read"`.
+///
+/// This validates that Phase 2d's `read_all = false` default wires through
+/// `check_own_tool_scope` → `ReadTool::scope_targets` → `Dimension::Read` check
+/// correctly: an out-of-scope read is caught by the pre-check rather than
+/// executing and returning file contents.
+///
+/// We use a scratch file under `/tmp/gait-test-oos-read-<pid>` that lives outside
+/// the TempDir codebase root (which is also under `/tmp` but at a different path),
+/// so the file is real but the path is provably out of scope for the session.
+#[tokio::test]
+async fn supervised_read_outside_ceiling_pauses_with_unlock() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+
+    // Create a real file outside the codebase tree.
+    let oos_path =
+        std::path::PathBuf::from(format!("/tmp/gait-test-oos-read-{}", std::process::id()));
+    std::fs::write(&oos_path, "secret content\n").expect("failed to write oos sentinel file");
+
+    let provider = Arc::new(MockProvider {
+        responses: Arc::new(vec![vec![
+            StreamChunk::ToolCallComplete {
+                tool_call_id: "tc-read-oos".into(),
+                tool_name: "read".into(),
+                args: serde_json::json!({ "file_path": oos_path.to_str().unwrap() }),
+            },
+            StreamChunk::Done,
+        ]]),
+        call_idx: Arc::new(AtomicUsize::new(0)),
+    });
+
+    let read_tool = crate::tools::ReadTool::new(crate::tools::ToolCtx::new(
+        ws.path().to_path_buf(),
+        ws.path().to_path_buf(),
+        "test".into(),
+    ));
+
+    let result = run_turn_test_call(
+        ws.path().to_path_buf(),
+        ws.path().to_path_buf(),
+        "sread-oos-01".into(),
+        provider,
+        vec![read_tool.boxed()],
+        // read is in the allow list so permission gating won't intercept first
+        vec!["read".into()],
+        vec![],
+        TurnInput {
+            auto: false, // supervised mode — pre-check must pause
+            max_iter: None,
+            preview_policy: crate::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: true,
+        },
+        crate::git::Repos::production(),
+    )
+    .await
+    .unwrap();
+
+    // Cleanup sentinel file regardless of outcome.
+    let _ = std::fs::remove_file(&oos_path);
+
+    // Must return TurnResult::Unlock with dimension="read".
+    match &result {
+        TurnResult::Unlock { items } => {
+            assert_eq!(items.len(), 1, "expected one unlock item, got {items:?}");
+            let item = &items[0];
+            assert_eq!(item.tool_name, "read", "tool_name should be 'read'");
+            assert_eq!(item.dimension, "read", "dimension should be 'read'");
+            assert!(
+                item.resource.contains("gait-test-oos-read"),
+                "resource should name the out-of-scope path, got: {}",
+                item.resource
+            );
+        }
+        other => panic!("expected TurnResult::Unlock (read out-of-scope), got: {other:?}"),
+    }
+}

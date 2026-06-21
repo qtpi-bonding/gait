@@ -1782,7 +1782,8 @@ fn check_own_tool_scope(
                 .iter()
                 .any(|allowed| target.starts_with(allowed)),
             Dimension::Read => {
-                // Phase 2b: read_all is always true → reads are never blocked.
+                // Phase 2d: read_all defaults to false → reads are scope-checked.
+                // When read_all=true (config `readable: ["*"]`) all reads pass through.
                 if ceiling.read_all {
                     true
                 } else {
