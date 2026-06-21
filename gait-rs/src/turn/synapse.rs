@@ -152,7 +152,7 @@ impl Synapse for SubprocessSynapse {
         let bytes = impulse.encode_to_vec();
 
         // Spawn the hand. The same binary (`current_exe`) runs the hidden `__run-tool`
-        // subcommand; `--gait-dir` / `--codebase` / `--session` / `--tool` / `--temp-jail`
+        // subcommand; `--gait-dir` / `--codebase` / `--session` / `--tool`
         // tell it which tool instance to execute inside its own `ToolCtx`.
         let exe = std::env::current_exe()
             .map_err(|e| ToolError::Internal(anyhow::anyhow!("current_exe: {e}")))?;
@@ -170,8 +170,6 @@ impl Synapse for SubprocessSynapse {
             .arg(&self.session_id)
             .arg("--tool")
             .arg(tool.name())
-            .arg("--temp-jail")
-            .arg(&temp_jail)
             .arg("--seal")
             .arg(if self.seal { "true" } else { "false" })
             .stdin(std::process::Stdio::piped())

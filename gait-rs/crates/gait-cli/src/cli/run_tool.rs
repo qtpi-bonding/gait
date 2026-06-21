@@ -34,8 +34,6 @@ struct RunToolArgs {
     session: String,
     #[arg(long)]
     tool: String,
-    #[arg(long)]
-    temp_jail: Option<PathBuf>,
     /// When false, skip platform_sandbox().apply() and use NoopSandbox instead.
     /// Set by SubprocessSynapse based on the per-turn sandbox engagement flag.
     #[arg(long, default_value = "true")]

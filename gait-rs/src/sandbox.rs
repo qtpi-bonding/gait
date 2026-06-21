@@ -266,6 +266,26 @@ mod tests {
     }
 
     #[test]
+    fn sbpl_escapes_quotes_and_backslashes_in_paths() {
+        // Paths with " or \ are legal on macOS and must not break the SBPL profile.
+        let scope = SandboxScope {
+            writable: vec![PathBuf::from("/repo/a\"b"), PathBuf::from("/repo/c\\d")],
+            readable: vec![],
+            read_all: true,
+            network: NetworkPolicy::Deny,
+        };
+        let p = build_sbpl(&scope);
+        assert!(
+            p.contains(r#"(subpath "/repo/a\"b")"#),
+            "double-quote in path must be escaped: {p}"
+        );
+        assert!(
+            p.contains(r#"(subpath "/repo/c\\d")"#),
+            "backslash in path must be escaped: {p}"
+        );
+    }
+
+    #[test]
     fn read_only_tool_gets_no_writable() {
         use crate::config::SandboxConfig;
         use crate::types::ToolAccess;
@@ -336,6 +356,14 @@ pub(crate) mod sbpl {
     use super::{NetworkPolicy, SandboxScope};
     use std::fmt::Write;
 
+    /// Escape a path string for embedding in an SBPL double-quoted literal.
+    /// Escapes backslash and double-quote (the only SBPL-significant chars in a path).
+    fn sbpl_escape(path: &std::path::Path) -> String {
+        path.to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+    }
+
     /// Build a macOS Seatbelt SBPL profile string from a [`SandboxScope`].
     ///
     /// Pure: no I/O, no FFI. Same input → same output on every platform.
@@ -355,7 +383,7 @@ pub(crate) mod sbpl {
             writeln!(s, "(allow file-read*)").unwrap();
         } else {
             for p in &scope.readable {
-                writeln!(s, r#"(allow file-read* (subpath "{}"))"#, p.display()).unwrap();
+                writeln!(s, r#"(allow file-read* (subpath "{}"))"#, sbpl_escape(p)).unwrap();
             }
         }
 
@@ -364,7 +392,7 @@ pub(crate) mod sbpl {
             writeln!(
                 s,
                 r#"(allow file-write* file-read* (subpath "{}"))"#,
-                p.display()
+                sbpl_escape(p)
             )
             .unwrap();
         }
@@ -437,16 +465,23 @@ pub mod ceiling {
         codebase: &Path,
         temp_jail: &Path,
     ) -> SandboxScope {
+        // Canonicalize codebase so the SBPL subpath matches what the kernel sees
+        // (handles /tmp → /private/tmp on macOS and symlinks). temp_jail is already
+        // canonicalized by the caller (synapse.rs) before it reaches here.
+        let codebase = codebase
+            .canonicalize()
+            .unwrap_or_else(|_| codebase.to_path_buf());
+
         // Base readable + writable: codebase + temp_jail (bound by access).
         let mut readable: Vec<PathBuf> = Vec::new();
         let mut writable: Vec<PathBuf> = Vec::new();
 
         if access.reads {
-            readable.push(codebase.to_path_buf());
+            readable.push(codebase.clone());
             readable.push(temp_jail.to_path_buf());
         }
         if access.writes {
-            writable.push(codebase.to_path_buf());
+            writable.push(codebase.clone());
             writable.push(temp_jail.to_path_buf());
         }
 
