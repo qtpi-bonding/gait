@@ -55,6 +55,7 @@ struct InformArg {
 mod curate;
 mod exec;
 mod gate;
+pub(crate) mod nerve;
 mod prompt;
 pub(crate) mod synapse;
 

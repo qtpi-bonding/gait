@@ -38,16 +38,26 @@ message NetworkScope {
   repeated string hosts = 2;
 }
 
-// Future: framing envelope for the brain↔spine nerve channel (Phase 3).
+// Framing envelope for the brain↔spine Nerve channel (Phase 3).
+// Transported as length-prefixed binary protobuf over a turn-scoped pipe.
+// Wire format: [version: u8][len: u32 BE][Signal proto bytes].
 message Signal {
   uint64 corr_id = 1;
   oneof body {
     Impulse impulse = 2;
     Feedback feedback = 3;
     Spawn spawn = 4;
+    Append append = 5;
   }
 }
 
+// Brain → spine: launch a child gait process (spawn_agent delegation).
 message Spawn {
   repeated string argv = 1;
+}
+
+// Brain → spine: persist one log event (spine is sole gait-dir writer).
+// The spine mints seq/parents and appends to sessions/<id>/log.jsonl.
+message Append {
+  gait.log.v1.Event event = 1;
 }
