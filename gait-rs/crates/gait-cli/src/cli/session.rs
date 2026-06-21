@@ -124,12 +124,10 @@ fn undo_command(
         .map_err(|e| anyhow::anyhow!("cannot undo: {} (is a turn in progress?)", e))?;
 
     if do_code {
-        let codebase = gait_core::session::session_json::read_session_json(&gait_dir, session_id)?
+        let codebase = gait_core::session::read_session_meta(&gait_dir, session_id)?
             .codebase_path
             .map(std::path::PathBuf::from)
-            .ok_or_else(|| {
-                anyhow::anyhow!("session.json has no codebase_path; cannot undo code")
-            })?;
+            .ok_or_else(|| anyhow::anyhow!("session has no codebase_path; cannot undo code"))?;
         let repos = gait_core::git::Repos::production();
         match checkpoint.as_deref() {
             Some(sha) => {

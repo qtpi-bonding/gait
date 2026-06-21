@@ -302,24 +302,19 @@ impl gait_core::embed::TurnDriver for CliDriver {
         result: &gait_core::turn::TurnResult,
     ) {
         use gait_core::{HarnessBackend, Scheduler};
-        let sj =
-            gait_core::session::session_json::read_session_json(&self.gait_dir, &self.session_id)
-                .unwrap_or_else(|e| {
-                    eprintln!("[gait] warning: could not read session.json in after_turn: {e}");
-                    gait_core::session::SessionJson {
-                        id: self.session_id.clone(),
-                        assigned_by: None,
-                        created_at: 0,
-                        codebase_path: None,
-                        agent_name: None,
-                        system_prompt: None,
-                    }
-                });
+        let meta = gait_core::session::read_session_meta(&self.gait_dir, &self.session_id)
+            .unwrap_or_else(|e| {
+                eprintln!("[gait] warning: could not read session meta in after_turn: {e}");
+                gait_core::session::SessionMeta {
+                    id: self.session_id.clone(),
+                    ..Default::default()
+                }
+            });
         let scheduler = gait_core::scheduler::NativeScheduler;
         let harness = gait_core::harness::NativeHarnessBackend::new(self.gait_dir.clone());
         let ended = gait_core::scheduler::TurnEnded {
             session_id: &self.session_id,
-            assigned_by: sj.assigned_by.as_deref(),
+            assigned_by: meta.assigned_by.as_deref(),
             result,
         };
         for action in scheduler.next(&ended) {

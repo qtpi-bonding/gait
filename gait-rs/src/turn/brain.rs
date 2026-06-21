@@ -406,16 +406,12 @@ impl TurnDriver for BrainDriver {
         result: &crate::turn::TurnResult,
     ) {
         use crate::{HarnessBackend, Scheduler};
-        let sj = crate::session::session_json::read_session_json(&self.gait_dir, &self.session_id)
+        let meta = crate::session::read_session_meta(&self.gait_dir, &self.session_id)
             .unwrap_or_else(|e| {
-                eprintln!("[brain] warning: could not read session.json in after_turn: {e}");
-                crate::session::SessionJson {
+                eprintln!("[brain] warning: could not read session meta in after_turn: {e}");
+                crate::session::SessionMeta {
                     id: self.session_id.clone(),
-                    assigned_by: None,
-                    created_at: 0,
-                    codebase_path: None,
-                    agent_name: None,
-                    system_prompt: None,
+                    ..Default::default()
                 }
             });
         let scheduler = crate::NativeScheduler;
@@ -426,7 +422,7 @@ impl TurnDriver for BrainDriver {
         .with_notify_tx(self.notify_tx.clone());
         let ended = crate::TurnEnded {
             session_id: &self.session_id,
-            assigned_by: sj.assigned_by.as_deref(),
+            assigned_by: meta.assigned_by.as_deref(),
             result,
         };
         for action in scheduler.next(&ended) {

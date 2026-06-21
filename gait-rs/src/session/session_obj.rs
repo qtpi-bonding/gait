@@ -1,5 +1,5 @@
 use crate::git::Repos;
-use crate::session::session_json::read_session_json;
+use crate::session::session_meta::read_session_meta;
 use std::path::PathBuf;
 
 /// The durable runtime instance: identity + bindings + injected repos.
@@ -22,8 +22,8 @@ impl Session {
         default_codebase: PathBuf,
         repos: Repos,
     ) -> Result<Self, anyhow::Error> {
-        let sj = read_session_json(&gait_dir, &id)?;
-        let codebase_path = sj
+        let meta = read_session_meta(&gait_dir, &id)?;
+        let codebase_path = meta
             .codebase_path
             .map(PathBuf::from)
             .unwrap_or(default_codebase);
@@ -31,7 +31,7 @@ impl Session {
             id,
             gait_dir,
             codebase_path,
-            assigned_by: sj.assigned_by,
+            assigned_by: meta.assigned_by,
             repos,
         })
     }
