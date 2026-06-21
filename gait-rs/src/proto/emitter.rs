@@ -24,6 +24,10 @@ pub struct Recorder {
     /// instead of directly calling `Command::spawn`. A brain-side relay task reads
     /// from this channel and sends `Spawn` signals to the spine over the Nerve.
     spawn_tx: Option<UnboundedSender<Vec<String>>>,
+    /// In-memory mirror of every event recorded in remote mode. The brain's
+    /// `Ingestor::from_shared` reads this, so the brain never re-reads the log
+    /// from disk. `None` outside the brain (buffer/live recorders).
+    log_mirror: Option<Arc<Mutex<Vec<Event>>>>,
 }
 
 impl Recorder {
@@ -35,6 +39,7 @@ impl Recorder {
             buffer: None,
             remote: None,
             spawn_tx: None,
+            log_mirror: None,
         }
     }
 
@@ -53,6 +58,7 @@ impl Recorder {
             buffer: None,
             remote: Some(event_tx),
             spawn_tx: None,
+            log_mirror: None,
         }
     }
 
@@ -61,6 +67,17 @@ impl Recorder {
     pub fn with_spawn_tx(mut self, tx: UnboundedSender<Vec<String>>) -> Self {
         self.spawn_tx = Some(tx);
         self
+    }
+
+    /// Builder: attach a shared log mirror that `record()` appends to in remote mode.
+    pub fn with_log_mirror(mut self, mirror: Arc<Mutex<Vec<Event>>>) -> Self {
+        self.log_mirror = Some(mirror);
+        self
+    }
+
+    /// The shared log mirror, if this recorder has one (remote/brain mode).
+    pub fn log_mirror(&self) -> Option<Arc<Mutex<Vec<Event>>>> {
+        self.log_mirror.clone()
     }
 
     /// Fire-and-forget process launch. In remote (brain) mode, sends argv to
@@ -122,6 +139,7 @@ impl Recorder {
             buffer: Some(Arc::new(Mutex::new(Vec::new()))),
             remote: None,
             spawn_tx: None,
+            log_mirror: None,
         }
     }
 
@@ -162,6 +180,12 @@ impl Recorder {
             // The brain has no log file, so mint with prev=None (seq=1, no parents).
             // The spine's append_with_id() will update seq/parents when persisting.
             let evt = crate::proto::envelope::mint(body, None, turn, step);
+            if let Some(mirror) = &self.log_mirror {
+                mirror
+                    .lock()
+                    .expect("log mirror poisoned")
+                    .push(evt.clone());
+            }
             let _ = remote_tx.send(evt.clone()); // channel receiver is the relay task
             let _ = self.sender.send(StreamItem {
                 item: Some(stream_item::Item::Event(evt.clone())),
@@ -322,5 +346,24 @@ mod tests {
             "buffered event must carry its body"
         );
         assert!(rec.take_buffer().is_empty(), "take_buffer drains");
+    }
+
+    #[test]
+    fn remote_record_appends_to_log_mirror() {
+        let (stream_tx, _srx) = mpsc::unbounded_channel();
+        let (event_tx, _erx) = mpsc::unbounded_channel();
+        let mirror = Arc::new(Mutex::new(Vec::new()));
+        let rec = Recorder::remote_sink(stream_tx, event_tx).with_log_mirror(mirror.clone());
+        rec.record(crate::proto::events::session_start(
+            "s1234567".to_string(),
+            None,
+            None,
+        ))
+        .unwrap();
+        assert_eq!(
+            mirror.lock().unwrap().len(),
+            1,
+            "recorded event mirrored in memory"
+        );
     }
 }
