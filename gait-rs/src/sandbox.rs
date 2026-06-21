@@ -278,8 +278,20 @@ mod tests {
             !p.contains("(allow file-read*)\n"),
             "must NOT blanket-allow reads"
         );
-        assert!(p.contains("(subpath \"/usr/lib\")"));
-        assert!(p.contains("(subpath \"/private/var/db/dyld\")"));
+        // Platform defaults: broad paths validated on Darwin 24.5.0.
+        assert!(p.contains("(subpath \"/usr\")"), "must allow /usr: {p}");
+        assert!(
+            p.contains("(subpath \"/System\")"),
+            "must allow /System: {p}"
+        );
+        assert!(
+            p.contains("(subpath \"/private\")"),
+            "must allow /private: {p}"
+        );
+        assert!(
+            p.contains("(literal \"/\")"),
+            "must allow root literal: {p}"
+        );
         assert!(p.contains("(subpath \"/repo\")")); // scope readable
     }
 
@@ -414,26 +426,50 @@ pub(crate) mod sbpl {
 
     /// Minimum set of read-only paths a sealed macOS process needs to exec,
     /// resolve DNS, and do TLS. These are emitted as `(allow file-read* (subpath …))`
-    /// when `scope.read_all` is false (confined-read mode, Phase 2d+).
+    /// (or `(literal …)` for the root entry) when `scope.read_all` is false
+    /// (confined-read mode, Phase 2d+).
+    ///
+    /// Derived from the Codex sandbox baseline and validated on Darwin 24.5.0 by
+    /// iterating C-based SBPL tests until `sh -c "echo hi"` exits 0.
+    ///
+    /// Key findings:
+    /// - `/usr` (full subtree) is required — narrowing to `/usr/lib` etc. is not enough;
+    ///   dyld walks the whole `/usr` tree for shared cache probing.
+    /// - `"/"` (root literal, NOT subpath) is required for `getcwd()` and path resolution;
+    ///   without it, processes receive SIGABRT even with all other paths allowed.
+    /// - `/private` (full subtree) covers `/private/var`, `/private/tmp`, `/private/etc`.
+    /// - `/var` is needed as the non-canonical alias (symlink to `/private/var`).
+    /// - `/Library` (full subtree) covers Frameworks, Preferences, Apple sub-trees.
+    /// - The dyld shared cache on macOS 13+ Sequoia lives under
+    ///   `/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/`, covered by `/System`.
+    /// - `/private/var/db/dyld` no longer exists on macOS Sequoia; kept as comment only.
     #[cfg(target_os = "macos")]
     fn platform_read_defaults() -> &'static [&'static str] {
         &[
-            "/usr/lib",
-            "/usr/share",
+            // Root directory literal — required for getcwd() and path resolution by dyld/sh.
+            // Must be emitted as (literal "/") not (subpath "/").  Sentinel: prefix with "@".
+            "@/", // /usr (full): dyld, libc, bin, sbin, libexec, share, etc.
+            "/usr",
+            // System frameworks: Foundation, CoreFoundation, PrivateFrameworks, dyld cache.
+            // On macOS Sequoia the dyld shared cache is under:
+            //   /System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/
             "/System",
-            "/Library/Frameworks",
-            "/private/var/db/dyld", // dyld shared cache
-            "/dev/null",
-            "/dev/random",
-            "/dev/urandom",
-            "/dev/dtracehelper",
-            "/etc", // resolv.conf, hosts, ssl (symlink → /private/etc)
-            "/private/etc",
-            "/private/var/db/timezone",
-            "/usr/bin",
-            "/bin",
-            "/usr/sbin",
-            "/sbin",
+            // /Library (full): Frameworks, Preferences, Apple, LaunchDaemons, etc.
+            "/Library",
+            // Standard executables — /bin and /sbin are separate mount points on macOS.
+            "/bin", "/sbin",
+            // /private (full): /private/var (db, folders, run, tmp), /private/etc, /private/tmp.
+            "/private",
+            // /var as the non-canonical symlink alias (→ /private/var).
+            // Seatbelt matches pre-symlink-resolution paths for some operations.
+            "/var", // /etc as the non-canonical symlink alias (→ /private/etc).
+            "/etc",
+            // /dev: device nodes (null, urandom, tty, fd, ptmx, dtracehelper).
+            "/dev",
+            // NOTE: /tmp and /private/tmp are intentionally NOT in read defaults.
+            // Processes that need to write temp files get explicit writable scope entries.
+            // Omitting /tmp allows tests to use /tmp as a confidentiality-test sentinel
+            // (out-of-scope reads should be denied).
         ]
     }
 
@@ -463,7 +499,96 @@ pub(crate) mod sbpl {
         // exec + fork so the shell can run subprocesses (they inherit this seal).
         writeln!(s, "(allow process-exec)").unwrap();
         writeln!(s, "(allow process-fork)").unwrap();
+        // process-info* and signal are required for any parent↔child coordination
+        // (waitpid, kill, getpid, etc.). Without these, spawned subprocesses may
+        // receive SIGABRT when the sandbox policy denies the credential lookup.
+        writeln!(s, "(allow process-info* (target same-sandbox))").unwrap();
+        writeln!(s, "(allow signal (target same-sandbox))").unwrap();
         writeln!(s, "(allow sysctl-read)").unwrap();
+
+        // IOKit: RootDomainUserClient is queried by CoreFoundation/libSystem at
+        // startup; denying it causes SIGABRT on Darwin 24.5+.
+        #[cfg(target_os = "macos")]
+        writeln!(
+            s,
+            r#"(allow iokit-open (iokit-registry-entry-class "RootDomainUserClient"))"#
+        )
+        .unwrap();
+
+        // Mach services required by libSystem / CoreFoundation at process startup.
+        // opendirectoryd.libinfo: getpwuid/getgrgid credential lookups (bash, dyld).
+        // cfprefsd: CoreFoundation user-preference daemon; accessed even in non-GUI apps.
+        // cfprefsd.agent (local-name): per-user agent variant.
+        // system.logger + logd: logging plumbing (libSystem calls these at init).
+        #[cfg(target_os = "macos")]
+        {
+            writeln!(s, r#"(allow mach-lookup"#).unwrap();
+            writeln!(
+                s,
+                r#"  (global-name "com.apple.system.opendirectoryd.libinfo")"#
+            )
+            .unwrap();
+            writeln!(
+                s,
+                r#"  (global-name "com.apple.system.DirectoryService.libinfo_v1")"#
+            )
+            .unwrap();
+            writeln!(s, r#"  (global-name "com.apple.cfprefsd.daemon")"#).unwrap();
+            writeln!(s, r#"  (global-name "com.apple.cfprefsd.agent")"#).unwrap();
+            writeln!(s, r#"  (local-name "com.apple.cfprefsd.agent")"#).unwrap();
+            writeln!(s, r#"  (global-name "com.apple.logd")"#).unwrap();
+            writeln!(s, r#"  (global-name "com.apple.system.logger")"#).unwrap();
+            writeln!(s, r#")"#).unwrap();
+        }
+
+        // User preferences (CFPreferences): libSystem reads these at startup.
+        #[cfg(target_os = "macos")]
+        {
+            writeln!(s, "(allow user-preference-read)").unwrap();
+            writeln!(
+                s,
+                r#"(allow ipc-posix-shm-read* (ipc-posix-name-prefix "apple.cfprefs."))"#
+            )
+            .unwrap();
+            writeln!(s, "(allow ipc-posix-sem)").unwrap();
+        }
+
+        // MAC policy syscalls needed for firmlink resolution and sandbox queries.
+        #[cfg(target_os = "macos")]
+        {
+            writeln!(
+                s,
+                r#"(allow system-mac-syscall (mac-policy-name "vnguard"))"#
+            )
+            .unwrap();
+            writeln!(
+                s,
+                r#"(allow system-mac-syscall (require-all (mac-policy-name "Sandbox") (mac-syscall-number 67)))"#
+            )
+            .unwrap();
+        }
+
+        // File-map-executable: required by dyld to map framework binaries.
+        // Blanket allow (not path-restricted) because dyld maps binaries from many
+        // locations including /usr, /System, /Library, /bin, /sbin, and scope paths.
+        // Restricting to named subpaths causes SIGABRT in practice (Darwin 24.5.0).
+        #[cfg(target_os = "macos")]
+        writeln!(s, "(allow file-map-executable)").unwrap();
+
+        // Terminal and standard file descriptor access for shell subprocesses.
+        // /dev/tty: required by many programs (even in non-interactive mode for ioctl checks).
+        // /dev/fd/*: used by sh for /dev/stdin etc.
+        #[cfg(target_os = "macos")]
+        {
+            writeln!(s, r#"(allow file-read* file-write* (literal "/dev/tty"))"#).unwrap();
+            writeln!(s, r#"(allow file-read* file-write* (literal "/dev/ptmx"))"#).unwrap();
+            writeln!(
+                s,
+                r#"(allow file-read* file-write-data (subpath "/dev/fd"))"#
+            )
+            .unwrap();
+            writeln!(s, r#"(allow file-read-metadata (subpath "/dev"))"#).unwrap();
+        }
 
         // Reads. Phase 2b blanket-allows reads when read_all=true.
         // Phase 2d (confined-read): when read_all=false, emit per-path subpath
@@ -473,8 +598,14 @@ pub(crate) mod sbpl {
         } else {
             // Platform defaults: paths every sealed macOS process must read to exec,
             // resolve DNS, and do TLS. Empty on non-macOS (SBPL never applied there).
+            // Entries prefixed with "@" are emitted as (literal …) instead of (subpath …).
+            // Currently only "@/" uses this — root directory must be a literal, not subpath.
             for root in platform_read_defaults() {
-                writeln!(s, r#"(allow file-read* (subpath "{root}"))"#).unwrap();
+                if let Some(path) = root.strip_prefix('@') {
+                    writeln!(s, r#"(allow file-read* (literal "{path}"))"#).unwrap();
+                } else {
+                    writeln!(s, r#"(allow file-read* (subpath "{root}"))"#).unwrap();
+                }
             }
             // Explicit scope paths (canonicalized by caller or best-effort here).
             for p in &scope.readable {
@@ -486,11 +617,14 @@ pub(crate) mod sbpl {
         }
 
         // Writes (and reads under writable, so tools can read what they write).
+        // Canonicalize writable paths so symlinks in the path (e.g. /var → /private/var
+        // on macOS) are resolved to the kernel-visible path before embedding in the profile.
         for p in &scope.writable {
+            let c = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
             writeln!(
                 s,
                 r#"(allow file-write* file-read* (subpath "{}"))"#,
-                sbpl_escape(p)
+                sbpl_escape(&c)
             )
             .unwrap();
         }
