@@ -979,6 +979,28 @@ fn launch_child(
     }
 }
 
+/// Reads the child's session log and returns the last `TurnComplete`'s
+/// `(message, result)`. Returns `None` if no `TurnComplete` event is found.
+fn read_terminal_result(log_path: &std::path::Path) -> Option<(String, Option<serde_json::Value>)> {
+    use crate::proto::gait::log::v1::payload;
+    let events = crate::session::log::read_events(log_path).ok()?;
+    // Walk backwards to find the last TurnComplete.
+    for event in events.iter().rev() {
+        if let Some(payload::Kind::TurnComplete(tc)) = crate::proto::event_kind(event) {
+            let output = tc.output.as_ref()?;
+            let message = output.message.clone();
+            // Convert pbjson_types::Value → serde_json::Value via serde round-trip.
+            let result: Option<serde_json::Value> = output
+                .result
+                .as_ref()
+                .and_then(|v| serde_json::to_value(v).ok())
+                .filter(|v| !v.is_null());
+            return Some((message, result));
+        }
+    }
+    None
+}
+
 /// Spine-side handler for `spawn_agent`: creates the child session (disk writes)
 /// and launches the child process. Returns a `Feedback` with `{session_id}`.
 pub(super) async fn handle_spawn_agent(args: SpawnAgentArgs, ctx: SpineToolCtx) -> Feedback {
@@ -1000,9 +1022,79 @@ pub(super) async fn handle_spawn_agent(args: SpawnAgentArgs, ctx: SpineToolCtx) 
         return error_feedback("spawn_agent: failed to create child session");
     }
 
-    let _child = launch_child(&ctx, &new_id, args.detached, None);
+    if args.detached {
+        // Fire-and-forget peer: break out of the cascade group, don't wait.
+        let _ = launch_child(&ctx, &new_id, true, None);
+        return feedback_result(serde_json::json!({ "session_id": new_id }));
+    }
 
-    feedback_result(serde_json::json!({ "session_id": new_id }))
+    // Blocking subagent: wait for the child process to exit, then read its result.
+    let tx_path = ctx
+        .gait_dir
+        .join("sessions")
+        .join(&new_id)
+        .join("log.jsonl");
+
+    let Some(mut child) = launch_child(&ctx, &new_id, false, None) else {
+        return error_feedback("spawn_agent: failed to launch subagent");
+    };
+
+    // Await child exit without blocking a tokio worker thread.
+    let status = tokio::task::spawn_blocking(move || child.wait())
+        .await
+        .ok() // JoinError → None
+        .and_then(|r| r.ok()); // io::Error → None
+
+    // Check if killed by signal (cascade kill = parent cancelled the session).
+    let was_signalled = status
+        .as_ref()
+        .map(|s| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                s.signal().is_some()
+            }
+            #[cfg(not(unix))]
+            {
+                false
+            }
+        })
+        .unwrap_or(false);
+
+    if was_signalled {
+        return feedback_result(serde_json::json!({
+            "session_id": new_id,
+            "status": "cancelled",
+        }));
+    }
+
+    let exit_code = status.as_ref().and_then(|s| s.code()).unwrap_or(-1);
+
+    build_subagent_feedback(&new_id, &tx_path, exit_code)
+}
+
+/// Assemble a `Feedback` after the blocking subagent exits.
+///
+/// Reads the child's session log for a `TurnComplete` event. Extracted as a
+/// separate function so it can be unit-tested independently of process launching.
+pub(super) fn build_subagent_feedback(
+    session_id: &str,
+    log_path: &std::path::Path,
+    exit_code: i32,
+) -> Feedback {
+    match read_terminal_result(log_path) {
+        Some((message, result)) => feedback_result(serde_json::json!({
+            "session_id": session_id,
+            "status": "done",
+            "message": message,
+            "result": result,
+        })),
+        None => feedback_result(serde_json::json!({
+            "session_id": session_id,
+            "status": "failed",
+            "summary": format!("subagent exited (code {exit_code}) without completing"),
+        })),
+    }
 }
 
 #[cfg(test)]
@@ -1023,8 +1115,8 @@ pub(super) fn test_ctx(ws: &std::path::Path, session_id: &str) -> SpineToolCtx {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_turn_profile, enrich_permissions_preview, error_feedback, handle_spawn_agent,
-        test_ctx, ProfileInputs, SpawnAgentArgs,
+        build_subagent_feedback, build_turn_profile, enrich_permissions_preview, error_feedback,
+        handle_spawn_agent, test_ctx, ProfileInputs, SpawnAgentArgs,
     };
 
     #[tokio::test]
@@ -1379,11 +1471,102 @@ mod tests {
         );
     }
 
+    // ── read_terminal_result tests ───────────────────────────────────────────
+
+    /// Log with a TurnComplete event → returns (message, result).
+    #[test]
+    fn read_terminal_result_finds_turn_complete() {
+        use crate::proto::events::{turn_complete, TurnCompleteParams};
+        use crate::proto::wire;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let log_path = dir.path().join("log.jsonl");
+
+        let body = turn_complete(TurnCompleteParams {
+            message: "hello from child".into(),
+            result: Some(serde_json::json!({"score": 42})),
+            ..Default::default()
+        });
+        wire::append(&log_path, body).unwrap();
+
+        let result = super::read_terminal_result(&log_path);
+        assert!(result.is_some(), "should find turn_complete");
+        let (msg, val) = result.unwrap();
+        assert_eq!(msg, "hello from child");
+        let val = val.expect("result should be Some");
+        // pbjson_types::Value serializes numbers as f64, so 42 becomes 42.0.
+        let score = val["score"].as_f64().expect("score should be a number");
+        assert!(
+            (score - 42.0).abs() < f64::EPSILON,
+            "score should be 42, got {score}"
+        );
+    }
+
+    /// Empty log → None.
+    #[test]
+    fn read_terminal_result_empty_log_returns_none() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let log_path = dir.path().join("log.jsonl");
+        // Don't write anything.
+        let result = super::read_terminal_result(&log_path);
+        assert!(result.is_none(), "empty log should return None");
+    }
+
+    /// Log with events but no TurnComplete → None.
+    #[test]
+    fn read_terminal_result_no_turn_complete_returns_none() {
+        use crate::proto::wire;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let log_path = dir.path().join("log.jsonl");
+        // Write only a UserText event.
+        let body = crate::proto::events::user_text("some task".into(), None);
+        wire::append(&log_path, body).unwrap();
+
+        let result = super::read_terminal_result(&log_path);
+        assert!(result.is_none(), "no turn_complete should return None");
+    }
+
+    /// handle_spawn_agent with detached=false but child cannot be launched (bad exe) →
+    /// no process but session exists. We can't easily test child.wait() path without a
+    /// real gait binary, so test the log-read fallback: write a session with no TurnComplete
+    /// and verify a hypothetical `read_terminal_result` returns None (status == "failed").
+    #[test]
+    fn read_terminal_result_last_turn_complete_wins() {
+        use crate::proto::events::{turn_complete, TurnCompleteParams};
+        use crate::proto::wire;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let log_path = dir.path().join("log.jsonl");
+
+        // Write two TurnComplete events; the second should win.
+        wire::append(
+            &log_path,
+            turn_complete(TurnCompleteParams {
+                message: "first".into(),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        wire::append(
+            &log_path,
+            turn_complete(TurnCompleteParams {
+                message: "second".into(),
+                result: Some(serde_json::json!("final")),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+        let (msg, val) = super::read_terminal_result(&log_path).unwrap();
+        assert_eq!(msg, "second");
+        assert_eq!(val.unwrap(), serde_json::json!("final"));
+    }
+
     /// Subagent (enrolled) is killed by kill_all; peer (detached) survives.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn launch_child_subagent_enrolled_peer_breaks_away() {
-        use super::launch_child;
         use crate::process::establish;
 
         // Build a minimal SpineToolCtx with a real containment group.
@@ -1456,5 +1639,92 @@ mod tests {
             peer_alive, 0,
             "breakaway peer (pid {peer_pid}) should survive kill_all"
         );
+    }
+
+    // ── build_subagent_feedback integration tests ────────────────────────────
+
+    /// Pre-write a `turn_complete` with `result = {"answer": 42}` to the child log,
+    /// then call `build_subagent_feedback` and assert the returned Feedback carries
+    /// the expected result value.
+    #[test]
+    fn build_subagent_feedback_reads_turn_complete_result() {
+        use crate::proto::events::{turn_complete, TurnCompleteParams};
+        use crate::proto::wire;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let log_path = dir.path().join("log.jsonl");
+
+        // Pre-write the turn_complete event (as the child process would).
+        wire::append(
+            &log_path,
+            turn_complete(TurnCompleteParams {
+                message: "task done".into(),
+                result: Some(serde_json::json!({"answer": 42})),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+        let fb = build_subagent_feedback("child-session-1", &log_path, 0);
+
+        // result is a proto Struct; navigate to the fields.
+        let fields = match fb.result.as_ref().and_then(|v| v.kind.as_ref()) {
+            Some(pbjson_types::value::Kind::StructValue(s)) => &s.fields,
+            other => panic!("expected StructValue, got {other:?}"),
+        };
+
+        // status == "done"
+        let status = fields.get("status").and_then(|v| match &v.kind {
+            Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.as_str()),
+            _ => None,
+        });
+        assert_eq!(status, Some("done"), "status must be 'done'");
+
+        // message == "task done"
+        let message = fields.get("message").and_then(|v| match &v.kind {
+            Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.clone()),
+            _ => None,
+        });
+        assert_eq!(message.as_deref(), Some("task done"));
+
+        // result.answer == 42 (stored as f64 in proto Number)
+        let result_struct = match fields.get("result").and_then(|v| v.kind.as_ref()) {
+            Some(pbjson_types::value::Kind::StructValue(s)) => s,
+            other => panic!("expected result StructValue, got {other:?}"),
+        };
+        let answer = match result_struct
+            .fields
+            .get("answer")
+            .and_then(|v| v.kind.as_ref())
+        {
+            Some(pbjson_types::value::Kind::NumberValue(n)) => *n,
+            other => panic!("expected NumberValue for answer, got {other:?}"),
+        };
+        assert!(
+            (answer - 42.0).abs() < f64::EPSILON,
+            "answer must be 42, got {answer}"
+        );
+    }
+
+    /// When the child log has no `TurnComplete`, `build_subagent_feedback` should
+    /// return a Feedback with `status == "failed"`.
+    #[test]
+    fn build_subagent_feedback_no_turn_complete_returns_failed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let log_path = dir.path().join("log.jsonl");
+        // Do NOT write any events — simulates child that exited without completing.
+
+        let fb = build_subagent_feedback("child-session-2", &log_path, 1);
+
+        let fields = match fb.result.as_ref().and_then(|v| v.kind.as_ref()) {
+            Some(pbjson_types::value::Kind::StructValue(s)) => &s.fields,
+            other => panic!("expected StructValue, got {other:?}"),
+        };
+
+        let status = fields.get("status").and_then(|v| match &v.kind {
+            Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.as_str()),
+            _ => None,
+        });
+        assert_eq!(status, Some("failed"), "status must be 'failed'");
     }
 }
