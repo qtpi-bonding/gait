@@ -705,8 +705,7 @@ mod tests {
             "type": "object",
             "properties": {
                 "output": {"type": "string"},
-                "exit_code": {"type": "integer"},
-                "timed_out": {"type": "boolean"}
+                "exit_code": {"type": "integer"}
             }
         });
         let rendered = compact_type(&schema);
@@ -716,7 +715,6 @@ mod tests {
         );
         assert!(rendered.contains("output: string"), "got: {rendered}");
         assert!(rendered.contains("exit_code: integer"), "got: {rendered}");
-        assert!(rendered.contains("timed_out: boolean"), "got: {rendered}");
     }
 
     #[test]

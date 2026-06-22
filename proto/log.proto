@@ -161,7 +161,7 @@ message TurnTokenUsage  { uint64 input = 1; uint64 output = 2; uint64 cache_read
 message Changes { repeated string added = 1; repeated string modified = 2; repeated string deleted = 3; }
 message StructuredDoneOutput { string message = 1; google.protobuf.Value result = 2; Changes changes = 3; }
 message CompactionTokenUsage { uint64 input = 1; uint64 output = 2; }
-message ProcessResult   { int32 exit_code = 1; bool timed_out = 2; }
+message ProcessResult   { int32 exit_code = 1; }
 message ConvergenceItem { string id = 1; string proposal = 2; optional string response = 3; bool consistent = 4; }
 
 

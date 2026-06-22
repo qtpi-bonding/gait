@@ -13,8 +13,6 @@ struct ShellParams {
     cmd: String,
     /// Why this command is needed
     reason: String,
-    /// Timeout in milliseconds. Omit for no timeout (recommended for build/test commands).
-    timeout: Option<u64>,
     /// Optional working directory for this command. Relative paths resolve against
     /// the current directory and PERSIST (like `cd`); absolute paths are used as-is.
     /// A nonexistent path errors and leaves the working directory unchanged.
@@ -25,7 +23,6 @@ struct ShellParams {
 struct ShellOutput {
     output: String,
     exit_code: i32,
-    timed_out: bool,
 }
 
 pub struct ShellTool {
@@ -110,7 +107,6 @@ impl Tool for ShellTool {
 
         let params: ShellParams = serde_json::from_value(args)
             .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
-        let timeout_ms = params.timeout;
 
         let run_dir = match params
             .cwd
@@ -139,7 +135,6 @@ impl Tool for ShellTool {
                         return Ok(serde_json::json!({
                             "output": format!("cd: no such directory: {}", req),
                             "exit_code": 1,
-                            "timed_out": false,
                         }))
                     }
                 }
@@ -160,6 +155,7 @@ impl Tool for ShellTool {
         let mut child = tokio::process::Command::new("sh")
             .args(["-c", &params.cmd])
             .current_dir(&cwd)
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .env_clear()
@@ -212,7 +208,6 @@ impl Tool for ShellTool {
         });
         drop(tx); // drop outer sender so rx closes when both tasks finish
 
-        // We need to drive the drain loop. If timeout is set, wrap the whole drain+wait.
         let drain_and_wait = async {
             let mut total: u64 = 0;
             let mut tail = std::collections::VecDeque::<u8>::new();
@@ -234,32 +229,18 @@ impl Tool for ShellTool {
             Ok::<_, ToolError>((status, total, tail))
         };
 
-        let (status, total, mut tail) = if let Some(ms) = timeout_ms {
-            match tokio::time::timeout(std::time::Duration::from_millis(ms), drain_and_wait).await {
-                Ok(r) => r?,
-                Err(_) => {
-                    return Ok(serde_json::json!({
-                        "output": format!("TIMED OUT after {}ms", ms),
-                        "exit_code": 124,
-                        "timed_out": true,
-                    }))
-                }
-            }
-        } else {
-            drain_and_wait.await?
-        };
+        let (status, total, mut tail) = drain_and_wait.await?;
 
         let exit_code = status.code().unwrap_or(1);
         let tail_str = String::from_utf8_lossy(tail.make_contiguous()).into_owned();
         let note = format!("[full output: {} ({} bytes)]", out_path.display(), total);
 
         // Structured process-tool shape: turn.rs reads `output` for the model-facing text,
-        // and lifts `exit_code`/`timed_out` into the proto `ProcessResult`. The "exit N (Xms)"
+        // and lifts `exit_code` into the proto `ProcessResult`. The "exit N (Xms)"
         // prefix is gone — timing lives in the generic `ToolResult.duration`, exit in `process`.
         Ok(serde_json::json!({
             "output": format!("{}\n{}", tail_str.trim_end(), note),
             "exit_code": exit_code,
-            "timed_out": false,
         }))
     }
 

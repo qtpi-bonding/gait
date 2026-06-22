@@ -24,7 +24,7 @@ async fn runs_command_and_captures_output() {
         )
         .await
         .unwrap();
-    // Shell now returns a structured process-tool shape: { output, exit_code, timed_out }.
+    // Shell now returns a structured process-tool shape: { output, exit_code }.
     // The model-facing `output` carries the clean command text + file note; the model
     // never sees the JSON wrapper or any "exit N (Xms)" prefix.
     let output = result
@@ -35,12 +35,7 @@ async fn runs_command_and_captures_output() {
         .get("exit_code")
         .and_then(|v| v.as_i64())
         .expect("exit_code field");
-    let timed_out = result
-        .get("timed_out")
-        .and_then(|v| v.as_bool())
-        .expect("timed_out field");
     assert_eq!(exit_code, 0, "got: {result}");
-    assert!(!timed_out, "got: {result}");
     assert!(output.contains("hello"), "got: {output}");
 }
 
@@ -62,12 +57,7 @@ async fn returns_nonzero_exit_code_on_failure() {
         .get("exit_code")
         .and_then(|v| v.as_i64())
         .expect("exit_code field");
-    let timed_out = result
-        .get("timed_out")
-        .and_then(|v| v.as_bool())
-        .expect("timed_out field");
     assert_eq!(exit_code, 1, "got: {result}");
-    assert!(!timed_out, "got: {result}");
 }
 
 #[tokio::test]
@@ -220,37 +210,48 @@ async fn cwd_nonexistent_errors_without_emitting() {
     );
 }
 
+/// stdin=null: `cat` reads from stdin and should get EOF immediately, not hang.
 #[tokio::test]
-async fn times_out_long_running_command() {
+async fn stdin_closed_cat_returns_promptly() {
+    use std::time::Duration;
     let dir = TempDir::new().unwrap();
     let tool = make_tool(&dir);
-    let result = tool
-        .execute(
-            serde_json::json!({
-                "cmd": "sleep 10",
-                "reason": "test timeout",
-                "timeout": 100
-            }),
+    // If stdin were inherited, `cat` would block forever waiting for input.
+    // With stdin=null it gets EOF and exits immediately.
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        tool.execute(
+            serde_json::json!({"cmd": "cat", "reason": "test stdin closed"}),
             &crate::Recorder::detached(),
-        )
-        .await
-        .unwrap();
-    // Timeout branch: exit_code=124, timed_out=true, output carries the TIMED OUT message.
+        ),
+    )
+    .await
+    .expect("cat must complete within 5s (stdin=null gives EOF)")
+    .unwrap();
     let exit_code = result
         .get("exit_code")
         .and_then(|v| v.as_i64())
         .expect("exit_code field");
-    let timed_out = result
-        .get("timed_out")
-        .and_then(|v| v.as_bool())
-        .expect("timed_out field");
-    let output = result
-        .get("output")
-        .and_then(|v| v.as_str())
-        .expect("output field");
-    assert_eq!(exit_code, 124, "got: {result}");
-    assert!(timed_out, "got: {result}");
-    assert!(output.contains("TIMED OUT"), "got: {output}");
+    assert_eq!(exit_code, 0, "cat exited cleanly: {result}");
+}
+
+/// Regression: exit_code must still appear in the result after the exec.rs lift was updated.
+#[tokio::test]
+async fn exit_code_present_in_result() {
+    let dir = TempDir::new().unwrap();
+    let tool = make_tool(&dir);
+    let result = tool
+        .execute(
+            serde_json::json!({"cmd": "exit 42", "reason": "test exit_code"}),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap();
+    let exit_code = result
+        .get("exit_code")
+        .and_then(|v| v.as_i64())
+        .expect("exit_code must be present in shell result");
+    assert_eq!(exit_code, 42, "got: {result}");
 }
 
 /// (a) Streaming: bytes appear in the file BEFORE the command finishes.
