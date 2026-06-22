@@ -18,6 +18,20 @@ message Feedback {
   google.protobuf.Value result = 1;
   repeated gait.log.v1.Event events = 2;
   optional gait.log.v1.UnlockItem denied = 3;  // set when the hand signals a seal denial (Phase 2c)
+  optional DaemonRecordProto daemon = 5;        // set when the hand spawned a background daemon
+}
+
+// Metadata for a daemon spawned by the shell tool (detached=true).
+// Carried from hand → spine via Feedback so the spine (sole gait-dir writer)
+// can append a DaemonStart entry to daemons.jsonl.
+message DaemonRecordProto {
+  string name       = 1;
+  int32  pid        = 2;
+  int32  pgid       = 3;
+  uint64 started_at = 4;
+  string cmd        = 5;
+  string cwd        = 6;
+  string log_path   = 7;
 }
 
 // Hand → spine reply: the single response a hand emits on stdout for one

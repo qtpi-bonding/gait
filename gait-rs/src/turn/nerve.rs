@@ -222,6 +222,7 @@ mod tests {
                 result: None,
                 events: vec![],
                 denied: None,
+                daemon: None,
             })),
         };
         let resp1 = Signal {
@@ -230,6 +231,7 @@ mod tests {
                 result: None,
                 events: vec![],
                 denied: None,
+                daemon: None,
             })),
         };
         write_signal(&mut spine_w, &resp2).await.unwrap();

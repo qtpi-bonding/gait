@@ -233,6 +233,7 @@ fn feedback_carries_value_and_events() {
         }),
         events: vec![event],
         denied: None,
+        daemon: None,
     };
 
     let bytes = prost::Message::encode_to_vec(&feedback);

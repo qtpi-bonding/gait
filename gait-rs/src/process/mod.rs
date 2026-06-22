@@ -4,7 +4,8 @@
 //! first; other targets get Noop. NOT gait's Docker `--container`.
 
 use std::io;
-use std::process::{Child, Command};
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 
 pub trait Containment: Send + Sync {
@@ -31,6 +32,37 @@ pub trait Containment: Send + Sync {
     /// The handle to pass to a blocking subagent as `--cascade-group` (so it
     /// enrolls its own work into THIS group). `None` if not yet realized.
     fn handle(&self) -> Option<String>;
+}
+
+/// Spawn `cmd` as a daemon fully outside the cascade group:
+/// - its own session (setsid in pre_exec) so SIGHUP from the hand's exit is not delivered,
+/// - stdout+stderr redirected to `log_path` (created/truncated),
+/// - stdin closed (null).
+///
+/// Returns `(child, pgid, started_at)` where `pgid == pid` (setsid leader).
+/// Drop `child` immediately if you do not intend to wait on it.
+pub fn spawn_detached_to_file(mut cmd: Command, log_path: &Path) -> io::Result<(Child, i32, u64)> {
+    let f = std::fs::File::create(log_path)?;
+    let f2 = f.try_clone()?;
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::from(f))
+        .stderr(Stdio::from(f2));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
+    let child = cmd.spawn()?;
+    let pid = child.id() as i32;
+    // After setsid the child is its own session+group leader, so pgid == pid.
+    // Do NOT call getpgid here — it races the child's pre_exec.
+    let started_at = crate::session::daemons::proc_start_time(pid).unwrap_or(0);
+    Ok((child, pid, started_at))
 }
 
 pub fn establish(inherited: Option<String>) -> Arc<dyn Containment> {

@@ -210,6 +210,7 @@ mod tests {
                     }),
                     events: vec![],
                     denied: None,
+                    daemon: None,
                 })),
             };
             nerve::write_signal(&mut w, &canned).await.unwrap();
