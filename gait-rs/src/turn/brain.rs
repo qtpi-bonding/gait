@@ -457,6 +457,7 @@ impl TurnDriver for BrainDriver {
             session_id: &self.session_id,
             assigned_by: meta.assigned_by.as_deref(),
             result,
+            notify_done: meta.notify_done,
         };
         for action in scheduler.next(&ended) {
             if let Err(e) = harness.execute(&action).await {
@@ -490,7 +491,12 @@ mod tests {
         assert_eq!(parsed.max_iter, cfg.max_iter);
 
         let ev = gait_proto::envelope::mint(
-            crate::proto::events::session_start("s1234567".into(), None, Some("/code".into())),
+            crate::proto::events::session_start(
+                "s1234567".into(),
+                None,
+                Some("/code".into()),
+                false,
+            ),
             None,
             0,
             0,

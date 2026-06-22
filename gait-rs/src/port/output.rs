@@ -151,6 +151,7 @@ impl<O: Write, E: Write> TurnSink for CliSink<O, E> {
             session_id: id.to_string(),
             assigned_by: None,
             codebase_path: None,
+            notify_done: false,
         };
         if let Ok(j) = serde_json::to_string(&ss) {
             let _ = writeln!(self.out, "{j}");

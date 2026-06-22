@@ -322,6 +322,7 @@ impl gait_core::embed::TurnDriver for CliDriver {
             session_id: &self.session_id,
             assigned_by: meta.assigned_by.as_deref(),
             result,
+            notify_done: meta.notify_done,
         };
         for action in scheduler.next(&ended) {
             if let Err(e) = harness.execute(&action).await {

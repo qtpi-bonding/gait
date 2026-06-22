@@ -193,7 +193,12 @@ pub fn write_unlock_reply(
 pub fn init_session(opts: InitSessionOpts) -> Result<(), SessionError> {
     // SessionStart is identity-only; model/codebase_hash/codebase_dirty on `opts`
     // remain unused here (pre-existing). codebase_path + assigned_by ARE persisted.
-    let body = crate::proto::events::session_start(opts.id, opts.assigned_by, opts.codebase_path);
+    let body = crate::proto::events::session_start(
+        opts.id,
+        opts.assigned_by,
+        opts.codebase_path,
+        opts.notify_done,
+    );
     let prev = last_event(&opts.log_path)?;
     let ev = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
     let mut file = std::fs::OpenOptions::new()

@@ -172,6 +172,7 @@ message SessionStart {                // root event — identity ONLY
   string session_id           = 1;
   optional string assigned_by = 2;
   optional string codebase_path = 3;
+  bool notify_done            = 4;  // true → scheduler sends NotifyAndResume; false → result via Feedback only
 }
 
 message Agent {                       // the live agent config from this seq forward; first instance = opening.

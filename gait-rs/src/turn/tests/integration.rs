@@ -770,7 +770,7 @@ async fn resume_executes_approved_tool_directly() {
     };
     wire::append(
         &tx_path,
-        events::session_start(session_id.into(), None, None),
+        events::session_start(session_id.into(), None, None, false),
     )
     .unwrap();
     wire::append(&tx_path, events::user_text("run echo".into(), None)).unwrap();
@@ -883,7 +883,7 @@ async fn resume_emits_denied_tool_result_for_rejected_call() {
     };
     wire::append(
         &tx_path,
-        events::session_start(session_id.into(), None, None),
+        events::session_start(session_id.into(), None, None, false),
     )
     .unwrap();
     wire::append(&tx_path, events::user_text("clean up".into(), None)).unwrap();
@@ -998,7 +998,7 @@ async fn resume_with_scope_agent_shows_whitelist_prefix() {
     let shell_args = serde_json::json!({ "cmd": "ls", "reason": "list files" });
     wire::append(
         &tx_path,
-        events::session_start(session_id.into(), None, None),
+        events::session_start(session_id.into(), None, None, false),
     )
     .unwrap();
     wire::append(&tx_path, events::user_text("list files".into(), None)).unwrap();

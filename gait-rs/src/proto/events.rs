@@ -7,11 +7,13 @@ pub fn session_start(
     session_id: String,
     assigned_by: Option<String>,
     codebase_path: Option<String>,
+    notify_done: bool,
 ) -> pb::event::Body {
     wire::body(pb::payload::Kind::SessionStart(pb::SessionStart {
         session_id,
         assigned_by,
         codebase_path,
+        notify_done,
     }))
 }
 
@@ -909,6 +911,7 @@ mod tests {
             "s1234567".to_string(),
             Some("sparent0".to_string()),
             Some("/code".to_string()),
+            false,
         );
         match body {
             crate::proto::gait::log::v1::event::Body::Payload(p) => match p.kind {

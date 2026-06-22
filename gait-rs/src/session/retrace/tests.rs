@@ -33,7 +33,7 @@ fn user_and_assistant_text_reconstructed() {
     let path = write_events(
         dir.path(),
         vec![
-            events::session_start("s1".into(), None, None),
+            events::session_start("s1".into(), None, None, false),
             events::user_text("hello".into(), None),
             events::assistant_text("hi there".into()),
         ],

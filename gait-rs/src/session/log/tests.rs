@@ -175,7 +175,7 @@ fn all_event_bodies_serialize_roundtrip() {
         cache_write: 0,
     };
     let bodies: Vec<event::Body> = vec![
-        events::session_start("s1".into(), None, None),
+        events::session_start("s1".into(), None, None, false),
         events::user_text("t".into(), None),
         events::assistant_text("a".into()),
         events::tool_call("i".into(), "read".into(), &serde_json::json!({})),

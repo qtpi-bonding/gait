@@ -9,6 +9,9 @@ pub struct SessionMeta {
     pub id: String,
     pub assigned_by: Option<String>,
     pub codebase_path: Option<String>,
+    /// Mirrors `SessionStart.notify_done`. When false, the scheduler suppresses
+    /// `NotifyAndResume` (result is delivered via Feedback instead).
+    pub notify_done: bool,
 }
 
 /// Derive session identity from an in-memory event list (the brain's log mirror).
@@ -25,6 +28,7 @@ pub fn from_events(events: &[Event], session_id: &str) -> SessionMeta {
                     },
                     assigned_by: s.assigned_by.clone(),
                     codebase_path: s.codebase_path.clone(),
+                    notify_done: s.notify_done,
                 };
             }
         }
@@ -87,6 +91,7 @@ mod tests {
             "s1234567".to_string(),
             Some("sparent0".to_string()),
             Some("/code".to_string()),
+            false,
         );
         let ev = mint(body, None, 0, 0);
         let meta = super::from_events(&[ev], "s1234567");

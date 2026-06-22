@@ -1315,7 +1315,12 @@ mod cancel_tests {
         // Build a minimal log: session_start + user_turn + cancellation_signal
 
         let log: Vec<crate::proto::gait::log::v1::Event> = vec![
-            envelope::mint(events::session_start("s1".into(), None, None), None, 0, 0),
+            envelope::mint(
+                events::session_start("s1".into(), None, None, false),
+                None,
+                0,
+                0,
+            ),
             envelope::mint(events::user_text("hello".into(), None), None, 0, 0),
             envelope::mint(events::cancellation_signal(), None, 0, 0),
         ];

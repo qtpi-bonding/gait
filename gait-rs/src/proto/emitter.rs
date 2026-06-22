@@ -248,6 +248,7 @@ mod tests {
                 "s1234567".to_string(),
                 None,
                 None,
+                false,
             ))
             .unwrap();
         assert!(em.tx_path.exists());
@@ -362,6 +363,7 @@ mod tests {
             "s1234567".to_string(),
             None,
             None,
+            false,
         ))
         .unwrap();
         assert_eq!(

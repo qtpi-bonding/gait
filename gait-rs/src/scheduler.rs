@@ -10,6 +10,9 @@ pub struct TurnEnded<'a> {
     pub session_id: &'a str,
     pub assigned_by: Option<&'a str>,
     pub result: &'a TurnResult,
+    /// When false, suppress `NotifyAndResume` — result delivered via Feedback instead.
+    /// Set from `SessionMeta.notify_done` (which mirrors `SessionStart.notify_done`).
+    pub notify_done: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,6 +63,9 @@ impl Scheduler for NativeScheduler {
         let Some(assigner) = ended.assigned_by else {
             return vec![];
         };
+        if !ended.notify_done {
+            return vec![];
+        }
         let (status, summary) = summarize(ended.result);
         vec![Action::NotifyAndResume {
             target_session: assigner.to_string(),
@@ -85,6 +91,7 @@ mod tests {
             session_id: "s1",
             assigned_by: None,
             result: &result,
+            notify_done: true,
         };
         assert!(NativeScheduler.next(&ended).is_empty());
     }
@@ -100,6 +107,7 @@ mod tests {
             session_id: "child",
             assigned_by: Some("parent"),
             result: &result,
+            notify_done: true,
         };
         let actions = NativeScheduler.next(&ended);
         assert_eq!(
@@ -120,10 +128,56 @@ mod tests {
             session_id: "child",
             assigned_by: Some("parent"),
             result: &result,
+            notify_done: true,
         };
         let actions = NativeScheduler.next(&ended);
         match &actions[0] {
             Action::NotifyAndResume { status, .. } => assert_eq!(status, "permissions"),
+        }
+    }
+
+    #[test]
+    fn blocking_subagent_yields_no_action() {
+        let result = TurnResult::Done {
+            message: "ok".into(),
+            result: None,
+            changes: None,
+        };
+        let ended = TurnEnded {
+            session_id: "child",
+            assigned_by: Some("parent"),
+            result: &result,
+            notify_done: false,
+        };
+        assert!(NativeScheduler.next(&ended).is_empty());
+    }
+
+    #[test]
+    fn peer_with_notify_done_true_yields_notify_and_resume() {
+        let result = TurnResult::Done {
+            message: "peer done".into(),
+            result: None,
+            changes: None,
+        };
+        let ended = TurnEnded {
+            session_id: "peer",
+            assigned_by: Some("assigner"),
+            result: &result,
+            notify_done: true,
+        };
+        let actions = NativeScheduler.next(&ended);
+        assert_eq!(actions.len(), 1);
+        match &actions[0] {
+            Action::NotifyAndResume {
+                target_session,
+                from_session,
+                status,
+                ..
+            } => {
+                assert_eq!(target_session, "assigner");
+                assert_eq!(from_session, "peer");
+                assert_eq!(status, "done");
+            }
         }
     }
 
