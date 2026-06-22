@@ -37,6 +37,7 @@ pub struct LoopConfig {
     pub sandbox_cfg: crate::config::SandboxConfig,
     pub relay: Option<crate::turn::nerve::NerveWriter>,
     pub initial_git: Option<crate::turn::GitSnapshot>,
+    pub daemons: Vec<(String, i32, bool, String)>,
 }
 
 /// Per-turn machinery the loop can't own generically. `?Send`: the driver runs on
@@ -125,6 +126,7 @@ pub async fn run_loop(
             sandbox_cfg: cfg.sandbox_cfg.clone(),
             relay: cfg.relay,
             initial_git: cfg.initial_git.clone(),
+            daemons: cfg.daemons.clone(),
         };
         let session_for_turn = session.clone();
         let handle = tokio::spawn(async move {

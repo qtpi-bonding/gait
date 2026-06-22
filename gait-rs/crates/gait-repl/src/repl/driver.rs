@@ -198,6 +198,7 @@ impl TurnDriver for ReplDriver {
             sandbox_cfg: self.config.sandbox.clone(),
             relay: None,
             initial_git: None,
+            daemons: vec![],
         }
     }
 

@@ -140,6 +140,7 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
             sandbox_cfg: Default::default(),
             relay: None,
             initial_git: None,
+            daemons: vec![],
         },
     )
     .await
@@ -229,6 +230,7 @@ async fn run_turn_permissions_result_integration() {
             sandbox_cfg: Default::default(),
             relay: None,
             initial_git: None,
+            daemons: vec![],
         },
     )
     .await

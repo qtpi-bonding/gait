@@ -1000,6 +1000,7 @@ dependencies = [
  "gait-workflow",
  "git2",
  "jsonschema",
+ "libc",
  "pbjson-types",
  "prost",
  "serde",

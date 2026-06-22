@@ -122,11 +122,19 @@ message Notify {
 // before the relay loop. Carries everything the brain would otherwise read from
 // disk at startup: config, the full session log (events), and the turn's git
 // snapshot. The brain reads this raw before start_nerve takes stdin.
+message DaemonStatus {
+  string name     = 1;
+  int32  pid      = 2;
+  bool   alive    = 3;
+  string log_path = 4;
+}
+
 message BrainInit {
   string config_json = 1;                  // serialized gait_core::config::Config (JSON)
   repeated gait.log.v1.Event events = 2;   // full session log (includes this turn's user input + SessionStart)
   GitStatus git = 3;                       // turn-start codebase git snapshot
   string profile_json = 4;                 // serialized gait_core::profile::Profile (JSON)
+  repeated DaemonStatus daemons = 5;       // active daemons for this session at turn start
 }
 
 message GitStatus {

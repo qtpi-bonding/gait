@@ -100,6 +100,7 @@ impl TurnDriver for MyDriver {
             sandbox_cfg: gait_core::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
+            daemons: vec![],
         }
     }
 

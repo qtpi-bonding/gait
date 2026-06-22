@@ -200,7 +200,7 @@ pub async fn relay_brain_turn(
     // The caller appended this turn's user input before relay_brain_turn, and the
     // SessionStart write above ran, so `events` is complete.
     {
-        use crate::proto::gait::sandbox::v1::{signal, BrainInit, GitStatus, Signal};
+        use crate::proto::gait::sandbox::v1::{signal, BrainInit, DaemonStatus, GitStatus, Signal};
         use tokio::io::AsyncWriteExt;
         let cfg = crate::config::load_config(gait_dir);
         let config_json = serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string());
@@ -209,6 +209,19 @@ pub async fn relay_brain_turn(
         let dirty_files = repos.codebase.dirty_files(codebase);
         let profile = build_turn_profile(gait_dir, codebase, profile_inputs);
         let profile_json = serde_json::to_string(&profile).unwrap_or_else(|_| "null".to_string());
+        let daemons = {
+            use crate::session::daemons::{active, is_alive};
+            active(gait_dir)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|r| DaemonStatus {
+                    alive: is_alive(&r),
+                    name: r.name,
+                    pid: r.pid,
+                    log_path: r.log_path,
+                })
+                .collect::<Vec<_>>()
+        };
         let init = BrainInit {
             config_json,
             events,
@@ -217,6 +230,7 @@ pub async fn relay_brain_turn(
                 dirty_files,
             }),
             profile_json,
+            daemons,
         };
         let sig = Signal {
             corr_id: 0,

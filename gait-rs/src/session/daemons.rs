@@ -216,6 +216,7 @@ fn proc_start_time_linux(pid: i32) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::process::CommandExt;
     use std::sync::Arc;
     use tempfile::TempDir;
 
@@ -285,6 +286,115 @@ mod tests {
             !is_alive(&rec),
             "wrong start-time should fail identity check"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration tests: live process + per-turn sweep + stop
+    // -----------------------------------------------------------------------
+
+    /// Spawn a real `sleep 999` in its own session (setsid), register it, then
+    /// verify that `active()` + `is_alive()` reports it alive.
+    #[test]
+    fn active_sweep_reports_live_process_as_alive() {
+        use std::process::Command;
+
+        let dir = TempDir::new().unwrap();
+
+        // Spawn sleep 999 as a child; it gets a new session via pre_exec setsid.
+        let mut child = unsafe {
+            Command::new("sleep")
+                .arg("999")
+                .pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                })
+                .spawn()
+                .expect("spawn sleep 999")
+        };
+
+        let pid = child.id() as i32;
+        let pgid = unsafe { libc::getpgid(pid) };
+        assert!(pgid > 0, "getpgid should succeed");
+
+        let started_at = proc_start_time(pid).expect("proc_start_time for child");
+
+        let rec = DaemonRecord {
+            name: "test-sleep-alive".to_owned(),
+            pid,
+            pgid,
+            started_at,
+            cmd: "sleep 999".to_owned(),
+            cwd: "/tmp".to_owned(),
+            log_path: "/tmp/test-sleep.log".to_owned(),
+        };
+
+        append_start(dir.path(), &rec).unwrap();
+
+        let recs = active(dir.path()).unwrap();
+        assert_eq!(recs.len(), 1, "one active daemon expected");
+        let found = &recs[0];
+        assert_eq!(found.name, "test-sleep-alive");
+        assert!(is_alive(found), "live sleep process should be alive");
+
+        // Cleanup: kill the child before the test exits.
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// After stopping a live daemon (killpg + append_stop), `active()` must no
+    /// longer list it and `is_alive()` must return false.
+    #[test]
+    fn stop_removes_live_daemon_and_is_alive_flips_false() {
+        use std::process::Command;
+
+        let dir = TempDir::new().unwrap();
+
+        let mut child = unsafe {
+            Command::new("sleep")
+                .arg("999")
+                .pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                })
+                .spawn()
+                .expect("spawn sleep 999")
+        };
+
+        let pid = child.id() as i32;
+        let pgid = unsafe { libc::getpgid(pid) };
+        assert!(pgid > 0);
+
+        let started_at = proc_start_time(pid).expect("proc_start_time for child");
+
+        let rec = DaemonRecord {
+            name: "test-sleep-stop".to_owned(),
+            pid,
+            pgid,
+            started_at,
+            cmd: "sleep 999".to_owned(),
+            cwd: "/tmp".to_owned(),
+            log_path: "/tmp/test-sleep-stop.log".to_owned(),
+        };
+
+        append_start(dir.path(), &rec).unwrap();
+
+        // Replicate cmd_daemons_stop logic: identity-checked kill + append_stop.
+        assert!(is_alive(&rec), "must be alive before stop");
+        unsafe { libc::killpg(pgid, libc::SIGTERM) };
+        // Give the kernel a moment to reap.
+        let _ = child.wait();
+
+        append_stop(dir.path(), "test-sleep-stop").unwrap();
+
+        // 1. active() must not list it any more.
+        let recs = active(dir.path()).unwrap();
+        assert!(
+            recs.iter().all(|r| r.name != "test-sleep-stop"),
+            "stopped daemon must not appear in active()"
+        );
+
+        // 2. is_alive must return false.
+        assert!(!is_alive(&rec), "is_alive must be false after stop");
     }
 
     #[test]

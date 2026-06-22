@@ -311,6 +311,7 @@ fn brain_init_signal_round_trips() {
                 dirty_files: vec!["src/main.rs".to_string()],
             }),
             profile_json: String::new(),
+            daemons: vec![],
         })),
     };
     let bytes = sig.encode_to_vec();

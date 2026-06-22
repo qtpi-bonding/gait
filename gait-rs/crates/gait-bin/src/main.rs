@@ -90,6 +90,10 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        "daemons" => {
+            let rest: Vec<String> = args[2..].to_vec();
+            gait_cli::cli::daemons::cmd_daemons(&gait_dir, &rest);
+        }
         "__brain" => gait_cli::cli::args::cmd_brain(&args[2..]).await,
         "__run-tool" => gait_cli::cli::run_tool::cmd_run_tool(&args[2..]).await,
         _ => {

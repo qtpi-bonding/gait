@@ -254,6 +254,11 @@ pub async fn run_brain(
             .map(|g| g.dirty_files.clone())
             .unwrap_or_default(),
     };
+    let daemons: Vec<(String, i32, bool, String)> = init
+        .daemons
+        .iter()
+        .map(|d| (d.name.clone(), d.pid, d.alive, d.log_path.clone()))
+        .collect();
 
     let session = std::sync::Arc::new(crate::session::Session {
         id: session_id.clone(),
@@ -286,6 +291,7 @@ pub async fn run_brain(
         workflow_runner,
         log_mirror,
         initial_git,
+        daemons,
     };
 
     let mut sink = BrainSink {
@@ -384,6 +390,7 @@ struct BrainDriver {
     workflow_runner: Option<Arc<dyn WorkflowRunner>>,
     log_mirror: std::sync::Arc<std::sync::Mutex<Vec<crate::proto::gait::log::v1::Event>>>,
     initial_git: crate::turn::GitSnapshot,
+    daemons: Vec<(String, i32, bool, String)>,
 }
 
 #[async_trait::async_trait(?Send)]
@@ -414,6 +421,7 @@ impl TurnDriver for BrainDriver {
             sandbox_cfg: self.sandbox_cfg.clone(),
             relay: Some(self.nerve_writer.clone()),
             initial_git: Some(self.initial_git.clone()),
+            daemons: self.daemons.clone(),
         }
     }
 
