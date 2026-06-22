@@ -4,6 +4,8 @@ use std::path::Path;
 pub mod defaults;
 pub mod resolver;
 
+pub use resolver::{ConfigResolver, Overrides};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigTool {
     pub name: String,
