@@ -346,6 +346,8 @@ pub async fn relay_brain_turn(
                     // Pass --cascade-group so the child self-assigns (race-free enrollment).
                     if let Some(handle) = group.handle() {
                         argv.extend(["--cascade-group".to_string(), handle]);
+                    } else {
+                        eprintln!("[spine] warning: spawn_agent cascade-group handle unavailable; subagent will not be enrolled in cascade group");
                     }
                     let mut cmd = std::process::Command::new(exe);
                     cmd.args(&argv)
