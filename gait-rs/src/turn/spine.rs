@@ -624,10 +624,10 @@ fn enrich_permissions_preview(
     let tools =
         crate::tools::builtin_tools(ctx, vec![], vec![], vec![], crate::git::Repos::production());
 
-    let jail = std::env::temp_dir().join(format!(
-        "gait-preview-{}",
-        uuid::Uuid::new_v4().to_string().replace('-', "")
-    ));
+    // compute_scope uses the jail only for path arithmetic (pushes it into
+    // readable/writable vecs); it never calls canonicalize or metadata on it.
+    // A stable sentinel is therefore sufficient — no temp directory needed.
+    let jail = std::env::temp_dir().join("gait-preview-jail");
 
     for item in perm.items.iter_mut() {
         if item.preview.is_some() {
@@ -647,14 +647,15 @@ fn enrich_permissions_preview(
         let ceiling =
             crate::sandbox::ceiling::compute_scope(tool.access(), sandbox_cfg, codebase, &jail);
         let targets = tool.scope_targets(&args);
-        let in_scope = targets.is_empty()
-            || targets.iter().all(|(path, _dim)| {
-                // Canonicalize the target path so /var/... and /private/var/... compare equal.
-                let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
-                ceiling.read_all
-                    || ceiling.readable.iter().any(|r| canonical.starts_with(r))
-                    || ceiling.writable.iter().any(|w| canonical.starts_with(w))
-            });
+        // Iterator::all returns true on an empty iterator, so no need to
+        // short-circuit on targets.is_empty() first.
+        let in_scope = targets.iter().all(|(path, _dim)| {
+            // Canonicalize the target path so /var/... and /private/var/... compare equal.
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+            ceiling.read_all
+                || ceiling.readable.iter().any(|r| canonical.starts_with(r))
+                || ceiling.writable.iter().any(|w| canonical.starts_with(w))
+        });
         if !in_scope {
             continue;
         }
@@ -848,10 +849,10 @@ mod tests {
         enrich_permissions_preview(&mut evt, codebase, codebase, "s1", &sandbox_cfg);
 
         let Some(event::Body::Payload(p)) = evt.body.as_ref() else {
-            panic!();
+            panic!("expected payload body in overwrite test");
         };
         let Some(payload::Kind::Permissions(perm)) = p.kind.as_ref() else {
-            panic!();
+            panic!("expected permissions kind in overwrite test");
         };
         assert_eq!(
             perm.items[0].preview.as_deref(),
