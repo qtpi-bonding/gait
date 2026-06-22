@@ -17,6 +17,7 @@ pub(crate) fn build_turn_context(
     codebase_hash: &str,
     dirty_files: &[String],
     cwd: &Path,
+    daemons: &[(String, i32, bool, String)],
 ) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -30,6 +31,16 @@ pub(crate) fn build_turn_context(
         ctx.push_str("Dirty files:\n");
         for f in dirty_files {
             ctx.push_str(&format!("  {}\n", f));
+        }
+    }
+    if !daemons.is_empty() {
+        ctx.push_str("Daemons:\n");
+        for (name, pid, alive, log_path) in daemons {
+            let status = if *alive { "running" } else { "stopped" };
+            ctx.push_str(&format!(
+                "  {} (pid {}) — {} — log: {}\n",
+                name, pid, status, log_path
+            ));
         }
     }
     // Terminal-style prompt: reminds the agent where `shell` runs (sticky cwd).

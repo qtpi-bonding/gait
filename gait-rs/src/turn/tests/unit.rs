@@ -126,6 +126,7 @@ fn turn_context_is_wrapped_in_status_tag() {
         "deadbeef",
         &["src/a.rs".to_string()],
         std::path::Path::new("/repo/sub"),
+        &[],
     );
     assert!(ctx.starts_with("<status>"), "got: {ctx}");
     assert!(ctx.trim_end().ends_with("</status>"), "got: {ctx}");
@@ -496,6 +497,7 @@ fn turn_input_initial_git_some_carries_seeded_hash() {
         sandbox_cfg: crate::config::SandboxConfig::default(),
         relay: None,
         initial_git: Some(snap.clone()),
+        daemons: vec![],
     };
     let git = input.initial_git.expect("initial_git should be Some");
     assert_eq!(git.head_hash, "seeded-abc123");

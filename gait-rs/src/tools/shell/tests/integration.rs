@@ -397,3 +397,251 @@ async fn writes_output_to_tmp_file() {
     let tmp_dir = std::env::temp_dir().join("gait-hand");
     assert!(tmp_dir.exists(), "gait-hand tmp dir not created");
 }
+
+// ── Detached daemon tests ──────────────────────────────────────────────────
+
+/// Helper: extract the `__daemon` object from a shell-tool response.
+fn daemon_proto(result: &serde_json::Value) -> &serde_json::Value {
+    result
+        .get("__daemon")
+        .expect("__daemon key missing from detached response")
+}
+
+#[tokio::test]
+async fn detached_spawn_returns_immediately() {
+    // A long-running sleep should not block execute() — it must return before the
+    // process finishes.
+    let dir = TempDir::new().unwrap();
+    let tool = make_tool(&dir);
+    let before = std::time::Instant::now();
+    let result = tool
+        .execute(
+            serde_json::json!({
+                "cmd": "sleep 30",
+                "reason": "daemon test",
+                "detached": true
+            }),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap();
+    let elapsed = before.elapsed();
+
+    let pid = daemon_proto(&result)
+        .get("pid")
+        .and_then(|v| v.as_i64())
+        .expect("pid") as i32;
+
+    // Teardown: kill the spawned daemon.
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+
+    assert!(
+        elapsed.as_secs() < 5,
+        "execute blocked for {}s — should return immediately",
+        elapsed.as_secs()
+    );
+    assert!(pid > 0, "pid must be positive, got {pid}");
+}
+
+#[tokio::test]
+async fn detached_child_is_in_own_session() {
+    // After setsid() the child's session id == its own pid (it is the session leader).
+    let dir = TempDir::new().unwrap();
+    let tool = make_tool(&dir);
+    let result = tool
+        .execute(
+            serde_json::json!({
+                "cmd": "sleep 30",
+                "reason": "daemon session test",
+                "detached": true
+            }),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap();
+
+    let pid = daemon_proto(&result)
+        .get("pid")
+        .and_then(|v| v.as_i64())
+        .expect("pid") as i32;
+
+    let child_sid = unsafe { libc::getsid(pid) };
+    let our_sid = unsafe { libc::getsid(0) };
+
+    // Teardown.
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+
+    assert_ne!(
+        child_sid, our_sid,
+        "child sid ({child_sid}) must differ from our sid ({our_sid})"
+    );
+    // Specifically, for a setsid leader, getsid(pid) == pid.
+    assert_eq!(child_sid, pid, "child must be its own session leader");
+}
+
+#[tokio::test]
+async fn detached_output_appears_in_log_file() {
+    // The daemon's stdout/stderr must be redirected to the log file.
+    let dir = TempDir::new().unwrap();
+    let tool = make_tool(&dir);
+    let result = tool
+        .execute(
+            serde_json::json!({
+                "cmd": "echo daemon-marker",
+                "reason": "log test",
+                "detached": true
+            }),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap();
+
+    let proto = daemon_proto(&result);
+    let log_path = proto
+        .get("log_path")
+        .and_then(|v| v.as_str())
+        .expect("log_path");
+    let pid = proto.get("pid").and_then(|v| v.as_i64()).expect("pid") as i32;
+
+    // Give the short-lived process a moment to write and exit.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    unsafe { libc::kill(pid, libc::SIGTERM) };
+
+    let contents = std::fs::read_to_string(log_path)
+        .unwrap_or_else(|e| panic!("cannot read log {log_path}: {e}"));
+    assert!(
+        contents.contains("daemon-marker"),
+        "expected 'daemon-marker' in log, got: {contents:?}"
+    );
+}
+
+#[tokio::test]
+async fn detached_daemon_record_proto_fields_populated() {
+    // The __daemon proto must contain all required fields that the spine uses to
+    // write a DaemonStart record into daemons.jsonl.
+    let dir = TempDir::new().unwrap();
+    let tool = make_tool(&dir);
+    let result = tool
+        .execute(
+            serde_json::json!({
+                "cmd": "sleep 30",
+                "reason": "record test",
+                "detached": true,
+                "name": "test-daemon"
+            }),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap();
+
+    let proto = daemon_proto(&result);
+    let pid = proto.get("pid").and_then(|v| v.as_i64()).expect("pid") as i32;
+
+    // Teardown.
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+
+    // cmd must be the raw user command, not "sh -c <cmd>".
+    let cmd = proto.get("cmd").and_then(|v| v.as_str()).expect("cmd");
+    assert_eq!(
+        cmd, "sleep 30",
+        "cmd should be raw user command, got: {cmd}"
+    );
+
+    // name must match what we passed.
+    let name = proto.get("name").and_then(|v| v.as_str()).expect("name");
+    assert_eq!(name, "test-daemon");
+
+    // log_path must live under the daemons/ subdirectory.
+    let log_path = proto
+        .get("log_path")
+        .and_then(|v| v.as_str())
+        .expect("log_path");
+    assert!(
+        log_path.contains("daemons/"),
+        "log_path should be under daemons/, got: {log_path}"
+    );
+
+    // started_at must be non-zero.
+    let started_at = proto
+        .get("started_at")
+        .and_then(|v| v.as_u64())
+        .expect("started_at");
+    assert!(started_at > 0, "started_at must be non-zero");
+}
+
+/// The spine writes a DaemonStart record into `<gait_dir>/daemons.jsonl` using
+/// the `__daemon` proto returned by the shell tool.  This test exercises that
+/// round-trip directly: spawn a daemon, extract the proto, call
+/// `daemons::append_start`, then verify `daemons::active()` lists the daemon.
+#[tokio::test]
+async fn detached_daemon_start_record_lands_in_daemons_jsonl() {
+    use crate::session::daemons;
+    let dir = TempDir::new().unwrap();
+    let tool = make_tool(&dir);
+    let result = tool
+        .execute(
+            serde_json::json!({
+                "cmd": "sleep 30",
+                "reason": "daemons.jsonl test",
+                "detached": true,
+                "name": "jsonl-test-daemon"
+            }),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap();
+
+    let proto = daemon_proto(&result);
+    let pid = proto.get("pid").and_then(|v| v.as_i64()).expect("pid") as i32;
+
+    // Reconstruct the DaemonRecord as spine would, then write it.
+    let rec = daemons::DaemonRecord {
+        name: proto
+            .get("name")
+            .and_then(|v| v.as_str())
+            .expect("name")
+            .to_owned(),
+        pid,
+        pgid: proto.get("pgid").and_then(|v| v.as_i64()).expect("pgid") as i32,
+        started_at: proto
+            .get("started_at")
+            .and_then(|v| v.as_u64())
+            .expect("started_at"),
+        cmd: proto
+            .get("cmd")
+            .and_then(|v| v.as_str())
+            .expect("cmd")
+            .to_owned(),
+        cwd: proto
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .expect("cwd")
+            .to_owned(),
+        log_path: proto
+            .get("log_path")
+            .and_then(|v| v.as_str())
+            .expect("log_path")
+            .to_owned(),
+    };
+
+    // Teardown: kill before we assert so the process doesn't linger on failure.
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+
+    // Write the record as spine does.
+    daemons::append_start(dir.path(), &rec).expect("append_start must succeed");
+
+    // Verify daemons.jsonl exists and active() returns the record.
+    let jsonl_path = dir.path().join("daemons.jsonl");
+    assert!(jsonl_path.exists(), "daemons.jsonl must be created");
+
+    let active = daemons::active(dir.path()).expect("active() must succeed");
+    assert_eq!(
+        active.len(),
+        1,
+        "expected 1 active daemon, got {}",
+        active.len()
+    );
+    assert_eq!(active[0].name, "jsonl-test-daemon");
+    assert_eq!(active[0].cmd, "sleep 30", "cmd must be raw user command");
+}

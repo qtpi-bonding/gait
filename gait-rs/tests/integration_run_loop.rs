@@ -102,6 +102,7 @@ impl TurnDriver for TestDriver {
             sandbox_cfg: Default::default(),
             relay: None,
             initial_git: None,
+            daemons: vec![],
         }
     }
 

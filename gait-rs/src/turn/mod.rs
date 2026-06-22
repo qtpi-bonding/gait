@@ -138,6 +138,8 @@ pub struct TurnInput {
     /// When `Some` (spine path), the turn-start git snapshot supplied by the spine
     /// via BrainInit — the brain does not read git itself. `None` reads disk.
     pub initial_git: Option<GitSnapshot>,
+    /// Active daemons injected by the brain from BrainInit.daemons. Empty on direct runs.
+    pub daemons: Vec<(String, i32, bool, String)>,
 }
 
 // ── Session lock (RAII PID file) ─────────────────────────────────────────────
@@ -566,7 +568,12 @@ pub async fn run_turn(
         // turn_ctx is prepended to `outgoing` INSIDE the step loop (Task 5, plan §5d)
         // so that pre_step mutations logged on this turn land in the transcript alongside
         // a fresh turn_ctx for THIS step, not the prior turn's.
-        turn_ctx = Some(build_turn_context(&codebase_hash, &dirty_files, &cwd));
+        turn_ctx = Some(build_turn_context(
+            &codebase_hash,
+            &dirty_files,
+            &cwd,
+            &input.daemons,
+        ));
     }
 
     // Derive enabled loadables from the FULL session (mutation-aware, via the

@@ -142,6 +142,7 @@ async fn full_turn_creates_transcript_and_git_commit() {
             sandbox_cfg: Default::default(),
             relay: None,
             initial_git: None,
+            daemons: vec![],
         },
     )
     .await
@@ -278,6 +279,7 @@ async fn cwd_event_reaches_live_channel_through_turn() {
             sandbox_cfg: Default::default(),
             relay: None,
             initial_git: None,
+            daemons: vec![],
         },
     )
     .await
@@ -332,6 +334,7 @@ async fn second_turn_resumes_session() {
             sandbox_cfg: Default::default(),
             relay: None,
             initial_git: None,
+            daemons: vec![],
         },
     )
     .await
@@ -356,6 +359,7 @@ async fn second_turn_resumes_session() {
             sandbox_cfg: Default::default(),
             relay: None,
             initial_git: None,
+            daemons: vec![],
         },
     )
     .await

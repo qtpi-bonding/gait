@@ -200,7 +200,7 @@ pub async fn relay_brain_turn(
     // The caller appended this turn's user input before relay_brain_turn, and the
     // SessionStart write above ran, so `events` is complete.
     {
-        use crate::proto::gait::sandbox::v1::{signal, BrainInit, GitStatus, Signal};
+        use crate::proto::gait::sandbox::v1::{signal, BrainInit, DaemonStatus, GitStatus, Signal};
         use tokio::io::AsyncWriteExt;
         let cfg = crate::config::load_config(gait_dir);
         let config_json = serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string());
@@ -209,6 +209,19 @@ pub async fn relay_brain_turn(
         let dirty_files = repos.codebase.dirty_files(codebase);
         let profile = build_turn_profile(gait_dir, codebase, profile_inputs);
         let profile_json = serde_json::to_string(&profile).unwrap_or_else(|_| "null".to_string());
+        let daemons = {
+            use crate::session::daemons::{active, is_alive};
+            active(gait_dir)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|r| DaemonStatus {
+                    alive: is_alive(&r),
+                    name: r.name,
+                    pid: r.pid,
+                    log_path: r.log_path,
+                })
+                .collect::<Vec<_>>()
+        };
         let init = BrainInit {
             config_json,
             events,
@@ -217,6 +230,7 @@ pub async fn relay_brain_turn(
                 dirty_files,
             }),
             profile_json,
+            daemons,
         };
         let sig = Signal {
             corr_id: 0,
@@ -477,7 +491,37 @@ pub async fn run_tool_as_spine(
     }
     let jail = jail_raw.canonicalize().unwrap_or_else(|_| jail_raw.clone());
 
-    let scope = crate::sandbox::ceiling::bound_request(&impulse.tool, sandbox_cfg, codebase, &jail);
+    // For detached daemon shell calls, use the full agent ceiling (all capabilities
+    // enabled, bounded only by the session sandbox config) rather than the
+    // per-call tool scope. This lets the daemon process inherit the agent's
+    // configured limits (e.g. network, codebase writes) rather than the narrower
+    // default shell scope.
+    let scope = if impulse.tool == "shell"
+        && impulse
+            .args
+            .as_ref()
+            .and_then(|s| s.fields.get("detached"))
+            .and_then(|v| match &v.kind {
+                Some(pbjson_types::value::Kind::BoolValue(b)) => Some(*b),
+                _ => None,
+            })
+            .unwrap_or(false)
+    {
+        use crate::types::ToolAccess;
+        crate::sandbox::ceiling::compute_scope(
+            ToolAccess {
+                reads: true,
+                writes: true,
+                network: true,
+                spawns: true,
+            },
+            sandbox_cfg,
+            codebase,
+            &jail,
+        )
+    } else {
+        crate::sandbox::ceiling::bound_request(&impulse.tool, sandbox_cfg, codebase, &jail)
+    };
     let requested = scope_to_proto(&scope);
 
     // Resolve cwd: if the brain sent a cwd in the Impulse, use it; otherwise
@@ -585,7 +629,7 @@ pub async fn run_tool_as_spine(
     // exit code; only fall back to exit-code/stderr if stdout is missing/garbled
     // (a true crash — the hand never got to write).
     use gait_proto::gait::sandbox::v1::{hand_response, HandResponse};
-    match HandResponse::decode(out.stdout.as_slice()) {
+    let feedback = match HandResponse::decode(out.stdout.as_slice()) {
         Ok(HandResponse {
             outcome: Some(hand_response::Outcome::Feedback(f)),
         }) => f,
@@ -598,7 +642,24 @@ pub async fn run_tool_as_spine(
             out.status,
             String::from_utf8_lossy(&out.stderr)
         )),
+    };
+
+    // If the hand spawned a detached daemon, record it in daemons.jsonl.
+    // The spine is the sole gait-dir writer; best-effort (ignore errors).
+    if let Some(ref rec) = feedback.daemon {
+        let dr = crate::session::daemons::DaemonRecord {
+            name: rec.name.clone(),
+            pid: rec.pid,
+            pgid: rec.pgid,
+            started_at: rec.started_at,
+            cmd: rec.cmd.clone(),
+            cwd: rec.cwd.clone(),
+            log_path: rec.log_path.clone(),
+        };
+        let _ = crate::session::daemons::append_start(gait_dir, &dr);
     }
+
+    feedback
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -611,6 +672,7 @@ pub fn error_feedback(msg: &str) -> Feedback {
         }),
         events: vec![],
         denied: None,
+        daemon: None,
     }
 }
 

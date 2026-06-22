@@ -18,6 +18,20 @@ message Feedback {
   google.protobuf.Value result = 1;
   repeated gait.log.v1.Event events = 2;
   optional gait.log.v1.UnlockItem denied = 3;  // set when the hand signals a seal denial (Phase 2c)
+  optional DaemonRecordProto daemon = 5;        // set when the hand spawned a background daemon
+}
+
+// Metadata for a daemon spawned by the shell tool (detached=true).
+// Carried from hand → spine via Feedback so the spine (sole gait-dir writer)
+// can append a DaemonStart entry to daemons.jsonl.
+message DaemonRecordProto {
+  string name       = 1;
+  int32  pid        = 2;
+  int32  pgid       = 3;
+  uint64 started_at = 4;
+  string cmd        = 5;
+  string cwd        = 6;
+  string log_path   = 7;
 }
 
 // Hand → spine reply: the single response a hand emits on stdout for one
@@ -108,11 +122,20 @@ message Notify {
 // before the relay loop. Carries everything the brain would otherwise read from
 // disk at startup: config, the full session log (events), and the turn's git
 // snapshot. The brain reads this raw before start_nerve takes stdin.
+// Live-status snapshot of one daemon entry from the gait-dir-level registry.
+message DaemonStatus {
+  string name     = 1;
+  int32  pid      = 2;
+  bool   alive    = 3;
+  string log_path = 4;
+}
+
 message BrainInit {
   string config_json = 1;                  // serialized gait_core::config::Config (JSON)
   repeated gait.log.v1.Event events = 2;   // full session log (includes this turn's user input + SessionStart)
   GitStatus git = 3;                       // turn-start codebase git snapshot
   string profile_json = 4;                 // serialized gait_core::profile::Profile (JSON)
+  repeated DaemonStatus daemons = 5;       // active daemons in this gait-dir (global registry, shared across sessions)
 }
 
 message GitStatus {

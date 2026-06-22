@@ -20,7 +20,8 @@ use crate::proto::Recorder;
 use crate::sandbox::{NetworkPolicy, SandboxScope};
 use crate::tools::{builtin_tools, ToolCtx};
 use gait_proto::gait::sandbox::v1::{
-    hand_response, network_scope::Mode, Feedback, HandError, HandResponse, Impulse,
+    hand_response, network_scope::Mode, DaemonRecordProto, Feedback, HandError, HandResponse,
+    Impulse,
 };
 
 // ── respond helpers ───────────────────────────────────────────────────────────
@@ -169,9 +170,53 @@ pub async fn run_hand(config: HandConfig) {
     ))
     .ok();
 
-    let result_json = match tool.execute(args_json, &rec).await {
+    let mut result_json = match tool.execute(args_json, &rec).await {
         Ok(v) => v,
         Err(e) => serde_json::Value::String(format!("error: {e}")),
+    };
+
+    // Extract "__daemon" sideband if the shell tool spawned a detached daemon.
+    // The shell tool embeds the DaemonRecord fields under this key so it can
+    // travel through the execute() return value without a separate channel.
+    let daemon_record: Option<DaemonRecordProto> = if let Some(obj) = result_json.as_object_mut() {
+        if let Some(d) = obj.remove("__daemon") {
+            let name = d
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let pid = d.get("pid").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let pgid = d.get("pgid").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let started_at = d.get("started_at").and_then(|v| v.as_u64()).unwrap_or(0);
+            let cmd = d
+                .get("cmd")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let cwd = d
+                .get("cwd")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let log_path = d
+                .get("log_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Some(DaemonRecordProto {
+                name,
+                pid,
+                pgid,
+                started_at,
+                cmd,
+                cwd,
+                log_path,
+            })
+        } else {
+            None
+        }
+    } else {
+        None
     };
 
     // Phase 2c Task 6: detect kernel-level permission denial from sealed `shell`
@@ -213,6 +258,7 @@ pub async fn run_hand(config: HandConfig) {
         result: Some(result_proto),
         events: rec.take_buffer(),
         denied,
+        daemon: daemon_record,
     };
     respond(hand_response::Outcome::Feedback(feedback));
 }

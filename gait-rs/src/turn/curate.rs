@@ -76,6 +76,7 @@ pub(super) async fn apply_curate_filter(
             sandbox_cfg: crate::config::SandboxConfig::default(),
             relay: None,
             initial_git: None,
+            daemons: vec![],
         },
     )
     .await;

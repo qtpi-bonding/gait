@@ -233,6 +233,7 @@ fn feedback_carries_value_and_events() {
         }),
         events: vec![event],
         denied: None,
+        daemon: None,
     };
 
     let bytes = prost::Message::encode_to_vec(&feedback);
@@ -310,6 +311,7 @@ fn brain_init_signal_round_trips() {
                 dirty_files: vec!["src/main.rs".to_string()],
             }),
             profile_json: String::new(),
+            daemons: vec![],
         })),
     };
     let bytes = sig.encode_to_vec();

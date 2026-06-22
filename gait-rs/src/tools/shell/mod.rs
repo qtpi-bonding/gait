@@ -17,6 +17,14 @@ struct ShellParams {
     /// the current directory and PERSIST (like `cd`); absolute paths are used as-is.
     /// A nonexistent path errors and leaves the working directory unchanged.
     cwd: Option<String>,
+    /// Run as a background daemon that outlives this turn; returns immediately.
+    /// The daemon inherits the agent's sandbox ceiling (not the per-call scope).
+    /// Output is written to <gait_dir>/daemons/<name>.log for its lifetime.
+    #[serde(default)]
+    detached: bool,
+    /// Name for this daemon (used in registry and log filename).
+    /// Auto-generated as "daemon-<uuid8>" if omitted.
+    name: Option<String>,
 }
 #[allow(dead_code)]
 #[derive(schemars::JsonSchema)]
@@ -142,6 +150,59 @@ impl Tool for ShellTool {
             None => current,
         };
         let cwd = run_dir;
+
+        // ── Detached daemon branch ─────────────────────────────────────────
+        if params.detached {
+            let name = params.name.clone().unwrap_or_else(|| {
+                let uid = uuid::Uuid::new_v4().to_string().replace('-', "");
+                format!("daemon-{}", &uid[..8])
+            });
+
+            let daemons_dir = self.ctx.gait_dir.join("daemons");
+            std::fs::create_dir_all(&daemons_dir)
+                .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
+            let log_path = daemons_dir.join(format!("{}.log", name));
+
+            let mut cmd = std::process::Command::new("sh");
+            cmd.args(["-c", &params.cmd])
+                .current_dir(&cwd)
+                .env_clear()
+                .envs(std::env::vars().filter(|(k, _)| {
+                    matches!(
+                        k.as_str(),
+                        "PATH" | "HOME" | "USER" | "SHELL" | "TERM" | "LANG" | "LC_ALL" | "TMPDIR"
+                    )
+                }));
+
+            let (child, pid, started_at) =
+                crate::process::spawn_detached_to_file(cmd, &log_path)
+                    .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
+            // Drop child immediately — daemon is detached; we do not wait on it.
+            drop(child);
+
+            let log_path_str = log_path.to_string_lossy().into_owned();
+            let cwd_str = cwd.to_string_lossy().into_owned();
+            let full_cmd = params.cmd.clone();
+
+            // Architecture note: the hand runtime (hand.rs) calls execute() and wraps the
+            // returned Value into HandResponse { Feedback { result, ... } }. To carry the
+            // DaemonRecordProto up to the spine we embed it as a "__daemon" key in the
+            // result JSON. hand.rs detects this key, extracts it into Feedback.daemon, and
+            // removes it from the result before forwarding.
+            return Ok(serde_json::json!({
+                "output": format!("started daemon {} (pid {}) — log: {}", name, pid, log_path_str),
+                "exit_code": 0,
+                "__daemon": {
+                    "name": name,
+                    "pid": pid,
+                    "pgid": pid,
+                    "started_at": started_at,
+                    "cmd": full_cmd,
+                    "cwd": cwd_str,
+                    "log_path": log_path_str,
+                },
+            }));
+        }
 
         let tmp_dir = std::env::temp_dir().join("gait-hand");
         let _ = std::fs::create_dir_all(&tmp_dir);

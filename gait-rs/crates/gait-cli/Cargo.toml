@@ -24,6 +24,7 @@ uuid = { version = "1", features = ["v4"] }
 dirs-next = "2"
 git2 = "0.19"
 serde_yaml = "0.9"
+libc = "0.2"
 
 [dev-dependencies]
 serial_test = "3"
