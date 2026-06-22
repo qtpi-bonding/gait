@@ -57,11 +57,24 @@ pub fn spawn_detached_to_file(mut cmd: Command, log_path: &Path) -> io::Result<(
             });
         }
     }
-    let child = cmd.spawn()?;
+    let mut child = cmd.spawn()?;
     let pid = child.id() as i32;
     // After setsid the child is its own session+group leader, so pgid == pid.
     // Do NOT call getpgid here — it races the child's pre_exec.
-    let started_at = crate::session::daemons::proc_start_time(pid).unwrap_or(0);
+    let started_at = match crate::session::daemons::proc_start_time(pid) {
+        Some(t) if t > 0 => t,
+        _ => {
+            // Cannot establish process identity — kill the child and fail the spawn.
+            // This prevents recording an un-stoppable zombie daemon entry.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+            let _ = child.wait(); // reap
+            return Err(std::io::Error::other(
+                "spawn_detached_to_file: could not read process start time for identity tracking",
+            ));
+        }
+    };
     Ok((child, pid, started_at))
 }
 

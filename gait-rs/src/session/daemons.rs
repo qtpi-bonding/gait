@@ -47,7 +47,22 @@ enum Line {
 // ---------------------------------------------------------------------------
 
 /// Append a `DaemonStart` entry to `<gait_dir>/daemons.jsonl`.
+///
+/// Returns `Err(AlreadyExists)` if a live daemon with the same name is already
+/// registered in the gait-dir registry.  Note: this check is advisory (TOCTOU
+/// window between the read and the write); for a CLI tool that is acceptable.
 pub fn append_start(gait_dir: &Path, rec: &DaemonRecord) -> io::Result<()> {
+    // Check for duplicate name among currently-active records.
+    let existing = active(gait_dir)?;
+    if existing.iter().any(|r| r.name == rec.name) {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "daemon '{}' is already registered (use a different name or stop it first)",
+                rec.name
+            ),
+        ));
+    }
     let path = gait_dir.join("daemons.jsonl");
     let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
     f.lock_exclusive()?;
