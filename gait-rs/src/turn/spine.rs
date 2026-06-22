@@ -949,7 +949,6 @@ fn launch_child(
     ctx: &SpineToolCtx,
     session_id: &str,
     detached: bool,
-    cascade_handle: Option<String>,
 ) -> Option<std::process::Child> {
     let mut argv = vec![
         "run".to_string(),
@@ -972,7 +971,7 @@ fn launch_child(
         None
     } else {
         // Subagent: enroll in cascade group.
-        let handle = cascade_handle.or_else(|| ctx.group.handle());
+        let handle = ctx.group.handle();
         if let Some(h) = handle {
             argv.extend(["--cascade-group".to_string(), h]);
         } else {
@@ -1037,14 +1036,21 @@ pub(super) async fn handle_spawn_agent(args: SpawnAgentArgs, ctx: SpineToolCtx) 
             .join("sessions")
             .join(&new_id)
             .join("result_schema.json");
-        if let Ok(bytes) = serde_json::to_vec_pretty(schema) {
-            let _ = std::fs::write(&schema_path, bytes);
+        match serde_json::to_vec_pretty(schema) {
+            Ok(bytes) => {
+                if let Err(e) = std::fs::write(&schema_path, &bytes) {
+                    eprintln!("[spine] warning: failed to write result_schema.json: {e}");
+                }
+            }
+            Err(e) => {
+                eprintln!("[spine] warning: failed to serialize result schema: {e}");
+            }
         }
     }
 
     if args.detached {
         // Fire-and-forget peer: break out of the cascade group, don't wait.
-        let _ = launch_child(&ctx, &new_id, true, None);
+        let _ = launch_child(&ctx, &new_id, true);
         return feedback_result(serde_json::json!({ "session_id": new_id }));
     }
 
@@ -1055,7 +1061,7 @@ pub(super) async fn handle_spawn_agent(args: SpawnAgentArgs, ctx: SpineToolCtx) 
         .join(&new_id)
         .join("log.jsonl");
 
-    let Some(mut child) = launch_child(&ctx, &new_id, false, None) else {
+    let Some(mut child) = launch_child(&ctx, &new_id, false) else {
         return error_feedback("spawn_agent: failed to launch subagent");
     };
 

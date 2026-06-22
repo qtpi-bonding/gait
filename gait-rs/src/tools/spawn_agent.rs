@@ -146,6 +146,26 @@ impl Tool for SpawnAgentTool {
         })
         .map_err(crate::tools::ToolError::Internal)?;
 
+        // Persist per-spawn schema so the child CLI can read it into ProfileInputs.
+        if let Some(schema) = args.get("schema").filter(|v| !v.is_null()) {
+            let schema_path = self
+                .ctx
+                .gait_dir
+                .join("sessions")
+                .join(&new_id)
+                .join("result_schema.json");
+            match serde_json::to_vec_pretty(schema) {
+                Ok(bytes) => {
+                    if let Err(e) = std::fs::write(&schema_path, bytes) {
+                        eprintln!("[spawn_agent] warning: failed to write result_schema.json: {e}");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[spawn_agent] warning: failed to serialize schema: {e}");
+                }
+            }
+        }
+
         // Schedule child for execution — via Spawn signal if in brain (sealed) mode,
         // or direct Command::spawn otherwise. Spine appends --sandbox-locked when
         // sandbox is active so the child cannot disable sandboxing.
