@@ -1,12 +1,12 @@
 //! Brain runtime: the sealed, per-turn inference process.
 //!
 //! The brain is spawned by the spine (`gait __brain`), self-seals to
-//! `{read_all: true, writable: [], network: All}`, and runs one turn via
+//! `{read_all: false, readable: [], writable: [], network: All}`, and runs one turn via
 //! `embed::run_loop`. All disk writes go through the spine via Nerve signals
 //! (Append for events, Spawn for process launches, StreamForward for streaming).
 //!
 //! This module owns:
-//! - `brain_scope()` — the seal spec (what the brain can do)
+//! - `brain_scope()` — the seal spec: compute + network only, no disk reads
 //! - `BrainSink` — a TurnSink that routes output to stderr (stdout is the Nerve)
 //! - `BrainDriver` — a TurnDriver that wires the Nerve + remote-sink Recorder
 //! - `run_brain()` — the brain's entry point (seal → nerve → run_loop → Terminated)
@@ -28,16 +28,21 @@ use gait_proto::gait::sandbox::v1::{signal, Append, Notify, Signal, StreamForwar
 
 // ── brain_scope ───────────────────────────────────────────────────────────────
 
-/// Build the brain's self-seal scope: read-all + zero writes + full outbound network.
+/// Build the brain's self-seal scope: compute + network only; all disk data arrives
+/// via `BrainInit` / spine relay.
 ///
-/// Validated spike (macOS 15 / Darwin 24.5.0):
-///   `(deny default)(allow file-read*)(allow process*)(allow network-outbound)
-///    (allow system-socket)(allow mach-lookup …)`
-/// DNS + TCP to api.anthropic.com:443 succeed under this policy with
-/// reqwest+rustls+bundled webpki-roots (no cert-store reads needed).
+/// The brain is a pure compute process — it holds no codebase paths, reads no files,
+/// and writes nothing to disk. All context (session log, file previews, permissions)
+/// is delivered in-memory by the spine before the seal is applied. Outbound network
+/// is required for LLM API calls (api.anthropic.com:443 via reqwest+rustls).
+///
+/// Validated spike (macOS 15 / Darwin 24.5.0): platform-default read paths
+/// (dyld, /usr, /System, /Library, /private, /bin, /sbin, /var, /etc, /dev)
+/// are sufficient for process exec + DNS + TLS with bundled webpki-roots.
+/// No codebase or gait-dir reads are needed after `BrainInit` is delivered.
 pub fn brain_scope() -> crate::sandbox::SandboxScope {
     crate::sandbox::SandboxScope {
-        read_all: true,
+        read_all: false,
         readable: vec![],
         writable: vec![],
         network: crate::sandbox::NetworkPolicy::All,

@@ -360,6 +360,56 @@ mod tests {
         );
     }
 
+    /// Regression guard: `brain_scope()` must emit a confined-read SBPL profile —
+    /// no blanket `(allow file-read*)`, platform-default reads only, full network.
+    ///
+    /// If this test fails after a `brain_scope()` change, re-run the runtime audit
+    /// (Steps 1 and 4 in task-2-brief.md) before relaxing `read_all`.
+    #[test]
+    fn brain_scope_emits_confined_read_profile() {
+        let scope = crate::turn::brain::brain_scope();
+        assert!(!scope.read_all, "brain_scope must NOT set read_all=true");
+        assert!(
+            scope.readable.is_empty(),
+            "brain_scope must have empty readable"
+        );
+        assert!(
+            scope.writable.is_empty(),
+            "brain_scope must have empty writable"
+        );
+        assert!(
+            matches!(scope.network, NetworkPolicy::All),
+            "brain_scope must allow all network"
+        );
+
+        let p = build_sbpl(&scope);
+        assert!(
+            !p.contains("(allow file-read*)\n"),
+            "brain_scope profile must NOT blanket-allow file reads: {p}"
+        );
+        assert!(
+            p.contains("(allow network-outbound)"),
+            "brain_scope profile must allow network outbound: {p}"
+        );
+        assert!(
+            p.contains("(allow system-socket)"),
+            "brain_scope profile must allow system-socket for DNS: {p}"
+        );
+        // Platform defaults must still be present so dyld/TLS can run.
+        #[cfg(target_os = "macos")]
+        {
+            assert!(p.contains("(subpath \"/usr\")"), "must allow /usr: {p}");
+            assert!(
+                p.contains("(subpath \"/System\")"),
+                "must allow /System: {p}"
+            );
+            assert!(
+                p.contains("(literal \"/\")"),
+                "must allow root literal: {p}"
+            );
+        }
+    }
+
     #[test]
     fn bound_request_ignores_brain_claimed_scope() {
         use crate::config::SandboxConfig;
