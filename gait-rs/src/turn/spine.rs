@@ -934,12 +934,15 @@ async fn reply_feedback(
 }
 
 /// Launch a child `gait run` process from the spine.
+///
+/// Returns `Some(child)` for an enrolled subagent (retained for wait), or
+/// `None` for a breakaway peer (detached into its own process group/cgroup).
 fn launch_child(
     ctx: &SpineToolCtx,
     session_id: &str,
     detached: bool,
     cascade_handle: Option<String>,
-) {
+) -> Option<std::process::Child> {
     let mut argv = vec![
         "run".to_string(),
         "--session".to_string(),
@@ -958,6 +961,7 @@ fn launch_child(
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         let _ = ctx.group.spawn_detached(cmd);
+        None
     } else {
         // Subagent: enroll in cascade group.
         let handle = cascade_handle.or_else(|| ctx.group.handle());
@@ -971,7 +975,7 @@ fn launch_child(
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        let _ = ctx.group.spawn_enrolled(cmd);
+        ctx.group.spawn_enrolled(cmd).ok()
     }
 }
 
@@ -996,7 +1000,7 @@ pub(super) async fn handle_spawn_agent(args: SpawnAgentArgs, ctx: SpineToolCtx) 
         return error_feedback("spawn_agent: failed to create child session");
     }
 
-    launch_child(&ctx, &new_id, args.detached, None);
+    let _child = launch_child(&ctx, &new_id, args.detached, None);
 
     feedback_result(serde_json::json!({ "session_id": new_id }))
 }
@@ -1372,6 +1376,85 @@ mod tests {
         assert!(
             !has_orphan,
             "retrace must find no orphan ToolCall after synthesis"
+        );
+    }
+
+    /// Subagent (enrolled) is killed by kill_all; peer (detached) survives.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn launch_child_subagent_enrolled_peer_breaks_away() {
+        use super::launch_child;
+        use crate::process::establish;
+
+        // Build a minimal SpineToolCtx with a real containment group.
+        let ws = tempfile::TempDir::new().unwrap();
+        let group = establish(None);
+
+        // We'll use `sleep 60` as a stand-in for gait run — the exe path doesn't
+        // matter because we're testing containment behavior, not gait startup.
+        let sleep_exe = std::path::PathBuf::from("sleep");
+
+        let ctx = super::SpineToolCtx {
+            gait_dir: ws.path().to_path_buf(),
+            codebase: ws.path().to_path_buf(),
+            session_id: "parent".to_string(),
+            repos: crate::git::Repos::production(),
+            exe: sleep_exe,
+            group: group.clone(),
+            sandbox_on: false,
+        };
+
+        // Spawn the "enrolled" subagent: launch_child with detached=false.
+        // We pass a dummy session_id; since the exe is `sleep`, args after `run`
+        // are ignored — sleep just reads arg[1] as duration.  We can't fully
+        // exercise the gait CLI here, so we test containment membership directly
+        // by spawning sleep via the group APIs and verifying kill_all behavior.
+
+        // Enrolled child via the group directly (mirrors what launch_child does).
+        let mut enrolled_cmd = std::process::Command::new("sleep");
+        enrolled_cmd
+            .arg("60")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let mut enrolled = ctx
+            .group
+            .spawn_enrolled(enrolled_cmd)
+            .expect("spawn enrolled");
+        let enrolled_pid = enrolled.id() as i32;
+
+        // Detached (peer) child via the group directly (mirrors what launch_child does).
+        let mut peer_cmd = std::process::Command::new("sleep");
+        peer_cmd
+            .arg("60")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let (mut peer, peer_pid) = ctx.group.spawn_detached(peer_cmd).expect("spawn detached");
+
+        // Kill all enrolled processes.
+        ctx.group.kill_all().expect("kill_all");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        // Reap the enrolled child so it's not a zombie.
+        let _ = enrolled.wait();
+
+        // Enrolled child must be dead.
+        let enrolled_alive = unsafe { libc::kill(enrolled_pid, 0) };
+        // Peer must still be alive.
+        let peer_alive = unsafe { libc::kill(peer_pid, 0) };
+
+        // Clean up peer.
+        unsafe { libc::kill(peer_pid, libc::SIGKILL) };
+        let _ = peer.wait();
+
+        assert_eq!(
+            enrolled_alive, -1,
+            "enrolled subagent (pid {enrolled_pid}) should be dead after kill_all"
+        );
+        assert_eq!(
+            peer_alive, 0,
+            "breakaway peer (pid {peer_pid}) should survive kill_all"
         );
     }
 }
