@@ -59,6 +59,13 @@ fn print_init_summary(gait_dir: &std::path::Path) {
     eprintln!("  next: gait run --task \"...\"");
 }
 
+/// Thin wrapper around [`scaffold_gait_dir`] for use in tests and programmatic callers
+/// that want to initialize a gait-dir without the git init / staging / commit steps.
+pub fn run_init(gait_dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(gait_dir)?;
+    scaffold_gait_dir(gait_dir)
+}
+
 /// Create the empty, editable layer affordances in the gait-dir (idempotent,
 /// never clobbers) and ensure USER.md and sessions/ are gitignored.
 pub fn scaffold_gait_dir(gait_dir: &std::path::Path) -> std::io::Result<()> {
@@ -82,11 +89,16 @@ pub fn scaffold_gait_dir(gait_dir: &std::path::Path) -> std::io::Result<()> {
     // sessions/ — turn history
     std::fs::create_dir_all(gait_dir.join("sessions"))?;
 
-    // gait.jsonc — default config (never clobber)
+    // gait.jsonc — default config (never clobber).
+    // allow + sandbox must match gait_core::config::defaults::default_allow() /
+    // default_sandbox() so that a freshly-init'd dir is indistinguishable from
+    // a no-config-file run in terms of runtime behavior.
     let config_path = gait_dir.join("gait.jsonc");
     if !config_path.exists() {
-        std::fs::write(&config_path,
-            "{\n  // gait configuration\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  // Allow list: tools that run without approval. Default empty = everything gated.\n  \"allow\": [],\n  // Tier 1 config-defined tools: shell commands the LLM can call by name\n  \"tools\": []\n}\n")?;
+        std::fs::write(
+            &config_path,
+            "{\n  // gait configuration\n  \"model\": \"minimax/MiniMax-M3\",\n  // Allow list: tools the agent may call without a human approval prompt.\n  // Matches the compiled-in read-only default (gait_core::config::defaults::default_allow).\n  \"allow\": [\"read\", \"glob\", \"grep\", \"ls\", \"clarify\", \"inform\"],\n  // Sandbox: kernel write-enforcement. on=true, network off, no extra readable/writable paths.\n  // Matches default_sandbox(). The codebase root is auto-injected by the scope-computation layer.\n  \"sandbox\": { \"on\": true, \"readable\": [], \"writable\": [], \"network\": false },\n  // Tier 1 config-defined tools: shell commands the LLM can call by name\n  \"tools\": []\n}\n",
+        )?;
     }
 
     // .gitignore — merge required entries, no duplicates
@@ -192,6 +204,23 @@ pub fn cmd_init(argv: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scaffold_allow_matches_no_config_default() {
+        let dir = tempfile::tempdir().unwrap();
+        run_init(dir.path()).unwrap();
+        let cfg = gait_core::config::load_config(dir.path());
+        assert_eq!(
+            cfg.allow,
+            gait_core::config::defaults::default_allow(),
+            "scaffold allow must match default_allow()"
+        );
+        assert_eq!(
+            cfg.sandbox.on,
+            gait_core::config::defaults::default_sandbox().on,
+            "scaffold sandbox.on must match default_sandbox().on"
+        );
+    }
 
     #[test]
     fn scaffold_creates_empty_affordances_and_gitignores_user() {
