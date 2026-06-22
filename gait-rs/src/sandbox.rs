@@ -619,7 +619,7 @@ mod tests {
         };
         let codebase = Path::new("/tmp");
         let jail = Path::new("/tmp/jail");
-        let via_full = super::ceiling::compute_scope(access.clone(), &cfg, codebase, jail);
+        let via_full = super::ceiling::compute_scope(access, &cfg, codebase, jail);
         let via_nofs = super::ceiling::compute_scope_nofs(access, &cfg, codebase, jail);
         assert_eq!(via_full.writable.len(), via_nofs.writable.len());
         assert_eq!(via_full.readable.len(), via_nofs.readable.len());
