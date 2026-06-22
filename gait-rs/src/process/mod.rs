@@ -607,12 +607,11 @@ mod linux {
             // Give it a moment to die.
             std::thread::sleep(std::time::Duration::from_millis(200));
 
-            // Try kill(0) — ESRCH means dead (or not our child yet reaped).
+            // Reap the child first to ensure it's not a zombie.
+            let _ = child.wait();
+            // After kill_all + reap, kill(pid, 0) must return ESRCH (-1) meaning dead.
+            // Try kill(0) — ESRCH means dead.
             let alive = unsafe { libc::kill(pid, 0) };
-            // Either the process is gone (alive == -1) or it's a zombie (acceptable).
-            // We just verify kill_all didn't error.
-            let _ = child.wait(); // reap
-                                  // After kill_all + reap, kill(pid, 0) must return ESRCH (-1) meaning dead.
             assert_eq!(
                 alive, -1,
                 "kill_all should have terminated child (pid {pid}), but kill(pid,0) returned {alive}"
