@@ -183,7 +183,10 @@ pub async fn exec_prompt_node(
         .with(consumer)
         .with(per_call)
         .resolve_checked()?;
-    let model = resolved_cfg.model.clone().unwrap_or_default();
+    let model = resolved_cfg
+        .model
+        .clone()
+        .expect("resolve_checked guarantees model is Some");
     let allow = resolved_cfg.allow.clone();
     let auto = node.auto.unwrap_or(workflow_def.auto);
 
