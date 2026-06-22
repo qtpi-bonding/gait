@@ -9,7 +9,7 @@ pub mod session_meta;
 pub mod session_obj;
 pub use log::*;
 pub use retrace::messages_from_path;
-pub use session_meta::{read_session_meta, SessionMeta};
+pub use session_meta::{from_events as session_meta_from_events, read_session_meta, SessionMeta};
 pub use session_obj::Session;
 
 /// Generate a fresh session id: `s` + first 8 hex chars of a v4 UUID.

@@ -1,4 +1,4 @@
-use crate::proto::gait::log::v1::{event, payload};
+use crate::proto::gait::log::v1::{event, payload, Event};
 use crate::session::log::read_events;
 use std::path::Path;
 
@@ -11,16 +11,13 @@ pub struct SessionMeta {
     pub codebase_path: Option<String>,
 }
 
-/// Read identity from `sessions/<id>/log.jsonl`'s `SessionStart` event.
-/// Returns a default (id only) when the log or its `SessionStart` is absent
-/// (new session, or a session predating `codebase_path` in `SessionStart`).
-pub fn read_session_meta(gait_dir: &Path, session_id: &str) -> anyhow::Result<SessionMeta> {
-    let log_path = gait_dir.join("sessions").join(session_id).join("log.jsonl");
-    let events = read_events(&log_path)?;
-    for e in &events {
+/// Derive session identity from an in-memory event list (the brain's log mirror).
+/// Scans for the first `SessionStart`; returns id-only default if absent.
+pub fn from_events(events: &[Event], session_id: &str) -> SessionMeta {
+    for e in events {
         if let Some(event::Body::Payload(p)) = &e.body {
             if let Some(payload::Kind::SessionStart(s)) = &p.kind {
-                return Ok(SessionMeta {
+                return SessionMeta {
                     id: if s.session_id.is_empty() {
                         session_id.to_string()
                     } else {
@@ -28,14 +25,22 @@ pub fn read_session_meta(gait_dir: &Path, session_id: &str) -> anyhow::Result<Se
                     },
                     assigned_by: s.assigned_by.clone(),
                     codebase_path: s.codebase_path.clone(),
-                });
+                };
             }
         }
     }
-    Ok(SessionMeta {
+    SessionMeta {
         id: session_id.to_string(),
         ..Default::default()
-    })
+    }
+}
+
+/// Read identity from `sessions/<id>/log.jsonl`'s `SessionStart` event.
+/// Returns a default (id only) when the log or its `SessionStart` is absent
+/// (new session, or a session predating `codebase_path` in `SessionStart`).
+pub fn read_session_meta(gait_dir: &Path, session_id: &str) -> anyhow::Result<SessionMeta> {
+    let log_path = gait_dir.join("sessions").join(session_id).join("log.jsonl");
+    Ok(from_events(&read_events(&log_path)?, session_id))
 }
 
 #[cfg(test)]
@@ -71,5 +76,20 @@ mod tests {
         assert_eq!(meta.id, "snolog00");
         assert!(meta.codebase_path.is_none());
         assert!(meta.assigned_by.is_none());
+    }
+
+    #[test]
+    fn from_events_extracts_identity() {
+        use crate::proto::envelope::mint;
+        use crate::proto::events::session_start;
+        let body = session_start(
+            "s1234567".to_string(),
+            Some("sparent0".to_string()),
+            Some("/code".to_string()),
+        );
+        let ev = mint(body, None, 0, 0);
+        let meta = super::from_events(&[ev], "s1234567");
+        assert_eq!(meta.codebase_path.as_deref(), Some("/code"));
+        assert_eq!(meta.assigned_by.as_deref(), Some("sparent0"));
     }
 }
