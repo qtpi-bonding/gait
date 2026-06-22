@@ -229,6 +229,9 @@ pub async fn relay_brain_turn(
 
     let mut run_result: Option<crate::turn::TurnResult> = None;
     let mut brain_failed = false;
+    // Track in-flight ToolCall call_ids so we can synthesize a ToolResult for
+    // any that are orphaned if the brain is killed before it returns results.
+    let mut pending_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     sink.begin_turn();
     loop {
@@ -262,6 +265,21 @@ pub async fn relay_brain_turn(
             }
             Some(signal::Body::Append(append)) => {
                 if let Some(mut evt) = append.event {
+                    // Track in-flight ToolCall / ToolResult pairs by call_id.
+                    // On cancel, any remaining pending_calls are orphans that need
+                    // a synthesized ToolResult so retrace reconstructs cleanly.
+                    use crate::proto::gait::log::v1::{event, payload};
+                    if let Some(event::Body::Payload(ref p)) = evt.body {
+                        match p.kind.as_ref() {
+                            Some(payload::Kind::ToolCall(tc)) => {
+                                pending_calls.insert(tc.call_id.clone());
+                            }
+                            Some(payload::Kind::ToolResult(tr)) => {
+                                pending_calls.remove(&tr.call_id);
+                            }
+                            _ => {}
+                        }
+                    }
                     enrich_permissions_preview(
                         &mut evt,
                         codebase,
@@ -361,6 +379,18 @@ pub async fn relay_brain_turn(
         }
     }
     sink.end_turn();
+
+    // Synthesize a ToolResult for each orphaned ToolCall (brain was killed before
+    // it could emit results). This ensures retrace::messages reconstructs with no
+    // orphan tool calls. Must run before commit_session so the repair lands in the
+    // same commit as the rest of the transcript.
+    for call_id in pending_calls.drain() {
+        let body =
+            crate::proto::events::tool_result(call_id, "cancelled by user".into(), None, None);
+        let prev = crate::session::log::last_event(&log_path).ok().flatten();
+        let ev = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
+        wire::append_with_id(&log_path, &ev).ok();
+    }
 
     // Drop the brain's stdin writer to signal EOF — the brain's Nerve reader
     // task is blocking on read_signal from stdin and will exit on EOF, which
@@ -958,6 +988,93 @@ mod tests {
             perm.items[0].preview.as_deref(),
             Some("--- brain computed this ---"),
             "existing preview must not be overwritten"
+        );
+    }
+
+    /// A cancelled turn with an orphan ToolCall leaves a synthesized ToolResult
+    /// in the log, so retrace::messages reconstructs with no orphan.
+    ///
+    /// This test exercises the synthesis logic directly: write a ToolCall to the
+    /// log, then simulate what the spine's teardown does (drain pending_calls and
+    /// append synthetic ToolResults), and verify the log ends with a matching
+    /// ToolResult and retrace sees no orphan tool calls.
+    #[test]
+    fn cancelled_turn_synthesizes_tool_result_for_orphan_call_id() {
+        use crate::proto::gait::log::v1::{event, payload};
+        use crate::proto::{envelope, wire};
+        use crate::session::retrace;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let log_path = dir.path().join("log.jsonl");
+
+        // 1. Write a ToolCall (simulating what the brain emits mid-turn).
+        let call_id = "call-orphan-1".to_string();
+        let tc_body = crate::proto::events::tool_call(
+            call_id.clone(),
+            "read".into(),
+            &serde_json::json!({"file_path": "foo.rs"}),
+        );
+        wire::append(&log_path, tc_body).expect("append tool_call");
+
+        // 2. Simulate cancel: the spine synthesizes a ToolResult for the orphan.
+        let body = crate::proto::events::tool_result(
+            call_id.clone(),
+            "cancelled by user".into(),
+            None,
+            None,
+        );
+        let prev = crate::session::log::last_event(&log_path).ok().flatten();
+        let ev = envelope::mint(body, prev.as_ref(), 0, 0);
+        wire::append_with_id(&log_path, &ev).expect("append synthesized tool_result");
+
+        // 3. Assert: the last event is a ToolResult with the correct call_id.
+        let events = crate::session::log::read_events(&log_path).unwrap();
+        assert_eq!(events.len(), 2, "log must have exactly 2 events");
+        let last = events.last().unwrap();
+        match last.body.as_ref() {
+            Some(event::Body::Payload(p)) => match p.kind.as_ref() {
+                Some(payload::Kind::ToolResult(tr)) => {
+                    assert_eq!(
+                        tr.call_id, call_id,
+                        "synthesized ToolResult must match call_id"
+                    );
+                    assert_eq!(tr.output, "cancelled by user");
+                }
+                other => panic!("expected ToolResult, got {other:?}"),
+            },
+            other => panic!("expected Payload body, got {other:?}"),
+        }
+
+        // 4. Assert: retrace::messages reconstructs with no orphan tool calls.
+        // Without the synthesized ToolResult, retrace would produce a ToolCall
+        // message with no matching ToolResult (an orphan). With it, it should
+        // produce a balanced assistant message followed by a tool result message.
+        let messages = retrace::messages(&events).expect("retrace must succeed");
+        // Every ToolCall in a messages list must have a corresponding ToolResult.
+        // retrace folds them into paired assistant (tool_calls) + user (tool_results)
+        // messages. Verify no dangling tool_call_id in the assistant message.
+        let has_orphan = messages.iter().any(|m| {
+            use crate::types::Message;
+            match m {
+                Message::Assistant { content, .. } => {
+                    use crate::types::AssistantContent;
+                    matches!(content, AssistantContent::Parts(parts) if {
+                        parts.iter().any(|p| {
+                            use crate::types::AssistantPart;
+                            matches!(p, AssistantPart::ToolCall(_))
+                        })
+                    }) && !messages.iter().any(|m2| {
+                        matches!(m2, Message::ToolResult { content, .. } if {
+                            content.iter().any(|r| r.tool_call_id == call_id)
+                        })
+                    })
+                }
+                _ => false,
+            }
+        });
+        assert!(
+            !has_orphan,
+            "retrace must find no orphan ToolCall after synthesis"
         );
     }
 }

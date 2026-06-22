@@ -268,6 +268,40 @@ pub async fn run_chat(
                 allow: vec![],
                 deny: vec![],
             };
+            // Esc watcher: poll for Esc key in raw mode; on press, call
+            // kill_all() on the current cascade group (via signal_slot).
+            // The brain dying causes relay_brain_turn's read to return Err,
+            // ending the turn. The watcher is joined after each turn.
+            let esc_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let esc_slot = signal_slot.clone();
+            let esc_done_flag = esc_done.clone();
+            let esc_handle = tokio::task::spawn_blocking(move || {
+                let _ = crossterm::terminal::enable_raw_mode();
+                // RAII guard: disable raw mode when the watcher exits.
+                struct RawModeGuard;
+                impl Drop for RawModeGuard {
+                    fn drop(&mut self) {
+                        let _ = crossterm::terminal::disable_raw_mode();
+                    }
+                }
+                let _guard = RawModeGuard;
+                loop {
+                    if esc_done_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
+                    if crossterm::event::poll(std::time::Duration::from_millis(50)).unwrap_or(false)
+                    {
+                        if let Ok(crossterm::event::Event::Key(e)) = crossterm::event::read() {
+                            if e.code == crossterm::event::KeyCode::Esc {
+                                if let Some(group) = esc_slot.lock().unwrap().clone() {
+                                    let _ = group.kill_all();
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
             let _failed = gait_core::turn::spine::relay_brain_turn(
                 &turn_args,
                 &gait_dir,
@@ -286,6 +320,12 @@ pub async fn run_chat(
             .unwrap_or_else(|e| {
                 eprintln!("[gait] turn error: {e}\r\n");
                 false
+            });
+
+            // Stop the Esc watcher and join it (restores terminal raw mode).
+            esc_done.store(true, std::sync::atomic::Ordering::SeqCst);
+            tokio::task::block_in_place(|| {
+                let _ = tokio::runtime::Handle::current().block_on(esc_handle);
             });
 
             // Clear the slot — turn complete, no live group to kill between turns.
