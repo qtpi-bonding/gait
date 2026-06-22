@@ -17,7 +17,8 @@ struct SpawnAgentArgs {
     context_files: Option<Vec<String>>,
     /// When true, spawn an independent peer agent that outlives this one.
     /// When false (default), spawn a subagent that is cascade-killed when this agent ends.
-    detached: Option<bool>,
+    #[serde(default)]
+    detached: bool,
 }
 #[allow(dead_code)]
 #[derive(schemars::JsonSchema)]

@@ -448,7 +448,11 @@ mod linux {
                     let mut d = self.detached_dir.lock().unwrap();
                     *d = Some(std::path::PathBuf::from(&detached_path));
                 }
-                // Child runs with setsid (own session) and we enroll it in the detached cgroup.
+                // Inject --cascade-group so the child self-assigns into the detached
+                // cgroup before it can fork grandchildren (same pattern as spawn_enrolled).
+                // This eliminates the post-spawn write race.
+                cmd.arg("--cascade-group").arg(&detached_path);
+                // Child runs with setsid (own session) so SIGHUP from parent exit is not delivered.
                 unsafe {
                     cmd.pre_exec(|| {
                         libc::setsid();
@@ -457,8 +461,6 @@ mod linux {
                 }
                 let c = cmd.spawn()?;
                 let pid = c.id() as i32;
-                // Enroll detached child in its own sibling cgroup.
-                let _ = std::fs::write(format!("{detached_path}/cgroup.procs"), pid.to_string());
                 Ok((c, pid))
             } else {
                 unsafe {
