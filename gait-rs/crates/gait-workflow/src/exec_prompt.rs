@@ -81,6 +81,7 @@ impl TurnDriver for PromptNodeDriver {
             sandbox_on: true,
             sandbox_cfg: config.sandbox,
             relay: None,
+            initial_git: None,
         }
     }
 

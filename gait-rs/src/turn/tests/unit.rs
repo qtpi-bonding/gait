@@ -471,3 +471,33 @@ mod exec_replace_tests {
         );
     }
 }
+
+// ── GitSnapshot unit tests ────────────────────────────────────────────────────
+
+#[test]
+fn git_snapshot_default_is_empty() {
+    let snap = GitSnapshot::default();
+    assert!(snap.head_hash.is_empty());
+    assert!(snap.dirty_files.is_empty());
+}
+
+#[test]
+fn turn_input_initial_git_some_carries_seeded_hash() {
+    let snap = GitSnapshot {
+        head_hash: "seeded-abc123".into(),
+        dirty_files: vec!["src/foo.rs".into()],
+    };
+    let input = TurnInput {
+        auto: true,
+        max_iter: None,
+        preview_policy: crate::config::PreviewPolicy::default(),
+        cancel: None,
+        sandbox_on: false,
+        sandbox_cfg: crate::config::SandboxConfig::default(),
+        relay: None,
+        initial_git: Some(snap.clone()),
+    };
+    let git = input.initial_git.expect("initial_git should be Some");
+    assert_eq!(git.head_hash, "seeded-abc123");
+    assert_eq!(git.dirty_files, vec!["src/foo.rs"]);
+}

@@ -197,6 +197,7 @@ impl TurnDriver for ReplDriver {
             sandbox_on: self.shared.borrow().sandbox_on,
             sandbox_cfg: self.config.sandbox.clone(),
             relay: None,
+            initial_git: None,
         }
     }
 

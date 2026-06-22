@@ -113,6 +113,14 @@ pub enum TurnResult {
     Cancelled,
 }
 
+/// Git state at the start of a turn — captured once by the spine (BrainInit)
+/// and threaded in so the brain does not read git itself on the spine path.
+#[derive(Clone, Default)]
+pub struct GitSnapshot {
+    pub head_hash: String,
+    pub dirty_files: Vec<String>,
+}
+
 /// Per-call inputs for one turn (the things that vary every invocation).
 pub struct TurnInput {
     pub auto: bool,
@@ -127,6 +135,9 @@ pub struct TurnInput {
     /// Phase 3 Task 4a: when Some, execute_tool_call uses RelaySynapse.
     /// None for direct runs (spine path sets this from LoopConfig).
     pub relay: Option<crate::turn::nerve::NerveWriter>,
+    /// When `Some` (spine path), the turn-start git snapshot supplied by the spine
+    /// via BrainInit — the brain does not read git itself. `None` reads disk.
+    pub initial_git: Option<GitSnapshot>,
 }
 
 // ── Session lock (RAII PID file) ─────────────────────────────────────────────
@@ -341,7 +352,10 @@ pub async fn run_turn(
 
     let session_dir = gait_dir.join("sessions").join(&session_id);
     let tx_path = session_dir.join("log.jsonl");
-    let ingestor = Ingestor::from_session(&gait_dir, &session_id);
+    let ingestor = match emitter.log_mirror() {
+        Some(mirror) => Ingestor::from_shared(mirror),
+        None => Ingestor::from_session(&gait_dir, &session_id),
+    };
 
     // SessionLock: brain doesn't hold the lock when under a spine (the spine holds it).
     let _lock = if relay.is_none() {
@@ -350,9 +364,13 @@ pub async fn run_turn(
         None
     };
 
-    let codebase_hash = repos.codebase.head_hash(&codebase_path).unwrap_or_default();
-
-    let dirty_files = repos.codebase.dirty_files(&codebase_path);
+    let (codebase_hash, dirty_files) = match &input.initial_git {
+        Some(g) => (g.head_hash.clone(), g.dirty_files.clone()),
+        None => (
+            repos.codebase.head_hash(&codebase_path).unwrap_or_default(),
+            repos.codebase.dirty_files(&codebase_path),
+        ),
+    };
     let codebase_dirty = !dirty_files.is_empty();
 
     // Init transcript (SessionStart) once per session. Gate on the SessionStart

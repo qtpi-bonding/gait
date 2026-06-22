@@ -293,6 +293,7 @@ impl gait_core::embed::TurnDriver for CliDriver {
             sandbox_on: self.sandbox_on,
             sandbox_cfg: self.sandbox_cfg.clone(),
             relay: None,
+            initial_git: None,
         }
     }
 

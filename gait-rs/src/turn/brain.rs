@@ -387,6 +387,7 @@ impl TurnDriver for BrainDriver {
             sandbox_on: self.sandbox_on,
             sandbox_cfg: self.sandbox_cfg.clone(),
             relay: Some(self.nerve_writer.clone()),
+            initial_git: None,
         }
     }
 
