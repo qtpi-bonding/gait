@@ -224,31 +224,11 @@ pub async fn run_brain(
         cfg.sandbox.on = true;
     }
 
-    let agent_path: Option<PathBuf> = if let Some(ref name) = config.agent_name {
-        Some(crate::agent_frontmatter::resolve_markdown_context_path(
-            &gait_dir,
-            crate::agent_frontmatter::MarkdownKind::Agent,
-            name,
-        ))
-    } else {
-        let default = crate::agent_frontmatter::resolve_markdown_context_path(
-            &gait_dir,
-            crate::agent_frontmatter::MarkdownKind::Agent,
-            "default",
-        );
-        if default.exists() {
-            Some(default)
-        } else {
-            None
-        }
-    };
-    let profile = crate::profile::Profile::from_config_and_agent(
-        &cfg,
-        &gait_dir,
-        Some(codebase_path.as_path()),
-        agent_path.as_deref(),
-        config.model_override.clone(),
-    );
+    let profile: crate::profile::Profile =
+        serde_json::from_str(&init.profile_json).unwrap_or_else(|e| {
+            eprintln!("[brain] error: bad profile_json in BrainInit: {e}");
+            std::process::exit(1);
+        });
 
     let repos = crate::git::Repos::production();
 
