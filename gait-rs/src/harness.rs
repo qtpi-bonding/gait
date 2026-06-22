@@ -30,7 +30,7 @@ pub struct NativeHarnessBackend {
     gait_dir: PathBuf,
     /// When `Some`, route `gait run` spawns via the Nerve's Spawn signal instead
     /// of calling `Command::spawn` directly (required when brain is sealed).
-    spawn_tx: Option<mpsc::UnboundedSender<Vec<String>>>,
+    spawn_tx: Option<mpsc::UnboundedSender<(Vec<String>, bool)>>,
     /// When `Some`, route NotifyAndResume writes via the Nerve's Notify signal
     /// instead of writing directly to disk (required when brain is sealed).
     notify_tx: Option<tokio::sync::mpsc::UnboundedSender<NotifyPayload>>,
@@ -45,7 +45,10 @@ impl NativeHarnessBackend {
         }
     }
 
-    pub fn new_with_spawn(gait_dir: PathBuf, spawn_tx: mpsc::UnboundedSender<Vec<String>>) -> Self {
+    pub fn new_with_spawn(
+        gait_dir: PathBuf,
+        spawn_tx: mpsc::UnboundedSender<(Vec<String>, bool)>,
+    ) -> Self {
         Self {
             gait_dir,
             spawn_tx: Some(spawn_tx),
@@ -134,7 +137,7 @@ impl HarnessBackend for NativeHarnessBackend {
                     "--auto".to_string(),
                 ];
                 if let Some(tx) = &self.spawn_tx {
-                    let _ = tx.send(argv);
+                    let _ = tx.send((argv, false));
                 } else {
                     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gait"));
                     std::process::Command::new(&exe)

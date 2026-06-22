@@ -15,6 +15,9 @@ struct SpawnAgentArgs {
     task: String,
     /// Optional files to prepend as context (reserved for future use)
     context_files: Option<Vec<String>>,
+    /// When true, spawn an independent peer agent that outlives this one.
+    /// When false (default), spawn a subagent that is cascade-killed when this agent ends.
+    detached: Option<bool>,
 }
 #[allow(dead_code)]
 #[derive(schemars::JsonSchema)]
@@ -50,7 +53,7 @@ impl Tool for SpawnAgentTool {
         "spawn_agent"
     }
     fn description(&self) -> &str {
-        "Delegate a subtask to a new background agent session. Returns {session_id} immediately — the child runs detached on the same codebase using the gait.jsonc model and allow/deny, starts a fresh log, and runs --auto. Use list_agents to check status. The child's message and result are in its session log when it calls structured_done."
+        "Delegate a subtask to a new agent session. Returns {session_id} immediately. detached: spawn an independent peer agent that outlives this one (default false = subagent that ends with this agent). The child runs on the same codebase using the gait.jsonc model and allow/deny, starts a fresh log, and runs --auto. Use list_agents to check status."
     }
     fn parameters(&self) -> &Value {
         &self.parameters
@@ -113,17 +116,23 @@ impl Tool for SpawnAgentTool {
             )
             .map_err(crate::tools::ToolError::Internal)?;
 
+        let is_detached = args["detached"].as_bool().unwrap_or(false);
+
         // Schedule child for execution — via Spawn signal if in brain (sealed) mode,
         // or direct Command::spawn otherwise. Spine appends --sandbox-locked when
         // sandbox is active so the child cannot disable sandboxing.
-        rec.spawn_process(vec![
-            "run".to_string(),
-            "--session".to_string(),
-            new_id.clone(),
-            "--gait-dir".to_string(),
-            self.ctx.gait_dir.to_str().unwrap_or(".").to_string(),
-            "--auto".to_string(),
-        ]);
+        // detached=false → subagent (cascade-killed with parent); detached=true → peer (survives).
+        rec.spawn_process(
+            vec![
+                "run".to_string(),
+                "--session".to_string(),
+                new_id.clone(),
+                "--gait-dir".to_string(),
+                self.ctx.gait_dir.to_str().unwrap_or(".").to_string(),
+                "--auto".to_string(),
+            ],
+            is_detached,
+        );
 
         Ok(serde_json::json!({ "session_id": new_id }))
     }

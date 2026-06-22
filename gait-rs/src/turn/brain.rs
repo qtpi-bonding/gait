@@ -162,14 +162,15 @@ pub async fn run_brain(
     // Spawn relay: tools (spawn_agent) and harness send argv here; relay task
     // forwards as Spawn Signals so the spine (not the sealed brain) executes
     // the child process. Spine appends --sandbox-locked when sandbox_on.
-    let (spawn_tx, mut spawn_rx) = mpsc::unbounded_channel::<Vec<String>>();
+    let (spawn_tx, mut spawn_rx) = mpsc::unbounded_channel::<(Vec<String>, bool)>();
     let spawn_relay_writer = nerve_writer.clone();
     tokio::spawn(async move {
-        while let Some(argv) = spawn_rx.recv().await {
+        while let Some((argv, detached)) = spawn_rx.recv().await {
             let sig = Signal {
                 corr_id: 0,
                 body: Some(signal::Body::Spawn(gait_proto::gait::sandbox::v1::Spawn {
                     argv,
+                    detached,
                 })),
             };
             spawn_relay_writer.send_one_way(&sig).await.ok();
@@ -385,7 +386,7 @@ struct BrainDriver {
     nerve_writer: NerveWriter,
     event_tx: mpsc::UnboundedSender<Event>,
     stream_fwd_tx: mpsc::UnboundedSender<StreamItem>,
-    spawn_tx: mpsc::UnboundedSender<Vec<String>>,
+    spawn_tx: mpsc::UnboundedSender<(Vec<String>, bool)>,
     notify_tx: mpsc::UnboundedSender<crate::harness::NotifyPayload>,
     workflow_runner: Option<Arc<dyn WorkflowRunner>>,
     log_mirror: std::sync::Arc<std::sync::Mutex<Vec<crate::proto::gait::log::v1::Event>>>,

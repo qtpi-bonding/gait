@@ -333,12 +333,27 @@ pub async fn relay_brain_turn(
                 if sandbox_on {
                     argv.push("--sandbox-locked".to_string());
                 }
-                let _ = std::process::Command::new(exe)
-                    .args(&argv)
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn();
+                if sp.detached {
+                    // Peer agent: breaks out of the cascade group — survives parent death.
+                    let mut cmd = std::process::Command::new(exe);
+                    cmd.args(&argv)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null());
+                    let _ = group.spawn_detached(cmd);
+                } else {
+                    // Subagent: enrolled in parent's cascade group — reaped when parent ends.
+                    // Pass --cascade-group so the child self-assigns (race-free enrollment).
+                    if let Some(handle) = group.handle() {
+                        argv.extend(["--cascade-group".to_string(), handle]);
+                    }
+                    let mut cmd = std::process::Command::new(exe);
+                    cmd.args(&argv)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null());
+                    let _ = group.spawn_enrolled(cmd);
+                }
             }
             Some(signal::Body::Notify(Notify {
                 target_session,
