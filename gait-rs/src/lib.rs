@@ -4,6 +4,7 @@ pub mod factory;
 pub mod git;
 pub mod harness;
 pub mod models;
+pub mod process;
 pub mod provider;
 pub mod scheduler;
 pub mod session;
