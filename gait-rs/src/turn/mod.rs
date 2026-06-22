@@ -1113,7 +1113,9 @@ pub async fn run_turn(
                     denied_ids.insert(tc.tool_call_id.clone());
                 }
                 GateDecision::Allow { approval_prefix } => {
-                    stream_preview_if_always(preview_policy, tool, &tc.args, emitter);
+                    if relay.is_none() {
+                        stream_preview_if_always(preview_policy, tool, &tc.args, emitter);
+                    }
                     if let Some(p) = approval_prefix {
                         tool_approval_prefixes.insert(tc.tool_call_id.clone(), p);
                     }
