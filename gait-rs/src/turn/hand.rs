@@ -19,7 +19,33 @@ use crate::proto::gait::log::v1::UnlockItem;
 use crate::proto::Recorder;
 use crate::sandbox::{NetworkPolicy, SandboxScope};
 use crate::tools::{builtin_tools, ToolCtx};
-use gait_proto::gait::sandbox::v1::{network_scope::Mode, Feedback, Impulse};
+use gait_proto::gait::sandbox::v1::{
+    hand_response, network_scope::Mode, Feedback, HandError, HandResponse, Impulse,
+};
+
+// ── respond helpers ───────────────────────────────────────────────────────────
+
+/// Encode one `HandResponse` to stdout and exit. Every hand outcome goes
+/// through here — there is no other reply channel.
+fn respond(outcome: hand_response::Outcome) -> ! {
+    let resp = HandResponse {
+        outcome: Some(outcome),
+    };
+    let bytes = resp.encode_to_vec();
+    if let Err(e) = std::io::Write::write_all(&mut std::io::stdout(), &bytes) {
+        // stdout is gone — nothing more we can do; the spine's crash fallback handles it.
+        eprintln!("[hand] stdout write failed: {e}");
+        std::process::exit(1);
+    }
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    std::process::exit(0);
+}
+
+fn respond_err(msg: impl Into<String>) -> ! {
+    respond(hand_response::Outcome::Error(HandError {
+        message: msg.into(),
+    }))
+}
 
 // ── HandConfig ────────────────────────────────────────────────────────────────
 
@@ -48,15 +74,11 @@ pub async fn run_hand(config: HandConfig) {
     // Read binary Impulse from stdin.
     let mut buf = Vec::new();
     if let Err(e) = std::io::stdin().read_to_end(&mut buf) {
-        eprintln!("[hand] stdin read failed: {e}");
-        std::process::exit(1);
+        respond_err(format!("stdin read failed: {e}"));
     }
     let impulse = match Impulse::decode(buf.as_slice()) {
         Ok(r) => r,
-        Err(e) => {
-            eprintln!("[hand] bad Impulse: {e}");
-            std::process::exit(1);
-        }
+        Err(e) => respond_err(format!("bad Impulse: {e}")),
     };
 
     // Convert Impulse.args (Option<pbjson_types::Struct>) → serde_json::Value.
@@ -109,10 +131,7 @@ pub async fn run_hand(config: HandConfig) {
     let tools = builtin_tools(ctx, vec![], vec![], vec![], Repos::production());
     let tool = match tools.iter().find(|t| t.name() == config.tool) {
         Some(t) => t,
-        None => {
-            eprintln!("[hand] unknown tool: {}", config.tool);
-            std::process::exit(1);
-        }
+        None => respond_err(format!("unknown tool: {}", config.tool)),
     };
 
     let rec = Recorder::buffering();
@@ -195,12 +214,7 @@ pub async fn run_hand(config: HandConfig) {
         events: rec.take_buffer(),
         denied,
     };
-
-    let bytes = feedback.encode_to_vec();
-    if let Err(e) = std::io::Write::write_all(&mut std::io::stdout(), &bytes) {
-        eprintln!("[hand] stdout write failed: {e}");
-        std::process::exit(1);
-    }
+    respond(hand_response::Outcome::Feedback(feedback));
 }
 
 // ── build_scope_from_impulse ──────────────────────────────────────────────────

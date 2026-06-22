@@ -470,15 +470,23 @@ pub async fn run_tool_as_spine(
     };
     let _ = std::fs::remove_dir_all(&jail);
 
-    if out.status.success() {
-        Feedback::decode(out.stdout.as_slice())
-            .unwrap_or_else(|e| error_feedback(&format!("bad Feedback proto: {e}")))
-    } else {
-        error_feedback(&format!(
-            "hand exited {}: {}",
+    // The hand always writes a HandResponse on stdout. Decode it regardless of
+    // exit code; only fall back to exit-code/stderr if stdout is missing/garbled
+    // (a true crash — the hand never got to write).
+    use gait_proto::gait::sandbox::v1::{hand_response, HandResponse};
+    match HandResponse::decode(out.stdout.as_slice()) {
+        Ok(HandResponse {
+            outcome: Some(hand_response::Outcome::Feedback(f)),
+        }) => f,
+        Ok(HandResponse {
+            outcome: Some(hand_response::Outcome::Error(e)),
+        }) => error_feedback(&format!("hand error: {}", e.message)),
+        Ok(HandResponse { outcome: None }) => error_feedback("hand returned empty HandResponse"),
+        Err(_) => error_feedback(&format!(
+            "hand crashed (exit {}): {}",
             out.status,
             String::from_utf8_lossy(&out.stderr)
-        ))
+        )),
     }
 }
 
@@ -570,7 +578,31 @@ fn turn_result_from_json(json: &str) -> crate::turn::TurnResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_turn_profile, ProfileInputs};
+    use super::{build_turn_profile, error_feedback, ProfileInputs};
+
+    #[test]
+    fn hand_response_error_arm_becomes_error_feedback() {
+        use gait_proto::gait::sandbox::v1::{hand_response, HandError, HandResponse};
+        use prost::Message as _;
+        let bytes = HandResponse {
+            outcome: Some(hand_response::Outcome::Error(HandError {
+                message: "nope".into(),
+            })),
+        }
+        .encode_to_vec();
+        // mirror the spine's decode mapping
+        let fb = match HandResponse::decode(bytes.as_slice()) {
+            Ok(HandResponse {
+                outcome: Some(hand_response::Outcome::Error(e)),
+            }) => error_feedback(&format!("hand error: {}", e.message)),
+            _ => panic!("expected error arm"),
+        };
+        let s = fb.result.and_then(|v| match v.kind {
+            Some(pbjson_types::value::Kind::StringValue(s)) => Some(s),
+            _ => None,
+        });
+        assert_eq!(s.as_deref(), Some("hand error: nope"));
+    }
 
     #[test]
     fn build_turn_profile_folds_cli_allow() {

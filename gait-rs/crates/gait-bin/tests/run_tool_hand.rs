@@ -10,7 +10,9 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use gait_proto::gait::sandbox::v1::{network_scope::Mode, Feedback, Impulse, NetworkScope, Scope};
+use gait_proto::gait::sandbox::v1::{
+    hand_response, network_scope::Mode, HandResponse, Impulse, NetworkScope, Scope,
+};
 use prost::Message;
 
 #[test]
@@ -75,8 +77,13 @@ fn run_tool_executes_read_in_subprocess() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    // Decode binary Feedback from stdout.
-    let feedback = Feedback::decode(out.stdout.as_slice()).expect("valid Feedback from hand");
+    // Decode binary HandResponse from stdout.
+    let hand_resp =
+        HandResponse::decode(out.stdout.as_slice()).expect("valid HandResponse from hand");
+    let feedback = match hand_resp.outcome {
+        Some(hand_response::Outcome::Feedback(f)) => f,
+        other => panic!("expected Feedback outcome, got {:?}", other),
+    };
     // Result should be the file content wrapped in <file>...</file> (a string value).
     let result_proto = feedback.result.expect("Feedback.result must be set");
     let result_str = match result_proto.kind {
