@@ -1844,3 +1844,95 @@ async fn supervised_read_outside_ceiling_pauses_with_unlock() {
         other => panic!("expected TurnResult::Unlock (read out-of-scope), got: {other:?}"),
     }
 }
+
+// ── Task 5: initial_git seeding ───────────────────────────────────────────────
+
+/// Behavioral test: when `TurnInput.initial_git` is `Some(GitSnapshot { head_hash: "seeded_hash_abc", .. })`,
+/// `run_turn` must use that hash in the emitted `TurnComplete` event instead of reading from disk.
+///
+/// Proof: we use a real git codebase dir whose actual HEAD hash is NOT "seeded_hash_abc". If the
+/// `Some` branch is taken, the `TurnComplete.codebase.hash` will equal `"seeded_hash_abc"`.
+/// If the `None` branch were taken (disk read), the hash would be the real git SHA — which differs.
+#[tokio::test]
+async fn run_turn_uses_seeded_git_hash_from_initial_git() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+
+    // Build a SEPARATE codebase dir that is its own git repo with a real commit.
+    // The real HEAD hash will be some full 40-char SHA, not "seeded_hash_abc".
+    let codebase_dir = TempDir::new().unwrap();
+    {
+        let repo = git2::Repository::init(codebase_dir.path()).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "test").unwrap();
+        cfg.set_str("user.email", "test@test.com").unwrap();
+        std::fs::write(codebase_dir.path().join("seed.txt"), "seed\n").unwrap();
+        let mut idx = repo.index().unwrap();
+        idx.add_path(std::path::Path::new("seed.txt")).unwrap();
+        idx.write().unwrap();
+        let tree_id = idx.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("test", "test@test.com").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+    }
+
+    let session_id = "sgitseed001";
+
+    let provider = Arc::new(MockProvider {
+        responses: Arc::new(vec![vec![
+            StreamChunk::Text("done".into()),
+            StreamChunk::Done,
+        ]]),
+        call_idx: Arc::new(AtomicUsize::new(0)),
+    });
+
+    run_turn_test_call(
+        ws.path().to_path_buf(),
+        codebase_dir.path().to_path_buf(),
+        session_id.into(),
+        provider,
+        vec![],
+        vec![],
+        vec![],
+        TurnInput {
+            auto: true,
+            max_iter: None,
+            preview_policy: crate::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: true,
+            sandbox_cfg: crate::config::SandboxConfig::default(),
+            relay: None,
+            initial_git: Some(crate::turn::GitSnapshot {
+                head_hash: "seeded_hash_abc".into(),
+                dirty_files: vec![],
+            }),
+        },
+        crate::git::Repos::production(),
+    )
+    .await
+    .unwrap();
+
+    let tx_path = ws
+        .path()
+        .join("sessions")
+        .join(session_id)
+        .join("log.jsonl");
+    let events = read_events(&tx_path).unwrap();
+
+    // The TurnComplete event must carry the seeded hash, not the real git SHA.
+    let tc = events
+        .iter()
+        .find_map(|e| match event_kind(e) {
+            Some(payload::Kind::TurnComplete(tc)) => Some(tc),
+            _ => None,
+        })
+        .expect("TurnComplete event must be present");
+
+    let recorded_hash = tc.codebase.as_ref().map(|c| c.hash.as_str()).unwrap_or("");
+    assert_eq!(
+        recorded_hash, "seeded_hash_abc",
+        "TurnComplete.codebase.hash must use the seeded value from initial_git, not disk; got: {:?}",
+        recorded_hash
+    );
+}
