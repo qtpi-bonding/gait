@@ -344,27 +344,6 @@ pub async fn run_brain(
     drop(nerve_writer);
     let _ = tokio::io::stdout().flush().await;
 }
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn brain_init_seeds_identity_and_config() {
-        let cfg = crate::config::GaitConfig::default();
-        let cfg_json = serde_json::to_string(&cfg).unwrap();
-        let parsed: crate::config::GaitConfig = serde_json::from_str(&cfg_json).unwrap();
-        assert_eq!(parsed.max_iter, cfg.max_iter);
-
-        let ev = gait_proto::envelope::mint(
-            crate::proto::events::session_start("s1234567".into(), None, Some("/code".into())),
-            None,
-            0,
-            0,
-        );
-        let meta = crate::session::session_meta_from_events(&[ev], "s1234567");
-        assert_eq!(meta.codebase_path.as_deref(), Some("/code"));
-    }
-}
 
 // ── BrainSink ─────────────────────────────────────────────────────────────────
 
@@ -502,5 +481,27 @@ impl TurnDriver for BrainDriver {
     ) -> std::ops::ControlFlow<()> {
         sink.diagnostic(crate::port::output::Diag::Error, &format!("error: {}", e));
         std::ops::ControlFlow::Break(())
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn brain_init_seeds_identity_and_config() {
+        let cfg = crate::config::GaitConfig::default();
+        let cfg_json = serde_json::to_string(&cfg).unwrap();
+        let parsed: crate::config::GaitConfig = serde_json::from_str(&cfg_json).unwrap();
+        assert_eq!(parsed.max_iter, cfg.max_iter);
+
+        let ev = gait_proto::envelope::mint(
+            crate::proto::events::session_start("s1234567".into(), None, Some("/code".into())),
+            None,
+            0,
+            0,
+        );
+        let meta = crate::session::session_meta_from_events(&[ev], "s1234567");
+        assert_eq!(meta.codebase_path.as_deref(), Some("/code"));
     }
 }
