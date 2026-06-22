@@ -113,8 +113,10 @@ mod tests {
 
     #[test]
     fn per_call_beats_consumer_beats_file() {
-        let mut base = GaitConfig::default();
-        base.model = Some("file-model".into()); // stands in for the gait.jsonc layer
+        let base = GaitConfig {
+            model: Some("file-model".into()), // stands in for the gait.jsonc layer
+            ..GaitConfig::default()
+        };
         let effective = ConfigResolver::new(base)
             .with(Overrides {
                 model: Some("consumer-model".into()),
