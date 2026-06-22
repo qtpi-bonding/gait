@@ -212,7 +212,10 @@ impl Tool for ShellTool {
             let mut total: u64 = 0;
             let mut tail = std::collections::VecDeque::<u8>::new();
             while let Some(chunk) = rx.recv().await {
-                out_file.write_all(&chunk).await.ok();
+                out_file
+                    .write_all(&chunk)
+                    .await
+                    .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
                 total += chunk.len() as u64;
                 rec.publish_delta(String::from_utf8_lossy(&chunk).into_owned());
                 tail.extend(&chunk);
@@ -220,7 +223,8 @@ impl Tool for ShellTool {
                     tail.pop_front();
                 }
             }
-            let _ = (h1.await, h2.await);
+            h1.await.expect("stdout drain task panicked");
+            h2.await.expect("stderr drain task panicked");
             out_file.flush().await.ok();
             let status = child
                 .wait()
