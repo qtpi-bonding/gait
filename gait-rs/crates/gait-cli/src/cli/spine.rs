@@ -16,6 +16,38 @@ use crate::cli::run::RunArgs;
 pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf) {
     use clap::Parser;
 
+    // ── Linux: self-assign to parent's cascade group (race-free enrollment) ──
+    // Must happen before any fork/spawn so all descendants land in the group.
+    #[cfg(target_os = "linux")]
+    {
+        // Peek at --cascade-group without full parse (full parse happens below).
+        // We do a lightweight scan: find "--cascade-group" followed by its value.
+        let mut cg_val: Option<&str> = None;
+        let mut iter = argv.iter();
+        while let Some(arg) = iter.next() {
+            if arg == "--cascade-group" {
+                cg_val = iter.next().map(|s| s.as_str());
+                break;
+            } else if let Some(val) = arg.strip_prefix("--cascade-group=") {
+                cg_val = Some(val);
+                break;
+            }
+        }
+        if let Some(cg) = cg_val {
+            if cg.starts_with("/sys/fs/cgroup") {
+                // cgroup v2 path: write our pid into cgroup.procs
+                let pid = std::process::id().to_string();
+                let procs = format!("{cg}/cgroup.procs");
+                let _ = std::fs::write(&procs, &pid);
+            } else if let Ok(pgid) = cg.parse::<i32>() {
+                // pgid degrade path
+                unsafe {
+                    libc::setpgid(0, pgid);
+                }
+            }
+        }
+    }
+
     let args = RunArgs::parse_from(argv);
     let mut sink = gait_core::port::output::CliSink::stdio(false);
 
