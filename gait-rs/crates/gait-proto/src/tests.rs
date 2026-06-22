@@ -322,3 +322,29 @@ fn brain_init_signal_round_trips() {
         other => panic!("expected BrainInit, got {other:?}"),
     }
 }
+
+#[test]
+fn hand_response_round_trips_both_arms() {
+    use crate::gait::sandbox::v1::{hand_response, Feedback, HandError, HandResponse};
+    use prost::Message;
+
+    let ok = HandResponse {
+        outcome: Some(hand_response::Outcome::Feedback(Feedback::default())),
+    };
+    let back = HandResponse::decode(ok.encode_to_vec().as_slice()).unwrap();
+    assert!(matches!(
+        back.outcome,
+        Some(hand_response::Outcome::Feedback(_))
+    ));
+
+    let err = HandResponse {
+        outcome: Some(hand_response::Outcome::Error(HandError {
+            message: "boom".into(),
+        })),
+    };
+    let back = HandResponse::decode(err.encode_to_vec().as_slice()).unwrap();
+    match back.outcome {
+        Some(hand_response::Outcome::Error(e)) => assert_eq!(e.message, "boom"),
+        other => panic!("expected Error, got {other:?}"),
+    }
+}

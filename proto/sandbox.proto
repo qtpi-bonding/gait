@@ -20,6 +20,20 @@ message Feedback {
   optional gait.log.v1.UnlockItem denied = 3;  // set when the hand signals a seal denial (Phase 2c)
 }
 
+// Hand → spine reply: the single response a hand emits on stdout for one
+// Impulse, whether the tool ran or the hand itself failed. Replaces the old
+// "Feedback on success / exit-code on failure" split.
+message HandResponse {
+  oneof outcome {
+    Feedback  feedback = 1;   // the tool ran (result + events + denied)
+    HandError error    = 2;   // the hand could not run the tool
+  }
+}
+
+message HandError {
+  string message = 1;
+}
+
 // Capability scope for one tool call.
 message Scope {
   bool read_all = 1;
