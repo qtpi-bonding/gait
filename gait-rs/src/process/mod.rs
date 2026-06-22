@@ -362,14 +362,14 @@ mod linux {
     impl Containment for CgroupContainment {
         fn spawn_enrolled(&self, mut cmd: Command) -> io::Result<Child> {
             if self.in_cgroup_mode() {
-                // Pass cgroup path so child self-assigns (race-free).
-                let handle = self.handle().unwrap_or_default();
-                cmd.env("GAIT_CASCADE_GROUP_ENV", &handle); // informational
-                                                            // For non-gait children (e.g. sh/bash) the parent is already in the
-                                                            // cgroup (or will be), so the child inherits.  We enroll after spawn.
+                // Inject --cascade-group so gait children self-assign race-free.
+                // Non-gait children (sh/bash) inherit the cgroup from the parent process
+                // (the spine is already in the cgroup); no post-spawn write needed.
+                if let Some(ref dir) = self.cgroup_dir {
+                    cmd.arg("--cascade-group").arg(dir.as_os_str());
+                }
                 let child = cmd.spawn()?;
                 let pid = child.id();
-                self.enroll_in_cgroup(pid);
                 self.owned.lock().unwrap().push(pid as i32);
                 Ok(child)
             } else {
@@ -397,11 +397,9 @@ mod linux {
 
         fn configure_enrolled(&self, cmd: &mut Command) -> io::Result<()> {
             if self.in_cgroup_mode() {
-                // For gait subagent children: pass --cascade-group <path>.
-                // This is done by the caller (relay/brain spawn) which has access to args.
-                // Here we just record the cgroup dir as an env var hint.
+                // Inject --cascade-group so the spawned child self-assigns race-free.
                 if let Some(ref dir) = self.cgroup_dir {
-                    cmd.env("GAIT_CASCADE_GROUP_ENV", dir.to_string_lossy().as_ref());
+                    cmd.arg("--cascade-group").arg(dir.as_os_str());
                 }
                 Ok(())
             } else {
@@ -477,7 +475,10 @@ mod linux {
 
         fn kill_all(&self) -> io::Result<()> {
             if self.in_cgroup_mode() {
-                if !self.inherited && !self.killed.swap(true, Ordering::SeqCst) {
+                // Kill the cgroup whether we own it or inherited it — if the parent
+                // died (pidfd watch fired), we must reap our own children.
+                // The `inherited` flag only controls cleanup (rmdir), not the kill.
+                if !self.killed.swap(true, Ordering::SeqCst) {
                     if let Some(ref dir) = self.cgroup_dir {
                         let kill_file = dir.join("cgroup.kill");
                         if kill_file.exists() {
@@ -575,7 +576,12 @@ mod linux {
 
     pub fn establish_linux(inherited: Option<String>) -> Arc<dyn Containment> {
         if let Some(handle) = inherited {
-            Arc::new(CgroupContainment::new_inherited(handle))
+            let arc: Arc<dyn Containment> = Arc::new(CgroupContainment::new_inherited(handle));
+            // Watch the parent process via pidfd: if parent dies (even SIGKILL),
+            // kill_all() the inherited group so orphaned children don't linger.
+            let parent_pid = unsafe { libc::getppid() };
+            spawn_pidfd_watch(arc.clone(), parent_pid);
+            arc
         } else {
             let c = CgroupContainment::new_owner();
             Arc::new(c)
@@ -606,9 +612,10 @@ mod linux {
             // Either the process is gone (alive == -1) or it's a zombie (acceptable).
             // We just verify kill_all didn't error.
             let _ = child.wait(); // reap
-            assert!(
-                alive != 0 || true,
-                "kill_all should have terminated child (pid {pid})"
+                                  // After kill_all + reap, kill(pid, 0) must return ESRCH (-1) meaning dead.
+            assert_eq!(
+                alive, -1,
+                "kill_all should have terminated child (pid {pid}), but kill(pid,0) returned {alive}"
             );
         }
 
