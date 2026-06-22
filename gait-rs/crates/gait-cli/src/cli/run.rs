@@ -33,6 +33,10 @@ pub struct RunArgs {
     pub no_sandbox: bool,
     #[arg(long = "sandbox-locked", hide = true)]
     pub sandbox_locked: bool,
+    /// Cascade group handle passed by a parent spine to a blocking subagent.
+    /// `None` for the top-level turn; a parent's pgid string for subagents (Plan 4).
+    #[arg(long = "cascade-group", hide = true)]
+    pub cascade_group: Option<String>,
     // Consumed by caller (args.rs); included to prevent "unexpected argument" errors.
     #[arg(long, hide = true)]
     gait_dir: Option<PathBuf>,

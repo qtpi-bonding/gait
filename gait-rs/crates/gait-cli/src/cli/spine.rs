@@ -169,6 +169,7 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
         sandbox_on,
         &profile_inputs,
         &mut sink,
+        args.cascade_group.clone(),
     )
     .await
     .unwrap_or_else(|e| {

@@ -99,8 +99,10 @@ pub async fn relay_brain_turn(
     sandbox_on: bool,
     profile_inputs: &ProfileInputs,
     sink: &mut dyn TurnSink,
+    cascade_group_arg: Option<String>,
 ) -> anyhow::Result<bool> {
-    use tokio::process::Command;
+    // ── Establish (or inherit) the cascade group for this turn ─────────────
+    let group = crate::process::establish(cascade_group_arg);
 
     // ── Spine-owned startup writes (brain is disk-write-free) ───────────────
     // These all write to gait-dir; the brain's seal has writable: [] so it
@@ -147,16 +149,32 @@ pub async fn relay_brain_turn(
         }
     }
 
-    // ── Spawn brain ─────────────────────────────────────────────────────────
-    let mut child = Command::new(exe)
-        .arg("__brain")
-        .args(brain_args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit())
-        .env("GAIT_BRAIN_API_KEY", api_key)
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("failed to spawn __brain: {e}"))?;
+    // ── Spawn brain (enrolled as cascade group leader) ──────────────────────
+    let mut child = {
+        use tokio::process::Command as TokioCommand;
+        let mut std_cmd = std::process::Command::new(exe);
+        std_cmd
+            .arg("__brain")
+            .args(brain_args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .env("GAIT_BRAIN_API_KEY", api_key);
+        // Set up cascade group enrollment hooks (setsid for brain = first call).
+        group
+            .configure_enrolled(&mut std_cmd)
+            .map_err(|e| anyhow::anyhow!("failed to configure brain enrollment: {e}"))?;
+        // Convert to tokio Command (keeps all pre_exec hooks) and spawn async.
+        let mut tokio_cmd = TokioCommand::from(std_cmd);
+        let child = tokio_cmd
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("failed to spawn __brain: {e}"))?;
+        // Register brain pid so group can reap it and knows its pgid.
+        group.register_pid(child.id().unwrap_or(0) as i32);
+        child
+    };
+    // Capture the group handle now that the brain (leader) is realized.
+    let _group_handle = group.handle(); // Future: pass to blocking subagents (Plan 4).
 
     let child_stdin = Arc::new(Mutex::new(child.stdin.take().expect("piped stdin")));
     let mut child_stdout = child.stdout.take().expect("piped stdout");
@@ -212,9 +230,11 @@ pub async fn relay_brain_turn(
                 let cb = codebase.to_path_buf();
                 let sid = session_id.to_string();
                 let exe_c = exe.to_path_buf();
+                let grp = Arc::clone(&group);
                 tokio::spawn(async move {
                     let feedback =
-                        run_tool_as_spine(impulse, &cfg, &gd, &cb, &sid, sandbox_on, &exe_c).await;
+                        run_tool_as_spine(impulse, &cfg, &gd, &cb, &sid, sandbox_on, &exe_c, grp)
+                            .await;
                     let resp = Signal {
                         corr_id,
                         body: Some(signal::Body::Feedback(feedback)),
@@ -386,6 +406,7 @@ pub async fn relay_brain_turn(
 /// Spawn `gait __run-tool` for one tool invocation (spine's authoritative scope
 /// ceiling applied via `bound_request`). Mirrors `SubprocessSynapse::fire` but
 /// takes an `Impulse` directly from the Nerve rather than a `Tool` ref.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_tool_as_spine(
     impulse: Impulse,
     sandbox_cfg: &SandboxConfig,
@@ -394,9 +415,9 @@ pub async fn run_tool_as_spine(
     session_id: &str,
     sandbox_on: bool,
     exe: &Path,
+    group: std::sync::Arc<dyn crate::process::Containment>,
 ) -> Feedback {
     use tokio::io::AsyncWriteExt;
-    use tokio::process::Command;
 
     let jail_raw = std::env::temp_dir().join(format!(
         "gait-hand-{}",
@@ -434,35 +455,57 @@ pub async fn run_tool_as_spine(
     };
     let bytes = impulse_with_scope.encode_to_vec();
 
-    let mut child = match Command::new(exe)
-        .arg("__run-tool")
-        .arg("--gait-dir")
-        .arg(gait_dir)
-        .arg("--codebase")
-        .arg(codebase)
-        .arg("--session")
-        .arg(session_id)
-        .arg("--tool")
-        .arg(&impulse.tool)
-        .arg("--seal")
-        .arg(if sandbox_on { "true" } else { "false" })
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .env_clear()
-        .envs(std::env::vars().filter(|(k, _)| {
-            matches!(
-                k.as_str(),
-                "PATH" | "HOME" | "USER" | "SHELL" | "TERM" | "LANG" | "LC_ALL" | "TMPDIR"
-            )
-        }))
-        .env("TMPDIR", &jail)
-        .spawn()
+    // debug_assert: the brain (group leader) must be alive before we enroll a hand.
+    // pgid == 0 means spawn_enrolled hasn't been called yet for the brain — logic error.
+    #[cfg(debug_assertions)]
     {
-        Ok(c) => c,
-        Err(e) => {
+        let handle_str = group.handle();
+        debug_assert!(
+            handle_str.is_some(),
+            "hand enrolled before brain: cascade group has no leader yet"
+        );
+    }
+    let mut child = {
+        use tokio::process::Command as TokioCommand;
+        let mut std_cmd = std::process::Command::new(exe);
+        std_cmd
+            .arg("__run-tool")
+            .arg("--gait-dir")
+            .arg(gait_dir)
+            .arg("--codebase")
+            .arg(codebase)
+            .arg("--session")
+            .arg(session_id)
+            .arg("--tool")
+            .arg(&impulse.tool)
+            .arg("--seal")
+            .arg(if sandbox_on { "true" } else { "false" })
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .env_clear()
+            .envs(std::env::vars().filter(|(k, _)| {
+                matches!(
+                    k.as_str(),
+                    "PATH" | "HOME" | "USER" | "SHELL" | "TERM" | "LANG" | "LC_ALL" | "TMPDIR"
+                )
+            }))
+            .env("TMPDIR", &jail);
+        // Enroll hand into the cascade group (joins brain's process group).
+        if let Err(e) = group.configure_enrolled(&mut std_cmd) {
             let _ = std::fs::remove_dir_all(&jail);
-            return error_feedback(&format!("failed to spawn __run-tool: {e}"));
+            return error_feedback(&format!("failed to configure hand enrollment: {e}"));
+        }
+        let mut tokio_cmd = TokioCommand::from(std_cmd);
+        match tokio_cmd.spawn() {
+            Ok(c) => {
+                group.register_pid(c.id().unwrap_or(0) as i32);
+                c
+            }
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&jail);
+                return error_feedback(&format!("failed to spawn __run-tool: {e}"));
+            }
         }
     };
 

@@ -11,6 +11,19 @@ pub trait Containment: Send + Sync {
     /// Spawn a child INSIDE the cascade group; returns the Child so the owner
     /// can waitpid it (no zombies — S4).
     fn spawn_enrolled(&self, cmd: Command) -> io::Result<Child>;
+    /// Configure `cmd` to join the cascade group and record the resulting pid
+    /// (called by `enroll_tokio` after the tokio spawn). Distinct from
+    /// `spawn_enrolled` because the brain uses `tokio::process::Command` so it
+    /// can drive async I/O; hands use `std::process::Command` (sync wait).
+    ///
+    /// On the FIRST call the brain becomes the group leader (setsid pre_exec).
+    /// On subsequent calls the hand joins via `process_group(pgid)`.
+    ///
+    /// Returns the pid to register after spawn.
+    fn configure_enrolled(&self, cmd: &mut Command) -> io::Result<()>;
+    /// Register a pid that was spawned after `configure_enrolled`. Must be
+    /// called exactly once per `configure_enrolled` call so kill_all can reap.
+    fn register_pid(&self, pid: i32);
     /// Spawn a daemon OUTSIDE the group (setsid breakaway); returns child + pgid.
     fn spawn_detached(&self, cmd: Command) -> io::Result<(Child, i32)>;
     /// Reap the whole group; idempotent; waitpids owned children.
@@ -37,6 +50,10 @@ impl Containment for NoopContainment {
     fn spawn_enrolled(&self, mut cmd: Command) -> io::Result<Child> {
         cmd.spawn()
     }
+    fn configure_enrolled(&self, _cmd: &mut Command) -> io::Result<()> {
+        Ok(())
+    }
+    fn register_pid(&self, _pid: i32) {}
     fn spawn_detached(&self, mut cmd: Command) -> io::Result<(Child, i32)> {
         let c = cmd.spawn()?;
         let pid = c.id() as i32;
@@ -85,12 +102,11 @@ mod macos {
         fn spawn_enrolled(&self, mut cmd: Command) -> io::Result<Child> {
             let pgid = self.pgid.load(Ordering::SeqCst);
             if pgid == 0 {
-                // First child = the brain = group+SESSION leader via setsid → a stable
-                // leader for the whole (blocking) turn; pgid == pid after setsid.
-                // (The brain talks over pipes, not a TTY, so detaching the TTY is fine.)
+                // First child = the brain = new process group leader (setpgid(0,0)).
+                // Stays in the spine's session so hands spawned by the spine can join.
                 unsafe {
                     cmd.pre_exec(|| {
-                        libc::setsid();
+                        libc::setpgid(0, 0);
                         Ok(())
                     });
                 }
@@ -106,6 +122,34 @@ mod macos {
                 self.owned.lock().unwrap().push(child.id() as i32);
                 Ok(child)
             }
+        }
+        fn configure_enrolled(&self, cmd: &mut Command) -> io::Result<()> {
+            let pgid = self.pgid.load(Ordering::SeqCst);
+            if pgid == 0 {
+                // First child (brain): new group leader via setpgid(0,0) — stays in
+                // spine's session so hands from the spine can join the group.
+                unsafe {
+                    cmd.pre_exec(|| {
+                        libc::setpgid(0, 0);
+                        Ok(())
+                    });
+                }
+            } else {
+                // Subsequent children (hands): join the brain's group.
+                cmd.process_group(pgid);
+            }
+            Ok(())
+        }
+        fn register_pid(&self, pid: i32) {
+            // If this is the first enrollment, the brain's pid IS the pgid.
+            let prev = self
+                .pgid
+                .compare_exchange(0, pid, Ordering::SeqCst, Ordering::SeqCst);
+            if prev.is_err() {
+                // pgid already set (either inherited or brain already registered);
+                // just track the pid for reaping.
+            }
+            self.owned.lock().unwrap().push(pid);
         }
         fn spawn_detached(&self, mut cmd: Command) -> io::Result<(Child, i32)> {
             unsafe {
@@ -152,6 +196,45 @@ mod macos {
             }
         }
     }
+}
+
+/// Integration test: brain becomes group leader; hand joins the same group.
+/// Asserts `getpgid(hand_pid) == getpgid(brain_pid)` via `libc::getpgid`.
+#[cfg(target_os = "macos")]
+#[test]
+fn brain_and_hand_share_process_group() {
+    let g = establish(None);
+
+    // Spawn "brain" (first enrolled = group leader via setsid).
+    let mut brain_cmd = std::process::Command::new("sleep");
+    brain_cmd.arg("5");
+    g.configure_enrolled(&mut brain_cmd)
+        .expect("configure brain");
+    let mut brain = brain_cmd.spawn().expect("spawn brain");
+    let brain_pid = brain.id() as i32;
+    g.register_pid(brain_pid);
+
+    // Spawn "hand" (joins brain's group).
+    let mut hand_cmd = std::process::Command::new("sleep");
+    hand_cmd.arg("5");
+    g.configure_enrolled(&mut hand_cmd).expect("configure hand");
+    let mut hand = hand_cmd.spawn().expect("spawn hand");
+    let hand_pid = hand.id() as i32;
+    g.register_pid(hand_pid);
+
+    // Verify both are in the same process group.
+    let brain_pgid = unsafe { libc::getpgid(brain_pid) };
+    let hand_pgid = unsafe { libc::getpgid(hand_pid) };
+    assert!(brain_pgid > 0, "brain_pgid must be positive");
+    assert_eq!(
+        brain_pgid, hand_pgid,
+        "brain and hand must share a process group"
+    );
+
+    // Clean up.
+    g.kill_all().expect("kill_all");
+    let _ = brain.wait();
+    let _ = hand.wait();
 }
 
 #[cfg(target_os = "macos")]

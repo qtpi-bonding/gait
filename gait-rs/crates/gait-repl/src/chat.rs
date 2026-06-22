@@ -257,6 +257,7 @@ pub async fn run_chat(
                 sandbox_on,
                 &profile_inputs,
                 &mut sink,
+                None, // top-level REPL turn: no inherited cascade group
             )
             .await
             .unwrap_or_else(|e| {
