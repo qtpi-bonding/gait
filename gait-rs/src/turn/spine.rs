@@ -38,19 +38,42 @@ pub fn build_turn_profile(
     codebase: &std::path::Path,
     inputs: &ProfileInputs,
 ) -> crate::profile::Profile {
-    let mut cfg = crate::config::load_config(gait_dir);
+    use crate::config::resolver::{ConfigResolver, Overrides};
+    let loaded = crate::config::load_config(gait_dir);
+    // consumer layer: nothing (gait.jsonc is already baked into `loaded`)
+    // per-call layer: CLI allow/deny overrides (only when non-empty, to preserve additive semantics)
+    let per_call = Overrides {
+        allow: if inputs.allow.is_empty() {
+            None
+        } else {
+            // merge: start from loaded allow and add any new patterns
+            let mut merged = loaded.allow.clone();
+            for p in &inputs.allow {
+                if !merged.contains(p) {
+                    merged.push(p.clone());
+                }
+            }
+            Some(merged)
+        },
+        deny: if inputs.deny.is_empty() {
+            None
+        } else {
+            let mut merged = loaded.deny.clone();
+            for p in &inputs.deny {
+                if !merged.contains(p) {
+                    merged.push(p.clone());
+                }
+            }
+            Some(merged)
+        },
+        ..Overrides::empty()
+    };
+    let mut cfg = ConfigResolver::new(loaded)
+        .with(Overrides::empty())
+        .with(per_call)
+        .resolve();
     if let Some(s) = &inputs.result_schema {
         cfg.result_schema = Some(s.clone());
-    }
-    for p in &inputs.allow {
-        if !cfg.allow.contains(p) {
-            cfg.allow.push(p.clone());
-        }
-    }
-    for p in &inputs.deny {
-        if !cfg.deny.contains(p) {
-            cfg.deny.push(p.clone());
-        }
     }
     let agent_path: Option<std::path::PathBuf> = match &inputs.agent_name {
         Some(name) => Some(crate::agent_frontmatter::resolve_markdown_context_path(

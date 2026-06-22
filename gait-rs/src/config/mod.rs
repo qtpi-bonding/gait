@@ -4,6 +4,7 @@ use std::path::Path;
 pub const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4-6";
 
 pub mod defaults;
+pub mod resolver;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigTool {

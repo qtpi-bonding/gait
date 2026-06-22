@@ -164,15 +164,27 @@ pub async fn exec_prompt_node(
 ) -> anyhow::Result<NodeOutput> {
     let task = substitute(prompt_text, &ctx.vars);
 
-    let model = node
-        .model
-        .clone()
-        .or_else(|| workflow_def.model.clone())
-        .unwrap_or_else(|| "minimax/MiniMax-M3".into());
-    let allow = node
-        .allow
-        .clone()
-        .unwrap_or_else(|| workflow_def.allow.clone());
+    use gait_core::config::resolver::{ConfigResolver, Overrides};
+    let loaded = gait_core::config::load_config(ctx.gait_dir);
+    // consumer layer: WorkflowDef fields
+    let consumer = Overrides {
+        model: workflow_def.model.clone(),
+        allow: Some(workflow_def.allow.clone()),
+        ..Overrides::empty()
+    };
+    // per-call layer: NodeDef fields (higher priority)
+    let per_call = Overrides {
+        model: node.model.clone(),
+        allow: node.allow.clone(),
+        agent: node.agent.clone(),
+        ..Overrides::empty()
+    };
+    let resolved_cfg = ConfigResolver::new(loaded)
+        .with(consumer)
+        .with(per_call)
+        .resolve();
+    let model = resolved_cfg.model.clone();
+    let allow = resolved_cfg.allow.clone();
     let auto = node.auto.unwrap_or(workflow_def.auto);
 
     let codebase = node
