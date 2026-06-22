@@ -40,6 +40,7 @@ fn init_session_writes_session_start() {
         codebase_dirty: false,
         assigned_by: None,
         codebase_path: None,
+        notify_done: false,
     })
     .unwrap();
     let events = read_events(&path).unwrap();
@@ -436,6 +437,7 @@ fn init_session_writes_codebase_path_into_session_start() {
         codebase_dirty: false,
         assigned_by: Some("sparent0".to_string()),
         codebase_path: Some("/code".to_string()),
+        notify_done: false,
     })
     .unwrap();
     let events = super::read_events(&log_path).unwrap();

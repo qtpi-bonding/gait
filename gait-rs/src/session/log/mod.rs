@@ -63,6 +63,9 @@ pub struct InitSessionOpts {
     pub codebase_dirty: bool,
     pub assigned_by: Option<String>,
     pub codebase_path: Option<String>,
+    /// When true, the scheduler will send a `Notify` to `assigned_by` when the
+    /// child session completes. (Task 6: peer agents notify; blocking subagents don't.)
+    pub notify_done: bool,
 }
 
 // ── Session state introspection ─────────────────────────────────────────────

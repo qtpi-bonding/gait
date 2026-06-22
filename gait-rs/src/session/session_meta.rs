@@ -62,6 +62,7 @@ mod tests {
             codebase_dirty: false,
             assigned_by: Some("sparent0".to_string()),
             codebase_path: Some("/code".to_string()),
+            notify_done: false,
         })
         .unwrap();
         let meta = read_session_meta(dir.path(), "s1234567").unwrap();

@@ -76,7 +76,8 @@ pub(super) async fn execute_tool_call(
             let started = std::time::Instant::now();
             // `denied` is extracted only on the world-tool (synapse) path; it stays
             // None on the brain path (control/transcript tools never touch the kernel).
-            let (res, denied) = if t.access().touches_world() {
+            let is_relay_spawn = t.name() == "spawn_agent" && relay.is_some();
+            let (res, denied) = if t.access().touches_world() || is_relay_spawn {
                 // Hand path: run via the synapse, then replay the returned events
                 // into the real log (between ToolCall and ToolResult).
                 // Fall back to InProcessSynapse when not running as the `gait` binary

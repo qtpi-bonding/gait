@@ -99,6 +99,8 @@ CancellationSignal cancellation_signal = 55;
     ThinkingBlock      thinking_block      = 58;
     Unlock             unlock              = 59;
     UnlockReply        unlock_reply        = 60;
+    DaemonStart        daemon_start        = 61;
+    DaemonStop         daemon_stop         = 62;
 
   }
   reserved 20 to 49;  // workflow family (WorkflowHook* / WorkflowNode* / WorkflowStart …) — deferred to the workflow-subsystem redo
@@ -478,4 +480,19 @@ enum GeminiThinkingLevel {
 message ThinkingBlock {
   string content   = 1;
   string signature = 2;  // Anthropic opaque signature; empty for non-Anthropic providers
+}
+
+// Daemon lifecycle events — written to the session log when a daemon is spawned/stopped.
+message DaemonStart {
+  string name       = 1;  // logical name chosen by the caller
+  int32  pid        = 2;
+  int32  pgid       = 3;
+  uint64 started_at = 4;  // proc_start_time disambiguator — prevents pid-reuse kills
+  string cmd        = 5;
+  string cwd        = 6;
+  string log_path   = 7;
+}
+
+message DaemonStop {
+  string name = 1;
 }

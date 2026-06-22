@@ -7,6 +7,25 @@ source of truth.
 
 ---
 
+## Workspace crates
+
+`gait-core` (the root package) is the engine; the workspace splits the rest into focused crates:
+
+| Crate | Role |
+|---|---|
+| **gait-core** | the library: `turn/` (incl. the sealed runtimes `brain.rs`/`spine.rs`/`hand.rs`), `tools/`, `provider/`, `session/`, `sandbox.rs`, `embed.rs` |
+| **gait-proto** | proto codegen + the log codec: `gait.{log,state,sandbox,workflow}.v1` and `envelope`/`wire`/`hash` (mint, append, `content_hash`) |
+| **gait-cli** | command implementations — `cmd_run`, `cmd_spine`, `cmd_brain`, `cmd_run_tool` — thin arg-parsers over the `gait-core` runtimes |
+| **gait-repl** | the REPL/TUI (`chat.rs`, `repl_loop.rs`) — another embedder over `run_loop` |
+| **gait-workflow** | the workflow runner (a DAG of prompt/tool nodes) |
+| **gait-bin** | the `gait` binary — a thin dispatcher into `gait-cli` |
+
+The three sealed runtimes live in **gait-core** so both the CLI and the REPL can reach
+them; `gait-cli`'s `cmd_brain` / `cmd_run_tool` just parse args and call `run_brain` /
+`run_hand`.
+
+---
+
 ## Layers
 
 ```
@@ -23,7 +42,7 @@ source of truth.
 │                         openai/, factory.rs          │
 ├──────────────────────────────────────────────────────┤
 │  Tier 5 · Session       session/{retrace,transcript, │
-│           (event log)   ingestor,session_json}.rs    │
+│           (event log)   ingestor,session_meta}.rs    │
 │                         proto/, git/                  │
 └──────────────────────────────────────────────────────┘
 
@@ -34,6 +53,7 @@ Cross-cutting:
   ui/           REPL rendering + permission prompts (stderr only)
   git/          The three repos: codebase, trace, checkpoint
   auth.rs       API key resolution
+  sandbox       brain/spine/hands process seal — see sandbox-security.md
 ```
 
 ### Tier 1 · Entry (`bin/gait.rs`, `cli/run.rs`, `chat.rs` + `repl_loop.rs`)
@@ -118,12 +138,22 @@ A dropped receiver (headless/test) is silently ignored. Build one with
 `Recorder::for_session(gait_dir, id, sender)`; `detached()` is a no-op for session-less paths.
 (Formerly `Emitter`/`emit`/`delta` — renamed when the turn-I/O boundary landed, see below.)
 
-### Two proto packages
+### Proto packages & pbjson
 - **`gait.log.v1`** (`log.proto`) — the durable event log schema. Source of truth.
 - **`gait.state.v1`** (`state.proto`) — `SessionStateReport` / `SessionState` (Idle,
   AwaitingPermission, AwaitingClarify, AwaitingInform). **Derived, never stored** — computed on
   demand by retrace from the log tail, returned by `gait status`. It references (not copies) the
   item types from `log.v1`.
+- **`gait.sandbox.v1`** (`sandbox.proto`) — the **IPC** between the sealed processes. The Nerve
+  `Signal` (brain↔spine: `Impulse`, `Feedback`, `Append`, `Spawn`, `Notify`, `StreamForward`,
+  `Terminated`, `BrainInit`) and the hand reply (`Impulse` → `HandResponse`). See the sealed-execution
+  section below and `sandbox-security.md`.
+- **`gait.workflow.v1`** (`workflow.proto`) — workflow DAG definitions.
+
+**pbjson** does double duty. The log is serialized as **pbjson canonical JSON**, so `content_hash`
+over `JCS(body)` is stable and the *same* `.proto` parses it everywhere (incl. `JsonSink` for
+embedders). And `pbjson_types` supplies the `google.protobuf` `Struct`/`Value` carriers that ferry
+dynamic tool args/results across the sandbox IPC (`Impulse.args`, `Feedback.result`).
 
 ---
 
@@ -170,6 +200,33 @@ A network transport or C-ABI shim would be additional `TurnSource`+`TurnSink` pa
 The workflow runner (`workflow/runner.rs`) is under the same boundary: it records events through a
 `Recorder` + a spawned consumer driving a `StdioSink`, and its prompt sub-turns publish to the
 workflow's live channel.
+
+---
+
+## Sealed execution: brain / spine / hands
+
+The *same* `run_loop`/`run_turn` runs in one of two modes, decided by whether the turn has a
+**relay** (`TurnInput.relay`):
+
+- **In-process** (`relay.is_none()`) — the embed/test path. `run_turn` reads and writes the
+  gait-dir directly. Simple, unsandboxed.
+- **Sealed relay** (`relay.is_some()`) — the production `gait run` / `gait chat` path. A **spine**
+  (the parent process) spawns a sealed **brain** (`gait __brain`) per turn and a sealed **hand**
+  (`gait __run-tool`) per tool call. The brain runs the identical `run_loop` but does **no disk
+  I/O**: it receives its inputs in a `BrainInit` signal and delegates every write (events via
+  `Append`, commits, process launches via `Spawn`) and the disk reads it can't do (edit/write
+  previews) to the spine over the **Nerve** — length-prefixed `gait.sandbox.v1.Signal` framed over
+  the child's stdio.
+
+Both `cmd_run` (CLI) and `run_chat` (REPL) take the sealed path through the shared
+`spine::relay_brain_turn` — the same way they share `run_loop`. The spine is the **sole disk
+reader+writer and capability authority**; the LLM-facing brain holds the fewest capabilities; each
+hand is kernel-sealed (Seatbelt/Landlock) to exactly the scope in its `Impulse`. Full role
+breakdown, threat model, and seals: [`sandbox-security.md`](sandbox-security.md).
+
+> Under the sealed path the **spine** performs the per-turn worktree/checkpoint/commit writes
+> described in "The Three Repos · During a turn" (the brain has `writable: []`); under the
+> in-process path `run_turn` does them itself.
 
 ---
 
@@ -242,8 +299,7 @@ gait_dir/
 │   └── refs/heads/session/<id>            ← session branch
 └── sessions/<id>/
     ├── .git                               ← worktree pointer
-    ├── log.jsonl                          ← the event log (source of truth)
-    ├── session.json                       ← write-once identity metadata
+    ├── log.jsonl                          ← the event log (source of truth; incl. session identity)
     ├── lock                               ← PID file (RAII during a turn)
     ├── codebase.git/                      ← CheckpointRepo bare shadow DB
     │   └── objects/info/alternates        ← → user's .git/objects (dedup)
@@ -288,8 +344,14 @@ knowing its format (diff, file content, command, …).
 ### ✓ `session.json.token_totals` → `total_usage` projection
 **Resolved.** The dead, duplicated
 `token_totals` sidecar is gone; cumulative usage is now `retrace::total_usage(events)` — a
-projection summing every `TurnComplete.usage`. Exposed via `gait cost <session-id>`. `session.json`
-now holds only write-once identity (`id`, `created_at`, `codebase_path`, `assigned_by`, `agent_name`).
+projection summing every `TurnComplete.usage`. Exposed via `gait cost <session-id>`.
+
+### ✓ `session.json` folded into the log
+**Resolved.** The `session.json` sidecar is gone entirely. Session identity (`codebase_path`,
+`assigned_by`) now lives on the `SessionStart` event; readers use `session_meta::read_session_meta`
+(file) / `from_events` (in-memory). The dead `agent_name`/`system_prompt`/`created_at` fields were
+dropped (the live system prompt is already replay-complete on the `Agent` event). This also lets the
+sealed brain derive identity from `BrainInit.events` instead of reading disk.
 
 ### ✓ `compat_rewrite_keys` shim deleted
 **Resolved** in the same cleanup. The silent legacy-key rewriter (`manifest`→`agent`,
@@ -301,21 +363,23 @@ loudly instead of being silently transformed — matching the no-backward-compat
 `cmd_run` moved to `cli/run.rs` and both it and the REPL now drive the unified `embed::run_loop`;
 `bin/gait.rs` is a thin dispatcher. Turn-driving is testable without the binary (`tests/integration_run_loop.rs`, `tests/integration_embed.rs`).
 
+### ✓ `stream.rs` permission-free duplicate loop removed
+**Resolved.** The second 50-step agentic loop that called `tool.execute()` with no permission
+checks is gone; tool-less generation routes through the production path. No `crate::stream` callers remain.
+
+### ✓ `PermissionItem` moved to proto
+**Resolved.** `PermissionItem` is now a `gait.log.v1` proto message (`log.proto:282`), shared cleanly
+by the log and the renderer — the old `ui/permission.rs → session::transcript::PermissionItem` upward
+import is gone (and `ui/permission.rs` no longer exists). The `preview` field lives on it as a proto
+field, now filled **spine-side** under the seal (see `sandbox-security.md`).
+
 ---
 
 ## Known Issues / Boundary Violations
 
-### 1. `turn.rs` is monolithic (~110 KB)
-Mixes prompt construction, the streaming loop, permission gating, signal dispatch, LoadContext
-handling, and a large test module. Should split into `turn/{prompt,gate,signals,loop}.rs`.
-
-### 2. `stream.rs` duplicates the agentic loop without permissions
-A second 50-step loop that calls `tool.execute()` directly with **no permission checks**. Predates
-mature `turn.rs`. Features added to `turn.rs` silently don't apply here. Only `generate.rs` and
-integration tests use it. Either delete it and route callers through `turn.rs`, or rename/document
-it as permission-free generation, not a general agent loop.
-
-### 3. `PermissionItem` lives in the session layer but is UI-facing
-`ui/permission.rs` imports `session::transcript::PermissionItem`. It sits in `transcript.rs`
-because it appears in the log, but its primary consumer is the UI — an upward dependency. Tolerable,
-but watch it: if more UI-only fields (like `preview`) accrete on it, consider a UI-side view type.
+### 1. `turn/mod.rs` is still large (~1.9 K lines)
+The `turn.rs` monolith was split into a module: `prompt.rs`, `gate.rs`, `exec.rs`, and the sealed
+runtimes `brain.rs`/`spine.rs`/`hand.rs`/`nerve.rs`/`synapse.rs` are now separate files (tests live in
+`turn/tests/`). What remains in `mod.rs` is the `run_turn` loop itself plus signal dispatch and the
+scope/unlock helpers (`check_own_tool_scope`, resume handling). No longer the ~110 KB single file, but
+still a candidate for a further `loop`-vs-`signals` split.

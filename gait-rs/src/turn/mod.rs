@@ -396,6 +396,7 @@ pub async fn run_turn(
                 codebase_dirty,
                 assigned_by: None,
                 codebase_path: Some(codebase_path.to_string_lossy().to_string()),
+                notify_done: false,
             })?;
         }
     }

@@ -160,6 +160,7 @@ pub async fn relay_brain_turn(
                 codebase_dirty,
                 assigned_by: None,
                 codebase_path: Some(codebase.to_string_lossy().into_owned()),
+                notify_done: false,
             })?;
         }
     }
@@ -257,25 +258,36 @@ pub async fn relay_brain_turn(
         match signal.body {
             Some(signal::Body::Impulse(impulse)) => {
                 let stdin_writer = Arc::clone(&child_stdin);
-                let cfg = sandbox_cfg.clone();
-                let gd = gait_dir.to_path_buf();
-                let cb = codebase.to_path_buf();
-                let sid = session_id.to_string();
-                let exe_c = exe.to_path_buf();
-                let grp = Arc::clone(&group);
-                tokio::spawn(async move {
-                    let feedback =
-                        run_tool_as_spine(impulse, &cfg, &gd, &cb, &sid, sandbox_on, &exe_c, grp)
-                            .await;
-                    let resp = Signal {
-                        corr_id,
-                        body: Some(signal::Body::Feedback(feedback)),
+                if impulse.tool == "spawn_agent" {
+                    let ctx = SpineToolCtx {
+                        gait_dir: gait_dir.to_path_buf(),
+                        codebase: codebase.to_path_buf(),
+                        session_id: session_id.to_string(),
+                        repos: repos.clone(),
+                        exe: exe.to_path_buf(),
+                        group: Arc::clone(&group),
+                        sandbox_on,
                     };
-                    let mut w = stdin_writer.lock().await;
-                    nerve::write_signal(&mut *w, &resp).await.ok();
-                    use tokio::io::AsyncWriteExt;
-                    w.flush().await.ok();
-                });
+                    tokio::spawn(async move {
+                        let args = parse_spawn_args(&impulse);
+                        let feedback = handle_spawn_agent(args, ctx).await;
+                        reply_feedback(stdin_writer, corr_id, feedback).await;
+                    });
+                } else {
+                    let cfg = sandbox_cfg.clone();
+                    let gd = gait_dir.to_path_buf();
+                    let cb = codebase.to_path_buf();
+                    let sid = session_id.to_string();
+                    let exe_c = exe.to_path_buf();
+                    let grp = Arc::clone(&group);
+                    tokio::spawn(async move {
+                        let feedback = run_tool_as_spine(
+                            impulse, &cfg, &gd, &cb, &sid, sandbox_on, &exe_c, grp,
+                        )
+                        .await;
+                        reply_feedback(stdin_writer, corr_id, feedback).await;
+                    });
+                }
             }
             Some(signal::Body::Append(append)) => {
                 if let Some(mut evt) = append.event {
@@ -837,11 +849,217 @@ fn enrich_permissions_preview(
     }
 }
 
+// ── spawn_agent spine handler ─────────────────────────────────────────────────
+
+/// Arguments for `spawn_agent`, deserialized from the Impulse Struct.
+pub(super) struct SpawnAgentArgs {
+    pub task: String,
+    /// Future: require a typed result from the child (Tasks 2–3).
+    #[allow(dead_code)]
+    pub schema: Option<serde_json::Value>,
+    /// Future: prepend files as context (reserved).
+    #[allow(dead_code)]
+    pub context_files: Option<Vec<String>>,
+    pub detached: bool,
+}
+
+/// Context the spine needs to handle `spawn_agent` (assembled from relay loop locals).
+pub(super) struct SpineToolCtx {
+    pub gait_dir: std::path::PathBuf,
+    pub codebase: std::path::PathBuf,
+    pub session_id: String,
+    pub repos: crate::git::Repos,
+    pub exe: std::path::PathBuf,
+    pub group: std::sync::Arc<dyn crate::process::Containment>,
+    pub sandbox_on: bool,
+}
+
+/// Build a `Feedback` carrying a JSON value result.
+pub(super) fn feedback_result(value: serde_json::Value) -> Feedback {
+    // Convert serde_json::Value → pbjson_types::Value via serde_json round-trip.
+    // This correctly handles objects/arrays as proto Struct/ListValue rather than
+    // stringifying them, so the brain receives a structured proto Value.
+    let proto_value: pbjson_types::Value =
+        serde_json::from_value(value).unwrap_or(pbjson_types::Value {
+            kind: Some(pbjson_types::value::Kind::NullValue(0)),
+        });
+    Feedback {
+        result: Some(proto_value),
+        events: vec![],
+        denied: None,
+        daemon: None,
+    }
+}
+
+/// Parse a proto `Struct` from an Impulse into `SpawnAgentArgs`.
+fn parse_spawn_args(impulse: &Impulse) -> SpawnAgentArgs {
+    let s = impulse.args.as_ref();
+    let get_str = |key: &str| -> Option<String> {
+        s.and_then(|st| st.fields.get(key))
+            .and_then(|v| match &v.kind {
+                Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.clone()),
+                _ => None,
+            })
+    };
+    let get_bool = |key: &str| -> bool {
+        s.and_then(|st| st.fields.get(key))
+            .and_then(|v| match &v.kind {
+                Some(pbjson_types::value::Kind::BoolValue(b)) => Some(*b),
+                _ => None,
+            })
+            .unwrap_or(false)
+    };
+    SpawnAgentArgs {
+        task: get_str("task").unwrap_or_default(),
+        schema: None, // schema not yet used in spine path
+        context_files: None,
+        detached: get_bool("detached"),
+    }
+}
+
+/// Send a `Feedback` back to the brain over the Nerve.
+async fn reply_feedback(
+    writer: std::sync::Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>,
+    corr_id: u64,
+    feedback: Feedback,
+) {
+    let resp = Signal {
+        corr_id,
+        body: Some(signal::Body::Feedback(feedback)),
+    };
+    let mut w = writer.lock().await;
+    nerve::write_signal(&mut *w, &resp).await.ok();
+    use tokio::io::AsyncWriteExt;
+    w.flush().await.ok();
+}
+
+/// Launch a child `gait run` process from the spine.
+fn launch_child(
+    ctx: &SpineToolCtx,
+    session_id: &str,
+    detached: bool,
+    cascade_handle: Option<String>,
+) {
+    let mut argv = vec![
+        "run".to_string(),
+        "--session".to_string(),
+        session_id.to_string(),
+        "--gait-dir".to_string(),
+        ctx.gait_dir.to_str().unwrap_or(".").to_string(),
+        "--auto".to_string(),
+    ];
+    if ctx.sandbox_on {
+        argv.push("--sandbox-locked".to_string());
+    }
+    if detached {
+        let mut cmd = std::process::Command::new(&ctx.exe);
+        cmd.args(&argv)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let _ = ctx.group.spawn_detached(cmd);
+    } else {
+        // Subagent: enroll in cascade group.
+        let handle = cascade_handle.or_else(|| ctx.group.handle());
+        if let Some(h) = handle {
+            argv.extend(["--cascade-group".to_string(), h]);
+        } else {
+            eprintln!("[spine] warning: spawn_agent cascade-group handle unavailable; subagent will not be enrolled in cascade group");
+        }
+        let mut cmd = std::process::Command::new(&ctx.exe);
+        cmd.args(&argv)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let _ = ctx.group.spawn_enrolled(cmd);
+    }
+}
+
+/// Spine-side handler for `spawn_agent`: creates the child session (disk writes)
+/// and launches the child process. Returns a `Feedback` with `{session_id}`.
+pub(super) async fn handle_spawn_agent(args: SpawnAgentArgs, ctx: SpineToolCtx) -> Feedback {
+    use crate::tools::spawn_agent::{write_child_session, WriteChildSessionOpts};
+
+    let new_id = crate::session::new_session_id();
+
+    if write_child_session(WriteChildSessionOpts {
+        gait_dir: &ctx.gait_dir,
+        codebase: &ctx.codebase,
+        new_id: &new_id,
+        parent_session_id: &ctx.session_id,
+        task: args.task,
+        notify_done: args.detached,
+        repos: &ctx.repos,
+    })
+    .is_err()
+    {
+        return error_feedback("spawn_agent: failed to create child session");
+    }
+
+    launch_child(&ctx, &new_id, args.detached, None);
+
+    feedback_result(serde_json::json!({ "session_id": new_id }))
+}
+
+#[cfg(test)]
+pub(super) fn test_ctx(ws: &std::path::Path, session_id: &str) -> SpineToolCtx {
+    SpineToolCtx {
+        gait_dir: ws.to_path_buf(),
+        codebase: ws.to_path_buf(),
+        session_id: session_id.to_string(),
+        repos: crate::git::Repos::production(),
+        exe: std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("gait")),
+        group: crate::process::establish(None),
+        sandbox_on: false,
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
-    use super::{build_turn_profile, enrich_permissions_preview, error_feedback, ProfileInputs};
+    use super::{
+        build_turn_profile, enrich_permissions_preview, error_feedback, handle_spawn_agent,
+        test_ctx, ProfileInputs, SpawnAgentArgs,
+    };
+
+    #[tokio::test]
+    async fn handle_spawn_agent_creates_session_and_returns_id() {
+        let ws = tempfile::TempDir::new().unwrap();
+        crate::test_utils::init_git_repo(ws.path());
+        std::fs::write(
+            ws.path().join("gait.jsonc"),
+            r#"{"model":"minimax/MiniMax-M3","allow":[],"tools":[]}"#,
+        )
+        .unwrap();
+        let fb = handle_spawn_agent(
+            SpawnAgentArgs {
+                task: "do X".into(),
+                schema: None,
+                context_files: None,
+                detached: true,
+            },
+            test_ctx(ws.path(), "parent01"),
+        )
+        .await;
+        // result is a proto Struct; extract session_id directly as a StringValue field.
+        let id = fb
+            .result
+            .as_ref()
+            .and_then(|v| match &v.kind {
+                Some(pbjson_types::value::Kind::StructValue(s)) => s.fields.get("session_id"),
+                _ => None,
+            })
+            .and_then(|v| match &v.kind {
+                Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.as_str()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            ws.path().join(format!("sessions/{id}/log.jsonl")).exists(),
+            "child session log must exist at sessions/{id}/log.jsonl"
+        );
+    }
 
     #[test]
     fn hand_response_error_arm_becomes_error_feedback() {

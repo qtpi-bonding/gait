@@ -8,11 +8,71 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
 
+/// Options for the shared child-session disk-write step.
+pub struct WriteChildSessionOpts<'a> {
+    pub gait_dir: &'a std::path::Path,
+    pub codebase: &'a std::path::Path,
+    pub new_id: &'a str,
+    pub parent_session_id: &'a str,
+    pub task: String,
+    pub notify_done: bool,
+    pub repos: &'a crate::git::Repos,
+}
+
+/// Shared logic: create session worktree, init session, seed task message, commit.
+/// Used by both `SpawnAgentTool::execute` (in-process / test path) and
+/// `handle_spawn_agent` (spine relay path) to avoid duplicating disk-write logic.
+pub fn write_child_session(opts: WriteChildSessionOpts<'_>) -> anyhow::Result<()> {
+    opts.repos
+        .traces
+        .create_session_worktree(opts.gait_dir, opts.new_id)?;
+
+    let config = load_config(opts.gait_dir);
+    let codebase_hash = opts
+        .repos
+        .codebase
+        .head_hash(opts.codebase)
+        .unwrap_or_default();
+    let tx_path = opts
+        .gait_dir
+        .join("sessions")
+        .join(opts.new_id)
+        .join("log.jsonl");
+
+    init_session(InitSessionOpts {
+        log_path: tx_path.clone(),
+        id: opts.new_id.to_string(),
+        model: config.model,
+        codebase_hash,
+        codebase_dirty: false,
+        assigned_by: Some(opts.parent_session_id.to_string()),
+        codebase_path: Some(opts.codebase.to_string_lossy().into_owned()),
+        notify_done: opts.notify_done,
+    })?;
+
+    let from = format!("agent:{}", opts.parent_session_id);
+    wire::append(&tx_path, events::user_text(opts.task, Some(from)))?;
+
+    opts.repos.traces.commit_session(
+        opts.gait_dir,
+        opts.new_id,
+        &format!(
+            "session({}): spawn from {}",
+            opts.new_id, opts.parent_session_id
+        ),
+    )?;
+
+    Ok(())
+}
+
 #[allow(dead_code)]
 #[derive(Deserialize, JsonSchema)]
 struct SpawnAgentArgs {
     /// Task description — injected as the first user_turn in the new session
     task: String,
+    /// Optional JSON schema the child's structured_done result must conform to.
+    /// Only meaningful when detached=false (blocking subagent).
+    schema: Option<serde_json::Value>,
     /// Optional files to prepend as context (reserved for future use)
     context_files: Option<Vec<String>>,
     /// When true, spawn an independent peer agent that outlives this one.
@@ -54,7 +114,7 @@ impl Tool for SpawnAgentTool {
         "spawn_agent"
     }
     fn description(&self) -> &str {
-        "Delegate a subtask to a new agent session. Returns {session_id} immediately. detached: spawn an independent peer agent that outlives this one (default false = subagent that ends with this agent). The child runs on the same codebase using the gait.jsonc model and allow/deny, starts a fresh log, and runs --auto. Use list_agents to check status."
+        "Delegate a subtask to a subagent. By default (detached:false) this blocks until the child finishes and returns its structured_done result; pass a schema to require a typed result. detached:true returns {session_id} immediately (peer agent)."
     }
     fn parameters(&self) -> &Value {
         &self.parameters
@@ -73,51 +133,18 @@ impl Tool for SpawnAgentTool {
             .to_string();
 
         let new_id = crate::session::new_session_id();
-
-        self.repos
-            .traces
-            .create_session_worktree(&self.ctx.gait_dir, &new_id)
-            .map_err(crate::tools::ToolError::Internal)?;
-
-        let config = load_config(&self.ctx.gait_dir);
-        let codebase_hash = self
-            .repos
-            .codebase
-            .head_hash(&self.ctx.codebase_path)
-            .unwrap_or_default();
-        let tx_path = self
-            .ctx
-            .gait_dir
-            .join("sessions")
-            .join(&new_id)
-            .join("log.jsonl");
-
-        init_session(InitSessionOpts {
-            log_path: tx_path.clone(),
-            id: new_id.clone(),
-            model: config.model,
-            codebase_hash,
-            codebase_dirty: false,
-            assigned_by: Some(self.ctx.session_id.clone()),
-            codebase_path: Some(self.ctx.codebase_path.to_string_lossy().to_string()),
-        })
-        .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
-
-        // Append the initial user message (task) so the child session has input to fold.
-        let from = format!("agent:{}", self.ctx.session_id);
-        wire::append(&tx_path, events::user_text(task, Some(from)))
-            .map_err(crate::tools::ToolError::Internal)?;
-
-        self.repos
-            .traces
-            .commit_session(
-                &self.ctx.gait_dir,
-                &new_id,
-                &format!("session({}): spawn from {}", new_id, self.ctx.session_id),
-            )
-            .map_err(crate::tools::ToolError::Internal)?;
-
         let is_detached = args["detached"].as_bool().unwrap_or(false);
+
+        write_child_session(WriteChildSessionOpts {
+            gait_dir: &self.ctx.gait_dir,
+            codebase: &self.ctx.codebase_path,
+            new_id: &new_id,
+            parent_session_id: &self.ctx.session_id,
+            task,
+            notify_done: is_detached,
+            repos: &self.repos,
+        })
+        .map_err(crate::tools::ToolError::Internal)?;
 
         // Schedule child for execution — via Spawn signal if in brain (sealed) mode,
         // or direct Command::spawn otherwise. Spine appends --sandbox-locked when
