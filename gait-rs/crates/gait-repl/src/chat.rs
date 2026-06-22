@@ -240,6 +240,12 @@ pub async fn run_chat(
                 };
             }
 
+            let profile_inputs = gait_core::turn::spine::ProfileInputs {
+                agent_name: agent_name.clone(),
+                model_override: None,
+                allow: vec![],
+                deny: vec![],
+            };
             let _failed = gait_core::turn::spine::relay_brain_turn(
                 &turn_args,
                 &gait_dir,
@@ -249,6 +255,7 @@ pub async fn run_chat(
                 &gait_bin,
                 &config.sandbox,
                 sandbox_on,
+                &profile_inputs,
                 &mut sink,
             )
             .await

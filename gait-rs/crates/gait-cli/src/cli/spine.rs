@@ -151,6 +151,13 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
     let sandbox_cfg = config.sandbox.clone();
     let sandbox_on = config.sandbox.on;
 
+    let profile_inputs = gait_core::turn::spine::ProfileInputs {
+        agent_name: args.agent_name.clone(),
+        model_override: args.model_override.clone(),
+        allow: args.allow.clone(),
+        deny: args.deny.clone(),
+    };
+
     let brain_failed = gait_core::turn::spine::relay_brain_turn(
         &brain_args,
         &gait_dir,
@@ -160,6 +167,7 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
         &exe,
         &sandbox_cfg,
         sandbox_on,
+        &profile_inputs,
         &mut sink,
     )
     .await

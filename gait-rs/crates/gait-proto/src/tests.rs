@@ -309,6 +309,7 @@ fn brain_init_signal_round_trips() {
                 head_hash: "abc123".to_string(),
                 dirty_files: vec!["src/main.rs".to_string()],
             }),
+            profile_json: String::new(),
         })),
     };
     let bytes = sig.encode_to_vec();

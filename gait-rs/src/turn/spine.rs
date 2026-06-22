@@ -17,6 +17,61 @@ use crate::proto::wire;
 use crate::sandbox::{NetworkPolicy, SandboxScope};
 use crate::turn::nerve;
 
+// ── ProfileInputs + build_turn_profile ───────────────────────────────────────
+
+/// Inputs the spine needs to build the turn's `Profile` (parsed by the CLI/REPL
+/// caller, since gait-core cannot parse clap args). Mirrors the brain's old
+/// agent/model/allow/deny handling.
+pub struct ProfileInputs {
+    pub agent_name: Option<String>,
+    pub model_override: Option<String>,
+    pub allow: Vec<String>,
+    pub deny: Vec<String>,
+}
+
+/// Build the turn's `Profile` on the spine (disk scan: agent file, system-prompt
+/// layers, skills/mcp/plugins). Folds CLI allow/deny into config first, mirroring
+/// the brain's previous in-process logic.
+pub fn build_turn_profile(
+    gait_dir: &std::path::Path,
+    codebase: &std::path::Path,
+    inputs: &ProfileInputs,
+) -> crate::profile::Profile {
+    let mut cfg = crate::config::load_config(gait_dir);
+    for p in &inputs.allow {
+        if !cfg.allow.contains(p) {
+            cfg.allow.push(p.clone());
+        }
+    }
+    for p in &inputs.deny {
+        if !cfg.deny.contains(p) {
+            cfg.deny.push(p.clone());
+        }
+    }
+    let agent_path: Option<std::path::PathBuf> = match &inputs.agent_name {
+        Some(name) => Some(crate::agent_frontmatter::resolve_markdown_context_path(
+            gait_dir,
+            crate::agent_frontmatter::MarkdownKind::Agent,
+            name,
+        )),
+        None => {
+            let default = crate::agent_frontmatter::resolve_markdown_context_path(
+                gait_dir,
+                crate::agent_frontmatter::MarkdownKind::Agent,
+                "default",
+            );
+            default.exists().then_some(default)
+        }
+    };
+    crate::profile::Profile::from_config_and_agent(
+        &cfg,
+        gait_dir,
+        Some(codebase),
+        agent_path.as_deref(),
+        inputs.model_override.clone(),
+    )
+}
+
 // ── relay_brain_turn ─────────────────────────────────────────────────────────
 
 /// Spawn `gait __brain` for one turn and relay its Nerve signals.
@@ -42,6 +97,7 @@ pub async fn relay_brain_turn(
     exe: &Path,
     sandbox_cfg: &SandboxConfig,
     sandbox_on: bool,
+    profile_inputs: &ProfileInputs,
     sink: &mut dyn TurnSink,
 ) -> anyhow::Result<bool> {
     use tokio::process::Command;
@@ -118,6 +174,8 @@ pub async fn relay_brain_turn(
         let events = crate::session::log::read_events(&log_path).unwrap_or_default();
         let head_hash = repos.codebase.head_hash(codebase).unwrap_or_default();
         let dirty_files = repos.codebase.dirty_files(codebase);
+        let profile = build_turn_profile(gait_dir, codebase, profile_inputs);
+        let profile_json = serde_json::to_string(&profile).unwrap_or_else(|_| "null".to_string());
         let init = BrainInit {
             config_json,
             events,
@@ -125,6 +183,7 @@ pub async fn relay_brain_turn(
                 head_hash,
                 dirty_files,
             }),
+            profile_json,
         };
         let sig = Signal {
             corr_id: 0,
@@ -504,5 +563,42 @@ fn turn_result_from_json(json: &str) -> crate::turn::TurnResult {
             result: None,
             changes: None,
         },
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::{build_turn_profile, ProfileInputs};
+
+    #[test]
+    fn build_turn_profile_folds_cli_allow() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Write a minimal gait.jsonc so load_config picks up a known model.
+        std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"anthropic/x"}"#).unwrap();
+        let inputs = ProfileInputs {
+            agent_name: None,
+            model_override: None,
+            allow: vec!["read".into()],
+            deny: vec![],
+        };
+        let p = build_turn_profile(dir.path(), dir.path(), &inputs);
+        assert_eq!(p.model, "anthropic/x");
+        assert!(p.allow.iter().any(|a| a == "read"));
+    }
+
+    #[test]
+    fn build_turn_profile_uses_default_model_without_config() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // No gait.jsonc — load_config falls back to GaitConfig::default().
+        let inputs = ProfileInputs {
+            agent_name: None,
+            model_override: None,
+            allow: vec![],
+            deny: vec![],
+        };
+        let p = build_turn_profile(dir.path(), dir.path(), &inputs);
+        assert_eq!(p.model, crate::config::DEFAULT_MODEL);
     }
 }

@@ -98,6 +98,7 @@ message BrainInit {
   string config_json = 1;                  // serialized gait_core::config::Config (JSON)
   repeated gait.log.v1.Event events = 2;   // full session log (includes this turn's user input + SessionStart)
   GitStatus git = 3;                       // turn-start codebase git snapshot
+  string profile_json = 4;                 // serialized gait_core::profile::Profile (JSON)
 }
 
 message GitStatus {
