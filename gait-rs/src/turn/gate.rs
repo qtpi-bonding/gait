@@ -107,9 +107,72 @@ pub(super) fn classify(
                 patterns: req.patterns.clone(),
                 tool_name: tc.tool_name.clone(),
                 tool_args: crate::proto::events::to_struct(&tc.args),
-                preview: tool.and_then(|t| t.preview(&tc.args)),
+                preview: None, // spine fills this from the codebase (sealed brain reads nothing)
             });
         }
     }
     GateDecision::Gate { items }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{PermissionRequest, ToolPermission};
+
+    /// A minimal Tool stub whose `preview()` always returns a non-None value.
+    /// Used to prove that `classify` does NOT call `preview()` — gate-layer
+    /// items must always carry `preview: None` (the spine fills it).
+    struct PreviewTool;
+
+    #[async_trait::async_trait]
+    impl crate::types::Tool for PreviewTool {
+        fn name(&self) -> &str {
+            "edit"
+        }
+        fn description(&self) -> &str {
+            "test edit tool"
+        }
+        fn parameters(&self) -> &serde_json::Value {
+            &serde_json::Value::Null
+        }
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _rec: &crate::Recorder,
+        ) -> Result<serde_json::Value, crate::tools::ToolError> {
+            Ok(serde_json::Value::Null)
+        }
+        fn permission(&self, _args: &serde_json::Value) -> ToolPermission {
+            ToolPermission::RequiresApproval(vec![PermissionRequest {
+                display: "edit /foo".into(),
+                patterns: vec!["edit:*".into()],
+            }])
+        }
+        fn preview(&self, _args: &serde_json::Value) -> Option<String> {
+            Some("--- a/foo\n+++ b/foo\n@@ -1 +1 @@\n-old\n+new".into())
+        }
+    }
+
+    #[test]
+    fn classify_gate_item_preview_is_none() {
+        // Brain must never compute previews; the spine fills them after relay.
+        let tc = crate::types::ToolCall {
+            tool_call_id: "tc1".into(),
+            tool_name: "edit".into(),
+            args: serde_json::json!({"path": "/foo", "content": "new"}),
+        };
+        let tool: &dyn crate::types::Tool = &PreviewTool;
+        let result = classify(&tc, Some(tool), &[], &[], false);
+        match result {
+            GateDecision::Gate { items } => {
+                assert_eq!(items.len(), 1);
+                assert!(
+                    items[0].preview.is_none(),
+                    "gate must emit preview: None — spine fills it; got {:?}",
+                    items[0].preview
+                );
+            }
+            _other => panic!("expected GateDecision::Gate, got something else"),
+        }
+    }
 }
