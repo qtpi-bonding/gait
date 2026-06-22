@@ -1113,6 +1113,7 @@ pub async fn run_turn(
                     denied_ids.insert(tc.tool_call_id.clone());
                 }
                 GateDecision::Allow { approval_prefix } => {
+                    // Under relay the spine fills the diff from the executed result; skip the brain-side pre-stream.
                     if relay.is_none() {
                         stream_preview_if_always(preview_policy, tool, &tc.args, emitter);
                     }

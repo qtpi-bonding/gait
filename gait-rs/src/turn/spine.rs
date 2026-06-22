@@ -647,15 +647,15 @@ fn enrich_permissions_preview(
         let ceiling =
             crate::sandbox::ceiling::compute_scope(tool.access(), sandbox_cfg, codebase, &jail);
         let targets = tool.scope_targets(&args);
-        // Iterator::all returns true on an empty iterator, so no need to
-        // short-circuit on targets.is_empty() first.
-        let in_scope = targets.iter().all(|(path, _dim)| {
-            // Canonicalize the target path so /var/... and /private/var/... compare equal.
-            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
-            ceiling.read_all
-                || ceiling.readable.iter().any(|r| canonical.starts_with(r))
-                || ceiling.writable.iter().any(|w| canonical.starts_with(w))
-        });
+        // Empty targets → no declared scope; treat as out-of-scope (skip preview).
+        let in_scope = !targets.is_empty()
+            && targets.iter().all(|(path, _dim)| {
+                // Canonicalize the target path so /var/... and /private/var/... compare equal.
+                let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+                ceiling.read_all
+                    || ceiling.readable.iter().any(|r| canonical.starts_with(r))
+                    || ceiling.writable.iter().any(|w| canonical.starts_with(w))
+            });
         if !in_scope {
             continue;
         }
@@ -817,6 +817,44 @@ mod tests {
         assert!(
             perm.items[0].preview.is_none(),
             "expected preview to be None for out-of-scope target"
+        );
+    }
+
+    /// A tool name that doesn't exist in builtin_tools → find returns None → continue →
+    /// preview stays None. Exercises the empty-targets short-circuit guard.
+    #[test]
+    fn enrich_skips_preview_when_no_targets() {
+        use crate::config::SandboxConfig;
+        use crate::proto::gait::log::v1::{event, payload, PermissionItem};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let codebase = dir.path();
+
+        // Use a tool name that doesn't exist in builtin_tools so the find() returns None
+        // and the loop continues without touching preview.
+        let item = PermissionItem {
+            id: "req-no-targets".into(),
+            cmd: "nonexistent_tool".into(),
+            reason: "some reason".into(),
+            patterns: vec![],
+            tool_name: "nonexistent_tool_xyz".into(),
+            tool_args: None,
+            preview: None,
+        };
+
+        let mut evt = make_permissions_event(vec![item]);
+        let sandbox_cfg = SandboxConfig::default();
+        enrich_permissions_preview(&mut evt, codebase, codebase, "s1", &sandbox_cfg);
+
+        let Some(event::Body::Payload(p)) = evt.body.as_ref() else {
+            panic!("expected payload body");
+        };
+        let Some(payload::Kind::Permissions(perm)) = p.kind.as_ref() else {
+            panic!("expected permissions kind");
+        };
+        assert!(
+            perm.items[0].preview.is_none(),
+            "expected preview to remain None when tool has no targets"
         );
     }
 
