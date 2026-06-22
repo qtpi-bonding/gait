@@ -187,7 +187,11 @@ impl Profile {
         let model = model_override
             .or_else(|| agent_path.and_then(crate::agent_frontmatter::read_agent_model))
             .or_else(|| config.model.clone())
-            .unwrap_or_default();
+            .unwrap_or_else(|| {
+                panic!(
+                    "model must be set before building Profile — use resolve_checked() or supply a model override"
+                )
+            });
 
         let mut instructions = crate::prompt::compose_system_prompt(
             gait_dir,
@@ -575,7 +579,10 @@ mod tests {
             "---\nname: tdd\ndescription: TDD workflow\n---\n# TDD\nbody\n",
         )
         .unwrap();
-        let config = GaitConfig::default();
+        let config = GaitConfig {
+            model: Some("test/model".into()),
+            ..GaitConfig::default()
+        };
         let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
         assert_eq!(profile.skills.len(), 1);
         assert_eq!(profile.skills[0].name, "tdd");
@@ -587,6 +594,7 @@ mod tests {
         use tempfile::TempDir;
         let dir = TempDir::new().unwrap();
         let config = GaitConfig {
+            model: Some("test/model".into()),
             skills: vec![crate::config::SkillDef {
                 name: "inline".into(),
                 description: "inline desc".into(),
@@ -612,6 +620,7 @@ mod tests {
         )
         .unwrap();
         let config = GaitConfig {
+            model: Some("test/model".into()),
             skills: vec![crate::config::SkillDef {
                 name: "tdd".into(),
                 description: "Config version".into(),
@@ -640,7 +649,10 @@ mod tests {
             r#"{"command":"npx","args":["-y","@pkg/slack"],"enabled":true}"#,
         )
         .unwrap();
-        let config = GaitConfig::default();
+        let config = GaitConfig {
+            model: Some("test/model".into()),
+            ..GaitConfig::default()
+        };
         let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
         assert_eq!(profile.mcp_servers.len(), 1);
         assert_eq!(profile.mcp_servers[0].name, "slack");
@@ -659,6 +671,7 @@ mod tests {
         )
         .unwrap();
         let config = GaitConfig {
+            model: Some("test/model".into()),
             mcp_servers: vec![crate::config::McpServerDef {
                 name: "slack".into(),
                 command: None,
@@ -686,6 +699,7 @@ mod tests {
         use tempfile::TempDir;
         let dir = TempDir::new().unwrap();
         let config = GaitConfig {
+            model: Some("test/model".into()),
             mcp_servers: vec![crate::config::McpServerDef {
                 name: "remote".into(),
                 command: None,
@@ -716,7 +730,10 @@ mod tests {
             "---\nname: formatter\nwasm: formatter.wasm\nenabled: true\n---\n# Formatter\n",
         )
         .unwrap();
-        let config = GaitConfig::default();
+        let config = GaitConfig {
+            model: Some("test/model".into()),
+            ..GaitConfig::default()
+        };
         let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
         assert_eq!(profile.wasm_plugins.len(), 1);
         assert_eq!(profile.wasm_plugins[0].name, "formatter");

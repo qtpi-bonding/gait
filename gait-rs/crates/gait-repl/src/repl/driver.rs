@@ -138,7 +138,11 @@ impl TurnDriver for ReplDriver {
             self.gait_dir.clone(),
             self.codebase.clone(),
         ));
-        let model_str = self.config.model.clone().unwrap_or_default();
+        let model_str = self.config.model.clone().ok_or_else(|| {
+            anyhow::anyhow!(
+                "no model: set \"model\" in gait.jsonc or pass --model <id> (see `gait models`)"
+            )
+        })?;
         let provider_name = model_str
             .split_once('/')
             .map(|(p, _)| p.to_string())

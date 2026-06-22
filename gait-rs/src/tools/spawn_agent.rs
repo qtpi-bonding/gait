@@ -39,10 +39,15 @@ pub fn write_child_session(opts: WriteChildSessionOpts<'_>) -> anyhow::Result<()
         .join(opts.new_id)
         .join("log.jsonl");
 
+    let session_model = config.model.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "no model: set \"model\" in gait.jsonc or pass --model <id> (see `gait models`)"
+        )
+    })?;
     init_session(InitSessionOpts {
         log_path: tx_path.clone(),
         id: opts.new_id.to_string(),
-        model: config.model.clone().unwrap_or_default(),
+        model: session_model,
         codebase_hash,
         codebase_dirty: false,
         assigned_by: Some(opts.parent_session_id.to_string()),

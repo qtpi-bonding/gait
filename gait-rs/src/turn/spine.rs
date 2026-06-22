@@ -1386,7 +1386,8 @@ mod tests {
     }
 
     #[test]
-    fn build_turn_profile_model_is_empty_without_config_or_override() {
+    #[should_panic(expected = "model must be set before building Profile")]
+    fn build_turn_profile_panics_without_config_or_override() {
         let dir = tempfile::TempDir::new().unwrap();
         // No gait.jsonc — load_config falls back to GaitConfig::default() which has model: None.
         let inputs = ProfileInputs {
@@ -1396,9 +1397,8 @@ mod tests {
             deny: vec![],
             result_schema: None,
         };
-        let p = build_turn_profile(dir.path(), dir.path(), &inputs);
-        // model defaults to None; Profile falls through to unwrap_or_default() → ""
-        assert_eq!(p.model, "");
+        // Should panic: no model in config and no model_override supplied.
+        let _ = build_turn_profile(dir.path(), dir.path(), &inputs);
     }
 
     fn make_permissions_event(
