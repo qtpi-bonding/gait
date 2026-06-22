@@ -91,8 +91,26 @@ pub async fn run_brain(
         crate::sandbox::SandboxStatus::Unavailable { .. } => "unavailable",
     };
 
+    // Read BrainInit as the first frame. MUST happen before start_nerve takes
+    // ownership of stdin (start_nerve's demux reader would otherwise consume and
+    // silently drop this unsolicited corr_id:0 frame).
+    let mut stdin = tokio::io::stdin();
+    let init = match nerve::read_signal(&mut stdin).await {
+        Ok(sig) => match sig.body {
+            Some(gait_proto::gait::sandbox::v1::signal::Body::BrainInit(b)) => b,
+            other => {
+                eprintln!("[brain] error: expected BrainInit as first frame, got {other:?}");
+                std::process::exit(1);
+            }
+        },
+        Err(e) => {
+            eprintln!("[brain] error: failed to read BrainInit frame: {e}");
+            std::process::exit(1);
+        }
+    };
+
     // Brain reads Feedback from stdin (spine→brain), writes Signals to stdout (brain→spine).
-    let (nerve_writer, _nerve_handle) = nerve::start_nerve(tokio::io::stdin(), tokio::io::stdout());
+    let (nerve_writer, _nerve_handle) = nerve::start_nerve(stdin, tokio::io::stdout());
 
     // Channel for AppendRelay: Recorder sends Events here; relay task forwards as Append signals.
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
@@ -180,7 +198,11 @@ pub async fn run_brain(
         }
     };
 
-    let mut cfg = crate::config::load_config(&gait_dir);
+    let mut cfg: crate::config::GaitConfig = serde_json::from_str(&init.config_json)
+        .unwrap_or_else(|e| {
+            eprintln!("[brain] warning: bad config_json in BrainInit ({e}); using defaults");
+            crate::config::GaitConfig::default()
+        });
     for p in &config.allow {
         if !cfg.allow.contains(p) {
             cfg.allow.push(p.clone());
@@ -232,18 +254,32 @@ pub async fn run_brain(
 
     let source = crate::port::input::ArgSource::new(None);
 
-    let session = std::sync::Arc::new(
-        crate::session::Session::load(
-            gait_dir.clone(),
-            session_id.clone(),
-            codebase_path.clone(),
-            repos.clone(),
-        )
-        .unwrap_or_else(|e| {
-            eprintln!("[brain] error: failed to load session.json: {e}");
-            std::process::exit(1);
-        }),
-    );
+    // Seed the log mirror from BrainInit.events and derive session identity in-memory.
+    let log_mirror = std::sync::Arc::new(std::sync::Mutex::new(init.events.clone()));
+    let meta = crate::session::session_meta_from_events(&init.events, &session_id);
+    let initial_git = crate::turn::GitSnapshot {
+        head_hash: init
+            .git
+            .as_ref()
+            .map(|g| g.head_hash.clone())
+            .unwrap_or_default(),
+        dirty_files: init
+            .git
+            .as_ref()
+            .map(|g| g.dirty_files.clone())
+            .unwrap_or_default(),
+    };
+
+    let session = std::sync::Arc::new(crate::session::Session {
+        id: session_id.clone(),
+        gait_dir: gait_dir.clone(),
+        codebase_path: meta
+            .codebase_path
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| codebase_path.clone()),
+        assigned_by: meta.assigned_by,
+        repos: repos.clone(),
+    });
 
     let mut driver = BrainDriver {
         profile: Some(profile),
@@ -263,6 +299,8 @@ pub async fn run_brain(
         spawn_tx,
         notify_tx,
         workflow_runner,
+        log_mirror,
+        initial_git,
     };
 
     let mut sink = BrainSink {
@@ -306,6 +344,28 @@ pub async fn run_brain(
     drop(nerve_writer);
     let _ = tokio::io::stdout().flush().await;
 }
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn brain_init_seeds_identity_and_config() {
+        let cfg = crate::config::GaitConfig::default();
+        let cfg_json = serde_json::to_string(&cfg).unwrap();
+        let parsed: crate::config::GaitConfig = serde_json::from_str(&cfg_json).unwrap();
+        assert_eq!(parsed.max_iter, cfg.max_iter);
+
+        let ev = gait_proto::envelope::mint(
+            crate::proto::events::session_start("s1234567".into(), None, Some("/code".into())),
+            None,
+            0,
+            0,
+        );
+        let meta = crate::session::session_meta_from_events(&[ev], "s1234567");
+        assert_eq!(meta.codebase_path.as_deref(), Some("/code"));
+    }
+}
+
 // ── BrainSink ─────────────────────────────────────────────────────────────────
 
 /// A TurnSink that routes output to stderr (brain's stdout is the Nerve pipe)
@@ -358,6 +418,8 @@ struct BrainDriver {
     spawn_tx: mpsc::UnboundedSender<Vec<String>>,
     notify_tx: mpsc::UnboundedSender<crate::harness::NotifyPayload>,
     workflow_runner: Option<Arc<dyn WorkflowRunner>>,
+    log_mirror: std::sync::Arc<std::sync::Mutex<Vec<crate::proto::gait::log::v1::Event>>>,
+    initial_git: crate::turn::GitSnapshot,
 }
 
 #[async_trait::async_trait(?Send)]
@@ -387,7 +449,7 @@ impl TurnDriver for BrainDriver {
             sandbox_on: self.sandbox_on,
             sandbox_cfg: self.sandbox_cfg.clone(),
             relay: Some(self.nerve_writer.clone()),
-            initial_git: None,
+            initial_git: Some(self.initial_git.clone()),
         }
     }
 
@@ -399,6 +461,7 @@ impl TurnDriver for BrainDriver {
     ) -> Recorder {
         Recorder::remote_sink(self.stream_fwd_tx.clone(), self.event_tx.clone())
             .with_spawn_tx(self.spawn_tx.clone())
+            .with_log_mirror(self.log_mirror.clone())
     }
 
     async fn after_turn(
@@ -407,14 +470,10 @@ impl TurnDriver for BrainDriver {
         result: &crate::turn::TurnResult,
     ) {
         use crate::{HarnessBackend, Scheduler};
-        let meta = crate::session::read_session_meta(&self.gait_dir, &self.session_id)
-            .unwrap_or_else(|e| {
-                eprintln!("[brain] warning: could not read session meta in after_turn: {e}");
-                crate::session::SessionMeta {
-                    id: self.session_id.clone(),
-                    ..Default::default()
-                }
-            });
+        let meta = {
+            let events = self.log_mirror.lock().expect("log mirror poisoned").clone();
+            crate::session::session_meta_from_events(&events, &self.session_id)
+        };
         let scheduler = crate::NativeScheduler;
         let harness = crate::NativeHarnessBackend::new_with_spawn(
             self.gait_dir.clone(),
