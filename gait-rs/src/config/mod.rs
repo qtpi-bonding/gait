@@ -296,7 +296,7 @@ impl LlmParamsConfig {
 /// When to render edit/write previews. `on-ask` (default): only at the permission
 /// prompt. `always`: also stream the diff live (ephemeral) for auto/allow-listed
 /// tools. `off`: never.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum PreviewPolicy {
     #[default]
@@ -305,7 +305,7 @@ pub enum PreviewPolicy {
     Off,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GaitConfig {
     pub model: String,
     #[serde(default)]

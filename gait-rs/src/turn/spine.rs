@@ -113,16 +113,8 @@ pub async fn relay_brain_turn(
     {
         use crate::proto::gait::sandbox::v1::{signal, BrainInit, GitStatus, Signal};
         use tokio::io::AsyncWriteExt;
-        let config_json = {
-            let path = gait_dir.join("gait.jsonc");
-            let raw = std::fs::read_to_string(&path).unwrap_or_default();
-            let stripped = crate::config::strip_jsonc_comments(&raw);
-            if stripped.trim().is_empty() {
-                "{}".to_string()
-            } else {
-                stripped
-            }
-        };
+        let cfg = crate::config::load_config(gait_dir);
+        let config_json = serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string());
         let events = crate::session::log::read_events(&log_path).unwrap_or_default();
         let head_hash = repos.codebase.head_hash(codebase).unwrap_or_default();
         let dirty_files = repos.codebase.dirty_files(codebase);
