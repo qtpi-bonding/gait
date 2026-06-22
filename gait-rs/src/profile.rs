@@ -4,6 +4,7 @@ use std::path::Path;
 
 /// The declarative description of an agent: 9 inputs the runner consumes,
 /// built from gait_dir `GaitConfig` and (optionally) an agent `.md` file.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Profile {
     pub model: String,        // "provider/model-id"
     pub instructions: String, // composed system prompt (preamble + agent body)
@@ -725,5 +726,29 @@ mod tests {
         assert_eq!(p.model, "test/model");
         assert!(p.instructions.contains("do stuff"));
         assert_eq!(p.allow, vec!["read".to_string()]);
+    }
+
+    #[test]
+    fn profile_round_trips_through_json() {
+        let p = Profile {
+            model: "anthropic/claude-x".into(),
+            instructions: "sys".into(),
+            allow: vec!["read".into()],
+            deny: vec![],
+            mcp_servers: vec![],
+            skills: vec![],
+            config_tools: vec![],
+            config_enabled: std::collections::HashSet::new(),
+            output_schema_retries: 0,
+            result_schema: None,
+            hooks: vec![],
+            wasm_plugins: vec![],
+            llm_params: crate::config::LlmParamsConfig::default(),
+        };
+        let json = serde_json::to_string(&p).expect("serialize");
+        let back: Profile = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.model, "anthropic/claude-x");
+        assert_eq!(back.instructions, "sys");
+        assert_eq!(back.allow, vec!["read".to_string()]);
     }
 }
