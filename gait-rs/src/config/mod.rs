@@ -3,6 +3,8 @@ use std::path::Path;
 
 pub const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4-6";
 
+pub mod defaults;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigTool {
     pub name: String,
@@ -359,39 +361,32 @@ pub struct GaitConfig {
 }
 
 fn default_compaction_threshold() -> f64 {
-    0.8
+    defaults::default_compaction_threshold()
 }
 
 fn default_output_schema_retries() -> u8 {
-    3
+    defaults::default_output_schema_retries()
 }
 
 impl Default for GaitConfig {
     fn default() -> Self {
         Self {
             model: DEFAULT_MODEL.into(),
-            allow: vec![
-                "read".into(),
-                "glob".into(),
-                "grep".into(),
-                "ls".into(),
-                "clarify".into(),
-                "inform".into(),
-            ],
-            deny: vec![],
+            allow: defaults::default_allow(),
+            deny: defaults::default_deny(),
             tools: vec![],
-            compaction_threshold: 0.8,
+            compaction_threshold: defaults::default_compaction_threshold(),
             mcp_servers: vec![],
             skills: vec![],
             wasm_plugins: vec![],
             hooks: vec![],
-            output_schema_retries: 3,
-            max_iter: None,
-            preview: PreviewPolicy::OnAsk,
+            output_schema_retries: defaults::default_output_schema_retries(),
+            max_iter: defaults::default_max_iter().map(|x| x as usize),
+            preview: defaults::default_preview(),
             result_schema: None,
             llm_params: LlmParamsConfig::default(),
-            show_thinking: false,
-            sandbox: SandboxConfig::default(),
+            show_thinking: defaults::default_show_thinking(),
+            sandbox: defaults::default_sandbox(),
         }
     }
 }
