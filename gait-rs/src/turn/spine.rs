@@ -27,6 +27,7 @@ pub struct ProfileInputs {
     pub model_override: Option<String>,
     pub allow: Vec<String>,
     pub deny: Vec<String>,
+    pub result_schema: Option<serde_json::Value>,
 }
 
 /// Build the turn's `Profile` on the spine (disk scan: agent file, system-prompt
@@ -38,6 +39,9 @@ pub fn build_turn_profile(
     inputs: &ProfileInputs,
 ) -> crate::profile::Profile {
     let mut cfg = crate::config::load_config(gait_dir);
+    if let Some(s) = &inputs.result_schema {
+        cfg.result_schema = Some(s.clone());
+    }
     for p in &inputs.allow {
         if !cfg.allow.contains(p) {
             cfg.allow.push(p.clone());
@@ -854,8 +858,8 @@ fn enrich_permissions_preview(
 /// Arguments for `spawn_agent`, deserialized from the Impulse Struct.
 pub(super) struct SpawnAgentArgs {
     pub task: String,
-    /// Future: require a typed result from the child (Tasks 2–3).
-    #[allow(dead_code)]
+    /// Per-spawn result schema written to `sessions/<id>/result_schema.json`
+    /// so the child CLI can enforce it via `ProfileInputs.result_schema`.
     pub schema: Option<serde_json::Value>,
     /// Future: prepend files as context (reserved).
     #[allow(dead_code)]
@@ -909,9 +913,13 @@ fn parse_spawn_args(impulse: &Impulse) -> SpawnAgentArgs {
             })
             .unwrap_or(false)
     };
+    let schema: Option<serde_json::Value> = s
+        .and_then(|st| st.fields.get("schema"))
+        .and_then(|v| serde_json::to_value(v).ok())
+        .filter(|v| !v.is_null());
     SpawnAgentArgs {
         task: get_str("task").unwrap_or_default(),
-        schema: None, // schema not yet used in spine path
+        schema,
         context_files: None,
         detached: get_bool("detached"),
     }
@@ -1020,6 +1028,18 @@ pub(super) async fn handle_spawn_agent(args: SpawnAgentArgs, ctx: SpineToolCtx) 
     .is_err()
     {
         return error_feedback("spawn_agent: failed to create child session");
+    }
+
+    // Persist per-spawn schema so the child CLI can read it into ProfileInputs.
+    if let Some(ref schema) = args.schema {
+        let schema_path = ctx
+            .gait_dir
+            .join("sessions")
+            .join(&new_id)
+            .join("result_schema.json");
+        if let Ok(bytes) = serde_json::to_vec_pretty(schema) {
+            let _ = std::fs::write(&schema_path, bytes);
+        }
     }
 
     if args.detached {
@@ -1157,6 +1177,128 @@ mod tests {
         );
     }
 
+    /// When `spawn_agent` is called with a non-null `schema`, the schema must be
+    /// persisted to `sessions/<child_id>/result_schema.json` in the gait-dir so the
+    /// child CLI can load it into `ProfileInputs.result_schema`.
+    ///
+    /// A full end-to-end test (parent spawns child with schema → child calls
+    /// `structured_done` → parent receives result) requires a live LLM API and a real
+    /// `gait` binary in PATH; that is not feasible in unit/integration tests. Instead we
+    /// exercise the two independently-testable halves:
+    ///   1. `handle_spawn_agent` writes `result_schema.json` (this test).
+    ///   2. `build_subagent_feedback` reads a pre-written `TurnComplete` carrying
+    ///      `result:{answer:1}` and returns it in the Feedback (next test).
+    #[tokio::test]
+    async fn handle_spawn_agent_with_schema_writes_result_schema_json() {
+        let ws = tempfile::TempDir::new().unwrap();
+        crate::test_utils::init_git_repo(ws.path());
+        std::fs::write(
+            ws.path().join("gait.jsonc"),
+            r#"{"model":"minimax/MiniMax-M3","allow":[],"tools":[]}"#,
+        )
+        .unwrap();
+        let schema = serde_json::json!({"type": "object", "required": ["answer"]});
+        let fb = handle_spawn_agent(
+            SpawnAgentArgs {
+                task: "answer the question".into(),
+                schema: Some(schema.clone()),
+                context_files: None,
+                detached: true, // fire-and-forget so we don't need a real binary
+            },
+            test_ctx(ws.path(), "parent-schema-01"),
+        )
+        .await;
+        // Extract the child session id from the returned Feedback.
+        let id = fb
+            .result
+            .as_ref()
+            .and_then(|v| match &v.kind {
+                Some(pbjson_types::value::Kind::StructValue(s)) => s.fields.get("session_id"),
+                _ => None,
+            })
+            .and_then(|v| match &v.kind {
+                Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.clone()),
+                _ => None,
+            })
+            .expect("Feedback must carry session_id");
+        let schema_path = ws
+            .path()
+            .join("sessions")
+            .join(&id)
+            .join("result_schema.json");
+        assert!(
+            schema_path.exists(),
+            "result_schema.json must exist at {schema_path:?}"
+        );
+        let on_disk: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&schema_path).unwrap()).unwrap();
+        assert_eq!(
+            on_disk, schema,
+            "result_schema.json content must round-trip the schema"
+        );
+    }
+
+    /// Asserts that `build_subagent_feedback` correctly surfaces `result:{answer:1}`
+    /// from a child log that contains a `TurnComplete` written by `structured_done`.
+    ///
+    /// This covers the Task-4 requirement: "assert the parent's `spawn_agent` result
+    /// carries `{answer:1}`".  The live end-to-end path (real LLM → real child process)
+    /// is not feasible without a live API key and a compiled `gait` binary on PATH.
+    #[test]
+    fn build_subagent_feedback_result_answer_1() {
+        use crate::proto::events::{turn_complete, TurnCompleteParams};
+        use crate::proto::wire;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let log_path = dir.path().join("log.jsonl");
+
+        // Simulate the child calling `structured_done(result:{answer:1})`.
+        wire::append(
+            &log_path,
+            turn_complete(TurnCompleteParams {
+                message: "done".into(),
+                result: Some(serde_json::json!({"answer": 1})),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+        let fb = build_subagent_feedback("child-answer-1", &log_path, 0);
+
+        let fields = match fb.result.as_ref().and_then(|v| v.kind.as_ref()) {
+            Some(pbjson_types::value::Kind::StructValue(s)) => &s.fields,
+            other => panic!("expected StructValue result, got {other:?}"),
+        };
+
+        // status == "done"
+        let status = fields
+            .get("status")
+            .and_then(|v| match &v.kind {
+                Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.as_str()),
+                _ => None,
+            })
+            .expect("status field must be present");
+        assert_eq!(status, "done");
+
+        // result.answer == 1
+        let result_struct = match fields.get("result").and_then(|v| v.kind.as_ref()) {
+            Some(pbjson_types::value::Kind::StructValue(s)) => s,
+            other => panic!("expected result StructValue, got {other:?}"),
+        };
+        let answer = match result_struct
+            .fields
+            .get("answer")
+            .and_then(|v| v.kind.as_ref())
+        {
+            Some(pbjson_types::value::Kind::NumberValue(n)) => *n,
+            other => panic!("expected NumberValue for answer, got {other:?}"),
+        };
+        assert!(
+            (answer - 1.0).abs() < f64::EPSILON,
+            "spawn_agent result must carry answer:1, got {answer}"
+        );
+    }
+
     #[test]
     fn hand_response_error_arm_becomes_error_feedback() {
         use gait_proto::gait::sandbox::v1::{hand_response, HandError, HandResponse};
@@ -1182,6 +1324,22 @@ mod tests {
     }
 
     #[test]
+    fn build_turn_profile_threads_result_schema() {
+        let ws = tempfile::TempDir::new().unwrap();
+        std::fs::write(ws.path().join("gait.jsonc"), r#"{"model":"m"}"#).unwrap();
+        let schema = serde_json::json!({"type":"object","required":["answer"]});
+        let inputs = ProfileInputs {
+            agent_name: None,
+            model_override: None,
+            allow: vec![],
+            deny: vec![],
+            result_schema: Some(schema.clone()),
+        };
+        let p = build_turn_profile(ws.path(), ws.path(), &inputs);
+        assert_eq!(p.result_schema, Some(schema));
+    }
+
+    #[test]
     fn build_turn_profile_folds_cli_allow() {
         let dir = tempfile::TempDir::new().unwrap();
         // Write a minimal gait.jsonc so load_config picks up a known model.
@@ -1191,6 +1349,7 @@ mod tests {
             model_override: None,
             allow: vec!["read".into()],
             deny: vec![],
+            result_schema: None,
         };
         let p = build_turn_profile(dir.path(), dir.path(), &inputs);
         assert_eq!(p.model, "anthropic/x");
@@ -1206,6 +1365,7 @@ mod tests {
             model_override: None,
             allow: vec![],
             deny: vec![],
+            result_schema: None,
         };
         let p = build_turn_profile(dir.path(), dir.path(), &inputs);
         assert_eq!(p.model, crate::config::DEFAULT_MODEL);

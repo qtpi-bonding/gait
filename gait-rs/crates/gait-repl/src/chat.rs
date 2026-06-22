@@ -267,6 +267,7 @@ pub async fn run_chat(
                 model_override: None,
                 allow: vec![],
                 deny: vec![],
+                result_schema: None,
             };
             // Esc watcher: poll for Esc key in raw mode; on press, call
             // kill_all() on the current cascade group (via signal_slot).

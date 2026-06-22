@@ -183,11 +183,23 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
     let sandbox_cfg = config.sandbox.clone();
     let sandbox_on = config.sandbox.on;
 
+    // Read per-spawn result schema if the child session has one written by the parent spine.
+    let result_schema: Option<serde_json::Value> = {
+        let schema_path = gait_dir
+            .join("sessions")
+            .join(&session_id)
+            .join("result_schema.json");
+        std::fs::read(&schema_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    };
+
     let profile_inputs = gait_core::turn::spine::ProfileInputs {
         agent_name: args.agent_name.clone(),
         model_override: args.model_override.clone(),
         allow: args.allow.clone(),
         deny: args.deny.clone(),
+        result_schema,
     };
 
     // Shared slot: holds the current cascade group so the signal task can reap it.
