@@ -1958,3 +1958,175 @@ async fn run_turn_uses_seeded_git_hash_from_initial_git() {
         recorded_hash
     );
 }
+
+// ---------------------------------------------------------------------------
+// Helpers and tests for "must call structured_done" nudge
+// ---------------------------------------------------------------------------
+
+/// Like `run_turn_test_call` but accepts a `result_schema` so we can test the
+/// nudge-on-plain-text path without touching the main helper signature.
+#[allow(clippy::too_many_arguments)]
+async fn run_turn_with_schema(
+    gait_dir: std::path::PathBuf,
+    codebase_path: std::path::PathBuf,
+    session_id: String,
+    provider: std::sync::Arc<dyn Provider>,
+    tools: Vec<Box<dyn Tool>>,
+    result_schema: Option<serde_json::Value>,
+    input: TurnInput,
+    repos: crate::git::Repos,
+) -> anyhow::Result<TurnResult> {
+    let session = crate::session::Session {
+        id: session_id,
+        gait_dir,
+        codebase_path,
+        assigned_by: None,
+        repos,
+    };
+    let caps = crate::profile::ResolvedProfile::for_test_with_schema(
+        provider,
+        tools,
+        vec![],
+        vec![],
+        result_schema,
+    );
+    let (tx, _rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
+    let emitter = Recorder::for_session(&session.gait_dir, &session.id, tx);
+    run_turn(&session, &emitter, caps, input).await
+}
+
+/// Test (a): provider returns plain text once, then calls `structured_done`.
+/// The nudge re-enters generation; the turn ultimately completes with the result.
+#[tokio::test]
+async fn schema_bound_plain_text_then_structured_done_succeeds() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+
+    let provider = Arc::new(MockProvider {
+        responses: Arc::new(vec![
+            // Step 1: plain text (no tool calls) — triggers nudge
+            vec![
+                StreamChunk::Text("I will now call the tool.".into()),
+                StreamChunk::Done,
+            ],
+            // Step 2: properly calls structured_done
+            vec![
+                StreamChunk::ToolCallComplete {
+                    tool_call_id: "tc1".into(),
+                    tool_name: "structured_done".into(),
+                    args: serde_json::json!({
+                        "message": "done",
+                        "result": { "answer": 42 }
+                    }),
+                },
+                StreamChunk::Done,
+            ],
+        ]),
+        call_idx: Arc::new(AtomicUsize::new(0)),
+    });
+
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": { "answer": { "type": "integer" } },
+        "required": ["answer"]
+    });
+    let output_tool = StructuredDoneTool::new();
+
+    let result = run_turn_with_schema(
+        ws.path().to_path_buf(),
+        ws.path().to_path_buf(),
+        "nudge_ok_001".into(),
+        provider,
+        vec![output_tool.boxed()],
+        Some(schema),
+        TurnInput {
+            auto: true,
+            max_iter: None,
+            preview_policy: crate::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: false,
+            sandbox_cfg: crate::config::SandboxConfig::default(),
+            relay: None,
+            initial_git: None,
+            daemons: vec![],
+        },
+        crate::git::Repos::production(),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "expected Ok after nudge + structured_done, got: {:?}",
+        result
+    );
+    match result.unwrap() {
+        TurnResult::Done { result, .. } => {
+            assert!(result.is_some(), "expected structured result in TurnResult");
+        }
+        other => panic!("expected TurnResult::Done, got: {:?}", other),
+    }
+}
+
+/// Test (b): provider always returns plain text, never calls `structured_done`.
+/// After nudges exhausted (output_schema_retries=3) the turn should return an error.
+#[tokio::test]
+async fn schema_bound_plain_text_always_errors_after_nudges() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+
+    // 4 plain-text responses (initial + 3 nudge retries) — all without tool calls
+    let responses: Vec<Vec<StreamChunk>> = (0..4)
+        .map(|_| {
+            vec![
+                StreamChunk::Text("I refuse to call the tool.".into()),
+                StreamChunk::Done,
+            ]
+        })
+        .collect();
+
+    let provider = Arc::new(MockProvider {
+        responses: Arc::new(responses),
+        call_idx: Arc::new(AtomicUsize::new(0)),
+    });
+
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": { "answer": { "type": "integer" } },
+        "required": ["answer"]
+    });
+    let output_tool = StructuredDoneTool::new();
+
+    let result = run_turn_with_schema(
+        ws.path().to_path_buf(),
+        ws.path().to_path_buf(),
+        "nudge_fail_001".into(),
+        provider,
+        vec![output_tool.boxed()],
+        Some(schema),
+        TurnInput {
+            auto: true,
+            max_iter: None,
+            preview_policy: crate::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: false,
+            sandbox_cfg: crate::config::SandboxConfig::default(),
+            relay: None,
+            initial_git: None,
+            daemons: vec![],
+        },
+        crate::git::Repos::production(),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "expected Err after nudges exhausted, got: {:?}",
+        result
+    );
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("structured_done"),
+        "error should mention structured_done; got: {msg}"
+    );
+}

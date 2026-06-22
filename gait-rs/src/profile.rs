@@ -395,6 +395,16 @@ impl ResolvedProfile {
         allow: Vec<String>,
         deny: Vec<String>,
     ) -> Self {
+        Self::for_test_with_schema(provider, tools, allow, deny, None)
+    }
+
+    pub fn for_test_with_schema(
+        provider: std::sync::Arc<dyn crate::provider::Provider>,
+        tools: Vec<Box<dyn crate::types::Tool>>,
+        allow: Vec<String>,
+        deny: Vec<String>,
+        result_schema: Option<serde_json::Value>,
+    ) -> Self {
         let permissioned = crate::tools::RegisteredTools(tools)
             .into_enabled()
             .with_permissions(allow, deny);
@@ -409,7 +419,7 @@ impl ResolvedProfile {
             plugin_registry: vec![],
             config_enabled: std::collections::HashSet::new(),
             output_schema_retries: 3,
-            result_schema: None,
+            result_schema,
             hooks: vec![],
             llm_params: crate::config::LlmParamsConfig::default(),
         }

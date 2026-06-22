@@ -297,6 +297,7 @@ pub async fn run_turn(
     let hooks = caps.hooks;
     let result_schema = caps.result_schema;
     let mut schema_retries_remaining: u8 = caps.output_schema_retries;
+    let mut done_nudges_remaining: u8 = caps.output_schema_retries;
     let llm_params = caps.llm_params.clone();
 
     // Build the agent-dimension seed (M3): config-derived genesis for ActiveAgent.
@@ -986,6 +987,24 @@ pub async fn run_turn(
 
         // No tool calls → auto-wrap the text as an implicit output() call.
         // output() is always the turn-completion path; plain text is just a short-hand.
+        // Exception: when a result_schema is configured the agent MUST call structured_done.
+        // Nudge it back into generation until done_nudges_remaining is exhausted.
+        if step_tool_calls.is_empty() && result_schema.is_some() {
+            if done_nudges_remaining > 0 {
+                done_nudges_remaining -= 1;
+                emitter.record(events::user_text(
+                    "You must finish by calling `structured_done` with a `result` matching \
+                     the declared schema. Plain-text completion is not accepted for this task."
+                        .into(),
+                    Some("harness".into()),
+                ))?;
+                continue;
+            } else {
+                return Err(anyhow::anyhow!(
+                    "subagent ended without calling structured_done after all nudges"
+                ));
+            }
+        }
         if step_tool_calls.is_empty() {
             let message = step_text.clone();
             let events_now = ingestor.events()?;
