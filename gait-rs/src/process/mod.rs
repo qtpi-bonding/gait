@@ -141,6 +141,9 @@ mod macos {
             Ok(())
         }
         fn register_pid(&self, pid: i32) {
+            if pid <= 0 {
+                return;
+            }
             // If this is the first enrollment, the brain's pid IS the pgid.
             let prev = self
                 .pgid
@@ -205,7 +208,7 @@ mod macos {
 fn brain_and_hand_share_process_group() {
     let g = establish(None);
 
-    // Spawn "brain" (first enrolled = group leader via setsid).
+    // Spawn "brain" (first enrolled = group leader via setpgid(0,0)).
     let mut brain_cmd = std::process::Command::new("sleep");
     brain_cmd.arg("5");
     g.configure_enrolled(&mut brain_cmd)
