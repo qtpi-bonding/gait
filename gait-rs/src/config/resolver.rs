@@ -50,7 +50,7 @@ impl ConfigResolver {
     /// Call in order from lower-priority to higher-priority; last `with` wins.
     pub fn with(mut self, layer: Overrides) -> Self {
         if let Some(model) = layer.model {
-            self.base.model = model;
+            self.base.model = Some(model);
         }
         if let Some(allow) = layer.allow {
             self.base.allow = allow;
@@ -72,6 +72,17 @@ impl ConfigResolver {
     pub fn resolve(self) -> GaitConfig {
         self.base
     }
+
+    /// Like `resolve()` but errors if no layer supplied a model.
+    pub fn resolve_checked(self) -> anyhow::Result<GaitConfig> {
+        let cfg = self.base;
+        if cfg.model.is_none() {
+            anyhow::bail!(
+                "no model: set \"model\" in gait.jsonc or pass --model <id> (see `gait models`)"
+            );
+        }
+        Ok(cfg)
+    }
 }
 
 #[cfg(test)]
@@ -80,9 +91,30 @@ mod tests {
     use crate::config::GaitConfig;
 
     #[test]
+    fn unset_model_errors_with_pointer() {
+        let base = GaitConfig::default(); // model is None after this task
+        let err = ConfigResolver::new(base).resolve_checked().unwrap_err();
+        assert!(err.to_string().contains("no model"));
+        assert!(err.to_string().contains("--model"));
+    }
+
+    #[test]
+    fn model_set_by_any_layer_resolves_ok() {
+        let base = GaitConfig::default();
+        let cfg = ConfigResolver::new(base)
+            .with(Overrides {
+                model: Some("minimax/MiniMax-M3".into()),
+                ..Overrides::empty()
+            })
+            .resolve_checked()
+            .unwrap();
+        assert_eq!(cfg.model.as_deref(), Some("minimax/MiniMax-M3"));
+    }
+
+    #[test]
     fn per_call_beats_consumer_beats_file() {
         let mut base = GaitConfig::default();
-        base.model = "file-model".into(); // stands in for the gait.jsonc layer
+        base.model = Some("file-model".into()); // stands in for the gait.jsonc layer
         let effective = ConfigResolver::new(base)
             .with(Overrides {
                 model: Some("consumer-model".into()),
@@ -93,7 +125,7 @@ mod tests {
                 ..Overrides::empty()
             })
             .resolve();
-        assert_eq!(effective.model, "percall-model");
+        assert_eq!(effective.model.as_deref(), Some("percall-model"));
     }
 
     #[test]

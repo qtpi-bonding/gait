@@ -186,7 +186,8 @@ impl Profile {
     ) -> Self {
         let model = model_override
             .or_else(|| agent_path.and_then(crate::agent_frontmatter::read_agent_model))
-            .unwrap_or_else(|| config.model.clone());
+            .or_else(|| config.model.clone())
+            .unwrap_or_default();
 
         let mut instructions = crate::prompt::compose_system_prompt(
             gait_dir,
@@ -486,7 +487,7 @@ mod tests {
     #[test]
     fn builder_uses_config_model_when_no_override_or_agent() {
         let config = GaitConfig {
-            model: "anthropic/x".into(),
+            model: Some("anthropic/x".into()),
             ..GaitConfig::default()
         };
         let dir = tempfile::TempDir::new().unwrap();
@@ -498,7 +499,7 @@ mod tests {
     #[test]
     fn explicit_model_override_wins() {
         let config = GaitConfig {
-            model: "anthropic/x".into(),
+            model: Some("anthropic/x".into()),
             ..GaitConfig::default()
         };
         let dir = tempfile::TempDir::new().unwrap();

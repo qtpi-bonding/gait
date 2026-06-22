@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-pub const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4-6";
-
 pub mod defaults;
 pub mod resolver;
 
@@ -310,7 +308,8 @@ pub enum PreviewPolicy {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GaitConfig {
-    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     #[serde(default)]
     pub allow: Vec<String>,
     #[serde(default)]
@@ -372,7 +371,7 @@ fn default_output_schema_retries() -> u8 {
 impl Default for GaitConfig {
     fn default() -> Self {
         Self {
-            model: DEFAULT_MODEL.into(),
+            model: defaults::default_model(),
             allow: defaults::default_allow(),
             deny: defaults::default_deny(),
             tools: vec![],
@@ -440,12 +439,7 @@ fn append_list_field(field: &str, pattern: &str, path: &Path) -> anyhow::Result<
             Err(e) => anyhow::bail!("gait.jsonc parse error: {e}"),
         }
     } else {
-        let mut m = serde_json::Map::new();
-        m.insert(
-            "model".into(),
-            serde_json::Value::String(DEFAULT_MODEL.into()),
-        );
-        m
+        serde_json::Map::new()
     };
     let list = obj
         .entry(field)
@@ -481,12 +475,7 @@ fn append_sandbox_field(field: &str, value: &str, path: &Path) -> anyhow::Result
             Err(e) => anyhow::bail!("gait.jsonc parse error: {e}"),
         }
     } else {
-        let mut m = serde_json::Map::new();
-        m.insert(
-            "model".into(),
-            serde_json::Value::String(DEFAULT_MODEL.into()),
-        );
-        m
+        serde_json::Map::new()
     };
 
     // Navigate/create sandbox block
@@ -535,12 +524,7 @@ pub fn append_sandbox_network_host(gait_dir: &Path, host: &str) -> anyhow::Resul
             Err(e) => anyhow::bail!("gait.jsonc parse error: {e}"),
         }
     } else {
-        let mut m = serde_json::Map::new();
-        m.insert(
-            "model".into(),
-            serde_json::Value::String(DEFAULT_MODEL.into()),
-        );
-        m
+        serde_json::Map::new()
     };
 
     let sandbox = obj

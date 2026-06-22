@@ -182,8 +182,8 @@ pub async fn exec_prompt_node(
     let resolved_cfg = ConfigResolver::new(loaded)
         .with(consumer)
         .with(per_call)
-        .resolve();
-    let model = resolved_cfg.model.clone();
+        .resolve_checked()?;
+    let model = resolved_cfg.model.clone().unwrap_or_default();
     let allow = resolved_cfg.allow.clone();
     let auto = node.auto.unwrap_or(workflow_def.auto);
 

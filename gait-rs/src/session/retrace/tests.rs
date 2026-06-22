@@ -373,7 +373,7 @@ fn agent_state_from_pb_agent_maps_enabled_sets() {
 fn agent_state_from_config_seeds_enabled_from_config() {
     use crate::config::{GaitConfig, McpServerDef, SkillDef};
     let cfg = GaitConfig {
-        model: "anthropic/x".into(),
+        model: Some("anthropic/x".into()),
         mcp_servers: vec![
             McpServerDef {
                 name: "slack".into(),

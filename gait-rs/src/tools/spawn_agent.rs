@@ -42,7 +42,7 @@ pub fn write_child_session(opts: WriteChildSessionOpts<'_>) -> anyhow::Result<()
     init_session(InitSessionOpts {
         log_path: tx_path.clone(),
         id: opts.new_id.to_string(),
-        model: config.model,
+        model: config.model.clone().unwrap_or_default(),
         codebase_hash,
         codebase_dirty: false,
         assigned_by: Some(opts.parent_session_id.to_string()),

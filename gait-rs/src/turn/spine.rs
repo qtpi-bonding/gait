@@ -1386,9 +1386,9 @@ mod tests {
     }
 
     #[test]
-    fn build_turn_profile_uses_default_model_without_config() {
+    fn build_turn_profile_model_is_empty_without_config_or_override() {
         let dir = tempfile::TempDir::new().unwrap();
-        // No gait.jsonc — load_config falls back to GaitConfig::default().
+        // No gait.jsonc — load_config falls back to GaitConfig::default() which has model: None.
         let inputs = ProfileInputs {
             agent_name: None,
             model_override: None,
@@ -1397,7 +1397,8 @@ mod tests {
             result_schema: None,
         };
         let p = build_turn_profile(dir.path(), dir.path(), &inputs);
-        assert_eq!(p.model, crate::config::DEFAULT_MODEL);
+        // model defaults to None; Profile falls through to unwrap_or_default() → ""
+        assert_eq!(p.model, "");
     }
 
     fn make_permissions_event(

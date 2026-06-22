@@ -35,7 +35,7 @@ fn sandbox_network_config_parses_string_host_as_hosts() {
 fn loads_default_when_no_file() {
     let dir = TempDir::new().unwrap();
     let cfg = load_config(dir.path());
-    assert_eq!(cfg.model, "anthropic/claude-sonnet-4-6");
+    assert_eq!(cfg.model, None);
 }
 
 #[test]
@@ -52,7 +52,7 @@ fn parses_model_and_allow() {
     )
     .unwrap();
     let cfg = load_config(dir.path());
-    assert_eq!(cfg.model, "minimax/MiniMax-M3");
+    assert_eq!(cfg.model.as_deref(), Some("minimax/MiniMax-M3"));
     assert_eq!(cfg.allow, vec!["read", "write", "shell"]);
 }
 
@@ -71,7 +71,7 @@ fn strips_line_comments() {
     )
     .unwrap();
     let cfg = load_config(dir.path());
-    assert_eq!(cfg.model, "anthropic/claude-sonnet-4-6");
+    assert_eq!(cfg.model.as_deref(), Some("anthropic/claude-sonnet-4-6"));
 }
 
 #[test]
@@ -122,7 +122,10 @@ fn append_allow_pattern_preserves_model_field() {
     )
     .unwrap();
     append_allow_pattern(dir.path(), "shell:git *").unwrap();
-    assert_eq!(load_config(dir.path()).model, "minimax/MiniMax-M3");
+    assert_eq!(
+        load_config(dir.path()).model.as_deref(),
+        Some("minimax/MiniMax-M3")
+    );
 }
 
 #[test]
@@ -191,16 +194,16 @@ fn parses_mcp_servers_spawn_and_connect() {
 }
 
 #[test]
-fn append_allow_creates_file_with_correct_default_model() {
+fn append_allow_creates_file_without_model_field() {
     let dir = TempDir::new().unwrap();
-    // No gait.jsonc exists yet — append_allow_pattern must create one
+    // No gait.jsonc exists yet — append_allow_pattern must create one without a model key
+    // (model has no compiled-in default; it must be set explicitly in gait.jsonc or via --model)
     append_allow_pattern(dir.path(), "read").unwrap();
     let content = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
     let val: serde_json::Value = serde_json::from_str(&content).unwrap();
-    assert_eq!(
-        val["model"].as_str().unwrap(),
-        "anthropic/claude-sonnet-4-6",
-        "newly created gait.jsonc must use the same default model as GaitConfig::default()"
+    assert!(
+        val.get("model").is_none() || val["model"].is_null(),
+        "newly created gait.jsonc must NOT hardcode a default model"
     );
 }
 

@@ -35,6 +35,10 @@ pub fn default_show_thinking() -> bool {
     false
 }
 
+pub fn default_model() -> Option<String> {
+    None
+}
+
 pub fn default_sandbox() -> SandboxConfig {
     SandboxConfig {
         on: true,
