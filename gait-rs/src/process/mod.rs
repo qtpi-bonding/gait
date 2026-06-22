@@ -136,6 +136,10 @@ mod macos {
                 }
             } else {
                 // Subsequent children (hands): join the brain's group.
+                debug_assert!(
+                    self.pgid.load(Ordering::SeqCst) != 0,
+                    "hand enrolled before brain: pgid must be set (brain must be spawned first)"
+                );
                 cmd.process_group(pgid);
             }
             Ok(())
@@ -182,8 +186,9 @@ mod macos {
                     }
                 });
             }
-            // Reap owned children to avoid zombies (S4) — blocking waitpid after kill is fine.
-            for pid in self.owned.lock().unwrap().drain(..) {
+            // Reap owned children to avoid zombies (S4) — release mutex before blocking waitpid.
+            let pids: Vec<i32> = self.owned.lock().unwrap().drain(..).collect();
+            for pid in pids {
                 unsafe {
                     libc::waitpid(pid, std::ptr::null_mut(), 0);
                 }
