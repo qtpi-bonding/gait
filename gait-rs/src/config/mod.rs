@@ -381,7 +381,7 @@ impl Default for GaitConfig {
             wasm_plugins: vec![],
             hooks: vec![],
             output_schema_retries: defaults::default_output_schema_retries(),
-            max_iter: defaults::default_max_iter().map(|x| x as usize),
+            max_iter: defaults::default_max_iter(),
             preview: defaults::default_preview(),
             result_schema: None,
             llm_params: LlmParamsConfig::default(),

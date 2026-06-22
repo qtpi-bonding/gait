@@ -23,7 +23,7 @@ pub fn default_output_schema_retries() -> u8 {
     3
 }
 
-pub fn default_max_iter() -> Option<u32> {
+pub fn default_max_iter() -> Option<usize> {
     None
 }
 
