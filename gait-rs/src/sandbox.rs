@@ -144,10 +144,55 @@ pub fn platform_sandbox() -> Box<dyn Sandbox> {
     }
 }
 
+/// Resolve `.` and `..` components lexically, without touching the filesystem.
+/// Unlike `canonicalize`, this does NOT resolve symlinks (so it is a sound,
+/// disk-free approximation for the sealed brain's advisory scope pre-check;
+/// the hand's kernel seal remains the authoritative enforcement).
+pub fn normalize_lexical(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    // ── normalize_lexical tests ───────────────────────────────────────────────
+
+    #[test]
+    fn normalize_lexical_resolves_dotdot() {
+        let result = normalize_lexical(std::path::Path::new("a/b/../c"));
+        assert_eq!(result, PathBuf::from("a/c"));
+    }
+
+    #[test]
+    fn normalize_lexical_removes_single_dot() {
+        let result = normalize_lexical(std::path::Path::new("/x/./y"));
+        assert_eq!(result, PathBuf::from("/x/y"));
+    }
+
+    #[test]
+    fn normalize_lexical_absolute_with_dotdot() {
+        let result = normalize_lexical(std::path::Path::new("/a/b/../c"));
+        assert_eq!(result, PathBuf::from("/a/c"));
+    }
+
+    #[test]
+    fn normalize_lexical_no_change_needed() {
+        let result = normalize_lexical(std::path::Path::new("/a/b/c"));
+        assert_eq!(result, PathBuf::from("/a/b/c"));
+    }
 
     #[test]
     fn noop_returns_noop() {
@@ -456,6 +501,74 @@ mod tests {
             Path::new("/tmp/jail"),
         );
         assert!(scope.read_all);
+    }
+
+    // ── compute_scope_nofs tests ──────────────────────────────────────────────
+
+    #[test]
+    fn compute_scope_nofs_read_tool_gets_readable_paths() {
+        use crate::config::SandboxConfig;
+        use crate::types::ToolAccess;
+        use std::path::Path;
+        let cfg = SandboxConfig::default();
+        let scope = super::ceiling::compute_scope_nofs(
+            ToolAccess {
+                reads: true,
+                ..Default::default()
+            },
+            &cfg,
+            Path::new("/repo/sub/../src"), // lexically normalized by caller
+            Path::new("/tmp/jail"),
+        );
+        // The codebase path is used as-given (no canonicalize call)
+        assert!(scope
+            .readable
+            .iter()
+            .any(|p| p == Path::new("/repo/sub/../src")));
+        assert!(scope.writable.is_empty());
+    }
+
+    #[test]
+    fn compute_scope_nofs_write_tool_gets_writable() {
+        use crate::config::SandboxConfig;
+        use crate::types::ToolAccess;
+        use std::path::{Path, PathBuf};
+        let cfg = SandboxConfig::default();
+        let scope = super::ceiling::compute_scope_nofs(
+            ToolAccess {
+                reads: true,
+                writes: true,
+                ..Default::default()
+            },
+            &cfg,
+            Path::new("/repo"),
+            Path::new("/tmp/jail"),
+        );
+        assert!(scope.writable.contains(&PathBuf::from("/repo")));
+        assert!(scope.writable.contains(&PathBuf::from("/tmp/jail")));
+    }
+
+    #[test]
+    fn compute_scope_delegates_to_nofs() {
+        // compute_scope_nofs produces same shape (count, read_all) as compute_scope.
+        // The actual path values may differ when the OS has symlinks (e.g. /tmp →
+        // /private/tmp on macOS), so we only compare structure, not exact paths.
+        use crate::config::SandboxConfig;
+        use crate::types::ToolAccess;
+        use std::path::Path;
+        let cfg = SandboxConfig::default();
+        let access = ToolAccess {
+            reads: true,
+            writes: true,
+            ..Default::default()
+        };
+        let codebase = Path::new("/tmp");
+        let jail = Path::new("/tmp/jail");
+        let via_full = super::ceiling::compute_scope(access.clone(), &cfg, codebase, jail);
+        let via_nofs = super::ceiling::compute_scope_nofs(access, &cfg, codebase, jail);
+        assert_eq!(via_full.writable.len(), via_nofs.writable.len());
+        assert_eq!(via_full.readable.len(), via_nofs.readable.len());
+        assert_eq!(via_full.read_all, via_nofs.read_all);
     }
 }
 
@@ -779,6 +892,10 @@ pub mod ceiling {
     /// Network: config `Off` always denies; `Hosts`/`All` honored only when
     /// `access.network` is true. `read_all` defaults to true in Phase 2b; Phase 2d
     /// will flip it to false and emit per-path subpath rules instead.
+    ///
+    /// Canonicalizes `codebase` via the filesystem. For a disk-free variant (e.g., the
+    /// sealed brain's advisory pre-check), use [`compute_scope_nofs`] with a
+    /// lexically-normalized codebase path.
     pub fn compute_scope(
         access: ToolAccess,
         cfg: &SandboxConfig,
@@ -791,17 +908,28 @@ pub mod ceiling {
         let codebase = codebase
             .canonicalize()
             .unwrap_or_else(|_| codebase.to_path_buf());
+        compute_scope_nofs(access, cfg, &codebase, temp_jail)
+    }
 
+    /// Like [`compute_scope`], but assumes `codebase` is already normalized and does
+    /// NO filesystem access — for the sealed brain's pre-check. The seal path keeps
+    /// using [`compute_scope`] (which canonicalizes, on the unsealed spine/hand side).
+    pub fn compute_scope_nofs(
+        access: ToolAccess,
+        cfg: &SandboxConfig,
+        codebase: &Path, // caller-normalized (e.g. via normalize_lexical)
+        temp_jail: &Path,
+    ) -> SandboxScope {
         // Base readable + writable: codebase + temp_jail (bound by access).
         let mut readable: Vec<PathBuf> = Vec::new();
         let mut writable: Vec<PathBuf> = Vec::new();
 
         if access.reads {
-            readable.push(codebase.clone());
+            readable.push(codebase.to_path_buf());
             readable.push(temp_jail.to_path_buf());
         }
         if access.writes {
-            writable.push(codebase.clone());
+            writable.push(codebase.to_path_buf());
             writable.push(temp_jail.to_path_buf());
         }
 

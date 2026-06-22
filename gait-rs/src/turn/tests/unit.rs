@@ -501,3 +501,164 @@ fn turn_input_initial_git_some_carries_seeded_hash() {
     assert_eq!(git.head_hash, "seeded-abc123");
     assert_eq!(git.dirty_files, vec!["src/foo.rs"]);
 }
+
+// ── check_own_tool_scope disk-free tests ────────────────────────────────────
+
+/// Minimal Tool that reports configurable scope_targets.
+struct ScopeTestTool {
+    access: crate::types::ToolAccess,
+    targets: Vec<(std::path::PathBuf, crate::types::Dimension)>,
+}
+
+#[async_trait::async_trait]
+impl crate::types::Tool for ScopeTestTool {
+    fn name(&self) -> &str {
+        "test_tool"
+    }
+    fn description(&self) -> &str {
+        "test"
+    }
+    fn parameters(&self) -> &serde_json::Value {
+        &serde_json::Value::Null
+    }
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        _rec: &crate::Recorder,
+    ) -> Result<serde_json::Value, crate::tools::ToolError> {
+        Ok(serde_json::Value::Null)
+    }
+    fn access(&self) -> crate::types::ToolAccess {
+        self.access
+    }
+    fn scope_targets(
+        &self,
+        _args: &serde_json::Value,
+    ) -> Vec<(std::path::PathBuf, crate::types::Dimension)> {
+        self.targets.clone()
+    }
+}
+
+#[test]
+fn check_own_tool_scope_in_codebase_is_in_scope() {
+    // Target path inside codebase must be in-scope (no disk access needed).
+    use crate::config::SandboxConfig;
+    use crate::types::{Dimension, ToolAccess, ToolCall};
+
+    let tc = ToolCall {
+        tool_call_id: "t1".into(),
+        tool_name: "test_tool".into(),
+        args: serde_json::Value::Null,
+    };
+    let tool = ScopeTestTool {
+        access: ToolAccess {
+            reads: true,
+            ..Default::default()
+        },
+        // Deliberately use a non-existent path — disk-free check must still work
+        targets: vec![(
+            std::path::PathBuf::from("/codebase/src/foo.rs"),
+            Dimension::Read,
+        )],
+    };
+    let cfg = SandboxConfig::default();
+    let items = check_own_tool_scope(&tc, &tool, std::path::Path::new("/codebase"), &cfg);
+    assert!(
+        items.is_empty(),
+        "in-codebase target must be in-scope, got: {items:?}"
+    );
+}
+
+#[test]
+fn check_own_tool_scope_outside_codebase_is_out_of_scope() {
+    use crate::config::SandboxConfig;
+    use crate::types::{Dimension, ToolAccess, ToolCall};
+
+    let tc = ToolCall {
+        tool_call_id: "t2".into(),
+        tool_name: "test_tool".into(),
+        args: serde_json::Value::Null,
+    };
+    let tool = ScopeTestTool {
+        access: ToolAccess {
+            reads: true,
+            writes: true,
+            ..Default::default()
+        },
+        targets: vec![(std::path::PathBuf::from("/etc/passwd"), Dimension::Write)],
+    };
+    let cfg = SandboxConfig::default();
+    let items = check_own_tool_scope(&tc, &tool, std::path::Path::new("/codebase"), &cfg);
+    assert_eq!(
+        items.len(),
+        1,
+        "out-of-scope target must generate an unlock item"
+    );
+    assert_eq!(items[0].resource, "/etc/passwd");
+}
+
+#[test]
+fn check_own_tool_scope_nonexistent_path_does_not_touch_disk() {
+    // This tests the key property: the function must not fail or panic for paths
+    // that don't exist. Previously it would canonicalize the parent, which touches
+    // disk. Now it's fully lexical.
+    use crate::config::SandboxConfig;
+    use crate::types::{Dimension, ToolAccess, ToolCall};
+
+    let tc = ToolCall {
+        tool_call_id: "t3".into(),
+        tool_name: "test_tool".into(),
+        args: serde_json::Value::Null,
+    };
+    // /this/path/does/not/exist on any reasonable test system
+    let nonexistent = std::path::PathBuf::from("/this/path/does/not/exist/new_file.rs");
+    // Place it inside codebase: /codebase/this/path/does/not/exist/new_file.rs
+    let inside_codebase = std::path::PathBuf::from("/codebase/this/does/not/exist.rs");
+    let tool = ScopeTestTool {
+        access: ToolAccess {
+            reads: true,
+            writes: true,
+            ..Default::default()
+        },
+        targets: vec![
+            (inside_codebase, Dimension::Write),
+            (nonexistent, Dimension::Write),
+        ],
+    };
+    let cfg = SandboxConfig::default();
+    // Must not panic; should return exactly 1 item (the truly outside path).
+    let items = check_own_tool_scope(&tc, &tool, std::path::Path::new("/codebase"), &cfg);
+    assert_eq!(
+        items.len(),
+        1,
+        "only the out-of-codebase path should be flagged: {items:?}"
+    );
+}
+
+#[test]
+fn check_own_tool_scope_lexical_dotdot_in_codebase_path() {
+    // A path with .. that resolves inside codebase must be treated as in-scope.
+    use crate::config::SandboxConfig;
+    use crate::types::{Dimension, ToolAccess, ToolCall};
+
+    let tc = ToolCall {
+        tool_call_id: "t4".into(),
+        tool_name: "test_tool".into(),
+        args: serde_json::Value::Null,
+    };
+    // /codebase/src/../lib.rs normalizes to /codebase/lib.rs — in scope
+    let tricky = std::path::PathBuf::from("/codebase/src/../lib.rs");
+    let tool = ScopeTestTool {
+        access: ToolAccess {
+            reads: true,
+            ..Default::default()
+        },
+        targets: vec![(tricky, Dimension::Read)],
+    };
+    let cfg = SandboxConfig::default();
+    let items = check_own_tool_scope(&tc, &tool, std::path::Path::new("/codebase"), &cfg);
+    assert!(
+        items.is_empty(),
+        "lexically in-scope path with .. must not be flagged: {items:?}"
+    );
+}

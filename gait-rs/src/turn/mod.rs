@@ -1814,7 +1814,8 @@ fn check_own_tool_scope(
     codebase: &std::path::Path,
     sandbox_cfg: &crate::config::SandboxConfig,
 ) -> Vec<pb::UnlockItem> {
-    use crate::sandbox::ceiling::compute_scope;
+    use crate::sandbox::ceiling::compute_scope_nofs;
+    use crate::sandbox::normalize_lexical;
     use crate::types::Dimension;
 
     let targets = tool.scope_targets(&tc.args);
@@ -1823,23 +1824,16 @@ fn check_own_tool_scope(
     }
 
     let temp_jail = std::path::Path::new("/tmp/gait-jail");
-    let ceiling = compute_scope(tool.access(), sandbox_cfg, codebase, temp_jail);
+    // Disk-free pre-check: normalize codebase lexically (no canonicalize).
+    // The hand's kernel seal remains the authoritative enforcement; this advisory
+    // check only needs to be a sound approximation (no symlink resolution needed).
+    let codebase_norm = normalize_lexical(codebase);
+    let ceiling = compute_scope_nofs(tool.access(), sandbox_cfg, &codebase_norm, temp_jail);
 
     let mut items = vec![];
     for (path, dim) in targets {
-        // Canonicalize the target so the starts_with comparison works correctly
-        // on macOS where /tmp → /private/tmp. compute_scope already canonicalizes
-        // the codebase path, so a non-canonical target path will spuriously fail
-        // starts_with and trigger a false-positive TurnResult::Unlock.
-        let target = if path.exists() {
-            path.canonicalize().unwrap_or_else(|_| path.clone())
-        } else {
-            // For not-yet-existing targets, canonicalize the parent directory.
-            path.parent()
-                .and_then(|p| p.canonicalize().ok())
-                .map(|p| p.join(path.file_name().unwrap_or_default()))
-                .unwrap_or_else(|| path.clone())
-        };
+        // Normalize target lexically — no filesystem access, works for non-existent paths.
+        let target = normalize_lexical(&path);
         let in_scope = match dim {
             Dimension::Write => ceiling
                 .writable
