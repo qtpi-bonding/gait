@@ -7,9 +7,11 @@ INSTALL_DIR ?= /usr/local/bin
 build:
 	cargo build --release -p gait-bin
 
+TARGET_DIR := $(shell cargo metadata --no-deps --format-version 1 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['target_directory'])")
+
 install: build
 	install -d $(INSTALL_DIR)
-	install -m 0755 target/release/gait $(INSTALL_DIR)/gait
+	install -m 0755 $(TARGET_DIR)/release/gait $(INSTALL_DIR)/gait
 	@echo "installed → $(INSTALL_DIR)/gait"
 
 fmt:
