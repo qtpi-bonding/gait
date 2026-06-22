@@ -158,6 +158,28 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
         deny: args.deny.clone(),
     };
 
+    // Shared slot: holds the current cascade group so the signal task can reap it.
+    let signal_slot: gait_core::turn::spine::SignalSlot =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+
+    // Spawn SIGINT/SIGTERM handler: kill current group (if any) then exit.
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let slot = signal_slot.clone();
+        tokio::spawn(async move {
+            let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT handler");
+            let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
+            tokio::select! {
+                _ = sigint.recv() => {}
+                _ = sigterm.recv() => {}
+            }
+            if let Some(group) = slot.lock().unwrap().clone() {
+                let _ = group.kill_all();
+            }
+            std::process::exit(0);
+        });
+    }
+
     let brain_failed = gait_core::turn::spine::relay_brain_turn(
         &brain_args,
         &gait_dir,
@@ -170,12 +192,16 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
         &profile_inputs,
         &mut sink,
         args.cascade_group.clone(),
+        Some(&signal_slot),
     )
     .await
     .unwrap_or_else(|e| {
         sink.diagnostic(Diag::Error, &format!("spine relay error: {e}"));
         true
     });
+
+    // Clear the slot — turn complete, no live group to kill.
+    *signal_slot.lock().unwrap() = None;
 
     if brain_failed {
         std::process::exit(1);

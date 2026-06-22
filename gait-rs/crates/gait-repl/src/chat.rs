@@ -134,6 +134,28 @@ pub async fn run_chat(
         }));
     let repos = gait_core::git::Repos::production();
 
+    // Shared slot: holds the current cascade group so the signal task can reap it.
+    let signal_slot: gait_core::turn::spine::SignalSlot =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+
+    // Spawn SIGINT/SIGTERM handler: kill current group (if any) then exit.
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let slot = signal_slot.clone();
+        tokio::spawn(async move {
+            let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT handler");
+            let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
+            tokio::select! {
+                _ = sigint.recv() => {}
+                _ = sigterm.recv() => {}
+            }
+            if let Some(group) = slot.lock().unwrap().clone() {
+                let _ = group.kill_all();
+            }
+            std::process::exit(0);
+        });
+    }
+
     loop {
         let shell_history_path = gait_dir
             .join("tmp")
@@ -258,12 +280,16 @@ pub async fn run_chat(
                 &profile_inputs,
                 &mut sink,
                 None, // top-level REPL turn: no inherited cascade group
+                Some(&signal_slot),
             )
             .await
             .unwrap_or_else(|e| {
                 eprintln!("[gait] turn error: {e}\r\n");
                 false
             });
+
+            // Clear the slot — turn complete, no live group to kill between turns.
+            *signal_slot.lock().unwrap() = None;
         }
 
         // The source ended the loop with a control signal (or EOF).

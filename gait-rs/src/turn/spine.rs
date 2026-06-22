@@ -74,6 +74,11 @@ pub fn build_turn_profile(
 
 // ── relay_brain_turn ─────────────────────────────────────────────────────────
 
+/// Shared slot holding the active cascade group for the current turn.
+/// The signal handler (SIGINT/SIGTERM) reads this to call `kill_all()`.
+pub type SignalSlot =
+    std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<dyn crate::process::Containment>>>>;
+
 /// Spawn `gait __brain` for one turn and relay its Nerve signals.
 ///
 /// * `Impulse`       → `run_tool_as_spine` (spawned task) → `Feedback`
@@ -100,9 +105,19 @@ pub async fn relay_brain_turn(
     profile_inputs: &ProfileInputs,
     sink: &mut dyn TurnSink,
     cascade_group_arg: Option<String>,
+    // Optional shared slot: if provided, the established group is stored here
+    // for the duration of the turn so an external signal handler can call
+    // kill_all(). The caller must clear the slot after the turn completes.
+    signal_slot: Option<&SignalSlot>,
 ) -> anyhow::Result<bool> {
     // ── Establish (or inherit) the cascade group for this turn ─────────────
     let group = crate::process::establish(cascade_group_arg);
+
+    // Store the group in the signal slot (if provided) so SIGINT/SIGTERM can
+    // reap it. Sequenced: establish → store → run → kill_all → caller clears.
+    if let Some(slot) = signal_slot {
+        *slot.lock().unwrap() = Some(Arc::clone(&group));
+    }
 
     // ── Spine-owned startup writes (brain is disk-write-free) ───────────────
     // These all write to gait-dir; the brain's seal has writable: [] so it
@@ -353,6 +368,10 @@ pub async fn relay_brain_turn(
     drop(child_stdin);
 
     let _ = child.wait().await;
+
+    // Reap any stragglers (hands, sh grandchildren) the brain left behind.
+    // Idempotent — no-op if nothing remains in the group.
+    let _ = group.kill_all();
 
     if let Some(result) = &run_result {
         // The spine is the sole gait-dir writer. The brain skipped
