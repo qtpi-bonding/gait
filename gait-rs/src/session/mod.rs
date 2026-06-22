@@ -1,6 +1,8 @@
 mod error;
 pub use error::SessionError;
 
+pub mod daemons;
+
 pub mod ingestor;
 pub mod log;
 pub mod retrace;
