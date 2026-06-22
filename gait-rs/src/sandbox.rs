@@ -149,6 +149,10 @@ pub fn platform_sandbox() -> Box<dyn Sandbox> {
 /// disk-free approximation for the sealed brain's advisory scope pre-check;
 /// the hand's kernel seal remains the authoritative enforcement).
 pub fn normalize_lexical(path: &std::path::Path) -> std::path::PathBuf {
+    debug_assert!(
+        path.is_absolute(),
+        "normalize_lexical: caller must pass an absolute path"
+    );
     use std::path::Component;
     let mut out = std::path::PathBuf::new();
     for comp in path.components() {
@@ -172,8 +176,9 @@ mod tests {
 
     #[test]
     fn normalize_lexical_resolves_dotdot() {
-        let result = normalize_lexical(std::path::Path::new("a/b/../c"));
-        assert_eq!(result, PathBuf::from("a/c"));
+        // Use an absolute path — normalize_lexical requires absolute paths (debug_assert).
+        let result = normalize_lexical(std::path::Path::new("/a/b/../c"));
+        assert_eq!(result, PathBuf::from("/a/c"));
     }
 
     #[test]
@@ -320,7 +325,7 @@ mod tests {
         };
         let p = build_sbpl(&scope);
         assert!(
-            !p.contains("(allow file-read*)\n"),
+            !p.contains("(allow file-read*)"),
             "must NOT blanket-allow reads"
         );
         // Platform defaults: broad paths validated on Darwin 24.5.0.
@@ -384,7 +389,7 @@ mod tests {
 
         let p = build_sbpl(&scope);
         assert!(
-            !p.contains("(allow file-read*)\n"),
+            !p.contains("(allow file-read*)"),
             "brain_scope profile must NOT blanket-allow file reads: {p}"
         );
         assert!(
@@ -567,7 +572,7 @@ mod tests {
                 ..Default::default()
             },
             &cfg,
-            Path::new("/repo/sub/../src"), // lexically normalized by caller
+            Path::new("/repo/sub/../src"), // deliberately un-normalized — passed as-given to verify compute_scope_nofs stores the codebase path verbatim (no normalization inside)
             Path::new("/tmp/jail"),
         );
         // The codebase path is used as-given (no canonicalize call)
