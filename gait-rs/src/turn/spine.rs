@@ -107,6 +107,42 @@ pub async fn relay_brain_turn(
 
     let log_path = gait_dir.join("sessions").join(session_id).join("log.jsonl");
 
+    // ── BrainInit: push config + full log + git so the brain reads zero disk. ──
+    // The caller appended this turn's user input before relay_brain_turn, and the
+    // SessionStart write above ran, so `events` is complete.
+    {
+        use crate::proto::gait::sandbox::v1::{signal, BrainInit, GitStatus, Signal};
+        use tokio::io::AsyncWriteExt;
+        let config_json = {
+            let path = gait_dir.join("gait.jsonc");
+            let raw = std::fs::read_to_string(&path).unwrap_or_default();
+            let stripped = crate::config::strip_jsonc_comments(&raw);
+            if stripped.trim().is_empty() {
+                "{}".to_string()
+            } else {
+                stripped
+            }
+        };
+        let events = crate::session::log::read_events(&log_path).unwrap_or_default();
+        let head_hash = repos.codebase.head_hash(codebase).unwrap_or_default();
+        let dirty_files = repos.codebase.dirty_files(codebase);
+        let init = BrainInit {
+            config_json,
+            events,
+            git: Some(GitStatus {
+                head_hash,
+                dirty_files,
+            }),
+        };
+        let sig = Signal {
+            corr_id: 0,
+            body: Some(signal::Body::BrainInit(init)),
+        };
+        let mut w = child_stdin.lock().await;
+        nerve::write_signal(&mut *w, &sig).await?;
+        w.flush().await?;
+    }
+
     let mut run_result: Option<crate::turn::TurnResult> = None;
     let mut brain_failed = false;
 
