@@ -157,7 +157,7 @@ impl Tool for ShellTool {
         };
         let out_path = tmp_dir.join(format!("shell-{}.txt", run_id));
 
-        let child = tokio::process::Command::new("sh")
+        let mut child = tokio::process::Command::new("sh")
             .args(["-c", &params.cmd])
             .current_dir(&cwd)
             .stdout(std::process::Stdio::piped())
@@ -172,10 +172,71 @@ impl Tool for ShellTool {
             .spawn()
             .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
 
-        let wait = child.wait_with_output();
-        let output = if let Some(ms) = timeout_ms {
-            match tokio::time::timeout(std::time::Duration::from_millis(ms), wait).await {
-                Ok(r) => r,
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut out_file = tokio::fs::File::create(&out_path)
+            .await
+            .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
+        let stdout = child.stdout.take().expect("piped");
+        let stderr = child.stderr.take().expect("piped");
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+
+        let h1 = tokio::spawn({
+            let tx = tx.clone();
+            async move {
+                let mut r = stdout;
+                let mut buf = [0u8; 8192];
+                loop {
+                    match r.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            let _ = tx.send(buf[..n].to_vec()).await;
+                        }
+                    }
+                }
+            }
+        });
+        let h2 = tokio::spawn({
+            let tx = tx.clone();
+            async move {
+                let mut r = stderr;
+                let mut buf = [0u8; 8192];
+                loop {
+                    match r.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            let _ = tx.send(buf[..n].to_vec()).await;
+                        }
+                    }
+                }
+            }
+        });
+        drop(tx); // drop outer sender so rx closes when both tasks finish
+
+        // We need to drive the drain loop. If timeout is set, wrap the whole drain+wait.
+        let drain_and_wait = async {
+            let mut total: u64 = 0;
+            let mut tail = std::collections::VecDeque::<u8>::new();
+            while let Some(chunk) = rx.recv().await {
+                out_file.write_all(&chunk).await.ok();
+                total += chunk.len() as u64;
+                rec.publish_delta(String::from_utf8_lossy(&chunk).into_owned());
+                tail.extend(&chunk);
+                while tail.len() > 64 * 1024 {
+                    tail.pop_front();
+                }
+            }
+            let _ = (h1.await, h2.await);
+            out_file.flush().await.ok();
+            let status = child
+                .wait()
+                .await
+                .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
+            Ok::<_, ToolError>((status, total, tail))
+        };
+
+        let (status, total, mut tail) = if let Some(ms) = timeout_ms {
+            match tokio::time::timeout(std::time::Duration::from_millis(ms), drain_and_wait).await {
+                Ok(r) => r?,
                 Err(_) => {
                     return Ok(serde_json::json!({
                         "output": format!("TIMED OUT after {}ms", ms),
@@ -185,38 +246,18 @@ impl Tool for ShellTool {
                 }
             }
         } else {
-            wait.await
+            drain_and_wait.await?
         };
 
-        let (exit_code, combined) = match output {
-            Ok(output) => {
-                let code = output.status.code().unwrap_or(1);
-                let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-                let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-                (code, format!("{}{}", stdout, stderr))
-            }
-            Err(e) => {
-                return Err(crate::tools::ToolError::Internal(anyhow::anyhow!(
-                    "Process error: {}",
-                    e
-                )))
-            }
-        };
-
-        let _ = std::fs::write(&out_path, &combined);
-        let file_note = format!(
-            "[full output: {} ({} bytes)]",
-            out_path.display(),
-            combined.len()
-        );
-
-        let display = format!("{}\n{}", combined.trim_end(), file_note);
+        let exit_code = status.code().unwrap_or(1);
+        let tail_str = String::from_utf8_lossy(tail.make_contiguous()).into_owned();
+        let note = format!("[full output: {} ({} bytes)]", out_path.display(), total);
 
         // Structured process-tool shape: turn.rs reads `output` for the model-facing text,
         // and lifts `exit_code`/`timed_out` into the proto `ProcessResult`. The "exit N (Xms)"
         // prefix is gone — timing lives in the generic `ToolResult.duration`, exit in `process`.
         Ok(serde_json::json!({
-            "output": display,
+            "output": format!("{}\n{}", tail_str.trim_end(), note),
             "exit_code": exit_code,
             "timed_out": false,
         }))

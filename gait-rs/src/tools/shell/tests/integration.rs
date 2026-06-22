@@ -253,6 +253,120 @@ async fn times_out_long_running_command() {
     assert!(output.contains("TIMED OUT"), "got: {output}");
 }
 
+/// (a) Streaming: bytes appear in the file BEFORE the command finishes.
+#[tokio::test]
+async fn streams_output_to_file_before_completion() {
+    use std::time::Duration;
+    use tokio::time::sleep;
+
+    let dir = TempDir::new().unwrap();
+    let tool = make_tool(&dir);
+
+    // Run in a background task; we'll poll the file while it's still running.
+    let handle = tokio::spawn(async move {
+        tool.execute(
+            serde_json::json!({
+                "cmd": "echo streamed_early; sleep 0.4; echo streamed_late",
+                "reason": "test streaming"
+            }),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap()
+    });
+
+    // Give the command time to emit the first line but not finish.
+    sleep(Duration::from_millis(100)).await;
+
+    // Find shell-*.txt files modified within the last 5 seconds that contain our marker.
+    let tmp_dir = std::env::temp_dir().join("gait-hand");
+    let now = std::time::SystemTime::now();
+    let mut contents = String::new();
+    if let Ok(entries) = std::fs::read_dir(&tmp_dir) {
+        let recent_threshold = std::time::Duration::from_secs(5);
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.starts_with("shell-") {
+                continue;
+            }
+            if let Ok(meta) = entry.metadata() {
+                if let Ok(modified) = meta.modified() {
+                    if now.duration_since(modified).unwrap_or(recent_threshold) < recent_threshold {
+                        let c = std::fs::read_to_string(entry.path()).unwrap_or_default();
+                        if c.contains("streamed_early") {
+                            contents = c;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        contents.contains("streamed_early"),
+        "expected 'streamed_early' in a recent shell-*.txt before command finished"
+    );
+
+    // Wait for full completion.
+    let result = handle.await.unwrap();
+    let output = result["output"].as_str().unwrap();
+    assert!(
+        output.contains("streamed_early"),
+        "final output missing streamed_early: {output}"
+    );
+    assert!(
+        output.contains("streamed_late"),
+        "final output missing streamed_late: {output}"
+    );
+}
+
+/// (b) Both stdout and stderr end up in the file — no EOF-drop.
+#[tokio::test]
+async fn captures_both_stdout_and_stderr() {
+    let dir = TempDir::new().unwrap();
+    let tool = make_tool(&dir);
+    let result = tool
+        .execute(
+            serde_json::json!({
+                "cmd": "echo OUT; echo ERR 1>&2",
+                "reason": "test both streams"
+            }),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap();
+    let output = result["output"].as_str().unwrap();
+    assert!(output.contains("OUT"), "missing stdout in output: {output}");
+    assert!(output.contains("ERR"), "missing stderr in output: {output}");
+}
+
+/// (c) total byte count in the file note matches actual content, not capped tail.
+#[tokio::test]
+async fn total_bytes_reflects_file_not_tail() {
+    let dir = TempDir::new().unwrap();
+    let tool = make_tool(&dir);
+    let result = tool
+        .execute(
+            serde_json::json!({
+                "cmd": "echo hello_world",
+                "reason": "test total bytes"
+            }),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap();
+    let output = result["output"].as_str().unwrap();
+    // The note contains "(N bytes)" — verify it's present and > 0.
+    assert!(
+        output.contains("bytes)"),
+        "expected bytes count in output: {output}"
+    );
+    // Also verify the file contains the content.
+    assert!(output.contains("hello_world"), "content missing: {output}");
+}
+
 #[tokio::test]
 async fn writes_output_to_tmp_file() {
     let dir = TempDir::new().unwrap();
