@@ -55,10 +55,7 @@ pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) {
         }
     };
 
-    let session_id = format!(
-        "wf{}",
-        &uuid::Uuid::new_v4().to_string().replace('-', "")[..8]
-    );
+    let session_id = gait_workflow::convert::mint_run_id(&wf.name);
     eprintln!(
         "[gait workflow] starting {} as session {}",
         name, session_id
