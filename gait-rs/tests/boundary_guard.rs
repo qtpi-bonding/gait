@@ -10,7 +10,7 @@ fn scan(dir: &Path, needles: &[&str], out: &mut String) {
             scan(&p, needles, out);
             continue;
         }
-        if p.extension().map_or(true, |x| x != "rs") {
+        if p.extension().is_none_or(|x| x != "rs") {
             continue;
         }
         for (i, line) in fs::read_to_string(&p).unwrap().lines().enumerate() {
