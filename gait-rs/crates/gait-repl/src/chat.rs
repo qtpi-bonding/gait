@@ -21,7 +21,7 @@ pub(crate) mod hints {
 
 /// The REPL: a banner + rustyline editor, then an outer session loop. Each
 /// `run_loop` runs one session's turns through the shared input boundary
-/// (`ReplSource`/`ReplSink`); `/n` ends it and starts a new session (reusing the
+/// (`ReplSource`); `/n` ends it and starts a new session (reusing the
 /// same editor/history), `/q`/EOF exits. (Phase 4b — the REPL on `run_loop`.)
 pub async fn run_chat(
     gait_dir: PathBuf,
@@ -127,8 +127,6 @@ pub async fn run_chat(
             builder,
             turn_done_blocks: None,
             control: None,
-            watcher_done: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            watcher_handle: None,
             sandbox_on: gait_core::config::load_config(&gait_dir).sandbox.on,
         }));
     let repos = gait_core::git::Repos::production();

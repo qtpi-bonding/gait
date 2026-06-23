@@ -1,8 +1,7 @@
 //! REPL adapters for the unified `run_loop` (Phase 4b): a `ReplSource` (line
-//! reader + interaction/respawn), a `ReplSink` (view-layer bridge), and a
-//! per-turn `ReplDriver`. `ReplSource` and `ReplSink` share one `ReplBuilder`
-//! behind `Rc<RefCell<…>>`; the loop borrows them at disjoint times (drive, then
-//! next), so the cell never double-borrows. The loop is awaited (not spawned),
+//! reader + interaction/respawn) sharing one `ReplBuilder` behind `Rc<RefCell<…>>`
+//! with the sink path the orchestrator drives. The loop borrows them at disjoint
+//! times, so the cell never double-borrows. The loop is awaited (not spawned),
 //! so the non-`Send` `Rc` is fine.
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -13,30 +12,19 @@ use std::sync::{Arc, Mutex};
 use crate::repl::ShellNavState;
 use crate::repl::{bang_command_str, is_bang_command};
 use crate::theme::{Theme, RESET};
-use crate::ui::{ReplBuilder, ViewSignal};
-use gait_core::embed::{user_turn_events, BrainLaunch, LoopConfig, TurnDriver};
-use gait_core::embed::{Diag, TurnSink, TurnSource, TurnStart};
+use crate::ui::ReplBuilder;
+use gait_core::embed::{user_turn_events, TurnSource, TurnStart};
 use gait_core::expand::{expand_input, ExpandCtx};
-use gait_core::proto::gait::log::v1::StreamItem;
 use gait_core::proto::{events, wire};
 use gait_core::pty::{run_and_capture_pty_raw, CaptureResult};
-use gait_core::turn::TurnResult;
 
-/// RAII guard: disables crossterm raw mode on drop.
-#[allow(dead_code)]
-struct RawModeGuard;
-impl Drop for RawModeGuard {
-    fn drop(&mut self) {
-        let _ = crossterm::terminal::disable_raw_mode();
-    }
-}
 /// A session-control signal the source raises to end the current `run_loop`.
 pub enum Control {
     NewSession(String),
     Quit,
 }
 
-/// Single-threaded REPL state shared by `ReplSink` and `ReplSource`.
+/// Single-threaded REPL state shared by the sink path and `ReplSource`.
 pub struct ReplShared {
     pub builder: ReplBuilder,
     /// Blocks captured from the just-finished turn's `TurnDone` signal (preferred
@@ -44,193 +32,11 @@ pub struct ReplShared {
     /// its own blocks).
     pub turn_done_blocks: Option<Vec<String>>,
     pub control: Option<Control>,
-    // Watcher lifecycle — written by ReplDriver::turn_config, torn down by ReplSink::end_turn
-    // (deferred cleanup: fields unused after chat.rs migration to orchestrator)
-    #[allow(dead_code)]
-    pub(crate) watcher_done: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    #[allow(dead_code)]
-    pub(crate) watcher_handle: Option<tokio::task::JoinHandle<()>>,
     /// Per-session sandbox engagement, toggled by `/sandbox on|off`. Initialized
     /// from `config.sandbox.on`; takes effect on the next turn.
     pub sandbox_on: bool,
 }
 pub type Shared = Rc<RefCell<ReplShared>>;
-
-/// View-layer sink: forwards stream items to the builder, captures `TurnDone`.
-// (deferred cleanup: ReplSink/ReplDriver unused after chat.rs migration to orchestrator)
-#[allow(dead_code)]
-pub struct ReplSink {
-    pub shared: Shared,
-}
-impl TurnSink for ReplSink {
-    fn item(&mut self, it: &StreamItem) {
-        let mut s = self.shared.borrow_mut();
-        if let ViewSignal::TurnDone(b) = s.builder.handle_stream_item(it.clone()) {
-            s.turn_done_blocks = Some(b);
-        }
-    }
-    fn result(&mut self, r: &TurnResult) {
-        match r {
-            TurnResult::Cancelled => {
-                eprint!("\x1b[2m⊘ interrupted\x1b[0m\r\n");
-            }
-            TurnResult::Unlock { items } => {
-                eprint!(
-                    "\r\n\x1b[33msandbox: {} item(s) need unlock\x1b[0m\r\n",
-                    items.len()
-                );
-                for item in items {
-                    eprint!(
-                        "  \x1b[2m[{dim}] {resource}\x1b[0m\r\n",
-                        dim = item.dimension,
-                        resource = item.resource
-                    );
-                }
-                eprint!("  \x1b[2mrun: /unlock [once|session|global|agent]\x1b[0m\r\n");
-            }
-            _ => {}
-        }
-        // structured_done rendered via ReplItem::StructuredResult (existing behaviour)
-    }
-    fn session_id(&mut self, _id: &str) {}
-    fn diagnostic(&mut self, level: Diag, msg: &str) {
-        if level == Diag::Error {
-            eprint!("[gait] {msg}\r\n");
-        }
-    }
-    fn begin_turn(&mut self) {
-        self.shared.borrow_mut().builder.begin_turn();
-    }
-    fn end_turn(&mut self) {
-        let handle = {
-            let mut s = self.shared.borrow_mut();
-            s.watcher_done
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            s.watcher_handle.take()
-        };
-        // block_in_place joins the spawn_blocking watcher synchronously.
-        // Watcher exits within 50ms (its poll interval). Requires multi-thread
-        // runtime — #[tokio::main] default; do not use current_thread flavor.
-        if let Some(h) = handle {
-            tokio::task::block_in_place(|| {
-                let _ = tokio::runtime::Handle::current().block_on(h);
-            });
-        }
-        // Stop the spinner timer and flush any pending render state (was the
-        // original end_turn body before watcher teardown moved here).
-        self.shared.borrow_mut().builder.flush();
-    }
-}
-
-/// Per-turn driver: supplies BrainLaunch data, manages the ESC-key watcher, and
-/// keeps the REPL alive on a turn error. Constructed once per session and passed
-/// to `run_loop`; no direct `turn::spine` usage.
-#[allow(dead_code)]
-pub struct ReplDriver {
-    pub codebase: PathBuf,
-    pub agent_path: Option<PathBuf>,
-    /// Retained for potential future use (e.g., cascade/SIGINT signal passing).
-    #[allow(dead_code)]
-    pub session_id: String,
-    pub config: gait_core::config::GaitConfig,
-    /// Retained for future use (workflow runner, git ops from driver context).
-    #[allow(dead_code)]
-    pub repos: gait_core::git::Repos,
-    pub shared: crate::repl::Shared,
-}
-#[async_trait::async_trait(?Send)]
-impl TurnDriver for ReplDriver {
-    fn brain_launch(&self, _session_id: &str) -> BrainLaunch {
-        let model_str = self.config.model.clone().unwrap_or_default();
-        let provider_name = model_str
-            .split_once('/')
-            .map(|(p, _)| p.to_string())
-            .unwrap_or_default();
-        let api_key = gait_core::auth::resolve_api_key(&provider_name).unwrap_or_default();
-        let gait_bin = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("gait"));
-        let agent_name = self
-            .agent_path
-            .as_ref()
-            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()));
-        let sandbox_on = self.shared.borrow().sandbox_on;
-        BrainLaunch::new(
-            self.codebase.clone(),
-            api_key,
-            gait_bin,
-            self.config.sandbox.clone(),
-            sandbox_on,
-            false, // chat is interactive
-            self.config.max_iter,
-            None, // no parent cascade group
-            agent_name,
-            self.config.model.clone(),
-            self.config.allow.clone(),
-            self.config.deny.clone(),
-            None,
-        )
-    }
-
-    fn turn_config(&mut self) -> LoopConfig {
-        use tokio_util::sync::CancellationToken;
-
-        // Fresh cancellation token + done flag for this turn.
-        let token = CancellationToken::new();
-        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let done_for_watcher = done.clone();
-        let token_clone = token.clone();
-        let handle = tokio::task::spawn_blocking(move || {
-            let _ = crossterm::terminal::enable_raw_mode();
-            let _guard = RawModeGuard;
-            loop {
-                if done_for_watcher.load(std::sync::atomic::Ordering::Relaxed) {
-                    break;
-                }
-                if crossterm::event::poll(std::time::Duration::from_millis(50)).unwrap_or(false) {
-                    if let Ok(crossterm::event::Event::Key(e)) = crossterm::event::read() {
-                        if e.code == crossterm::event::KeyCode::Esc {
-                            token_clone.cancel();
-                        }
-                    }
-                }
-            }
-        });
-        {
-            let mut s = self.shared.borrow_mut();
-            s.watcher_done = done;
-            s.watcher_handle = Some(handle);
-        }
-
-        LoopConfig {
-            auto: false,
-            max_iter: self.config.max_iter,
-            preview_policy: self.config.preview,
-            cancel: Some(token),
-            sandbox_on: self.shared.borrow().sandbox_on,
-            sandbox_cfg: self.config.sandbox.clone(),
-            relay: None,
-            initial_git: None,
-            daemons: vec![],
-        }
-    }
-
-    async fn after_turn(
-        &mut self,
-        _sink: &mut dyn gait_core::embed::TurnSink,
-        _result: &gait_core::turn::TurnResult,
-    ) {
-        // Watcher is torn down in ReplSink::end_turn() before this runs.
-    }
-
-    fn on_turn_error(
-        &mut self,
-        _sink: &mut dyn TurnSink,
-        e: anyhow::Error,
-    ) -> std::ops::ControlFlow<()> {
-        // Watcher is torn down in ReplSink::end_turn() before this runs.
-        eprint!("[gait] turn error: {e}\r\n");
-        std::ops::ControlFlow::Continue(())
-    }
-}
 
 /// Line reader + interaction/respawn. Yields `Input(user_turn)` per task line,
 /// `Resume` after appending an interaction reply, `None` on `/n`/`/q`/EOF (with a
@@ -626,51 +432,6 @@ async fn run_workflow_from_repl(
         }
     });
     format!("workflow started: {}", run_id)
-}
-
-#[cfg(test)]
-mod tests {
-    // Validates the signal+join mechanism used by end_turn.
-    // Marked ignore because it mutates terminal state — run manually:
-    //   cargo test -p gait-repl watcher_raw_mode -- --ignored
-    #[test]
-    #[ignore]
-    fn watcher_raw_mode_off_after_teardown() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        use std::sync::Arc;
-        use tokio::runtime::Runtime;
-
-        // multi-thread runtime is required for block_in_place
-        let rt = Runtime::new().unwrap();
-        rt.block_on(async {
-            let done = Arc::new(AtomicBool::new(false));
-            let done2 = done.clone();
-            let handle = tokio::task::spawn_blocking(move || {
-                let _ = crossterm::terminal::enable_raw_mode();
-                let _g = super::RawModeGuard;
-                while !done2.load(Ordering::Relaxed) {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-            });
-
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            assert!(
-                crossterm::terminal::is_raw_mode_enabled().unwrap_or(false),
-                "watcher should have enabled raw mode"
-            );
-
-            // Simulate what end_turn does: signal then block_in_place join
-            done.store(true, Ordering::SeqCst);
-            tokio::task::block_in_place(|| {
-                let _ = tokio::runtime::Handle::current().block_on(handle);
-            });
-
-            assert!(
-                !crossterm::terminal::is_raw_mode_enabled().unwrap_or(true),
-                "raw mode must be off after watcher join"
-            );
-        });
-    }
 }
 
 #[cfg(test)]
