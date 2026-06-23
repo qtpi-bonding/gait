@@ -169,8 +169,8 @@ engine. `run_turn` never touches stdin/stdout/a terminal — it only folds the l
 - `trait TurnSink { item, result, session_id, diagnostic, begin_turn, end_turn }` — the agnostic
   output contract. `drive(rx, &mut sink)` pumps the channel into a sink.
 - Adapters: **`StdioSink`** (CLI — Trace+Error → stderr, the one proto `RunResult` → stdout),
-  the REPL **`ReplSink`** (view-layer render), and **`JsonSink`** (a callback sink emitting pbjson
-  for embedders — see below).
+  the workflow-runner **view sink** (drives the REPL `ReplBuilder` for interactive prompt nodes),
+  and **`JsonSink`** (a callback sink emitting pbjson for embedders — see below).
 
 ### Input port (`port/input.rs`)
 - `trait TurnSource { async fn next() → Option<TurnStart> }` where `TurnStart{Input(event::Body) |
@@ -186,7 +186,7 @@ engine. `run_turn` never touches stdin/stdout/a terminal — it only folds the l
 - `run_loop(source, &mut sink, session, gait_dir, session_id, &mut driver)` — appends each input
   event, runs one `run_turn` per yield, pumps its stream to the sink. Shared by `cmd_run`
   (`cli/run.rs`, `ArgSource`+`StdioSink`+`CliDriver`) and `run_chat`
-  (`chat.rs`/`repl_loop.rs`, `ReplSource`+`ReplSink`+`ReplDriver`).
+  (`chat.rs`, `chat → ReplSource` driven via the workflow runner's interactive prompt node).
 
 ### The embedding facade (`gait_ai::embed`)
 The whole surface is public under one module: `TurnSource`/`TurnStart`, `TurnSink`/`JsonSink`,
