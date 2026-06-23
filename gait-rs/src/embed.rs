@@ -157,7 +157,7 @@ pub fn user_turn_events(
 pub async fn run_loop(
     mut source: impl TurnSource,
     sink: &mut impl TurnSink,
-    _session: Arc<crate::session::Session>,
+    session: Arc<crate::session::Session>,
     gait_dir: &Path,
     session_id: &str,
     driver: &mut impl TurnDriver,
@@ -167,11 +167,12 @@ pub async fn run_loop(
     while let Some(start) = source.next().await {
         if let TurnStart::Input(bodies) = start {
             // Pre-write input events (spine is the sole gait-dir writer).
-            // relay_brain_turn will create the worktree if needed (idempotent).
+            // Ensure session worktree exists before first append (once per turn, not per body).
+            session
+                .repos
+                .traces
+                .create_session_worktree(gait_dir, session_id)?;
             for body in bodies {
-                // Ensure session worktree exists before first append.
-                let repos = crate::git::Repos::production();
-                repos.traces.create_session_worktree(gait_dir, session_id)?;
                 crate::proto::wire::append(&tx_path, body)?;
             }
         }
