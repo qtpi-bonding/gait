@@ -83,10 +83,9 @@ impl Tool for ReadTool {
     }
     fn description(&self) -> &str {
         "Read a file from the codebase, optionally with line range. Each line is prefixed with \
-         #XY|content where XY is a 2-char content hash (a unique line), or #XY-N|content where \
-         N is the instance number if the same content appears multiple times in the file. \
-         Use the part after `#` as the edit ref with the `edit` tool — `XY` for unique lines, \
-         `XY-N` for duplicate lines — to modify lines without reproducing old content. \
+         `#<id>|content`. `<id>` is a 4-char content hash (e.g. `#QMZP|`). Lines that repeat \
+         get a disambiguator: `#QMZP-VRWS|` (context) or `#QMZP-VRWS-2|` (ordinal). \
+         Pass the `<id>` exactly as shown to `edit` — to modify lines without reproducing old content. \
          Paths are relative to the codebase root."
     }
     fn parameters(&self) -> &Value {
@@ -168,7 +167,7 @@ impl Tool for ReadTool {
         let end = lines.len().min(offset + limit);
 
         for annotated in annotated_all.iter().take(end).skip(offset) {
-            // Strip the `#XY|` (or `#XY-N|`) prefix, then truncate content if too long,
+            // Strip the hashline prefix (`#P4|`, `#P4-C4|`, or `#P4-C4-N|`), truncate if too long,
             // then re-stamp with the same prefix so the truncated line is still anchorable.
             let (prefix, content) = match annotated.find('|') {
                 Some(pipe) => (&annotated[..=pipe], &annotated[pipe + 1..]),
@@ -302,9 +301,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dup_lines_get_instance_suffixes() {
+    async fn dup_lines_get_context_tags() {
         let dir = TempDir::new().unwrap();
-        // Two identical lines ("same") separated by a unique line ("other")
+        // Two identical lines ("same") separated by a unique line ("other").
+        // With the 4-2-2 scheme: distinct neighbors → context tags (tier 2), not ordinals.
         std::fs::write(dir.path().join("dup.txt"), "same\nother\nsame").unwrap();
 
         let tool = ReadTool::new(make_ctx(&dir));
@@ -316,17 +316,26 @@ mod tests {
             .await
             .unwrap();
         let text = result.as_str().unwrap();
-        // First and second occurrences of "same" get -1 and -2 instance suffixes
-        assert!(text.contains("-1|same"), "first dup should be -1: {text}");
-        assert!(text.contains("-2|same"), "second dup should be -2: {text}");
+        // Both occurrences of "same" get context tags (contain '-' before the '|same').
+        let lines: Vec<&str> = text.lines().collect();
+        let same_lines: Vec<&&str> = lines.iter().filter(|l| l.ends_with("|same")).collect();
+        assert_eq!(
+            same_lines.len(),
+            2,
+            "expected 2 annotated 'same' lines: {text}"
+        );
+        for l in &same_lines {
+            assert!(l.contains('-'), "dup 'same' should have context tag: {l}");
+        }
+        // The two context tags differ (distinct neighbors).
+        assert_ne!(
+            same_lines[0], same_lines[1],
+            "context tags for 'same' should differ: {text}"
+        );
         // The unique line gets NO instance suffix
         assert!(text.contains("|other"), "got: {text}");
         assert!(
             !text.contains("-1|other"),
-            "unique line should have no suffix: {text}"
-        );
-        assert!(
-            !text.contains("-2|other"),
             "unique line should have no suffix: {text}"
         );
     }
