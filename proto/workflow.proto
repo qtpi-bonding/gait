@@ -76,7 +76,7 @@ message PromptNode {
   string          continue_session = 2;  // empty => fresh; else continue this session id
   optional string codebase         = 3;
 }
-message ShellNode  { string command = 1; }
+message ShellNode  { string command = 1; optional uint64 timeout_ms = 2; }
 message BranchNode {
   string          on     = 1;
   optional string then   = 2;

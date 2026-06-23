@@ -75,10 +75,13 @@ fn node_type_name(node: &Node) -> &'static str {
 }
 
 /// Nodes whose depends_on are all satisfied, not yet completed, and not in-flight.
+/// `exclude` is an optional set of node IDs to skip (used to exclude goto-only targets
+/// from the initial ready set — they should only be enqueued via ErrorGoto).
 fn compute_ready_nodes(
     nodes: &[Node],
     completed: &HashSet<String>,
     in_flight: &HashSet<String>,
+    exclude: &HashSet<String>,
 ) -> Vec<usize> {
     nodes
         .iter()
@@ -86,9 +89,39 @@ fn compute_ready_nodes(
         .filter(|(_, n)| {
             !completed.contains(&n.id)
                 && !in_flight.contains(&n.id)
+                && !exclude.contains(&n.id)
                 && n.depends_on.iter().all(|dep| completed.contains(dep))
         })
         .map(|(i, _)| i)
+        .collect()
+}
+
+/// Returns the set of node IDs that are exclusively reachable via `on_error.goto`
+/// and have no `depends_on` entries (i.e., they would otherwise be picked up as
+/// initial ready nodes but should only be enqueued on error).
+fn goto_only_nodes(nodes: &[Node]) -> HashSet<String> {
+    // Collect all node IDs referenced as on_error.goto targets.
+    let goto_targets: HashSet<String> = nodes
+        .iter()
+        .filter_map(|n| {
+            n.on_error
+                .as_ref()
+                .and_then(|oe| oe.goto.as_ref())
+                .filter(|g| g.as_str() != "abort" && g.as_str() != "continue")
+                .cloned()
+        })
+        .collect();
+    // A node is "goto-only" if it appears as a goto target and has no depends_on
+    // (nodes with depends_on are already blocked from the initial ready set).
+    goto_targets
+        .into_iter()
+        .filter(|id| {
+            nodes
+                .iter()
+                .find(|n| &n.id == id)
+                .map(|n| n.depends_on.is_empty())
+                .unwrap_or(false)
+        })
         .collect()
 }
 
@@ -352,8 +385,12 @@ pub async fn run_workflow(
         // Seed completed from prior (resumed) run
         sync_completed(&mut completed, &state, &wf.nodes);
 
+        // Compute nodes that are exclusively reachable via on_error.goto — these
+        // must not be enqueued at startup; they are only triggered on error.
+        let goto_only = goto_only_nodes(&wf.nodes);
+
         // Enqueue all initially ready nodes; run interactive ones inline.
-        let initially_ready = compute_ready_nodes(&wf.nodes, &completed, &in_flight);
+        let initially_ready = compute_ready_nodes(&wf.nodes, &completed, &in_flight, &goto_only);
         for idx in initially_ready {
             let node = wf.nodes[idx].clone();
             if is_interactive_node(&node) {
@@ -598,7 +635,8 @@ pub async fn run_workflow(
                     }
 
                     // Newly ready nodes (depends_on satisfied)
-                    let new_ready = compute_ready_nodes(&wf.nodes, &completed, &in_flight);
+                    let new_ready =
+                        compute_ready_nodes(&wf.nodes, &completed, &in_flight, &HashSet::new());
                     for idx in new_ready {
                         let target = wf.nodes[idx].clone();
                         enqueue_node_task(
@@ -704,7 +742,8 @@ pub async fn run_workflow(
                     completed.insert(node_id.clone());
 
                     // Check for newly unblocked nodes
-                    let new_ready = compute_ready_nodes(&wf.nodes, &completed, &in_flight);
+                    let new_ready =
+                        compute_ready_nodes(&wf.nodes, &completed, &in_flight, &HashSet::new());
                     for idx in new_ready {
                         let target = wf.nodes[idx].clone();
                         enqueue_node_task(
@@ -1124,7 +1163,7 @@ mod tests {
         let nodes = vec![node("a", &[]), node("b", &[]), node("c", &["a"])];
         let completed = HashSet::new();
         let in_flight: HashSet<String> = HashSet::new();
-        let ready = compute_ready_nodes(&nodes, &completed, &in_flight);
+        let ready = compute_ready_nodes(&nodes, &completed, &in_flight, &HashSet::new());
         let ids: HashSet<&str> = ready.iter().map(|&i| nodes[i].id.as_str()).collect();
         assert!(ids.contains("a"));
         assert!(ids.contains("b"));
@@ -1136,7 +1175,7 @@ mod tests {
         let nodes = vec![node("a", &[]), node("b", &[]), node("c", &["a", "b"])];
         let completed: HashSet<String> = ["a".into(), "b".into()].into();
         let in_flight: HashSet<String> = HashSet::new();
-        let ready = compute_ready_nodes(&nodes, &completed, &in_flight);
+        let ready = compute_ready_nodes(&nodes, &completed, &in_flight, &HashSet::new());
         let ids: Vec<&str> = ready.iter().map(|&i| nodes[i].id.as_str()).collect();
         assert!(ids.contains(&"c"));
     }
@@ -1146,7 +1185,7 @@ mod tests {
         let nodes = vec![node("a", &[]), node("b", &[])];
         let completed: HashSet<String> = HashSet::new();
         let in_flight: HashSet<String> = ["a".into()].into();
-        let ready = compute_ready_nodes(&nodes, &completed, &in_flight);
+        let ready = compute_ready_nodes(&nodes, &completed, &in_flight, &HashSet::new());
         let ids: Vec<&str> = ready.iter().map(|&i| nodes[i].id.as_str()).collect();
         assert!(!ids.contains(&"a"));
         assert!(ids.contains(&"b"));

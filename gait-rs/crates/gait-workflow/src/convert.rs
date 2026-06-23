@@ -46,6 +46,7 @@ fn node_to_proto(n: &NodeDef) -> Node {
     } else if let Some(s) = &n.shell {
         Some(node::Body::Shell(ShellNode {
             command: s.run().to_string(),
+            timeout_ms: Some(s.timeout_ms()),
         }))
     } else if let Some(b) = &n.branch {
         Some(node::Body::Branch(BranchNode {

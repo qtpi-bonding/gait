@@ -21,8 +21,7 @@ pub async fn exec_shell_node(
     ctx: &NodeContext<'_>,
 ) -> anyhow::Result<NodeOutput> {
     let cmd = substitute(&shell.command, &ctx.vars);
-    // Proto ShellNode has only `command`; use conservative defaults.
-    let timeout_ms: u64 = 120_000;
+    let timeout_ms: u64 = shell.timeout_ms.unwrap_or(120_000);
     let cwd = ctx.codebase;
 
     let result = tokio::time::timeout(
@@ -63,6 +62,7 @@ mod tests {
         let ws = TempDir::new().unwrap();
         let shell = ShellNode {
             command: "echo hello".into(),
+            timeout_ms: None,
         };
         let ctx = make_test_ctx(ws.path());
         let out = exec_shell_node(&shell, &ctx).await.unwrap();
@@ -75,6 +75,7 @@ mod tests {
         let ws = TempDir::new().unwrap();
         let shell = ShellNode {
             command: "exit 1".into(),
+            timeout_ms: None,
         };
         let ctx = make_test_ctx(ws.path());
         let out = exec_shell_node(&shell, &ctx).await.unwrap();
