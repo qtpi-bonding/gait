@@ -157,7 +157,27 @@ pub async fn run_chat(
             .join("tmp")
             .join(format!("shell-{}.jsonl", session_id));
         nav.lock().unwrap().path = shell_history_path.clone();
-        let config = gait_core::config::load_config(&gait_dir);
+
+        // Build a degenerate single-node workflow that drives the interactive
+        // REPL session.  The prompt is empty so exec_prompt_node treats this
+        // as an interactive node and passes the live ReplSource through.
+        // continue_session pins the node to the current session's log.
+        let wf_node = gait_core::proto::gait::workflow::v1::Node {
+            id: "chat".to_string(),
+            body: Some(gait_core::proto::gait::workflow::v1::node::Body::Prompt(
+                gait_core::proto::gait::workflow::v1::PromptNode {
+                    prompt: String::new(),
+                    continue_session: session_id.clone(),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        };
+        let wf_def = gait_core::proto::gait::workflow::v1::Workflow {
+            name: "chat".to_string(),
+            nodes: vec![wf_node],
+            ..Default::default()
+        };
 
         let source = crate::repl::ReplSource {
             shared: shared.clone(),
@@ -173,37 +193,25 @@ pub async fn run_chat(
             last_blocks: Vec::new(),
             ran_turn: false,
         };
-        let mut sink = crate::repl::ReplSink {
-            shared: shared.clone(),
-        };
-        let mut driver = crate::repl::ReplDriver {
-            codebase: codebase.clone(),
-            agent_path: agent_path.clone(),
-            session_id: session_id.clone(),
-            config,
-            repos: repos.clone(),
-            shared: shared.clone(),
-        };
 
-        // Drive turns for this session via the unified run_loop.
-        // ReplDriver::turn_config() spawns the ESC-key watcher; ReplSink::end_turn()
-        // tears it down. No competing watcher — the chat.rs inline one is gone.
-        let session = std::sync::Arc::new(
-            gait_core::Session::open(gait_dir.clone(), codebase.clone(), session_id.clone())
-                .map_err(|e| anyhow::anyhow!("open session: {e}"))?,
-        );
-        gait_core::embed::run_loop(
-            source,
-            &mut sink,
-            session,
-            &gait_dir,
-            &session_id,
-            &mut driver,
-            Some(&kill_handle),
+        let run_id = format!("chat-{}", session_id);
+        let _outcome = gait_workflow::run_workflow(
+            gait_workflow::WorkflowRunOpts {
+                workflow_def: wf_def,
+                yaml_path: String::new(),
+                session_id: run_id,
+                gait_dir: gait_dir.clone(),
+                codebase: codebase.clone(),
+                args: vec![],
+            },
+            &mut gait_workflow::observer::CliObserver::default(),
+            Some(Box::new(source)),
         )
         .await?;
+        // NodeOpen means the ReplSource yielded None (the user typed /q, /n,
+        // or EOF).  Check the control signal to decide whether to loop.
 
-        // The source ended the loop with a control signal (or EOF).
+        // The source ended the run with a control signal (or EOF).
         let control = shared.borrow_mut().control.take();
         match control {
             Some(crate::repl::Control::NewSession(id)) => {

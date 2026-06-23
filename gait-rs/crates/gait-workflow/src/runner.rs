@@ -263,10 +263,18 @@ pub enum WorkflowOutcome {
     NodeOpen,
 }
 
+/// Returns `true` if the node is an absent-prompt (interactive) node that
+/// should be driven with a live `TurnSource` rather than queued in the
+/// `FuturesUnordered` pool.
+fn is_interactive_node(node: &gait_core::proto::gait::workflow::v1::Node) -> bool {
+    use gait_core::proto::gait::workflow::v1::node;
+    matches!(node.body.as_ref(), Some(node::Body::Prompt(p)) if p.prompt.is_empty())
+}
+
 pub async fn run_workflow(
     opts: WorkflowRunOpts,
     observer: &mut dyn WorkflowObserver,
-    _input: Option<Box<dyn TurnSource>>,
+    input: Option<Box<dyn TurnSource>>,
 ) -> anyhow::Result<WorkflowOutcome> {
     let WorkflowRunOpts {
         workflow_def: wf_owned,
@@ -305,206 +313,232 @@ pub async fn run_workflow(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<StreamItem>();
     let rec = Recorder::for_session(&gait_dir, &session_id, tx);
 
-    let run_result: anyhow::Result<WorkflowOutcome> =
-        async {
-            if wf_events.is_empty() {
-                emit_workflow_start(
-                    &rec,
-                    &repos,
-                    &wf,
-                    &workflow_id,
-                    &yaml_path,
-                    &args,
-                    &args_str,
-                    &gait_dir,
-                    &session_id,
-                    &codebase,
-                    &state,
-                    &run_log,
-                    observer,
-                )
-                .await?;
+    // Interactive (absent-prompt) nodes must be driven with the owned live
+    // source outside the FuturesUnordered pool (which requires Send).  We
+    // consume `input` the first time we encounter such a node; subsequent
+    // interactive nodes (if any) fall through to NodeOpen as before.
+    let mut live_input: Option<Box<dyn TurnSource>> = input;
+
+    let run_result: anyhow::Result<WorkflowOutcome> = async {
+        if wf_events.is_empty() {
+            emit_workflow_start(
+                &rec,
+                &repos,
+                &wf,
+                &workflow_id,
+                &yaml_path,
+                &args,
+                &args_str,
+                &gait_dir,
+                &session_id,
+                &codebase,
+                &state,
+                &run_log,
+                observer,
+            )
+            .await?;
+        }
+
+        if let Some(gate_id) = state.gate_paused.take() {
+            state.set_status(&gate_id, NodeStatus::Done);
+        }
+
+        let mut completed: HashSet<String> = HashSet::new();
+        let mut in_flight: HashSet<String> = HashSet::new();
+        let mut tasks: FuturesUnordered<NodeFuture> = FuturesUnordered::new();
+        let mut goto_hops: HashMap<String, u32> = HashMap::new();
+        const MAX_GOTO_HOPS: u32 = 1000;
+
+        // Seed completed from prior (resumed) run
+        sync_completed(&mut completed, &state, &wf.nodes);
+
+        // Enqueue all initially ready nodes; run interactive ones inline.
+        let initially_ready = compute_ready_nodes(&wf.nodes, &completed, &in_flight);
+        for idx in initially_ready {
+            let node = wf.nodes[idx].clone();
+            if is_interactive_node(&node) {
+                if let Some(live) = live_input.take() {
+                    // Run the interactive node inline with the live source, then
+                    // return NodeOpen so the caller can restart with a fresh source.
+                    let node_id = node.id.clone();
+                    let ntype = "prompt";
+                    observer.on_event(&run_log.node_start(&node_id, ntype, 1, &session_id)?);
+                    state.set_status(&node_id, NodeStatus::Running);
+                    let vars = VarContext {
+                        workflow_id: workflow_id.clone(),
+                        session_id: session_id.clone(),
+                        gait_dir: gait_dir.clone(),
+                        codebase: codebase.clone(),
+                        args: args_str.clone(),
+                        node_id: node_id.clone(),
+                        node_outputs: state.node_outputs.clone(),
+                        node_exit: None,
+                        failed_node: state.failed_node.clone(),
+                    };
+                    let ctx = crate::exec_shell::NodeContext {
+                        workflow_id: &workflow_id,
+                        session_id: &session_id,
+                        gait_dir: &gait_dir,
+                        codebase: &codebase,
+                        vars,
+                        workflow_tx: rec.sender(),
+                    };
+                    let _out = crate::exec_prompt::exec_prompt_node(
+                        &node,
+                        match node.body.as_ref() {
+                            Some(gait_core::proto::gait::workflow::v1::node::Body::Prompt(p)) => p,
+                            _ => unreachable!(),
+                        },
+                        &ctx,
+                        &wf,
+                        Some(live),
+                    )
+                    .await?;
+                    update_progress(
+                        &gait_dir,
+                        &session_id,
+                        &workflow_id,
+                        &wf.name,
+                        &state,
+                        &wf.nodes,
+                    )?;
+                    repos.traces.commit_session(
+                        &gait_dir,
+                        &session_id,
+                        &format!("workflow: open node {}", node_id),
+                    )?;
+                    return Ok(WorkflowOutcome::NodeOpen);
+                }
+                // No live input available → fall through to non-interactive path
+                // (will return NodeOpen via task pool as before).
+            }
+            enqueue_node_task(
+                node,
+                &wf,
+                &workflow_id,
+                &session_id,
+                &gait_dir,
+                &codebase,
+                &args_str,
+                &mut state,
+                &mut in_flight,
+                &mut tasks,
+                &rec,
+                &run_log,
+                observer,
+            )
+            .await?;
+        }
+
+        loop {
+            if tasks.is_empty() {
+                break;
             }
 
-            if let Some(gate_id) = state.gate_paused.take() {
-                state.set_status(&gate_id, NodeStatus::Done);
+            let (node_id, outcome) = match tasks.next().await {
+                Some(Ok(r)) => r,
+                Some(Err(e)) => return Err(e),
+                None => break,
+            };
+            // Drain stream items produced while the task was running.
+            while let Ok(item) = rx.try_recv() {
+                observer.on_stream_item(&item);
             }
+            in_flight.remove(&node_id);
 
-            let mut completed: HashSet<String> = HashSet::new();
-            let mut in_flight: HashSet<String> = HashSet::new();
-            let mut tasks: FuturesUnordered<NodeFuture> = FuturesUnordered::new();
-            let mut goto_hops: HashMap<String, u32> = HashMap::new();
-            const MAX_GOTO_HOPS: u32 = 1000;
+            let node = wf
+                .nodes
+                .iter()
+                .find(|n| n.id == node_id)
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("completed node '{}' not found in workflow", node_id)
+                })?;
+            let env = make_env_vars(
+                &workflow_id,
+                &session_id,
+                &gait_dir,
+                &codebase,
+                &args_str,
+                Some(&node_id),
+                &state,
+            );
 
-            // Seed completed from prior (resumed) run
-            sync_completed(&mut completed, &state, &wf.nodes);
-
-            // Enqueue all initially ready nodes
-            let initially_ready = compute_ready_nodes(&wf.nodes, &completed, &in_flight);
-            for idx in initially_ready {
-                let node = wf.nodes[idx].clone();
-                enqueue_node_task(
-                    node,
-                    &wf,
-                    &workflow_id,
-                    &session_id,
-                    &gait_dir,
-                    &codebase,
-                    &args_str,
-                    &mut state,
-                    &mut in_flight,
-                    &mut tasks,
-                    &rec,
-                    &run_log,
-                    observer,
-                )
-                .await?;
-            }
-
-            loop {
-                if tasks.is_empty() {
-                    break;
+            match outcome {
+                NodeTaskOutcome::Open => {
+                    // Absent-prompt node, no input: exit cleanly without settling.
+                    // NodeStart was already recorded in enqueue_node_task;
+                    // NodeComplete is NOT emitted — the node is left in Running
+                    // state so reconstruct_state.open_node() returns it.
+                    update_progress(
+                        &gait_dir,
+                        &session_id,
+                        &workflow_id,
+                        &wf.name,
+                        &state,
+                        &wf.nodes,
+                    )?;
+                    repos.traces.commit_session(
+                        &gait_dir,
+                        &session_id,
+                        &format!("workflow: open node {}", node_id),
+                    )?;
+                    return Ok(WorkflowOutcome::NodeOpen);
                 }
 
-                let (node_id, outcome) = match tasks.next().await {
-                    Some(Ok(r)) => r,
-                    Some(Err(e)) => return Err(e),
-                    None => break,
-                };
-                // Drain stream items produced while the task was running.
-                while let Ok(item) = rx.try_recv() {
-                    observer.on_stream_item(&item);
-                }
-                in_flight.remove(&node_id);
+                NodeTaskOutcome::Done(ref out) => {
+                    rec.record(wire::raw(
+                        "node_complete",
+                        serde_json::json!({
+                            "workflow_id": workflow_id.clone(), "node_id": node_id.clone(),
+                            "output": out.text.clone(), "exit_code": out.exit_code,
+                            "json_output": out.json.clone(), "routed_to": out.routed_to.clone(),
+                        }),
+                    ))?;
+                    observer.on_event(&run_log.node_complete(
+                        &node_id,
+                        &session_id,
+                        &out.text,
+                        out.exit_code,
+                        &out.json.as_ref().map(|v| v.to_string()).unwrap_or_default(),
+                        out.routed_to.as_deref().unwrap_or(""),
+                    )?);
+                    state.set_status(&node_id, NodeStatus::Done);
+                    state.node_outputs.insert(node_id.clone(), out.clone());
+                    completed.insert(node_id.clone());
 
-                let node = wf
-                    .nodes
-                    .iter()
-                    .find(|n| n.id == node_id)
-                    .cloned()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("completed node '{}' not found in workflow", node_id)
-                    })?;
-                let env = make_env_vars(
-                    &workflow_id,
-                    &session_id,
-                    &gait_dir,
-                    &codebase,
-                    &args_str,
-                    Some(&node_id),
-                    &state,
-                );
-
-                match outcome {
-                    NodeTaskOutcome::Open => {
-                        // Absent-prompt node, no input: exit cleanly without settling.
-                        // NodeStart was already recorded in enqueue_node_task;
-                        // NodeComplete is NOT emitted — the node is left in Running
-                        // state so reconstruct_state.open_node() returns it.
-                        update_progress(
-                            &gait_dir,
-                            &session_id,
-                            &workflow_id,
-                            &wf.name,
-                            &state,
-                            &wf.nodes,
-                        )?;
-                        repos.traces.commit_session(
-                            &gait_dir,
-                            &session_id,
-                            &format!("workflow: open node {}", node_id),
-                        )?;
-                        return Ok(WorkflowOutcome::NodeOpen);
+                    // After hooks
+                    if let Some(hooks) = &node.hooks {
+                        if let Some(cmd) = &hooks.after {
+                            let (exit, _) = run_hook(cmd, &env).await;
+                            rec.record(wire::raw(
+                                "hook_run",
+                                serde_json::json!({
+                                    "workflow_id": workflow_id.clone(), "node_id": node_id.clone(),
+                                    "hook_type": "after", "cmd": cmd.clone(), "exit_code": exit,
+                                }),
+                            ))?;
+                        }
                     }
 
-                    NodeTaskOutcome::Done(ref out) => {
-                        rec.record(wire::raw(
-                            "node_complete",
-                            serde_json::json!({
-                                "workflow_id": workflow_id.clone(), "node_id": node_id.clone(),
-                                "output": out.text.clone(), "exit_code": out.exit_code,
-                                "json_output": out.json.clone(), "routed_to": out.routed_to.clone(),
-                            }),
-                        ))?;
-                        observer.on_event(&run_log.node_complete(
-                            &node_id,
-                            &session_id,
-                            &out.text,
-                            out.exit_code,
-                            &out.json.as_ref().map(|v| v.to_string()).unwrap_or_default(),
-                            out.routed_to.as_deref().unwrap_or(""),
-                        )?);
-                        state.set_status(&node_id, NodeStatus::Done);
-                        state.node_outputs.insert(node_id.clone(), out.clone());
-                        completed.insert(node_id.clone());
-
-                        // After hooks
-                        if let Some(hooks) = &node.hooks {
-                            if let Some(cmd) = &hooks.after {
-                                let (exit, _) = run_hook(cmd, &env).await;
-                                rec.record(wire::raw("hook_run", serde_json::json!({
-                                "workflow_id": workflow_id.clone(), "node_id": node_id.clone(),
-                                "hook_type": "after", "cmd": cmd.clone(), "exit_code": exit,
-                            })))?;
-                            }
-                        }
-
-                        // Branch routing: mark non-taken paths as skipped, enqueue taken path
-                        if let Some(node::Body::Branch(_)) = node.body.as_ref() {
-                            if let Some(routed_to) = &out.routed_to {
-                                propagate_branch_skips(
-                                    &node,
-                                    routed_to,
-                                    &mut state,
-                                    &rec,
-                                    &workflow_id,
-                                    &run_log,
-                                    observer,
-                                )?;
-                                sync_completed(&mut completed, &state, &wf.nodes);
-                                // Enqueue the branch target (supports cycles: re-enqueue even if completed)
-                                if let Some(target_idx) =
-                                    wf.nodes.iter().position(|n| &n.id == routed_to)
-                                {
-                                    if !in_flight.contains(routed_to.as_str()) {
-                                        let target = wf.nodes[target_idx].clone();
-                                        enqueue_node_task(
-                                            target,
-                                            &wf,
-                                            &workflow_id,
-                                            &session_id,
-                                            &gait_dir,
-                                            &codebase,
-                                            &args_str,
-                                            &mut state,
-                                            &mut in_flight,
-                                            &mut tasks,
-                                            &rec,
-                                            &run_log,
-                                            observer,
-                                        )
-                                        .await?;
-                                    }
-                                }
-                            }
-                            // No routed_to = terminal branch path, nothing to enqueue
-                        }
-
-                        // Unconditional goto (supports cycles: re-enqueue even if completed)
-                        if let Some(goto_id) = &node.goto {
-                            let hops = goto_hops.entry(node_id.clone()).or_insert(0);
-                            *hops += 1;
-                            if *hops > MAX_GOTO_HOPS {
-                                anyhow::bail!(
-                                    "goto cycle limit exceeded at node '{}' after {} hops",
-                                    node_id,
-                                    hops
-                                );
-                            }
-                            if !in_flight.contains(goto_id.as_str()) {
-                                if let Some(target_idx) =
-                                    wf.nodes.iter().position(|n| &n.id == goto_id)
-                                {
+                    // Branch routing: mark non-taken paths as skipped, enqueue taken path
+                    if let Some(node::Body::Branch(_)) = node.body.as_ref() {
+                        if let Some(routed_to) = &out.routed_to {
+                            propagate_branch_skips(
+                                &node,
+                                routed_to,
+                                &mut state,
+                                &rec,
+                                &workflow_id,
+                                &run_log,
+                                observer,
+                            )?;
+                            sync_completed(&mut completed, &state, &wf.nodes);
+                            // Enqueue the branch target (supports cycles: re-enqueue even if completed)
+                            if let Some(target_idx) =
+                                wf.nodes.iter().position(|n| &n.id == routed_to)
+                            {
+                                if !in_flight.contains(routed_to.as_str()) {
                                     let target = wf.nodes[target_idx].clone();
                                     enqueue_node_task(
                                         target,
@@ -525,165 +559,23 @@ pub async fn run_workflow(
                                 }
                             }
                         }
-
-                        // Newly ready nodes (depends_on satisfied)
-                        let new_ready = compute_ready_nodes(&wf.nodes, &completed, &in_flight);
-                        for idx in new_ready {
-                            let target = wf.nodes[idx].clone();
-                            enqueue_node_task(
-                                target,
-                                &wf,
-                                &workflow_id,
-                                &session_id,
-                                &gait_dir,
-                                &codebase,
-                                &args_str,
-                                &mut state,
-                                &mut in_flight,
-                                &mut tasks,
-                                &rec,
-                                &run_log,
-                                observer,
-                            )
-                            .await?;
-                        }
+                        // No routed_to = terminal branch path, nothing to enqueue
                     }
 
-                    NodeTaskOutcome::GatePaused(ref out) => {
-                        rec.record(wire::raw(
-                            "workflow_gate",
-                            serde_json::json!({
-                                "workflow_id": workflow_id.clone(),
-                                "node_id": node_id.clone(),
-                                "message": out.text.clone(),
-                            }),
-                        ))?;
-                        observer.on_event(&run_log.workflow_gate(&node_id, &out.text)?);
-                        state.set_status(&node_id, NodeStatus::Paused);
-                        update_progress(
-                            &gait_dir,
-                            &session_id,
-                            &workflow_id,
-                            &wf.name,
-                            &state,
-                            &wf.nodes,
-                        )?;
-                        repos.traces.commit_session(
-                            &gait_dir,
-                            &session_id,
-                            &format!("workflow: gate {}", node_id),
-                        )?;
-                        eprintln!("[gait workflow] paused at gate '{}'", node_id);
-                        return Ok(WorkflowOutcome::GatePaused);
-                    }
-
-                    NodeTaskOutcome::Error(ref msg) => {
-                        if let Some(hooks) = &node.hooks {
-                            if let Some(cmd) = &hooks.error {
-                                run_hook(cmd, &env).await;
-                            }
+                    // Unconditional goto (supports cycles: re-enqueue even if completed)
+                    if let Some(goto_id) = &node.goto {
+                        let hops = goto_hops.entry(node_id.clone()).or_insert(0);
+                        *hops += 1;
+                        if *hops > MAX_GOTO_HOPS {
+                            anyhow::bail!(
+                                "goto cycle limit exceeded at node '{}' after {} hops",
+                                node_id,
+                                hops
+                            );
                         }
-                        state.set_status(&node_id, NodeStatus::Error(msg.clone()));
-                        state.failed_node = Some(node_id.clone());
-                        completed.insert(node_id.clone());
-
-                        rec.record(wire::raw(
-                            "node_error",
-                            serde_json::json!({
-                                "workflow_id": workflow_id.clone(), "node_id": node_id.clone(),
-                                "error": msg.clone(), "attempt": 1,
-                            }),
-                        ))?;
-                        rec.record(wire::raw(
-                            "workflow_error",
-                            serde_json::json!({
-                                "workflow_id": workflow_id.clone(), "failed_node": node_id.clone(),
-                                "error": msg.clone(),
-                            }),
-                        ))?;
-                        observer.on_event(&run_log.node_error(&node_id, msg, 1)?);
-                        observer.on_event(&run_log.workflow_error(&session_id, &node_id, msg)?);
-
-                        // Proto Workflow has no workflow-level error hook; per-node hooks
-                        // on the failing node are already run above via node.hooks.
-
-                        update_progress(
-                            &gait_dir,
-                            &session_id,
-                            &workflow_id,
-                            &wf.name,
-                            &state,
-                            &wf.nodes,
-                        )?;
-                        repos.traces.commit_session(
-                            &gait_dir,
-                            &session_id,
-                            &format!("workflow: error at {}", node_id),
-                        )?;
-                        anyhow::bail!("workflow aborted at node '{}': {}", node_id, msg);
-                    }
-
-                    NodeTaskOutcome::ErrorContinue => {
-                        if let Some(hooks) = &node.hooks {
-                            if let Some(cmd) = &hooks.error {
-                                run_hook(cmd, &env).await;
-                            }
-                        }
-                        state.set_status(&node_id, NodeStatus::Skipped);
-                        completed.insert(node_id.clone());
-
-                        // Check for newly unblocked nodes
-                        let new_ready = compute_ready_nodes(&wf.nodes, &completed, &in_flight);
-                        for idx in new_ready {
-                            let target = wf.nodes[idx].clone();
-                            enqueue_node_task(
-                                target,
-                                &wf,
-                                &workflow_id,
-                                &session_id,
-                                &gait_dir,
-                                &codebase,
-                                &args_str,
-                                &mut state,
-                                &mut in_flight,
-                                &mut tasks,
-                                &rec,
-                                &run_log,
-                                observer,
-                            )
-                            .await?;
-                        }
-                    }
-
-                    NodeTaskOutcome::ErrorGoto(ref goto_id) => {
-                        if let Some(hooks) = &node.hooks {
-                            if let Some(cmd) = &hooks.error {
-                                run_hook(cmd, &env).await;
-                            }
-                        }
-                        state.set_status(
-                            &node_id,
-                            NodeStatus::Error(format!("routed to {}", goto_id)),
-                        );
-                        state.failed_node = Some(node_id.clone());
-                        completed.insert(node_id.clone());
-
-                        rec.record(wire::raw(
-                            "node_error",
-                            serde_json::json!({
-                                "workflow_id": workflow_id.clone(), "node_id": node_id.clone(),
-                                "error": format!("on_error goto: {}", goto_id), "attempt": 1,
-                            }),
-                        ))?;
-                        observer.on_event(&run_log.node_error(
-                            &node_id,
-                            &format!("on_error goto: {}", goto_id),
-                            1,
-                        )?);
-
-                        // Enqueue the error-recovery node
-                        if let Some(target_idx) = wf.nodes.iter().position(|n| &n.id == goto_id) {
-                            if !in_flight.contains(goto_id.as_str()) {
+                        if !in_flight.contains(goto_id.as_str()) {
+                            if let Some(target_idx) = wf.nodes.iter().position(|n| &n.id == goto_id)
+                            {
                                 let target = wf.nodes[target_idx].clone();
                                 enqueue_node_task(
                                     target,
@@ -704,40 +596,219 @@ pub async fn run_workflow(
                             }
                         }
                     }
+
+                    // Newly ready nodes (depends_on satisfied)
+                    let new_ready = compute_ready_nodes(&wf.nodes, &completed, &in_flight);
+                    for idx in new_ready {
+                        let target = wf.nodes[idx].clone();
+                        enqueue_node_task(
+                            target,
+                            &wf,
+                            &workflow_id,
+                            &session_id,
+                            &gait_dir,
+                            &codebase,
+                            &args_str,
+                            &mut state,
+                            &mut in_flight,
+                            &mut tasks,
+                            &rec,
+                            &run_log,
+                            observer,
+                        )
+                        .await?;
+                    }
                 }
 
-                update_progress(
-                    &gait_dir,
-                    &session_id,
-                    &workflow_id,
-                    &wf.name,
-                    &state,
-                    &wf.nodes,
-                )?;
-                repos.traces.commit_session(
-                    &gait_dir,
-                    &session_id,
-                    &format!("workflow: {}", node_id),
-                )?;
+                NodeTaskOutcome::GatePaused(ref out) => {
+                    rec.record(wire::raw(
+                        "workflow_gate",
+                        serde_json::json!({
+                            "workflow_id": workflow_id.clone(),
+                            "node_id": node_id.clone(),
+                            "message": out.text.clone(),
+                        }),
+                    ))?;
+                    observer.on_event(&run_log.workflow_gate(&node_id, &out.text)?);
+                    state.set_status(&node_id, NodeStatus::Paused);
+                    update_progress(
+                        &gait_dir,
+                        &session_id,
+                        &workflow_id,
+                        &wf.name,
+                        &state,
+                        &wf.nodes,
+                    )?;
+                    repos.traces.commit_session(
+                        &gait_dir,
+                        &session_id,
+                        &format!("workflow: gate {}", node_id),
+                    )?;
+                    eprintln!("[gait workflow] paused at gate '{}'", node_id);
+                    return Ok(WorkflowOutcome::GatePaused);
+                }
+
+                NodeTaskOutcome::Error(ref msg) => {
+                    if let Some(hooks) = &node.hooks {
+                        if let Some(cmd) = &hooks.error {
+                            run_hook(cmd, &env).await;
+                        }
+                    }
+                    state.set_status(&node_id, NodeStatus::Error(msg.clone()));
+                    state.failed_node = Some(node_id.clone());
+                    completed.insert(node_id.clone());
+
+                    rec.record(wire::raw(
+                        "node_error",
+                        serde_json::json!({
+                            "workflow_id": workflow_id.clone(), "node_id": node_id.clone(),
+                            "error": msg.clone(), "attempt": 1,
+                        }),
+                    ))?;
+                    rec.record(wire::raw(
+                        "workflow_error",
+                        serde_json::json!({
+                            "workflow_id": workflow_id.clone(), "failed_node": node_id.clone(),
+                            "error": msg.clone(),
+                        }),
+                    ))?;
+                    observer.on_event(&run_log.node_error(&node_id, msg, 1)?);
+                    observer.on_event(&run_log.workflow_error(&session_id, &node_id, msg)?);
+
+                    // Proto Workflow has no workflow-level error hook; per-node hooks
+                    // on the failing node are already run above via node.hooks.
+
+                    update_progress(
+                        &gait_dir,
+                        &session_id,
+                        &workflow_id,
+                        &wf.name,
+                        &state,
+                        &wf.nodes,
+                    )?;
+                    repos.traces.commit_session(
+                        &gait_dir,
+                        &session_id,
+                        &format!("workflow: error at {}", node_id),
+                    )?;
+                    anyhow::bail!("workflow aborted at node '{}': {}", node_id, msg);
+                }
+
+                NodeTaskOutcome::ErrorContinue => {
+                    if let Some(hooks) = &node.hooks {
+                        if let Some(cmd) = &hooks.error {
+                            run_hook(cmd, &env).await;
+                        }
+                    }
+                    state.set_status(&node_id, NodeStatus::Skipped);
+                    completed.insert(node_id.clone());
+
+                    // Check for newly unblocked nodes
+                    let new_ready = compute_ready_nodes(&wf.nodes, &completed, &in_flight);
+                    for idx in new_ready {
+                        let target = wf.nodes[idx].clone();
+                        enqueue_node_task(
+                            target,
+                            &wf,
+                            &workflow_id,
+                            &session_id,
+                            &gait_dir,
+                            &codebase,
+                            &args_str,
+                            &mut state,
+                            &mut in_flight,
+                            &mut tasks,
+                            &rec,
+                            &run_log,
+                            observer,
+                        )
+                        .await?;
+                    }
+                }
+
+                NodeTaskOutcome::ErrorGoto(ref goto_id) => {
+                    if let Some(hooks) = &node.hooks {
+                        if let Some(cmd) = &hooks.error {
+                            run_hook(cmd, &env).await;
+                        }
+                    }
+                    state.set_status(
+                        &node_id,
+                        NodeStatus::Error(format!("routed to {}", goto_id)),
+                    );
+                    state.failed_node = Some(node_id.clone());
+                    completed.insert(node_id.clone());
+
+                    rec.record(wire::raw(
+                        "node_error",
+                        serde_json::json!({
+                            "workflow_id": workflow_id.clone(), "node_id": node_id.clone(),
+                            "error": format!("on_error goto: {}", goto_id), "attempt": 1,
+                        }),
+                    ))?;
+                    observer.on_event(&run_log.node_error(
+                        &node_id,
+                        &format!("on_error goto: {}", goto_id),
+                        1,
+                    )?);
+
+                    // Enqueue the error-recovery node
+                    if let Some(target_idx) = wf.nodes.iter().position(|n| &n.id == goto_id) {
+                        if !in_flight.contains(goto_id.as_str()) {
+                            let target = wf.nodes[target_idx].clone();
+                            enqueue_node_task(
+                                target,
+                                &wf,
+                                &workflow_id,
+                                &session_id,
+                                &gait_dir,
+                                &codebase,
+                                &args_str,
+                                &mut state,
+                                &mut in_flight,
+                                &mut tasks,
+                                &rec,
+                                &run_log,
+                                observer,
+                            )
+                            .await?;
+                        }
+                    }
+                }
             }
 
-            emit_workflow_complete(
-                &rec,
-                &repos,
-                &wf,
-                &workflow_id,
+            update_progress(
                 &gait_dir,
                 &session_id,
+                &workflow_id,
+                &wf.name,
                 &state,
-                &codebase,
-                &args_str,
-                &run_log,
-                observer,
-            )
-            .await?;
-            Ok(WorkflowOutcome::Completed)
+                &wf.nodes,
+            )?;
+            repos.traces.commit_session(
+                &gait_dir,
+                &session_id,
+                &format!("workflow: {}", node_id),
+            )?;
         }
-        .await;
+
+        emit_workflow_complete(
+            &rec,
+            &repos,
+            &wf,
+            &workflow_id,
+            &gait_dir,
+            &session_id,
+            &state,
+            &codebase,
+            &args_str,
+            &run_log,
+            observer,
+        )
+        .await?;
+        Ok(WorkflowOutcome::Completed)
+    }
+    .await;
 
     drop(rec);
     // Final drain: flush any remaining items after rec is dropped (channel closed).
