@@ -64,7 +64,7 @@ impl Tool for GlobTool {
 
     async fn execute(&self, args: Value, _rec: &crate::Recorder) -> Result<Value, ToolError> {
         let params: GlobParams = serde_json::from_value(args)
-            .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
+            .map_err(|e| crate::tools::ToolError::InvalidParams(e.to_string()))?;
 
         let search_dir = match &params.path {
             Some(p) if std::path::Path::new(p).is_absolute() => PathBuf::from(p),

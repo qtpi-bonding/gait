@@ -166,7 +166,7 @@ impl Tool for GrepTool {
 
     async fn execute(&self, args: Value, _rec: &crate::Recorder) -> Result<Value, ToolError> {
         let params: GrepParams = serde_json::from_value(args)
-            .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
+            .map_err(|e| crate::tools::ToolError::InvalidParams(e.to_string()))?;
 
         let resolved = match &params.path {
             Some(p) if std::path::Path::new(p).is_absolute() => PathBuf::from(p),

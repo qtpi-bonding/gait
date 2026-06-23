@@ -43,7 +43,7 @@ impl Tool for WriteTool {
     }
     async fn execute(&self, args: Value, _rec: &crate::Recorder) -> Result<Value, ToolError> {
         let params: WriteParams = serde_json::from_value(args)
-            .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
+            .map_err(|e| crate::tools::ToolError::InvalidParams(e.to_string()))?;
         let resolved = if std::path::Path::new(&params.file_path).is_absolute() {
             PathBuf::from(&params.file_path)
         } else {

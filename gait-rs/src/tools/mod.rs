@@ -114,6 +114,31 @@ pub fn inject_filter(
     schema
 }
 
+/// Coerce whole-number JSON floats to integers so models that emit `50.0`
+/// for an integer field don't hit serde's "expected u64, got float" error.
+/// Walks the entire value so nested params (e.g. arrays) are also fixed.
+pub fn coerce_int_params(v: serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.into_iter()
+                .map(|(k, val)| (k, coerce_int_params(val)))
+                .collect(),
+        ),
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.into_iter().map(coerce_int_params).collect())
+        }
+        serde_json::Value::Number(n) => {
+            if let Some(f) = n.as_f64() {
+                if f.fract() == 0.0 && f >= i64::MIN as f64 && f <= i64::MAX as f64 {
+                    return serde_json::Value::Number((f as i64).into());
+                }
+            }
+            serde_json::Value::Number(n)
+        }
+        other => other,
+    }
+}
+
 /// Names of all built-in tools. Used for allow-list validation without constructing tool instances.
 pub fn builtin_tool_names() -> &'static [&'static str] {
     &[

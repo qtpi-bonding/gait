@@ -216,7 +216,7 @@ impl Tool for LsTool {
 
     async fn execute(&self, args: Value, _rec: &crate::Recorder) -> Result<Value, ToolError> {
         let params: LsParams = serde_json::from_value(args)
-            .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
+            .map_err(|e| crate::tools::ToolError::InvalidParams(e.to_string()))?;
         let extra_ignore = params.ignore.unwrap_or_default();
 
         let search_dir = match &params.path {

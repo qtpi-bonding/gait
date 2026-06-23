@@ -68,6 +68,10 @@ pub(super) async fn execute_tool_call(
     // `synapse_denied` carries a seal-denial signal from the hand (Phase 2c Task 6):
     // set when the hand detects EACCES/EPERM in a `shell` command's output while
     // running under Seatbelt. The turn loop inspects it after execute_tool_call returns.
+    // Coerce whole-number floats (e.g. `50.0`) to integers so models that emit
+    // float literals for integer fields don't fail serde deserialization.
+    let coerced_args = crate::tools::coerce_int_params(tc.args.clone());
+
     let (raw, duration, process, synapse_denied) = match tools
         .iter()
         .find(|t| t.name() == tc.tool_name)
@@ -92,7 +96,7 @@ pub(super) async fn execute_tool_call(
                     RelaySynapse {
                         writer: nerve_writer.clone(),
                     }
-                    .fire(t.as_ref(), tc.args.clone(), scope_req)
+                    .fire(t.as_ref(), coerced_args.clone(), scope_req)
                     .await
                 } else {
                     // No spine (tests, direct cargo test) — run in-process.
@@ -100,7 +104,7 @@ pub(super) async fn execute_tool_call(
                     // has a relay handle. The in-process path covers tests.
                     use crate::turn::synapse::InProcessSynapse;
                     InProcessSynapse
-                        .fire(t.as_ref(), tc.args.clone(), scope_req)
+                        .fire(t.as_ref(), coerced_args.clone(), scope_req)
                         .await
                 };
                 match fired {
@@ -116,7 +120,7 @@ pub(super) async fn execute_tool_call(
                 }
             } else {
                 // Brain path: control/transcript tool, runs in-process as before.
-                (t.execute(tc.args.clone(), emitter).await, None)
+                (t.execute(coerced_args.clone(), emitter).await, None)
             };
             let elapsed = started.elapsed();
             let duration = Some(pbjson_types::Duration {

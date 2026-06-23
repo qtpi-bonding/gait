@@ -102,7 +102,7 @@ impl Tool for ReadTool {
 
     async fn execute(&self, args: Value, _rec: &crate::Recorder) -> Result<Value, ToolError> {
         let params: ReadParams = serde_json::from_value(args)
-            .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
+            .map_err(|e| crate::tools::ToolError::InvalidParams(e.to_string()))?;
         let offset = params.offset.unwrap_or(0) as usize;
         let limit = params.limit.unwrap_or(DEFAULT_READ_LIMIT) as usize;
 
@@ -358,6 +358,28 @@ mod tests {
                 }),
                 &crate::Recorder::detached(),
             )
+            .await
+            .unwrap();
+        let text = result.as_str().unwrap();
+        assert!(text.contains("|b"), "got: {text}");
+        assert!(text.contains("|c"), "got: {text}");
+        assert!(!text.contains("|a"), "should not contain line 1");
+    }
+
+    #[tokio::test]
+    async fn accepts_float_limit_and_offset() {
+        // Models sometimes emit whole-number floats (e.g. `50.0`) for integer fields.
+        // coerce_int_params() normalises them before dispatch; the tool should succeed.
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("test.txt"), "a\nb\nc\nd\ne").unwrap();
+        let tool = ReadTool::new(make_ctx(&dir));
+        let args = crate::tools::coerce_int_params(serde_json::json!({
+            "file_path": "test.txt",
+            "offset": 1.0,
+            "limit": 2.0
+        }));
+        let result = tool
+            .execute(args, &crate::Recorder::detached())
             .await
             .unwrap();
         let text = result.as_str().unwrap();
