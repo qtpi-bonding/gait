@@ -121,7 +121,6 @@ impl TurnSink for ReplSink {
 /// keeps the REPL alive on a turn error. Constructed once per session and passed
 /// to `run_loop`; no direct `turn::spine` usage.
 pub struct ReplDriver {
-    pub gait_dir: PathBuf,
     pub codebase: PathBuf,
     pub agent_path: Option<PathBuf>,
     /// Retained for potential future use (e.g., cascade/SIGINT signal passing).

@@ -177,7 +177,6 @@ pub async fn run_chat(
             shared: shared.clone(),
         };
         let mut driver = crate::repl::ReplDriver {
-            gait_dir: gait_dir.clone(),
             codebase: codebase.clone(),
             agent_path: agent_path.clone(),
             session_id: session_id.clone(),
