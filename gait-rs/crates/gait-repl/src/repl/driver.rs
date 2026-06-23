@@ -9,7 +9,7 @@ use std::process::Command;
 use std::rc::Rc;
 
 use crate::repl::{bang_command_str, is_bang_command};
-use crate::theme::{Theme, RESET};
+use crate::theme::RESET;
 use crate::ui::ReplBuilder;
 use gait_core::embed::{user_turn_events, TurnSource, TurnStart};
 use gait_core::expand::{expand_input, ExpandCtx};
@@ -46,7 +46,6 @@ pub struct ReplSource {
     pub session_id: String,
     pub agent_path: Option<PathBuf>,
     pub repos: gait_core::git::Repos,
-    pub theme: Theme,
     pub shell_history_path: PathBuf,
     pub gait_bin: PathBuf,
     pub last_blocks: Vec<String>,

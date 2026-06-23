@@ -205,7 +205,6 @@ pub async fn run_chat(
             session_id: session_id.clone(),
             agent_path: agent_path.clone(),
             repos: repos.clone(),
-            theme: theme.clone(),
             shell_history_path,
             gait_bin: gait_bin.clone(),
             last_blocks: Vec::new(),
