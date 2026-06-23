@@ -40,7 +40,7 @@ fn node_to_proto(n: &NodeDef) -> Node {
     let body = if let Some(p) = &n.prompt {
         Some(node::Body::Prompt(PromptNode {
             prompt: p.clone(),
-            continue_session: String::new(),
+            continue_session: n.continue_session.clone().unwrap_or_default(),
             codebase: n.codebase.clone(),
         }))
     } else if let Some(s) = &n.shell {

@@ -120,6 +120,8 @@ pub struct NodeDef {
     pub branch: Option<BranchConfig>,
     #[serde(default)]
     pub gate: Option<GateConfig>,
+    #[serde(default)]
+    pub continue_session: Option<String>,
 }
 
 impl NodeDef {
