@@ -4,10 +4,13 @@
 //! workflow runner at every significant event. Two implementations are
 //! provided:
 //!
-//! - [`CliObserver`]: writes stream items to stderr (matching prior
-//!   `CliSink` behavior) and prints terse event lines.
-//! - [`ChannelObserver`]: forwards to `tokio::sync::mpsc` channels for
+//! - [`CliObserver`]: prints terse workflow-event lines to stderr.
+//! - [`ChannelObserver`]: forwards events to a `tokio::sync::mpsc` channel for
 //!   programmatic consumers (tests, embedding).
+//! - [`NullObserver`]: discards every event (used by the REPL).
+//!
+//! Turn output (deltas/events/results) no longer flows here — it goes through
+//! the caller-supplied [`gait_core::embed::TurnSink`] handed to `run_workflow`.
 
 use gait_core::proto::gait::workflow::v1::{workflow_event, WorkflowEvent};
 
@@ -26,8 +29,8 @@ pub trait WorkflowObserver {
 
 // ─── CliObserver ──────────────────────────────────────────────────────────────
 
-/// CLI observer: stream items → stderr (JSON, matching prior `CliSink`
-/// behavior), workflow events → terse human-readable lines on stderr.
+/// CLI observer: workflow lifecycle events → terse human-readable lines on
+/// stderr. Stream items are handled by the `TurnSink`, not here.
 #[derive(Default)]
 pub struct CliObserver;
 
