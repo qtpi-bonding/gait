@@ -14,7 +14,7 @@ use crate::repl::ShellNavState;
 use crate::repl::{bang_command_str, is_bang_command};
 use crate::theme::{Theme, RESET};
 use crate::ui::{ReplBuilder, ViewSignal};
-use gait_core::embed::{user_turn_events, LoopConfig, TurnDriver};
+use gait_core::embed::{user_turn_events, BrainLaunch, LoopConfig, TurnDriver};
 use gait_core::embed::{Diag, TurnSink, TurnSource, TurnStart};
 use gait_core::expand::{expand_input, ExpandCtx};
 use gait_core::proto::gait::log::v1::StreamItem;
@@ -132,34 +132,48 @@ pub struct ReplDriver {
 }
 #[async_trait::async_trait(?Send)]
 impl TurnDriver for ReplDriver {
-    async fn resolve_profile(&mut self) -> anyhow::Result<gait_core::profile::ResolvedProfile> {
-        let runner = std::sync::Arc::new(gait_workflow::GaitWorkflowRunner::new(
-            self.gait_dir.clone(),
-            self.codebase.clone(),
-        ));
-        let model_str = self.config.model.clone().ok_or_else(|| {
-            anyhow::anyhow!(
-                "no model: set \"model\" in gait.jsonc or pass --model <id> (see `gait models`)"
-            )
-        })?;
+    /// Placeholder for Task 3 (ReplDriver migration to sealed run_loop).
+    /// Task 3 will populate brain_args, api_key, gait_bin, profile_inputs from
+    /// the repl's existing data. For now returns a minimal stub that will compile.
+    fn brain_launch(&self, session_id: &str) -> BrainLaunch {
+        let model_str = self.config.model.clone().unwrap_or_default();
         let provider_name = model_str
             .split_once('/')
             .map(|(p, _)| p.to_string())
-            .unwrap_or_else(|| model_str.clone());
-        let api_key = gait_core::auth::resolve_api_key(&provider_name);
-        gait_core::embed::resolve_profile(
-            &self.config,
-            &self.gait_dir,
-            &self.codebase,
-            &self.session_id,
-            self.agent_path.as_deref(),
-            None,
-            &self.repos,
-            Some(runner),
+            .unwrap_or_default();
+        let api_key = gait_core::auth::resolve_api_key(&provider_name).unwrap_or_default();
+        let gait_bin = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("gait"));
+        let profile_inputs = gait_core::turn::spine::ProfileInputs {
+            agent_name: self
+                .agent_path
+                .as_ref()
+                .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned())),
+            model_override: self.config.model.clone(),
+            allow: self.config.allow.clone(),
+            deny: self.config.deny.clone(),
+            result_schema: None,
+        };
+        let brain_args = vec![
+            "__brain".to_string(),
+            "--gait-dir".to_string(),
+            self.gait_dir.to_string_lossy().into_owned(),
+            "--codebase".to_string(),
+            self.codebase.to_string_lossy().into_owned(),
+            "--session".to_string(),
+            session_id.to_string(),
+        ];
+        BrainLaunch {
+            brain_args,
+            codebase: self.codebase.clone(),
             api_key,
-        )
-        .await
+            gait_bin,
+            sandbox_cfg: self.config.sandbox.clone(),
+            sandbox_on: self.shared.borrow().sandbox_on,
+            profile_inputs,
+            cascade_group_arg: None,
+        }
     }
+
     fn turn_config(&mut self) -> LoopConfig {
         use tokio_util::sync::CancellationToken;
 

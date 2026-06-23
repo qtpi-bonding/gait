@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
-use crate::embed::{LoopConfig, TurnDriver};
+use crate::embed::LoopConfig;
 use crate::port::output::{CliSink, Diag, TurnSink};
 use crate::proto::gait::log::v1::{Event, StreamItem};
 use crate::proto::Recorder;
@@ -238,8 +238,6 @@ pub async fn run_brain(
 
     let repos = crate::git::Repos::production();
 
-    let source = crate::port::input::ArgSource::new(None);
-
     // Seed the log mirror from BrainInit.events and derive session identity in-memory.
     let log_mirror = std::sync::Arc::new(std::sync::Mutex::new(init.events.clone()));
     let meta = crate::session::session_meta_from_events(&init.events, &session_id);
@@ -300,25 +298,71 @@ pub async fn run_brain(
         result_json: None,
     };
 
-    let loop_result = crate::embed::run_loop(
-        source,
-        &mut sink,
-        session,
-        &gait_dir,
-        &session_id,
-        &mut driver,
-    )
-    .await;
-
-    let (run_result_json, failed) = match loop_result {
-        Err(e) => {
-            eprintln!("[brain] error: {}", e);
-            ("{}".to_string(), true)
-        }
-        Ok(()) => {
-            let failed = sink.inner.failed;
-            let json = sink.result_json.unwrap_or_else(|| "{}".to_string());
-            (json, failed)
+    // ── Brain rewire (Task 2 sub-step a): call run_turn directly ─────────────
+    // The brain runs exactly one turn. It no longer calls run_loop (which would
+    // spawn another brain — a fork bomb). Instead it drives run_turn in-process,
+    // using the exact per-turn wrapper that run_loop used to provide.
+    //
+    // MUST OMIT: create_session_worktree + wire::append — both are gait-dir writes
+    // forbidden by the brain's seal (writable: []); the spine already did them.
+    //
+    // MUST KEEP: relay handle in turn_config, make_recorder, drive, sink.result,
+    // after_turn (Scheduler/Harness post-turn policy).
+    let (run_result_json, failed) = {
+        // 1. Resolve profile (single-shot).
+        let profile_result = driver.resolve_profile().await;
+        match profile_result {
+            Err(e) => {
+                eprintln!("[brain] error resolving profile: {e}");
+                ("{}".to_string(), true)
+            }
+            Ok(profile) => {
+                // 2. Build TurnInput from turn_config (KEEP relay handle — required for world tools).
+                let cfg = driver.turn_config();
+                let input = crate::turn::TurnInput {
+                    auto: cfg.auto,
+                    max_iter: cfg.max_iter,
+                    preview_policy: cfg.preview_policy,
+                    cancel: cfg.cancel,
+                    sandbox_on: cfg.sandbox_on,
+                    sandbox_cfg: cfg.sandbox_cfg.clone(),
+                    relay: cfg.relay,
+                    initial_git: cfg.initial_git.clone(),
+                    daemons: cfg.daemons.clone(),
+                };
+                // 3. Build remote-sink Recorder (streams via Nerve, not to disk).
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                let emitter = driver.make_recorder(&gait_dir, &session_id, tx);
+                // 4. Spawn run_turn; drain the stream channel; collect result.
+                let session_for_turn = session.clone();
+                let handle = tokio::spawn(async move {
+                    crate::turn::run_turn(&session_for_turn, &emitter, profile, input).await
+                });
+                sink.begin_turn();
+                // drive() drains rx so emitter drops, closing the channel.
+                // NOTE: for the brain the Recorder emits via stream_fwd (Nerve), so rx is
+                // inert here — BrainSink::item is a no-op. Keep drive() anyway: it must
+                // run so the emitter can drop and allow run_turn's task to complete.
+                crate::port::output::drive(rx, &mut sink).await;
+                sink.end_turn();
+                match handle.await {
+                    Ok(Ok(result)) => {
+                        sink.result(&result);
+                        driver.after_turn(&mut sink, &result).await;
+                        let failed = sink.inner.failed;
+                        let json = sink.result_json.take().unwrap_or_else(|| "{}".to_string());
+                        (json, failed)
+                    }
+                    Ok(Err(e)) => {
+                        sink.diagnostic(Diag::Error, &format!("error: {e}"));
+                        ("{}".to_string(), true)
+                    }
+                    Err(panic) => {
+                        sink.diagnostic(Diag::Error, &format!("turn task panicked: {panic}"));
+                        ("{}".to_string(), true)
+                    }
+                }
+            }
         }
     };
 
@@ -394,8 +438,10 @@ struct BrainDriver {
     daemons: Vec<(String, i32, bool, String)>,
 }
 
-#[async_trait::async_trait(?Send)]
-impl TurnDriver for BrainDriver {
+/// BrainDriver is a plain `pub(crate)` struct — NOT a TurnDriver impl.
+/// The brain calls run_turn directly (Task 2 sub-step a); it no longer uses run_loop.
+/// These are inherent methods called directly from run_brain.
+impl BrainDriver {
     async fn resolve_profile(&mut self) -> anyhow::Result<crate::profile::ResolvedProfile> {
         let profile = self.profile.take().ok_or_else(|| {
             anyhow::anyhow!("BrainDriver::resolve_profile called more than once (single-shot)")
@@ -467,15 +513,6 @@ impl TurnDriver for BrainDriver {
                 );
             }
         }
-    }
-
-    fn on_turn_error(
-        &mut self,
-        sink: &mut dyn crate::port::output::TurnSink,
-        e: anyhow::Error,
-    ) -> std::ops::ControlFlow<()> {
-        sink.diagnostic(crate::port::output::Diag::Error, &format!("error: {}", e));
-        std::ops::ControlFlow::Break(())
     }
 }
 

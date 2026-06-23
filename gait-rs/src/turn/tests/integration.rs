@@ -2130,3 +2130,60 @@ async fn schema_bound_plain_text_always_errors_after_nudges() {
         "error should mention structured_done; got: {msg}"
     );
 }
+
+// ── Task 2 — run_turn primitive test ─────────────────────────────────────────
+//
+// The brain rewire means turn behavior is tested at the `run_turn` primitive
+// (in-process, mockable). This test exercises the exact call path the rewired
+// brain takes: build session + mock provider + Recorder; call run_turn directly
+// (NOT run_loop); assert it returns TurnResult::Done.
+#[tokio::test(flavor = "multi_thread")]
+async fn run_turn_primitive_drives_one_turn_with_mock_provider() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+
+    let provider = Arc::new(FakeProvider {
+        steps: Arc::new(vec![FakeStep::text("Task complete.")]),
+        call_idx: Arc::new(AtomicUsize::new(0)),
+    });
+
+    let repos = crate::git::Repos::production();
+    let session_id = "sprim001".to_string();
+    repos
+        .traces
+        .create_session_worktree(ws.path(), &session_id)
+        .unwrap();
+
+    let session = crate::session::Session {
+        id: session_id.clone(),
+        gait_dir: ws.path().to_path_buf(),
+        codebase_path: ws.path().to_path_buf(),
+        assigned_by: None,
+        repos,
+    };
+
+    let caps = crate::profile::ResolvedProfile::for_test(provider, vec![], vec![], vec![]);
+    let (tx, _rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
+    let emitter = crate::proto::Recorder::for_session(&session.gait_dir, &session.id, tx);
+
+    let input = TurnInput {
+        auto: true,
+        max_iter: None,
+        preview_policy: crate::config::PreviewPolicy::default(),
+        cancel: None,
+        sandbox_on: false,
+        sandbox_cfg: crate::config::SandboxConfig::default(),
+        relay: None,
+        initial_git: None,
+        daemons: vec![],
+    };
+
+    let result = run_turn(&session, &emitter, caps, input).await.unwrap();
+
+    assert!(
+        matches!(result, TurnResult::Done { .. }),
+        "expected TurnResult::Done from run_turn primitive, got: {:?}",
+        result
+    );
+}

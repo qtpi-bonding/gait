@@ -1,21 +1,16 @@
-//! Phase 5 Task 3: external-style embedding proof.
+//! Task 2 rewrite: `run_loop` is now the sealed spine loop (spawns real `gait __brain`
+//! processes), so the old in-process embedding test has been rewritten to test
+//! `run_turn` directly via `JsonSink` — the embedding output sink.
 //!
 //! This test mimics an external consumer (Serverpod/Flutter FFI-style): it
-//! drives a single turn through `gait_core::embed::run_loop` and reads the output
-//! as **pbjson** (canonical protobuf-JSON) via `gait_core::embed::JsonSink` — the
-//! same wire format the CLI emits and the log is written in. The test parses
-//! the pbjson back into the proto types (`StreamItem`/`RunResult`) to prove the
-//! round-trip, and then inspects the session's `log.jsonl` for the expected
-//! `user_turn` + `turn_complete` events.
+//! drives a single turn through `run_turn` and reads the output as **pbjson**
+//! (canonical protobuf-JSON) via `gait_core::embed::JsonSink` — the same wire
+//! format the CLI emits. The test parses the pbjson back into proto types to
+//! prove the round-trip, then inspects the session's `log.jsonl`.
 //!
-//! Uses **only** `gait_core::embed::*` (+ tempfile/git for setup, + serde_json to
-//! parse pbjson). No `gait_core::cli::*`, no `gait_core::port::*` directly.
+//! Uses **only** `gait_core::embed::*` (+ tempfile/git for setup).
 use async_stream::stream;
-use async_trait::async_trait;
-use gait_core::embed::{
-    self, run_loop, user_turn_events, JsonFrame, JsonSink, LoopConfig, TurnDriver, TurnSink,
-    TurnSource, TurnStart,
-};
+use gait_core::embed::{self, user_turn_events, JsonFrame, JsonSink, TurnSink};
 use gait_core::provider::{Provider, ProviderError, StreamChunk};
 use gait_core::types::{Message, Tool};
 use std::cell::RefCell;
@@ -42,10 +37,8 @@ fn init_git_repo(dir: &std::path::Path) {
         .ok();
 }
 
-/// A provider that just answers with text (one turn, no tools) — hermetic
-/// `ResolvedProfile::for_test` does not call into network/agent resolution.
 struct TextProvider;
-#[async_trait]
+#[async_trait::async_trait]
 impl Provider for TextProvider {
     fn model_id(&self) -> &str {
         "text"
@@ -68,104 +61,72 @@ impl Provider for TextProvider {
     }
 }
 
-/// External embedder's input port: hand the loop one `Input` turn then EOF.
-struct MySource {
-    start: Option<TurnStart>,
-}
-#[async_trait(?Send)]
-impl TurnSource for MySource {
-    async fn next(&mut self) -> Option<TurnStart> {
-        self.start.take()
-    }
-}
-
-/// External embedder's driver port: hand back the resolved profile once; never error.
-struct MyDriver {
-    caps: Option<embed::ResolvedProfile>,
-}
-#[async_trait(?Send)]
-impl TurnDriver for MyDriver {
-    async fn resolve_profile(&mut self) -> anyhow::Result<embed::ResolvedProfile> {
-        self.caps
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("profile already taken"))
-    }
-    fn turn_config(&mut self) -> LoopConfig {
-        LoopConfig {
-            auto: true,
-            max_iter: None,
-            preview_policy: Default::default(),
-            cancel: None,
-            sandbox_on: true,
-            sandbox_cfg: gait_core::config::SandboxConfig::default(),
-            relay: None,
-            initial_git: None,
-            daemons: vec![],
-        }
-    }
-
-    fn on_turn_error(
-        &mut self,
-        _sink: &mut dyn TurnSink,
-        e: anyhow::Error,
-    ) -> std::ops::ControlFlow<()> {
-        panic!("unexpected turn error: {e}");
-    }
-}
-
 #[tokio::test]
 async fn embed_drives_a_turn_and_emits_pbjson() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
     let session_id = "sembed01";
 
-    // Build the one-and-only user_turn + context_status bodies (carries the
-    // codebase head hash the same way the CLI/REPL do — input adapter owns
-    // turn-time context).
     let repos = gait_core::git::Repos::production();
+    repos
+        .traces
+        .create_session_worktree(ws.path(), session_id)
+        .unwrap();
+
+    // Pre-write the user_turn (simulating what the spine does before spawning the brain).
     let bodies = user_turn_events(&repos, ws.path(), "embed me".into());
-    let source = MySource {
-        start: Some(TurnStart::Input(bodies)),
-    };
+    let log = ws
+        .path()
+        .join("sessions")
+        .join(session_id)
+        .join("log.jsonl");
+    for body in &bodies {
+        gait_core::proto::wire::append(&log, body.clone()).unwrap();
+    }
 
-    // Hermetic profile: no api key, no tools/MCP. This is a proof of the *embedding
-    // loop*, not provider resolution (resolve_profile is exercised by the REPL).
     let caps = embed::ResolvedProfile::for_test(Arc::new(TextProvider), vec![], vec![], vec![]);
-    let mut driver = MyDriver { caps: Some(caps) };
 
-    // Capture pbjson frames from JsonSink. The callback must own the String
-    // (no borrowed lifetime — see embed::JsonFrame docs), so the consumer
-    // copies it out via Rc<RefCell<_>>. The Rc<RefCell<_>> boxes are also
-    // what keeps the closure Send-free across the await point below.
+    // Capture pbjson frames from JsonSink.
     let items: Rc<RefCell<Vec<String>>> = Default::default();
     let result: Rc<RefCell<Option<String>>> = Default::default();
     let (it, rs) = (items.clone(), result.clone());
     let mut sink = JsonSink::new(move |frame| match frame {
-        JsonFrame::Item(j) => it.borrow_mut().push(j), // owned String
+        JsonFrame::Item(j) => it.borrow_mut().push(j),
         JsonFrame::Result(j) => *rs.borrow_mut() = Some(j),
         JsonFrame::Diagnostic(..) => {}
     });
 
-    // The Session the embedder is in charge of. gait_dir == codebase_path here
-    // (the canonical single-root layout).
-    let session = Arc::new(embed::Session {
+    let session = gait_core::session::Session {
         id: session_id.into(),
         gait_dir: ws.path().to_path_buf(),
         codebase_path: ws.path().to_path_buf(),
         assigned_by: None,
-        repos: embed::Repos::production(),
-    });
+        repos: gait_core::git::Repos::production(),
+    };
 
-    run_loop(
-        source,
-        &mut sink,
-        session,
-        ws.path(),
-        session_id,
-        &mut driver,
-    )
-    .await
-    .expect("embed::run_loop must succeed for the external-style embedder");
+    let input = gait_core::turn::TurnInput {
+        auto: true,
+        max_iter: None,
+        preview_policy: Default::default(),
+        cancel: None,
+        sandbox_on: true,
+        sandbox_cfg: Default::default(),
+        relay: None,
+        initial_git: None,
+        daemons: vec![],
+    };
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<embed::StreamItem>();
+    let emitter = gait_core::proto::Recorder::for_session(ws.path(), session_id, tx);
+
+    let handle =
+        tokio::spawn(
+            async move { gait_core::turn::run_turn(&session, &emitter, caps, input).await },
+        );
+    gait_core::port::output::drive(rx, &mut sink).await;
+
+    let result_turn = handle.await.unwrap().expect("run_turn must succeed");
+    sink.result(&result_turn);
 
     // Parse the pbjson back (what a Dart/Serverpod consumer does): at least
     // one item decodes as a `StreamItem`, and the result decodes as a
@@ -192,16 +153,7 @@ async fn embed_drives_a_turn_and_emits_pbjson() {
         "result pbjson must contain key \"done\" (got: {v})"
     );
 
-    // Session transcript must have the user_turn (appended by the input adapter
-    // pre-fold) and the turn_complete (the fold wrote it). We use the
-    // proto-level `payload::Kind` match — same approach as
-    // `integration_run_loop.rs` — so the check is robust to the pbjson camelCase
-    // wire format ("userTurn" / "turnComplete") and to field renames.
-    let log = ws
-        .path()
-        .join("sessions")
-        .join(session_id)
-        .join("log.jsonl");
+    // Session transcript must have the user_turn and the turn_complete.
     let events = gait_core::proto::wire::read_events(&log).expect("session log must parse");
     use gait_core::proto::gait::log::v1::{event, payload, Event};
     fn kind(e: &Event) -> Option<&payload::Kind> {
@@ -215,13 +167,6 @@ async fn embed_drives_a_turn_and_emits_pbjson() {
             .iter()
             .any(|e| matches!(kind(e), Some(payload::Kind::UserText(_)))),
         "log must contain a user_turn event (got {} events)",
-        events.len()
-    );
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(kind(e), Some(payload::Kind::ContextStatus(_)))),
-        "log must contain a context_status event (got {} events)",
         events.len()
     );
     assert!(

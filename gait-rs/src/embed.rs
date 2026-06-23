@@ -20,7 +20,6 @@ pub use crate::session::Session;
 pub use crate::turn::{TurnInput, TurnResult};
 pub use crate::Recorder;
 
-use crate::port::output::drive;
 use std::ops::ControlFlow;
 use std::path::Path;
 use std::sync::Arc;
@@ -40,26 +39,44 @@ pub struct LoopConfig {
     pub daemons: Vec<(String, i32, bool, String)>,
 }
 
+/// All driver-supplied args that `relay_brain_turn` needs for one brain spawn.
+/// Returned by `TurnDriver::brain_launch()`; consumed by `run_loop`.
+///
+/// Fields match `relay_brain_turn`'s real signature (spine.rs:123); `gait_dir`,
+/// `session_id`, `sink`, and `signal_slot` come from `run_loop`'s own params.
+/// The easy one to forget: `codebase` (PathBuf, not just cli args).
+pub struct BrainLaunch {
+    /// Argv forwarded to `gait __brain` (already has --session injected by the driver).
+    pub brain_args: Vec<String>,
+    /// Absolute path to the codebase root (required by relay_brain_turn).
+    pub codebase: std::path::PathBuf,
+    /// Resolved LLM API key (empty string if none).
+    pub api_key: String,
+    /// Absolute path to the gait binary (current_exe or resolved path).
+    pub gait_bin: std::path::PathBuf,
+    /// Sandbox configuration to apply to the brain process.
+    pub sandbox_cfg: crate::config::SandboxConfig,
+    /// Whether the sandbox is active for this turn.
+    pub sandbox_on: bool,
+    /// Profile-level inputs forwarded to BrainInit (agent/model/allow/deny/result_schema).
+    pub profile_inputs: crate::turn::spine::ProfileInputs,
+    /// Optional cascade group handle string (pgid or cgroup path) passed from a parent spine.
+    pub cascade_group_arg: Option<String>,
+}
+
 /// Per-turn machinery the loop can't own generically. `?Send`: the driver runs on
-/// the loop's own task (only `run_turn` is spawned), and a REPL driver/sink holds
+/// the loop's own task (only the brain spawn is async), and a REPL driver/sink holds
 /// non-`Send` view state.
+///
+/// Post-Task-2: `resolve_profile` and `make_recorder` have been REMOVED — the brain
+/// resolves its own profile from `BrainInit`. The only public method is `brain_launch()`,
+/// which supplies the data `relay_brain_turn` needs to spawn a sealed brain.
 #[async_trait::async_trait(?Send)]
 pub trait TurnDriver {
-    /// Resolve the `ResolvedProfile` for this turn (`ResolvedProfile` is not `Clone`).
-    async fn resolve_profile(&mut self) -> anyhow::Result<crate::profile::ResolvedProfile>;
-    /// `auto`/`max_iter`/`preview` for this turn.
+    /// All data needed to spawn `gait __brain` for one turn.
+    fn brain_launch(&self, session_id: &str) -> BrainLaunch;
+    /// `auto`/`max_iter`/`preview` for this turn (used to build BrainInit).
     fn turn_config(&mut self) -> LoopConfig;
-    /// Create the Recorder for this turn.
-    /// Default: writes to the session log file (direct/spine-less runs).
-    /// BrainDriver overrides to return `Recorder::remote_sink` (no disk write).
-    fn make_recorder(
-        &self,
-        gait_dir: &std::path::Path,
-        session_id: &str,
-        stream_tx: tokio::sync::mpsc::UnboundedSender<crate::proto::gait::log::v1::StreamItem>,
-    ) -> crate::Recorder {
-        crate::Recorder::for_session(gait_dir, session_id, stream_tx)
-    }
     /// After-turn policy (CLI: Scheduler/Harness; REPL: none). Runs on success only.
     async fn after_turn(&mut self, _sink: &mut dyn TurnSink, _result: &TurnResult) {}
     /// Turn error/panic policy. CLI → `diagnostic` + `Break` (the post-loop
@@ -89,68 +106,80 @@ pub fn user_turn_events(
     ]
 }
 
-/// Run turns until the source is exhausted — one `run_turn` per `TurnStart`.
-/// `Input` bodies are appended before the fold; `Resume` runs a bare fold turn.
+/// Run turns until the source is exhausted — one sealed `gait __brain` per `TurnStart`.
+///
+/// `run_loop` is the **spine loop**: per `TurnSource::next()` it calls
+/// `relay_brain_turn` (spawn sealed brain, relay Nerve, serve tools, write log).
+/// The brain runs `run_turn` in-process; the spine relays events to `sink`.
+///
+/// `Input` bodies are pre-written before the brain spawns (spine is the sole writer).
+/// `cascade` is an optional process-lifetime `SignalSlot` for the top-level kill
+/// handle; `run_loop` stores the group per turn and clears it after each turn.
 pub async fn run_loop(
     mut source: impl TurnSource,
     sink: &mut impl TurnSink,
-    session: Arc<crate::session::Session>,
+    _session: Arc<crate::session::Session>,
     gait_dir: &Path,
     session_id: &str,
     driver: &mut impl TurnDriver,
+    cascade: Option<&crate::turn::spine::SignalSlot>,
 ) -> anyhow::Result<()> {
-    // Ensure the session worktree (and thus the log dir) exists before we append
-    // the first input event — `run_turn` also creates it (idempotent), but the
-    // pre-turn append below would otherwise fail on a fresh session.
-    session
-        .repos
-        .traces
-        .create_session_worktree(gait_dir, session_id)?;
     let tx_path = gait_dir.join("sessions").join(session_id).join("log.jsonl");
     while let Some(start) = source.next().await {
         if let TurnStart::Input(bodies) = start {
+            // Pre-write input events (spine is the sole gait-dir writer).
+            // relay_brain_turn will create the worktree if needed (idempotent).
             for body in bodies {
-                crate::proto::wire::append(&tx_path, body)?; // append-then-fold
+                // Ensure session worktree exists before first append.
+                let repos = crate::git::Repos::production();
+                repos.traces.create_session_worktree(gait_dir, session_id)?;
+                crate::proto::wire::append(&tx_path, body)?;
             }
         }
-        let profile = driver.resolve_profile().await?;
-        let cfg = driver.turn_config();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let emitter = driver.make_recorder(gait_dir, session_id, tx);
-        let input = TurnInput {
-            auto: cfg.auto,
-            max_iter: cfg.max_iter,
-            preview_policy: cfg.preview_policy,
-            cancel: cfg.cancel,
-            sandbox_on: cfg.sandbox_on,
-            sandbox_cfg: cfg.sandbox_cfg.clone(),
-            relay: cfg.relay,
-            initial_git: cfg.initial_git.clone(),
-            daemons: cfg.daemons.clone(),
-        };
-        let session_for_turn = session.clone();
-        let handle = tokio::spawn(async move {
-            crate::turn::run_turn(&session_for_turn, &emitter, profile, input).await
-            // emitter drops here → channel closes → drive() returns
-        });
-        sink.begin_turn();
-        drive(rx, sink).await;
-        sink.end_turn(); // runs on success AND error (preserves flush-before-error)
-        match handle.await {
-            Ok(Ok(result)) => {
-                sink.result(&result);
-                driver.after_turn(sink, &result).await;
-            }
-            Ok(Err(e)) => {
-                if driver.on_turn_error(sink, e).is_break() {
+        let launch = driver.brain_launch(session_id);
+        let failed = crate::turn::spine::relay_brain_turn(
+            &launch.brain_args,
+            gait_dir,
+            &launch.codebase,
+            session_id,
+            &launch.api_key,
+            &launch.gait_bin,
+            &launch.sandbox_cfg,
+            launch.sandbox_on,
+            &launch.profile_inputs,
+            sink,
+            launch.cascade_group_arg,
+            cascade,
+        )
+        .await;
+        // Clear the cascade slot after each turn (parity with spine.rs:248).
+        if let Some(slot) = cascade {
+            *slot.lock().unwrap() = None;
+        }
+        match failed {
+            Ok(true) => {
+                // Brain signalled failure — surface as a turn error.
+                if driver
+                    .on_turn_error(sink, anyhow::anyhow!("brain turn failed"))
+                    .is_break()
+                {
                     break;
                 }
             }
-            Err(panic) => {
-                if driver
-                    .on_turn_error(sink, anyhow::anyhow!("turn task panicked: {panic}"))
-                    .is_break()
-                {
+            Ok(false) => {
+                // Success: after_turn policy (Scheduler/Harness).
+                // Note: sink.result() was already called by relay_brain_turn (spine.rs:517).
+                // We pass a synthetic Done result to after_turn; the real result was
+                // captured by sink during relay.
+                let dummy = TurnResult::Done {
+                    message: String::new(),
+                    result: None,
+                    changes: None,
+                };
+                driver.after_turn(sink, &dummy).await;
+            }
+            Err(e) => {
+                if driver.on_turn_error(sink, e).is_break() {
                     break;
                 }
             }

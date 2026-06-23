@@ -22,6 +22,7 @@ use crate::turn::nerve;
 /// Inputs the spine needs to build the turn's `Profile` (parsed by the CLI/REPL
 /// caller, since gait-core cannot parse clap args). Mirrors the brain's old
 /// agent/model/allow/deny handling.
+#[derive(Clone)]
 pub struct ProfileInputs {
     pub agent_name: Option<String>,
     pub model_override: Option<String>,

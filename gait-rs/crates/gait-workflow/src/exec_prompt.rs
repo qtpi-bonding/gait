@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gait_core::embed::{self, Diag, LoopConfig, TurnDriver, TurnSink, TurnSource, TurnStart};
-use gait_core::profile::{build_workflow_node_profile, WorkflowNodeProfileOpts};
+use gait_core::embed::{
+    self, BrainLaunch, Diag, LoopConfig, TurnDriver, TurnSink, TurnSource, TurnStart,
+};
 use gait_core::proto::gait::log::v1::StreamItem;
 use gait_core::turn::TurnResult;
 use gait_core::Session;
@@ -11,75 +12,90 @@ use crate::exec_shell::NodeContext;
 use crate::schema::{NodeDef, WorkflowDef};
 use crate::vars::{substitute, NodeOutput};
 
-/// Inputs the driver needs to (re-)build the per-node `Profile` for each turn.
-/// We don't store the `Profile` directly because `Profile` does not derive
-/// `Clone` — `run_loop` calls `resolve_profile` per turn, and we want a fresh
-/// resolve from the same per-node opts each time.
-struct PromptNodeDriverOpts {
+/// Per-node driver: supplies `brain_launch()` so `run_loop` can spawn `gait __brain`
+/// for each prompt node. Workflow nodes are now fully sealed (Task 2).
+struct PromptNodeDriver {
+    gait_dir: PathBuf,
+    codebase: PathBuf,
     /// Resolved model string ("provider/model-id").
     model: String,
     /// Allow list (replaces config.allow).
     allow: Vec<String>,
-    /// Optional named agent (path resolved at profile-build time).
+    /// Optional named agent.
     agent_name: Option<String>,
-    /// Inline system prompt body.
-    system_prompt: Option<String>,
     /// JSON Schema for `structured_done.result`.
     result_schema: Option<serde_json::Value>,
     /// auto permissions gate.
     auto: bool,
-}
-
-struct PromptNodeDriver {
-    gait_dir: PathBuf,
-    session_id: String,
-    codebase: PathBuf,
-    opts: PromptNodeDriverOpts,
+    /// Sandbox config (loaded once from gait.jsonc).
+    sandbox_cfg: gait_core::config::SandboxConfig,
 }
 
 #[async_trait::async_trait(?Send)]
 impl TurnDriver for PromptNodeDriver {
-    async fn resolve_profile(&mut self) -> anyhow::Result<gait_core::profile::ResolvedProfile> {
-        let config = gait_core::config::load_config(&self.gait_dir);
-        let profile = build_workflow_node_profile(WorkflowNodeProfileOpts {
-            config: &config,
-            gait_dir: &self.gait_dir,
-            model: Some(self.opts.model.clone()),
-            agent_name: self.opts.agent_name.clone(),
-            system_prompt: self.opts.system_prompt.as_deref(),
-            allow: self.opts.allow.clone(),
-            result_schema: self.opts.result_schema.clone(),
-        });
+    fn brain_launch(&self, session_id: &str) -> BrainLaunch {
+        // Resolve API key from the model's provider name.
         let api_key = gait_core::auth::resolve_api_key(
-            profile.model.split_once('/').map(|(p, _)| p).unwrap_or(""),
-        );
-        let repos = gait_core::git::Repos::production();
-        let runner = std::sync::Arc::new(crate::runner_impl::GaitWorkflowRunner::new(
-            self.gait_dir.clone(),
-            self.codebase.clone(),
-        ));
-        let resolved = profile
-            .resolve(
-                self.codebase.clone(),
-                self.session_id.clone(),
-                self.gait_dir.clone(),
-                repos,
-                api_key,
-                Some(runner),
-            )
-            .await?;
-        Ok(resolved)
+            self.model.split_once('/').map(|(p, _)| p).unwrap_or(""),
+        )
+        .unwrap_or_default();
+
+        // Build brain_args: the same argv the spine would pass to `gait __brain`.
+        // Include --session, --model, --agent (if any), --allow entries, --sandbox-locked.
+        let mut brain_args: Vec<String> = vec![
+            "__brain".into(),
+            "--gait-dir".into(),
+            self.gait_dir.to_string_lossy().into_owned(),
+            "--codebase".into(),
+            self.codebase.to_string_lossy().into_owned(),
+            "--session".into(),
+            session_id.to_string(),
+            "--model".into(),
+            self.model.clone(),
+            "--sandbox-locked".into(), // workflow nodes are always sealed
+            "--auto".into(),           // workflow nodes run non-interactive
+        ];
+        if let Some(ref agent) = self.agent_name {
+            brain_args.push("--agent".into());
+            brain_args.push(agent.clone());
+        }
+        for a in &self.allow {
+            brain_args.push("--allow".into());
+            brain_args.push(a.clone());
+        }
+
+        let gait_bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gait"));
+
+        // Build ProfileInputs for BrainInit (model/agent/allow/result_schema).
+        let result_schema = self.result_schema.clone();
+        let profile_inputs = gait_core::turn::spine::ProfileInputs {
+            agent_name: self.agent_name.clone(),
+            model_override: Some(self.model.clone()),
+            allow: self.allow.clone(),
+            deny: vec![],
+            result_schema,
+        };
+
+        BrainLaunch {
+            brain_args,
+            codebase: self.codebase.clone(),
+            api_key,
+            gait_bin,
+            sandbox_cfg: self.sandbox_cfg.clone(),
+            sandbox_on: true, // workflow nodes are always sandboxed
+            profile_inputs,
+            cascade_group_arg: None,
+        }
     }
 
     fn turn_config(&mut self) -> LoopConfig {
-        let config = gait_core::config::load_config(&self.gait_dir);
         LoopConfig {
-            auto: self.opts.auto,
+            auto: self.auto,
             max_iter: None,
             preview_policy: gait_core::config::PreviewPolicy::default(),
             cancel: None,
             sandbox_on: true,
-            sandbox_cfg: config.sandbox,
+            sandbox_cfg: self.sandbox_cfg.clone(),
             relay: None,
             initial_git: None,
             daemons: vec![],
@@ -216,24 +232,25 @@ pub async fn exec_prompt_node(
     // workflow's channel and captures the final TurnResult.
     let mut sink = CapturingSink::new(ctx.workflow_tx.clone());
 
-    let driver_opts = PromptNodeDriverOpts {
+    let sandbox_cfg = {
+        let cfg = gait_core::config::load_config(ctx.gait_dir);
+        cfg.sandbox
+    };
+
+    let mut driver = PromptNodeDriver {
+        gait_dir: ctx.gait_dir.to_path_buf(),
+        codebase: codebase.clone(),
         model: model.clone(),
         allow: allow.clone(),
         agent_name: node.agent.clone(),
-        system_prompt: node.system_prompt.clone(),
         result_schema: node.output_schema.clone(),
         auto,
-    };
-    let mut driver = PromptNodeDriver {
-        gait_dir: ctx.gait_dir.to_path_buf(),
-        session_id: ctx.session_id.to_string(),
-        codebase: codebase.clone(),
-        opts: driver_opts,
+        sandbox_cfg,
     };
 
-    // Drive one turn. The per-turn `Recorder` inside `run_loop` writes the
-    // sub-turn transcript to the session's `log.jsonl`; the sink forwards
-    // channel items to the workflow's consumer.
+    // Drive one turn. relay_brain_turn inside run_loop writes the sub-turn
+    // transcript to the session's log.jsonl; the sink forwards items to the
+    // workflow's consumer.
     embed::run_loop(
         source,
         &mut sink,
@@ -241,6 +258,7 @@ pub async fn exec_prompt_node(
         ctx.gait_dir,
         ctx.session_id,
         &mut driver,
+        None, // no cascade kill slot for workflow nodes
     )
     .await?;
 
@@ -298,22 +316,18 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn prompt_node_driver_opts_capture_gait_dir() {
-        let opts = PromptNodeDriverOpts {
+    fn prompt_node_driver_holds_paths() {
+        let driver = PromptNodeDriver {
+            gait_dir: PathBuf::from("/tmp/gd"),
+            codebase: PathBuf::from("/tmp/cb"),
             model: "test/model".into(),
             allow: vec!["run_workflow".into()],
             agent_name: None,
-            system_prompt: None,
             result_schema: None,
             auto: false,
+            sandbox_cfg: gait_core::config::SandboxConfig::default(),
         };
-        let driver = PromptNodeDriver {
-            gait_dir: PathBuf::from("/tmp/gd"),
-            session_id: "s1".into(),
-            codebase: PathBuf::from("/tmp/cb"),
-            opts,
-        };
-        // Verify the driver holds the paths we'll use to construct GaitWorkflowRunner.
+        // Verify the driver holds the paths used to construct BrainLaunch.
         assert_eq!(driver.gait_dir, PathBuf::from("/tmp/gd"));
         assert_eq!(driver.codebase, PathBuf::from("/tmp/cb"));
     }

@@ -1,15 +1,108 @@
-//! Phase 3 Task 4a: spine process (`gait run`).
+//! Task 2: spine process (`gait run`).
 //!
-//! Thin CLI wrapper around `gait_core::turn::spine::relay_brain_turn`. The
-//! spine relay, brain runtime, and hand runtime all live in gait-core.
-//! This file parses args, pre-writes input events, resolves the API key,
-//! and delegates to the shared relay (same path as the REPL).
+//! `cmd_spine` now uses `SpineDriver` + `run_loop` (the sealed loop) instead of
+//! calling `relay_brain_turn` inline. `SpineDriver` implements `TurnDriver::brain_launch()`
+//! to supply all data `relay_brain_turn` needs. One turn per `TurnStart` from `SpineSource`.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use gait_core::embed::{CliSink, Diag, TurnSink};
+use gait_core::embed::{
+    BrainLaunch, CliSink, Diag, LoopConfig, TurnDriver, TurnSink, TurnSource, TurnStart,
+};
 
 use crate::cli::run::RunArgs;
+
+// ── SpineDriver ───────────────────────────────────────────────────────────────
+
+/// `TurnDriver` impl for `gait run` (the spine process). Supplies `brain_launch()`
+/// with all data `relay_brain_turn` needs; `turn_config` is informational only (the
+/// actual config lands in `BrainInit` via `ProfileInputs`).
+struct SpineDriver {
+    /// Argv forwarded to `gait __brain` (--session injected by cmd_spine).
+    brain_args: Vec<String>,
+    codebase: PathBuf,
+    api_key: String,
+    gait_bin: PathBuf,
+    sandbox_cfg: gait_core::config::SandboxConfig,
+    sandbox_on: bool,
+    profile_inputs: gait_core::turn::spine::ProfileInputs,
+    cascade_group_arg: Option<String>,
+    /// For after_turn: scheduler/harness policy on success.
+    gait_dir: PathBuf,
+    session_id: String,
+    auto: bool,
+    max_iter: Option<usize>,
+}
+
+#[async_trait::async_trait(?Send)]
+impl TurnDriver for SpineDriver {
+    fn brain_launch(&self, _session_id: &str) -> BrainLaunch {
+        BrainLaunch {
+            brain_args: self.brain_args.clone(),
+            codebase: self.codebase.clone(),
+            api_key: self.api_key.clone(),
+            gait_bin: self.gait_bin.clone(),
+            sandbox_cfg: self.sandbox_cfg.clone(),
+            sandbox_on: self.sandbox_on,
+            profile_inputs: self.profile_inputs.clone(),
+            cascade_group_arg: self.cascade_group_arg.clone(),
+        }
+    }
+
+    fn turn_config(&mut self) -> LoopConfig {
+        LoopConfig {
+            auto: self.auto,
+            max_iter: self.max_iter,
+            preview_policy: gait_core::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: self.sandbox_on,
+            sandbox_cfg: self.sandbox_cfg.clone(),
+            relay: None,
+            initial_git: None,
+            daemons: vec![],
+        }
+    }
+
+    async fn after_turn(&mut self, sink: &mut dyn TurnSink, _result: &gait_core::turn::TurnResult) {
+        // The spine's after_turn reads the session meta and runs the Scheduler/Harness.
+        // Note: relay_brain_turn already called sink.result() with the real TurnResult;
+        // run_loop passes a synthetic dummy here — we skip harness for now (Task 3 wires this).
+        let _ = (sink, &self.gait_dir, &self.session_id);
+    }
+
+    fn on_turn_error(
+        &mut self,
+        sink: &mut dyn TurnSink,
+        e: anyhow::Error,
+    ) -> std::ops::ControlFlow<()> {
+        sink.diagnostic(Diag::Error, &format!("spine relay error: {e}"));
+        std::ops::ControlFlow::Break(())
+    }
+}
+
+// ── SpineSource ───────────────────────────────────────────────────────────────
+
+/// Single-turn source: yields exactly one `Input([user_bodies])` then `None`.
+/// For `--task`-less runs (resume), yields one `Resume`.
+struct SpineSource {
+    bodies: Option<Vec<gait_core::proto::gait::log::v1::event::Body>>,
+    done: bool,
+}
+
+#[async_trait::async_trait(?Send)]
+impl TurnSource for SpineSource {
+    async fn next(&mut self) -> Option<TurnStart> {
+        if self.done {
+            return None;
+        }
+        self.done = true;
+        match self.bodies.take() {
+            Some(b) if !b.is_empty() => Some(TurnStart::Input(b)),
+            _ => Some(TurnStart::Resume),
+        }
+    }
+}
 
 // ── Spine ─────────────────────────────────────────────────────────────────────
 
@@ -123,25 +216,10 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
 
     let repos = gait_core::git::Repos::production();
 
-    // Ensure session worktree exists for pre-writing input events.
-    repos
-        .traces
-        .create_session_worktree(&gait_dir, &session_id)
-        .unwrap_or_else(|e| {
-            sink.diagnostic(
-                Diag::Error,
-                &format!("error creating session worktree: {e}"),
-            );
-            std::process::exit(1);
-        });
-
-    let log_path = gait_dir
-        .join("sessions")
-        .join(&session_id)
-        .join("log.jsonl");
-
     // Expand and pre-write input events (brain runs Resume, sees them on first fold).
-    if let Some(task_text) = args.task.clone() {
+    let user_bodies: Vec<gait_core::proto::gait::log::v1::event::Body> = if let Some(task_text) =
+        args.task.clone()
+    {
         let hist = gait_dir
             .join("tmp")
             .join(format!("shell-{}.jsonl", &session_id));
@@ -157,14 +235,10 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
                 last_blocks: &last_blocks,
             },
         );
-        let bodies = gait_core::embed::user_turn_events(&repos, &codebase_path, expanded);
-        for body in bodies {
-            if let Err(e) = gait_core::proto::wire::append(&log_path, body) {
-                sink.diagnostic(Diag::Error, &format!("error appending input event: {e}"));
-                std::process::exit(1);
-            }
-        }
-    }
+        gait_core::embed::user_turn_events(&repos, &codebase_path, expanded)
+    } else {
+        vec![]
+    };
 
     // Build brain argv: same as spine argv but with --session injected and --task stripped.
     let mut brain_args: Vec<String> = argv.to_vec();
@@ -179,7 +253,6 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
         std::process::exit(1);
     });
 
-    // Delegate to the shared spine relay in gait-core (same path as the REPL).
     let sandbox_cfg = config.sandbox.clone();
     let sandbox_on = config.sandbox.on;
 
@@ -203,8 +276,7 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
     };
 
     // Shared slot: holds the current cascade group so the signal task can reap it.
-    let signal_slot: gait_core::turn::spine::SignalSlot =
-        std::sync::Arc::new(std::sync::Mutex::new(None));
+    let signal_slot: gait_core::turn::spine::SignalSlot = Arc::new(std::sync::Mutex::new(None));
 
     // Spawn SIGINT/SIGTERM handler: kill current group (if any) then exit.
     {
@@ -224,30 +296,56 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
         });
     }
 
-    let brain_failed = gait_core::turn::spine::relay_brain_turn(
-        &brain_args,
-        &gait_dir,
-        &codebase_path,
-        &session_id,
-        &api_key,
-        &exe,
-        &sandbox_cfg,
-        sandbox_on,
-        &profile_inputs,
-        &mut sink,
-        args.cascade_group.clone(),
-        Some(&signal_slot),
-    )
-    .await
-    .unwrap_or_else(|e| {
-        sink.diagnostic(Diag::Error, &format!("spine relay error: {e}"));
-        true
+    // Build the Session for run_loop (spine is the trusted parent process).
+    let session = Arc::new(gait_core::session::Session {
+        id: session_id.clone(),
+        gait_dir: gait_dir.clone(),
+        codebase_path: codebase_path.clone(),
+        assigned_by: None,
+        repos: repos.clone(),
     });
 
-    // Clear the slot — turn complete, no live group to kill.
-    *signal_slot.lock().unwrap() = None;
+    let source = SpineSource {
+        bodies: if user_bodies.is_empty() {
+            None
+        } else {
+            Some(user_bodies)
+        },
+        done: false,
+    };
 
-    if brain_failed {
+    let mut driver = SpineDriver {
+        brain_args,
+        codebase: codebase_path,
+        api_key,
+        gait_bin: exe,
+        sandbox_cfg,
+        sandbox_on,
+        profile_inputs,
+        cascade_group_arg: args.cascade_group.clone(),
+        gait_dir: gait_dir.clone(),
+        session_id: session_id.clone(),
+        auto: args.auto,
+        max_iter: config.max_iter,
+    };
+
+    let run_result = gait_core::embed::run_loop(
+        source,
+        &mut sink,
+        session,
+        &gait_dir,
+        &session_id,
+        &mut driver,
+        Some(&signal_slot),
+    )
+    .await;
+
+    if let Err(e) = run_result {
+        sink.diagnostic(Diag::Error, &format!("spine run_loop error: {e}"));
+        std::process::exit(1);
+    }
+
+    if sink.failed {
         std::process::exit(1);
     }
 }
@@ -256,8 +354,3 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
 // The brain runtime (brain_scope, BrainSink, BrainDriver, run_brain) has been
 // moved to gait-core/src/turn/brain.rs. The CLI wrapper (`cmd_brain`) lives in
 // args.rs and calls `gait_core::turn::brain::run_brain`.
-//
-// The duplicated spine relay loop, run_tool_for_spine, error_feedback,
-// scope_to_proto, and strip_task_from_args have been removed — the CLI now
-// delegates to `gait_core::turn::spine::relay_brain_turn` (same path as the
-// REPL), which uses `run_tool_as_spine` in core.

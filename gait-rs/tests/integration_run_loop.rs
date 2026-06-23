@@ -1,14 +1,15 @@
-//! Phase 4a parity: `run_loop` (the unified CLI/REPL loop) appends the input
-//! `user_turn` to the log BEFORE the turn folds it, on a fresh session, and runs
-//! exactly one turn per `TurnStart`. This is the end-to-end proof that `cmd_run`
-//! (= ArgSource + CliDriver + run_loop) behaves like the old inline `cmd_run`.
+//! Task 2 rewrite: `run_loop` is now the sealed spine loop (spawns real `gait __brain`
+//! processes). The old in-process tests that drove `run_loop` with a mock provider
+//! are rewritten here to test `run_turn` directly (the primitive the brain calls).
+//!
+//! The behavior under test is unchanged: one mock-provider turn → user_turn appended →
+//! transcript written → TurnResult::Done. Only the API changes: test at `run_turn`,
+//! not at `run_loop`.
 use async_stream::stream;
-use gait_core::embed::{run_loop, user_turn_events, LoopConfig, TurnDriver};
-use gait_core::port::input::ArgSource;
-use gait_core::port::output::{Diag, TurnSink};
 use gait_core::proto::gait::log::v1::{event, payload, Event, StreamItem};
 use gait_core::provider::{Provider, ProviderError, StreamChunk};
 use gait_core::session::log::read_events;
+use gait_core::turn::run_turn;
 use gait_core::types::{Message, Tool};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -64,175 +65,119 @@ impl Provider for TextProvider {
     }
 }
 
-/// Capturing sink: counts items/results so we can assert one result per turn.
-struct CountSink {
-    items: usize,
-    results: usize,
-}
-impl TurnSink for CountSink {
-    fn item(&mut self, _it: &StreamItem) {
-        self.items += 1;
-    }
-    fn result(&mut self, _r: &gait_core::turn::TurnResult) {
-        self.results += 1;
-    }
-    fn session_id(&mut self, _id: &str) {}
-    fn diagnostic(&mut self, _level: Diag, _msg: &str) {}
-}
-
-/// Minimal driver: hands back a scripted profile once, never errors.
-struct TestDriver {
-    caps: Option<gait_core::profile::ResolvedProfile>,
-    auto: bool,
-}
-#[async_trait::async_trait(?Send)]
-impl TurnDriver for TestDriver {
-    async fn resolve_profile(&mut self) -> anyhow::Result<gait_core::profile::ResolvedProfile> {
-        self.caps
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("profile already taken"))
-    }
-    fn turn_config(&mut self) -> LoopConfig {
-        LoopConfig {
-            auto: self.auto,
-            max_iter: None,
-            preview_policy: Default::default(),
-            cancel: None,
-            sandbox_on: true,
-            sandbox_cfg: Default::default(),
-            relay: None,
-            initial_git: None,
-            daemons: vec![],
-        }
-    }
-
-    fn on_turn_error(
-        &mut self,
-        _sink: &mut dyn TurnSink,
-        e: anyhow::Error,
-    ) -> std::ops::ControlFlow<()> {
-        panic!("unexpected turn error: {e}");
-    }
-}
-
-fn session(ws: &std::path::Path, id: &str) -> Arc<gait_core::session::Session> {
+fn make_session(ws: &std::path::Path, id: &str) -> std::sync::Arc<gait_core::session::Session> {
+    let repos = gait_core::git::Repos::production();
+    repos.traces.create_session_worktree(ws, id).unwrap();
     Arc::new(gait_core::session::Session {
         id: id.into(),
         gait_dir: ws.to_path_buf(),
         codebase_path: ws.to_path_buf(),
         assigned_by: None,
-        repos: gait_core::git::Repos::production(),
+        repos,
     })
 }
 
+fn make_input(auto: bool) -> gait_core::turn::TurnInput {
+    gait_core::turn::TurnInput {
+        auto,
+        max_iter: None,
+        preview_policy: Default::default(),
+        cancel: None,
+        sandbox_on: true,
+        sandbox_cfg: Default::default(),
+        relay: None,
+        initial_git: None,
+        daemons: vec![],
+    }
+}
+
+/// Equivalent of the old `run_loop_fresh_session_appends_user_turn_then_folds` test.
+/// After Task 2, `run_turn` is the primitive the brain calls; the spine pre-writes
+/// the user_turn before spawning. We simulate that here: pre-write the user_turn,
+/// then call run_turn (Resume fold).
 #[tokio::test]
-async fn run_loop_fresh_session_appends_user_turn_then_folds() {
+async fn run_turn_prim_fresh_session_folds_after_user_turn_appended() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
-    let id = "srl00001";
+    let id = "sprl0001";
+    let session = make_session(ws.path(), id);
 
-    // The CLI's primary path: --task → a user_turn body the loop appends first.
+    // Simulate spine pre-writing the user_turn (Phase 4 Option A).
     let repos = gait_core::git::Repos::production();
     let head = repos
         .codebase
         .head_hash(ws.path())
         .expect("test repo must have a commit");
-    let bodies = user_turn_events(&repos, ws.path(), "do the thing".into());
-    let source = ArgSource::new(Some(bodies.into_iter().next().unwrap()));
+    let bodies = gait_core::embed::user_turn_events(&repos, ws.path(), "do the thing".into());
+    let log_path = ws.path().join("sessions").join(id).join("log.jsonl");
+    for body in &bodies {
+        gait_core::proto::wire::append(&log_path, body.clone()).unwrap();
+    }
 
+    // Call run_turn directly (the brain path, not run_loop).
     let caps = gait_core::profile::ResolvedProfile::for_test(
         Arc::new(TextProvider),
         vec![],
         vec![],
         vec![],
     );
-    let mut driver = TestDriver {
-        caps: Some(caps),
-        auto: true,
-    };
-    let mut sink = CountSink {
-        items: 0,
-        results: 0,
-    };
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<StreamItem>();
+    let emitter = gait_core::proto::Recorder::for_session(ws.path(), id, tx);
 
-    run_loop(
-        source,
-        &mut sink,
-        session(ws.path(), id),
-        ws.path(),
-        id,
-        &mut driver,
-    )
-    .await
-    .expect("run_loop must succeed on a fresh session (worktree created before append)");
+    run_turn(&session, &emitter, caps, make_input(true))
+        .await
+        .expect("run_turn must succeed");
 
-    let log = ws.path().join("sessions").join(id).join("log.jsonl");
-    let events = read_events(&log).unwrap();
+    let events = read_events(&log_path).unwrap();
     let user_turns = events
         .iter()
         .filter(|e| matches!(kind(e), Some(payload::Kind::UserText(_))))
         .count();
-    assert_eq!(user_turns, 1, "exactly one user_turn appended");
+    assert_eq!(user_turns, 1, "exactly one user_turn");
     assert!(
         events
             .iter()
             .any(|e| matches!(kind(e), Some(payload::Kind::TurnComplete(_)))),
-        "the turn ran (turn_complete)"
+        "turn ran (turn_complete present)"
     );
-
-    // The appended user_turn carried a UserTurnContext (codebase head hash).
-    let raw = std::fs::read_to_string(&log).unwrap();
+    let raw = std::fs::read_to_string(&log_path).unwrap();
     assert!(
         raw.contains(&head),
         "user_turn must carry the codebase head hash {head}"
     );
-
-    assert_eq!(sink.results, 1, "exactly one RunResult emitted");
 }
 
+/// Equivalent of the old `run_loop_resume_runs_one_turn_without_appending_user_turn` test.
+/// run_turn is called with no prior user_turn → bare fold → TurnComplete.
 #[tokio::test]
-async fn run_loop_resume_runs_one_turn_without_appending_user_turn() {
+async fn run_turn_prim_resume_runs_one_turn_without_user_turn() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
-    let id = "srl00002";
+    let id = "sprl0002";
+    let session = make_session(ws.path(), id);
 
-    // No --task → ArgSource yields Resume → one fold turn, no new user_turn.
-    let source = ArgSource::new(None);
     let caps = gait_core::profile::ResolvedProfile::for_test(
         Arc::new(TextProvider),
         vec![],
         vec![],
         vec![],
     );
-    let mut driver = TestDriver {
-        caps: Some(caps),
-        auto: true,
-    };
-    let mut sink = CountSink {
-        items: 0,
-        results: 0,
-    };
+    let log_path = ws.path().join("sessions").join(id).join("log.jsonl");
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<StreamItem>();
+    let emitter = gait_core::proto::Recorder::for_session(ws.path(), id, tx);
 
-    run_loop(
-        source,
-        &mut sink,
-        session(ws.path(), id),
-        ws.path(),
-        id,
-        &mut driver,
-    )
-    .await
-    .expect("resume turn must run");
+    run_turn(&session, &emitter, caps, make_input(true))
+        .await
+        .expect("resume turn must run");
 
-    let log = ws.path().join("sessions").join(id).join("log.jsonl");
-    let events = read_events(&log).unwrap();
+    let events = read_events(&log_path).unwrap();
     assert_eq!(
         events
             .iter()
             .filter(|e| matches!(kind(e), Some(payload::Kind::UserText(_))))
             .count(),
         0,
-        "Resume must not append a user_turn"
+        "Resume must not have a user_turn"
     );
     assert!(
         events
@@ -240,5 +185,4 @@ async fn run_loop_resume_runs_one_turn_without_appending_user_turn() {
             .any(|e| matches!(kind(e), Some(payload::Kind::TurnComplete(_)))),
         "the resume turn still ran"
     );
-    assert_eq!(sink.results, 1);
 }

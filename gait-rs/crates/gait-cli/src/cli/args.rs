@@ -33,14 +33,8 @@ pub fn resolve_codebase(args: &[String]) -> std::path::PathBuf {
     })
 }
 
-pub async fn cmd_run(argv: &[String]) {
-    let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
-        eprintln!("[gait] {e}");
-        std::process::exit(1);
-    });
-    let codebase = resolve_codebase(argv);
-    crate::cli::run::cmd_run(argv, gait_dir, codebase).await
-}
+// cmd_run deleted (Task 2): the in-process run path was dead code (no caller in main.rs).
+// `gait run` routes through cmd_spine → SpineDriver → run_loop → relay_brain_turn.
 
 pub async fn cmd_spine(argv: &[String]) {
     let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
