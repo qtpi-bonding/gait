@@ -66,26 +66,20 @@ impl TurnDriver for PromptNodeDriver {
 
         let gait_bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gait"));
 
-        // Build ProfileInputs for BrainInit (model/agent/allow/result_schema).
-        let result_schema = self.result_schema.clone();
-        let profile_inputs = gait_core::turn::spine::ProfileInputs {
-            agent_name: self.agent_name.clone(),
-            model_override: Some(self.model.clone()),
-            allow: self.allow.clone(),
-            deny: vec![],
-            result_schema,
-        };
-
-        BrainLaunch {
+        BrainLaunch::new(
             brain_args,
-            codebase: self.codebase.clone(),
+            self.codebase.clone(),
             api_key,
             gait_bin,
-            sandbox_cfg: self.sandbox_cfg.clone(),
-            sandbox_on: true, // workflow nodes are always sandboxed
-            profile_inputs,
-            cascade_group_arg: None,
-        }
+            self.sandbox_cfg.clone(),
+            true, // workflow nodes are always sandboxed
+            None, // cascade_group_arg
+            self.agent_name.clone(),
+            Some(self.model.clone()),
+            self.allow.clone(),
+            vec![], // deny
+            self.result_schema.clone(),
+        )
     }
 
     fn turn_config(&mut self) -> LoopConfig {

@@ -52,14 +52,14 @@ struct InformArg {
     context: Option<String>,
 }
 
-pub mod brain;
+pub(crate) mod brain;
 mod curate;
 mod exec;
 mod gate;
-pub mod hand;
+pub(crate) mod hand;
 pub mod nerve;
 mod prompt;
-pub mod spine;
+pub(crate) mod spine;
 pub(crate) mod synapse;
 
 // Re-exports

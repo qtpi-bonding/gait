@@ -25,7 +25,12 @@ struct SpineDriver {
     gait_bin: PathBuf,
     sandbox_cfg: gait_core::config::SandboxConfig,
     sandbox_on: bool,
-    profile_inputs: gait_core::turn::spine::ProfileInputs,
+    // Profile-level inputs stored as individual fields to avoid naming the sealed type.
+    agent_name: Option<String>,
+    model_override: Option<String>,
+    allow: Vec<String>,
+    deny: Vec<String>,
+    result_schema: Option<serde_json::Value>,
     cascade_group_arg: Option<String>,
     /// For after_turn: scheduler/harness policy on success.
     gait_dir: PathBuf,
@@ -37,16 +42,20 @@ struct SpineDriver {
 #[async_trait::async_trait(?Send)]
 impl TurnDriver for SpineDriver {
     fn brain_launch(&self, _session_id: &str) -> BrainLaunch {
-        BrainLaunch {
-            brain_args: self.brain_args.clone(),
-            codebase: self.codebase.clone(),
-            api_key: self.api_key.clone(),
-            gait_bin: self.gait_bin.clone(),
-            sandbox_cfg: self.sandbox_cfg.clone(),
-            sandbox_on: self.sandbox_on,
-            profile_inputs: self.profile_inputs.clone(),
-            cascade_group_arg: self.cascade_group_arg.clone(),
-        }
+        BrainLaunch::new(
+            self.brain_args.clone(),
+            self.codebase.clone(),
+            self.api_key.clone(),
+            self.gait_bin.clone(),
+            self.sandbox_cfg.clone(),
+            self.sandbox_on,
+            self.cascade_group_arg.clone(),
+            self.agent_name.clone(),
+            self.model_override.clone(),
+            self.allow.clone(),
+            self.deny.clone(),
+            self.result_schema.clone(),
+        )
     }
 
     fn turn_config(&mut self) -> LoopConfig {
@@ -241,7 +250,7 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
 
     // Build brain argv: same as spine argv but with --session injected and --task stripped.
     let mut brain_args: Vec<String> = argv.to_vec();
-    gait_core::turn::spine::strip_task_from_args(&mut brain_args);
+    gait_core::embed::strip_task_from_args(&mut brain_args);
     if !brain_args.iter().any(|a| a == "--session") {
         brain_args.push("--session".into());
         brain_args.push(session_id.clone());
@@ -264,14 +273,6 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
         std::fs::read(&schema_path)
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-    };
-
-    let profile_inputs = gait_core::turn::spine::ProfileInputs {
-        agent_name: args.agent_name.clone(),
-        model_override: args.model_override.clone(),
-        allow: args.allow.clone(),
-        deny: args.deny.clone(),
-        result_schema,
     };
 
     // Process-lifetime cascade kill handle — held by the SIGINT/SIGTERM handler
@@ -319,7 +320,11 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
         gait_bin: exe,
         sandbox_cfg,
         sandbox_on,
-        profile_inputs,
+        agent_name: args.agent_name.clone(),
+        model_override: args.model_override.clone(),
+        allow: args.allow.clone(),
+        deny: args.deny.clone(),
+        result_schema,
         cascade_group_arg: args.cascade_group.clone(),
         gait_dir: gait_dir.clone(),
         session_id: session_id.clone(),
