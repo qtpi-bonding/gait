@@ -486,6 +486,7 @@ async fn run_workflow_from_repl(
     let run_id_log = run_id.clone();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let mut sink = gait_core::embed::CliSink::stdio(true);
         if let Err(e) = rt.block_on(gait_workflow::run_workflow(
             gait_workflow::WorkflowRunOpts {
                 workflow_def,
@@ -495,6 +496,7 @@ async fn run_workflow_from_repl(
                 codebase,
                 args,
             },
+            &mut sink,
             &mut gait_workflow::observer::CliObserver,
             None,
         )) {

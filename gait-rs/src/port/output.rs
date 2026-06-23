@@ -52,6 +52,30 @@ pub trait TurnSink {
     fn end_turn(&mut self) {}
 }
 
+/// Forwarding impl so a `&mut dyn TurnSink` trait object (and reborrows of one)
+/// satisfies `impl TurnSink` — `run_loop` takes `&mut impl TurnSink`, so callers
+/// holding only a trait object can pass `&mut *sink` straight through.
+impl TurnSink for &mut dyn TurnSink {
+    fn item(&mut self, item: &StreamItem) {
+        (**self).item(item);
+    }
+    fn result(&mut self, r: &crate::turn::TurnResult) {
+        (**self).result(r);
+    }
+    fn session_id(&mut self, id: &str) {
+        (**self).session_id(id);
+    }
+    fn diagnostic(&mut self, level: Diag, msg: &str) {
+        (**self).diagnostic(level, msg);
+    }
+    fn begin_turn(&mut self) {
+        (**self).begin_turn();
+    }
+    fn end_turn(&mut self) {
+        (**self).end_turn();
+    }
+}
+
 pub async fn drive(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<StreamItem>,
     sink: &mut impl TurnSink,

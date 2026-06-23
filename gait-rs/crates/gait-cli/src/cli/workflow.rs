@@ -61,6 +61,7 @@ pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) {
         name, session_id
     );
 
+    let mut sink = gait_core::embed::CliSink::stdio(false);
     match run_workflow(
         WorkflowRunOpts {
             workflow_def: gait_workflow::convert::to_proto(&wf),
@@ -70,6 +71,7 @@ pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) {
             codebase: gait_dir.join("codebase"),
             args,
         },
+        &mut sink,
         &mut CliObserver,
         None,
     )
@@ -175,6 +177,7 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) {
         progress.name, workflow_id
     );
 
+    let mut sink = gait_core::embed::CliSink::stdio(false);
     match run_workflow(
         WorkflowRunOpts {
             workflow_def: gait_workflow::convert::to_proto(&wf),
@@ -184,6 +187,7 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) {
             codebase: gait_dir.join("codebase"),
             args: vec![],
         },
+        &mut sink,
         &mut CliObserver,
         None,
     )

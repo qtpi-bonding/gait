@@ -82,9 +82,9 @@ async fn observer_parity_shell_workflow() {
     );
 
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (item_tx, _item_rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut obs = ChannelObserver::new(event_tx, item_tx);
+    let mut obs = ChannelObserver::new(event_tx);
 
+    let mut sink = gait_core::embed::CliSink::stdio(true);
     let outcome = run_workflow(
         WorkflowRunOpts {
             workflow_def: gait_workflow::convert::to_proto(&wf),
@@ -94,6 +94,7 @@ async fn observer_parity_shell_workflow() {
             codebase: gait_dir.clone(),
             args: vec![],
         },
+        &mut sink,
         &mut obs,
         None,
     )
@@ -134,4 +135,66 @@ async fn observer_parity_shell_workflow() {
         saw_complete,
         "event channel should have seen WorkflowComplete"
     );
+}
+
+/// Set up a real git-backed gait-dir (the same shape `observer_parity_shell_workflow`
+/// builds) so a shell workflow can create session worktrees offline.
+fn setup_git_gait_dir(gait_dir: &std::path::Path) {
+    std::fs::create_dir_all(gait_dir.join("sessions")).unwrap();
+    std::fs::create_dir_all(gait_dir.join("workflow-runs")).unwrap();
+    for args in [
+        vec!["init"],
+        vec!["config", "user.email", "test@test.com"],
+        vec!["config", "user.name", "Test"],
+    ] {
+        std::process::Command::new("git")
+            .args(&args)
+            .current_dir(gait_dir)
+            .output()
+            .unwrap();
+    }
+    std::fs::write(gait_dir.join(".gitkeep"), "").unwrap();
+    for args in [vec!["add", ".gitkeep"], vec!["commit", "-m", "init"]] {
+        std::process::Command::new("git")
+            .args(&args)
+            .current_dir(gait_dir)
+            .output()
+            .unwrap();
+    }
+}
+
+/// Orchestrator regression: `run_workflow` accepts a `RecordingSink` and drives
+/// a real (offline, shell) workflow to completion with both nodes Done. This
+/// exercises the new `sink` parameter and the `select!` drain loop end-to-end.
+#[tokio::test]
+async fn run_workflow_accepts_recording_sink() {
+    use gait_core::embed::RecordingSink;
+    let dir = TempDir::new().unwrap();
+    let gait_dir = dir.path().to_path_buf();
+    setup_git_gait_dir(&gait_dir);
+
+    let wf: WorkflowDef = serde_yaml::from_str(WORKFLOW_YAML).unwrap();
+    let session = format!("rec{}", std::process::id());
+    let mut sink = RecordingSink::default();
+    let outcome = run_workflow(
+        WorkflowRunOpts {
+            workflow_def: gait_workflow::convert::to_proto(&wf),
+            yaml_path: "rec-test.yaml".to_string(),
+            session_id: session.clone(),
+            gait_dir: gait_dir.clone(),
+            codebase: gait_dir.clone(),
+            args: vec![],
+        },
+        &mut sink,
+        &mut gait_workflow::observer::NullObserver,
+        None,
+    )
+    .await
+    .expect("run should succeed");
+    assert_eq!(outcome, WorkflowOutcome::Completed);
+
+    let log = WorkflowRunLog::open(&gait_dir.join("workflow-runs"), &session).unwrap();
+    let state = reconstruct_state(&log.read_events().unwrap());
+    assert_eq!(state.node_status("step1"), NodeStatus::Done);
+    assert_eq!(state.node_status("step2"), NodeStatus::Done);
 }

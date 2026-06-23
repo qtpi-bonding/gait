@@ -212,6 +212,10 @@ pub async fn run_chat(
         };
 
         let run_id = format!("chat-{}", session_id);
+        let mut sink = crate::repl::ReplSink {
+            shared: shared.clone(),
+        };
+        let mut observer = gait_workflow::observer::NullObserver;
         let _outcome = gait_workflow::run_workflow(
             gait_workflow::WorkflowRunOpts {
                 workflow_def: wf_def,
@@ -221,7 +225,8 @@ pub async fn run_chat(
                 codebase: codebase.clone(),
                 args: vec![],
             },
-            &mut gait_workflow::observer::CliObserver,
+            &mut sink,
+            &mut observer,
             Some(Box::new(source)),
         )
         .await?;
