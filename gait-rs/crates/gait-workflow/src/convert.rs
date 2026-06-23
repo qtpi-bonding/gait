@@ -55,12 +55,12 @@ fn node_to_proto(n: &NodeDef) -> Node {
             r#else: b.else_.clone(),
             cases: b.cases.clone(),
         }))
-    } else if let Some(g) = &n.gate {
-        Some(node::Body::Gate(GateNode {
-            message: g.message().to_string(),
-        }))
     } else {
-        None
+        n.gate.as_ref().map(|g| {
+            node::Body::Gate(GateNode {
+                message: g.message().to_string(),
+            })
+        })
     };
     Node {
         id: n.id.clone(),
