@@ -50,7 +50,11 @@ fn build_line_editor(
         .with_completer(Box::new(crate::repl::GaitCompleter {
             gait_dir: gait_dir.clone(),
             codebase: codebase.clone(),
-            shell_history_path,
+            shell_history_path: shell_history_path.clone(),
+        }))
+        .with_highlighter(Box::new(crate::repl::GaitHighlighter {
+            shell_history_path: shell_history_path.clone(),
+            codebase: codebase.clone(),
         }))
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(
             ColumnarMenu::default().with_name("completion_menu"),

@@ -21,6 +21,7 @@ crossterm = "0.29"
 tokio-util = "0.7"
 reedline = "0.48"
 unicode-width = "0.2"
+nu-ansi-term = "0.50"
 
 [dev-dependencies]
 tempfile = "3"
