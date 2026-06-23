@@ -5,11 +5,11 @@ use gait_core::embed::{
     self, BrainLaunch, Diag, LoopConfig, TurnDriver, TurnSink, TurnSource, TurnStart,
 };
 use gait_core::proto::gait::log::v1::StreamItem;
+use gait_core::proto::gait::workflow::v1::{Node, PromptNode, Workflow};
 use gait_core::turn::TurnResult;
 use gait_core::Session;
 
 use crate::exec_shell::NodeContext;
-use crate::schema::{NodeDef, WorkflowDef};
 use crate::vars::{substitute, NodeOutput};
 
 /// Per-node driver: supplies `brain_launch()` so `run_loop` can spawn `gait __brain`
@@ -121,8 +121,8 @@ impl TurnSink for CapturingSink {
 }
 
 /// Single-turn source: yields exactly one `Input([user_turn, context_status])` then `None`.
-struct OneTurnSource {
-    bodies: Option<Vec<gait_core::proto::gait::log::v1::event::Body>>,
+pub struct OneTurnSource {
+    pub bodies: Option<Vec<gait_core::proto::gait::log::v1::event::Body>>,
 }
 
 #[async_trait::async_trait(?Send)]
@@ -132,33 +132,62 @@ impl TurnSource for OneTurnSource {
     }
 }
 
+/// Wrapper enum so the orchestrator can pass a by-value `impl TurnSource` to
+/// `run_loop`.  `Box<dyn TurnSource>` does NOT itself satisfy `impl TurnSource`
+/// (async_trait adds no blanket impl), so this enum bridges the gap: calling
+/// `.next()` on a `Box<dyn TurnSource>` works as a method call through the
+/// trait object.
+pub enum NodeSource {
+    Literal(OneTurnSource),
+    Live(Box<dyn TurnSource>),
+}
+
+#[async_trait::async_trait(?Send)]
+impl TurnSource for NodeSource {
+    async fn next(&mut self) -> Option<TurnStart> {
+        match self {
+            NodeSource::Literal(s) => s.next().await,
+            NodeSource::Live(b) => b.next().await,
+        }
+    }
+}
+
 /// Drive a single prompt node through the unified `run_loop` boundary.
 ///
-/// Replaces the old direct `run_turn` + `Arc<dyn Provider>` flow. The driver
-/// builds a profile via `build_workflow_node_profile` (Task 1), opens a
-/// session, drives exactly one turn, and forwards every sub-turn `StreamItem`
-/// to the workflow's channel via `CapturingSink` (preserving the Phase 3b
-/// contract that prompt sub-turns publish to the workflow's consumer).
+/// `input` is `Some(live_source)` when the caller has a live interactive source
+/// (e.g. stdin for `gait workflow run`). If the node has a literal `prompt`
+/// field it is used directly (one-shot), ignoring `input`. If the node has no
+/// prompt and `input` is `None`, returns `NodeOutput::open()` immediately —
+/// the run exits cleanly and the node is left open for resume.
 pub async fn exec_prompt_node(
-    node: &NodeDef,
-    prompt_text: &str,
+    node: &Node,
+    p: &PromptNode,
     ctx: &NodeContext<'_>,
-    workflow_def: &WorkflowDef,
+    wf: &Workflow,
+    input: Option<Box<dyn TurnSource>>,
 ) -> anyhow::Result<NodeOutput> {
-    let task = substitute(prompt_text, &ctx.vars);
+    // Fast path: absent prompt + no input → open immediately, before any model
+    // resolution or session setup (those require a valid model config).
+    if p.prompt.is_empty() && input.is_none() {
+        return Ok(NodeOutput::open());
+    }
 
     use gait_core::config::resolver::{ConfigResolver, Overrides};
     let loaded = gait_core::config::load_config(ctx.gait_dir);
-    // consumer layer: WorkflowDef fields
+    // consumer layer: Workflow fields
     let consumer = Overrides {
-        model: workflow_def.model.clone(),
-        allow: Some(workflow_def.allow.clone()),
+        model: wf.model.clone(),
+        allow: Some(wf.allow.clone()),
         ..Overrides::empty()
     };
-    // per-call layer: NodeDef fields (higher priority)
+    // per-call layer: Node fields (higher priority)
     let per_call = Overrides {
         model: node.model.clone(),
-        allow: node.allow.clone(),
+        allow: if node.allow.is_empty() {
+            None
+        } else {
+            Some(node.allow.clone())
+        },
         agent: node.agent.clone(),
         ..Overrides::empty()
     };
@@ -171,70 +200,106 @@ pub async fn exec_prompt_node(
         .clone()
         .expect("resolve_checked guarantees model is Some");
     let allow = resolved_cfg.allow.clone();
-    let auto = node.auto.unwrap_or(workflow_def.auto);
+    let auto = node.auto.unwrap_or(wf.auto);
 
-    let codebase = node
+    // output_schema_json: parse non-empty string to Value
+    let result_schema: Option<serde_json::Value> = if node.output_schema_json.is_empty() {
+        None
+    } else {
+        Some(serde_json::from_str(&node.output_schema_json).map_err(|e| {
+            anyhow::anyhow!("node '{}': invalid output_schema_json: {}", node.id, e)
+        })?)
+    };
+
+    let codebase = p
         .codebase
-        .as_ref()
+        .as_deref()
         .map(|cb| PathBuf::from(substitute(cb, &ctx.vars)))
         .unwrap_or_else(|| ctx.codebase.to_path_buf());
+
+    let session_id = if p.continue_session.is_empty() {
+        ctx.session_id.to_string()
+    } else {
+        p.continue_session.clone()
+    };
 
     // Open the session up-front so `run_loop` can use `session.repos` for
     // worktree creation.
     let session = Arc::new(Session::open(
         ctx.gait_dir.to_path_buf(),
         codebase.clone(),
-        ctx.session_id.to_string(),
+        session_id.clone(),
     )?);
-
-    // Single-turn source. The body is appended before the fold (Phase 4
-    // Option A) — `run_loop` does the append-then-fold.
-    let repos = gait_core::git::Repos::production();
-    let user_bodies = embed::user_turn_events(&repos, &codebase, task);
-    let source = OneTurnSource {
-        bodies: Some(user_bodies),
-    };
-
-    // Capturing-and-forwarding sink: forwards every sub-turn item to the
-    // workflow's channel and captures the final TurnResult.
-    let mut sink = CapturingSink::new(ctx.workflow_tx.clone());
 
     let sandbox_cfg = {
         let cfg = gait_core::config::load_config(ctx.gait_dir);
         cfg.sandbox
     };
 
+    let mut sink = CapturingSink::new(ctx.workflow_tx.clone());
+
     let mut driver = PromptNodeDriver {
         codebase: codebase.clone(),
         model: model.clone(),
         allow: allow.clone(),
         agent_name: node.agent.clone(),
-        result_schema: node.output_schema.clone(),
+        result_schema,
         auto,
         sandbox_cfg,
     };
 
-    // Drive one turn. relay_brain_turn inside run_loop writes the sub-turn
-    // transcript to the session's log.jsonl; the sink forwards items to the
-    // workflow's consumer.
-    embed::run_loop(
-        source,
-        &mut sink,
-        session,
-        ctx.gait_dir,
-        ctx.session_id,
-        &mut driver,
-        None, // no cascade kill slot for workflow nodes
-    )
-    .await?;
+    if !p.prompt.is_empty() {
+        // Literal prompt: substitute vars, create one-shot source, run.
+        let task = substitute(&p.prompt, &ctx.vars);
+        let repos = gait_core::git::Repos::production();
+        let user_bodies = embed::user_turn_events(&repos, &codebase, task);
+        let source = NodeSource::Literal(OneTurnSource {
+            bodies: Some(user_bodies),
+        });
 
-    // Surface the captured TurnResult as a NodeOutput. Match the legacy
-    // mapping so callers (runner.rs) see the same shape.
-    let turn_result = sink
-        .result
-        .ok_or_else(|| anyhow::anyhow!("run_loop returned without a TurnResult"))?;
+        embed::run_loop(
+            source,
+            &mut sink,
+            session,
+            ctx.gait_dir,
+            &session_id,
+            &mut driver,
+            None,
+        )
+        .await?;
 
-    Ok(match turn_result {
+        // Map sink.result -> NodeOutput
+        let turn_result = sink
+            .result
+            .ok_or_else(|| anyhow::anyhow!("run_loop returned without a TurnResult"))?;
+        Ok(map_turn_result(turn_result))
+    } else {
+        // Absent prompt: interactive node.
+        let Some(live) = input else {
+            // Headless and no input -> leave the node OPEN and exit.
+            return Ok(NodeOutput::open());
+        };
+        let source = NodeSource::Live(live);
+
+        embed::run_loop(
+            source,
+            &mut sink,
+            session,
+            ctx.gait_dir,
+            &session_id,
+            &mut driver,
+            None,
+        )
+        .await?;
+
+        // Live node that returned (source exhausted) stays OPEN — no terminal
+        // advance has been signalled. The run exits cleanly; resume re-enters.
+        Ok(NodeOutput::open())
+    }
+}
+
+fn map_turn_result(turn_result: TurnResult) -> NodeOutput {
+    match turn_result {
         TurnResult::Done {
             message, result, ..
         } => NodeOutput {
@@ -273,7 +338,7 @@ pub async fn exec_prompt_node(
             json: None,
             routed_to: None,
         },
-    })
+    }
 }
 
 #[cfg(test)]

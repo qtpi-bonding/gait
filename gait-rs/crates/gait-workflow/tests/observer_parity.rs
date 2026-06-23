@@ -87,7 +87,7 @@ async fn observer_parity_shell_workflow() {
 
     let outcome = run_workflow(
         WorkflowRunOpts {
-            workflow_def: wf,
+            workflow_def: gait_workflow::convert::to_proto(&wf),
             yaml_path: "workflows/parity-test.yaml".to_string(),
             session_id: session_id.clone(),
             gait_dir: gait_dir.clone(),
@@ -95,6 +95,7 @@ async fn observer_parity_shell_workflow() {
             args: vec![],
         },
         &mut obs,
+        None,
     )
     .await
     .unwrap();

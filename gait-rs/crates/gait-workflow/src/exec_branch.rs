@@ -1,22 +1,19 @@
-use crate::schema::BranchConfig;
 use crate::vars::{eval_bool_expr, NodeOutput};
+use gait_core::proto::gait::workflow::v1::BranchNode;
 use std::collections::HashMap;
 
-pub fn resolve_branch(
-    cfg: &BranchConfig,
-    _outputs: &HashMap<String, NodeOutput>,
-) -> Option<String> {
+pub fn resolve_branch(cfg: &BranchNode, _outputs: &HashMap<String, NodeOutput>) -> Option<String> {
     let expr = cfg.on.trim();
     if !cfg.cases.is_empty() {
         if let Some(target) = cfg.cases.get(expr) {
             return Some(target.clone());
         }
-        return cfg.else_.clone();
+        return cfg.r#else.clone();
     }
     if eval_bool_expr(expr) {
         cfg.then.clone()
     } else {
-        cfg.else_.clone()
+        cfg.r#else.clone()
     }
 }
 
@@ -26,10 +23,10 @@ mod tests {
 
     #[test]
     fn two_way_branch_then_path() {
-        let cfg = crate::schema::BranchConfig {
+        let cfg = BranchNode {
             on: "0 == 0".into(),
             then: Some("ship".into()),
-            else_: Some("fix".into()),
+            r#else: Some("fix".into()),
             cases: Default::default(),
         };
         let outputs = std::collections::HashMap::new();
@@ -39,10 +36,10 @@ mod tests {
 
     #[test]
     fn two_way_branch_else_path() {
-        let cfg = crate::schema::BranchConfig {
+        let cfg = BranchNode {
             on: "1 == 0".into(),
             then: Some("ship".into()),
-            else_: Some("fix".into()),
+            r#else: Some("fix".into()),
             cases: Default::default(),
         };
         let outputs = std::collections::HashMap::new();
@@ -55,10 +52,10 @@ mod tests {
         let mut cases = std::collections::HashMap::new();
         cases.insert("0".into(), "ship".into());
         cases.insert("1".into(), "fix".into());
-        let cfg = crate::schema::BranchConfig {
+        let cfg = BranchNode {
             on: "0".into(),
             then: None,
-            else_: Some("fallback".into()),
+            r#else: Some("fallback".into()),
             cases,
         };
         let outputs = std::collections::HashMap::new();

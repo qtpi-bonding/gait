@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use gait_core::embed::TurnSource;
 use gait_core::proto::gait::log::v1::StreamItem;
+use gait_core::proto::gait::workflow::v1::{node, Node, Workflow};
 use gait_core::proto::wire;
 use gait_core::Recorder;
 
@@ -17,9 +19,9 @@ use crate::hooks::run_hook;
 use crate::observer::WorkflowObserver;
 use crate::progress::{init_progress, write_progress, ProgressFile, ProgressNode};
 use crate::run_log::WorkflowRunLog;
-use crate::schema::{NodeDef, WorkflowDef, GATE_PAUSED_SENTINEL};
+use crate::schema::GATE_PAUSED_SENTINEL;
 use crate::state::{reconstruct_state, NodeStatus, WorkflowState};
-use crate::vars::{substitute, NodeOutput, VarContext};
+use crate::vars::{substitute, NodeOutput, VarContext, NODE_OPEN_SENTINEL};
 
 /// Inputs for `run_workflow`.
 ///
@@ -29,7 +31,7 @@ use crate::vars::{substitute, NodeOutput, VarContext};
 /// nodes independent of any provider the CLI/REPL constructed for the parent
 /// session.
 pub struct WorkflowRunOpts {
-    pub workflow_def: WorkflowDef,
+    pub workflow_def: Workflow,
     pub yaml_path: String,
     pub session_id: String,
     pub gait_dir: PathBuf,
@@ -44,25 +46,37 @@ type NodeFuture =
 enum NodeTaskOutcome {
     Done(NodeOutput),
     GatePaused(NodeOutput), // carries gate message in text field
+    Open,                   // absent-prompt node, no input -> run exits, node left open
     Error(String),          // abort after retries exhausted
     ErrorContinue,          // on_error: continue — treat as skipped
     ErrorGoto(String),      // on_error: goto <node_id>
 }
 
 struct NodeRunParams {
-    node: NodeDef,
+    node: Node,
     workflow_id: String,
     session_id: String,
     gait_dir: PathBuf,
     codebase: PathBuf,
-    wf: Arc<WorkflowDef>,
+    wf: Arc<Workflow>,
     vars: VarContext,
     workflow_tx: tokio::sync::mpsc::UnboundedSender<StreamItem>,
 }
 
+/// Derive the node type name from its proto body oneof.
+fn node_type_name(node: &Node) -> &'static str {
+    match node.body.as_ref() {
+        Some(node::Body::Shell(_)) => "shell",
+        Some(node::Body::Prompt(_)) => "prompt",
+        Some(node::Body::Branch(_)) => "branch",
+        Some(node::Body::Gate(_)) => "gate",
+        None => "unknown",
+    }
+}
+
 /// Nodes whose depends_on are all satisfied, not yet completed, and not in-flight.
 fn compute_ready_nodes(
-    nodes: &[NodeDef],
+    nodes: &[Node],
     completed: &HashSet<String>,
     in_flight: &HashSet<String>,
 ) -> Vec<usize> {
@@ -80,7 +94,7 @@ fn compute_ready_nodes(
 
 /// Sync the completed set with state — any Done/Skipped/Error/Paused node is "complete"
 /// for the purpose of unblocking dependents.
-fn sync_completed(completed: &mut HashSet<String>, state: &WorkflowState, nodes: &[NodeDef]) {
+fn sync_completed(completed: &mut HashSet<String>, state: &WorkflowState, nodes: &[Node]) {
     for n in nodes {
         if matches!(
             state.node_status(&n.id),
@@ -100,8 +114,8 @@ fn backoff_delay_ms(attempt: u32, base_ms: u64, backoff: &str) -> u64 {
 }
 
 /// Execute a single node with retries. Returns the node_id and outcome.
-/// Retry logic (retry_times, delay, backoff, context) lives here.
-/// Error routing (goto, abort, continue) is determined here and signalled via outcome.
+/// Interactive (absent-prompt) nodes pass `None` for input — they always return
+/// `NodeTaskOutcome::Open` which the scheduler handles outside this function.
 async fn run_single_node(params: NodeRunParams) -> anyhow::Result<(String, NodeTaskOutcome)> {
     let node_id = params.node.id.clone();
     let on_error = params.node.on_error.clone().unwrap_or_default();
@@ -122,10 +136,15 @@ async fn run_single_node(params: NodeRunParams) -> anyhow::Result<(String, NodeT
             workflow_tx: &params.workflow_tx,
         };
 
-        match execute_node(&params.node, &ctx, &params.wf).await {
+        // Interactive/absent-prompt nodes are run outside FuturesUnordered with
+        // the owned input source. Inside the task pool, always pass None.
+        match execute_node(&params.node, &ctx, &params.wf, None).await {
             Ok(out) => {
                 if out.routed_to.as_deref() == Some(GATE_PAUSED_SENTINEL) {
                     return Ok((node_id, NodeTaskOutcome::GatePaused(out)));
+                }
+                if out.routed_to.as_deref() == Some(NODE_OPEN_SENTINEL) {
+                    return Ok((node_id, NodeTaskOutcome::Open));
                 }
                 return Ok((node_id, NodeTaskOutcome::Done(out)));
             }
@@ -134,10 +153,14 @@ async fn run_single_node(params: NodeRunParams) -> anyhow::Result<(String, NodeT
                     continue;
                 }
                 // All retries exhausted — route by on_error
-                if on_error.is_continue() {
+                if on_error.goto.as_deref() == Some("continue") {
                     return Ok((node_id, NodeTaskOutcome::ErrorContinue));
                 }
-                if let Some(goto_id) = on_error.goto_node() {
+                if let Some(goto_id) = on_error
+                    .goto
+                    .as_deref()
+                    .filter(|&g| g != "abort" && g != "continue")
+                {
                     return Ok((node_id, NodeTaskOutcome::ErrorGoto(goto_id.to_string())));
                 }
                 return Ok((node_id, NodeTaskOutcome::Error(e.to_string())));
@@ -151,8 +174,8 @@ async fn run_single_node(params: NodeRunParams) -> anyhow::Result<(String, NodeT
 /// Calls before-hooks, emits node_start, sets Running status, builds VarContext.
 #[allow(clippy::too_many_arguments)]
 async fn enqueue_node_task(
-    node: NodeDef,
-    wf: &Arc<WorkflowDef>,
+    node: Node,
+    wf: &Arc<Workflow>,
     workflow_id: &str,
     session_id: &str,
     gait_dir: &Path,
@@ -189,14 +212,15 @@ async fn enqueue_node_task(
         }
     }
 
+    let ntype = node_type_name(&node);
     rec.record(wire::raw(
         "node_start",
         serde_json::json!({
             "workflow_id": workflow_id, "node_id": node_id.clone(),
-            "node_type": node.node_type_name(), "attempt": 1,
+            "node_type": ntype, "attempt": 1,
         }),
     ))?;
-    observer.on_event(&run_log.node_start(&node_id, node.node_type_name(), 1, session_id)?);
+    observer.on_event(&run_log.node_start(&node_id, ntype, 1, session_id)?);
     state.set_status(&node_id, NodeStatus::Running);
 
     let vars = VarContext {
@@ -225,6 +249,7 @@ async fn enqueue_node_task(
 
     Ok(())
 }
+
 /// Outcome of a completed `run_workflow` call.
 #[derive(Debug, PartialEq)]
 pub enum WorkflowOutcome {
@@ -232,11 +257,16 @@ pub enum WorkflowOutcome {
     Completed,
     /// Workflow paused at a gate node, awaiting external input to resume.
     GatePaused,
+    /// Workflow paused at an open (absent-prompt) node awaiting interactive input.
+    /// The node was started (`NodeStart` recorded) but not completed. Resume with
+    /// an input source to continue from this point.
+    NodeOpen,
 }
 
 pub async fn run_workflow(
     opts: WorkflowRunOpts,
     observer: &mut dyn WorkflowObserver,
+    _input: Option<Box<dyn TurnSource>>,
 ) -> anyhow::Result<WorkflowOutcome> {
     let WorkflowRunOpts {
         workflow_def: wf_owned,
@@ -256,12 +286,8 @@ pub async fn run_workflow(
     let tx_path = session_dir.join("log.jsonl");
 
     let args_str = args.join(" ");
-    // The per-run pbjson event log lives alongside the session transcript. It is
-    // created once at run start and opened (not recreated) on resume after a gate.
-    // Must be constructed BEFORE reconstruct_state so we can fold its events.
     let workflow_runs_dir = gait_dir.join("workflow-runs");
     let run_log = if tx_path.exists() {
-        // Resumed run: re-open the existing log (don't truncate)
         WorkflowRunLog::open(&workflow_runs_dir, &session_id)?
     } else {
         WorkflowRunLog::create(&workflow_runs_dir, &session_id)?
@@ -370,6 +396,27 @@ pub async fn run_workflow(
                 );
 
                 match outcome {
+                    NodeTaskOutcome::Open => {
+                        // Absent-prompt node, no input: exit cleanly without settling.
+                        // NodeStart was already recorded in enqueue_node_task;
+                        // NodeComplete is NOT emitted — the node is left in Running
+                        // state so reconstruct_state.open_node() returns it.
+                        update_progress(
+                            &gait_dir,
+                            &session_id,
+                            &workflow_id,
+                            &wf.name,
+                            &state,
+                            &wf.nodes,
+                        )?;
+                        repos.traces.commit_session(
+                            &gait_dir,
+                            &session_id,
+                            &format!("workflow: open node {}", node_id),
+                        )?;
+                        return Ok(WorkflowOutcome::NodeOpen);
+                    }
+
                     NodeTaskOutcome::Done(ref out) => {
                         rec.record(wire::raw(
                             "node_complete",
@@ -403,7 +450,7 @@ pub async fn run_workflow(
                         }
 
                         // Branch routing: mark non-taken paths as skipped, enqueue taken path
-                        if node.branch.is_some() {
+                        if let Some(node::Body::Branch(_)) = node.body.as_ref() {
                             if let Some(routed_to) = &out.routed_to {
                                 propagate_branch_skips(
                                     &node,
@@ -557,21 +604,8 @@ pub async fn run_workflow(
                         observer.on_event(&run_log.node_error(&node_id, msg, 1)?);
                         observer.on_event(&run_log.workflow_error(&session_id, &node_id, msg)?);
 
-                        if let Some(hooks) = &wf.hooks {
-                            if let Some(cmd) = &hooks.error {
-                                let mut env2 = make_env_vars(
-                                    &workflow_id,
-                                    &session_id,
-                                    &gait_dir,
-                                    &codebase,
-                                    &args_str,
-                                    None,
-                                    &state,
-                                );
-                                env2.insert("FAILED_NODE".into(), node_id.clone());
-                                run_hook(cmd, &env2).await;
-                            }
-                        }
+                        // Proto Workflow has no workflow-level error hook; per-node hooks
+                        // on the failing node are already run above via node.hooks.
 
                         update_progress(
                             &gait_dir,
@@ -712,6 +746,7 @@ pub async fn run_workflow(
     }
     match run_result? {
         WorkflowOutcome::GatePaused => Ok(WorkflowOutcome::GatePaused),
+        WorkflowOutcome::NodeOpen => Ok(WorkflowOutcome::NodeOpen),
         WorkflowOutcome::Completed => Ok(WorkflowOutcome::Completed),
     }
 }
@@ -720,7 +755,7 @@ pub async fn run_workflow(
 async fn emit_workflow_start(
     rec: &Recorder,
     repos: &gait_core::git::Repos,
-    wf: &WorkflowDef,
+    wf: &Workflow,
     workflow_id: &str,
     yaml_path: &str,
     args: &[String],
@@ -741,13 +776,8 @@ async fn emit_workflow_start(
             "args": args,
         }),
     ))?;
-    observer.on_event(&run_log.workflow_start(
-        session_id,
-        &wf.name,
-        yaml_path,
-        args,
-        &crate::convert::to_proto(wf),
-    )?);
+    // wf is already proto Workflow — pass directly (no conversion needed).
+    observer.on_event(&run_log.workflow_start(session_id, &wf.name, yaml_path, args, wf)?);
     let node_ids: Vec<&str> = wf.nodes.iter().map(|n| n.id.as_str()).collect();
     let progress = init_progress(workflow_id, &wf.name, &node_ids);
     write_progress(gait_dir, session_id, &progress)?;
@@ -755,27 +785,9 @@ async fn emit_workflow_start(
         .traces
         .commit_session(gait_dir, session_id, "workflow: start")?;
 
-    if let Some(hooks) = &wf.hooks {
-        if let Some(cmd) = &hooks.before {
-            let env = make_env_vars(
-                workflow_id,
-                session_id,
-                gait_dir,
-                codebase,
-                args_str,
-                None,
-                state,
-            );
-            let (exit, _) = run_hook(cmd, &env).await;
-            rec.record(wire::raw(
-                "hook_run",
-                serde_json::json!({
-                    "workflow_id": workflow_id, "node_id": null,
-                    "hook_type": "before", "cmd": cmd, "exit_code": exit,
-                }),
-            ))?;
-        }
-    }
+    // Note: proto Workflow does not carry workflow-level hooks (only per-node hooks via Node.hooks).
+    // Workflow-level before/after hooks are a serde-schema-only feature; omitted from proto IR.
+    let _ = (codebase, args_str, state); // suppress unused warnings
     Ok(())
 }
 
@@ -783,7 +795,7 @@ async fn emit_workflow_start(
 async fn emit_workflow_complete(
     rec: &Recorder,
     repos: &gait_core::git::Repos,
-    wf: &WorkflowDef,
+    wf: &Workflow,
     workflow_id: &str,
     gait_dir: &Path,
     session_id: &str,
@@ -812,63 +824,46 @@ async fn emit_workflow_complete(
         .traces
         .commit_session(gait_dir, session_id, "workflow: complete")?;
 
-    if let Some(hooks) = &wf.hooks {
-        if let Some(cmd) = &hooks.after {
-            let env = make_env_vars(
-                workflow_id,
-                session_id,
-                gait_dir,
-                codebase,
-                args_str,
-                None,
-                state,
-            );
-            run_hook(cmd, &env).await;
-        }
-    }
-
+    // Note: proto Workflow does not carry workflow-level hooks.
+    let _ = (codebase, args_str, state);
     Ok(())
 }
 
 async fn execute_node(
-    node: &NodeDef,
+    node: &Node,
     ctx: &NodeContext<'_>,
-    wf: &WorkflowDef,
+    wf: &Workflow,
+    input: Option<Box<dyn TurnSource>>,
 ) -> anyhow::Result<NodeOutput> {
-    if let Some(shell) = &node.shell {
-        return exec_shell_node(shell, ctx).await;
+    match node.body.as_ref() {
+        Some(node::Body::Shell(s)) => exec_shell_node(s, ctx).await,
+        Some(node::Body::Prompt(p)) => exec_prompt_node(node, p, ctx, wf, input).await,
+        Some(node::Body::Branch(b)) => {
+            let expr = substitute(&b.on, &ctx.vars);
+            let mut b2 = b.clone();
+            b2.on = expr;
+            match resolve_branch(&b2, &ctx.vars.node_outputs) {
+                Some(routed) => Ok(NodeOutput {
+                    text: routed.clone(),
+                    exit_code: None,
+                    json: None,
+                    routed_to: Some(routed),
+                }),
+                None => Ok(NodeOutput {
+                    text: String::new(),
+                    exit_code: None,
+                    json: None,
+                    routed_to: None,
+                }),
+            }
+        }
+        Some(node::Body::Gate(g)) => exec_gate_node(&node.id, g, &ctx.vars),
+        None => anyhow::bail!("node '{}' has no body", node.id),
     }
-    if let Some(prompt) = &node.prompt {
-        return exec_prompt_node(node, prompt, ctx, wf).await;
-    }
-    if let Some(branch_cfg) = &node.branch {
-        let expr = substitute(&branch_cfg.on, &ctx.vars);
-        let mut cfg = branch_cfg.clone();
-        cfg.on = expr;
-        return match resolve_branch(&cfg, &ctx.vars.node_outputs) {
-            Some(routed) => Ok(NodeOutput {
-                text: routed.clone(),
-                exit_code: None,
-                json: None,
-                routed_to: Some(routed),
-            }),
-            // No route = terminal branch path (no else, condition was false)
-            None => Ok(NodeOutput {
-                text: String::new(),
-                exit_code: None,
-                json: None,
-                routed_to: None,
-            }),
-        };
-    }
-    if let Some(gate_cfg) = &node.gate {
-        return exec_gate_node(&node.id, gate_cfg, &ctx.vars);
-    }
-    anyhow::bail!("node '{}' has no valid type", node.id)
 }
 
 fn propagate_branch_skips(
-    branch_node: &NodeDef,
+    branch_node: &Node,
     routed_to: &str,
     state: &mut WorkflowState,
     rec: &Recorder,
@@ -876,14 +871,17 @@ fn propagate_branch_skips(
     run_log: &WorkflowRunLog,
     observer: &mut dyn WorkflowObserver,
 ) -> anyhow::Result<()> {
-    let branch_cfg = branch_node.branch.as_ref().unwrap();
+    let branch_cfg = match branch_node.body.as_ref() {
+        Some(node::Body::Branch(b)) => b,
+        _ => return Ok(()),
+    };
     let mut inactive = vec![];
     if let Some(then) = &branch_cfg.then {
         if then != routed_to {
             inactive.push(then.clone());
         }
     }
-    if let Some(else_) = &branch_cfg.else_ {
+    if let Some(else_) = &branch_cfg.r#else {
         if else_ != routed_to {
             inactive.push(else_.clone());
         }
@@ -917,7 +915,7 @@ fn update_progress(
     workflow_id: &str,
     name: &str,
     state: &WorkflowState,
-    nodes: &[NodeDef],
+    nodes: &[Node],
 ) -> anyhow::Result<()> {
     let pf = build_progress(workflow_id, name, "running", state, nodes);
     write_progress(gait_dir, session_id, &pf)
@@ -929,7 +927,7 @@ fn update_progress_done(
     workflow_id: &str,
     name: &str,
     state: &WorkflowState,
-    nodes: &[NodeDef],
+    nodes: &[Node],
 ) -> anyhow::Result<()> {
     let pf = build_progress(workflow_id, name, "done", state, nodes);
     write_progress(gait_dir, session_id, &pf)
@@ -940,7 +938,7 @@ fn build_progress(
     name: &str,
     wf_status: &str,
     state: &WorkflowState,
-    nodes: &[NodeDef],
+    nodes: &[Node],
 ) -> ProgressFile {
     ProgressFile {
         workflow_id: workflow_id.to_string(),
@@ -1006,7 +1004,7 @@ fn make_env_vars(
 }
 
 #[cfg(test)]
-fn topological_sort(nodes: &[NodeDef]) -> Vec<usize> {
+fn topological_sort(nodes: &[Node]) -> Vec<usize> {
     use std::collections::VecDeque;
     let n = nodes.len();
     let id_to_idx: HashMap<&str, usize> = nodes
@@ -1042,8 +1040,8 @@ fn topological_sort(nodes: &[NodeDef]) -> Vec<usize> {
 mod tests {
     use super::*;
 
-    fn node(id: &str, deps: &[&str]) -> NodeDef {
-        NodeDef {
+    fn node(id: &str, deps: &[&str]) -> Node {
+        Node {
             id: id.to_string(),
             depends_on: deps.iter().map(|s| s.to_string()).collect(),
             ..Default::default()

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use gait_workflow::observer::CliObserver;
 use gait_workflow::progress;
 use gait_workflow::runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
-use gait_workflow::schema::WorkflowDef;
+use gait_workflow::schema::WorkflowDef; // still needed for yaml parsing
 
 use crate::cli::args::resolve_gait_dir;
 
@@ -63,7 +63,7 @@ pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) {
 
     match run_workflow(
         WorkflowRunOpts {
-            workflow_def: wf,
+            workflow_def: gait_workflow::convert::to_proto(&wf),
             yaml_path: yaml_path.to_string_lossy().to_string(),
             session_id,
             gait_dir: gait_dir.clone(),
@@ -71,12 +71,17 @@ pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) {
             args,
         },
         &mut CliObserver::default(),
+        None,
     )
     .await
     {
         Ok(WorkflowOutcome::Completed) => {}
         Ok(WorkflowOutcome::GatePaused) => {
             eprintln!("[gait workflow] paused at gate");
+            std::process::exit(0);
+        }
+        Ok(WorkflowOutcome::NodeOpen) => {
+            eprintln!("[gait workflow] paused at open node");
             std::process::exit(0);
         }
         Err(e) => {
@@ -172,7 +177,7 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) {
 
     match run_workflow(
         WorkflowRunOpts {
-            workflow_def: wf,
+            workflow_def: gait_workflow::convert::to_proto(&wf),
             yaml_path: yaml_path_str,
             session_id: workflow_id,
             gait_dir: gait_dir.clone(),
@@ -180,12 +185,17 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) {
             args: vec![],
         },
         &mut CliObserver::default(),
+        None,
     )
     .await
     {
         Ok(WorkflowOutcome::Completed) => {}
         Ok(WorkflowOutcome::GatePaused) => {
             eprintln!("[gait workflow] paused at gate");
+            std::process::exit(0);
+        }
+        Ok(WorkflowOutcome::NodeOpen) => {
+            eprintln!("[gait workflow] paused at open node");
             std::process::exit(0);
         }
         Err(e) => {

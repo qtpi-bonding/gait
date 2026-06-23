@@ -37,21 +37,11 @@ pub fn resolve_codebase(args: &[String]) -> std::path::PathBuf {
 // `gait run` routes through cmd_run → CliDriver → run_loop.
 
 /// Dispatch a hidden role subcommand (`__brain` or `__run-tool`) via `gait_core::__dispatch_role`.
-/// Builds the `GaitWorkflowRunner` for the `__brain` arm (gait-cli owns this construction);
-/// passes `None` for the `__run-tool` arm which needs no runner.
+/// The WorkflowRunner for the `__brain` arm will be wired in Task 7 (spine-routed path).
+/// Until then, passes `None` so the brain omits the `run_workflow` tool (safe: workflow nodes
+/// don't self-recurse in the current feature set).
 pub async fn cmd_dispatch_role(argv: &[String]) {
-    let runner: Option<std::sync::Arc<dyn gait_core::workflow_runner::WorkflowRunner>> =
-        if gait_core::is_brain_argv(argv) {
-            let gait_dir = gait_dir_or_env(argv).unwrap_or_else(|| {
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-            });
-            let codebase = resolve_codebase(argv);
-            Some(std::sync::Arc::new(gait_workflow::GaitWorkflowRunner::new(
-                gait_dir, codebase,
-            )))
-        } else {
-            None
-        };
+    let runner: Option<std::sync::Arc<dyn gait_core::workflow_runner::WorkflowRunner>> = None;
     gait_core::__dispatch_role(argv, runner).await;
 }
 

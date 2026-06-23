@@ -16,12 +16,29 @@ static RE_EXIT_NODE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\$([a-zA-Z_][a-zA-Z0-9_-]*)\.exit").expect("valid regex literal")
 });
 
+/// Sentinel value used by `exec_prompt_node` to signal that a prompt node with
+/// no prompt text has no input available and must be left open (resumed later).
+pub const NODE_OPEN_SENTINEL: &str = "__node_open__";
+
 #[derive(Debug, Clone)]
 pub struct NodeOutput {
     pub text: String,
     pub exit_code: Option<i32>,
     pub json: Option<serde_json::Value>,
     pub routed_to: Option<String>,
+}
+
+impl NodeOutput {
+    /// Construct the "node is open / waiting for input" sentinel output.
+    /// The runner maps `NODE_OPEN_SENTINEL` → `NodeTaskOutcome::Open`.
+    pub fn open() -> Self {
+        NodeOutput {
+            text: String::new(),
+            exit_code: None,
+            json: None,
+            routed_to: Some(NODE_OPEN_SENTINEL.to_string()),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -423,12 +423,14 @@ impl TurnSource for ReplSource {
                     None => eprint!("[gait] usage: /workflow <name> [args...]\r\n"),
                     Some(name) => {
                         let args: Vec<String> = parts.map(String::from).collect();
-                        let runner = gait_workflow::GaitWorkflowRunner::new(
+                        // Inline workflow runner (replaces the removed GaitWorkflowRunner).
+                        let result = run_workflow_from_repl(
+                            name.to_string(),
+                            args,
                             self.gait_dir.clone(),
                             self.codebase.clone(),
-                        );
-                        use gait_core::workflow_runner::WorkflowRunner as _;
-                        let result = runner.run(name.to_string(), args).await;
+                        )
+                        .await;
                         println!("{result}");
                     }
                 }
@@ -568,6 +570,56 @@ fn parse_skill_toggle(line: &str) -> Option<(String, bool)> {
     };
 
     Some((name.to_string(), enabled))
+}
+
+/// Inline workflow runner for the REPL `/workflow` command.
+/// Replaces the removed `GaitWorkflowRunner`. Task 7 will wire the spine-routed
+/// path; for now this spawns a dedicated OS thread + runtime (same pattern as
+/// the old GaitWorkflowRunner).
+async fn run_workflow_from_repl(
+    name: String,
+    args: Vec<String>,
+    gait_dir: std::path::PathBuf,
+    codebase: std::path::PathBuf,
+) -> String {
+    let yaml_path = gait_dir.join("workflows").join(format!("{name}.yaml"));
+    let yaml_content = match std::fs::read_to_string(&yaml_path) {
+        Ok(c) => c,
+        Err(e) => return format!("workflow error: cannot read {}: {e}", yaml_path.display()),
+    };
+    let workflow_def_serde: gait_workflow::schema::WorkflowDef =
+        match serde_yaml::from_str(&yaml_content) {
+            Ok(w) => w,
+            Err(e) => {
+                return format!(
+                    "workflow error: invalid yaml at {}: {e}",
+                    yaml_path.display()
+                )
+            }
+        };
+    let workflow_def = gait_workflow::convert::to_proto(&workflow_def_serde);
+    let run_id = gait_workflow::convert::mint_run_id(&name);
+    let yaml_path_str = yaml_path.to_string_lossy().to_string();
+    let run_id_task = run_id.clone();
+    let run_id_log = run_id.clone();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        if let Err(e) = rt.block_on(gait_workflow::run_workflow(
+            gait_workflow::WorkflowRunOpts {
+                workflow_def,
+                yaml_path: yaml_path_str,
+                session_id: run_id_task,
+                gait_dir,
+                codebase,
+                args,
+            },
+            &mut gait_workflow::observer::CliObserver::default(),
+            None,
+        )) {
+            eprintln!("[gait workflow] {run_id_log}: error: {e}");
+        }
+    });
+    format!("workflow started: {}", run_id)
 }
 
 #[cfg(test)]

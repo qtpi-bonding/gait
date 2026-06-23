@@ -1,6 +1,6 @@
-use crate::schema::ShellConfig;
 use crate::vars::{substitute, NodeOutput, VarContext};
 use gait_core::proto::gait::log::v1::StreamItem;
+use gait_core::proto::gait::workflow::v1::ShellNode;
 use std::path::Path;
 
 pub struct NodeContext<'a> {
@@ -17,16 +17,13 @@ pub struct NodeContext<'a> {
 }
 
 pub async fn exec_shell_node(
-    shell: &ShellConfig,
+    shell: &ShellNode,
     ctx: &NodeContext<'_>,
 ) -> anyhow::Result<NodeOutput> {
-    let cmd = substitute(shell.run(), &ctx.vars);
-    let timeout_ms = shell.timeout_ms();
-    let cwd = if shell.cwd() == "workspace" {
-        ctx.gait_dir
-    } else {
-        ctx.codebase
-    };
+    let cmd = substitute(&shell.command, &ctx.vars);
+    // Proto ShellNode has only `command`; use conservative defaults.
+    let timeout_ms: u64 = 120_000;
+    let cwd = ctx.codebase;
 
     let result = tokio::time::timeout(
         std::time::Duration::from_millis(timeout_ms),
@@ -64,7 +61,9 @@ mod tests {
     #[tokio::test]
     async fn shell_captures_output_and_exit() {
         let ws = TempDir::new().unwrap();
-        let shell = crate::schema::ShellConfig::Short("echo hello".into());
+        let shell = ShellNode {
+            command: "echo hello".into(),
+        };
         let ctx = make_test_ctx(ws.path());
         let out = exec_shell_node(&shell, &ctx).await.unwrap();
         assert_eq!(out.text.trim(), "hello");
@@ -74,7 +73,9 @@ mod tests {
     #[tokio::test]
     async fn shell_nonzero_exit_ok() {
         let ws = TempDir::new().unwrap();
-        let shell = crate::schema::ShellConfig::Short("exit 1".into());
+        let shell = ShellNode {
+            command: "exit 1".into(),
+        };
         let ctx = make_test_ctx(ws.path());
         let out = exec_shell_node(&shell, &ctx).await.unwrap();
         assert_eq!(out.exit_code, Some(1));
