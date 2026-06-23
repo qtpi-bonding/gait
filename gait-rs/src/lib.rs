@@ -55,8 +55,6 @@ pub use scheduler::{Action, NativeScheduler, Scheduler, TurnEnded};
 pub use session::Ingestor;
 pub use session::{new_session_id, Session};
 pub use tools::builtin_tools;
-pub use turn::nerve::NerveWriter;
-pub use turn::{TurnInput, TurnResult}; // Phase 3 Task 4a: spine needs NerveWriter from gait_cli
 
 /// The built-in harness preamble, embedded from `prompts/gait-harness.md`.
 /// Wrapped in the `<harness>` layer of the composed system prompt.

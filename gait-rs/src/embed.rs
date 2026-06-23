@@ -17,7 +17,7 @@ pub use crate::port::output::{run_result_proto, CliSink, Diag, TurnSink};
 pub use crate::profile::ResolvedProfile;
 pub use crate::proto::gait::log::v1::{RunResult, StreamItem};
 pub use crate::session::Session;
-pub use crate::turn::spine::{strip_task_from_args, ProfileInputs};
+pub use crate::turn::spine::strip_task_from_args;
 pub use crate::turn::{TurnInput, TurnResult};
 pub use crate::Recorder;
 pub use cascade::CascadeKillHandle;
