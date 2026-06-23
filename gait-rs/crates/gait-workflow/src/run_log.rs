@@ -31,13 +31,24 @@ pub struct WorkflowRunLog {
 impl WorkflowRunLog {
     /// Create a new workflow-run log at `{workflow_runs_dir}/{run_id}/log.jsonl`.
     /// The run directory is created if it does not exist; the log file itself
-    /// is created (truncated if it already exists).
+    /// is created exclusively (`O_CREAT | O_EXCL`) — if it already exists,
+    /// this returns an error rather than truncating a live run.
     pub fn create(workflow_runs_dir: &Path, run_id: &str) -> anyhow::Result<Self> {
         let run_dir = workflow_runs_dir.join(run_id);
         std::fs::create_dir_all(&run_dir)?;
         let path = run_dir.join("log.jsonl");
-        // Truncate if present — `create` is for new runs.
-        std::fs::File::create(&path)?;
+        // O_EXCL: fail loudly rather than truncating a live run on ID collision.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "workflow run log already exists at {}: {}",
+                    path.display(),
+                    e
+                )
+            })?;
         Ok(Self { path })
     }
 

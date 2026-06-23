@@ -250,24 +250,25 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<WorkflowOutco
     let session_dir = gait_dir.join("sessions").join(&session_id);
     let tx_path = session_dir.join("log.jsonl");
 
-    let existing_events = gait_core::session::log::read_events(&tx_path).unwrap_or_default();
-    let mut state = reconstruct_state(&existing_events);
-
-    let workflow_id = if state.workflow_id.is_empty() {
-        session_id.clone()
-    } else {
-        state.workflow_id.clone()
-    };
-
     let args_str = args.join(" ");
     // The per-run pbjson event log lives alongside the session transcript. It is
     // created once at run start and opened (not recreated) on resume after a gate.
+    // Must be constructed BEFORE reconstruct_state so we can fold its events.
     let workflow_runs_dir = gait_dir.join("workflow-runs");
     let run_log = if tx_path.exists() {
         // Resumed run: re-open the existing log (don't truncate)
         WorkflowRunLog::open(&workflow_runs_dir, &session_id)?
     } else {
         WorkflowRunLog::create(&workflow_runs_dir, &session_id)?
+    };
+
+    let wf_events = run_log.read_events().unwrap_or_default();
+    let mut state = reconstruct_state(&wf_events);
+
+    let workflow_id = if state.workflow_id.is_empty() {
+        session_id.clone()
+    } else {
+        state.workflow_id.clone()
     };
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<StreamItem>();
@@ -280,7 +281,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<WorkflowOutco
 
     let run_result: anyhow::Result<WorkflowOutcome> =
         async {
-            if existing_events.is_empty() {
+            if wf_events.is_empty() {
                 emit_workflow_start(
                     &rec,
                     &repos,

@@ -1,5 +1,5 @@
 use crate::vars::NodeOutput;
-use gait_core::proto::gait::log::v1::{event, payload, Event};
+use gait_core::proto::gait::workflow::v1::{workflow_event, WorkflowEvent};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -39,28 +39,29 @@ impl WorkflowState {
     pub fn is_skipped(&self, id: &str) -> bool {
         matches!(self.node_status(id), NodeStatus::Skipped)
     }
-}
 
-/// The `RawEvent` (`type`, original-JSON `payload`) for a workflow event, if any.
-/// Workflow events are stored as opaque `RawEvent`s carrying the original tagged
-/// JSON object verbatim (e.g. `{"type":"node_start","workflow_id":"w1",...}`).
-fn raw_event(e: &Event) -> Option<(&str, serde_json::Value)> {
-    match &e.body {
-        Some(event::Body::Payload(p)) => match p.kind.as_ref() {
-            Some(payload::Kind::Raw(r)) => {
-                let v = match &r.payload {
-                    Some(s) => serde_json::to_value(s).unwrap_or(serde_json::Value::Null),
-                    None => serde_json::Value::Null,
-                };
-                Some((r.r#type.as_str(), v))
+    /// Returns the node_id of the last node that was started but not yet
+    /// completed, skipped, or errored — i.e. the node that was in-flight when
+    /// the workflow was interrupted.
+    pub fn open_node(&self) -> Option<&str> {
+        // Find the last Running entry (insertion order is preserved in HashMap
+        // only in Rust's current impl — to be safe we just return any Running).
+        // In practice there is at most one Running node at exit (gate pause exits
+        // before a second node starts).
+        self.node_statuses.iter().find_map(|(id, status)| {
+            if *status == NodeStatus::Running {
+                Some(id.as_str())
+            } else {
+                None
             }
-            _ => None,
-        },
-        _ => None,
+        })
     }
 }
 
-pub fn reconstruct_state(events: &[Event]) -> WorkflowState {
+/// Fold a proto `WorkflowEvent` run-log into a `WorkflowState`.
+/// This is the authoritative replay: state is reconstructed by matching on the
+/// typed `WorkflowEvent.kind` oneof directly — no JSON parsing required.
+pub fn reconstruct_state(events: &[WorkflowEvent]) -> WorkflowState {
     let mut state = WorkflowState {
         workflow_id: String::new(),
         node_outputs: HashMap::new(),
@@ -69,62 +70,52 @@ pub fn reconstruct_state(events: &[Event]) -> WorkflowState {
         gate_paused: None,
     };
     for event in events {
-        let Some((tag, v)) = raw_event(event) else {
+        let Some(kind) = &event.kind else {
             continue;
         };
-        let s = |key: &str| v.get(key).and_then(|x| x.as_str()).map(|s| s.to_string());
-        match tag {
-            "workflow_start" => {
-                state.workflow_id = s("workflow_id").unwrap_or_default();
+        match kind {
+            workflow_event::Kind::WorkflowStart(ws) => {
+                state.workflow_id = ws.run_id.clone();
             }
-            "node_start" => {
-                if let Some(node_id) = s("node_id") {
-                    state.set_status(&node_id, NodeStatus::Running);
-                }
+            workflow_event::Kind::NodeStart(ns) => {
+                state.set_status(&ns.node_id, NodeStatus::Running);
             }
-            "node_complete" => {
-                if let Some(node_id) = s("node_id") {
-                    state.set_status(&node_id, NodeStatus::Done);
-                    // pbjson Struct stores all numbers as f64, so accept either.
-                    let exit_code = v
-                        .get("exit_code")
-                        .and_then(|x| x.as_i64().or_else(|| x.as_f64().map(|f| f as i64)))
-                        .map(|n| n as i32);
-                    let json = v.get("json_output").cloned().filter(|x| !x.is_null());
-                    let routed_to = s("routed_to");
-                    state.node_outputs.insert(
-                        node_id,
-                        NodeOutput {
-                            text: s("output").unwrap_or_default(),
-                            exit_code,
-                            json,
-                            routed_to,
-                        },
-                    );
-                }
+            workflow_event::Kind::NodeComplete(nc) => {
+                state.set_status(&nc.node_id, NodeStatus::Done);
+                let json = if nc.json_output.is_empty() {
+                    None
+                } else {
+                    serde_json::from_str(&nc.json_output).ok()
+                };
+                let routed_to = if nc.routed_to.is_empty() {
+                    None
+                } else {
+                    Some(nc.routed_to.clone())
+                };
+                state.node_outputs.insert(
+                    nc.node_id.clone(),
+                    NodeOutput {
+                        text: nc.output.clone(),
+                        exit_code: nc.exit_code,
+                        json,
+                        routed_to,
+                    },
+                );
             }
-            "node_skip" => {
-                if let Some(node_id) = s("node_id") {
-                    state.set_status(&node_id, NodeStatus::Skipped);
-                }
+            workflow_event::Kind::NodeSkip(ns) => {
+                state.set_status(&ns.node_id, NodeStatus::Skipped);
             }
-            "node_error" => {
-                if let Some(node_id) = s("node_id") {
-                    state.set_status(&node_id, NodeStatus::Error(s("error").unwrap_or_default()));
-                }
+            workflow_event::Kind::NodeError(ne) => {
+                state.set_status(&ne.node_id, NodeStatus::Error(ne.error.clone()));
             }
-            "workflow_gate" => {
-                if let Some(node_id) = s("node_id") {
-                    state.gate_paused = Some(node_id.clone());
-                    state.set_status(&node_id, NodeStatus::Paused);
-                }
+            workflow_event::Kind::WorkflowGate(wg) => {
+                state.gate_paused = Some(wg.node_id.clone());
+                state.set_status(&wg.node_id, NodeStatus::Paused);
             }
-            "workflow_error" => {
-                if let Some(failed_node) = s("failed_node") {
-                    state.failed_node = Some(failed_node);
-                }
+            workflow_event::Kind::WorkflowError(we) => {
+                state.failed_node = Some(we.failed_node.clone());
             }
-            _ => {}
+            workflow_event::Kind::WorkflowComplete(_) => {}
         }
     }
     state
@@ -133,38 +124,75 @@ pub fn reconstruct_state(events: &[Event]) -> WorkflowState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gait_core::proto::wire;
+    use gait_core::proto::gait::workflow::v1::*;
 
-    fn mint_raw(tag: &str, payload: serde_json::Value) -> Event {
-        gait_core::proto::envelope::mint(wire::raw(tag, payload), None, 0, 0)
+    fn we(kind: workflow_event::Kind) -> WorkflowEvent {
+        WorkflowEvent {
+            version: 1,
+            ts: 0,
+            kind: Some(kind),
+        }
     }
 
     #[test]
-    fn reconstruct_from_events() {
-        let events = vec![
-            mint_raw(
-                "workflow_start",
-                serde_json::json!({"workflow_id": "wf1", "name": "t", "yaml_path": "", "args": []}),
-            ),
-            mint_raw(
-                "node_start",
-                serde_json::json!({"workflow_id": "wf1", "node_id": "n1", "node_type": "shell", "attempt": 1}),
-            ),
-            mint_raw(
-                "node_complete",
-                serde_json::json!({"workflow_id": "wf1", "node_id": "n1", "output": "ok", "exit_code": 0, "json_output": null, "routed_to": null}),
-            ),
-            mint_raw(
-                "node_skip",
-                serde_json::json!({"workflow_id": "wf1", "node_id": "n2", "reason": "inactive branch"}),
-            ),
+    fn folds_proto_and_reports_open_node() {
+        let evs = vec![
+            we(workflow_event::Kind::WorkflowStart(WorkflowStart {
+                run_id: "r".into(),
+                workflow: "t".into(),
+                ..Default::default()
+            })),
+            we(workflow_event::Kind::NodeStart(NodeStart {
+                node_id: "a".into(),
+                ..Default::default()
+            })),
+            we(workflow_event::Kind::NodeComplete(NodeComplete {
+                node_id: "a".into(),
+                output: "ok".into(),
+                ..Default::default()
+            })),
+            we(workflow_event::Kind::NodeStart(NodeStart {
+                node_id: "b".into(),
+                ..Default::default()
+            })),
         ];
-        let state = reconstruct_state(&events);
+        let st = reconstruct_state(&evs);
+        assert_eq!(st.node_status("a"), NodeStatus::Done);
+        assert_eq!(st.open_node(), Some("b")); // started, no complete => the open node
+    }
+
+    #[test]
+    fn reconstruct_from_proto_events() {
+        let evs = vec![
+            we(workflow_event::Kind::WorkflowStart(WorkflowStart {
+                run_id: "wf1".into(),
+                workflow: "t".into(),
+                ..Default::default()
+            })),
+            we(workflow_event::Kind::NodeStart(NodeStart {
+                node_id: "n1".into(),
+                node_type: "shell".into(),
+                attempt: 1,
+                ..Default::default()
+            })),
+            we(workflow_event::Kind::NodeComplete(NodeComplete {
+                node_id: "n1".into(),
+                output: "ok".into(),
+                exit_code: Some(0),
+                ..Default::default()
+            })),
+            we(workflow_event::Kind::NodeSkip(NodeSkip {
+                node_id: "n2".into(),
+                reason: "inactive branch".into(),
+            })),
+        ];
+        let state = reconstruct_state(&evs);
         assert_eq!(state.workflow_id, "wf1");
         assert_eq!(state.node_status("n1"), NodeStatus::Done);
         assert_eq!(state.node_status("n2"), NodeStatus::Skipped);
         assert_eq!(state.node_status("n3"), NodeStatus::Pending);
         let out = state.node_outputs.get("n1").unwrap();
         assert_eq!(out.exit_code, Some(0));
+        assert_eq!(state.open_node(), None); // all nodes completed or skipped
     }
 }
