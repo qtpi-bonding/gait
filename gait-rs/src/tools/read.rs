@@ -83,10 +83,9 @@ impl Tool for ReadTool {
     }
     fn description(&self) -> &str {
         "Read a file from the codebase, optionally with line range. Each line is prefixed with \
-         #XY|content where XY is a 2-char content hash (a unique line), or #XY-N|content where \
-         N is the instance number if the same content appears multiple times in the file. \
-         Use the part after `#` as the edit ref with the `edit` tool — `XY` for unique lines, \
-         `XY-N` for duplicate lines — to modify lines without reproducing old content. \
+         `#<id>|content`. `<id>` is a 4-char content hash (e.g. `#QMZP|`). Lines that repeat \
+         get a disambiguator: `#QMZP-VRWS|` (context) or `#QMZP-VRWS-2|` (ordinal). \
+         Pass the `<id>` exactly as shown to `edit` — to modify lines without reproducing old content. \
          Paths are relative to the codebase root."
     }
     fn parameters(&self) -> &Value {
@@ -168,7 +167,7 @@ impl Tool for ReadTool {
         let end = lines.len().min(offset + limit);
 
         for annotated in annotated_all.iter().take(end).skip(offset) {
-            // Strip the `#XY|` (or `#XY-N|`) prefix, then truncate content if too long,
+            // Strip the hashline prefix (`#P4|`, `#P4-C4|`, or `#P4-C4-N|`), truncate if too long,
             // then re-stamp with the same prefix so the truncated line is still anchorable.
             let (prefix, content) = match annotated.find('|') {
                 Some(pipe) => (&annotated[..=pipe], &annotated[pipe + 1..]),
