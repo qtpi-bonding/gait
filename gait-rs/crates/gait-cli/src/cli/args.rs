@@ -33,9 +33,8 @@ pub fn resolve_codebase(args: &[String]) -> std::path::PathBuf {
     })
 }
 
-// cmd_run deleted (Task 2): the in-process run path was dead code.
 // cmd_brain deleted (Task 5): dispatch now via gait_core::__dispatch_role.
-// `gait run` routes through cmd_spine → SpineDriver → run_loop.
+// `gait run` routes through cmd_run → CliDriver → run_loop.
 
 /// Dispatch a hidden role subcommand (`__brain` or `__run-tool`) via `gait_core::__dispatch_role`.
 /// Builds the `GaitWorkflowRunner` for the `__brain` arm (gait-cli owns this construction);
@@ -56,13 +55,13 @@ pub async fn cmd_dispatch_role(argv: &[String]) {
     gait_core::__dispatch_role(argv, runner).await;
 }
 
-pub async fn cmd_spine(argv: &[String]) {
+pub async fn cmd_run(argv: &[String]) {
     let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
         eprintln!("[gait] {e}");
         std::process::exit(1);
     });
     let codebase = resolve_codebase(argv);
-    crate::cli::spine::cmd_spine(argv, gait_dir, codebase).await
+    crate::cli::run::cmd_run(argv, gait_dir, codebase).await
 }
 
 #[cfg(test)]

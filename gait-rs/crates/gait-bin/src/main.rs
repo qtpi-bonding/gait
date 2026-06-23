@@ -47,7 +47,7 @@ async fn main() {
         .unwrap_or_else(cwd_or_dot);
 
     match args[1].as_str() {
-        "run" => gait_cli::cli::args::cmd_spine(&args[2..]).await,
+        "run" => gait_cli::cli::args::cmd_run(&args[2..]).await,
 
         "init" => gait_cli::cli::init::cmd_init(&args[2..]),
         "finish" => gait_cli::cli::session::cmd_finish(&args[2..]),
