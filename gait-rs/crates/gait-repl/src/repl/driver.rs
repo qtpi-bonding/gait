@@ -15,9 +15,8 @@ use crate::repl::{bang_command_str, is_bang_command};
 use crate::theme::{Theme, RESET};
 use crate::ui::{ReplBuilder, ViewSignal};
 use gait_core::embed::{user_turn_events, LoopConfig, TurnDriver};
+use gait_core::embed::{Diag, TurnSink, TurnSource, TurnStart};
 use gait_core::expand::{expand_input, ExpandCtx};
-use gait_core::port::input::{TurnSource, TurnStart};
-use gait_core::port::output::{Diag, TurnSink};
 use gait_core::proto::gait::log::v1::StreamItem;
 use gait_core::proto::{events, wire};
 use gait_core::pty::{run_and_capture_pty_raw, CaptureResult};
@@ -206,7 +205,7 @@ impl TurnDriver for ReplDriver {
 
     async fn after_turn(
         &mut self,
-        _sink: &mut dyn gait_core::port::output::TurnSink,
+        _sink: &mut dyn gait_core::embed::TurnSink,
         _result: &gait_core::turn::TurnResult,
     ) {
         // Watcher is torn down in ReplSink::end_turn() before this runs.

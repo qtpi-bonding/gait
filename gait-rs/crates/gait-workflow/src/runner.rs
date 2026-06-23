@@ -273,7 +273,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<WorkflowOutco
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<StreamItem>();
     let rec = Recorder::for_session(&gait_dir, &session_id, tx);
     let consumer = tokio::spawn(async move {
-        let mut sink = gait_core::port::output::CliSink::stdio(false);
+        let mut sink = gait_core::embed::CliSink::stdio(false);
         gait_core::port::output::drive(rx, &mut sink).await;
         sink.failed
     });

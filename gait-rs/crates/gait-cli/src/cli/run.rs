@@ -52,12 +52,12 @@ pub struct RunArgs {
 /// passes the resolved `gait_dir` + `codebase_path` in; flags are parsed via
 /// [`RunArgs`].
 pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf) {
-    use gait_core::port::output::{Diag, TurnSink};
+    use gait_core::embed::{CliSink, Diag, TurnSink};
     let args = RunArgs::parse_from(argv);
 
     // The single owned output boundary: Trace+Error stream to stderr, the final
     // RunResult prints once to stdout, diagnostics go to stderr (and set `failed`).
-    let mut sink = gait_core::port::output::CliSink::stdio(false);
+    let mut sink = CliSink::stdio(false);
 
     // A fresh session announces its id on stdout (proto SessionStart). `--session`
     // resumes silently (the closure — and thus this line — never runs).
@@ -304,7 +304,7 @@ impl gait_core::embed::TurnDriver for CliDriver {
 
     async fn after_turn(
         &mut self,
-        sink: &mut dyn gait_core::port::output::TurnSink,
+        sink: &mut dyn gait_core::embed::TurnSink,
         result: &gait_core::turn::TurnResult,
     ) {
         use gait_core::{HarnessBackend, Scheduler};
@@ -327,7 +327,7 @@ impl gait_core::embed::TurnDriver for CliDriver {
         for action in scheduler.next(&ended) {
             if let Err(e) = harness.execute(&action).await {
                 sink.diagnostic(
-                    gait_core::port::output::Diag::Info,
+                    gait_core::embed::Diag::Info,
                     &format!("warning: harness execute failed: {}", e),
                 );
             }
@@ -336,13 +336,10 @@ impl gait_core::embed::TurnDriver for CliDriver {
 
     fn on_turn_error(
         &mut self,
-        sink: &mut dyn gait_core::port::output::TurnSink,
+        sink: &mut dyn gait_core::embed::TurnSink,
         e: anyhow::Error,
     ) -> std::ops::ControlFlow<()> {
-        sink.diagnostic(
-            gait_core::port::output::Diag::Error,
-            &format!("error: {}", e),
-        );
+        sink.diagnostic(gait_core::embed::Diag::Error, &format!("error: {}", e));
         std::ops::ControlFlow::Break(())
     }
 }

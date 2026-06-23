@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use gait_core::port::output::{Diag, TurnSink};
+use gait_core::embed::{CliSink, Diag, TurnSink};
 
 use crate::cli::run::RunArgs;
 
@@ -49,7 +49,7 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
     }
 
     let args = RunArgs::parse_from(argv);
-    let mut sink = gait_core::port::output::CliSink::stdio(false);
+    let mut sink = CliSink::stdio(false);
 
     let session_id = args.session_id.clone().unwrap_or_else(|| {
         let id = format!(
