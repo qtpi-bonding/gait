@@ -78,7 +78,7 @@ pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) {
         Ok(WorkflowOutcome::Completed) => {}
         Ok(WorkflowOutcome::GatePaused) => {
             eprintln!("[gait workflow] paused at gate");
-            std::process::exit(0);
+            std::process::exit(2);
         }
         Ok(WorkflowOutcome::NodeOpen) => {
             eprintln!("[gait workflow] paused at open node");
@@ -192,7 +192,7 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) {
         Ok(WorkflowOutcome::Completed) => {}
         Ok(WorkflowOutcome::GatePaused) => {
             eprintln!("[gait workflow] paused at gate");
-            std::process::exit(0);
+            std::process::exit(2);
         }
         Ok(WorkflowOutcome::NodeOpen) => {
             eprintln!("[gait workflow] paused at open node");
