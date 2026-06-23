@@ -135,7 +135,7 @@ pub struct ReplDriver {
 }
 #[async_trait::async_trait(?Send)]
 impl TurnDriver for ReplDriver {
-    fn brain_launch(&self, session_id: &str) -> BrainLaunch {
+    fn brain_launch(&self, _session_id: &str) -> BrainLaunch {
         let model_str = self.config.model.clone().unwrap_or_default();
         let provider_name = model_str
             .split_once('/')
@@ -147,38 +147,16 @@ impl TurnDriver for ReplDriver {
             .agent_path
             .as_ref()
             .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()));
-        let mut brain_args = vec![
-            "__brain".to_string(),
-            "--gait-dir".to_string(),
-            self.gait_dir.to_string_lossy().into_owned(),
-            "--codebase".to_string(),
-            self.codebase.to_string_lossy().into_owned(),
-            "--session".to_string(),
-            session_id.to_string(),
-        ];
-        // Include --model when a model override is configured (consistent with
-        // SpineDriver and PromptNodeDriver).
-        if let Some(ref model) = self.config.model {
-            brain_args.push("--model".to_string());
-            brain_args.push(model.clone());
-        }
-        if let Some(ref name) = agent_name {
-            brain_args.push("--agent".to_string());
-            brain_args.push(name.clone());
-        }
-        if let Some(n) = self.config.max_iter {
-            brain_args.push("--max-iter".to_string());
-            brain_args.push(n.to_string());
-        }
         let sandbox_on = self.shared.borrow().sandbox_on;
         BrainLaunch::new(
-            brain_args,
             self.codebase.clone(),
             api_key,
             gait_bin,
             self.config.sandbox.clone(),
             sandbox_on,
-            None,
+            false, // chat is interactive
+            self.config.max_iter,
+            None, // no parent cascade group
             agent_name,
             self.config.model.clone(),
             self.config.allow.clone(),

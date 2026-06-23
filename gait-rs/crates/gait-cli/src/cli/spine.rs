@@ -18,8 +18,6 @@ use crate::cli::run::RunArgs;
 /// with all data `relay_brain_turn` needs; `turn_config` is informational only (the
 /// actual config lands in `BrainInit` via `ProfileInputs`).
 struct SpineDriver {
-    /// Argv forwarded to `gait __brain` (--session injected by cmd_spine).
-    brain_args: Vec<String>,
     codebase: PathBuf,
     api_key: String,
     gait_bin: PathBuf,
@@ -43,12 +41,13 @@ struct SpineDriver {
 impl TurnDriver for SpineDriver {
     fn brain_launch(&self, _session_id: &str) -> BrainLaunch {
         BrainLaunch::new(
-            self.brain_args.clone(),
             self.codebase.clone(),
             self.api_key.clone(),
             self.gait_bin.clone(),
             self.sandbox_cfg.clone(),
             self.sandbox_on,
+            self.auto,
+            self.max_iter,
             self.cascade_group_arg.clone(),
             self.agent_name.clone(),
             self.model_override.clone(),
@@ -248,14 +247,6 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
         vec![]
     };
 
-    // Build brain argv: same as spine argv but with --session injected and --task stripped.
-    let mut brain_args: Vec<String> = argv.to_vec();
-    gait_core::embed::strip_task_from_args(&mut brain_args);
-    if !brain_args.iter().any(|a| a == "--session") {
-        brain_args.push("--session".into());
-        brain_args.push(session_id.clone());
-    }
-
     let exe = std::env::current_exe().unwrap_or_else(|e| {
         sink.diagnostic(Diag::Error, &format!("error: current_exe: {e}"));
         std::process::exit(1);
@@ -314,7 +305,6 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
     };
 
     let mut driver = SpineDriver {
-        brain_args,
         codebase: codebase_path,
         api_key,
         gait_bin: exe,

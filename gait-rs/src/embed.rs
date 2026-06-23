@@ -48,8 +48,6 @@ pub struct LoopConfig {
 /// `session_id`, `sink`, and `signal_slot` come from `run_loop`'s own params.
 /// The easy one to forget: `codebase` (PathBuf, not just cli args).
 pub struct BrainLaunch {
-    /// Argv forwarded to `gait __brain` (already has --session injected by the driver).
-    pub brain_args: Vec<String>,
     /// Absolute path to the codebase root (required by relay_brain_turn).
     pub codebase: std::path::PathBuf,
     /// Resolved LLM API key (empty string if none).
@@ -58,11 +56,15 @@ pub struct BrainLaunch {
     pub gait_bin: std::path::PathBuf,
     /// Sandbox configuration to apply to the brain process.
     pub sandbox_cfg: crate::config::SandboxConfig,
-    /// Whether the sandbox is active for this turn.
+    /// Whether the sandbox is active for this turn (drives the brain's seal flag).
     pub sandbox_on: bool,
+    /// Whether the brain runs non-interactively (`--auto`).
+    pub auto: bool,
+    /// Per-turn iteration cap (`--max-iter`), if any.
+    pub max_iter: Option<usize>,
     /// Profile-level inputs forwarded to BrainInit (agent/model/allow/deny/result_schema).
     pub profile_inputs: crate::turn::spine::ProfileInputs,
-    /// Optional cascade group handle string (pgid or cgroup path) passed from a parent spine.
+    /// Optional cascade group handle string (pgid or cgroup path) from a parent spine.
     pub cascade_group_arg: Option<String>,
 }
 
@@ -71,12 +73,13 @@ impl BrainLaunch {
     /// `gait-repl` uses this so it doesn't import the sealed `turn::spine` type.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        brain_args: Vec<String>,
         codebase: std::path::PathBuf,
         api_key: String,
         gait_bin: std::path::PathBuf,
         sandbox_cfg: crate::config::SandboxConfig,
         sandbox_on: bool,
+        auto: bool,
+        max_iter: Option<usize>,
         cascade_group_arg: Option<String>,
         agent_name: Option<String>,
         model_override: Option<String>,
@@ -85,12 +88,13 @@ impl BrainLaunch {
         result_schema: Option<serde_json::Value>,
     ) -> Self {
         Self {
-            brain_args,
             codebase,
             api_key,
             gait_bin,
             sandbox_cfg,
             sandbox_on,
+            auto,
+            max_iter,
             cascade_group_arg,
             profile_inputs: crate::turn::spine::ProfileInputs {
                 agent_name,
@@ -178,7 +182,6 @@ pub async fn run_loop(
         }
         let launch = driver.brain_launch(session_id);
         let failed = crate::turn::spine::relay_brain_turn(
-            &launch.brain_args,
             gait_dir,
             &launch.codebase,
             session_id,
@@ -186,6 +189,8 @@ pub async fn run_loop(
             &launch.gait_bin,
             &launch.sandbox_cfg,
             launch.sandbox_on,
+            launch.auto,
+            launch.max_iter,
             &launch.profile_inputs,
             sink,
             launch.cascade_group_arg,

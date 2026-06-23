@@ -100,6 +100,61 @@ pub fn build_turn_profile(
     )
 }
 
+// ── brain_argv ────────────────────────────────────────────────────────────────
+
+/// Build the argv passed to `gait __brain` — the single source of truth for the
+/// brain's command line. The `"__brain"` role token itself is prepended by the
+/// spawn in `relay_brain_turn`; no consumer constructs any of this.
+///
+/// Only flags the brain actually reads from argv are emitted: `--gait-dir`,
+/// `--codebase`, `--session`, `--auto`, `--max-iter`, `--allow`, `--deny`, and
+/// the sandbox flag. The profile (model/agent/result-schema) reaches the brain
+/// via the `BrainInit` frame, not argv.
+pub(crate) fn brain_argv(
+    gait_dir: &Path,
+    codebase: &Path,
+    session_id: &str,
+    auto: bool,
+    max_iter: Option<usize>,
+    sandbox_on: bool,
+    profile: &ProfileInputs,
+) -> Vec<String> {
+    let mut a = vec![
+        "--gait-dir".to_string(),
+        gait_dir.to_string_lossy().into_owned(),
+        "--codebase".to_string(),
+        codebase.to_string_lossy().into_owned(),
+        "--session".to_string(),
+        session_id.to_string(),
+    ];
+    if auto {
+        a.push("--auto".to_string());
+    }
+    if let Some(n) = max_iter {
+        a.push("--max-iter".to_string());
+        a.push(n.to_string());
+    }
+    for p in &profile.allow {
+        a.push("--allow".to_string());
+        a.push(p.clone());
+    }
+    for p in &profile.deny {
+        a.push("--deny".to_string());
+        a.push(p.clone());
+    }
+    // Sealed spine ⇒ sealed brain (and vice versa); the brain never escapes a
+    // sandboxed parent and is never sandboxed under an unsandboxed parent.
+    a.push(
+        if sandbox_on {
+            "--sandbox-locked"
+        } else {
+            "--no-sandbox"
+        }
+        .to_string(),
+    );
+    a
+}
+
 // ── relay_brain_turn ─────────────────────────────────────────────────────────
 
 /// Shared slot holding the active cascade group for the current turn.
@@ -122,7 +177,6 @@ pub type SignalSlot =
 /// Returns `Ok(true)` if the brain signalled failure, `Ok(false)` on success.
 #[allow(clippy::too_many_arguments)]
 pub async fn relay_brain_turn(
-    brain_args: &[String],
     gait_dir: &Path,
     codebase: &Path,
     session_id: &str,
@@ -130,6 +184,8 @@ pub async fn relay_brain_turn(
     exe: &Path,
     sandbox_cfg: &SandboxConfig,
     sandbox_on: bool,
+    auto: bool,
+    max_iter: Option<usize>,
     profile_inputs: &ProfileInputs,
     sink: &mut dyn TurnSink,
     cascade_group_arg: Option<String>,
@@ -196,10 +252,19 @@ pub async fn relay_brain_turn(
     // ── Spawn brain (enrolled as cascade group leader) ──────────────────────
     let mut child = {
         use tokio::process::Command as TokioCommand;
+        let brain_args = brain_argv(
+            gait_dir,
+            codebase,
+            session_id,
+            auto,
+            max_iter,
+            sandbox_on,
+            profile_inputs,
+        );
         let mut std_cmd = std::process::Command::new(exe);
         std_cmd
             .arg("__brain")
-            .args(brain_args)
+            .args(&brain_args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit())
@@ -1165,9 +1230,74 @@ pub(super) fn test_ctx(ws: &std::path::Path, session_id: &str) -> SpineToolCtx {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_subagent_feedback, build_turn_profile, enrich_permissions_preview, error_feedback,
-        handle_spawn_agent, test_ctx, ProfileInputs, SpawnAgentArgs,
+        brain_argv, build_subagent_feedback, build_turn_profile, enrich_permissions_preview,
+        error_feedback, handle_spawn_agent, test_ctx, ProfileInputs, SpawnAgentArgs,
     };
+
+    #[test]
+    fn brain_argv_is_canonical_and_has_no_role_token() {
+        let profile = ProfileInputs {
+            agent_name: Some("default".into()),
+            model_override: Some("anthropic/x".into()),
+            allow: vec!["Bash".into()],
+            deny: vec!["Net".into()],
+            result_schema: None,
+        };
+        let argv = brain_argv(
+            std::path::Path::new("/g"),
+            std::path::Path::new("/c"),
+            "s123",
+            true,
+            Some(7),
+            true,
+            &profile,
+        );
+        // The role token is added by the spawn, never by the builder.
+        assert!(!argv.iter().any(|a| a == "__brain"));
+        // Canonical required flags.
+        assert_eq!(argv[0], "--gait-dir");
+        assert_eq!(argv[1], "/g");
+        assert!(windowed(&argv, "--codebase", "/c"));
+        assert!(windowed(&argv, "--session", "s123"));
+        assert!(argv.iter().any(|a| a == "--auto"));
+        assert!(windowed(&argv, "--max-iter", "7"));
+        assert!(windowed(&argv, "--allow", "Bash"));
+        assert!(windowed(&argv, "--deny", "Net"));
+        // Sealed spine ⇒ sealed brain.
+        assert!(argv.iter().any(|a| a == "--sandbox-locked"));
+        // model/agent/result-schema flow via BrainInit, NOT argv.
+        assert!(!argv.iter().any(|a| a == "--model"));
+        assert!(!argv.iter().any(|a| a == "--agent"));
+    }
+
+    #[test]
+    fn brain_argv_unsandboxed_emits_no_sandbox() {
+        let profile = ProfileInputs {
+            agent_name: None,
+            model_override: None,
+            allow: vec![],
+            deny: vec![],
+            result_schema: None,
+        };
+        let argv = brain_argv(
+            std::path::Path::new("/g"),
+            std::path::Path::new("/c"),
+            "s",
+            false,
+            None,
+            false,
+            &profile,
+        );
+        assert!(argv.iter().any(|a| a == "--no-sandbox"));
+        assert!(!argv.iter().any(|a| a == "--sandbox-locked"));
+        assert!(!argv.iter().any(|a| a == "--auto"));
+        assert!(!argv.iter().any(|a| a == "--max-iter"));
+    }
+
+    // helper: true if `flag` is immediately followed by `val` in argv.
+    fn windowed(argv: &[String], flag: &str, val: &str) -> bool {
+        argv.windows(2).any(|w| w[0] == flag && w[1] == val)
+    }
 
     #[tokio::test]
     async fn handle_spawn_agent_creates_session_and_returns_id() {

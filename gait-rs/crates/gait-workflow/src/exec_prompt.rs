@@ -33,46 +33,20 @@ struct PromptNodeDriver {
 
 #[async_trait::async_trait(?Send)]
 impl TurnDriver for PromptNodeDriver {
-    fn brain_launch(&self, session_id: &str) -> BrainLaunch {
-        // Resolve API key from the model's provider name.
+    fn brain_launch(&self, _session_id: &str) -> BrainLaunch {
         let api_key = gait_core::auth::resolve_api_key(
             self.model.split_once('/').map(|(p, _)| p).unwrap_or(""),
         )
         .unwrap_or_default();
-
-        // Build brain_args: the same argv the spine would pass to `gait __brain`.
-        // Include --session, --model, --agent (if any), --allow entries, --sandbox-locked.
-        let mut brain_args: Vec<String> = vec![
-            "__brain".into(),
-            "--gait-dir".into(),
-            self.gait_dir.to_string_lossy().into_owned(),
-            "--codebase".into(),
-            self.codebase.to_string_lossy().into_owned(),
-            "--session".into(),
-            session_id.to_string(),
-            "--model".into(),
-            self.model.clone(),
-            "--sandbox-locked".into(), // workflow nodes are always sealed
-            "--auto".into(),           // workflow nodes run non-interactive
-        ];
-        if let Some(ref agent) = self.agent_name {
-            brain_args.push("--agent".into());
-            brain_args.push(agent.clone());
-        }
-        for a in &self.allow {
-            brain_args.push("--allow".into());
-            brain_args.push(a.clone());
-        }
-
         let gait_bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gait"));
-
         BrainLaunch::new(
-            brain_args,
             self.codebase.clone(),
             api_key,
             gait_bin,
             self.sandbox_cfg.clone(),
             true, // workflow nodes are always sandboxed
+            self.auto,
+            None,
             None, // cascade_group_arg
             self.agent_name.clone(),
             Some(self.model.clone()),
