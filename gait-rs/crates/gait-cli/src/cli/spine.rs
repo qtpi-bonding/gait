@@ -275,13 +275,14 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
         result_schema,
     };
 
-    // Shared slot: holds the current cascade group so the signal task can reap it.
-    let signal_slot: gait_core::turn::spine::SignalSlot = Arc::new(std::sync::Mutex::new(None));
+    // Process-lifetime cascade kill handle — held by the SIGINT/SIGTERM handler
+    // and threaded through run_loop so relay_brain_turn can register the active group.
+    let kill_handle = gait_core::embed::CascadeKillHandle::new();
 
     // Spawn SIGINT/SIGTERM handler: kill current group (if any) then exit.
     {
         use tokio::signal::unix::{signal, SignalKind};
-        let slot = signal_slot.clone();
+        let handle = kill_handle.clone();
         tokio::spawn(async move {
             let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT handler");
             let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
@@ -289,9 +290,7 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
                 _ = sigint.recv() => {}
                 _ = sigterm.recv() => {}
             }
-            if let Some(group) = slot.lock().unwrap().clone() {
-                let _ = group.kill_all();
-            }
+            handle.kill();
             std::process::exit(0);
         });
     }
@@ -336,7 +335,7 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
         &gait_dir,
         &session_id,
         &mut driver,
-        Some(&signal_slot),
+        Some(&kill_handle),
     )
     .await;
 

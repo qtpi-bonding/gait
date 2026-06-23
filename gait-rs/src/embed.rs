@@ -20,6 +20,7 @@ pub use crate::session::Session;
 pub use crate::turn::spine::ProfileInputs;
 pub use crate::turn::{TurnInput, TurnResult};
 pub use crate::Recorder;
+pub use cascade::CascadeKillHandle;
 
 use std::ops::ControlFlow;
 use std::path::Path;
@@ -160,7 +161,7 @@ pub async fn run_loop(
     gait_dir: &Path,
     session_id: &str,
     driver: &mut impl TurnDriver,
-    cascade: Option<&crate::turn::spine::SignalSlot>,
+    cascade: Option<&CascadeKillHandle>,
 ) -> anyhow::Result<()> {
     let tx_path = gait_dir.join("sessions").join(session_id).join("log.jsonl");
     while let Some(start) = source.next().await {
@@ -187,12 +188,12 @@ pub async fn run_loop(
             &launch.profile_inputs,
             sink,
             launch.cascade_group_arg,
-            cascade,
+            cascade.map(|h| &h.0),
         )
         .await;
         // Clear the cascade slot after each turn (parity with spine.rs:248).
-        if let Some(slot) = cascade {
-            *slot.lock().unwrap() = None;
+        if let Some(handle) = cascade {
+            *handle.0.lock().unwrap() = None;
         }
         match failed {
             Ok(true) => {
@@ -263,6 +264,97 @@ pub async fn resolve_profile(
             workflow_runner,
         )
         .await
+}
+
+// ── CascadeKillHandle ────────────────────────────────────────────────────────
+
+mod cascade {
+    use crate::turn::spine::SignalSlot;
+
+    /// Opaque, process-level teardown for the active sealed tree. Held by the
+    /// gait binary's top-level signal handler. The cascade group it wraps stays
+    /// private — callers invoke `kill()` and know nothing about the group type.
+    ///
+    /// Construct with [`CascadeKillHandle::new`] once (process lifetime), hand a
+    /// clone to the signal handler, and pass `Some(&handle)` to [`run_loop`].
+    #[derive(Clone)]
+    pub struct CascadeKillHandle(pub(super) SignalSlot);
+
+    impl CascadeKillHandle {
+        /// Create a handle backed by an empty slot (no group enrolled yet).
+        pub fn new() -> Self {
+            Self(std::sync::Arc::new(std::sync::Mutex::new(None)))
+        }
+
+        /// Kill all processes enrolled in the active cascade group, if any.
+        /// If no turn is running the slot is empty and this is a no-op.
+        pub fn kill(&self) {
+            if let Some(group) = self.0.lock().unwrap().clone() {
+                let _ = group.kill_all();
+            }
+        }
+    }
+
+    impl Default for CascadeKillHandle {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Enrolled child is killed; detached peer survives — through the opaque handle.
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        #[test]
+        fn cascade_kill_handle_kills_enrolled_spares_detached() {
+            let handle = CascadeKillHandle::new();
+            let group = crate::process::establish(None);
+
+            // Store the group into the slot (mirrors relay_brain_turn).
+            *handle.0.lock().unwrap() = Some(std::sync::Arc::clone(&group));
+
+            // Enrolled child.
+            let mut enrolled_cmd = std::process::Command::new("sleep");
+            enrolled_cmd
+                .arg("60")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            let mut enrolled = group.spawn_enrolled(enrolled_cmd).expect("spawn enrolled");
+            let enrolled_pid = enrolled.id() as i32;
+
+            // Detached peer.
+            let mut peer_cmd = std::process::Command::new("sleep");
+            peer_cmd
+                .arg("60")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            let (mut peer, peer_pid) = group.spawn_detached(peer_cmd).expect("spawn detached");
+
+            // Kill via the opaque handle.
+            handle.kill();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+
+            let _ = enrolled.wait();
+            let enrolled_alive = unsafe { libc::kill(enrolled_pid, 0) };
+            let peer_alive = unsafe { libc::kill(peer_pid, 0) };
+
+            unsafe { libc::kill(peer_pid, libc::SIGKILL) };
+            let _ = peer.wait();
+
+            assert_eq!(
+                enrolled_alive, -1,
+                "enrolled child (pid {enrolled_pid}) should be dead after handle.kill()"
+            );
+            assert_eq!(
+                peer_alive, 0,
+                "detached peer (pid {peer_pid}) should survive handle.kill()"
+            );
+        }
+    }
 }
 
 /// A frame handed to a [`JsonSink`] callback. Strings are pbjson (canonical

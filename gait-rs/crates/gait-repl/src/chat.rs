@@ -133,10 +133,13 @@ pub async fn run_chat(
         }));
     let repos = gait_core::git::Repos::production();
 
-    // SIGINT/SIGTERM handler: exit cleanly. Task 4 will wire cascade kill
-    // through run_loop's CancellationToken instead of a SignalSlot.
+    // Process-lifetime cascade kill handle — held by the SIGINT/SIGTERM handler
+    // and threaded through run_loop so relay_brain_turn can register the active
+    // group. On signal, kill() tears down the sealed tree before exiting.
+    let kill_handle = gait_core::embed::CascadeKillHandle::new();
     {
         use tokio::signal::unix::{signal, SignalKind};
+        let handle = kill_handle.clone();
         tokio::spawn(async move {
             let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT handler");
             let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
@@ -144,6 +147,7 @@ pub async fn run_chat(
                 _ = sigint.recv() => {}
                 _ = sigterm.recv() => {}
             }
+            handle.kill();
             std::process::exit(0);
         });
     }
@@ -196,7 +200,7 @@ pub async fn run_chat(
             &gait_dir,
             &session_id,
             &mut driver,
-            None,
+            Some(&kill_handle),
         )
         .await?;
 
