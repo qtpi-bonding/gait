@@ -45,7 +45,10 @@ pub struct ReplShared {
     pub turn_done_blocks: Option<Vec<String>>,
     pub control: Option<Control>,
     // Watcher lifecycle — written by ReplDriver::turn_config, torn down by ReplSink::end_turn
+    // (deferred cleanup: fields unused after chat.rs migration to orchestrator)
+    #[allow(dead_code)]
     pub(crate) watcher_done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    #[allow(dead_code)]
     pub(crate) watcher_handle: Option<tokio::task::JoinHandle<()>>,
     /// Per-session sandbox engagement, toggled by `/sandbox on|off`. Initialized
     /// from `config.sandbox.on`; takes effect on the next turn.
@@ -54,6 +57,8 @@ pub struct ReplShared {
 pub type Shared = Rc<RefCell<ReplShared>>;
 
 /// View-layer sink: forwards stream items to the builder, captures `TurnDone`.
+// (deferred cleanup: ReplSink/ReplDriver unused after chat.rs migration to orchestrator)
+#[allow(dead_code)]
 pub struct ReplSink {
     pub shared: Shared,
 }
@@ -120,6 +125,7 @@ impl TurnSink for ReplSink {
 /// Per-turn driver: supplies BrainLaunch data, manages the ESC-key watcher, and
 /// keeps the REPL alive on a turn error. Constructed once per session and passed
 /// to `run_loop`; no direct `turn::spine` usage.
+#[allow(dead_code)]
 pub struct ReplDriver {
     pub codebase: PathBuf,
     pub agent_path: Option<PathBuf>,
@@ -613,7 +619,7 @@ async fn run_workflow_from_repl(
                 codebase,
                 args,
             },
-            &mut gait_workflow::observer::CliObserver::default(),
+            &mut gait_workflow::observer::CliObserver,
             None,
         )) {
             eprintln!("[gait workflow] {run_id_log}: error: {e}");

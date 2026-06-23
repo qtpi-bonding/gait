@@ -50,7 +50,7 @@ nodes:
             codebase: ws.path().to_path_buf(),
             args: vec![],
         },
-        &mut CliObserver::default(),
+        &mut CliObserver,
         None,
     )
     .await
@@ -106,7 +106,7 @@ nodes:
             codebase: ws.path().to_path_buf(),
             args: vec![],
         },
-        &mut CliObserver::default(),
+        &mut CliObserver,
         None,
     )
     .await
@@ -160,7 +160,7 @@ nodes:
             codebase: ws.path().to_path_buf(),
             args: vec![],
         },
-        &mut CliObserver::default(),
+        &mut CliObserver,
         None,
     )
     .await
@@ -303,7 +303,7 @@ async fn smoke_parallel_workflow_completes() {
             codebase: ws.path().to_path_buf(),
             args: vec![],
         },
-        &mut CliObserver::default(),
+        &mut CliObserver,
         None,
     )
     .await
@@ -348,7 +348,7 @@ async fn smoke_cycle_workflow_via_goto() {
             codebase: ws.path().to_path_buf(),
             args: vec![],
         },
-        &mut CliObserver::default(),
+        &mut CliObserver,
         None,
     )
     .await
@@ -389,7 +389,7 @@ async fn smoke_retry_on_error_goto() {
             codebase: ws.path().to_path_buf(),
             args: vec![],
         },
-        &mut CliObserver::default(),
+        &mut CliObserver,
         None,
     )
     .await

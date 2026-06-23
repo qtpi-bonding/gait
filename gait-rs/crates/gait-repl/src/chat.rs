@@ -204,7 +204,7 @@ pub async fn run_chat(
                 codebase: codebase.clone(),
                 args: vec![],
             },
-            &mut gait_workflow::observer::CliObserver::default(),
+            &mut gait_workflow::observer::CliObserver,
             Some(Box::new(source)),
         )
         .await?;

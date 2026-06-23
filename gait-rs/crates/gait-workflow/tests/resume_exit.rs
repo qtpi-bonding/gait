@@ -14,7 +14,7 @@ use gait_workflow::convert::to_proto;
 use gait_workflow::run_log::WorkflowRunLog;
 use gait_workflow::runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
 use gait_workflow::schema::WorkflowDef;
-use gait_workflow::state::{reconstruct_state, NodeStatus};
+use gait_workflow::state::reconstruct_state;
 
 use gait_core::proto::gait::workflow::v1::workflow_event;
 
@@ -72,7 +72,7 @@ async fn absent_prompt_headless_exits_node_open() {
             codebase: gait_dir.clone(),
             args: vec![],
         },
-        &mut CliObserver::default(),
+        &mut CliObserver,
         None, // headless: no input source
     )
     .await
@@ -152,7 +152,7 @@ async fn gate_node_exits_gate_paused_not_node_open() {
             codebase: gait_dir.clone(),
             args: vec![],
         },
-        &mut CliObserver::default(),
+        &mut CliObserver,
         None,
     )
     .await

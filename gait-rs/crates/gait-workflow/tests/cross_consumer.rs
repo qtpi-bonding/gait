@@ -84,7 +84,7 @@ async fn cli_and_channel_observer_produce_identical_state() {
             codebase: gait_dir1.clone(),
             args: vec![],
         },
-        &mut CliObserver::default(),
+        &mut CliObserver,
         None,
     )
     .await
