@@ -117,24 +117,24 @@ impl TurnSink for ReplSink {
     }
 }
 
-/// Per-turn driver: rebuilds the Profile each turn (matches the old REPL), no
-/// after-turn coordination, and keeps the REPL alive on a turn error.
-/// Retained for ESC-key watcher infrastructure; not constructed in spine mode.
-#[allow(dead_code)]
+/// Per-turn driver: supplies BrainLaunch data, manages the ESC-key watcher, and
+/// keeps the REPL alive on a turn error. Constructed once per session and passed
+/// to `run_loop`; no direct `turn::spine` usage.
 pub struct ReplDriver {
     pub gait_dir: PathBuf,
     pub codebase: PathBuf,
     pub agent_path: Option<PathBuf>,
+    /// Retained for future Task 4 wiring (cascade/SIGINT signal passing).
+    #[allow(dead_code)]
     pub session_id: String,
     pub config: gait_core::config::GaitConfig,
+    /// Retained for future use (workflow runner, git ops from driver context).
+    #[allow(dead_code)]
     pub repos: gait_core::git::Repos,
     pub shared: crate::repl::Shared,
 }
 #[async_trait::async_trait(?Send)]
 impl TurnDriver for ReplDriver {
-    /// Placeholder for Task 3 (ReplDriver migration to sealed run_loop).
-    /// Task 3 will populate brain_args, api_key, gait_bin, profile_inputs from
-    /// the repl's existing data. For now returns a minimal stub that will compile.
     fn brain_launch(&self, session_id: &str) -> BrainLaunch {
         let model_str = self.config.model.clone().unwrap_or_default();
         let provider_name = model_str
@@ -143,17 +143,11 @@ impl TurnDriver for ReplDriver {
             .unwrap_or_default();
         let api_key = gait_core::auth::resolve_api_key(&provider_name).unwrap_or_default();
         let gait_bin = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("gait"));
-        let profile_inputs = gait_core::turn::spine::ProfileInputs {
-            agent_name: self
-                .agent_path
-                .as_ref()
-                .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned())),
-            model_override: self.config.model.clone(),
-            allow: self.config.allow.clone(),
-            deny: self.config.deny.clone(),
-            result_schema: None,
-        };
-        let brain_args = vec![
+        let agent_name = self
+            .agent_path
+            .as_ref()
+            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()));
+        let mut brain_args = vec![
             "__brain".to_string(),
             "--gait-dir".to_string(),
             self.gait_dir.to_string_lossy().into_owned(),
@@ -162,16 +156,35 @@ impl TurnDriver for ReplDriver {
             "--session".to_string(),
             session_id.to_string(),
         ];
-        BrainLaunch {
+        // Include --model when a model override is configured (consistent with
+        // SpineDriver and PromptNodeDriver).
+        if let Some(ref model) = self.config.model {
+            brain_args.push("--model".to_string());
+            brain_args.push(model.clone());
+        }
+        if let Some(ref name) = agent_name {
+            brain_args.push("--agent".to_string());
+            brain_args.push(name.clone());
+        }
+        if let Some(n) = self.config.max_iter {
+            brain_args.push("--max-iter".to_string());
+            brain_args.push(n.to_string());
+        }
+        let sandbox_on = self.shared.borrow().sandbox_on;
+        BrainLaunch::new(
             brain_args,
-            codebase: self.codebase.clone(),
+            self.codebase.clone(),
             api_key,
             gait_bin,
-            sandbox_cfg: self.config.sandbox.clone(),
-            sandbox_on: self.shared.borrow().sandbox_on,
-            profile_inputs,
-            cascade_group_arg: None,
-        }
+            self.config.sandbox.clone(),
+            sandbox_on,
+            None,
+            agent_name,
+            self.config.model.clone(),
+            self.config.allow.clone(),
+            self.config.deny.clone(),
+            None,
+        )
     }
 
     fn turn_config(&mut self) -> LoopConfig {

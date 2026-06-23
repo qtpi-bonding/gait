@@ -17,6 +17,7 @@ pub use crate::port::output::{run_result_proto, CliSink, Diag, TurnSink};
 pub use crate::profile::ResolvedProfile;
 pub use crate::proto::gait::log::v1::{RunResult, StreamItem};
 pub use crate::session::Session;
+pub use crate::turn::spine::ProfileInputs;
 pub use crate::turn::{TurnInput, TurnResult};
 pub use crate::Recorder;
 
@@ -62,6 +63,43 @@ pub struct BrainLaunch {
     pub profile_inputs: crate::turn::spine::ProfileInputs,
     /// Optional cascade group handle string (pgid or cgroup path) passed from a parent spine.
     pub cascade_group_arg: Option<String>,
+}
+
+impl BrainLaunch {
+    /// Construct a `BrainLaunch` without naming `ProfileInputs` in the call site.
+    /// `gait-repl` uses this so it doesn't import the sealed `turn::spine` type.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        brain_args: Vec<String>,
+        codebase: std::path::PathBuf,
+        api_key: String,
+        gait_bin: std::path::PathBuf,
+        sandbox_cfg: crate::config::SandboxConfig,
+        sandbox_on: bool,
+        cascade_group_arg: Option<String>,
+        agent_name: Option<String>,
+        model_override: Option<String>,
+        allow: Vec<String>,
+        deny: Vec<String>,
+        result_schema: Option<serde_json::Value>,
+    ) -> Self {
+        Self {
+            brain_args,
+            codebase,
+            api_key,
+            gait_bin,
+            sandbox_cfg,
+            sandbox_on,
+            cascade_group_arg,
+            profile_inputs: crate::turn::spine::ProfileInputs {
+                agent_name,
+                model_override,
+                allow,
+                deny,
+                result_schema,
+            },
+        }
+    }
 }
 
 /// Per-turn machinery the loop can't own generically. `?Send`: the driver runs on

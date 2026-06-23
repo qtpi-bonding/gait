@@ -3,7 +3,6 @@ use rustyline::Editor;
 use std::path::PathBuf;
 
 use crate::repl::{ReplHelper, ShellNavHandler, ShellNavState};
-use gait_core::embed::{TurnSource, TurnStart};
 use rustyline::{EventHandler, KeyCode, KeyEvent, Modifiers};
 use std::sync::{Arc, Mutex};
 
@@ -134,23 +133,16 @@ pub async fn run_chat(
         }));
     let repos = gait_core::git::Repos::production();
 
-    // Shared slot: holds the current cascade group so the signal task can reap it.
-    let signal_slot: gait_core::turn::spine::SignalSlot =
-        std::sync::Arc::new(std::sync::Mutex::new(None));
-
-    // Spawn SIGINT/SIGTERM handler: kill current group (if any) then exit.
+    // SIGINT/SIGTERM handler: exit cleanly. Task 4 will wire cascade kill
+    // through run_loop's CancellationToken instead of a SignalSlot.
     {
         use tokio::signal::unix::{signal, SignalKind};
-        let slot = signal_slot.clone();
         tokio::spawn(async move {
             let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT handler");
             let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
             tokio::select! {
                 _ = sigint.recv() => {}
                 _ = sigterm.recv() => {}
-            }
-            if let Some(group) = slot.lock().unwrap().clone() {
-                let _ = group.kill_all();
             }
             std::process::exit(0);
         });
@@ -163,59 +155,7 @@ pub async fn run_chat(
         nav.lock().unwrap().path = shell_history_path.clone();
         let config = gait_core::config::load_config(&gait_dir);
 
-        // Resolve API key for the brain (spine passes it via env, never disk).
-        let provider_name = {
-            let profile = gait_core::profile::Profile::from_config_and_agent(
-                &config,
-                &gait_dir,
-                Some(codebase.as_path()),
-                agent_path.as_deref(),
-                None,
-            );
-            match profile.model.split_once('/') {
-                Some((p, _)) => p.to_string(),
-                None => profile.model.clone(),
-            }
-        };
-        let api_key = gait_core::auth::resolve_api_key(&provider_name).unwrap_or_default();
-
-        // Ensure the session worktree (and log dir) exist before appending input.
-        repos
-            .traces
-            .create_session_worktree(&gait_dir, &session_id)
-            .map_err(|e| anyhow::anyhow!("create session worktree: {e}"))?;
-
-        let tx_path = gait_dir
-            .join("sessions")
-            .join(&session_id)
-            .join("log.jsonl");
-
-        // Build brain argv: --session, --gait-dir, --codebase, sandbox flag,
-        // optional --max-iter / --agent. No --task (brain runs Resume mode).
-        let mut brain_args = vec![
-            "--session".to_string(),
-            session_id.clone(),
-            "--gait-dir".to_string(),
-            gait_dir.to_str().unwrap_or(".").to_string(),
-            "--codebase".to_string(),
-            codebase.to_str().unwrap_or(".").to_string(),
-        ];
-        // Sandbox flag: read from shared (user may toggle per-session).
-        if shared.borrow().sandbox_on {
-            brain_args.push("--sandbox".to_string());
-        } else {
-            brain_args.push("--no-sandbox".to_string());
-        }
-        if let Some(n) = config.max_iter {
-            brain_args.push("--max-iter".to_string());
-            brain_args.push(n.to_string());
-        }
-        if let Some(ref name) = agent_name {
-            brain_args.push("--agent".to_string());
-            brain_args.push(name.clone());
-        }
-
-        let mut source = crate::repl::ReplSource {
+        let source = crate::repl::ReplSource {
             shared: shared.clone(),
             gait_dir: gait_dir.clone(),
             codebase: codebase.clone(),
@@ -232,106 +172,33 @@ pub async fn run_chat(
         let mut sink = crate::repl::ReplSink {
             shared: shared.clone(),
         };
+        let mut driver = crate::repl::ReplDriver {
+            gait_dir: gait_dir.clone(),
+            codebase: codebase.clone(),
+            agent_path: agent_path.clone(),
+            session_id: session_id.clone(),
+            config,
+            repos: repos.clone(),
+            shared: shared.clone(),
+        };
 
-        // Per-turn spine loop: prompt → write input → spawn brain → relay.
-        loop {
-            let Some(start) = source.next().await else {
-                break;
-            };
-
-            // Write input events to log (Resume skips this).
-            if let TurnStart::Input(bodies) = start {
-                for body in bodies {
-                    gait_core::proto::wire::append(&tx_path, body)
-                        .map_err(|e| anyhow::anyhow!("append input: {e}"))?;
-                }
-            }
-
-            // Re-read sandbox_on in case the user toggled it this turn.
-            let sandbox_on = shared.borrow().sandbox_on;
-            let mut turn_args = brain_args.clone();
-            // Replace --sandbox / --no-sandbox with the current per-turn value.
-            if let Some(pos) = turn_args
-                .iter()
-                .position(|a| a == "--sandbox" || a == "--no-sandbox")
-            {
-                turn_args[pos] = if sandbox_on {
-                    "--sandbox".to_string()
-                } else {
-                    "--no-sandbox".to_string()
-                };
-            }
-
-            let profile_inputs = gait_core::turn::spine::ProfileInputs {
-                agent_name: agent_name.clone(),
-                model_override: None,
-                allow: vec![],
-                deny: vec![],
-                result_schema: None,
-            };
-            // Esc watcher: poll for Esc key in raw mode; on press, call
-            // kill_all() on the current cascade group (via signal_slot).
-            // The brain dying causes relay_brain_turn's read to return Err,
-            // ending the turn. The watcher is joined after each turn.
-            let esc_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let esc_slot = signal_slot.clone();
-            let esc_done_flag = esc_done.clone();
-            let esc_handle = tokio::task::spawn_blocking(move || {
-                let _ = crossterm::terminal::enable_raw_mode();
-                // RAII guard: disable raw mode when the watcher exits.
-                struct RawModeGuard;
-                impl Drop for RawModeGuard {
-                    fn drop(&mut self) {
-                        let _ = crossterm::terminal::disable_raw_mode();
-                    }
-                }
-                let _guard = RawModeGuard;
-                loop {
-                    if esc_done_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                        break;
-                    }
-                    if crossterm::event::poll(std::time::Duration::from_millis(50)).unwrap_or(false)
-                    {
-                        if let Ok(crossterm::event::Event::Key(e)) = crossterm::event::read() {
-                            if e.code == crossterm::event::KeyCode::Esc {
-                                if let Some(group) = esc_slot.lock().unwrap().clone() {
-                                    let _ = group.kill_all();
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-
-            let _failed = gait_core::turn::spine::relay_brain_turn(
-                &turn_args,
-                &gait_dir,
-                &codebase,
-                &session_id,
-                &api_key,
-                &gait_bin,
-                &config.sandbox,
-                sandbox_on,
-                &profile_inputs,
-                &mut sink,
-                None, // top-level REPL turn: no inherited cascade group
-                Some(&signal_slot),
-            )
-            .await
-            .unwrap_or_else(|e| {
-                eprintln!("[gait] turn error: {e}\r\n");
-                false
-            });
-
-            // Stop the Esc watcher and join it (restores terminal raw mode).
-            esc_done.store(true, std::sync::atomic::Ordering::SeqCst);
-            tokio::task::block_in_place(|| {
-                let _ = tokio::runtime::Handle::current().block_on(esc_handle);
-            });
-
-            // Clear the slot — turn complete, no live group to kill between turns.
-            *signal_slot.lock().unwrap() = None;
-        }
+        // Drive turns for this session via the unified run_loop.
+        // ReplDriver::turn_config() spawns the ESC-key watcher; ReplSink::end_turn()
+        // tears it down. No competing watcher — the chat.rs inline one is gone.
+        let session = std::sync::Arc::new(
+            gait_core::Session::open(gait_dir.clone(), codebase.clone(), session_id.clone())
+                .map_err(|e| anyhow::anyhow!("open session: {e}"))?,
+        );
+        gait_core::embed::run_loop(
+            source,
+            &mut sink,
+            session,
+            &gait_dir,
+            &session_id,
+            &mut driver,
+            None,
+        )
+        .await?;
 
         // The source ended the loop with a control signal (or EOF).
         let control = shared.borrow_mut().control.take();
