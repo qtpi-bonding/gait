@@ -302,9 +302,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dup_lines_get_instance_suffixes() {
+    async fn dup_lines_get_context_tags() {
         let dir = TempDir::new().unwrap();
-        // Two identical lines ("same") separated by a unique line ("other")
+        // Two identical lines ("same") separated by a unique line ("other").
+        // With the 4-2-2 scheme: distinct neighbors → context tags (tier 2), not ordinals.
         std::fs::write(dir.path().join("dup.txt"), "same\nother\nsame").unwrap();
 
         let tool = ReadTool::new(make_ctx(&dir));
@@ -316,17 +317,26 @@ mod tests {
             .await
             .unwrap();
         let text = result.as_str().unwrap();
-        // First and second occurrences of "same" get -1 and -2 instance suffixes
-        assert!(text.contains("-1|same"), "first dup should be -1: {text}");
-        assert!(text.contains("-2|same"), "second dup should be -2: {text}");
+        // Both occurrences of "same" get context tags (contain '-' before the '|same').
+        let lines: Vec<&str> = text.lines().collect();
+        let same_lines: Vec<&&str> = lines.iter().filter(|l| l.ends_with("|same")).collect();
+        assert_eq!(
+            same_lines.len(),
+            2,
+            "expected 2 annotated 'same' lines: {text}"
+        );
+        for l in &same_lines {
+            assert!(l.contains('-'), "dup 'same' should have context tag: {l}");
+        }
+        // The two context tags differ (distinct neighbors).
+        assert_ne!(
+            same_lines[0], same_lines[1],
+            "context tags for 'same' should differ: {text}"
+        );
         // The unique line gets NO instance suffix
         assert!(text.contains("|other"), "got: {text}");
         assert!(
             !text.contains("-1|other"),
-            "unique line should have no suffix: {text}"
-        );
-        assert!(
-            !text.contains("-2|other"),
             "unique line should have no suffix: {text}"
         );
     }
