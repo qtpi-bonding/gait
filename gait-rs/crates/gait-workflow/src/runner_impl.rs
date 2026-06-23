@@ -2,6 +2,7 @@
 //! `run_workflow`. This is the implementation `gait-repl` and `gait-cli`
 //! inject into `ToolCtx` to enable the `run_workflow` builtin tool.
 
+use crate::observer::CliObserver;
 use crate::runner::{run_workflow, WorkflowRunOpts};
 use crate::schema::WorkflowDef;
 use gait_core::workflow_runner::WorkflowRunner;
@@ -59,14 +60,17 @@ impl WorkflowRunner for GaitWorkflowRunner {
         // Send. Use a dedicated OS thread + its own runtime to avoid the bound.
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-            if let Err(e) = rt.block_on(run_workflow(WorkflowRunOpts {
-                workflow_def,
-                yaml_path: yaml_path_str,
-                session_id: run_id_task,
-                gait_dir,
-                codebase,
-                args,
-            })) {
+            if let Err(e) = rt.block_on(run_workflow(
+                WorkflowRunOpts {
+                    workflow_def,
+                    yaml_path: yaml_path_str,
+                    session_id: run_id_task,
+                    gait_dir,
+                    codebase,
+                    args,
+                },
+                &mut CliObserver::default(),
+            )) {
                 eprintln!("[gait workflow] {run_id_log}: error: {e}");
             }
         });

@@ -95,7 +95,7 @@ impl WorkflowRunLog {
         yaml_path: &str,
         args: &[String],
         def: &Workflow,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<WorkflowEvent> {
         let ev = WorkflowEvent {
             version: WORKFLOW_LOG_VERSION,
             ts: now_ms(),
@@ -111,7 +111,8 @@ impl WorkflowRunLog {
                 ),
             ),
         };
-        self.append(&ev)
+        self.append(&ev)?;
+        Ok(ev)
     }
 
     /// Append a node start event.
@@ -121,7 +122,7 @@ impl WorkflowRunLog {
         node_type: &str,
         attempt: u32,
         session_id: &str,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<WorkflowEvent> {
         let ev = WorkflowEvent {
             version: WORKFLOW_LOG_VERSION,
             ts: now_ms(),
@@ -134,7 +135,8 @@ impl WorkflowRunLog {
                 }),
             ),
         };
-        self.append(&ev)
+        self.append(&ev)?;
+        Ok(ev)
     }
 
     /// Append a node complete event.
@@ -146,7 +148,7 @@ impl WorkflowRunLog {
         exit_code: Option<i32>,
         json_output: &str,
         routed_to: &str,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<WorkflowEvent> {
         let ev = WorkflowEvent {
             version: WORKFLOW_LOG_VERSION,
             ts: now_ms(),
@@ -163,11 +165,17 @@ impl WorkflowRunLog {
                 ),
             ),
         };
-        self.append(&ev)
+        self.append(&ev)?;
+        Ok(ev)
     }
 
     /// Append a node error event.
-    pub fn node_error(&self, node_id: &str, error: &str, attempt: u32) -> anyhow::Result<()> {
+    pub fn node_error(
+        &self,
+        node_id: &str,
+        error: &str,
+        attempt: u32,
+    ) -> anyhow::Result<WorkflowEvent> {
         let ev = WorkflowEvent {
             version: WORKFLOW_LOG_VERSION,
             ts: now_ms(),
@@ -179,11 +187,12 @@ impl WorkflowRunLog {
                 }),
             ),
         };
-        self.append(&ev)
+        self.append(&ev)?;
+        Ok(ev)
     }
 
     /// Append a node skip event (e.g. inactive branch path).
-    pub fn node_skip(&self, node_id: &str, reason: &str) -> anyhow::Result<()> {
+    pub fn node_skip(&self, node_id: &str, reason: &str) -> anyhow::Result<WorkflowEvent> {
         let ev = WorkflowEvent {
             version: WORKFLOW_LOG_VERSION,
             ts: now_ms(),
@@ -194,11 +203,12 @@ impl WorkflowRunLog {
                 }),
             ),
         };
-        self.append(&ev)
+        self.append(&ev)?;
+        Ok(ev)
     }
 
     /// Append a workflow gate pause event.
-    pub fn workflow_gate(&self, node_id: &str, message: &str) -> anyhow::Result<()> {
+    pub fn workflow_gate(&self, node_id: &str, message: &str) -> anyhow::Result<WorkflowEvent> {
         let ev = WorkflowEvent {
             version: WORKFLOW_LOG_VERSION,
             ts: now_ms(),
@@ -211,11 +221,12 @@ impl WorkflowRunLog {
                 ),
             ),
         };
-        self.append(&ev)
+        self.append(&ev)?;
+        Ok(ev)
     }
 
     /// Append a workflow complete event.
-    pub fn workflow_complete(&self, run_id: &str) -> anyhow::Result<()> {
+    pub fn workflow_complete(&self, run_id: &str) -> anyhow::Result<WorkflowEvent> {
         let ev = WorkflowEvent {
             version: WORKFLOW_LOG_VERSION,
             ts: now_ms(),
@@ -227,7 +238,8 @@ impl WorkflowRunLog {
                 ),
             ),
         };
-        self.append(&ev)
+        self.append(&ev)?;
+        Ok(ev)
     }
 
     /// Append a workflow error event (terminal failure).
@@ -236,7 +248,7 @@ impl WorkflowRunLog {
         run_id: &str,
         failed_node: &str,
         error: &str,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<WorkflowEvent> {
         let ev = WorkflowEvent {
             version: WORKFLOW_LOG_VERSION,
             ts: now_ms(),
@@ -250,7 +262,8 @@ impl WorkflowRunLog {
                 ),
             ),
         };
-        self.append(&ev)
+        self.append(&ev)?;
+        Ok(ev)
     }
 
     /// Serialize `ev` as one JSON line and append to the log file.
@@ -289,7 +302,7 @@ mod tests {
             &[],
             &def,
         )
-        .unwrap();
+        .unwrap(); // return value (WorkflowEvent) is intentionally discarded in tests
         let events = log.read_events().unwrap();
         assert_eq!(events.len(), 1);
         assert!(events[0].kind.is_some());

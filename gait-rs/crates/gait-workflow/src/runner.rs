@@ -14,6 +14,7 @@ use crate::exec_gate::exec_gate_node;
 use crate::exec_prompt::exec_prompt_node;
 use crate::exec_shell::{exec_shell_node, NodeContext};
 use crate::hooks::run_hook;
+use crate::observer::WorkflowObserver;
 use crate::progress::{init_progress, write_progress, ProgressFile, ProgressNode};
 use crate::run_log::WorkflowRunLog;
 use crate::schema::{NodeDef, WorkflowDef, GATE_PAUSED_SENTINEL};
@@ -162,6 +163,7 @@ async fn enqueue_node_task(
     tasks: &mut FuturesUnordered<NodeFuture>,
     rec: &Recorder,
     run_log: &WorkflowRunLog,
+    observer: &mut dyn WorkflowObserver,
 ) -> anyhow::Result<()> {
     let node_id = node.id.clone();
     let env = make_env_vars(
@@ -194,7 +196,7 @@ async fn enqueue_node_task(
             "node_type": node.node_type_name(), "attempt": 1,
         }),
     ))?;
-    run_log.node_start(&node_id, node.node_type_name(), 1, session_id)?;
+    observer.on_event(&run_log.node_start(&node_id, node.node_type_name(), 1, session_id)?);
     state.set_status(&node_id, NodeStatus::Running);
 
     let vars = VarContext {
@@ -232,7 +234,10 @@ pub enum WorkflowOutcome {
     GatePaused,
 }
 
-pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<WorkflowOutcome> {
+pub async fn run_workflow(
+    opts: WorkflowRunOpts,
+    observer: &mut dyn WorkflowObserver,
+) -> anyhow::Result<WorkflowOutcome> {
     let WorkflowRunOpts {
         workflow_def: wf_owned,
         yaml_path,
@@ -271,13 +276,8 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<WorkflowOutco
         state.workflow_id.clone()
     };
 
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<StreamItem>();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<StreamItem>();
     let rec = Recorder::for_session(&gait_dir, &session_id, tx);
-    let consumer = tokio::spawn(async move {
-        let mut sink = gait_core::embed::CliSink::stdio(false);
-        gait_core::port::output::drive(rx, &mut sink).await;
-        sink.failed
-    });
 
     let run_result: anyhow::Result<WorkflowOutcome> =
         async {
@@ -295,6 +295,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<WorkflowOutco
                     &codebase,
                     &state,
                     &run_log,
+                    observer,
                 )
                 .await?;
             }
@@ -329,6 +330,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<WorkflowOutco
                     &mut tasks,
                     &rec,
                     &run_log,
+                    observer,
                 )
                 .await?;
             }
@@ -343,6 +345,10 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<WorkflowOutco
                     Some(Err(e)) => return Err(e),
                     None => break,
                 };
+                // Drain stream items produced while the task was running.
+                while let Ok(item) = rx.try_recv() {
+                    observer.on_stream_item(&item);
+                }
                 in_flight.remove(&node_id);
 
                 let node = wf
@@ -373,14 +379,14 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<WorkflowOutco
                                 "json_output": out.json.clone(), "routed_to": out.routed_to.clone(),
                             }),
                         ))?;
-                        run_log.node_complete(
+                        observer.on_event(&run_log.node_complete(
                             &node_id,
                             &session_id,
                             &out.text,
                             out.exit_code,
                             &out.json.as_ref().map(|v| v.to_string()).unwrap_or_default(),
                             out.routed_to.as_deref().unwrap_or(""),
-                        )?;
+                        )?);
                         state.set_status(&node_id, NodeStatus::Done);
                         state.node_outputs.insert(node_id.clone(), out.clone());
                         completed.insert(node_id.clone());
@@ -406,6 +412,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<WorkflowOutco
                                     &rec,
                                     &workflow_id,
                                     &run_log,
+                                    observer,
                                 )?;
                                 sync_completed(&mut completed, &state, &wf.nodes);
                                 // Enqueue the branch target (supports cycles: re-enqueue even if completed)
@@ -427,6 +434,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<WorkflowOutco
                                             &mut tasks,
                                             &rec,
                                             &run_log,
+                                            observer,
                                         )
                                         .await?;
                                     }
@@ -464,6 +472,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<WorkflowOutco
                                         &mut tasks,
                                         &rec,
                                         &run_log,
+                                        observer,
                                     )
                                     .await?;
                                 }
@@ -487,6 +496,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<WorkflowOutco
                                 &mut tasks,
                                 &rec,
                                 &run_log,
+                                observer,
                             )
                             .await?;
                         }
@@ -501,7 +511,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<WorkflowOutco
                                 "message": out.text.clone(),
                             }),
                         ))?;
-                        run_log.workflow_gate(&node_id, &out.text)?;
+                        observer.on_event(&run_log.workflow_gate(&node_id, &out.text)?);
                         state.set_status(&node_id, NodeStatus::Paused);
                         update_progress(
                             &gait_dir,
@@ -544,8 +554,8 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<WorkflowOutco
                                 "error": msg.clone(),
                             }),
                         ))?;
-                        run_log.node_error(&node_id, msg, 1)?;
-                        run_log.workflow_error(&session_id, &node_id, msg)?;
+                        observer.on_event(&run_log.node_error(&node_id, msg, 1)?);
+                        observer.on_event(&run_log.workflow_error(&session_id, &node_id, msg)?);
 
                         if let Some(hooks) = &wf.hooks {
                             if let Some(cmd) = &hooks.error {
@@ -605,6 +615,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<WorkflowOutco
                                 &mut tasks,
                                 &rec,
                                 &run_log,
+                                observer,
                             )
                             .await?;
                         }
@@ -630,7 +641,11 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<WorkflowOutco
                                 "error": format!("on_error goto: {}", goto_id), "attempt": 1,
                             }),
                         ))?;
-                        run_log.node_error(&node_id, &format!("on_error goto: {}", goto_id), 1)?;
+                        observer.on_event(&run_log.node_error(
+                            &node_id,
+                            &format!("on_error goto: {}", goto_id),
+                            1,
+                        )?);
 
                         // Enqueue the error-recovery node
                         if let Some(target_idx) = wf.nodes.iter().position(|n| &n.id == goto_id) {
@@ -649,6 +664,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<WorkflowOutco
                                     &mut tasks,
                                     &rec,
                                     &run_log,
+                                    observer,
                                 )
                                 .await?;
                             }
@@ -682,6 +698,7 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<WorkflowOutco
                 &codebase,
                 &args_str,
                 &run_log,
+                observer,
             )
             .await?;
             Ok(WorkflowOutcome::Completed)
@@ -689,7 +706,10 @@ pub async fn run_workflow(opts: WorkflowRunOpts) -> anyhow::Result<WorkflowOutco
         .await;
 
     drop(rec);
-    let _failed = consumer.await.unwrap_or(false);
+    // Final drain: flush any remaining items after rec is dropped (channel closed).
+    while let Ok(item) = rx.try_recv() {
+        observer.on_stream_item(&item);
+    }
     match run_result? {
         WorkflowOutcome::GatePaused => Ok(WorkflowOutcome::GatePaused),
         WorkflowOutcome::Completed => Ok(WorkflowOutcome::Completed),
@@ -710,6 +730,7 @@ async fn emit_workflow_start(
     codebase: &Path,
     state: &WorkflowState,
     run_log: &WorkflowRunLog,
+    observer: &mut dyn WorkflowObserver,
 ) -> anyhow::Result<()> {
     rec.record(wire::raw(
         "workflow_start",
@@ -720,13 +741,13 @@ async fn emit_workflow_start(
             "args": args,
         }),
     ))?;
-    run_log.workflow_start(
+    observer.on_event(&run_log.workflow_start(
         session_id,
         &wf.name,
         yaml_path,
         args,
         &crate::convert::to_proto(wf),
-    )?;
+    )?);
     let node_ids: Vec<&str> = wf.nodes.iter().map(|n| n.id.as_str()).collect();
     let progress = init_progress(workflow_id, &wf.name, &node_ids);
     write_progress(gait_dir, session_id, &progress)?;
@@ -770,6 +791,7 @@ async fn emit_workflow_complete(
     codebase: &Path,
     args_str: &str,
     run_log: &WorkflowRunLog,
+    observer: &mut dyn WorkflowObserver,
 ) -> anyhow::Result<()> {
     rec.record(wire::raw(
         "workflow_complete",
@@ -777,7 +799,7 @@ async fn emit_workflow_complete(
             "workflow_id": workflow_id,
         }),
     ))?;
-    run_log.workflow_complete(session_id)?;
+    observer.on_event(&run_log.workflow_complete(session_id)?);
     update_progress_done(
         gait_dir,
         session_id,
@@ -805,7 +827,6 @@ async fn emit_workflow_complete(
         }
     }
 
-    eprintln!("[gait workflow] complete: {}", wf.name);
     Ok(())
 }
 
@@ -853,6 +874,7 @@ fn propagate_branch_skips(
     rec: &Recorder,
     workflow_id: &str,
     run_log: &WorkflowRunLog,
+    observer: &mut dyn WorkflowObserver,
 ) -> anyhow::Result<()> {
     let branch_cfg = branch_node.branch.as_ref().unwrap();
     let mut inactive = vec![];
@@ -881,7 +903,9 @@ fn propagate_branch_skips(
                     "reason": format!("inactive branch (routed to {})", routed_to),
                 }),
             ))?;
-            run_log.node_skip(id, &format!("inactive branch (routed to {})", routed_to))?;
+            observer.on_event(
+                &run_log.node_skip(id, &format!("inactive branch (routed to {})", routed_to))?,
+            );
         }
     }
     Ok(())

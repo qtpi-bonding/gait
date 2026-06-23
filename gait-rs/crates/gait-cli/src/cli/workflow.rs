@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+use gait_workflow::observer::CliObserver;
 use gait_workflow::progress;
 use gait_workflow::runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
 use gait_workflow::schema::WorkflowDef;
@@ -63,14 +64,17 @@ pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) {
         name, session_id
     );
 
-    match run_workflow(WorkflowRunOpts {
-        workflow_def: wf,
-        yaml_path: yaml_path.to_string_lossy().to_string(),
-        session_id,
-        gait_dir: gait_dir.clone(),
-        codebase: gait_dir.join("codebase"),
-        args,
-    })
+    match run_workflow(
+        WorkflowRunOpts {
+            workflow_def: wf,
+            yaml_path: yaml_path.to_string_lossy().to_string(),
+            session_id,
+            gait_dir: gait_dir.clone(),
+            codebase: gait_dir.join("codebase"),
+            args,
+        },
+        &mut CliObserver::default(),
+    )
     .await
     {
         Ok(WorkflowOutcome::Completed) => {}
@@ -169,14 +173,17 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) {
         progress.name, workflow_id
     );
 
-    match run_workflow(WorkflowRunOpts {
-        workflow_def: wf,
-        yaml_path: yaml_path_str,
-        session_id: workflow_id,
-        gait_dir: gait_dir.clone(),
-        codebase: gait_dir.join("codebase"),
-        args: vec![],
-    })
+    match run_workflow(
+        WorkflowRunOpts {
+            workflow_def: wf,
+            yaml_path: yaml_path_str,
+            session_id: workflow_id,
+            gait_dir: gait_dir.clone(),
+            codebase: gait_dir.join("codebase"),
+            args: vec![],
+        },
+        &mut CliObserver::default(),
+    )
     .await
     {
         Ok(WorkflowOutcome::Completed) => {}

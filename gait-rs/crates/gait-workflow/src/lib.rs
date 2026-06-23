@@ -14,6 +14,7 @@ pub mod state;
 pub mod vars;
 
 pub mod convert;
+pub mod observer;
 pub mod run_log;
 
 pub mod status;
