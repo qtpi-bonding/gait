@@ -15,7 +15,6 @@ use crate::vars::{substitute, NodeOutput};
 /// Per-node driver: supplies `brain_launch()` so `run_loop` can spawn `gait __brain`
 /// for each prompt node. Workflow nodes are now fully sealed (Task 2).
 struct PromptNodeDriver {
-    gait_dir: PathBuf,
     codebase: PathBuf,
     /// Resolved model string ("provider/model-id").
     model: String,
@@ -206,7 +205,6 @@ pub async fn exec_prompt_node(
     };
 
     let mut driver = PromptNodeDriver {
-        gait_dir: ctx.gait_dir.to_path_buf(),
         codebase: codebase.clone(),
         model: model.clone(),
         allow: allow.clone(),
@@ -286,7 +284,6 @@ mod tests {
     #[test]
     fn prompt_node_driver_holds_paths() {
         let driver = PromptNodeDriver {
-            gait_dir: PathBuf::from("/tmp/gd"),
             codebase: PathBuf::from("/tmp/cb"),
             model: "test/model".into(),
             allow: vec!["run_workflow".into()],
@@ -296,7 +293,6 @@ mod tests {
             sandbox_cfg: gait_core::config::SandboxConfig::default(),
         };
         // Verify the driver holds the paths used to construct BrainLaunch.
-        assert_eq!(driver.gait_dir, PathBuf::from("/tmp/gd"));
         assert_eq!(driver.codebase, PathBuf::from("/tmp/cb"));
     }
 }
