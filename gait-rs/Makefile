@@ -1,5 +1,6 @@
-# Install location — override on the command line, e.g.
-#   make install INSTALL_DIR=$$HOME/.local/bin
+# Install location — override via Makefile.local (gitignored) or on the command line:
+#   echo 'INSTALL_DIR = $(HOME)/develop' > Makefile.local
+-include Makefile.local
 INSTALL_DIR ?= /usr/local/bin
 
 .PHONY: build install fmt lint test check hooks
