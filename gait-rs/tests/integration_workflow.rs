@@ -1,4 +1,6 @@
 use gait_workflow::{
+    convert,
+    observer::CliObserver,
     runner::{run_workflow, WorkflowRunOpts},
     schema::WorkflowDef,
 };
@@ -39,14 +41,18 @@ nodes:
     let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
     let session_id = "swf_test01";
 
-    run_workflow(WorkflowRunOpts {
-        workflow_def: wf,
-        yaml_path: "workflows/test-shell.yaml".into(),
-        session_id: session_id.into(),
-        gait_dir: ws.path().to_path_buf(),
-        codebase: ws.path().to_path_buf(),
-        args: vec![],
-    })
+    run_workflow(
+        WorkflowRunOpts {
+            workflow_def: convert::to_proto(&wf),
+            yaml_path: "workflows/test-shell.yaml".into(),
+            session_id: session_id.into(),
+            gait_dir: ws.path().to_path_buf(),
+            codebase: ws.path().to_path_buf(),
+            args: vec![],
+        },
+        &mut CliObserver::default(),
+        None,
+    )
     .await
     .unwrap();
 
@@ -91,14 +97,18 @@ nodes:
     let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
     let session_id = "swf_branch01";
 
-    run_workflow(WorkflowRunOpts {
-        workflow_def: wf,
-        yaml_path: "workflows/branch-test.yaml".into(),
-        session_id: session_id.into(),
-        gait_dir: ws.path().to_path_buf(),
-        codebase: ws.path().to_path_buf(),
-        args: vec![],
-    })
+    run_workflow(
+        WorkflowRunOpts {
+            workflow_def: convert::to_proto(&wf),
+            yaml_path: "workflows/branch-test.yaml".into(),
+            session_id: session_id.into(),
+            gait_dir: ws.path().to_path_buf(),
+            codebase: ws.path().to_path_buf(),
+            args: vec![],
+        },
+        &mut CliObserver::default(),
+        None,
+    )
     .await
     .unwrap();
 
@@ -141,14 +151,18 @@ nodes:
     let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
     let session_id = "swf_rec01";
 
-    run_workflow(WorkflowRunOpts {
-        workflow_def: wf,
-        yaml_path: "workflows/rec-test.yaml".into(),
-        session_id: session_id.into(),
-        gait_dir: ws.path().to_path_buf(),
-        codebase: ws.path().to_path_buf(),
-        args: vec![],
-    })
+    run_workflow(
+        WorkflowRunOpts {
+            workflow_def: convert::to_proto(&wf),
+            yaml_path: "workflows/rec-test.yaml".into(),
+            session_id: session_id.into(),
+            gait_dir: ws.path().to_path_buf(),
+            codebase: ws.path().to_path_buf(),
+            args: vec![],
+        },
+        &mut CliObserver::default(),
+        None,
+    )
     .await
     .unwrap();
 
@@ -195,6 +209,7 @@ nodes:
 #[ignore = "requires real network call — run manually to verify prompt sub-turn channel wiring"]
 async fn prompt_subturn_publishes_to_workflow_channel() {
     use gait_core::proto::gait::log::v1::{event, payload, stream_item, StreamItem};
+    use gait_core::proto::gait::workflow::v1::node;
     use gait_workflow::exec_prompt::exec_prompt_node;
     use gait_workflow::exec_shell::NodeContext;
     use gait_workflow::vars::VarContext;
@@ -205,8 +220,13 @@ async fn prompt_subturn_publishes_to_workflow_channel() {
     init_git_repo(ws.path());
 
     let yaml = "name: prompt-test\nnodes:\n  - id: p\n    prompt: \"say hi\"\n";
-    let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
-    let node = &wf.nodes[0];
+    let wf_def: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
+    let wf_proto = convert::to_proto(&wf_def);
+    let proto_node = &wf_proto.nodes[0];
+    let prompt_body = match proto_node.body.as_ref().unwrap() {
+        node::Body::Prompt(p) => p,
+        _ => panic!("expected prompt node"),
+    };
     let session_id = "swf_prompt01";
 
     // exec_prompt_node now runs `run_loop`, which expects the session worktree
@@ -238,9 +258,10 @@ async fn prompt_subturn_publishes_to_workflow_channel() {
                 failed_node: None,
             },
         };
-        // exec_prompt_node signature now drops the provider arg (run_loop
-        // resolves its own profile via build_workflow_node_profile).
-        exec_prompt_node(node, "say hi", &ctx, &wf).await.unwrap();
+        // exec_prompt_node signature: (node, prompt_node, ctx, wf, input)
+        exec_prompt_node(proto_node, prompt_body, &ctx, &wf_proto, None)
+            .await
+            .unwrap();
     } // ctx drops here, releasing the &tx borrow
 
     let mut saw_event = false;
@@ -273,14 +294,18 @@ async fn smoke_parallel_workflow_completes() {
     let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
     let session_id = "swf_smoke_parallel";
 
-    run_workflow(WorkflowRunOpts {
-        workflow_def: wf,
-        yaml_path: "smoke-parallel.yaml".into(),
-        session_id: session_id.into(),
-        gait_dir: ws.path().to_path_buf(),
-        codebase: ws.path().to_path_buf(),
-        args: vec![],
-    })
+    run_workflow(
+        WorkflowRunOpts {
+            workflow_def: convert::to_proto(&wf),
+            yaml_path: "smoke-parallel.yaml".into(),
+            session_id: session_id.into(),
+            gait_dir: ws.path().to_path_buf(),
+            codebase: ws.path().to_path_buf(),
+            args: vec![],
+        },
+        &mut CliObserver::default(),
+        None,
+    )
     .await
     .unwrap();
 
@@ -314,14 +339,18 @@ async fn smoke_cycle_workflow_via_goto() {
     let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
     let session_id = "swf_smoke_cycle";
 
-    run_workflow(WorkflowRunOpts {
-        workflow_def: wf,
-        yaml_path: "smoke-cycle.yaml".into(),
-        session_id: session_id.into(),
-        gait_dir: ws.path().to_path_buf(),
-        codebase: ws.path().to_path_buf(),
-        args: vec![],
-    })
+    run_workflow(
+        WorkflowRunOpts {
+            workflow_def: convert::to_proto(&wf),
+            yaml_path: "smoke-cycle.yaml".into(),
+            session_id: session_id.into(),
+            gait_dir: ws.path().to_path_buf(),
+            codebase: ws.path().to_path_buf(),
+            args: vec![],
+        },
+        &mut CliObserver::default(),
+        None,
+    )
     .await
     .unwrap();
 
@@ -351,14 +380,18 @@ async fn smoke_retry_on_error_goto() {
     let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
     let session_id = "swf_smoke_retry";
 
-    run_workflow(WorkflowRunOpts {
-        workflow_def: wf,
-        yaml_path: "smoke-retry.yaml".into(),
-        session_id: session_id.into(),
-        gait_dir: ws.path().to_path_buf(),
-        codebase: ws.path().to_path_buf(),
-        args: vec![],
-    })
+    run_workflow(
+        WorkflowRunOpts {
+            workflow_def: convert::to_proto(&wf),
+            yaml_path: "smoke-retry.yaml".into(),
+            session_id: session_id.into(),
+            gait_dir: ws.path().to_path_buf(),
+            codebase: ws.path().to_path_buf(),
+            args: vec![],
+        },
+        &mut CliObserver::default(),
+        None,
+    )
     .await
     .unwrap();
 
