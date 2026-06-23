@@ -57,8 +57,6 @@ pub fn brain_scope() -> crate::sandbox::SandboxScope {
 pub struct BrainConfig {
     pub session_id: Option<String>,
     pub auto: bool,
-    pub model_override: Option<String>,
-    pub agent_name: Option<String>,
     pub allow: Vec<String>,
     pub deny: Vec<String>,
     pub max_iter: Option<usize>,

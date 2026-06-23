@@ -151,8 +151,6 @@ pub async fn __dispatch_role(
             let config = BrainConfig {
                 session_id: args.session_id,
                 auto: args.auto,
-                model_override: args.model_override,
-                agent_name: args.agent_name,
                 allow: args.allow,
                 deny: args.deny,
                 max_iter: args.max_iter,
