@@ -1019,6 +1019,7 @@ dependencies = [
  "anyhow",
  "async-stream",
  "async-trait",
+ "clap",
  "dirs-next",
  "eventsource-stream",
  "fs2",

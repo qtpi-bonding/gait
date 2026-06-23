@@ -33,8 +33,28 @@ pub fn resolve_codebase(args: &[String]) -> std::path::PathBuf {
     })
 }
 
-// cmd_run deleted (Task 2): the in-process run path was dead code (no caller in main.rs).
-// `gait run` routes through cmd_spine → SpineDriver → run_loop → relay_brain_turn.
+// cmd_run deleted (Task 2): the in-process run path was dead code.
+// cmd_brain deleted (Task 5): dispatch now via gait_core::__dispatch_role.
+// `gait run` routes through cmd_spine → SpineDriver → run_loop.
+
+/// Dispatch a hidden role subcommand (`__brain` or `__run-tool`) via `gait_core::__dispatch_role`.
+/// Builds the `GaitWorkflowRunner` for the `__brain` arm (gait-cli owns this construction);
+/// passes `None` for the `__run-tool` arm which needs no runner.
+pub async fn cmd_dispatch_role(argv: &[String]) {
+    let runner: Option<std::sync::Arc<dyn gait_core::workflow_runner::WorkflowRunner>> =
+        if argv.first().map(|s| s.as_str()) == Some("__brain") {
+            let gait_dir = gait_dir_or_env(argv).unwrap_or_else(|| {
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+            });
+            let codebase = resolve_codebase(argv);
+            Some(std::sync::Arc::new(gait_workflow::GaitWorkflowRunner::new(
+                gait_dir, codebase,
+            )))
+        } else {
+            None
+        };
+    gait_core::__dispatch_role(argv, runner).await;
+}
 
 pub async fn cmd_spine(argv: &[String]) {
     let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
@@ -43,44 +63,6 @@ pub async fn cmd_spine(argv: &[String]) {
     });
     let codebase = resolve_codebase(argv);
     crate::cli::spine::cmd_spine(argv, gait_dir, codebase).await
-}
-
-pub async fn cmd_brain(argv: &[String]) {
-    use clap::Parser;
-    use std::sync::Arc;
-
-    use crate::cli::run::RunArgs;
-    use gait_core::turn::brain::{run_brain, BrainConfig};
-
-    let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
-        eprintln!("[gait] {e}");
-        std::process::exit(1);
-    });
-    let codebase = resolve_codebase(argv);
-    let args = RunArgs::parse_from(argv);
-
-    let api_key = std::env::var("GAIT_BRAIN_API_KEY").ok();
-
-    let workflow_runner: Option<Arc<dyn gait_core::workflow_runner::WorkflowRunner>> =
-        Some(Arc::new(gait_workflow::GaitWorkflowRunner::new(
-            gait_dir.clone(),
-            codebase.clone(),
-        )));
-
-    let config = BrainConfig {
-        session_id: args.session_id,
-        auto: args.auto,
-        model_override: args.model_override,
-        agent_name: args.agent_name,
-        allow: args.allow,
-        deny: args.deny,
-        max_iter: args.max_iter,
-        sandbox_locked: args.sandbox_locked,
-        no_sandbox: args.no_sandbox,
-        sandbox: args.sandbox,
-    };
-
-    run_brain(config, gait_dir, codebase, api_key, workflow_runner).await;
 }
 
 #[cfg(test)]

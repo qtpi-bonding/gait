@@ -94,8 +94,10 @@ async fn main() {
             let rest: Vec<String> = args[2..].to_vec();
             gait_cli::cli::daemons::cmd_daemons(&gait_dir, &rest);
         }
-        "__brain" => gait_cli::cli::args::cmd_brain(&args[2..]).await,
-        "__run-tool" => gait_cli::cli::run_tool::cmd_run_tool(&args[2..]).await,
+        _ if gait_core::is_role_argv(&args[1..]) => {
+            // gait-cli builds the GaitWorkflowRunner (avoids gait-bin needing gait-workflow dep).
+            gait_cli::cli::args::cmd_dispatch_role(&args[1..]).await;
+        }
         _ => {
             eprintln!("[gait] unknown command: {}", args[1]);
             usage();

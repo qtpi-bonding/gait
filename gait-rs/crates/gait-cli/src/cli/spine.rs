@@ -1,8 +1,7 @@
-//! Task 2: spine process (`gait run`).
+//! Spine process (`gait run`).
 //!
-//! `cmd_spine` now uses `SpineDriver` + `run_loop` (the sealed loop) instead of
-//! calling `relay_brain_turn` inline. `SpineDriver` implements `TurnDriver::brain_launch()`
-//! to supply all data `relay_brain_turn` needs. One turn per `TurnStart` from `SpineSource`.
+//! `cmd_spine` uses `SpineDriver` + `run_loop` (the sealed loop). One turn per
+//! `TurnStart` from `SpineSource`. Brain launch is handled by `gait_core::__dispatch_role`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -350,6 +349,5 @@ pub async fn cmd_spine(argv: &[String], gait_dir: PathBuf, codebase_path: PathBu
 }
 
 // ── Brain ─────────────────────────────────────────────────────────────────────
-// The brain runtime (brain_scope, BrainSink, BrainDriver, run_brain) has been
-// moved to gait-core/src/turn/brain.rs. The CLI wrapper (`cmd_brain`) lives in
-// args.rs and calls `gait_core::turn::brain::run_brain`.
+// The brain runtime lives in gait-core/src/turn/brain.rs.
+// Dispatch is via gait_core::__dispatch_role (Task 5).
