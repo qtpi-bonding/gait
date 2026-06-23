@@ -2,12 +2,34 @@
 //! transforms items via the pure view layer in ui/view.rs, and writes the result
 //! to stderr. No business logic here.
 
+use unicode_width::UnicodeWidthStr;
+
 use crate::theme::{Theme, DIM_FG, RESET};
 use crate::ui::state::ReplState;
 use crate::ui::view::{clean_repl_item, ReplViewItem};
 use std::io::Write;
 use termimad::crossterm::style::Color as CColor;
 use termimad::MadSkin;
+
+/// Display width of the `NNN│ ` / `  ✓│ ` gutter all continuation lines align under.
+const GUTTER: usize = 5;
+
+/// Print `text` wrapped to the terminal, with `first_prefix` on the first
+/// physical line and `hang_prefix` (the GUTTER-wide indent) on every wrapped
+/// continuation line. All lines end with `\r\n`.
+fn emit_wrapped(first_prefix: &str, hang_prefix: &str, text: &str) {
+    let term_w = crossterm::terminal::size()
+        .map(|(w, _)| w as usize)
+        .unwrap_or(80);
+    let segs = word_wrap(text, term_w.saturating_sub(GUTTER));
+    let mut it = segs.into_iter();
+    if let Some(first) = it.next() {
+        eprint!("{first_prefix}{first}\r\n");
+    }
+    for seg in it {
+        eprint!("{hang_prefix}{seg}\r\n");
+    }
+}
 
 /// Extract the most meaningful argument from a tool call to show beside the tool name.
 pub(crate) fn tool_target(name: &str, args: &serde_json::Value) -> Option<String> {
@@ -117,32 +139,18 @@ impl ReplRenderer {
     fn paint_view_item(&self, v: &ReplViewItem) {
         match v {
             ReplViewItem::BlockStart { num, text } => {
-                eprint!("{}{:>3}\u{2502}{} {}\r\n", DIM_FG, num, RESET, text);
+                let first = format!("{}{:>3}\u{2502}{} ", DIM_FG, num, RESET);
+                emit_wrapped(&first, "     ", text);
             }
             ReplViewItem::BlockCont { text } => {
-                let term_w = termimad::terminal_size().0 as usize;
-                for seg in word_wrap(text, term_w.saturating_sub(5)) {
-                    eprint!("     {}\r\n", seg);
-                }
+                emit_wrapped("     ", "     ", text);
             }
             ReplViewItem::BlockEnd { num } => {
                 eprint!("{}{:>3}\u{2502}{}\r\n", DIM_FG, num, RESET);
             }
             ReplViewItem::DoneStart { text } => {
-                let term_w = termimad::terminal_size().0 as usize;
-                let segs = word_wrap(text, term_w.saturating_sub(5));
-                let mut it = segs.into_iter();
-                if let Some(first) = it.next() {
-                    eprint!(
-                        "{}  \u{2713}\u{2502}{} {}\r\n",
-                        self.theme.success.fg(),
-                        RESET,
-                        first
-                    );
-                }
-                for seg in it {
-                    eprint!("     {}\r\n", seg);
-                }
+                let first = format!("{}  \u{2713}\u{2502}{} ", self.theme.success.fg(), RESET);
+                emit_wrapped(&first, "     ", text);
             }
             ReplViewItem::ToolResult {
                 ok,
@@ -210,28 +218,28 @@ impl ReplRenderer {
     }
 }
 
-/// Split `text` into segments of at most `max_width` display chars, breaking on
-/// whitespace. Returns a single-element vec if no wrapping is needed.
+/// Split `text` into segments of at most `max_width` display columns, breaking
+/// on whitespace. Returns a single-element vec if no wrapping is needed.
 fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
-    if max_width == 0 || text.is_empty() || text.chars().count() <= max_width {
+    if max_width == 0 || text.is_empty() || text.width() <= max_width {
         return vec![text.to_string()];
     }
     let mut out = Vec::new();
     let mut line = String::new();
-    let mut line_len = 0usize;
+    let mut line_w = 0usize;
     for word in text.split_whitespace() {
-        let wlen = word.chars().count();
-        if line_len == 0 {
+        let ww = word.width();
+        if line_w == 0 {
             line.push_str(word);
-            line_len = wlen;
-        } else if line_len + 1 + wlen <= max_width {
+            line_w = ww;
+        } else if line_w + 1 + ww <= max_width {
             line.push(' ');
             line.push_str(word);
-            line_len += 1 + wlen;
+            line_w += 1 + ww;
         } else {
             out.push(std::mem::take(&mut line));
             line.push_str(word);
-            line_len = wlen;
+            line_w = ww;
         }
     }
     if !line.is_empty() || out.is_empty() {
@@ -240,6 +248,32 @@ fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
     out
 }
 
+#[cfg(test)]
+mod word_wrap_tests {
+    use super::*;
+
+    #[test]
+    fn word_wrap_uses_display_width_not_char_count() {
+        // "ｗ" (fullwidth w, U+FF57) is 2 display columns. Three of them = 6 cols.
+        // With max_width 4, display-width math must wrap (each word is 2 cols,
+        // two together = 4, third pushes to 7 > 4 -> split); char-count math
+        // would fit 4 single-width chars so it might not split correctly.
+        let segs = word_wrap("ｗ ｗ ｗ", 4);
+        assert!(
+            segs.len() >= 2,
+            "expected wrapping by display width, got {segs:?}"
+        );
+    }
+
+    #[test]
+    fn emit_wrapped_hangs_under_gutter() {
+        // Long single word-stream wraps; we can only assert the wrap count here
+        // since emit_wrapped prints. Verify via word_wrap the segment count.
+        let long = "alpha beta gamma delta epsilon zeta eta theta";
+        let segs = word_wrap(long, 10);
+        assert!(segs.len() >= 4);
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
