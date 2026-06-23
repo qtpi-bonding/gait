@@ -7,6 +7,7 @@ pub mod input;
 pub mod prompt;
 
 pub use complete::GaitCompleter;
+pub use driver::ReplSink;
 pub(crate) use driver::{Control, ReplShared, ReplSource, Shared};
 pub use helper::collect_at_refs;
 pub use highlight::GaitHighlighter;

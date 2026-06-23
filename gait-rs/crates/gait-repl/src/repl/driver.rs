@@ -10,11 +10,12 @@ use std::rc::Rc;
 
 use crate::repl::{bang_command_str, is_bang_command};
 use crate::theme::RESET;
-use crate::ui::ReplBuilder;
-use gait_core::embed::{user_turn_events, TurnSource, TurnStart};
+use crate::ui::{ReplBuilder, ViewSignal};
+use gait_core::embed::{user_turn_events, Diag, TurnSink, TurnSource, TurnStart};
 use gait_core::expand::{expand_input, ExpandCtx};
-use gait_core::proto::{events, wire};
+use gait_core::proto::{events, gait::log::v1::StreamItem, wire};
 use gait_core::pty::{run_and_capture_pty_raw, CaptureResult};
+use gait_core::turn::TurnResult;
 
 /// A session-control signal the source raises to end the current `run_loop`.
 pub enum Control {
@@ -35,6 +36,62 @@ pub struct ReplShared {
     pub sandbox_on: bool,
 }
 pub type Shared = Rc<RefCell<ReplShared>>;
+
+/// View-layer sink: forwards stream items to the shared `ReplBuilder`, captures
+/// the finished turn's blocks, and renders interrupt/unlock notices. This is the
+/// REPL's `TurnSink` — handed to the orchestrator so turn output renders through
+/// the themed `ReplRenderer` instead of the CLI/JSON path.
+pub struct ReplSink {
+    pub shared: Shared,
+}
+
+impl TurnSink for ReplSink {
+    fn item(&mut self, it: &StreamItem) {
+        let mut s = self.shared.borrow_mut();
+        if let ViewSignal::TurnDone(b) = s.builder.handle_stream_item(it.clone()) {
+            s.turn_done_blocks = Some(b);
+        }
+    }
+
+    fn result(&mut self, r: &TurnResult) {
+        match r {
+            TurnResult::Cancelled => {
+                eprint!("\x1b[2m\u{2298} interrupted\x1b[0m\r\n");
+            }
+            TurnResult::Unlock { items } => {
+                eprint!(
+                    "\r\n\x1b[33msandbox: {} item(s) need unlock\x1b[0m\r\n",
+                    items.len()
+                );
+                for item in items {
+                    eprint!(
+                        "  \x1b[2m[{dim}] {resource}\x1b[0m\r\n",
+                        dim = item.dimension,
+                        resource = item.resource
+                    );
+                }
+                eprint!("  \x1b[2mrun: /unlock [once|session|global|agent]\x1b[0m\r\n");
+            }
+            _ => {}
+        }
+    }
+
+    fn session_id(&mut self, _id: &str) {}
+
+    fn diagnostic(&mut self, level: Diag, msg: &str) {
+        if level == Diag::Error {
+            eprint!("[gait] {msg}\r\n");
+        }
+    }
+
+    fn begin_turn(&mut self) {
+        self.shared.borrow_mut().builder.begin_turn();
+    }
+
+    fn end_turn(&mut self) {
+        self.shared.borrow_mut().builder.flush();
+    }
+}
 
 /// Line reader + interaction/respawn. Yields `Input(user_turn)` per task line,
 /// `Resume` after appending an interaction reply, `None` on `/n`/`/q`/EOF (with a
@@ -524,6 +581,69 @@ mod skill_toggle_tests {
         assert_eq!(
             parse_skill_toggle("/my_skill"),
             Some(("my_skill".to_string(), true))
+        );
+    }
+}
+
+#[cfg(test)]
+mod repl_sink_tests {
+    use super::ReplSink;
+    use gait_core::embed::TurnSink;
+    use gait_core::proto::gait::log::v1 as pb;
+
+    fn shared() -> crate::repl::Shared {
+        let rl = reedline::Reedline::create();
+        let builder = crate::ui::ReplBuilder::new(rl, crate::theme::Theme::dark());
+        std::rc::Rc::new(std::cell::RefCell::new(crate::repl::ReplShared {
+            builder,
+            turn_done_blocks: None,
+            control: None,
+            sandbox_on: false,
+        }))
+    }
+
+    #[test]
+    fn delta_item_is_accepted_by_sink() {
+        let s = shared();
+        let mut sink = ReplSink { shared: s.clone() };
+        sink.begin_turn();
+        let item = pb::StreamItem {
+            item: Some(pb::stream_item::Item::Delta(pb::TextDelta {
+                content: "hello".into(),
+            })),
+        };
+        // Consuming a bare delta must not panic and must NOT yet record blocks —
+        // turn_done_blocks only populates on TurnComplete (next test).
+        sink.item(&item);
+        sink.end_turn();
+        assert!(s.borrow().turn_done_blocks.is_none());
+    }
+
+    #[test]
+    fn turn_complete_records_blocks_into_shared() {
+        let s = shared();
+        let mut sink = ReplSink { shared: s.clone() };
+        sink.begin_turn();
+        // Stream one line of assistant text, then a blank line to close the block.
+        for line in ["block one", ""] {
+            sink.item(&pb::StreamItem {
+                item: Some(pb::stream_item::Item::Delta(pb::TextDelta {
+                    content: format!("{line}\n"),
+                })),
+            });
+        }
+        let body = gait_core::proto::events::turn_complete(
+            gait_core::proto::events::TurnCompleteParams::default(),
+        );
+        let ev = gait_core::proto::envelope::mint(body, None, 0, 0);
+        sink.item(&pb::StreamItem {
+            item: Some(pb::stream_item::Item::Event(ev)),
+        });
+        // `TurnComplete` with empty `blocks` returns the accumulated `all_blocks`
+        // (see ui/state.rs:261), i.e. the streamed-delta blocks above.
+        assert_eq!(
+            s.borrow().turn_done_blocks.as_deref(),
+            Some(["block one".to_string()].as_slice()),
         );
     }
 }
