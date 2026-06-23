@@ -351,7 +351,7 @@ pub async fn relay_brain_turn(
         match signal.body {
             Some(signal::Body::Impulse(impulse)) => {
                 let stdin_writer = Arc::clone(&child_stdin);
-                if impulse.tool == "spawn_agent" {
+                if impulse.tool == "spawn_agent" || impulse.tool == "run_workflow" {
                     let ctx = SpineToolCtx {
                         gait_dir: gait_dir.to_path_buf(),
                         codebase: codebase.to_path_buf(),
@@ -362,8 +362,13 @@ pub async fn relay_brain_turn(
                         sandbox_on,
                     };
                     tokio::spawn(async move {
-                        let args = parse_spawn_args(&impulse);
-                        let feedback = handle_spawn_agent(args, ctx).await;
+                        let feedback = if impulse.tool == "spawn_agent" {
+                            let args = parse_spawn_args(&impulse);
+                            handle_spawn_agent(args, ctx).await
+                        } else {
+                            let args = parse_run_workflow_args(&impulse);
+                            handle_run_workflow(args, ctx).await
+                        };
                         reply_feedback(stdin_writer, corr_id, feedback).await;
                     });
                 } else {
@@ -1212,6 +1217,168 @@ pub(super) fn build_subagent_feedback(
     }
 }
 
+/// Arguments parsed from a `run_workflow` Impulse.
+pub(super) struct RunWorkflowArgs {
+    pub name: String,
+    pub wf_args: Vec<String>,
+    pub detached: bool,
+}
+
+/// Parse a proto `Struct` from an Impulse into `RunWorkflowArgs`.
+fn parse_run_workflow_args(impulse: &Impulse) -> RunWorkflowArgs {
+    let s = impulse.args.as_ref();
+    let get_str = |key: &str| -> Option<String> {
+        s.and_then(|st| st.fields.get(key))
+            .and_then(|v| match &v.kind {
+                Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.clone()),
+                _ => None,
+            })
+    };
+    let get_bool = |key: &str| -> bool {
+        s.and_then(|st| st.fields.get(key))
+            .and_then(|v| match &v.kind {
+                Some(pbjson_types::value::Kind::BoolValue(b)) => Some(*b),
+                _ => None,
+            })
+            .unwrap_or(false)
+    };
+    let wf_args: Vec<String> = s
+        .and_then(|st| st.fields.get("args"))
+        .and_then(|v| match &v.kind {
+            Some(pbjson_types::value::Kind::ListValue(lv)) => Some(
+                lv.values
+                    .iter()
+                    .filter_map(|v| match &v.kind {
+                        Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .unwrap_or_default();
+    RunWorkflowArgs {
+        name: get_str("name").unwrap_or_default(),
+        wf_args,
+        detached: get_bool("detached"),
+    }
+}
+
+/// Spine-side handler for `run_workflow`: launches `gait workflow run <name>` as a
+/// subprocess (enrolled or detached) and waits for it to finish (unless `detached`).
+pub(super) async fn handle_run_workflow(args: RunWorkflowArgs, ctx: SpineToolCtx) -> Feedback {
+    if args.name.is_empty() {
+        return error_feedback("run_workflow: missing required field: name");
+    }
+
+    if args.detached {
+        let _ = launch_workflow_child(&ctx, &args.name, &args.wf_args, true);
+        return feedback_result(serde_json::json!({
+            "status": "started",
+            "name": args.name,
+        }));
+    }
+
+    // Blocking: wait for the workflow process to exit, then read the run log.
+    let Some(mut child) = launch_workflow_child(&ctx, &args.name, &args.wf_args, false) else {
+        return error_feedback("run_workflow: failed to launch workflow subprocess");
+    };
+
+    let status = tokio::task::spawn_blocking(move || child.wait())
+        .await
+        .ok()
+        .and_then(|r| r.ok());
+
+    let was_signalled = status
+        .as_ref()
+        .map(|s| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                s.signal().is_some()
+            }
+            #[cfg(not(unix))]
+            {
+                false
+            }
+        })
+        .unwrap_or(false);
+
+    if was_signalled {
+        return feedback_result(serde_json::json!({
+            "name": args.name,
+            "status": "cancelled",
+        }));
+    }
+
+    let exit_code = status.as_ref().and_then(|s| s.code()).unwrap_or(-1);
+    build_workflow_feedback(&args.name, exit_code)
+}
+
+/// Launch `gait workflow run <name> [args…] --gait-dir … [--sandbox-locked] [--cascade-group …]`
+/// as a child process (enrolled or detached).
+fn launch_workflow_child(
+    ctx: &SpineToolCtx,
+    name: &str,
+    wf_args: &[String],
+    detached: bool,
+) -> Option<std::process::Child> {
+    let mut argv = vec![
+        "workflow".to_string(),
+        "run".to_string(),
+        name.to_string(),
+        "--gait-dir".to_string(),
+        ctx.gait_dir.to_str().unwrap_or(".").to_string(),
+    ];
+    for a in wf_args {
+        argv.push(a.clone());
+    }
+    if ctx.sandbox_on {
+        argv.push("--sandbox-locked".to_string());
+    }
+    if detached {
+        let mut cmd = std::process::Command::new(&ctx.exe);
+        cmd.args(&argv)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let _ = ctx.group.spawn_detached(cmd);
+        None
+    } else {
+        let handle = ctx.group.handle();
+        if let Some(h) = handle {
+            argv.extend(["--cascade-group".to_string(), h]);
+        } else {
+            eprintln!("[spine] warning: run_workflow cascade-group handle unavailable");
+        }
+        let mut cmd = std::process::Command::new(&ctx.exe);
+        cmd.args(&argv)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        ctx.group.spawn_enrolled(cmd).ok()
+    }
+}
+
+/// Assemble a `Feedback` after the blocking workflow subprocess exits.
+///
+/// NOTE(SP-2c): the brain has only the workflow *name*; the subprocess re-reads
+/// `{gait_dir}/workflows/{name}.yaml` — acceptable, but does not exercise embedded-def resume.
+pub(super) fn build_workflow_feedback(name: &str, exit_code: i32) -> Feedback {
+    if exit_code == 0 {
+        feedback_result(serde_json::json!({
+            "name": name,
+            "status": "done",
+        }))
+    } else {
+        feedback_result(serde_json::json!({
+            "name": name,
+            "status": "failed",
+            "summary": format!("workflow subprocess exited with code {exit_code}"),
+        }))
+    }
+}
+
 #[cfg(test)]
 pub(super) fn test_ctx(ws: &std::path::Path, session_id: &str) -> SpineToolCtx {
     SpineToolCtx {
@@ -2047,5 +2214,103 @@ mod tests {
             _ => None,
         });
         assert_eq!(status, Some("failed"), "status must be 'failed'");
+    }
+
+    // ── run_workflow relay-routing tests ──────────────────────────────────────
+
+    /// `build_workflow_feedback` with exit_code 0 → `status == "done"`.
+    #[test]
+    fn build_workflow_feedback_exit_0_is_done() {
+        let fb = super::build_workflow_feedback("my-flow", 0);
+        let fields = match fb.result.as_ref().and_then(|v| v.kind.as_ref()) {
+            Some(pbjson_types::value::Kind::StructValue(s)) => &s.fields,
+            other => panic!("expected StructValue, got {other:?}"),
+        };
+        let status = fields
+            .get("status")
+            .and_then(|v| match &v.kind {
+                Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.as_str()),
+                _ => None,
+            })
+            .expect("status field missing");
+        assert_eq!(status, "done");
+        let name = fields
+            .get("name")
+            .and_then(|v| match &v.kind {
+                Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.as_str()),
+                _ => None,
+            })
+            .expect("name field missing");
+        assert_eq!(name, "my-flow");
+    }
+
+    /// `build_workflow_feedback` with non-zero exit → `status == "failed"`.
+    #[test]
+    fn build_workflow_feedback_nonzero_exit_is_failed() {
+        let fb = super::build_workflow_feedback("my-flow", 1);
+        let fields = match fb.result.as_ref().and_then(|v| v.kind.as_ref()) {
+            Some(pbjson_types::value::Kind::StructValue(s)) => &s.fields,
+            other => panic!("expected StructValue, got {other:?}"),
+        };
+        let status = fields
+            .get("status")
+            .and_then(|v| match &v.kind {
+                Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.as_str()),
+                _ => None,
+            })
+            .expect("status field missing");
+        assert_eq!(status, "failed");
+    }
+
+    /// `handle_run_workflow` with missing name → error feedback.
+    #[tokio::test]
+    async fn handle_run_workflow_empty_name_returns_error() {
+        let ws = tempfile::TempDir::new().unwrap();
+        let fb = super::handle_run_workflow(
+            super::RunWorkflowArgs {
+                name: String::new(),
+                wf_args: vec![],
+                detached: false,
+            },
+            test_ctx(ws.path(), "parent-wf"),
+        )
+        .await;
+        // error_feedback puts the message string at the top-level result.
+        let is_error = matches!(
+            fb.result.as_ref().and_then(|v| v.kind.as_ref()),
+            Some(pbjson_types::value::Kind::StringValue(_))
+        );
+        assert!(is_error, "expected error string feedback for empty name");
+    }
+
+    /// `handle_run_workflow` detached with a real name → returns `status == "started"`.
+    /// (exe is a dummy; spawn_detached is fire-and-forget, we just verify the feedback shape.)
+    #[tokio::test]
+    async fn handle_run_workflow_detached_returns_started() {
+        let ws = tempfile::TempDir::new().unwrap();
+        // Use a dummy exe path — spawn_detached is fire-and-forget; we only check feedback shape.
+        let mut ctx = test_ctx(ws.path(), "parent-wf2");
+        ctx.exe = std::path::PathBuf::from("false"); // exits immediately
+        let fb = super::handle_run_workflow(
+            super::RunWorkflowArgs {
+                name: "smoke-test".into(),
+                wf_args: vec![],
+                detached: true,
+            },
+            ctx,
+        )
+        .await;
+        let fields = match fb.result.as_ref().and_then(|v| v.kind.as_ref()) {
+            Some(pbjson_types::value::Kind::StructValue(s)) => &s.fields,
+            other => panic!("expected StructValue, got {other:?}"),
+        };
+        let status = fields
+            .get("status")
+            .and_then(|v| match &v.kind {
+                Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.as_str()),
+                _ => None,
+            })
+            .expect("status field missing");
+        assert_eq!(status, "started");
     }
 }

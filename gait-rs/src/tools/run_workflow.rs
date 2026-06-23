@@ -32,6 +32,12 @@ impl RunWorkflowTool {
                     "description": "Optional positional arguments forwarded to the workflow. \
                                     Each entry becomes one element of `args` exposed to nodes \
                                     (env var `ARGS`, vars context, etc.)."
+                },
+                "detached": {
+                    "type": "boolean",
+                    "description": "When true, launch the workflow subprocess as a fire-and-forget \
+                                    peer (not enrolled in the cascade group). Defaults to false \
+                                    (blocking: spine waits for the workflow to finish or pause)."
                 }
             },
             "required": ["name"],
