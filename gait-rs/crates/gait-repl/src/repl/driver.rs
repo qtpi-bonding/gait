@@ -113,7 +113,9 @@ impl TurnSource for ReplSource {
         // ---- read + dispatch lines until a task line (or a control signal) ----
         loop {
             // GaitPrompt with session, model, and branch info in the right edge.
-            let branch = String::new(); // TODO: wire from current_branch() when available
+            // `gait_core::git::Repos` does not expose a `current_branch` method;
+            // leave empty until the method is added to the Repos API.
+            let branch = String::new();
             let session_short = self.session_id.chars().take(4).collect::<String>();
             let open_node = None; // chat's degenerate node; non-chat workflows set this later.
             let prompt = crate::repl::GaitPrompt {
@@ -324,7 +326,7 @@ impl TurnSource for ReplSource {
                 line
             };
 
-            self.shared.borrow_mut().builder.add_history_entry(&line);
+            // Reedline records history automatically on Signal::Success; no manual add needed.
             // Unified expansion (identical to the CLI path): $(cmd)/$(N), @path, >(N).
             let expanded = expand_input(
                 &line,

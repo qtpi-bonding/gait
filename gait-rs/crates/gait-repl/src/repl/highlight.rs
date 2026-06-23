@@ -3,9 +3,6 @@ use nu_ansi_term::{Color, Style};
 use reedline::{Highlighter, StyledText};
 use std::path::{Path, PathBuf};
 
-// Expose nu_ansi_term publicly so tests can access Color and Style if needed
-pub use nu_ansi_term;
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum Kind {
     Plain,

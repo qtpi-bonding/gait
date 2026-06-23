@@ -67,11 +67,6 @@ impl ReplBuilder {
         self.rl.read_line(prompt)
     }
 
-    pub fn add_history_entry(&mut self, line: &str) {
-        let item = reedline::HistoryItem::from_command_line(line);
-        let _ = self.rl.history_mut().save(item);
-    }
-
     fn make_prompt(&self, prefix: &str) -> DefaultPrompt {
         DefaultPrompt::new(
             DefaultPromptSegment::Basic(prefix.to_string()),

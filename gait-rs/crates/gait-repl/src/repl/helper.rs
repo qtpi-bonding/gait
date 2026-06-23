@@ -27,10 +27,6 @@ pub fn collect_at_refs(line: &str) -> Vec<usize> {
     result
 }
 
-// Keep deprecated stubs so chat.rs/driver.rs can still compile until
-// those files are migrated in this task (they will be updated below).
-// TODO: remove after Steps 7-9 are done.
-
 #[cfg(test)]
 mod tests {
     use super::*;
