@@ -16,10 +16,12 @@ pub(crate) mod hints {
 fn build_line_editor(
     shell_history_path: std::path::PathBuf,
     history_file: std::path::PathBuf,
+    gait_dir: std::path::PathBuf,
+    codebase: std::path::PathBuf,
 ) -> reedline::Reedline {
     use reedline::{
-        default_emacs_keybindings, EditCommand, Emacs, FileBackedHistory, KeyCode, KeyModifiers,
-        Reedline, ReedlineEvent,
+        default_emacs_keybindings, ColumnarMenu, EditCommand, Emacs, FileBackedHistory, KeyCode,
+        KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu,
     };
     let history = Box::new(
         FileBackedHistory::with_file(2000, history_file).expect("create reedline history"),
@@ -31,12 +33,28 @@ fn build_line_editor(
         KeyCode::Enter,
         ReedlineEvent::Edit(vec![EditCommand::InsertNewline]),
     );
+    kb.add_binding(
+        KeyModifiers::NONE,
+        KeyCode::Tab,
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::Menu("completion_menu".to_string()),
+            ReedlineEvent::MenuNext,
+        ]),
+    );
     Reedline::create()
         .with_history(history)
         .with_hinter(Box::new(crate::repl::GaitHinter {
-            shell_history_path,
+            shell_history_path: shell_history_path.clone(),
             current: String::new(),
         }))
+        .with_completer(Box::new(crate::repl::GaitCompleter {
+            gait_dir: gait_dir.clone(),
+            codebase: codebase.clone(),
+            shell_history_path,
+        }))
+        .with_menu(ReedlineMenu::EngineCompleter(Box::new(
+            ColumnarMenu::default().with_name("completion_menu"),
+        )))
         .with_edit_mode(Box::new(Emacs::new(kb)))
 }
 
@@ -112,7 +130,12 @@ pub async fn run_chat(
     );
 
     let history_file = gait_dir.join("repl_history");
-    let rl = build_line_editor(shell_history_path.clone(), history_file);
+    let rl = build_line_editor(
+        shell_history_path.clone(),
+        history_file,
+        gait_dir.clone(),
+        codebase.clone(),
+    );
 
     // One builder, shared by the per-session source + sink. It outlives every
     // `run_loop` so editor history and view state persist across `/n`.

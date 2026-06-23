@@ -1,8 +1,10 @@
+pub mod complete;
 pub(crate) mod driver;
 pub mod helper;
 pub mod hinter;
 pub mod input;
 
+pub use complete::GaitCompleter;
 pub(crate) use driver::{Control, ReplShared, ReplSource, Shared};
 pub use helper::collect_at_refs;
 pub use hinter::GaitHinter;
