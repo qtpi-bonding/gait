@@ -288,7 +288,8 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let run_id = "test-run-20260616-120000";
         let log = WorkflowRunLog::create(dir.path(), run_id).unwrap();
-        log.workflow_start(run_id, "test-workflow", "workflows/test.yaml", &[])
+        let def = gait_core::proto::gait::workflow::v1::Workflow::default();
+        log.workflow_start(run_id, "test-workflow", "workflows/test.yaml", &[], &def)
             .unwrap();
         log.node_start("a", "shell", 1, "session-a").unwrap();
         log.node_complete("a", "session-a", "ok", Some(0), "{}", "")

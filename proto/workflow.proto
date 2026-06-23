@@ -32,7 +32,60 @@ message WorkflowStart {
   string          workflow  = 2;  // workflow name from yaml
   string          yaml_path = 3;  // path to the workflow yaml
   repeated string args      = 4;  // CLI args passed to the run
+  Workflow        def       = 5;  // canonical workflow IR at run time
 }
+
+// ============================================================================
+// Canonical workflow IR — written once into WorkflowStart.def so the run log
+// is self-describing without re-parsing the yaml.
+// ============================================================================
+
+message Workflow {
+  uint32          version       = 1;  // format generation (mirrors WorkflowEvent.version)
+  string          name          = 2;
+  string          version_label = 3;  // human yaml `version:` string
+  optional string model         = 4;
+  repeated string allow         = 5;
+  bool            auto          = 6;
+  repeated Node   nodes         = 7;
+}
+
+message Node {
+  string          id                 = 1;
+  repeated string depends_on         = 2;
+  optional string model              = 3;
+  optional bool   auto               = 4;
+  repeated string allow              = 5;
+  optional string agent              = 6;
+  optional string system_prompt      = 7;
+  repeated string files              = 8;
+  string          output_schema_json = 9;   // JSON; empty if none
+  optional OnError on_error          = 10;
+  optional string goto               = 11;
+  optional Hooks  hooks              = 12;
+  oneof body {
+    PromptNode prompt = 13;
+    ShellNode  shell  = 14;
+    BranchNode branch = 15;
+    GateNode   gate   = 16;
+  }
+}
+
+message PromptNode {
+  string          prompt           = 1;  // empty => absent => open node (pause === exit)
+  string          continue_session = 2;  // empty => fresh; else continue this session id
+  optional string codebase         = 3;
+}
+message ShellNode  { string command = 1; }
+message BranchNode {
+  string          on     = 1;
+  optional string then   = 2;
+  optional string else_  = 3;
+  map<string,string> cases = 4;
+}
+message GateNode   { string message = 1; }
+message OnError    { uint32 retry_times = 1; uint64 delay = 2; string backoff = 3; string context = 4; optional string goto = 5; }
+message Hooks      { optional string before = 1; optional string after = 2; optional string error = 3; }
 
 message NodeStart {
   string node_id    = 1;

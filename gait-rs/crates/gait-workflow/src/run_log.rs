@@ -13,8 +13,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use gait_core::proto::gait::workflow::v1::{
-    NodeComplete, NodeError, NodeSkip, NodeStart, WorkflowComplete, WorkflowError, WorkflowEvent,
-    WorkflowGate, WorkflowStart,
+    NodeComplete, NodeError, NodeSkip, NodeStart, Workflow, WorkflowComplete, WorkflowError,
+    WorkflowEvent, WorkflowGate, WorkflowStart,
 };
 
 /// Current format generation for the workflow run log. Mirrors the contract
@@ -83,6 +83,7 @@ impl WorkflowRunLog {
         workflow: &str,
         yaml_path: &str,
         args: &[String],
+        def: &Workflow,
     ) -> anyhow::Result<()> {
         let ev = WorkflowEvent {
             version: WORKFLOW_LOG_VERSION,
@@ -94,6 +95,7 @@ impl WorkflowRunLog {
                         workflow: workflow.to_string(),
                         yaml_path: yaml_path.to_string(),
                         args: args.to_vec(),
+                        def: Some(def.clone()),
                     },
                 ),
             ),
@@ -268,11 +270,13 @@ mod tests {
     fn log_roundtrips_workflow_start() {
         let dir = TempDir::new().unwrap();
         let log = WorkflowRunLog::create(dir.path(), "test-run-20260616-120000").unwrap();
+        let def = gait_core::proto::gait::workflow::v1::Workflow::default();
         log.workflow_start(
             "test-run-20260616-120000",
             "test-workflow",
             "workflows/test.yaml",
             &[],
+            &def,
         )
         .unwrap();
         let events = log.read_events().unwrap();

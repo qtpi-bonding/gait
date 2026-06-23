@@ -719,7 +719,13 @@ async fn emit_workflow_start(
             "args": args,
         }),
     ))?;
-    run_log.workflow_start(session_id, &wf.name, yaml_path, args)?;
+    run_log.workflow_start(
+        session_id,
+        &wf.name,
+        yaml_path,
+        args,
+        &crate::convert::to_proto(wf),
+    )?;
     let node_ids: Vec<&str> = wf.nodes.iter().map(|n| n.id.as_str()).collect();
     let progress = init_progress(workflow_id, &wf.name, &node_ids);
     write_progress(gait_dir, session_id, &progress)?;

@@ -13,6 +13,7 @@ pub mod schema;
 pub mod state;
 pub mod vars;
 
+pub mod convert;
 pub mod run_log;
 
 pub mod status;
