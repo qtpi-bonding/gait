@@ -34,7 +34,7 @@ impl Hinter for GaitHinter {
         }
         let query = SearchQuery::last_with_prefix(line.to_string(), history.session());
         if let Ok(items) = history.search(query) {
-            if let Some(item) = items.first() {
+            if let Some(item) = items.last() {
                 let suffix = item.command_line.get(line.len()..).unwrap_or("");
                 self.current = suffix.to_string();
                 return suffix.to_string();
@@ -50,11 +50,9 @@ impl Hinter for GaitHinter {
 
     fn next_hint_token(&self) -> String {
         // Accept one whitespace-delimited token of the suggestion.
-        let mut it = self.current.splitn(2, ' ');
-        match it.next() {
-            Some(tok) if !tok.is_empty() => tok.to_string(),
-            _ => String::new(),
-        }
+        // Use split_inclusive to preserve the trailing space separator.
+        let mut it = self.current.split_inclusive(' ');
+        it.next().unwrap_or("").to_string()
     }
 }
 
