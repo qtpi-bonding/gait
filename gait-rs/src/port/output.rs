@@ -167,6 +167,28 @@ impl<O: Write, E: Write> TurnSink for CliSink<O, E> {
     }
 }
 
+/// An in-memory `TurnSink` for tests and programmatic embedding: records every
+/// frame it receives. Not used in production rendering paths.
+#[derive(Default)]
+pub struct RecordingSink {
+    pub items: Vec<StreamItem>,
+    pub results: Vec<TurnResult>,
+    pub diagnostics: Vec<(Diag, String)>,
+}
+
+impl TurnSink for RecordingSink {
+    fn item(&mut self, item: &StreamItem) {
+        self.items.push(item.clone());
+    }
+    fn result(&mut self, r: &TurnResult) {
+        self.results.push(r.clone());
+    }
+    fn session_id(&mut self, _id: &str) {}
+    fn diagnostic(&mut self, level: Diag, msg: &str) {
+        self.diagnostics.push((level, msg.to_string()));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,5 +318,19 @@ mod tests {
         s.session_id("s1234567");
         let v: serde_json::Value = serde_json::from_slice(&o).unwrap();
         assert_eq!(v["sessionId"], "s1234567"); // pbjson camelCase
+    }
+    #[test]
+    fn recording_sink_collects_items_and_results() {
+        let mut s = RecordingSink::default();
+        s.item(&ev(events::tool_call(
+            "c1".into(),
+            "read".into(),
+            &serde_json::json!({}),
+        )));
+        s.result(&crate::turn::TurnResult::Permissions);
+        s.diagnostic(Diag::Error, "boom");
+        assert_eq!(s.items.len(), 1);
+        assert_eq!(s.results.len(), 1);
+        assert_eq!(s.diagnostics, vec![(Diag::Error, "boom".to_string())]);
     }
 }
