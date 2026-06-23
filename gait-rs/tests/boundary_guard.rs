@@ -35,6 +35,7 @@ fn sealed_mechanism_is_not_named_by_consumers() {
         "relay_brain_turn",
         "SignalSlot",
         "ProfileInputs",
+        "__brain",
     ];
     let mut leaks = String::new();
     for c in [

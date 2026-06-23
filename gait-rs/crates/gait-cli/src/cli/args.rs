@@ -41,7 +41,7 @@ pub fn resolve_codebase(args: &[String]) -> std::path::PathBuf {
 /// passes `None` for the `__run-tool` arm which needs no runner.
 pub async fn cmd_dispatch_role(argv: &[String]) {
     let runner: Option<std::sync::Arc<dyn gait_core::workflow_runner::WorkflowRunner>> =
-        if argv.first().map(|s| s.as_str()) == Some("__brain") {
+        if gait_core::is_brain_argv(argv) {
             let gait_dir = gait_dir_or_env(argv).unwrap_or_else(|| {
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
             });

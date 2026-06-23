@@ -65,6 +65,12 @@ pub const GAIT_BUILD_GIT_HASH: &str = env!("GAIT_BUILD_GIT_HASH");
 
 // ── Role dispatch (gait-bin-only by convention) ───────────────────────────────
 
+/// Returns true when `argv[0]` is the `__brain` role subcommand. Lets gait-cli
+/// decide whether to construct the workflow runner without naming the role token.
+pub fn is_brain_argv(argv: &[String]) -> bool {
+    argv.first().map(|s| s.as_str()) == Some("__brain")
+}
+
 /// Returns true when `argv[0]` is a hidden role subcommand (`__brain` or `__run-tool`).
 /// Pure function — testable without spawning a real provider.
 pub fn is_role_argv(argv: &[String]) -> bool {
