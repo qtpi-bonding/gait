@@ -1,8 +1,5 @@
-use rustyline::error::ReadlineError;
-use rustyline::history::DefaultHistory;
-use rustyline::Editor;
+use reedline::{DefaultPrompt, DefaultPromptSegment, Prompt, Reedline, Signal};
 
-use crate::repl::ReplHelper;
 use crate::theme::Theme;
 use crate::theme::{DIM_FG, RESET};
 use crate::ui::renderer::ReplRenderer;
@@ -17,17 +14,14 @@ pub struct InteractionOutcome {
 }
 
 pub struct ReplBuilder {
-    pub rl: Editor<ReplHelper, DefaultHistory>,
+    pub rl: Reedline,
     state: ReplState,
     renderer: ReplRenderer,
 }
 
 impl ReplBuilder {
-    pub fn new(mut rl: Editor<ReplHelper, DefaultHistory>, theme: Theme) -> Self {
-        rl.bind_sequence(
-            rustyline::KeyEvent(rustyline::KeyCode::Esc, rustyline::Modifiers::NONE),
-            rustyline::EventHandler::Simple(rustyline::Cmd::Interrupt),
-        );
+    pub fn new(rl: Reedline, theme: Theme) -> Self {
+        // Keybindings are configured at build time in chat.rs::build_line_editor.
         Self {
             rl,
             state: ReplState::new(),
@@ -69,12 +63,34 @@ impl ReplBuilder {
         std::mem::take(&mut self.state.all_blocks)
     }
 
-    pub fn readline(&mut self, prompt: &str) -> Result<String, ReadlineError> {
-        self.rl.readline(prompt)
+    pub fn readline(&mut self, prompt: &dyn Prompt) -> std::io::Result<Signal> {
+        self.rl.read_line(prompt)
     }
 
     pub fn add_history_entry(&mut self, line: &str) {
-        let _ = self.rl.add_history_entry(line);
+        let item = reedline::HistoryItem::from_command_line(line);
+        let _ = self.rl.history_mut().save(item);
+    }
+
+    fn make_prompt(&self, prefix: &str) -> DefaultPrompt {
+        DefaultPrompt::new(
+            DefaultPromptSegment::Basic(prefix.to_string()),
+            DefaultPromptSegment::Empty,
+        )
+    }
+
+    fn read_line_raw(&mut self, prefix: &str) -> String {
+        let prompt = self.make_prompt(prefix);
+        match self.rl.read_line(&prompt) {
+            Ok(Signal::Success(s)) => {
+                eprint!("{}", RESET);
+                s.trim().to_string()
+            }
+            _ => {
+                eprint!("{}", RESET);
+                String::new()
+            }
+        }
     }
 }
 
@@ -96,12 +112,7 @@ impl ReplBuilder {
     }
 
     fn run_clarify(&mut self, items: Vec<pb::ClarifyItem>) -> anyhow::Result<InteractionOutcome> {
-        let prompt = format!(
-            "{}>{} {}",
-            self.renderer.theme().accent.fg(),
-            RESET,
-            self.renderer.theme().user_msg.fg()
-        );
+        let prompt_str = format!("{}>{} ", self.renderer.theme().accent.fg(), RESET,);
         let mut replies = Vec::new();
 
         let bar = "\u{2500}".repeat(56);
@@ -126,13 +137,7 @@ impl ReplBuilder {
                     eprint!("{}     ({}) {}{}\r\n", DIM_FG, letter, opt, RESET);
                 }
             }
-            let raw = self
-                .rl
-                .readline(&prompt)
-                .unwrap_or_default()
-                .trim()
-                .to_string();
-            eprint!("{}", RESET);
+            let raw = self.read_line_raw(&prompt_str);
             let content = if !item.options.is_empty() {
                 parse_option_input(&raw, &item.options).unwrap_or(raw)
             } else {
@@ -151,12 +156,7 @@ impl ReplBuilder {
     }
 
     fn run_inform(&mut self, items: Vec<pb::InformItem>) -> anyhow::Result<InteractionOutcome> {
-        let prompt = format!(
-            "{}>{} {}",
-            self.renderer.theme().accent.fg(),
-            RESET,
-            self.renderer.theme().user_msg.fg()
-        );
+        let prompt_str = format!("{}>{} ", self.renderer.theme().accent.fg(), RESET,);
         let mut replies = Vec::new();
 
         let bar = "\u{2500}".repeat(57);
@@ -175,13 +175,7 @@ impl ReplBuilder {
             if let Some(ctx) = &item.context {
                 eprint!("{}     context: {}{}\r\n", DIM_FG, ctx, RESET);
             }
-            let raw = self
-                .rl
-                .readline(&prompt)
-                .unwrap_or_default()
-                .trim()
-                .to_string();
-            eprint!("{}", RESET);
+            let raw = self.read_line_raw(&prompt_str);
             let content = if raw.is_empty() {
                 "understood".into()
             } else {
@@ -207,12 +201,7 @@ impl ReplBuilder {
     ) -> anyhow::Result<InteractionOutcome> {
         use crate::ui::permission::parse_permission_response;
         use gait_core::permission::PermissionChoice;
-        let prompt = format!(
-            "  {}>{} {}",
-            self.renderer.theme().accent.fg(),
-            RESET,
-            self.renderer.theme().user_msg.fg()
-        );
+        let prompt_str = format!("  {}>{} ", self.renderer.theme().accent.fg(), RESET,);
         let mut reply_items: Vec<pb::PermissionsReplyItem> = vec![];
         let mut cancelled = false;
         let mut bulk: Option<BulkScope> = None;
@@ -260,26 +249,31 @@ impl ReplBuilder {
                 scope.to_choice(broadest())
             } else {
                 loop {
-                    match self.rl.readline(&prompt) {
-                        Ok(input) => {
+                    let pmt = self.make_prompt(&prompt_str);
+                    match self.rl.read_line(&pmt) {
+                        Ok(Signal::Success(input)) => {
                             eprint!("{}", RESET);
-                            let trimmed = input.trim();
-                            if let Some(scope) = parse_bulk_scope(trimmed) {
+                            let trimmed = input.trim().to_string();
+                            if let Some(scope) = parse_bulk_scope(&trimmed) {
                                 let choice = scope.to_choice(broadest());
                                 bulk = Some(scope);
                                 break choice;
                             }
-                            match parse_permission_response(trimmed, &item.patterns) {
+                            match parse_permission_response(&trimmed, &item.patterns) {
                                 Some(c) => break c,
                                 None => eprint!("  unrecognized — e.g. 0, 1, s, s1, 1a, r\r\n"),
                             }
                         }
-                        Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => {
+                        Ok(Signal::CtrlC) | Ok(Signal::CtrlD) | Err(_) => {
                             eprint!("{}", RESET);
                             cancelled = true;
                             break PermissionChoice::Deny;
                         }
-                        Err(_) => break PermissionChoice::Deny,
+                        Ok(_) => {
+                            eprint!("{}", RESET);
+                            cancelled = true;
+                            break PermissionChoice::Deny;
+                        }
                     }
                 }
             };

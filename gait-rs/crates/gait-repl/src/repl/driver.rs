@@ -7,9 +7,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::process::Command;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 
-use crate::repl::ShellNavState;
 use crate::repl::{bang_command_str, is_bang_command};
 use crate::theme::{Theme, RESET};
 use crate::ui::ReplBuilder;
@@ -49,7 +47,6 @@ pub struct ReplSource {
     pub agent_path: Option<PathBuf>,
     pub repos: gait_core::git::Repos,
     pub theme: Theme,
-    pub nav: Arc<Mutex<ShellNavState>>,
     pub shell_history_path: PathBuf,
     pub gait_bin: PathBuf,
     pub last_blocks: Vec<String>,
@@ -107,28 +104,35 @@ impl TurnSource for ReplSource {
 
         // ---- read + dispatch lines until a task line (or a control signal) ----
         loop {
-            self.nav.lock().unwrap().index = 0;
-            let prompt = format!(
-                "{}>{} {}",
-                self.theme.accent.fg(),
-                RESET,
-                self.theme.user_msg.fg()
+            // Temporary minimal prompt until Task 6 lands GaitPrompt.
+            let prompt = reedline::DefaultPrompt::new(
+                reedline::DefaultPromptSegment::Basic(format!(
+                    "{}>{} {}",
+                    self.theme.accent.fg(),
+                    RESET,
+                    self.theme.user_msg.fg()
+                )),
+                reedline::DefaultPromptSegment::Empty,
             );
             // Bind readline to a local so the RefCell borrow is released before the
             // match arms (which borrow `shared` again).
             let read = self.shared.borrow_mut().builder.readline(&prompt);
             let line = match read {
-                Ok(l) => {
+                Ok(reedline::Signal::Success(buf)) => {
                     eprint!("{}", RESET);
-                    l.trim().to_string()
+                    buf.trim().to_string()
                 }
-                Err(rustyline::error::ReadlineError::Eof) => {
+                Ok(reedline::Signal::CtrlD) => {
                     self.shared.borrow_mut().control = Some(Control::Quit);
                     return None;
                 }
-                Err(rustyline::error::ReadlineError::Interrupted) => {
+                Ok(reedline::Signal::CtrlC) => {
                     eprint!("{}", RESET);
                     continue;
+                }
+                Ok(_) => {
+                    self.shared.borrow_mut().control = Some(Control::Quit);
+                    return None;
                 }
                 Err(_) => {
                     self.shared.borrow_mut().control = Some(Control::Quit);
