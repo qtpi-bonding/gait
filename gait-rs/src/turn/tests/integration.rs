@@ -1398,7 +1398,7 @@ async fn always_policy_streams_edit_preview_delta() {
     std::fs::write(&path, "fn foo() {\n    bar();\n}").unwrap();
     let content = std::fs::read_to_string(&path).unwrap();
     let lines: Vec<&str> = content.split('\n').collect();
-    let hash = crate::hashline::compute_line_hash(2, lines[1]);
+    let hash = crate::hashline::compute_line_hash(lines[1]);
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let emitter = crate::proto::Recorder::new(dir.path().join("log.jsonl"), tx);
