@@ -60,6 +60,14 @@ impl ReplSource {
             .join(&self.session_id)
             .join("log.jsonl")
     }
+
+    fn model_label(&self) -> String {
+        self.agent_path
+            .as_ref()
+            .and_then(|p| p.file_stem().and_then(|s| s.to_str()))
+            .unwrap_or("default")
+            .to_string()
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -104,16 +112,16 @@ impl TurnSource for ReplSource {
 
         // ---- read + dispatch lines until a task line (or a control signal) ----
         loop {
-            // Temporary minimal prompt until Task 6 lands GaitPrompt.
-            let prompt = reedline::DefaultPrompt::new(
-                reedline::DefaultPromptSegment::Basic(format!(
-                    "{}>{} {}",
-                    self.theme.accent.fg(),
-                    RESET,
-                    self.theme.user_msg.fg()
-                )),
-                reedline::DefaultPromptSegment::Empty,
-            );
+            // GaitPrompt with session, model, and branch info in the right edge.
+            let branch = String::new(); // TODO: wire from current_branch() when available
+            let session_short = self.session_id.chars().take(4).collect::<String>();
+            let open_node = None; // chat's degenerate node; non-chat workflows set this later.
+            let prompt = crate::repl::GaitPrompt {
+                model: self.model_label(),
+                session_short,
+                branch,
+                open_node,
+            };
             // Bind readline to a local so the RefCell borrow is released before the
             // match arms (which borrow `shared` again).
             let read = self.shared.borrow_mut().builder.readline(&prompt);
