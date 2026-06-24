@@ -165,6 +165,7 @@ pub async fn exec_prompt_node(
     ctx: &NodeContext<'_>,
     wf: &Workflow,
     input: Option<Box<dyn TurnSource>>,
+    ui_sink: Option<&mut dyn TurnSink>,
 ) -> anyhow::Result<NodeOutput> {
     // Fast path: absent prompt + no input → open immediately, before any model
     // resolution or session setup (those require a valid model config).
@@ -236,8 +237,6 @@ pub async fn exec_prompt_node(
         cfg.sandbox
     };
 
-    let mut sink = CapturingSink::new(ctx.workflow_tx.clone());
-
     let mut driver = PromptNodeDriver {
         codebase: codebase.clone(),
         model: model.clone(),
@@ -257,6 +256,7 @@ pub async fn exec_prompt_node(
             bodies: Some(user_bodies),
         });
 
+        let mut sink = CapturingSink::new(ctx.workflow_tx.clone());
         embed::run_loop(
             source,
             &mut sink,
@@ -281,16 +281,36 @@ pub async fn exec_prompt_node(
         };
         let source = NodeSource::Live(live);
 
-        embed::run_loop(
-            source,
-            &mut sink,
-            session,
-            ctx.gait_dir,
-            &session_id,
-            &mut driver,
-            None,
-        )
-        .await?;
+        match ui_sink {
+            Some(mut ui) => {
+                // Foreground interactive node: render straight through the
+                // caller's sink so begin_turn/result/diagnostic all reach it
+                // (the channel hop would drop everything but `item`).
+                embed::run_loop(
+                    source,
+                    &mut ui,
+                    session,
+                    ctx.gait_dir,
+                    &session_id,
+                    &mut driver,
+                    None,
+                )
+                .await?;
+            }
+            None => {
+                let mut sink = CapturingSink::new(ctx.workflow_tx.clone());
+                embed::run_loop(
+                    source,
+                    &mut sink,
+                    session,
+                    ctx.gait_dir,
+                    &session_id,
+                    &mut driver,
+                    None,
+                )
+                .await?;
+            }
+        }
 
         // Live node that returned (source exhausted) stays OPEN — no terminal
         // advance has been signalled. The run exits cleanly; resume re-enters.

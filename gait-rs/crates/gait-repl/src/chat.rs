@@ -18,6 +18,7 @@ fn build_line_editor(
     history_file: std::path::PathBuf,
     gait_dir: std::path::PathBuf,
     codebase: std::path::PathBuf,
+    theme: &crate::theme::Theme,
 ) -> reedline::Reedline {
     use reedline::{
         default_emacs_keybindings, ColumnarMenu, EditCommand, Emacs, FileBackedHistory, KeyCode,
@@ -55,6 +56,14 @@ fn build_line_editor(
         .with_highlighter(Box::new(crate::repl::GaitHighlighter {
             shell_history_path: shell_history_path.clone(),
             codebase: codebase.clone(),
+            user_msg: {
+                let c = &theme.user_msg;
+                if crate::theme::supports_truecolor() {
+                    nu_ansi_term::Color::Rgb(c.0, c.1, c.2)
+                } else {
+                    nu_ansi_term::Color::Fixed(crate::theme::rgb_to_ansi256(c.0, c.1, c.2))
+                }
+            },
         }))
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(
             ColumnarMenu::default().with_name("completion_menu"),
@@ -139,6 +148,7 @@ pub async fn run_chat(
         history_file,
         gait_dir.clone(),
         codebase.clone(),
+        &theme,
     );
 
     // One builder, shared by the per-session source + sink. It outlives every
@@ -212,6 +222,10 @@ pub async fn run_chat(
         };
 
         let run_id = format!("chat-{}", session_id);
+        let mut sink = crate::repl::ReplSink {
+            shared: shared.clone(),
+        };
+        let mut observer = gait_workflow::observer::NullObserver;
         let _outcome = gait_workflow::run_workflow(
             gait_workflow::WorkflowRunOpts {
                 workflow_def: wf_def,
@@ -221,7 +235,8 @@ pub async fn run_chat(
                 codebase: codebase.clone(),
                 args: vec![],
             },
-            &mut gait_workflow::observer::CliObserver,
+            &mut sink,
+            &mut observer,
             Some(Box::new(source)),
         )
         .await?;

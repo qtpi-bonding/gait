@@ -67,6 +67,10 @@ impl ReplBuilder {
         self.rl.read_line(prompt)
     }
 
+    pub fn theme(&self) -> &crate::theme::Theme {
+        self.renderer.theme()
+    }
+
     fn make_prompt(&self, prefix: &str) -> DefaultPrompt {
         DefaultPrompt::new(
             DefaultPromptSegment::Basic(prefix.to_string()),
@@ -107,7 +111,7 @@ impl ReplBuilder {
     }
 
     fn run_clarify(&mut self, items: Vec<pb::ClarifyItem>) -> anyhow::Result<InteractionOutcome> {
-        let prompt_str = format!("{}>{} ", self.renderer.theme().accent.fg(), RESET,);
+        let prompt_str = format!("{}", RESET);
         let mut replies = Vec::new();
 
         let bar = "\u{2500}".repeat(56);
@@ -151,7 +155,7 @@ impl ReplBuilder {
     }
 
     fn run_inform(&mut self, items: Vec<pb::InformItem>) -> anyhow::Result<InteractionOutcome> {
-        let prompt_str = format!("{}>{} ", self.renderer.theme().accent.fg(), RESET,);
+        let prompt_str = format!("{}", RESET);
         let mut replies = Vec::new();
 
         let bar = "\u{2500}".repeat(57);
@@ -196,7 +200,7 @@ impl ReplBuilder {
     ) -> anyhow::Result<InteractionOutcome> {
         use crate::ui::permission::parse_permission_response;
         use gait_core::permission::PermissionChoice;
-        let prompt_str = format!("  {}>{} ", self.renderer.theme().accent.fg(), RESET,);
+        let prompt_str = format!("  {}", RESET);
         let mut reply_items: Vec<pb::PermissionsReplyItem> = vec![];
         let mut cancelled = false;
         let mut bulk: Option<BulkScope> = None;
@@ -222,7 +226,14 @@ impl ReplBuilder {
                 );
             }
             for line in crate::ui::permission::preview_block(item.preview.as_deref()) {
-                eprint!("{}{}{}\r\n", DIM_FG, line, RESET);
+                let color = if line.starts_with('+') {
+                    self.renderer.theme().success.fg()
+                } else if line.starts_with('-') {
+                    self.renderer.theme().danger.fg()
+                } else {
+                    DIM_FG.to_string()
+                };
+                eprint!("{}{}{}\r\n", color, line, RESET);
             }
             eprint!("\r\n");
             let exact = item.patterns.last().cloned().unwrap_or_default();

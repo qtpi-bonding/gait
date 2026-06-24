@@ -5,18 +5,17 @@
 /// Render-ready item. The renderer matches on these variants; column conventions
 /// are encoded by the variant, not by literal strings at the call site.
 pub enum ReplViewItem {
-    BlockStart {
+    /// A numbered assistant text block — full markdown content rendered through termimad.
+    Block {
         num: usize,
-        text: String,
-    },
-    BlockCont {
-        text: String,
-    },
-    BlockEnd {
-        num: usize,
+        content: String,
     },
     /// First line of a structured_done message — rendered with ✓│ gutter.
     DoneStart {
+        text: String,
+    },
+    /// Continuation lines for DoneStart (multi-line done messages).
+    DoneCont {
         text: String,
     },
     ToolResult {
@@ -46,21 +45,13 @@ pub(crate) fn clean_repl_item(item: crate::ui::state::ReplItem) -> Vec<ReplViewI
     use crate::ui::state::ReplItem;
     match item {
         ReplItem::Block { content, block_num } => {
-            let mut lines = content.lines();
-            if let Some(first) = lines.next() {
-                let mut out = vec![ReplViewItem::BlockStart {
-                    num: block_num,
-                    text: first.to_string(),
-                }];
-                for line in lines {
-                    out.push(ReplViewItem::BlockCont {
-                        text: line.to_string(),
-                    });
-                }
-                out
+            if content.is_empty() {
+                vec![]
             } else {
-                // Empty block: emit just the gutter line.
-                vec![ReplViewItem::BlockEnd { num: block_num }]
+                vec![ReplViewItem::Block {
+                    num: block_num,
+                    content,
+                }]
             }
         }
         ReplItem::Spacing => vec![ReplViewItem::Spacing],
@@ -95,7 +86,7 @@ pub(crate) fn clean_repl_item(item: crate::ui::state::ReplItem) -> Vec<ReplViewI
                     text: first.to_string(),
                 }];
                 for line in lines {
-                    out.push(ReplViewItem::BlockCont {
+                    out.push(ReplViewItem::DoneCont {
                         text: line.to_string(),
                     });
                 }
@@ -109,8 +100,10 @@ pub(crate) fn clean_repl_item(item: crate::ui::state::ReplItem) -> Vec<ReplViewI
 }
 
 /// Strip hashline anchors, XML wrappers, and footer lines from raw tool output.
+/// Returns at most 3 lines: first, `…`, last (so the snippet stays compact).
 pub(crate) fn clean_tool_output(raw: &str) -> Vec<String> {
-    raw.lines()
+    let lines: Vec<String> = raw
+        .lines()
         .filter(|l| {
             let t = l.trim();
             !t.is_empty()
@@ -124,7 +117,15 @@ pub(crate) fn clean_tool_output(raw: &str) -> Vec<String> {
             Some(content) => content.to_string(),
             None => l.to_string(),
         })
-        .collect()
+        .collect();
+    match lines.len() {
+        0 | 1 | 2 => lines,
+        _ => vec![
+            lines[0].clone(),
+            "\u{2026}".to_string(), // …
+            lines[lines.len() - 1].clone(),
+        ],
+    }
 }
 
 /// Strip `#XY|` or `#XY-N|` prefix from a hashline. Returns the content after `|`,
@@ -169,28 +170,26 @@ mod tests {
     }
 
     #[test]
-    fn clean_repl_item_block_emits_start_then_cont() {
+    fn clean_repl_item_block_emits_single_block_item() {
         let item = ReplItem::Block {
             content: "first line\nsecond line\nthird".to_string(),
             block_num: 7,
         };
         let out = clean_repl_item(item);
+        assert_eq!(out.len(), 1);
         assert!(
-            matches!(out[0], ReplViewItem::BlockStart { num: 7, ref text } if text == "first line")
+            matches!(&out[0], ReplViewItem::Block { num: 7, content } if content == "first line\nsecond line\nthird")
         );
-        assert!(matches!(out[1], ReplViewItem::BlockCont { ref text } if text == "second line"));
-        assert!(matches!(out[2], ReplViewItem::BlockCont { ref text } if text == "third"));
-        assert_eq!(out.len(), 3);
     }
 
     #[test]
-    fn clean_repl_item_empty_block_emits_block_end() {
+    fn clean_repl_item_empty_block_is_suppressed() {
         let item = ReplItem::Block {
             content: String::new(),
             block_num: 3,
         };
         let out = clean_repl_item(item);
-        assert!(matches!(out[0], ReplViewItem::BlockEnd { num: 3 }));
+        assert!(out.is_empty(), "empty block produces no view items");
     }
 
     #[test]
@@ -199,14 +198,25 @@ mod tests {
             ok: true,
             name: "read".to_string(),
             elapsed_ms: Some(42),
-            output: "<file>\n#AB|hello\n#AB-2|hello\n</file>".to_string(),
+            // Two identical hashlines → 2 unique content lines (≤2, no truncation).
+            output: "<file>\n#AB|hello\n#AB-2|world\n</file>".to_string(),
         };
         let out = clean_repl_item(item);
         assert!(
             matches!(out[0], ReplViewItem::ToolResult { ok: true, ref name, elapsed_ms: Some(42) } if name == "read")
         );
         assert!(matches!(out[1], ReplViewItem::SnippetLine { ref text } if text == "hello"));
-        assert!(matches!(out[2], ReplViewItem::SnippetLine { ref text } if text == "hello"));
+        assert!(matches!(out[2], ReplViewItem::SnippetLine { ref text } if text == "world"));
+    }
+
+    #[test]
+    fn clean_tool_output_truncates_long_output() {
+        let raw = "line1\nline2\nline3\nline4\nline5";
+        let out = clean_tool_output(raw);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0], "line1");
+        assert_eq!(out[1], "\u{2026}");
+        assert_eq!(out[2], "line5");
     }
 
     #[test]

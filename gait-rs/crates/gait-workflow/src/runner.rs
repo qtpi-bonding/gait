@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use gait_core::embed::TurnSource;
+use gait_core::embed::{TurnSink, TurnSource};
 use gait_core::proto::gait::log::v1::StreamItem;
 use gait_core::proto::gait::workflow::v1::{node, Node, Workflow};
 use gait_core::proto::wire;
@@ -41,6 +41,12 @@ pub struct WorkflowRunOpts {
 
 type NodeFuture =
     Pin<Box<dyn std::future::Future<Output = anyhow::Result<(String, NodeTaskOutcome)>>>>;
+
+/// `tasks.next()` only yields `None` when the pool is empty, which the `loop`
+/// guard already excludes; this makes that unreachable explicit.
+fn unreachable_empty_tasks() -> (String, NodeTaskOutcome) {
+    unreachable!("tasks.next() returned None while pool was non-empty")
+}
 
 #[derive(Debug)]
 enum NodeTaskOutcome {
@@ -306,6 +312,7 @@ fn is_interactive_node(node: &gait_core::proto::gait::workflow::v1::Node) -> boo
 
 pub async fn run_workflow(
     opts: WorkflowRunOpts,
+    sink: &mut dyn TurnSink,
     observer: &mut dyn WorkflowObserver,
     input: Option<Box<dyn TurnSource>>,
 ) -> anyhow::Result<WorkflowOutcome> {
@@ -429,6 +436,7 @@ pub async fn run_workflow(
                         &ctx,
                         &wf,
                         Some(live),
+                        Some(sink),
                     )
                     .await?;
                     update_progress(
@@ -472,14 +480,25 @@ pub async fn run_workflow(
                 break;
             }
 
-            let (node_id, outcome) = match tasks.next().await {
-                Some(Ok(r)) => r,
-                Some(Err(e)) => return Err(e),
-                None => break,
+            // Drain stream items into the sink AS they arrive (not just when a
+            // node finishes), so fan-out output renders live. `select!` re-polls
+            // `tasks.next()` each iteration; FuturesUnordered::next is cancel-safe.
+            let (node_id, outcome) = loop {
+                tokio::select! {
+                    biased;
+                    Some(item) = rx.recv() => { sink.item(&item); }
+                    res = tasks.next() => {
+                        match res {
+                            Some(Ok(r)) => break r,
+                            Some(Err(e)) => return Err(e),
+                            None => break unreachable_empty_tasks(),
+                        }
+                    }
+                }
             };
-            // Drain stream items produced while the task was running.
+            // Flush anything buffered between the winning task completing and now.
             while let Ok(item) = rx.try_recv() {
-                observer.on_stream_item(&item);
+                sink.item(&item);
             }
             in_flight.remove(&node_id);
 
@@ -852,7 +871,7 @@ pub async fn run_workflow(
     drop(rec);
     // Final drain: flush any remaining items after rec is dropped (channel closed).
     while let Ok(item) = rx.try_recv() {
-        observer.on_stream_item(&item);
+        sink.item(&item);
     }
     match run_result? {
         WorkflowOutcome::GatePaused => Ok(WorkflowOutcome::GatePaused),
@@ -947,7 +966,7 @@ async fn execute_node(
 ) -> anyhow::Result<NodeOutput> {
     match node.body.as_ref() {
         Some(node::Body::Shell(s)) => exec_shell_node(s, ctx).await,
-        Some(node::Body::Prompt(p)) => exec_prompt_node(node, p, ctx, wf, input).await,
+        Some(node::Body::Prompt(p)) => exec_prompt_node(node, p, ctx, wf, input, None).await,
         Some(node::Body::Branch(b)) => {
             let expr = substitute(&b.on, &ctx.vars);
             let mut b2 = b.clone();

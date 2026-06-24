@@ -63,6 +63,7 @@ async fn absent_prompt_headless_exits_node_open() {
     let wf: WorkflowDef = serde_yaml::from_str(OPEN_NODE_YAML).unwrap();
     let session_id = "test-open-node-001".to_string();
 
+    let mut sink = gait_core::embed::CliSink::stdio(true);
     let outcome = run_workflow(
         WorkflowRunOpts {
             workflow_def: to_proto(&wf),
@@ -72,6 +73,7 @@ async fn absent_prompt_headless_exits_node_open() {
             codebase: gait_dir.clone(),
             args: vec![],
         },
+        &mut sink,
         &mut CliObserver,
         None, // headless: no input source
     )
@@ -143,6 +145,7 @@ async fn gate_node_exits_gate_paused_not_node_open() {
     let wf: WorkflowDef = serde_yaml::from_str(GATE_YAML).unwrap();
     let session_id = "test-gate-001".to_string();
 
+    let mut sink = gait_core::embed::CliSink::stdio(true);
     let outcome = run_workflow(
         WorkflowRunOpts {
             workflow_def: to_proto(&wf),
@@ -152,6 +155,7 @@ async fn gate_node_exits_gate_paused_not_node_open() {
             codebase: gait_dir.clone(),
             args: vec![],
         },
+        &mut sink,
         &mut CliObserver,
         None,
     )

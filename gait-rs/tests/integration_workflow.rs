@@ -41,6 +41,7 @@ nodes:
     let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
     let session_id = "swf_test01";
 
+    let mut sink = gait_core::embed::CliSink::stdio(true);
     run_workflow(
         WorkflowRunOpts {
             workflow_def: convert::to_proto(&wf),
@@ -50,6 +51,7 @@ nodes:
             codebase: ws.path().to_path_buf(),
             args: vec![],
         },
+        &mut sink,
         &mut CliObserver,
         None,
     )
@@ -97,6 +99,7 @@ nodes:
     let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
     let session_id = "swf_branch01";
 
+    let mut sink = gait_core::embed::CliSink::stdio(true);
     run_workflow(
         WorkflowRunOpts {
             workflow_def: convert::to_proto(&wf),
@@ -106,6 +109,7 @@ nodes:
             codebase: ws.path().to_path_buf(),
             args: vec![],
         },
+        &mut sink,
         &mut CliObserver,
         None,
     )
@@ -151,6 +155,7 @@ nodes:
     let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
     let session_id = "swf_rec01";
 
+    let mut sink = gait_core::embed::CliSink::stdio(true);
     run_workflow(
         WorkflowRunOpts {
             workflow_def: convert::to_proto(&wf),
@@ -160,6 +165,7 @@ nodes:
             codebase: ws.path().to_path_buf(),
             args: vec![],
         },
+        &mut sink,
         &mut CliObserver,
         None,
     )
@@ -258,8 +264,8 @@ async fn prompt_subturn_publishes_to_workflow_channel() {
                 failed_node: None,
             },
         };
-        // exec_prompt_node signature: (node, prompt_node, ctx, wf, input)
-        exec_prompt_node(proto_node, prompt_body, &ctx, &wf_proto, None)
+        // exec_prompt_node signature: (node, prompt_node, ctx, wf, input, ui_sink)
+        exec_prompt_node(proto_node, prompt_body, &ctx, &wf_proto, None, None)
             .await
             .unwrap();
     } // ctx drops here, releasing the &tx borrow
@@ -294,6 +300,7 @@ async fn smoke_parallel_workflow_completes() {
     let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
     let session_id = "swf_smoke_parallel";
 
+    let mut sink = gait_core::embed::CliSink::stdio(true);
     run_workflow(
         WorkflowRunOpts {
             workflow_def: convert::to_proto(&wf),
@@ -303,6 +310,7 @@ async fn smoke_parallel_workflow_completes() {
             codebase: ws.path().to_path_buf(),
             args: vec![],
         },
+        &mut sink,
         &mut CliObserver,
         None,
     )
@@ -339,6 +347,7 @@ async fn smoke_cycle_workflow_via_goto() {
     let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
     let session_id = "swf_smoke_cycle";
 
+    let mut sink = gait_core::embed::CliSink::stdio(true);
     run_workflow(
         WorkflowRunOpts {
             workflow_def: convert::to_proto(&wf),
@@ -348,6 +357,7 @@ async fn smoke_cycle_workflow_via_goto() {
             codebase: ws.path().to_path_buf(),
             args: vec![],
         },
+        &mut sink,
         &mut CliObserver,
         None,
     )
@@ -380,6 +390,7 @@ async fn smoke_retry_on_error_goto() {
     let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
     let session_id = "swf_smoke_retry";
 
+    let mut sink = gait_core::embed::CliSink::stdio(true);
     run_workflow(
         WorkflowRunOpts {
             workflow_def: convert::to_proto(&wf),
@@ -389,6 +400,7 @@ async fn smoke_retry_on_error_goto() {
             codebase: ws.path().to_path_buf(),
             args: vec![],
         },
+        &mut sink,
         &mut CliObserver,
         None,
     )

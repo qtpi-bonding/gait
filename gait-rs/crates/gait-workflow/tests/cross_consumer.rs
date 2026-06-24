@@ -75,6 +75,7 @@ async fn cli_and_channel_observer_produce_identical_state() {
     setup_gait_dir(&gait_dir1);
     let session1 = unique_session_id("cli");
 
+    let mut sink1 = gait_core::embed::CliSink::stdio(true);
     let outcome1 = run_workflow(
         WorkflowRunOpts {
             workflow_def: to_proto(&wf),
@@ -84,6 +85,7 @@ async fn cli_and_channel_observer_produce_identical_state() {
             codebase: gait_dir1.clone(),
             args: vec![],
         },
+        &mut sink1,
         &mut CliObserver,
         None,
     )
@@ -102,9 +104,9 @@ async fn cli_and_channel_observer_produce_identical_state() {
     let session2 = unique_session_id("chan");
 
     let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (item_tx, _item_rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut obs2 = ChannelObserver::new(event_tx, item_tx);
+    let mut obs2 = ChannelObserver::new(event_tx);
 
+    let mut sink2 = gait_core::embed::CliSink::stdio(true);
     let outcome2 = run_workflow(
         WorkflowRunOpts {
             workflow_def: to_proto(&wf),
@@ -114,6 +116,7 @@ async fn cli_and_channel_observer_produce_identical_state() {
             codebase: gait_dir2.clone(),
             args: vec![],
         },
+        &mut sink2,
         &mut obs2,
         None,
     )

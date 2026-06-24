@@ -43,8 +43,7 @@ pub(crate) fn build_turn_context(
             ));
         }
     }
-    // Terminal-style prompt: reminds the agent where `shell` runs (sticky cwd).
-    ctx.push_str(&format!("{} %\n", cwd.display()));
+    ctx.push_str(&format!("<cwd>{}</cwd>\n", cwd.display()));
     ctx.push_str("</status>\n");
     ctx
 }

@@ -1,12 +1,16 @@
-//! reedline prompt: left `>`, right session context, open-node-aware indicator.
+//! reedline prompt: right shows agent + model, indicator is accent-colored.
 use reedline::{Prompt, PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus};
 use std::borrow::Cow;
 
 pub struct GaitPrompt {
+    /// Agent file stem, e.g. "default", "coding".
+    pub agent: String,
+    /// Short model name, e.g. "haiku", "m3" (everything after the first `/`).
     pub model: String,
-    pub session_short: String,
     pub branch: String,
     pub open_node: Option<String>,
+    /// Pre-built accent-colored indicator string (avoids storing the theme).
+    pub indicator: String,
 }
 
 impl Prompt for GaitPrompt {
@@ -15,19 +19,15 @@ impl Prompt for GaitPrompt {
     }
     fn render_prompt_right(&self) -> Cow<'_, str> {
         if self.branch.is_empty() {
-            Cow::Owned(format!("{} · {}", self.model, self.session_short))
+            Cow::Owned(format!("{} · {}", self.agent, self.model))
         } else {
-            Cow::Owned(format!(
-                "{} · {} · {}",
-                self.model, self.session_short, self.branch
-            ))
+            Cow::Owned(format!("{} · {} · {}", self.agent, self.model, self.branch))
         }
     }
     fn render_prompt_indicator(&self, _mode: PromptEditMode) -> Cow<'_, str> {
         match &self.open_node {
-            // The degenerate chat node is always "open"; don't clutter for it.
             Some(node) if node != "chat" => Cow::Owned(format!("\u{21bb} {node} \u{203a} ")),
-            _ => Cow::Borrowed("> "),
+            _ => Cow::Borrowed(&self.indicator),
         }
     }
     fn render_prompt_multiline_indicator(&self) -> Cow<'_, str> {
@@ -55,10 +55,11 @@ mod tests {
 
     fn p(open: Option<&str>) -> GaitPrompt {
         GaitPrompt {
+            agent: "default".into(),
             model: "m3".into(),
-            session_short: "ab12".into(),
             branch: "main".into(),
             open_node: open.map(String::from),
+            indicator: "> ".into(),
         }
     }
 
@@ -77,9 +78,12 @@ mod tests {
     }
 
     #[test]
-    fn right_prompt_shows_model_and_branch() {
+    fn right_prompt_shows_agent_model_and_branch() {
         let prompt = p(None);
         let got = prompt.render_prompt_right();
-        assert!(got.contains("m3") && got.contains("main"), "got {got:?}");
+        assert!(
+            got.contains("default") && got.contains("m3") && got.contains("main"),
+            "got {got:?}"
+        );
     }
 }

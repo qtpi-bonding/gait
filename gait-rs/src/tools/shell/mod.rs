@@ -223,9 +223,12 @@ impl Tool for ShellTool {
             .envs(std::env::vars().filter(|(k, _)| {
                 matches!(
                     k.as_str(),
-                    "PATH" | "HOME" | "USER" | "SHELL" | "TERM" | "LANG" | "LC_ALL" | "TMPDIR"
+                    "PATH" | "HOME" | "USER" | "SHELL" | "LANG" | "LC_ALL" | "TMPDIR"
                 )
             }))
+            // Suppress colour output: programs check TERM and NO_COLOR before emitting ANSI.
+            .env("TERM", "dumb")
+            .env("NO_COLOR", "1")
             .spawn()
             .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
 
@@ -297,7 +300,7 @@ impl Tool for ShellTool {
         let (status, total, mut tail) = drain_and_wait.await?;
 
         let exit_code = status.code().unwrap_or(1);
-        let tail_str = String::from_utf8_lossy(tail.make_contiguous()).into_owned();
+        let tail_str = strip_ansi(&String::from_utf8_lossy(tail.make_contiguous()));
         let note = format!("[full output: {} ({} bytes)]", out_path.display(), total);
 
         // Structured process-tool shape: turn.rs reads `output` for the model-facing text,
@@ -317,6 +320,45 @@ impl Tool for ShellTool {
             ..Default::default()
         }
     }
+}
+
+/// Remove ANSI escape sequences from `s` so models see plain text.
+/// Handles CSI (`ESC[…m`) and OSC (`ESC]…BEL/ST`) sequences; passes everything else through.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek().copied() {
+            Some('[') => {
+                chars.next();
+                // CSI: consume digits/semicolons until a letter finalizer
+                for c2 in chars.by_ref() {
+                    if c2.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                chars.next();
+                // OSC: consume until BEL or ESC\
+                while let Some(c2) = chars.next() {
+                    if c2 == '\x07' {
+                        break;
+                    }
+                    if c2 == '\x1b' {
+                        chars.next(); // consume the trailing '\'
+                        break;
+                    }
+                }
+            }
+            _ => {} // unknown escape: drop the ESC, let next char through
+        }
+    }
+    out
 }
 
 #[cfg(test)]

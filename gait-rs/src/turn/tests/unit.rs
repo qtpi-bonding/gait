@@ -133,8 +133,8 @@ fn turn_context_is_wrapped_in_status_tag() {
     assert!(ctx.contains("Codebase commit: deadbeef"));
     assert!(ctx.contains("src/a.rs"));
     assert!(
-        ctx.contains("/repo/sub %"),
-        "expected terminal-style cwd prompt, got: {ctx}"
+        ctx.contains("<cwd>/repo/sub</cwd>"),
+        "expected <cwd> XML tag, got: {ctx}"
     );
 }
 

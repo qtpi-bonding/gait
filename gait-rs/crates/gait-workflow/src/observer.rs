@@ -4,34 +4,33 @@
 //! workflow runner at every significant event. Two implementations are
 //! provided:
 //!
-//! - [`CliObserver`]: writes stream items to stderr (matching prior
-//!   `CliSink` behavior) and prints terse event lines.
-//! - [`ChannelObserver`]: forwards to `tokio::sync::mpsc` channels for
+//! - [`CliObserver`]: prints terse workflow-event lines to stderr.
+//! - [`ChannelObserver`]: forwards events to a `tokio::sync::mpsc` channel for
 //!   programmatic consumers (tests, embedding).
+//! - [`NullObserver`]: discards every event (used by the REPL).
+//!
+//! Turn output (deltas/events/results) no longer flows here — it goes through
+//! the caller-supplied [`gait_core::embed::TurnSink`] handed to `run_workflow`.
 
-use gait_core::proto::gait::log::v1::StreamItem;
 use gait_core::proto::gait::workflow::v1::{workflow_event, WorkflowEvent};
 
 // ─── trait ────────────────────────────────────────────────────────────────────
 
 /// Synchronous observer for workflow runner output.
 ///
-/// Called inline from the runner after each log write and after each
-/// `try_recv` drain of the `StreamItem` channel. Order within a single
-/// node's lifetime is: zero or more `on_stream_item` calls interleaved with
-/// async yields, followed by exactly one `on_event` call for the terminal
-/// event (start, complete, skip, error, etc.).
+/// Called inline from the runner after each log write. Stream items are no
+/// longer delivered here — turn output flows through the caller-supplied
+/// `TurnSink` instead. The observer sees exactly one `on_event` call per
+/// terminal event (start, complete, skip, error, etc.).
 pub trait WorkflowObserver {
     /// Called after a workflow event has been appended to the run-log.
     fn on_event(&mut self, ev: &WorkflowEvent);
-    /// Called for each `StreamItem` drained from the node task channel.
-    fn on_stream_item(&mut self, item: &StreamItem);
 }
 
 // ─── CliObserver ──────────────────────────────────────────────────────────────
 
-/// CLI observer: stream items → stderr (JSON, matching prior `CliSink`
-/// behavior), workflow events → terse human-readable lines on stderr.
+/// CLI observer: workflow lifecycle events → terse human-readable lines on
+/// stderr. Stream items are handled by the `TurnSink`, not here.
 #[derive(Default)]
 pub struct CliObserver;
 
@@ -65,40 +64,21 @@ impl WorkflowObserver for CliObserver {
             None => {}
         }
     }
-
-    fn on_stream_item(&mut self, item: &StreamItem) {
-        if let Ok(j) = serde_json::to_string(item) {
-            eprintln!("{j}");
-        }
-    }
 }
 
 // ─── ChannelObserver ──────────────────────────────────────────────────────────
 
-/// Channel observer: forwards events and stream items to unbounded mpsc
-/// senders. Either sender may be `None` to discard that category.
+/// Channel observer: forwards lifecycle events to an unbounded mpsc sender.
+/// The sender may be `None` to discard events.
 pub struct ChannelObserver {
     pub event_tx: Option<tokio::sync::mpsc::UnboundedSender<WorkflowEvent>>,
-    pub item_tx: Option<tokio::sync::mpsc::UnboundedSender<StreamItem>>,
 }
 
 impl ChannelObserver {
-    /// Create a `ChannelObserver` that forwards to both channels.
-    pub fn new(
-        event_tx: tokio::sync::mpsc::UnboundedSender<WorkflowEvent>,
-        item_tx: tokio::sync::mpsc::UnboundedSender<StreamItem>,
-    ) -> Self {
+    /// Create a `ChannelObserver` that forwards events to the given channel.
+    pub fn new(event_tx: tokio::sync::mpsc::UnboundedSender<WorkflowEvent>) -> Self {
         Self {
             event_tx: Some(event_tx),
-            item_tx: Some(item_tx),
-        }
-    }
-
-    /// Create a `ChannelObserver` that only captures events (items discarded).
-    pub fn events_only(event_tx: tokio::sync::mpsc::UnboundedSender<WorkflowEvent>) -> Self {
-        Self {
-            event_tx: Some(event_tx),
-            item_tx: None,
         }
     }
 }
@@ -109,10 +89,16 @@ impl WorkflowObserver for ChannelObserver {
             let _ = tx.send(ev.clone());
         }
     }
+}
 
-    fn on_stream_item(&mut self, item: &StreamItem) {
-        if let Some(tx) = &self.item_tx {
-            let _ = tx.send(item.clone());
-        }
-    }
+// ─── NullObserver ──────────────────────────────────────────────────────────────
+
+/// A `WorkflowObserver` that discards every lifecycle event. Used by the REPL,
+/// which renders turn output through its `TurnSink` and wants no `[gait workflow]`
+/// status lines polluting the chat surface.
+#[derive(Default)]
+pub struct NullObserver;
+
+impl WorkflowObserver for NullObserver {
+    fn on_event(&mut self, _ev: &WorkflowEvent) {}
 }

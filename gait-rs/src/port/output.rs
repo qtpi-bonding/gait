@@ -52,6 +52,30 @@ pub trait TurnSink {
     fn end_turn(&mut self) {}
 }
 
+/// Forwarding impl so a `&mut dyn TurnSink` trait object (and reborrows of one)
+/// satisfies `impl TurnSink` — `run_loop` takes `&mut impl TurnSink`, so callers
+/// holding only a trait object can pass `&mut *sink` straight through.
+impl TurnSink for &mut dyn TurnSink {
+    fn item(&mut self, item: &StreamItem) {
+        (**self).item(item);
+    }
+    fn result(&mut self, r: &crate::turn::TurnResult) {
+        (**self).result(r);
+    }
+    fn session_id(&mut self, id: &str) {
+        (**self).session_id(id);
+    }
+    fn diagnostic(&mut self, level: Diag, msg: &str) {
+        (**self).diagnostic(level, msg);
+    }
+    fn begin_turn(&mut self) {
+        (**self).begin_turn();
+    }
+    fn end_turn(&mut self) {
+        (**self).end_turn();
+    }
+}
+
 pub async fn drive(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<StreamItem>,
     sink: &mut impl TurnSink,
@@ -164,6 +188,28 @@ impl<O: Write, E: Write> TurnSink for CliSink<O, E> {
         if level == Diag::Error || !self.quiet {
             let _ = writeln!(self.err, "[gait] {msg}");
         }
+    }
+}
+
+/// An in-memory `TurnSink` for tests and programmatic embedding: records every
+/// frame it receives. Not used in production rendering paths.
+#[derive(Default)]
+pub struct RecordingSink {
+    pub items: Vec<StreamItem>,
+    pub results: Vec<TurnResult>,
+    pub diagnostics: Vec<(Diag, String)>,
+}
+
+impl TurnSink for RecordingSink {
+    fn item(&mut self, item: &StreamItem) {
+        self.items.push(item.clone());
+    }
+    fn result(&mut self, r: &TurnResult) {
+        self.results.push(r.clone());
+    }
+    fn session_id(&mut self, _id: &str) {}
+    fn diagnostic(&mut self, level: Diag, msg: &str) {
+        self.diagnostics.push((level, msg.to_string()));
     }
 }
 
@@ -296,5 +342,19 @@ mod tests {
         s.session_id("s1234567");
         let v: serde_json::Value = serde_json::from_slice(&o).unwrap();
         assert_eq!(v["sessionId"], "s1234567"); // pbjson camelCase
+    }
+    #[test]
+    fn recording_sink_collects_items_and_results() {
+        let mut s = RecordingSink::default();
+        s.item(&ev(events::tool_call(
+            "c1".into(),
+            "read".into(),
+            &serde_json::json!({}),
+        )));
+        s.result(&crate::turn::TurnResult::Permissions);
+        s.diagnostic(Diag::Error, "boom");
+        assert_eq!(s.items.len(), 1);
+        assert_eq!(s.results.len(), 1);
+        assert_eq!(s.diagnostics, vec![(Diag::Error, "boom".to_string())]);
     }
 }
