@@ -91,7 +91,9 @@ impl ProviderError {
     /// carries `#[from]`, so the bare `?` operator won't compile.
     pub fn from_reqwest(e: reqwest::Error) -> Self {
         if e.is_timeout() {
-            ProviderError::Timeout { phase: TimeoutPhase::Connect }
+            ProviderError::Timeout {
+                phase: TimeoutPhase::Connect,
+            }
         } else if e.is_connect() {
             ProviderError::Connect(e.to_string())
         } else {

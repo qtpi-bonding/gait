@@ -17,55 +17,23 @@ pub fn load_provider(
     api_key: Option<String>,
 ) -> Result<Box<dyn Provider>, FactoryError> {
     let (provider_id, model_id) = parse_model_string(model_str)?;
-    let key = resolve_api_key(&provider_id, api_key)?;
-
-    match provider_id.as_str() {
-        "anthropic" => Ok(Box::new(AnthropicProvider::new(
-            key,
-            model_id,
-            None,
-            true,
-            crate::transport::TransportConfig::default(),
-        ))),
-        "openai" => Ok(Box::new(OpenAIProvider::new(
-            key,
-            model_id,
-            None,
-            crate::transport::TransportConfig::default(),
-        ))),
-        "groq" => Ok(Box::new(OpenAIProvider::new(
-            key,
-            model_id,
-            Some("https://api.groq.com/openai/v1".into()),
-            crate::transport::TransportConfig::default(),
-        ))),
-        "mistral" => Ok(Box::new(OpenAIProvider::new(
-            key,
-            model_id,
-            Some("https://api.mistral.ai/v1".into()),
-            crate::transport::TransportConfig::default(),
-        ))),
-        "openrouter" => Ok(Box::new(OpenAIProvider::new(
-            key,
-            model_id,
-            Some("https://openrouter.ai/api/v1".into()),
-            crate::transport::TransportConfig::default(),
-        ))),
-        "deepinfra" => Ok(Box::new(OpenAIProvider::new(
-            key,
-            model_id,
-            Some("https://api.deepinfra.com/v1/openai".into()),
-            crate::transport::TransportConfig::default(),
-        ))),
-        "minimax" => Ok(Box::new(AnthropicProvider::new(
-            key,
-            model_id,
-            Some("https://api.minimax.io/anthropic/v1".into()),
-            true,
-            crate::transport::TransportConfig::default(),
-        ))),
-        other => Err(FactoryError::UnknownProvider(other.into())),
-    }
+    let spec = crate::providers::lookup(&provider_id)
+        .ok_or_else(|| FactoryError::UnknownProvider(provider_id.clone()))?;
+    let key = match api_key.filter(|k| !k.is_empty()) {
+        Some(k) => k,
+        None => std::env::var(spec.env_var)
+            .map_err(|_| FactoryError::MissingApiKey(spec.id.into(), spec.env_var.into()))?,
+    };
+    let base = spec.base_url.map(String::from);
+    let transport = crate::transport::TransportConfig::default();
+    Ok(match spec.wire {
+        crate::providers::Wire::Anthropic => {
+            Box::new(AnthropicProvider::new(key, model_id, base, true, transport))
+        }
+        crate::providers::Wire::OpenAI => {
+            Box::new(OpenAIProvider::new(key, model_id, base, transport))
+        }
+    })
 }
 
 fn parse_model_string(s: &str) -> Result<(String, String), FactoryError> {
@@ -74,16 +42,6 @@ fn parse_model_string(s: &str) -> Result<(String, String), FactoryError> {
         return Err(FactoryError::InvalidFormat(s.into()));
     }
     Ok((parts[0].into(), parts[1].into()))
-}
-
-fn resolve_api_key(provider_id: &str, explicit: Option<String>) -> Result<String, FactoryError> {
-    if let Some(key) = explicit {
-        if !key.is_empty() {
-            return Ok(key);
-        }
-    }
-    let env_var = format!("{}_API_KEY", provider_id.to_uppercase());
-    std::env::var(&env_var).map_err(|_| FactoryError::MissingApiKey(provider_id.into(), env_var))
 }
 
 #[cfg(test)]
@@ -139,5 +97,11 @@ mod tests {
         let result = load_provider("groq/model", None);
         // If GROQ_API_KEY is set in env, this will succeed — that's fine
         let _ = result;
+    }
+
+    #[test]
+    fn load_xai_uses_openai_wire() {
+        let p = load_provider("xai/grok-beta", Some("key".into())).unwrap();
+        assert_eq!(p.model_id(), "grok-beta");
     }
 }

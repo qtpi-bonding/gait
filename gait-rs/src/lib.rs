@@ -17,6 +17,7 @@ pub mod embed;
 pub mod port;
 pub mod profile;
 pub mod proto;
+pub mod providers;
 
 // Deferred — external callers in gait-cli/gait-repl; seal after public wrappers added
 pub mod agent_frontmatter;
