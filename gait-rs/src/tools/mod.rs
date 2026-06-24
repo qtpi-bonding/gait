@@ -140,6 +140,77 @@ pub fn coerce_int_params(v: serde_json::Value) -> serde_json::Value {
     }
 }
 
+/// Schema-guided scalar coercion. First applies the unconditional float->int
+/// pass (`coerce_int_params` semantics), then walks `args` alongside `schema`
+/// and coerces string-encoded scalars to the declared type — but only when the
+/// schema says `integer`/`number`/`boolean`, so genuine string fields (paths,
+/// names) are never mangled. Recurses object `properties` and array `items`.
+pub fn coerce_scalar_params(
+    args: serde_json::Value,
+    schema: &serde_json::Value,
+) -> serde_json::Value {
+    /// True if the schema's `type` (a string OR an array like `["integer","null"]`)
+    /// permits any of `want`. Optional fields emit array `type`, so a plain
+    /// `as_str()` check would silently skip exactly the fields weak models
+    /// stringify — handle both shapes.
+    fn type_allows(schema: &serde_json::Value, want: &[&str]) -> bool {
+        match schema.get("type") {
+            Some(serde_json::Value::String(s)) => want.contains(&s.as_str()),
+            Some(serde_json::Value::Array(arr)) => arr
+                .iter()
+                .any(|v| v.as_str().map_or(false, |s| want.contains(&s))),
+            _ => false,
+        }
+    }
+    fn walk(v: serde_json::Value, schema: &serde_json::Value) -> serde_json::Value {
+        match v {
+            serde_json::Value::Object(map) => {
+                let props = schema.get("properties").and_then(|p| p.as_object());
+                serde_json::Value::Object(
+                    map.into_iter()
+                        .map(|(k, val)| {
+                            let child = props.and_then(|p| p.get(&k));
+                            let val = match child {
+                                Some(cs) => walk(val, cs),
+                                None => coerce_int_params(val),
+                            };
+                            (k, val)
+                        })
+                        .collect(),
+                )
+            }
+            serde_json::Value::Array(arr) => {
+                let items = schema.get("items");
+                serde_json::Value::Array(
+                    arr.into_iter()
+                        .map(|x| match items {
+                            Some(is) => walk(x, is),
+                            None => coerce_int_params(x),
+                        })
+                        .collect(),
+                )
+            }
+            serde_json::Value::String(s) => {
+                if type_allows(schema, &["integer", "number"]) {
+                    serde_json::from_str::<serde_json::Number>(&s)
+                        .map(serde_json::Value::Number)
+                        .unwrap_or(serde_json::Value::String(s))
+                } else if type_allows(schema, &["boolean"]) {
+                    match s.as_str() {
+                        "true" => serde_json::Value::Bool(true),
+                        "false" => serde_json::Value::Bool(false),
+                        _ => serde_json::Value::String(s),
+                    }
+                } else {
+                    serde_json::Value::String(s)
+                }
+            }
+            other => coerce_int_params(other),
+        }
+    }
+    walk(args, schema)
+}
+
 /// Names of all built-in tools. Used for allow-list validation without constructing tool instances.
 pub fn builtin_tool_names() -> &'static [&'static str] {
     &[
@@ -455,5 +526,76 @@ mod tests {
         ] {
             assert!(!by(n).touches_world(), "{n} must be brain-side");
         }
+    }
+
+    #[test]
+    fn coerce_scalar_parses_stringified_integer_when_schema_says_integer() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {"limit": {"type": "integer"}}
+        });
+        let args = serde_json::json!({"limit": "50"});
+        let out = coerce_scalar_params(args, &schema);
+        assert_eq!(out["limit"], serde_json::json!(50));
+    }
+
+    #[test]
+    fn coerce_scalar_leaves_string_field_alone() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {"path": {"type": "string"}}
+        });
+        let args = serde_json::json!({"path": "123"});
+        let out = coerce_scalar_params(args, &schema);
+        assert_eq!(out["path"], serde_json::json!("123")); // NOT coerced to number
+    }
+
+    #[test]
+    fn coerce_scalar_parses_stringified_bool() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {"detached": {"type": "boolean"}}
+        });
+        let args = serde_json::json!({"detached": "true"});
+        let out = coerce_scalar_params(args, &schema);
+        assert_eq!(out["detached"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn coerce_scalar_recurses_array_items() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "rows": {"type": "array", "items": {
+                    "type": "object", "properties": {"n": {"type": "integer"}}
+                }}
+            }
+        });
+        let args = serde_json::json!({"rows": [{"n": "7"}]});
+        let out = coerce_scalar_params(args, &schema);
+        assert_eq!(out["rows"][0]["n"], serde_json::json!(7));
+    }
+
+    #[test]
+    fn coerce_scalar_handles_optional_field_with_array_type() {
+        // optional integer -> schemars emits type: ["integer","null"]
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {"limit": {"type": ["integer", "null"]}}
+        });
+        let args = serde_json::json!({"limit": "50"});
+        let out = coerce_scalar_params(args, &schema);
+        assert_eq!(out["limit"], serde_json::json!(50));
+    }
+
+    #[test]
+    fn coerce_scalar_still_floors_float_to_int() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {"limit": {"type": "integer"}}
+        });
+        let args = serde_json::json!({"limit": 50.0});
+        let out = coerce_scalar_params(args, &schema);
+        assert_eq!(out["limit"], serde_json::json!(50));
     }
 }

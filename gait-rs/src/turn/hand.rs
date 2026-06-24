@@ -143,6 +143,12 @@ pub async fn run_hand(config: HandConfig) {
         None => respond_err(format!("unknown tool: {}", config.tool)),
     };
 
+    // Schema-guided coercion (string -> scalar, float -> int) needs the tool's
+    // parameters schema, so it lives here, after the tool is resolved. The
+    // injected `__cwd` key has no schema entry and falls through to the float->int
+    // pass (a string path is left untouched).
+    let args_json = crate::tools::coerce_scalar_params(args_json, tool.parameters());
+
     let rec = Recorder::buffering();
 
     // Build the SandboxScope from Impulse.requested and apply the seal BEFORE any

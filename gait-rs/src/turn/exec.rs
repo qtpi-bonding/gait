@@ -68,15 +68,19 @@ pub(super) async fn execute_tool_call(
     // `synapse_denied` carries a seal-denial signal from the hand (Phase 2c Task 6):
     // set when the hand detects EACCES/EPERM in a `shell` command's output while
     // running under Seatbelt. The turn loop inspects it after execute_tool_call returns.
-    // Coerce whole-number floats (e.g. `50.0`) to integers so models that emit
-    // float literals for integer fields don't fail serde deserialization.
-    let coerced_args = crate::tools::coerce_int_params(tc.args.clone());
 
     let (raw, duration, process, synapse_denied) = match tools
         .iter()
         .find(|t| t.name() == tc.tool_name)
     {
         Some(t) => {
+            // Schema-guided coercion (integer/number/boolean string decoding + the
+            // unconditional float->int pass it layers on top of) needs the tool's
+            // parameters schema, so it lives here, not in the pre-lookup site. The
+            // `None` (unknown-tool) arm never uses `coerced_args` so nothing else
+            // changes. `coerce_int_params` is idempotent so re-applying it inside
+            // `coerce_scalar_params` is harmless.
+            let coerced_args = crate::tools::coerce_scalar_params(tc.args.clone(), t.parameters());
             let started = std::time::Instant::now();
             // `denied` is extracted only on the world-tool (synapse) path; it stays
             // None on the brain path (control/transcript tools never touch the kernel).
