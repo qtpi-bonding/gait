@@ -145,6 +145,11 @@ where
                 if !e.is_retryable() || attempts_used >= cfg.max_attempts as u32 {
                     return Err(e);
                 }
+                // Task 6: transport_retry observability — v1 uses log::warn!
+                eprintln!(
+                    "[gait] transport_retry attempt={attempts_used}/{} reason={e:?}",
+                    cfg.max_attempts
+                );
                 let delay = e
                     .retry_after()
                     .unwrap_or_else(|| backoff_delay(cfg, attempt));

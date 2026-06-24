@@ -909,9 +909,23 @@ pub async fn run_turn(
             let chunk = match chunk_result {
                 Ok(c) => c,
                 Err(crate::provider::ProviderError::StreamIncomplete { received_bytes }) => {
+                    // Task 6: transport_error observability — v1 uses log::warn!
+                    // A structured recorder event can follow once transport errors
+                    // are promoted to first-class proto events.
+                    eprintln!(
+                        "[gait] transport_error kind=stream_incomplete received_bytes={received_bytes}"
+                    );
                     return Err(anyhow::anyhow!(
                         "stream incomplete after {received_bytes} bytes"
                     ));
+                }
+                Err(crate::provider::ProviderError::Timeout { phase }) => {
+                    eprintln!("[gait] transport_error kind=timeout phase={phase:?}");
+                    return Err(anyhow::anyhow!("stream timeout in phase {phase:?}"));
+                }
+                Err(crate::provider::ProviderError::Overloaded) => {
+                    eprintln!("[gait] transport_error kind=overloaded");
+                    return Err(anyhow::anyhow!("provider overloaded"));
                 }
                 Err(e) => return Err(anyhow::anyhow!("stream error: {}", e)),
             };

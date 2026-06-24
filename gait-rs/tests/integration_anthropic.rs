@@ -1,5 +1,5 @@
 use futures_util::StreamExt;
-use gait_core::provider::StreamChunk;
+use gait_core::provider::{ProviderError, StreamChunk};
 use gait_core::{load_provider, Message, MessageContent};
 
 #[tokio::test]
@@ -91,7 +91,6 @@ impl MockSse {
 #[tokio::test]
 async fn stream_ending_without_message_stop_yields_incomplete() {
     use gait_core::anthropic::AnthropicProvider;
-    use gait_core::provider::ProviderError;
 
     // 2 content_block_delta events, then the server drops the connection.
     // No message_stop → the stream is incomplete.
@@ -124,5 +123,67 @@ async fn stream_ending_without_message_stop_yields_incomplete() {
         ),
         "expected StreamIncomplete {{ received_bytes: 5 }}, got {:?}",
         last
+    );
+}
+
+/// Task 6 — usage accounting on mid-stream failure.
+///
+/// A stream that emits `StepUsage{input:100}` then fails with `StreamIncomplete`
+/// must surface the error **and** account the partial usage exactly once.
+///
+/// Current behavior (v1): the caller (turn/mod.rs) accumulates usage into
+/// `total_usage` before the stream error propagates. If the turn is retried at
+/// the orchestration spine, those 100 input tokens will be counted again.
+///
+/// KNOWN: partial usage counted once here; re-counted on spine re-invoke if the
+/// caller retries. A usage-rollback mechanism belongs in a follow-up task once
+/// we decide whether to debit per-attempt or per-successful-turn only.
+///
+/// This test pins the *current* (single-pass) behavior so a future rollback
+/// implementation is forced to update this assertion deliberately.
+#[tokio::test]
+async fn partial_usage_then_incomplete_is_accounted_once() {
+    use gait_core::anthropic::AnthropicProvider;
+
+    // Emits a MessageStart (100 input tokens) + one text delta, then drops the
+    // connection without a message_stop — triggering StreamIncomplete.
+    let server = mock_sse_server(vec![
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"x\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-x\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":100,\"output_tokens\":0}}}\n\n",
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+    ])
+    .await;
+
+    let provider = AnthropicProvider::new(
+        "k".into(),
+        "claude-x".into(),
+        Some(server.url()),
+        false,
+        gait_core::transport::TransportConfig::default(),
+    );
+    let mut stream = provider
+        .stream("sys", &[], &[], &Default::default(), None)
+        .await
+        .unwrap();
+
+    let mut input_tokens_seen: u32 = 0;
+    let mut got_incomplete = false;
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(StreamChunk::StepUsage(u)) => input_tokens_seen += u.input_tokens,
+            Err(ProviderError::StreamIncomplete { .. }) => {
+                got_incomplete = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(got_incomplete, "expected StreamIncomplete error");
+    // KNOWN: 100 tokens from MessageStart are counted once per stream invocation.
+    // On spine-level retry these tokens would be counted again — see doc comment.
+    assert_eq!(
+        input_tokens_seen, 100,
+        "partial usage must be counted exactly once per stream pass"
     );
 }
