@@ -91,7 +91,7 @@ impl AnthropicProvider {
         cfg.unwrap_or_else(|| {
             self.base_url
                 .as_deref()
-                .map_or(true, |u| u.contains("api.anthropic.com"))
+                .is_none_or(|u| u.contains("api.anthropic.com"))
         })
     }
 }

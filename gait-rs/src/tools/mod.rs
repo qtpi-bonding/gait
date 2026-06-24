@@ -158,7 +158,7 @@ pub fn coerce_scalar_params(
             Some(serde_json::Value::String(s)) => want.contains(&s.as_str()),
             Some(serde_json::Value::Array(arr)) => arr
                 .iter()
-                .any(|v| v.as_str().map_or(false, |s| want.contains(&s))),
+                .any(|v| v.as_str().is_some_and(|s| want.contains(&s))),
             _ => false,
         }
     }
