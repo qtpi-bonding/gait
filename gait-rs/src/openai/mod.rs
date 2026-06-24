@@ -1,6 +1,6 @@
 use crate::provider::{ChunkStream, Provider, ProviderError, StreamChunk};
 use crate::types::{AssistantContent, AssistantPart, Message, MessageContent, Tool, Usage};
-use eventsource_stream::Eventsource;
+use eventsource_stream::{EventStreamError, Eventsource};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -367,7 +367,16 @@ fn body_stream(
         let mut received_bytes: usize = 0;
 
         while let Some(event) = sse.next().await {
-            let event = event.map_err(|e| ProviderError::Sse(e.to_string()))?;
+            let event = match event {
+                Ok(ev) => ev,
+                // Connection dropped mid-body before [DONE] → silent-truncation
+                // case; surface StreamIncomplete. Parse/Utf8 errors stay Sse.
+                Err(EventStreamError::Transport(_)) if !saw_terminal => {
+                    Err(ProviderError::StreamIncomplete { received_bytes })?;
+                    break;
+                }
+                Err(e) => Err(ProviderError::Sse(e.to_string()))?,
+            };
             if event.data == "[DONE]" { saw_terminal = true; break; }
             if event.data.is_empty() { continue; }
 

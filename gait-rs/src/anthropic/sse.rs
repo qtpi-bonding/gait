@@ -1,7 +1,7 @@
 use crate::anthropic::types::{AnthropicEvent, ContentBlock, ContentDelta};
 use crate::provider::{ProviderError, StreamChunk};
 use crate::types::Usage;
-use eventsource_stream::Eventsource;
+use eventsource_stream::{EventStreamError, Eventsource};
 use futures_util::{Stream, StreamExt};
 use reqwest::Client;
 use std::collections::HashMap;
@@ -61,7 +61,18 @@ impl SseClient {
             let mut received_bytes: usize = 0;
 
             while let Some(event) = stream.next().await {
-                let event = event.map_err(|e| ProviderError::Sse(e.to_string()))?;
+                let event = match event {
+                    Ok(ev) => ev,
+                    // A transport-level drop (connection closed mid-body) before the
+                    // terminal marker is the silent-truncation case — surface it as
+                    // StreamIncomplete, not a parse error. Utf8/Parser errors are
+                    // genuine data corruption and stay terminal Sse errors.
+                    Err(EventStreamError::Transport(_)) if !saw_terminal => {
+                        Err(ProviderError::StreamIncomplete { received_bytes })?;
+                        break;
+                    }
+                    Err(e) => Err(ProviderError::Sse(e.to_string()))?,
+                };
                 if event.event == "message_stop" { saw_terminal = true; break; }
                 if event.data.is_empty() || event.data == "[DONE]" { continue; }
 
