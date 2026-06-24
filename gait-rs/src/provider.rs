@@ -52,20 +52,75 @@ pub fn parse_tool_args(buf: &str) -> serde_json::Value {
     coerce_tool_input(serde_json::from_str(buf).unwrap_or(serde_json::Value::Null))
 }
 
+/// Which phase of the request hit a timeout. Used by [`ProviderError::Timeout`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeoutPhase {
+    Connect,
+    Ttfb,
+    Idle,
+    Absolute,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
+    #[error("connect error: {0}")]
+    Connect(String),
+    #[error("timeout ({phase:?})")]
+    Timeout { phase: TimeoutPhase },
     #[error("HTTP error {status}: {body}")]
-    Http { status: u16, body: String },
+    Http {
+        status: u16,
+        body: String,
+        retry_after: Option<std::time::Duration>,
+    },
+    #[error("server overloaded")]
+    Overloaded,
     #[error("SSE parse error: {0}")]
     Sse(String),
     #[error("stream ended after {received_bytes} bytes with no terminal marker")]
     StreamIncomplete { received_bytes: usize },
     #[error("Serialization error: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("Network error: {0}")]
-    Network(#[from] reqwest::Error),
     #[error("{0}")]
     Other(String),
+}
+
+impl ProviderError {
+    /// Map a raw `reqwest::Error` into a classified `ProviderError`.
+    /// Use this at every `.send().await` site — `reqwest::Error` no longer
+    /// carries `#[from]`, so the bare `?` operator won't compile.
+    pub fn from_reqwest(e: reqwest::Error) -> Self {
+        if e.is_timeout() {
+            ProviderError::Timeout { phase: TimeoutPhase::Connect }
+        } else if e.is_connect() {
+            ProviderError::Connect(e.to_string())
+        } else {
+            ProviderError::Other(e.to_string())
+        }
+    }
+
+    /// Whether the caller should attempt another connection. Phase-1 only —
+    /// mid-stream failures (StreamIncomplete, Overloaded, Sse) are always terminal.
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            ProviderError::Connect(_) => true,
+            ProviderError::Timeout { phase } => {
+                matches!(phase, TimeoutPhase::Connect | TimeoutPhase::Ttfb)
+            }
+            ProviderError::Http { status, .. } => *status == 429 || (500..=504).contains(status),
+            // Overloaded, Sse, StreamIncomplete, Json, Other — all terminal.
+            _ => false,
+        }
+    }
+
+    /// Server-supplied retry hint, when one was present on the response.
+    pub fn retry_after(&self) -> Option<std::time::Duration> {
+        if let ProviderError::Http { retry_after, .. } = self {
+            *retry_after
+        } else {
+            None
+        }
+    }
 }
 
 // The core trait every LLM provider implements

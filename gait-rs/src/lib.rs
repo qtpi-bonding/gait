@@ -39,6 +39,7 @@ pub mod sandbox;
 mod test_utils;
 pub(crate) mod text;
 pub(crate) mod wasm_plugins;
+pub(crate) mod transport;
 
 // Types — explicit list replaces pub use types::*
 pub use types::{

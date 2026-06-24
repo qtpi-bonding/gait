@@ -47,12 +47,14 @@ impl SseClient {
                 .header("content-type", "application/json")
                 .json(&body)
                 .send()
-                .await?;
+                .await
+                .map_err(ProviderError::from_reqwest)?;
 
             if !resp.status().is_success() {
                 let status = resp.status().as_u16();
+                let retry_after = crate::transport::parse_retry_after(&resp);
                 let body = resp.text().await.unwrap_or_default();
-                Err(ProviderError::Http { status, body })?;
+                Err(ProviderError::Http { status, body, retry_after })?;
                 return;
             }
 
@@ -155,7 +157,11 @@ impl SseClient {
                     }
                     AnthropicEvent::MessageStop => { saw_terminal = true; yield StreamChunk::Done; break; }
                     AnthropicEvent::Error { error } => {
-                        Err(ProviderError::Sse(error.message))?;
+                        if error.kind == "overloaded_error" {
+                            Err(ProviderError::Overloaded)?;
+                        } else {
+                            Err(ProviderError::Sse(error.message))?;
+                        }
                     }
                     _ => {}
                 }
