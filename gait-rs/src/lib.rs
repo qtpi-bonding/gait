@@ -26,8 +26,8 @@ pub mod pty;
 pub mod shell_history;
 pub mod skills;
 
-// No external callers — safe to seal now
-pub(crate) mod anthropic;
+// anthropic / transport are pub for integration tests (AnthropicProvider, TransportConfig)
+pub mod anthropic;
 pub(crate) mod config_hook;
 pub(crate) mod hashline;
 pub(crate) mod hook_runner;
@@ -38,8 +38,8 @@ pub mod sandbox;
 #[cfg(test)]
 mod test_utils;
 pub(crate) mod text;
+pub mod transport;
 pub(crate) mod wasm_plugins;
-pub(crate) mod transport;
 
 // Types — explicit list replaces pub use types::*
 pub use types::{

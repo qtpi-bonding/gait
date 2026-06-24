@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 /// All knobs the LLM path cares about. `Default` *is* the production policy.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct TransportConfig {
+pub struct TransportConfig {
     /// Time budget for the TCP/TLS handshake (no body yet).
     pub connect_timeout: Duration,
     /// Time budget for the first byte after the request has been sent.
