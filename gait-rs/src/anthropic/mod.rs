@@ -35,10 +35,16 @@ fn anthropic_model_gen(model: &str) -> AnthropicModelGen {
 }
 
 pub struct AnthropicProvider {
+    // api_key / base_url / http are stored for future public inspection (e.g.
+    // tests reading back the provider's config); they are currently only used
+    // during construction to seed the SseClient.
+    #[allow(dead_code)]
     pub api_key: String,
     pub model: String,
+    #[allow(dead_code)]
     pub base_url: Option<String>,
     pub cache: bool,
+    #[allow(dead_code)]
     http: reqwest::Client,
     transport: crate::transport::TransportConfig,
     sse: SseClient,
