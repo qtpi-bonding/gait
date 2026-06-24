@@ -898,7 +898,16 @@ pub async fn run_turn(
                 chunk = chunk_stream.next()   => chunk,
             };
             let Some(chunk_result) = chunk_opt else { break };
-            match chunk_result.map_err(|e| anyhow::anyhow!("stream error: {}", e))? {
+            let chunk = match chunk_result {
+                Ok(c) => c,
+                Err(crate::provider::ProviderError::StreamIncomplete { received_bytes }) => {
+                    return Err(anyhow::anyhow!(
+                        "stream incomplete after {received_bytes} bytes"
+                    ));
+                }
+                Err(e) => return Err(anyhow::anyhow!("stream error: {}", e)),
+            };
+            match chunk {
                 StreamChunk::Text(t) => {
                     if seen_tool_complete {
                         post_tool_text.push(t.clone());

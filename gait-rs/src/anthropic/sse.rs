@@ -62,10 +62,12 @@ impl SseClient {
             let mut thinking_indices: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
             let mut stream = resp.bytes_stream().eventsource();
+            let mut saw_terminal = false;
+            let mut received_bytes: usize = 0;
 
             while let Some(event) = stream.next().await {
                 let event = event.map_err(|e| ProviderError::Sse(e.to_string()))?;
-                if event.event == "message_stop" { break; }
+                if event.event == "message_stop" { saw_terminal = true; break; }
                 if event.data.is_empty() || event.data == "[DONE]" { continue; }
 
                 let parsed: AnthropicEvent = serde_json::from_str(&event.data)?;
@@ -100,6 +102,7 @@ impl SseClient {
                     }
                     AnthropicEvent::ContentBlockDelta { index, delta } => match delta {
                         ContentDelta::TextDelta { text } => {
+                            received_bytes += text.len();
                             yield StreamChunk::Text(text);
                         }
                         ContentDelta::InputJsonDelta { partial_json } => {
@@ -150,12 +153,16 @@ impl SseClient {
                             cache_write_tokens: u.cache_creation_input_tokens.unwrap_or(0),
                         });
                     }
-                    AnthropicEvent::MessageStop => { yield StreamChunk::Done; break; }
+                    AnthropicEvent::MessageStop => { saw_terminal = true; yield StreamChunk::Done; break; }
                     AnthropicEvent::Error { error } => {
                         Err(ProviderError::Sse(error.message))?;
                     }
                     _ => {}
                 }
+            }
+
+            if !saw_terminal {
+                Err(ProviderError::StreamIncomplete { received_bytes })?;
             }
         }
     }

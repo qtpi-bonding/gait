@@ -319,10 +319,12 @@ impl Provider for OpenAIProvider {
             let mut tool_args:  HashMap<u32, String> = HashMap::new();
 
             let mut sse = resp.bytes_stream().eventsource();
+            let mut saw_terminal = false;
+            let mut received_bytes: usize = 0;
 
             while let Some(event) = sse.next().await {
                 let event = event.map_err(|e| ProviderError::Sse(e.to_string()))?;
-                if event.data == "[DONE]" { break; }
+                if event.data == "[DONE]" { saw_terminal = true; break; }
                 if event.data.is_empty() { continue; }
 
                 let chunk: StreamChunkData = match serde_json::from_str(&event.data) {
@@ -342,6 +344,7 @@ impl Provider for OpenAIProvider {
                 for choice in &chunk.choices {
                     if let Some(text) = &choice.delta.content {
                         if !text.is_empty() {
+                            received_bytes += text.len();
                             yield StreamChunk::Text(text.clone());
                         }
                     }
@@ -378,8 +381,13 @@ impl Provider for OpenAIProvider {
                             yield StreamChunk::ToolCallComplete { tool_call_id: id, tool_name: name, args };
                         }
                         yield StreamChunk::Done;
+                        saw_terminal = true;
                     }
                 }
+            }
+
+            if !saw_terminal {
+                Err(ProviderError::StreamIncomplete { received_bytes })?;
             }
         };
 

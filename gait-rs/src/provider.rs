@@ -58,6 +58,8 @@ pub enum ProviderError {
     Http { status: u16, body: String },
     #[error("SSE parse error: {0}")]
     Sse(String),
+    #[error("stream ended after {received_bytes} bytes with no terminal marker")]
+    StreamIncomplete { received_bytes: usize },
     #[error("Serialization error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("Network error: {0}")]
