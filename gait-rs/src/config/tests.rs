@@ -444,6 +444,7 @@ fn llm_params_merged_with_agent_wins() {
             effort: Some("low".into()),
             top_k: None,
             thinking: None,
+            strict_tools: None,
         }),
         openai: None,
         gemini: None,
@@ -557,7 +558,15 @@ fn append_sandbox_network_host_creates_nested_entry() {
     super::append_sandbox_network_host(dir.path(), "api.example.com").unwrap();
     let raw = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
     let val: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    // network is an array of host strings when it was formerly Off
     let hosts = val["sandbox"]["network"].as_array().unwrap();
     assert_eq!(hosts[0].as_str().unwrap(), "api.example.com");
+}
+
+#[test]
+fn strict_tools_round_trips_and_defaults_none() {
+    use crate::config::OpenAILlmParamsConfig;
+    let c: OpenAILlmParamsConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(c.strict_tools, None);
+    let c: OpenAILlmParamsConfig = serde_json::from_str(r#"{"strict_tools": true}"#).unwrap();
+    assert_eq!(c.strict_tools, Some(true));
 }

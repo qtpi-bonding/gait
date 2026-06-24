@@ -219,6 +219,8 @@ pub struct AnthropicLlmParamsConfig {
     pub top_k: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<AnthropicThinkingConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict_tools: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -233,6 +235,8 @@ pub struct OpenAILlmParamsConfig {
     pub seed: Option<i64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stop: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict_tools: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
