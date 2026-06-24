@@ -20,6 +20,7 @@ pub mod read;
 pub mod run_workflow;
 pub mod shell;
 pub mod spawn_agent;
+pub mod strict;
 pub mod structured_done;
 pub mod webfetch;
 pub mod write;
