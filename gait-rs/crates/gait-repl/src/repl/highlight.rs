@@ -65,6 +65,8 @@ pub(crate) fn classify(line: &str, shell_path: &Path, _codebase: &Path) -> Vec<(
 pub struct GaitHighlighter {
     pub shell_history_path: PathBuf,
     pub codebase: PathBuf,
+    /// Theme color for plain user input text.
+    pub user_msg: Color,
 }
 
 impl Highlighter for GaitHighlighter {
@@ -72,7 +74,7 @@ impl Highlighter for GaitHighlighter {
         let mut st = StyledText::new();
         for (kind, text) in classify(line, &self.shell_history_path, &self.codebase) {
             let style = match kind {
-                Kind::Plain => Style::new(),
+                Kind::Plain => Style::new().fg(self.user_msg),
                 Kind::Command => Style::new().fg(Color::Cyan),
                 Kind::Bang => Style::new().fg(Color::Green),
                 Kind::RefOk => Style::new().fg(Color::Blue),

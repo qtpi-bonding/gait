@@ -78,15 +78,9 @@ fn to_ccolor(r: u8, g: u8, b: u8) -> CColor {
 fn themed_skin(theme: &Theme) -> MadSkin {
     let accent = to_ccolor(theme.accent.0, theme.accent.1, theme.accent.2);
 
-    let code_block_color = if theme.is_dark {
-        to_ccolor(0x00, 0x62, 0x80)
-    } else {
-        to_ccolor(0x00, 0xC3, 0xFF)
-    };
-
     let mut skin = MadSkin::default();
     skin.inline_code.set_fgbg(accent, CColor::Reset);
-    skin.code_block.set_fgbg(code_block_color, CColor::Reset);
+    skin.code_block.set_fgbg(accent, CColor::Reset);
     skin.quote_mark = termimad::StyledChar::from_fg_char(CColor::DarkGrey, '▐');
     skin.horizontal_rule = termimad::StyledChar::from_fg_char(CColor::DarkGrey, '─');
     skin
@@ -138,19 +132,15 @@ impl ReplRenderer {
 
     fn paint_view_item(&self, v: &ReplViewItem) {
         match v {
-            ReplViewItem::BlockStart { num, text } => {
-                let first = format!("{}{:>3}\u{2502}{} ", DIM_FG, num, RESET);
-                emit_wrapped(&first, "     ", text);
-            }
-            ReplViewItem::BlockCont { text } => {
-                emit_wrapped("     ", "     ", text);
-            }
-            ReplViewItem::BlockEnd { num } => {
-                eprint!("{}{:>3}\u{2502}{}\r\n", DIM_FG, num, RESET);
+            ReplViewItem::Block { num, content } => {
+                self.paint_block(*num, content);
             }
             ReplViewItem::DoneStart { text } => {
                 let first = format!("{}  \u{2713}\u{2502}{} ", self.theme.success.fg(), RESET);
                 emit_wrapped(&first, "     ", text);
+            }
+            ReplViewItem::DoneCont { text } => {
+                emit_wrapped("     ", "     ", text);
             }
             ReplViewItem::ToolResult {
                 ok,
@@ -198,6 +188,35 @@ impl ReplRenderer {
             ReplViewItem::Spacing => {
                 eprint!("\r\n");
             }
+        }
+    }
+
+    /// Render a numbered assistant block through termimad so markdown (bold, code,
+    /// headers, etc.) is formatted. The gutter (`NNN│`) appears on the first
+    /// rendered line; continuation lines get a plain `     ` indent to align under
+    /// the content column.
+    fn paint_block(&self, num: usize, content: &str) {
+        let term_w = crossterm::terminal::size()
+            .map(|(w, _)| w as usize)
+            .unwrap_or(80);
+        let content_w = term_w.saturating_sub(GUTTER);
+        // Render markdown to an ANSI-colored string via termimad.
+        let rendered = {
+            let text = self.skin.text(content, Some(content_w));
+            format!("{text}")
+        };
+        let mut is_first = true;
+        for line in rendered.lines() {
+            if is_first {
+                eprint!("{}{:>3}\u{2502}{} {}\r\n", DIM_FG, num, RESET, line);
+                is_first = false;
+            } else {
+                eprint!("     {}\r\n", line);
+            }
+        }
+        if is_first {
+            // empty render — just the gutter
+            eprint!("{}{:>3}\u{2502}{}\r\n", DIM_FG, num, RESET);
         }
     }
 
@@ -285,7 +304,7 @@ mod tests {
         let r = ReplRenderer::new(Theme::detect());
         let mut state = ReplState::new();
         state.pending.push(ReplItem::Block {
-            content: "hello".into(),
+            content: "hello world".into(),
             block_num: 1,
         });
         state.pending.push(ReplItem::Spacing);

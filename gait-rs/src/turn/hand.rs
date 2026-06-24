@@ -83,11 +83,19 @@ pub async fn run_hand(config: HandConfig) {
     };
 
     // Convert Impulse.args (Option<pbjson_types::Struct>) → serde_json::Value.
-    let args_json: serde_json::Value = impulse
-        .args
-        .as_ref()
-        .map(|s| serde_json::to_value(s).unwrap_or(serde_json::Value::Object(Default::default())))
-        .unwrap_or(serde_json::Value::Object(Default::default()));
+    // pbjson_types stores all numbers as f64, so integer fields come out as floats
+    // (e.g. `limit: 3.0`). Coerce whole-number floats back to integers so serde
+    // can deserialize them into u64/i64 fields without error.
+    let args_json: serde_json::Value = {
+        let raw = impulse
+            .args
+            .as_ref()
+            .map(|s| {
+                serde_json::to_value(s).unwrap_or(serde_json::Value::Object(Default::default()))
+            })
+            .unwrap_or(serde_json::Value::Object(Default::default()));
+        crate::tools::coerce_int_params(raw)
+    };
 
     // For `shell`, inject impulse.cwd into args as `__cwd` so the tool reads the
     // session's active working directory without re-reading the session log itself.

@@ -133,6 +133,23 @@ impl Sandbox for SeatbeltSandbox {
 
 // ── platform default ─────────────────────────────────────────────────────────
 
+/// Paths that are always readable on this platform regardless of the `readable` config —
+/// required for the process to exec, resolve DNS, and do TLS. Returned without the internal
+/// `@` literal-vs-subpath sentinel. Exposed so callers (e.g. `gait init`) can surface these
+/// in generated config comments so users know what the sandbox implicitly allows.
+pub fn platform_system_reads() -> &'static [&'static str] {
+    #[cfg(target_os = "macos")]
+    {
+        &[
+            "/", "/usr", "/System", "/Library", "/bin", "/sbin", "/private", "/var", "/etc", "/dev",
+        ]
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        &[]
+    }
+}
+
 /// Return the appropriate sandbox for this platform.
 pub fn platform_sandbox() -> Box<dyn Sandbox> {
     if cfg!(target_os = "linux") {
@@ -556,6 +573,31 @@ mod tests {
             Path::new("/tmp/jail"),
         );
         assert!(scope.read_all);
+    }
+
+    #[test]
+    fn codebase_var_expands_in_readable_and_writable() {
+        use crate::config::SandboxConfig;
+        use crate::types::ToolAccess;
+        use std::path::{Path, PathBuf};
+        let cfg = SandboxConfig {
+            readable: vec!["$CODEBASE".into()],
+            writable: vec!["$CODEBASE".into()],
+            ..Default::default()
+        };
+        let codebase = Path::new("/repo/myproject");
+        let scope = super::ceiling::compute_scope_nofs(
+            ToolAccess {
+                reads: true,
+                writes: true,
+                ..Default::default()
+            },
+            &cfg,
+            codebase,
+            Path::new("/tmp/jail"),
+        );
+        assert!(scope.readable.contains(&PathBuf::from("/repo/myproject")));
+        assert!(scope.writable.contains(&PathBuf::from("/repo/myproject")));
     }
 
     // ── compute_scope_nofs tests ──────────────────────────────────────────────
@@ -988,17 +1030,17 @@ pub mod ceiling {
             writable.push(temp_jail.to_path_buf());
         }
 
-        // Extend from config (tilde-expand "~" prefix paths).
+        // Extend from config (expand "~/" and "$CODEBASE" in paths).
         // `"*"` is the open-read sentinel — it sets read_all=true and must not be
-        // added as a literal path, so filter it out before tilde-expanding.
+        // added as a literal path, so filter it out before expanding.
         let home = dirs_next::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
         let read_all = cfg.readable.iter().any(|r| r == "*");
         for p in cfg.readable.iter().filter(|r| *r != "*") {
-            readable.push(expand_tilde(p, &home));
+            readable.push(expand_path_vars(p, &home, codebase));
         }
         if access.writes {
             for p in &cfg.writable {
-                writable.push(expand_tilde(p, &home));
+                writable.push(expand_path_vars(p, &home, codebase));
             }
         }
 
@@ -1032,8 +1074,13 @@ pub mod ceiling {
         }
     }
 
-    fn expand_tilde(p: &str, home: &Path) -> PathBuf {
-        if let Some(rest) = p.strip_prefix("~/") {
+    /// Expand `~/` (home dir) and `$CODEBASE` (codebase root) in a config path string.
+    fn expand_path_vars(p: &str, home: &Path, codebase: &Path) -> PathBuf {
+        if let Some(rest) = p.strip_prefix("$CODEBASE/") {
+            codebase.join(rest)
+        } else if p == "$CODEBASE" {
+            codebase.to_path_buf()
+        } else if let Some(rest) = p.strip_prefix("~/") {
             home.join(rest)
         } else if p == "~" {
             home.to_path_buf()

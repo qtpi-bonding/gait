@@ -90,15 +90,47 @@ pub fn scaffold_gait_dir(gait_dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(gait_dir.join("sessions"))?;
 
     // gait.jsonc — default config (never clobber).
-    // allow + sandbox must match gait_core::config::defaults::default_allow() /
-    // default_sandbox() so that a freshly-init'd dir is indistinguishable from
-    // a no-config-file run in terms of runtime behavior.
+    // allow must match gait_core::config::defaults::default_allow().
+    // sandbox.on matches default_sandbox().on; readable/writable use $CODEBASE
+    // (equivalent at runtime since compute_scope auto-injects the codebase, but
+    // explicit so users can see and extend the list).
     let config_path = gait_dir.join("gait.jsonc");
     if !config_path.exists() {
-        std::fs::write(
-            &config_path,
-            "{\n  // gait configuration\n  \"model\": \"minimax/MiniMax-M3\",\n  // Allow list: tools the agent may call without a human approval prompt.\n  // Matches the compiled-in read-only default (gait_core::config::defaults::default_allow).\n  \"allow\": [\"read\", \"glob\", \"grep\", \"ls\", \"clarify\", \"inform\"],\n  // Sandbox: kernel write-enforcement. on=true, network off, no extra readable/writable paths.\n  // Matches default_sandbox(). The codebase root is auto-injected by the scope-computation layer.\n  \"sandbox\": { \"on\": true, \"readable\": [], \"writable\": [], \"network\": false },\n  // Tier 1 config-defined tools: shell commands the LLM can call by name\n  \"tools\": []\n}\n",
-        )?;
+        let system_reads = gait_core::sandbox::platform_system_reads();
+        let system_reads_comment = if system_reads.is_empty() {
+            "  //   (none on this platform)".to_string()
+        } else {
+            format!("  //   {}", system_reads.join("  "))
+        };
+        let config = format!(
+            r#"{{
+  // gait configuration
+  "model": "minimax/MiniMax-M3",
+  // Allow list: tools the agent may call without a human approval prompt.
+  "allow": ["read", "glob", "grep", "ls", "clarify", "inform"],
+  // Sandbox: kernel write-enforcement (Seatbelt on macOS, Landlock on Linux).
+  //
+  // readable / writable accept paths and these special tokens:
+  //   $CODEBASE  expands to the --codebase path at runtime
+  //   ~/...      expands to your home directory
+  //
+  // Platform paths always readable regardless of 'readable' (OS bootstrap requirement):
+{system_reads_comment}
+  //
+  // The codebase root is always readable+writable for tools that need it,
+  // regardless of what you list here.
+  "sandbox": {{
+    "on": true,
+    "readable": ["$CODEBASE"],
+    "writable": ["$CODEBASE"],
+    "network": false
+  }},
+  // Tier 1 config-defined tools: shell commands the LLM can call by name
+  "tools": []
+}}
+"#
+        );
+        std::fs::write(&config_path, config)?;
     }
 
     // .gitignore — merge required entries, no duplicates

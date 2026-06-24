@@ -9,7 +9,7 @@ use std::process::Command;
 use std::rc::Rc;
 
 use crate::repl::{bang_command_str, is_bang_command};
-use crate::theme::RESET;
+use crate::theme::{DIM_FG, RESET};
 use crate::ui::{ReplBuilder, ViewSignal};
 use gait_core::embed::{user_turn_events, Diag, TurnSink, TurnSource, TurnStart};
 use gait_core::expand::{expand_input, ExpandCtx};
@@ -56,21 +56,26 @@ impl TurnSink for ReplSink {
     fn result(&mut self, r: &TurnResult) {
         match r {
             TurnResult::Cancelled => {
-                eprint!("\x1b[2m\u{2298} interrupted\x1b[0m\r\n");
+                eprint!("{}\u{2298} interrupted{}\r\n", DIM_FG, RESET);
             }
             TurnResult::Unlock { items } => {
+                let warning_fg = self.shared.borrow().builder.theme().warning.fg();
                 eprint!(
-                    "\r\n\x1b[33msandbox: {} item(s) need unlock\x1b[0m\r\n",
-                    items.len()
+                    "\r\n{}sandbox: {} item(s) need unlock{}\r\n",
+                    warning_fg,
+                    items.len(),
+                    RESET
                 );
                 for item in items {
                     eprint!(
-                        "  \x1b[2m[{dim}] {resource}\x1b[0m\r\n",
-                        dim = item.dimension,
-                        resource = item.resource
+                        "  {}[{}] {}{}\r\n",
+                        DIM_FG, item.dimension, item.resource, RESET
                     );
                 }
-                eprint!("  \x1b[2mrun: /unlock [once|session|global|agent]\x1b[0m\r\n");
+                eprint!(
+                    "  {}run: /unlock [once|session|global|agent]{}\r\n",
+                    DIM_FG, RESET
+                );
             }
             _ => {}
         }
@@ -117,11 +122,22 @@ impl ReplSource {
             .join("log.jsonl")
     }
 
-    fn model_label(&self) -> String {
+    fn agent_label(&self) -> String {
         self.agent_path
             .as_ref()
             .and_then(|p| p.file_stem().and_then(|s| s.to_str()))
             .unwrap_or("default")
+            .to_string()
+    }
+
+    /// Short model name: the part after the first `/` in the resolved model string,
+    /// e.g. `"anthropic/claude-haiku-..."` → `"claude-haiku-..."`, `"minimax/m3"` → `"m3"`.
+    fn model_short(&self) -> String {
+        let cfg = gait_core::config::load_config(&self.gait_dir);
+        cfg.model
+            .as_deref()
+            .and_then(|m| m.split_once('/').map(|(_, s)| s))
+            .unwrap_or("?")
             .to_string()
     }
 }
@@ -172,13 +188,17 @@ impl TurnSource for ReplSource {
             // `gait_core::git::Repos` does not expose a `current_branch` method;
             // leave empty until the method is added to the Repos API.
             let branch = String::new();
-            let session_short = self.session_id.chars().take(4).collect::<String>();
             let open_node = None; // chat's degenerate node; non-chat workflows set this later.
+            let indicator = {
+                let accent = self.shared.borrow().builder.theme().accent.fg();
+                format!("{accent}> {RESET}")
+            };
             let prompt = crate::repl::GaitPrompt {
-                model: self.model_label(),
-                session_short,
+                agent: self.agent_label(),
+                model: self.model_short(),
                 branch,
                 open_node,
+                indicator,
             };
             // Bind readline to a local so the RefCell borrow is released before the
             // match arms (which borrow `shared` again).

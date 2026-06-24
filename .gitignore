@@ -36,3 +36,4 @@ CLAUDE.local.md
 AGENTS.md
 GEMINI.md
 .mcp.json
+Makefile.local
