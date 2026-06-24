@@ -80,6 +80,20 @@ impl AnthropicProvider {
             sse,
         }
     }
+
+    /// Whether to request strict tool use. Explicit config wins; otherwise
+    /// default on only for the real Anthropic API host (compatible third-party
+    /// hosts may not implement grammar-constrained sampling).
+    ///
+    /// NOTE: `base_url` is `Option<String>` and `None` means the default
+    /// real-Anthropic host — so `None` must resolve to `true`.
+    fn resolve_strict(&self, cfg: Option<bool>) -> bool {
+        cfg.unwrap_or_else(|| {
+            self.base_url
+                .as_deref()
+                .map_or(true, |u| u.contains("api.anthropic.com"))
+        })
+    }
 }
 
 /// Assemble the Anthropic message array: convert messages, place the rolling
@@ -176,13 +190,30 @@ impl Provider for AnthropicProvider {
             Some(AnthropicSystem::Text(system.into()))
         };
 
+        let want_strict =
+            self.resolve_strict(params.anthropic.as_ref().and_then(|a| a.strict_tools));
         let mut oai_tools: Vec<AnthropicTool> = tools
             .iter()
-            .map(|t| AnthropicTool {
-                name: t.name().to_string(),
-                description: crate::types::render_description(t.as_ref()),
-                input_schema: t.parameters().clone(),
-                cache_control: None,
+            .map(|t| {
+                let base = t.parameters().clone();
+                let (schema, strict) = if want_strict {
+                    match crate::tools::strict::to_strict_schema(
+                        &base,
+                        crate::tools::strict::StrictDialect::Anthropic,
+                    ) {
+                        Some(s) => (s, Some(true)),
+                        None => (base, None), // un-strictifiable tool falls back individually
+                    }
+                } else {
+                    (base, None)
+                };
+                AnthropicTool {
+                    name: t.name().to_string(),
+                    description: crate::types::render_description(t.as_ref()),
+                    input_schema: schema,
+                    strict,
+                    cache_control: None,
+                }
             })
             .collect();
 
@@ -379,5 +410,49 @@ mod cache_prefix_tests {
             prefix(None),
             "stripping the tail must recover the no-tail prefix"
         );
+    }
+}
+
+#[cfg(test)]
+mod strict_tool_tests {
+    use super::*;
+    use crate::tools::strict::{to_strict_schema, StrictDialect};
+
+    #[test]
+    fn strict_tool_gets_strict_flag_and_transformed_schema() {
+        // schema with one required + one optional field
+        let base = serde_json::json!({
+            "type": "object",
+            "properties": {"a": {"type": "string"}, "b": {"type": "integer"}},
+            "required": ["a"]
+        });
+        let strict = to_strict_schema(&base, StrictDialect::Anthropic).unwrap();
+        let tool = AnthropicTool {
+            name: "t".into(),
+            description: "d".into(),
+            input_schema: strict,
+            strict: Some(true),
+            cache_control: None,
+        };
+        let v = serde_json::to_value(&tool).unwrap();
+        assert_eq!(v["strict"], serde_json::json!(true));
+        assert_eq!(
+            v["input_schema"]["additionalProperties"],
+            serde_json::json!(false)
+        );
+        assert_eq!(v["input_schema"]["required"], serde_json::json!(["a"])); // optional kept
+    }
+
+    #[test]
+    fn non_strict_tool_omits_strict_field() {
+        let tool = AnthropicTool {
+            name: "t".into(),
+            description: "d".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+            strict: None,
+            cache_control: None,
+        };
+        let v = serde_json::to_value(&tool).unwrap();
+        assert!(v.get("strict").is_none());
     }
 }
