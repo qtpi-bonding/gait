@@ -1,5 +1,5 @@
 use futures_util::StreamExt;
-use gait_core::provider::{ProviderError, StreamChunk};
+use gait_core::provider::{Provider, ProviderError, StreamChunk};
 use gait_core::{load_provider, Message, MessageContent};
 
 #[tokio::test]
@@ -108,7 +108,13 @@ async fn stream_ending_without_message_stop_yields_incomplete() {
         gait_core::transport::TransportConfig::default(),
     );
     let mut stream = provider
-        .stream("sys", &[], &[], &Default::default(), None)
+        .stream(
+            "sys",
+            &[],
+            &[],
+            &gait_core::config::LlmParamsConfig::default(),
+            None,
+        )
         .await
         .unwrap();
 
@@ -162,7 +168,13 @@ async fn partial_usage_then_incomplete_is_accounted_once() {
         gait_core::transport::TransportConfig::default(),
     );
     let mut stream = provider
-        .stream("sys", &[], &[], &Default::default(), None)
+        .stream(
+            "sys",
+            &[],
+            &[],
+            &gait_core::config::LlmParamsConfig::default(),
+            None,
+        )
         .await
         .unwrap();
 
