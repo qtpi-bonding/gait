@@ -111,7 +111,7 @@ impl ReplBuilder {
     }
 
     fn run_clarify(&mut self, items: Vec<pb::ClarifyItem>) -> anyhow::Result<InteractionOutcome> {
-        let prompt_str = format!("{}", RESET);
+        let prompt_str = RESET.to_string();
         let mut replies = Vec::new();
 
         let bar = "\u{2500}".repeat(56);
@@ -155,7 +155,7 @@ impl ReplBuilder {
     }
 
     fn run_inform(&mut self, items: Vec<pb::InformItem>) -> anyhow::Result<InteractionOutcome> {
-        let prompt_str = format!("{}", RESET);
+        let prompt_str = RESET.to_string();
         let mut replies = Vec::new();
 
         let bar = "\u{2500}".repeat(57);

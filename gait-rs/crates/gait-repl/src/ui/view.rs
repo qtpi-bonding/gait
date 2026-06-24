@@ -119,7 +119,7 @@ pub(crate) fn clean_tool_output(raw: &str) -> Vec<String> {
         })
         .collect();
     match lines.len() {
-        0 | 1 | 2 => lines,
+        0..=2 => lines,
         _ => vec![
             lines[0].clone(),
             "\u{2026}".to_string(), // …
