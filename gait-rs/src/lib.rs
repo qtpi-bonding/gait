@@ -14,6 +14,7 @@ pub mod types;
 pub mod workflow_runner;
 
 pub mod embed;
+pub mod models_meta;
 pub mod port;
 pub mod profile;
 pub mod proto;
