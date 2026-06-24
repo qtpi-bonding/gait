@@ -14,6 +14,13 @@ pub struct OpenAIProvider {
 }
 
 impl OpenAIProvider {
+    /// Whether to request strict function calling. Explicit config wins; otherwise
+    /// default on only for the real OpenAI API host (MiniMax and other compatible
+    /// third-party hosts may not implement constrained decoding).
+    fn resolve_strict(&self, cfg: Option<bool>) -> bool {
+        cfg.unwrap_or_else(|| self.base_url.contains("api.openai.com"))
+    }
+
     pub fn new(
         api_key: String,
         model: String,
@@ -104,6 +111,8 @@ struct ChatToolDef {
     name: String,
     description: String,
     parameters: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    strict: Option<bool>,
 }
 
 // ── SSE response types ────────────────────────────────────────────────────────
@@ -259,15 +268,31 @@ impl Provider for OpenAIProvider {
         let url = format!("{}/chat/completions", self.base_url);
         let api_key = self.api_key.clone();
 
+        let want_strict = self.resolve_strict(params.openai.as_ref().and_then(|o| o.strict_tools));
         let chat_tools: Vec<ChatTool> = tools
             .iter()
-            .map(|t| ChatTool {
-                r#type: "function".into(),
-                function: ChatToolDef {
-                    name: t.name().to_string(),
-                    description: crate::types::render_description(t.as_ref()),
-                    parameters: t.parameters().clone(),
-                },
+            .map(|t| {
+                let base = t.parameters().clone();
+                let (parameters, strict) = if want_strict {
+                    match crate::tools::strict::to_strict_schema(
+                        &base,
+                        crate::tools::strict::StrictDialect::OpenAi,
+                    ) {
+                        Some(s) => (s, Some(true)),
+                        None => (base, None),
+                    }
+                } else {
+                    (base, None)
+                };
+                ChatTool {
+                    r#type: "function".into(),
+                    function: ChatToolDef {
+                        name: t.name().to_string(),
+                        description: crate::types::render_description(t.as_ref()),
+                        parameters,
+                        strict,
+                    },
+                }
             })
             .collect();
 
@@ -477,6 +502,56 @@ mod tests {
         assert_eq!(json["presence_penalty"].as_f64().unwrap() as f32, 0.2_f32);
         assert_eq!(json["seed"], 42);
         assert_eq!(json["stop"][0], "<|end|>");
+    }
+
+    #[test]
+    fn openai_strict_tool_serializes_strict_and_nullable_optionals() {
+        let base = serde_json::json!({
+            "type": "object",
+            "properties": {"a": {"type": "string"}, "b": {"type": "integer"}},
+            "required": ["a"]
+        });
+        let strict = crate::tools::strict::to_strict_schema(
+            &base,
+            crate::tools::strict::StrictDialect::OpenAi,
+        )
+        .unwrap();
+        let def = ChatToolDef {
+            name: "t".into(),
+            description: "d".into(),
+            parameters: strict,
+            strict: Some(true),
+        };
+        let v = serde_json::to_value(&def).unwrap();
+        assert_eq!(v["strict"], serde_json::json!(true));
+        assert_eq!(
+            v["parameters"]["additionalProperties"],
+            serde_json::json!(false)
+        );
+        // optional `b` is now required + nullable
+        let req: Vec<String> = v["parameters"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_string())
+            .collect();
+        assert!(req.contains(&"b".to_string()));
+        assert_eq!(
+            v["parameters"]["properties"]["b"]["type"],
+            serde_json::json!(["integer", "null"])
+        );
+    }
+
+    #[test]
+    fn openai_non_strict_tool_omits_strict() {
+        let def = ChatToolDef {
+            name: "t".into(),
+            description: "d".into(),
+            parameters: serde_json::json!({}),
+            strict: None,
+        };
+        let v = serde_json::to_value(&def).unwrap();
+        assert!(v.get("strict").is_none());
     }
 
     #[test]
