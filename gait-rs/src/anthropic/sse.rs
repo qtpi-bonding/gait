@@ -13,51 +13,44 @@ pub struct SseClient {
 }
 
 impl SseClient {
-    pub fn new(api_key: String) -> Self {
-        Self {
-            http: Client::new(),
-            api_key,
-            base_url: "https://api.anthropic.com/v1".into(),
-        }
-    }
-
-    pub fn with_base_url(api_key: String, base_url: String) -> Self {
-        Self {
-            http: Client::new(),
-            api_key,
-            base_url,
-        }
-    }
-
-    /// Issue a streaming POST and return a 'static stream of chunks.
-    /// Takes `self` by value so the returned stream is owned (not borrowing &self).
-    pub fn stream_request(
-        self,
-        body: serde_json::Value,
-    ) -> impl Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static {
-        let http = self.http;
-        let api_key = self.api_key;
+    /// Eager: POST, await response, check status. Returns the streaming Response.
+    /// This is the retry-eligible phase: classified errors flow out as `ProviderError`
+    /// and can be retried by `retry_phase1` (Task 5). No body is consumed here.
+    pub async fn connect(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response, ProviderError> {
         let url = format!("{}/messages", self.base_url);
+        let resp = self
+            .http
+            .post(&url)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(body)
+            .send()
+            .await
+            .map_err(ProviderError::from_reqwest)?;
 
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let retry_after = crate::transport::parse_retry_after(&resp);
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ProviderError::Http {
+                status,
+                body,
+                retry_after,
+            });
+        }
+        Ok(resp)
+    }
+
+    /// Lazy: consume the Response body as SSE. Terminal errors only.
+    /// Takes the `Response` by value so the returned stream is owned (not borrowing &self).
+    pub fn body_stream(
+        resp: reqwest::Response,
+    ) -> impl Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static {
         async_stream::try_stream! {
-            let resp = http
-                .post(&url)
-                .header("x-api-key", &api_key)
-                .header("anthropic-version", "2023-06-01")
-                .header("content-type", "application/json")
-                .json(&body)
-                .send()
-                .await
-                .map_err(ProviderError::from_reqwest)?;
-
-            if !resp.status().is_success() {
-                let status = resp.status().as_u16();
-                let retry_after = crate::transport::parse_retry_after(&resp);
-                let body = resp.text().await.unwrap_or_default();
-                Err(ProviderError::Http { status, body, retry_after })?;
-                return;
-            }
-
             let mut tool_name_map: HashMap<u32, String> = HashMap::new();
             let mut tool_id_map: HashMap<u32, String> = HashMap::new();
             let mut args_buf: HashMap<u32, String> = HashMap::new();

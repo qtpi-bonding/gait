@@ -101,7 +101,13 @@ async fn stream_ending_without_message_stop_yields_incomplete() {
     ])
     .await;
 
-    let provider = AnthropicProvider::new("k".into(), "claude-x".into(), Some(server.url()), false);
+    let provider = AnthropicProvider::new(
+        "k".into(),
+        "claude-x".into(),
+        Some(server.url()),
+        false,
+        gait_core::transport::TransportConfig::default(),
+    );
     let mut stream = provider
         .stream("sys", &[], &[], &Default::default(), None)
         .await

@@ -1,8 +1,6 @@
 use crate::provider::{ChunkStream, Provider, ProviderError, StreamChunk};
 use crate::types::{AssistantContent, AssistantPart, Message, MessageContent, Tool, Usage};
 use eventsource_stream::Eventsource;
-use futures_util::StreamExt;
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -11,14 +9,27 @@ pub struct OpenAIProvider {
     pub api_key: String,
     pub model: String,
     pub base_url: String,
+    http: reqwest::Client,
+    transport: crate::transport::TransportConfig,
 }
 
 impl OpenAIProvider {
-    pub fn new(api_key: String, model: String, base_url: Option<String>) -> Self {
+    pub fn new(
+        api_key: String,
+        model: String,
+        base_url: Option<String>,
+        transport: crate::transport::TransportConfig,
+    ) -> Self {
+        let http = reqwest::Client::builder()
+            .connect_timeout(transport.connect_timeout)
+            .build()
+            .expect("reqwest client");
         Self {
             api_key,
             model,
             base_url: base_url.unwrap_or_else(|| "https://api.openai.com/v1".into()),
+            http,
+            transport,
         }
     }
 }
@@ -244,7 +255,7 @@ impl Provider for OpenAIProvider {
         params: &crate::config::LlmParamsConfig,
         tail_context: Option<&str>,
     ) -> Result<ChunkStream, ProviderError> {
-        let http = Client::new();
+        let http = self.http.clone();
         let url = format!("{}/chat/completions", self.base_url);
         let api_key = self.api_key.clone();
 
@@ -298,106 +309,118 @@ impl Provider for OpenAIProvider {
 
         let body_value = serde_json::to_value(&body)?;
 
-        let stream = async_stream::try_stream! {
-            let resp = http
-                .post(&url)
-                .header("Authorization", format!("Bearer {}", api_key))
-                .header("Content-Type", "application/json")
-                .json(&body_value)
-                .send()
-                .await
-                .map_err(ProviderError::from_reqwest)?;
+        // Eager phase: POST and classify status. Errors here (Http, Connect, Timeout)
+        // propagate out of stream().await — the call site wraps this in a cancel-select.
+        let resp = http
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Content-Type", "application/json")
+            .json(&body_value)
+            .send()
+            .await
+            .map_err(ProviderError::from_reqwest)?;
 
-            if !resp.status().is_success() {
-                let status = resp.status().as_u16();
-                let retry_after = crate::transport::parse_retry_after(&resp);
-                let body = resp.text().await.unwrap_or_default();
-                Err(ProviderError::Http { status, body, retry_after })?;
-                return;
-            }
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let retry_after = crate::transport::parse_retry_after(&resp);
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ProviderError::Http {
+                status,
+                body,
+                retry_after,
+            });
+        }
 
-            let mut tool_ids:   HashMap<u32, String> = HashMap::new();
-            let mut tool_names: HashMap<u32, String> = HashMap::new();
-            let mut tool_args:  HashMap<u32, String> = HashMap::new();
-
-            let mut sse = resp.bytes_stream().eventsource();
-            let mut saw_terminal = false;
-            let mut received_bytes: usize = 0;
-
-            while let Some(event) = sse.next().await {
-                let event = event.map_err(|e| ProviderError::Sse(e.to_string()))?;
-                if event.data == "[DONE]" { saw_terminal = true; break; }
-                if event.data.is_empty() { continue; }
-
-                let chunk: StreamChunkData = match serde_json::from_str(&event.data) {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
-
-                if let Some(usage) = chunk.usage {
-                    yield StreamChunk::StepUsage(Usage {
-                        input_tokens: usage.prompt_tokens,
-                        output_tokens: usage.completion_tokens,
-                        cache_read_tokens: 0,
-                        cache_write_tokens: 0,
-                    });
-                }
-
-                for choice in &chunk.choices {
-                    if let Some(text) = &choice.delta.content {
-                        if !text.is_empty() {
-                            received_bytes += text.len();
-                            yield StreamChunk::Text(text.clone());
-                        }
-                    }
-
-                    if let Some(tcs) = &choice.delta.tool_calls {
-                        for tc in tcs {
-                            let idx = tc.index;
-                            if let Some(id) = &tc.id {
-                                tool_ids.entry(idx).or_insert_with(|| id.clone());
-                            }
-                            if let Some(f) = &tc.function {
-                                if let Some(name) = &f.name {
-                                    tool_names.entry(idx).or_insert_with(|| name.clone());
-                                }
-                                if let Some(args) = &f.arguments {
-                                    tool_args.entry(idx).or_default().push_str(args);
-                                    let id   = tool_ids.get(&idx).cloned().unwrap_or_default();
-                                    let name = tool_names.get(&idx).cloned().unwrap_or_default();
-                                    yield StreamChunk::ToolCallDelta {
-                                        tool_call_id: id,
-                                        tool_name: name,
-                                        args_delta: args.clone(),
-                                    };
-                                }
-                            }
-                        }
-                    }
-
-                    if matches!(choice.finish_reason.as_deref(), Some("tool_calls") | Some("stop")) {
-                        for (idx, args_str) in &tool_args {
-                            let id   = tool_ids.get(idx).cloned().unwrap_or_default();
-                            let name = tool_names.get(idx).cloned().unwrap_or_default();
-                            let args = crate::provider::parse_tool_args(args_str);
-                            yield StreamChunk::ToolCallComplete { tool_call_id: id, tool_name: name, args };
-                        }
-                        yield StreamChunk::Done;
-                        saw_terminal = true;
-                    }
-                }
-            }
-
-            if !saw_terminal {
-                Err(ProviderError::StreamIncomplete { received_bytes })?;
-            }
-        };
-
-        Ok(Box::pin(stream))
+        Ok(Box::pin(body_stream(resp)))
     }
 
     fn model_id(&self) -> &str {
         &self.model
+    }
+}
+
+/// Lazy SSE body parser for the OpenAI-compatible streaming shape.
+/// Errors here are terminal — the connect/classification already happened upstream.
+fn body_stream(
+    resp: reqwest::Response,
+) -> impl futures_util::Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static {
+    use futures_util::StreamExt;
+    async_stream::try_stream! {
+        let mut tool_ids:   HashMap<u32, String> = HashMap::new();
+        let mut tool_names: HashMap<u32, String> = HashMap::new();
+        let mut tool_args:  HashMap<u32, String> = HashMap::new();
+
+        let mut sse = resp.bytes_stream().eventsource();
+        let mut saw_terminal = false;
+        let mut received_bytes: usize = 0;
+
+        while let Some(event) = sse.next().await {
+            let event = event.map_err(|e| ProviderError::Sse(e.to_string()))?;
+            if event.data == "[DONE]" { saw_terminal = true; break; }
+            if event.data.is_empty() { continue; }
+
+            let chunk: StreamChunkData = match serde_json::from_str(&event.data) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            if let Some(usage) = chunk.usage {
+                yield StreamChunk::StepUsage(Usage {
+                    input_tokens: usage.prompt_tokens,
+                    output_tokens: usage.completion_tokens,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                });
+            }
+
+            for choice in &chunk.choices {
+                if let Some(text) = &choice.delta.content {
+                    if !text.is_empty() {
+                        received_bytes += text.len();
+                        yield StreamChunk::Text(text.clone());
+                    }
+                }
+
+                if let Some(tcs) = &choice.delta.tool_calls {
+                    for tc in tcs {
+                        let idx = tc.index;
+                        if let Some(id) = &tc.id {
+                            tool_ids.entry(idx).or_insert_with(|| id.clone());
+                        }
+                        if let Some(f) = &tc.function {
+                            if let Some(name) = &f.name {
+                                tool_names.entry(idx).or_insert_with(|| name.clone());
+                            }
+                            if let Some(args) = &f.arguments {
+                                tool_args.entry(idx).or_default().push_str(args);
+                                let id   = tool_ids.get(&idx).cloned().unwrap_or_default();
+                                let name = tool_names.get(&idx).cloned().unwrap_or_default();
+                                yield StreamChunk::ToolCallDelta {
+                                    tool_call_id: id,
+                                    tool_name: name,
+                                    args_delta: args.clone(),
+                                };
+                            }
+                        }
+                    }
+                }
+
+                if matches!(choice.finish_reason.as_deref(), Some("tool_calls") | Some("stop")) {
+                    for (idx, args_str) in &tool_args {
+                        let id   = tool_ids.get(idx).cloned().unwrap_or_default();
+                        let name = tool_names.get(idx).cloned().unwrap_or_default();
+                        let args = crate::provider::parse_tool_args(args_str);
+                        yield StreamChunk::ToolCallComplete { tool_call_id: id, tool_name: name, args };
+                    }
+                    yield StreamChunk::Done;
+                    saw_terminal = true;
+                }
+            }
+        }
+
+        if !saw_terminal {
+            Err(ProviderError::StreamIncomplete { received_bytes })?;
+        }
     }
 }
 

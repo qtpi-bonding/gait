@@ -39,15 +39,39 @@ pub struct AnthropicProvider {
     pub model: String,
     pub base_url: Option<String>,
     pub cache: bool,
+    http: reqwest::Client,
+    transport: crate::transport::TransportConfig,
+    sse: SseClient,
 }
 
 impl AnthropicProvider {
-    pub fn new(api_key: String, model: String, base_url: Option<String>, cache: bool) -> Self {
+    pub fn new(
+        api_key: String,
+        model: String,
+        base_url: Option<String>,
+        cache: bool,
+        transport: crate::transport::TransportConfig,
+    ) -> Self {
+        let http = reqwest::Client::builder()
+            .connect_timeout(transport.connect_timeout)
+            .build()
+            .expect("reqwest client");
+        let resolved_base = base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.anthropic.com/v1".into());
+        let sse = SseClient {
+            http: http.clone(),
+            api_key: api_key.clone(),
+            base_url: resolved_base,
+        };
         Self {
             api_key,
             model,
             base_url,
             cache,
+            http,
+            transport,
+            sse,
         }
     }
 }
@@ -228,11 +252,8 @@ impl Provider for AnthropicProvider {
             output_config,
         };
         let body = serde_json::to_value(&req)?;
-        let client = match &self.base_url {
-            Some(url) => SseClient::with_base_url(self.api_key.clone(), url.clone()),
-            None => SseClient::new(self.api_key.clone()),
-        };
-        let stream = client.stream_request(body);
+        let resp = self.sse.connect(&body).await?;
+        let stream = SseClient::body_stream(resp);
         Ok(Box::pin(stream))
     }
 

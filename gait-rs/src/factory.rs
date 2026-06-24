@@ -20,33 +20,49 @@ pub fn load_provider(
     let key = resolve_api_key(&provider_id, api_key)?;
 
     match provider_id.as_str() {
-        "anthropic" => Ok(Box::new(AnthropicProvider::new(key, model_id, None, true))),
-        "openai" => Ok(Box::new(OpenAIProvider::new(key, model_id, None))),
+        "anthropic" => Ok(Box::new(AnthropicProvider::new(
+            key,
+            model_id,
+            None,
+            true,
+            crate::transport::TransportConfig::default(),
+        ))),
+        "openai" => Ok(Box::new(OpenAIProvider::new(
+            key,
+            model_id,
+            None,
+            crate::transport::TransportConfig::default(),
+        ))),
         "groq" => Ok(Box::new(OpenAIProvider::new(
             key,
             model_id,
             Some("https://api.groq.com/openai/v1".into()),
+            crate::transport::TransportConfig::default(),
         ))),
         "mistral" => Ok(Box::new(OpenAIProvider::new(
             key,
             model_id,
             Some("https://api.mistral.ai/v1".into()),
+            crate::transport::TransportConfig::default(),
         ))),
         "openrouter" => Ok(Box::new(OpenAIProvider::new(
             key,
             model_id,
             Some("https://openrouter.ai/api/v1".into()),
+            crate::transport::TransportConfig::default(),
         ))),
         "deepinfra" => Ok(Box::new(OpenAIProvider::new(
             key,
             model_id,
             Some("https://api.deepinfra.com/v1/openai".into()),
+            crate::transport::TransportConfig::default(),
         ))),
         "minimax" => Ok(Box::new(AnthropicProvider::new(
             key,
             model_id,
             Some("https://api.minimax.io/anthropic/v1".into()),
             true,
+            crate::transport::TransportConfig::default(),
         ))),
         other => Err(FactoryError::UnknownProvider(other.into())),
     }

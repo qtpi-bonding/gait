@@ -873,16 +873,24 @@ pub async fn run_turn(
         );
         // `outgoing` is the per-step message list sent to the LLM (rebuilt from
         // the log every step under the log-first design).
-        let mut chunk_stream = provider
-            .stream(
-                &system_prompt,
-                &outgoing,
-                &tools,
-                &llm_params,
-                Some(session_state_body.as_str()),
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("provider error: {}", e))?;
+        // The eager-connect phase (Task 3): this `.await` performs the HTTP POST and
+        // returns a classified `ProviderError` if anything failed before the first
+        // byte. We must still Esc-cancel from here, so wrap it in the same
+        // cancel-select the loop below uses.
+        let stream_fut = provider.stream(
+            &system_prompt,
+            &outgoing,
+            &tools,
+            &llm_params,
+            Some(session_state_body.as_str()),
+        );
+        let mut chunk_stream = tokio::select! {
+            biased;
+            _ = cancel_token_fut(&cancel) => {
+                return Err(anyhow::anyhow!("provider cancelled during connect"));
+            }
+            res = stream_fut => res.map_err(|e| anyhow::anyhow!("provider error: {}", e))?,
+        };
 
         let mut step_text = String::new();
         let mut step_tool_calls: Vec<ToolCall> = vec![];
