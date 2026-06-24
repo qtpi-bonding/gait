@@ -253,7 +253,7 @@ impl Provider for AnthropicProvider {
         };
         let body = serde_json::to_value(&req)?;
         let resp = self.sse.connect(&body).await?;
-        let stream = SseClient::body_stream(resp);
+        let stream = crate::transport::guard_idle(SseClient::body_stream(resp), self.transport);
         Ok(Box::pin(stream))
     }
 

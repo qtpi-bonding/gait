@@ -331,7 +331,10 @@ impl Provider for OpenAIProvider {
             });
         }
 
-        Ok(Box::pin(body_stream(resp)))
+        Ok(Box::pin(crate::transport::guard_idle(
+            body_stream(resp),
+            self.transport,
+        )))
     }
 
     fn model_id(&self) -> &str {

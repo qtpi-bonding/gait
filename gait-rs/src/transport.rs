@@ -4,6 +4,8 @@
 //! intentionally not `serde`-derived. Defaults are the policy; tests can override
 //! individual fields by struct-literal.
 
+use crate::provider::{ProviderError, StreamChunk, TimeoutPhase};
+use futures_util::{Stream, StreamExt};
 use std::time::Duration;
 
 /// All knobs the LLM path cares about. `Default` *is* the production policy.
@@ -52,6 +54,42 @@ pub(crate) fn backoff_delay(cfg: &TransportConfig, attempt: u32) -> Duration {
     cap.mul_f64(frac)
 }
 
+/// Wrap a streaming response with three nested deadlines: TTFB on the first
+/// poll, idle between subsequent polls, and absolute as an overall ceiling.
+/// Emits the matching `ProviderError::Timeout { phase }` on overrun and stops
+/// the stream (terminal — the spec is retry-pre-first-byte-only).
+pub(crate) fn guard_idle(
+    inner: impl Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static,
+    cfg: TransportConfig,
+) -> impl Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static {
+    async_stream::stream! {
+        tokio::pin!(inner);
+        let deadline = tokio::time::Instant::now() + cfg.absolute_cap;
+        let mut first = true;
+        loop {
+            let gap = if first { cfg.ttfb_timeout } else { cfg.idle_timeout };
+            let phase = if first { TimeoutPhase::Ttfb } else { TimeoutPhase::Idle };
+            let next = inner.next();
+            tokio::select! {
+                biased;
+                _ = tokio::time::sleep_until(deadline) => {
+                    yield Err(ProviderError::Timeout { phase: TimeoutPhase::Absolute });
+                    return;
+                }
+                r = tokio::time::timeout(gap, next) => match r {
+                    Err(_)         => { yield Err(ProviderError::Timeout { phase }); return; }
+                    Ok(None)       => { return; }
+                    Ok(Some(item)) => {
+                        let stop = item.is_err();
+                        yield item;
+                        if stop { return; }
+                    }
+                },
+            }
+            first = false;
+        }
+    }
+}
 /// Parse the HTTP `Retry-After` header as a number of seconds. Returns `None`
 /// for missing, non-numeric, or HTTP-date headers (we only honour the delta-seconds
 /// form — it's what every LLM provider we talk to sends today).
@@ -74,11 +112,32 @@ mod tests {
     #[test]
     fn retryable_classification() {
         use std::time::Duration;
-        assert!(ProviderError::Http { status: 429, body: "".into(), retry_after: None }.is_retryable());
-        assert!(ProviderError::Http { status: 503, body: "".into(), retry_after: None }.is_retryable());
-        assert!(!ProviderError::Http { status: 400, body: "".into(), retry_after: None }.is_retryable());
-        assert!(ProviderError::Timeout { phase: TimeoutPhase::Ttfb }.is_retryable());
-        assert!(!ProviderError::Timeout { phase: TimeoutPhase::Idle }.is_retryable());
+        assert!(ProviderError::Http {
+            status: 429,
+            body: "".into(),
+            retry_after: None
+        }
+        .is_retryable());
+        assert!(ProviderError::Http {
+            status: 503,
+            body: "".into(),
+            retry_after: None
+        }
+        .is_retryable());
+        assert!(!ProviderError::Http {
+            status: 400,
+            body: "".into(),
+            retry_after: None
+        }
+        .is_retryable());
+        assert!(ProviderError::Timeout {
+            phase: TimeoutPhase::Ttfb
+        }
+        .is_retryable());
+        assert!(!ProviderError::Timeout {
+            phase: TimeoutPhase::Idle
+        }
+        .is_retryable());
         assert!(!ProviderError::StreamIncomplete { received_bytes: 0 }.is_retryable());
         assert!(!ProviderError::Overloaded.is_retryable());
         // Touch Duration so the import is not flagged as unused on minimal configs.
