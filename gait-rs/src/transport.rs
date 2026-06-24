@@ -6,7 +6,9 @@
 
 use crate::provider::{ProviderError, StreamChunk, TimeoutPhase};
 use futures_util::{Stream, StreamExt};
+use std::future::Future;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 /// All knobs the LLM path cares about. `Default` *is* the production policy.
 #[derive(Debug, Clone, Copy)]
@@ -90,6 +92,7 @@ pub(crate) fn guard_idle(
         }
     }
 }
+
 /// Parse the HTTP `Retry-After` header as a number of seconds. Returns `None`
 /// for missing, non-numeric, or HTTP-date headers (we only honour the delta-seconds
 /// form — it's what every LLM provider we talk to sends today).
@@ -102,6 +105,58 @@ pub(crate) fn parse_retry_after(resp: &reqwest::Response) -> Option<Duration> {
         .parse::<u64>()
         .ok()
         .map(Duration::from_secs)
+}
+
+/// Pre-first-byte retry loop. Runs `f` up to `cfg.max_attempts` times on
+/// classified retryable `ProviderError`s, with full-jitter exponential
+/// backoff (or `Retry-After` if the server supplied one). Cancel-aware: every
+/// `await` — both `f()` and the backoff sleep — is `select!`-ed against the
+/// cancel token, so an Esc during a retry never blocks the turn-cancel path.
+///
+/// Mid-stream errors (Sse/StreamIncomplete/Overloaded/Json/Other) are terminal
+/// per the spec; `is_retryable` returns false for them and we surface
+/// immediately.
+///
+/// v1: threading is the simpler outer `tokio::select!` already in `turn/mod.rs`
+/// — the call site cancels the whole `stream().await`, including any in-flight
+/// retry. The token here is a `CancellationToken::new()` placeholder so the
+/// helper is always cancel-aware; the call sites pass `&CancellationToken::new()`
+/// when no token is in scope (acceptable per the plan note).
+pub(crate) async fn retry_phase1<T, F, Fut>(
+    cfg: &TransportConfig,
+    cancel: &CancellationToken,
+    f: F,
+) -> Result<T, ProviderError>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<T, ProviderError>>,
+{
+    let mut attempt: u32 = 0;
+    loop {
+        let result = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(ProviderError::Other("cancelled".into())),
+            r = f() => r,
+        };
+        match result {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                let attempts_used = attempt + 1;
+                if !e.is_retryable() || attempts_used >= cfg.max_attempts as u32 {
+                    return Err(e);
+                }
+                let delay = e
+                    .retry_after()
+                    .unwrap_or_else(|| backoff_delay(cfg, attempt));
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return Err(ProviderError::Other("cancelled".into())),
+                    _ = tokio::time::sleep(delay) => {}
+                }
+                attempt += 1;
+            }
+        }
+    }
 }
 
 #[cfg(test)]

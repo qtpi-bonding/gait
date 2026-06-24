@@ -309,28 +309,37 @@ impl Provider for OpenAIProvider {
 
         let body_value = serde_json::to_value(&body)?;
 
-        // Eager phase: POST and classify status. Errors here (Http, Connect, Timeout)
-        // propagate out of stream().await — the call site wraps this in a cancel-select.
-        let resp = http
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
-            .json(&body_value)
-            .send()
-            .await
-            .map_err(ProviderError::from_reqwest)?;
-
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let retry_after = crate::transport::parse_retry_after(&resp);
-            let body = resp.text().await.unwrap_or_default();
-            return Err(ProviderError::Http {
-                status,
-                body,
-                retry_after,
-            });
-        }
-
+        // Pre-first-byte retry (Task 5): wrap the eager connect so a transient
+        // 429/5xx/Connect/Timeout is retried with full-jitter backoff before the
+        // first byte ever arrives. Cancel-continuity lives at the call site in
+        // turn/mod.rs (the outer select on `cancel_token_fut(&cancel)`), per the
+        // plan's v1 note; here we pass a fresh placeholder token.
+        let resp = crate::transport::retry_phase1(
+            &self.transport,
+            &tokio_util::sync::CancellationToken::new(),
+            || async {
+                let resp = http
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {}", api_key))
+                    .header("Content-Type", "application/json")
+                    .json(&body_value)
+                    .send()
+                    .await
+                    .map_err(ProviderError::from_reqwest)?;
+                if !resp.status().is_success() {
+                    let status = resp.status().as_u16();
+                    let retry_after = crate::transport::parse_retry_after(&resp);
+                    let body = resp.text().await.unwrap_or_default();
+                    return Err(ProviderError::Http {
+                        status,
+                        body,
+                        retry_after,
+                    });
+                }
+                Ok(resp)
+            },
+        )
+        .await?;
         Ok(Box::pin(crate::transport::guard_idle(
             body_stream(resp),
             self.transport,
