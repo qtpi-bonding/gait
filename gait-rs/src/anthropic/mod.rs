@@ -252,7 +252,17 @@ impl Provider for AnthropicProvider {
             output_config,
         };
         let body = serde_json::to_value(&req)?;
-        let resp = self.sse.connect(&body).await?;
+        // Pre-first-byte retry (Task 5): wrap the eager connect so a transient
+        // 429/5xx/Connect/Timeout is retried with full-jitter backoff before the
+        // first byte ever arrives. Cancel-continuity lives at the call site in
+        // turn/mod.rs (the outer select on `cancel_token_fut(&cancel)`), per the
+        // plan's v1 note; here we pass a fresh placeholder token.
+        let resp = crate::transport::retry_phase1(
+            &self.transport,
+            &tokio_util::sync::CancellationToken::new(),
+            || self.sse.connect(&body),
+        )
+        .await?;
         let stream = crate::transport::guard_idle(SseClient::body_stream(resp), self.transport);
         Ok(Box::pin(stream))
     }
