@@ -13,6 +13,7 @@ pub mod turn;
 pub mod types;
 pub mod workflow_runner;
 
+pub mod diagnostic;
 pub mod embed;
 pub mod models_meta;
 pub mod port;
