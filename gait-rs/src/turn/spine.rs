@@ -17,6 +17,59 @@ use crate::proto::wire;
 use crate::sandbox::{NetworkPolicy, SandboxScope};
 use crate::turn::nerve;
 
+// ── WatchdogCfg + watchdog_breach ────────────────────────────────────────────
+
+use crate::diagnostic::{Cap, Phase};
+
+#[derive(Clone, Copy)]
+pub(crate) struct WatchdogCfg {
+    pub stall_cap_ms: u64,
+    pub ping_ms: u64,
+    pub absolute_backstop_ms: u64, // guard_idle absolute_cap(600s) + 60s margin
+}
+
+impl Default for WatchdogCfg {
+    fn default() -> Self {
+        Self {
+            stall_cap_ms: 90_000,
+            ping_ms: 15_000,
+            absolute_backstop_ms: 660_000,
+        }
+    }
+}
+
+/// Pure decision. `since_last_ping_ms = None` until the first ping (cold-start grace:
+/// both caps disarmed). `tool_in_flight = !pending_calls.is_empty()` from the spine loop.
+pub(crate) fn watchdog_breach(
+    cfg: &WatchdogCfg,
+    phase: Phase,
+    phase_elapsed_ms: u64,
+    since_last_ping_ms: Option<u64>,
+    tool_in_flight: bool,
+) -> Option<&'static str> {
+    let Some(since) = since_last_ping_ms else {
+        return None;
+    };
+    if since > 2 * cfg.ping_ms {
+        return Some("no diagnostic ping (brain wedged)");
+    }
+    match phase.cap() {
+        Cap::StallCap => {
+            (phase_elapsed_ms > cfg.stall_cap_ms).then_some("phase exceeded stall_cap")
+        }
+        Cap::AbsoluteBackstop => (phase_elapsed_ms > cfg.absolute_backstop_ms)
+            .then_some("streaming exceeded absolute backstop"),
+        Cap::ToolAware => {
+            if tool_in_flight {
+                None
+            } else {
+                (phase_elapsed_ms > cfg.stall_cap_ms)
+                    .then_some("await_feedback stalled, no tool in flight")
+            }
+        }
+    }
+}
+
 // ── ProfileInputs + build_turn_profile ───────────────────────────────────────
 
 /// Inputs the spine needs to build the turn's `Profile` (parsed by the CLI/REPL
@@ -341,11 +394,37 @@ pub async fn relay_brain_turn(
     // any that are orphaned if the brain is killed before it returns results.
     let mut pending_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
 
+    let wd = WatchdogCfg::default();
+    let mut last_phase = crate::diagnostic::Phase::TurnBegin;
+    let mut last_phase_elapsed_ms: u64 = 0;
+    // None until the first ping → cold-start grace (watchdog disarmed).
+    let mut last_ping_at: Option<std::time::Instant> = None;
+
     sink.begin_turn();
     loop {
-        let signal = match nerve::read_signal(&mut child_stdout).await {
-            Ok(s) => s,
-            Err(_) => break, // brain exited / pipe closed
+        let read = nerve::read_signal(&mut child_stdout);
+        let timed = tokio::time::timeout(std::time::Duration::from_millis(wd.ping_ms), read).await;
+        let signal = match timed {
+            Ok(Ok(s)) => s,
+            Ok(Err(_)) => break, // pipe closed (brain exited)
+            Err(_) => {
+                // read timed out → fall through to the watchdog check
+                let since = last_ping_at.map(|t| t.elapsed().as_millis() as u64);
+                if let Some(reason) = watchdog_breach(
+                    &wd,
+                    last_phase,
+                    last_phase_elapsed_ms,
+                    since,
+                    !pending_calls.is_empty(),
+                ) {
+                    eprintln!("[gait] watchdog: {reason}");
+                    brain_failed = true;
+                    // TODO Task 5: replace with emit_terminal_failure
+                    let _ = group.kill_all();
+                    break;
+                }
+                continue;
+            }
         };
         let corr_id = signal.corr_id;
         match signal.body {
@@ -517,13 +596,30 @@ pub async fn relay_brain_turn(
                 // No Feedback needed — one-way signal like Append.
             }
             Some(signal::Body::Diagnostic(diag)) => {
-                // Watchdog state update is added in Task 3 (loop-local last_phase/last_ping).
-                // Task 2: debug-gated write only.
+                last_phase = crate::diagnostic::phase_from_str(&diag.phase);
+                last_phase_elapsed_ms = diag.elapsed_ms;
+                last_ping_at = Some(std::time::Instant::now());
                 if crate::diagnostic::debug_enabled() {
                     write_diagnostic_line(gait_dir, session_id, &diag.record_json);
                 }
             }
             _ => {}
+        }
+
+        // Watchdog: runs after every signal (in addition to every read-timeout).
+        let since = last_ping_at.map(|t| t.elapsed().as_millis() as u64);
+        if let Some(reason) = watchdog_breach(
+            &wd,
+            last_phase,
+            last_phase_elapsed_ms,
+            since,
+            !pending_calls.is_empty(),
+        ) {
+            eprintln!("[gait] watchdog: {reason}");
+            brain_failed = true;
+            // TODO Task 5: replace with emit_terminal_failure
+            let _ = group.kill_all();
+            break;
         }
     }
     sink.end_turn();
@@ -1432,7 +1528,8 @@ pub(super) fn test_ctx(ws: &std::path::Path, session_id: &str) -> SpineToolCtx {
 mod tests {
     use super::{
         brain_argv, build_subagent_feedback, build_turn_profile, enrich_permissions_preview,
-        error_feedback, handle_spawn_agent, test_ctx, ProfileInputs, SpawnAgentArgs,
+        error_feedback, handle_spawn_agent, test_ctx, watchdog_breach, ProfileInputs,
+        SpawnAgentArgs, WatchdogCfg,
     };
 
     #[test]
@@ -2429,5 +2526,56 @@ mod tests {
             .join(session)
             .join("log.jsonl")
             .exists());
+    }
+
+    // ── Watchdog logic tests ──────────────────────────────────────────────────
+
+    use crate::diagnostic::Phase;
+
+    fn wd() -> WatchdogCfg {
+        WatchdogCfg {
+            stall_cap_ms: 90_000,
+            ping_ms: 15_000,
+            absolute_backstop_ms: 660_000,
+        }
+    }
+
+    #[test]
+    fn phase_elapsed_cap_fires_while_alive() {
+        // Fast phase past stall_cap is a breach EVEN with a fresh ping.
+        assert!(
+            watchdog_breach(&wd(), Phase::AwaitingHeaders, 95_000, Some(1_000), false).is_some()
+        );
+    }
+
+    #[test]
+    fn no_ping_cap_fires_when_wedged() {
+        // streaming is "long", but no ping for >2*ping_ms means the runtime is wedged.
+        assert!(watchdog_breach(&wd(), Phase::Streaming, 10_000, Some(31_000), false).is_some());
+    }
+
+    #[test]
+    fn streaming_with_fresh_pings_is_not_a_breach() {
+        assert!(watchdog_breach(&wd(), Phase::Streaming, 120_000, Some(2_000), false).is_none());
+    }
+
+    #[test]
+    fn await_feedback_with_tool_in_flight_is_not_a_breach() {
+        assert!(watchdog_breach(&wd(), Phase::AwaitFeedback, 200_000, Some(2_000), true).is_none());
+        // …same phase, NO tool in flight, past stall_cap → breach.
+        assert!(watchdog_breach(&wd(), Phase::AwaitFeedback, 95_000, Some(2_000), false).is_some());
+    }
+
+    #[test]
+    fn no_ping_yet_disarms_both_caps() {
+        // Before the first ping (None), neither cap fires (cold-start grace).
+        assert!(watchdog_breach(&wd(), Phase::AwaitingHeaders, 95_000, None, false).is_none());
+    }
+
+    #[test]
+    fn fresh_pings_do_not_save_a_capped_fast_phase() {
+        let cfg = wd();
+        // ping just arrived (since=0) but awaiting_headers elapsed crossed stall_cap.
+        assert!(watchdog_breach(&cfg, Phase::AwaitingHeaders, 90_001, Some(0), false).is_some());
     }
 }

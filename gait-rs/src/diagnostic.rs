@@ -7,6 +7,9 @@
 //! never folded by `retrace`. Keeping the event proto out of this file is the
 //! structural guarantee that a diagnostic can never become a transcript event.
 
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +93,121 @@ impl DiagRecord {
     /// One compact JSON object, no trailing newline (the writer adds it).
     pub fn to_json_line(&self) -> String {
         serde_json::to_string(self).unwrap_or_else(|_| "{\"event\":\"error\"}".into())
+    }
+}
+
+// ── PhaseCell + process-global ────────────────────────────────────────────────
+
+#[derive(Clone)]
+pub struct PhaseCell(Arc<Mutex<(Phase, Instant)>>);
+
+impl PhaseCell {
+    pub fn new() -> Self {
+        Self(Arc::new(Mutex::new((Phase::TurnBegin, Instant::now()))))
+    }
+    pub fn set(&self, p: Phase) {
+        let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        *g = (p, Instant::now());
+    }
+    pub fn current(&self) -> Phase {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).0
+    }
+    pub fn elapsed_ms(&self) -> u64 {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .1
+            .elapsed()
+            .as_millis() as u64
+    }
+}
+impl Default for PhaseCell {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+static BRAIN_PHASE: OnceLock<PhaseCell> = OnceLock::new();
+
+/// Install the brain-process phase cell (call ONCE at brain startup). Returns a clone.
+pub fn install_brain_phase_cell() -> PhaseCell {
+    BRAIN_PHASE.get_or_init(PhaseCell::new).clone()
+}
+
+/// Set the current phase. No-op if not installed (spine process / tests).
+pub fn set_phase(p: Phase) {
+    if let Some(c) = BRAIN_PHASE.get() {
+        c.set(p);
+    }
+}
+
+/// (phase, elapsed_ms) of the installed cell, or None.
+pub fn current_phase() -> Option<(Phase, u64)> {
+    BRAIN_PHASE.get().map(|c| (c.current(), c.elapsed_ms()))
+}
+
+/// Phase ↔ snake_case string (matches the serde rename_all, but explicit for the
+/// wire `phase` field on the Diagnostic signal so the spine can route without parsing JSON).
+pub fn phase_str(p: Phase) -> &'static str {
+    match p {
+        Phase::TurnBegin => "turn_begin",
+        Phase::AwaitFeedback => "await_feedback",
+        Phase::LlmRequest => "llm_request",
+        Phase::Connecting => "connecting",
+        Phase::AwaitingHeaders => "awaiting_headers",
+        Phase::AwaitingFirstByte => "awaiting_first_byte",
+        Phase::Streaming => "streaming",
+        Phase::StreamEnd => "stream_end",
+        Phase::TurnEnd => "turn_end",
+        Phase::Unknown => "unknown",
+    }
+}
+
+pub fn phase_from_str(s: &str) -> Phase {
+    match s {
+        "turn_begin" => Phase::TurnBegin,
+        "await_feedback" => Phase::AwaitFeedback,
+        "llm_request" => Phase::LlmRequest,
+        "connecting" => Phase::Connecting,
+        "awaiting_headers" => Phase::AwaitingHeaders,
+        "awaiting_first_byte" => Phase::AwaitingFirstByte,
+        "streaming" => Phase::Streaming,
+        "stream_end" => Phase::StreamEnd,
+        "turn_end" => Phase::TurnEnd,
+        _ => Phase::Unknown,
+    }
+}
+
+impl DiagRecord {
+    /// A lightweight phase ping: phase + elapsed only (no attempt/detail).
+    pub fn ping(session: &str, turn: u32, model: &str, phase: Phase, elapsed_ms: u64) -> Self {
+        Self {
+            ts: now_unix_millis(),
+            mono_ms: elapsed_ms,
+            session: session.into(),
+            turn,
+            phase,
+            event: PhaseEvent::Heartbeat,
+            elapsed_ms,
+            attempt: None,
+            model: model.into(),
+            detail: None,
+        }
+    }
+    /// A terminal failure record (spine-side; session known, turn/model best-effort).
+    pub fn terminal(session: &str, phase: Phase, detail: &str) -> Self {
+        Self {
+            ts: now_unix_millis(),
+            mono_ms: 0,
+            session: session.into(),
+            turn: 0,
+            phase,
+            event: PhaseEvent::Error,
+            elapsed_ms: 0,
+            attempt: None,
+            model: String::new(),
+            detail: Some(detail.into()),
+        }
     }
 }
 

@@ -24,7 +24,9 @@ use crate::proto::Recorder;
 use crate::turn::nerve::{self, NerveWriter};
 use crate::workflow_runner::WorkflowRunner;
 
-use gait_proto::gait::sandbox::v1::{signal, Append, Notify, Signal, StreamForward, Terminated};
+use gait_proto::gait::sandbox::v1::{
+    signal, Append, Diagnostic, Notify, Signal, StreamForward, Terminated,
+};
 
 // ── brain_scope ───────────────────────────────────────────────────────────────
 
@@ -201,6 +203,33 @@ pub async fn run_brain(
             std::process::exit(1);
         }
     };
+
+    // Install the process-global phase cell and spawn the always-on ping task.
+    let _phase_cell = crate::diagnostic::install_brain_phase_cell();
+    let ping_writer = nerve_writer.clone();
+    let ping_session = session_id.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(15_000));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            let Some((phase, elapsed_ms)) = crate::diagnostic::current_phase() else {
+                continue;
+            };
+            let rec = crate::diagnostic::DiagRecord::ping(&ping_session, 0, "", phase, elapsed_ms);
+            let sig = Signal {
+                corr_id: 0,
+                body: Some(signal::Body::Diagnostic(Diagnostic {
+                    record_json: rec.to_json_line(),
+                    phase: crate::diagnostic::phase_str(phase).to_string(),
+                    elapsed_ms,
+                })),
+            };
+            if ping_writer.send_one_way(&sig).await.is_err() {
+                break;
+            }
+        }
+    });
 
     let mut cfg: crate::config::GaitConfig = serde_json::from_str(&init.config_json)
         .unwrap_or_else(|e| {
