@@ -136,7 +136,16 @@ where
         let result = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(ProviderError::Other("cancelled".into())),
-            r = f() => r,
+            // Bound the request/header-wait phase. `connect_timeout` only covers the
+            // TCP/TLS handshake, and `guard_idle` cannot start until response headers
+            // arrive — so without a deadline here, a server that accepts the connection
+            // then stalls before sending headers hangs forever (observed: an 18-minute
+            // hang past the 600s absolute cap). Map the overrun to a retryable TTFB
+            // timeout so this loop backs off and retries pre-first-byte.
+            r = tokio::time::timeout(cfg.ttfb_timeout, f()) => match r {
+                Err(_) => Err(ProviderError::Timeout { phase: TimeoutPhase::Ttfb }),
+                Ok(r) => r,
+            },
         };
         match result {
             Ok(v) => return Ok(v),
@@ -202,6 +211,33 @@ mod tests {
         assert!(!ProviderError::Overloaded.is_retryable());
         // Touch Duration so the import is not flagged as unused on minimal configs.
         let _ = Duration::from_secs(0);
+    }
+
+    // Regression: a server that accepts the connection then never sends response
+    // headers must NOT hang retry_phase1 forever. The per-attempt ttfb_timeout
+    // converts the stall into a retryable TTFB error; with max_attempts the loop
+    // gives up promptly instead of blocking past the absolute cap.
+    #[tokio::test]
+    async fn retry_phase1_bounds_a_hanging_request() {
+        let cfg = TransportConfig {
+            ttfb_timeout: Duration::from_millis(20),
+            max_attempts: 2,
+            initial_backoff: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(1),
+            ..TransportConfig::default()
+        };
+        let cancel = CancellationToken::new();
+        let result = retry_phase1::<(), _, _>(&cfg, &cancel, || async {
+            // Never resolves — simulates a stalled header wait.
+            std::future::pending::<Result<(), ProviderError>>().await
+        })
+        .await;
+        match result {
+            Err(ProviderError::Timeout {
+                phase: TimeoutPhase::Ttfb,
+            }) => {}
+            other => panic!("expected retryable TTFB timeout, got {other:?}"),
+        }
     }
 
     #[test]
