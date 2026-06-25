@@ -80,8 +80,9 @@ pub(crate) fn guard_idle(
                 }
                 r = tokio::time::timeout(gap, next) => match r {
                     Err(_)         => { yield Err(ProviderError::Timeout { phase }); return; }
-                    Ok(None)       => { return; }
+                    Ok(None)       => { crate::diagnostic::set_phase(crate::diagnostic::Phase::StreamEnd); return; }
                     Ok(Some(item)) => {
+                        if first { crate::diagnostic::set_phase(crate::diagnostic::Phase::Streaming); }
                         let stop = item.is_err();
                         yield item;
                         if stop { return; }

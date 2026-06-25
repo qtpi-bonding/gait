@@ -361,6 +361,7 @@ pub async fn run_brain(
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                 let emitter = driver.make_recorder(&gait_dir, &session_id, tx);
                 // 4. Spawn run_turn; drain the stream channel; collect result.
+                crate::diagnostic::set_phase(crate::diagnostic::Phase::TurnBegin);
                 let session_for_turn = session.clone();
                 let handle = tokio::spawn(async move {
                     crate::turn::run_turn(&session_for_turn, &emitter, profile, input).await
@@ -378,6 +379,11 @@ pub async fn run_brain(
                         driver.after_turn(&mut sink, &result).await;
                         let failed = sink.inner.failed;
                         let json = sink.result_json.take().unwrap_or_else(|| "{}".to_string());
+                        crate::diagnostic::set_phase(crate::diagnostic::Phase::TurnEnd);
+                        // Brain runs a single turn; after TurnEnd it awaits the
+                        // Terminated signal being consumed by the spine (AwaitFeedback
+                        // is the closest brain-owned seam before that implicit wait).
+                        crate::diagnostic::set_phase(crate::diagnostic::Phase::AwaitFeedback);
                         (json, failed)
                     }
                     Ok(Err(e)) => {
