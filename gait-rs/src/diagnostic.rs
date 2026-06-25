@@ -79,6 +79,13 @@ pub fn now_unix_millis() -> u64 {
         .unwrap_or(0)
 }
 
+/// True when GAIT_DEBUG is set to a non-empty value.
+pub fn debug_enabled() -> bool {
+    std::env::var("GAIT_DEBUG")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+}
+
 impl DiagRecord {
     /// One compact JSON object, no trailing newline (the writer adds it).
     pub fn to_json_line(&self) -> String {

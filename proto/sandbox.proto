@@ -80,6 +80,7 @@ message Signal {
     StreamForward stream_forward = 7;
     Notify notify = 8;
     BrainInit brain_init = 9;          // spine→brain: first frame, replaces startup+log+git disk reads
+    Diagnostic diagnostic = 10;        // brain→spine: a diagnostic.jsonl record (JSON string)
   }
 }
 
@@ -142,4 +143,13 @@ message BrainInit {
 message GitStatus {
   string head_hash = 1;
   repeated string dirty_files = 2;
+}
+
+// Brain → spine: one diagnostic record. Carried as a JSON string (DiagRecord).
+// Routed to sessions/<id>/diagnostic.jsonl when GAIT_DEBUG is set; ALWAYS used
+// to drive the spine liveness watchdog. NEVER an event, never folded by retrace.
+message Diagnostic {
+  string record_json = 1;   // serialized diagnostic::DiagRecord
+  string phase       = 2;   // snake_case phase, for the watchdog without parsing record_json
+  uint64 elapsed_ms  = 3;   // phase elapsed, for the watchdog
 }

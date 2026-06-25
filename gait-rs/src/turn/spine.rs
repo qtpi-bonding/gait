@@ -516,6 +516,13 @@ pub async fn relay_brain_turn(
                 }
                 // No Feedback needed — one-way signal like Append.
             }
+            Some(signal::Body::Diagnostic(diag)) => {
+                // Watchdog state update is added in Task 3 (loop-local last_phase/last_ping).
+                // Task 2: debug-gated write only.
+                if crate::diagnostic::debug_enabled() {
+                    write_diagnostic_line(gait_dir, session_id, &diag.record_json);
+                }
+            }
             _ => {}
         }
     }
@@ -790,6 +797,25 @@ pub async fn run_tool_as_spine(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Append one diagnostic record line to sessions/<id>/diagnostic.jsonl.
+/// Best-effort: an IO error is logged once to stderr and dropped — diagnostics
+/// must never fail a run or interfere with log.jsonl.
+pub(crate) fn write_diagnostic_line(gait_dir: &std::path::Path, session_id: &str, line: &str) {
+    use std::io::Write;
+    let path = gait_dir
+        .join("sessions")
+        .join(session_id)
+        .join("diagnostic.jsonl");
+    let res = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| writeln!(f, "{line}"));
+    if let Err(e) = res {
+        eprintln!("[gait] diagnostic write failed: {e}");
+    }
+}
 
 /// Build a Feedback carrying a string error result.
 pub fn error_feedback(msg: &str) -> Feedback {
@@ -2377,5 +2403,31 @@ mod tests {
             })
             .expect("status field missing");
         assert_eq!(status, "started");
+    }
+
+    #[test]
+    fn diagnostic_line_is_appended_to_diagnostic_jsonl() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gait_dir = tmp.path();
+        let session = "stest";
+        std::fs::create_dir_all(gait_dir.join("sessions").join(session)).unwrap();
+
+        super::write_diagnostic_line(gait_dir, session, "{\"phase\":\"awaiting_headers\"}");
+        super::write_diagnostic_line(gait_dir, session, "{\"phase\":\"streaming\"}");
+
+        let p = gait_dir
+            .join("sessions")
+            .join(session)
+            .join("diagnostic.jsonl");
+        let body = std::fs::read_to_string(&p).unwrap();
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("awaiting_headers"));
+        // And it did NOT touch log.jsonl
+        assert!(!gait_dir
+            .join("sessions")
+            .join(session)
+            .join("log.jsonl")
+            .exists());
     }
 }
