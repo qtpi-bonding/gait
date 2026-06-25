@@ -47,9 +47,7 @@ pub(crate) fn watchdog_breach(
     since_last_ping_ms: Option<u64>,
     tool_in_flight: bool,
 ) -> Option<&'static str> {
-    let Some(since) = since_last_ping_ms else {
-        return None;
-    };
+    let since = since_last_ping_ms?;
     if since > 2 * cfg.ping_ms {
         return Some("no diagnostic ping (brain wedged)");
     }
@@ -423,7 +421,7 @@ pub async fn relay_brain_turn(
                         session_id,
                         &mut brain_failed,
                         last_phase,
-                        &reason,
+                        reason,
                     );
                     let _ = group.kill_all();
                     break;
@@ -639,7 +637,7 @@ pub async fn relay_brain_turn(
                 session_id,
                 &mut brain_failed,
                 last_phase,
-                &reason,
+                reason,
             );
             let _ = group.kill_all();
             break;
