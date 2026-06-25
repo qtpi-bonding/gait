@@ -417,9 +417,14 @@ pub async fn relay_brain_turn(
                     since,
                     !pending_calls.is_empty(),
                 ) {
-                    eprintln!("[gait] watchdog: {reason}");
-                    brain_failed = true;
-                    // TODO Task 5: replace with emit_terminal_failure
+                    emit_terminal_failure(
+                        &log_path,
+                        gait_dir,
+                        session_id,
+                        &mut brain_failed,
+                        last_phase,
+                        &reason,
+                    );
                     let _ = group.kill_all();
                     break;
                 }
@@ -512,6 +517,19 @@ pub async fn relay_brain_turn(
             }
             Some(signal::Body::Terminated(t)) => {
                 brain_failed = t.failed;
+                // Brain-reported failure: the brain already appended its own Error
+                // event to log.jsonl via Signal::Append before sending Terminated,
+                // so we must NOT double-write the event here. We do write a
+                // diagnostic record so the failure is always explained in
+                // diagnostic.jsonl regardless of GAIT_DEBUG.
+                if t.failed {
+                    let rec = crate::diagnostic::DiagRecord::terminal(
+                        session_id,
+                        last_phase,
+                        "brain reported failure via Terminated signal",
+                    );
+                    write_diagnostic_line(gait_dir, session_id, &rec.to_json_line());
+                }
                 run_result = Some(turn_result_from_json(&t.run_result_json));
                 break;
             }
@@ -615,9 +633,14 @@ pub async fn relay_brain_turn(
             since,
             !pending_calls.is_empty(),
         ) {
-            eprintln!("[gait] watchdog: {reason}");
-            brain_failed = true;
-            // TODO Task 5: replace with emit_terminal_failure
+            emit_terminal_failure(
+                &log_path,
+                gait_dir,
+                session_id,
+                &mut brain_failed,
+                last_phase,
+                &reason,
+            );
             let _ = group.kill_all();
             break;
         }
@@ -911,6 +934,32 @@ pub(crate) fn write_diagnostic_line(gait_dir: &std::path::Path, session_id: &str
     if let Err(e) = res {
         eprintln!("[gait] diagnostic write failed: {e}");
     }
+}
+
+/// THE single dual-emit site for terminal failures. Ordering is load-bearing:
+/// the Error event lands in log.jsonl FIRST (transcript correctness + exit
+/// parity via `brain_failed`), the DiagRecord in diagnostic.jsonl SECOND
+/// (best-effort). Single-threaded sole writer ⇒ back-to-back.
+/// Mirrors the orphan-tool repair append at spine.rs:631-636.
+fn emit_terminal_failure(
+    log_path: &Path,
+    gait_dir: &Path,
+    session_id: &str,
+    brain_failed: &mut bool,
+    phase: crate::diagnostic::Phase,
+    detail: &str,
+) {
+    // 1) Error event → log.jsonl FIRST (also sets brain_failed for exit parity).
+    let body = crate::proto::events::error(detail.to_string(), crate::diagnostic::phase_str(phase));
+    let prev = crate::session::log::last_event(log_path).ok().flatten();
+    let evt = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
+    wire::append_with_id(log_path, &evt).ok();
+    *brain_failed = true;
+
+    // 2) DiagRecord → diagnostic.jsonl SECOND (always, even when GAIT_DEBUG is
+    //    off — a terminal failure must always be explained).
+    let rec = crate::diagnostic::DiagRecord::terminal(session_id, phase, detail);
+    write_diagnostic_line(gait_dir, session_id, &rec.to_json_line());
 }
 
 /// Build a Feedback carrying a string error result.
@@ -2577,5 +2626,36 @@ mod tests {
         let cfg = wd();
         // ping just arrived (since=0) but awaiting_headers elapsed crossed stall_cap.
         assert!(watchdog_breach(&cfg, Phase::AwaitingHeaders, 90_001, Some(0), false).is_some());
+    }
+
+    // ── emit_terminal_failure ordering test ──────────────────────────────────
+
+    #[test]
+    fn terminal_failure_writes_error_event_and_diagnostic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gait_dir = tmp.path();
+        let session = "sterm";
+        let sdir = gait_dir.join("sessions").join(session);
+        std::fs::create_dir_all(&sdir).unwrap();
+        let log_path = sdir.join("log.jsonl");
+
+        let mut failed = false;
+        super::emit_terminal_failure(
+            &log_path,
+            gait_dir,
+            session,
+            &mut failed,
+            crate::diagnostic::Phase::AwaitingHeaders,
+            "watchdog: phase exceeded stall_cap",
+        );
+
+        assert!(failed, "brain_failed flag set for exit parity");
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        assert!(
+            log.to_lowercase().contains("error"),
+            "Error event in log.jsonl"
+        );
+        let diag = std::fs::read_to_string(sdir.join("diagnostic.jsonl")).unwrap();
+        assert!(diag.contains("awaiting_headers") && diag.contains("stall_cap"));
     }
 }
