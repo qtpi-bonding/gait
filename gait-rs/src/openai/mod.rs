@@ -339,11 +339,14 @@ impl Provider for OpenAIProvider {
         // first byte ever arrives. Cancel-continuity lives at the call site in
         // turn/mod.rs (the outer select on `cancel_token_fut(&cancel)`), per the
         // plan's v1 note; here we pass a fresh placeholder token.
-        crate::diagnostic::set_phase(crate::diagnostic::Phase::LlmRequest);
+        // set_phase is called inside the closure so each retry attempt resets the
+        // PhaseCell clock — otherwise 3 attempts × 30s TTFB + backoffs can exceed
+        // the watchdog's 90s stall_cap before it fires.
         let resp = crate::transport::retry_phase1(
             &self.transport,
             &tokio_util::sync::CancellationToken::new(),
             || async {
+                crate::diagnostic::set_phase(crate::diagnostic::Phase::LlmRequest);
                 let resp = http
                     .post(&url)
                     .header("Authorization", format!("Bearer {}", api_key))

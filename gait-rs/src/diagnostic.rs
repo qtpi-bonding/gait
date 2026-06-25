@@ -180,10 +180,13 @@ pub fn phase_from_str(s: &str) -> Phase {
 
 impl DiagRecord {
     /// A lightweight phase ping: phase + elapsed only (no attempt/detail).
+    /// `mono_ms` is 0 in pings — the brain-start timer is not wired to the ping
+    /// task, so setting it to `elapsed_ms` (time-in-phase) would give consumers
+    /// wrong deltas when diffing across records.
     pub fn ping(session: &str, turn: u32, model: &str, phase: Phase, elapsed_ms: u64) -> Self {
         Self {
             ts: now_unix_millis(),
-            mono_ms: elapsed_ms,
+            mono_ms: 0,
             session: session.into(),
             turn,
             phase,
