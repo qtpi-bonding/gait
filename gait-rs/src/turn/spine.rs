@@ -264,6 +264,20 @@ pub async fn relay_brain_turn(
     if let Some(slot) = signal_slot {
         *slot.lock().unwrap() = Some(Arc::clone(&group));
     }
+    // ── Build the turn context once ────────────────────────────────────────
+    // The ctx carries every spine-side handle the turn needs (gait-dir,
+    // codebase, session id, repos, exe, cascade group, sandbox flag). Building
+    // it here means the persistence types can later be constructed from `&ctx`
+    // and the relay loop can clone it cheaply into spawned tasks.
+    let ctx = TurnCtx {
+        gait_dir: gait_dir.to_path_buf(),
+        codebase: codebase.to_path_buf(),
+        session_id: session_id.to_string(),
+        repos: repos.clone(),
+        exe: exe.to_path_buf(),
+        group: Arc::clone(&group),
+        sandbox_on,
+    };
 
     // ── Spine-owned startup writes (brain is disk-write-free) ───────────────
     // These all write to gait-dir; the brain's seal has writable: [] so it
@@ -446,15 +460,7 @@ pub async fn relay_brain_turn(
             Some(signal::Body::Impulse(impulse)) => {
                 let stdin_writer = Arc::clone(&child_stdin);
                 if impulse.tool == "spawn_agent" || impulse.tool == "run_workflow" {
-                    let ctx = SpineToolCtx {
-                        gait_dir: gait_dir.to_path_buf(),
-                        codebase: codebase.to_path_buf(),
-                        session_id: session_id.to_string(),
-                        repos: repos.clone(),
-                        exe: exe.to_path_buf(),
-                        group: Arc::clone(&group),
-                        sandbox_on,
-                    };
+                    let ctx = ctx.clone();
                     tokio::spawn(async move {
                         let feedback = if impulse.tool == "spawn_agent" {
                             let args = parse_spawn_args(&impulse);
@@ -1143,9 +1149,11 @@ pub(super) struct SpawnAgentArgs {
     pub context_files: Option<Vec<String>>,
     pub detached: bool,
 }
-
-/// Context the spine needs to handle `spawn_agent` (assembled from relay loop locals).
-pub(super) struct SpineToolCtx {
+/// Context the spine carries for the entire turn (assembled once near the top
+/// of `relay_brain_turn`, after the cascade group is established, and cloned
+/// into spawned tasks as needed).
+#[derive(Clone)]
+pub(super) struct TurnCtx {
     pub gait_dir: std::path::PathBuf,
     pub codebase: std::path::PathBuf,
     pub session_id: String,
@@ -1222,11 +1230,7 @@ async fn reply_feedback(
 ///
 /// Returns `Some(child)` for an enrolled subagent (retained for wait), or
 /// `None` for a breakaway peer (detached into its own process group/cgroup).
-fn launch_child(
-    ctx: &SpineToolCtx,
-    session_id: &str,
-    detached: bool,
-) -> Option<std::process::Child> {
+fn launch_child(ctx: &TurnCtx, session_id: &str, detached: bool) -> Option<std::process::Child> {
     let mut argv = vec![
         "run".to_string(),
         "--session".to_string(),
@@ -1287,7 +1291,7 @@ fn read_terminal_result(log_path: &std::path::Path) -> Option<(String, Option<se
 
 /// Spine-side handler for `spawn_agent`: creates the child session (disk writes)
 /// and launches the child process. Returns a `Feedback` with `{session_id}`.
-pub(super) async fn handle_spawn_agent(args: SpawnAgentArgs, ctx: SpineToolCtx) -> Feedback {
+pub(super) async fn handle_spawn_agent(args: SpawnAgentArgs, ctx: TurnCtx) -> Feedback {
     use crate::tools::spawn_agent::{write_child_session, WriteChildSessionOpts};
 
     let new_id = crate::session::new_session_id();
@@ -1449,7 +1453,7 @@ fn parse_run_workflow_args(impulse: &Impulse) -> RunWorkflowArgs {
 
 /// Spine-side handler for `run_workflow`: launches `gait workflow run <name>` as a
 /// subprocess (enrolled or detached) and waits for it to finish (unless `detached`).
-pub(super) async fn handle_run_workflow(args: RunWorkflowArgs, ctx: SpineToolCtx) -> Feedback {
+pub(super) async fn handle_run_workflow(args: RunWorkflowArgs, ctx: TurnCtx) -> Feedback {
     if args.name.is_empty() {
         return error_feedback("run_workflow: missing required field: name");
     }
@@ -1501,7 +1505,7 @@ pub(super) async fn handle_run_workflow(args: RunWorkflowArgs, ctx: SpineToolCtx
 /// Launch `gait workflow run <name> [args…] --gait-dir … [--sandbox-locked] [--cascade-group …]`
 /// as a child process (enrolled or detached).
 fn launch_workflow_child(
-    ctx: &SpineToolCtx,
+    ctx: &TurnCtx,
     name: &str,
     wf_args: &[String],
     detached: bool,
@@ -1571,8 +1575,8 @@ pub(super) fn build_workflow_feedback(name: &str, exit_code: i32) -> Feedback {
 }
 
 #[cfg(test)]
-pub(super) fn test_ctx(ws: &std::path::Path, session_id: &str) -> SpineToolCtx {
-    SpineToolCtx {
+pub(super) fn test_ctx(ws: &std::path::Path, session_id: &str) -> TurnCtx {
+    TurnCtx {
         gait_dir: ws.to_path_buf(),
         codebase: ws.to_path_buf(),
         session_id: session_id.to_string(),
@@ -2249,7 +2253,7 @@ mod tests {
     fn launch_child_subagent_enrolled_peer_breaks_away() {
         use crate::process::establish;
 
-        // Build a minimal SpineToolCtx with a real containment group.
+        // Build a minimal TurnCtx with a real containment group.
         let ws = tempfile::TempDir::new().unwrap();
         let group = establish(None);
 
@@ -2257,7 +2261,7 @@ mod tests {
         // matter because we're testing containment behavior, not gait startup.
         let sleep_exe = std::path::PathBuf::from("sleep");
 
-        let ctx = super::SpineToolCtx {
+        let ctx = super::TurnCtx {
             gait_dir: ws.path().to_path_buf(),
             codebase: ws.path().to_path_buf(),
             session_id: "parent".to_string(),
