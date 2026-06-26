@@ -152,6 +152,42 @@ async fn notify_writes_agent_update_to_parent_session() {
 }
 
 #[tokio::test]
+async fn notify_commits_target_session_through_injected_repos() {
+    // PIN the DI fix: the Notify arm's cross-session commit now routes through
+    // the injected `repos` (spine.rs Notify arm), NOT `Repos::production()`.
+    // Before the fix this commit was invisible to the mock — the recorder would
+    // show only the child's own `commit_session:child:...`. After it, the same
+    // mock observes a SECOND commit, this time against the *parent* target.
+    let tmp = tempfile::tempdir().unwrap();
+    let _ = run_one(tmp.path(), "parent3", &[terminated_ok("seed")]).await;
+
+    let n = Signal {
+        corr_id: 0,
+        body: Some(signal::Body::Notify(Notify {
+            target_session: "parent3".into(),
+            from_session: "child3".into(),
+            status: "done".into(),
+            summary: "child finished".into(),
+        })),
+    };
+    let (_sink, calls) = run_one(tmp.path(), "child3", &[n, terminated_ok("done")]).await;
+    let seq = calls.snapshot();
+
+    // The cross-session commit lands on the SAME injected mock as the child's
+    // own persistence — proof the Notify arm no longer reaches for
+    // Repos::production().
+    assert!(
+        seq.iter().any(|c| c.starts_with("commit_session:parent3:")),
+        "Notify arm must commit the target session through the injected repos; got: {seq:?}"
+    );
+    // And the child still commits its own session — both go through one handle.
+    assert!(
+        seq.iter().any(|c| c.starts_with("commit_session:child3:")),
+        "child turn must still commit its own session; got: {seq:?}"
+    );
+}
+
+#[tokio::test]
 async fn notify_to_missing_parent_does_not_fail_the_turn() {
     // PIN current behavior (latent bug flagged in architecture review):
     // spine.rs:597 swallows the lock-acquire error and just logs to stderr.

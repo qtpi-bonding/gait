@@ -608,7 +608,9 @@ pub async fn relay_brain_turn(
                 }
                 if let Some(_lock) = lock {
                     wire::append(&tx_path, event).ok();
-                    let repos = crate::git::Repos::production();
+                    // Use the injected `repos` (DI) — same handle as every other
+                    // persistence site in this turn, so a test mock observes this
+                    // cross-session commit too. (Was `Repos::production()`.)
                     repos
                         .traces
                         .commit_session(
