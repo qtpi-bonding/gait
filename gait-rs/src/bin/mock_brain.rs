@@ -27,6 +27,7 @@ fn main() {
     let mut stdin = std::io::stdin();
     drain_one_frame(&mut stdin); // consume BrainInit so the spine's write completes
 
+    // mock_delay_ms: sleep BEFORE sending frames (brain appears silent during delay).
     if let Ok(ms) = std::fs::read_to_string(dir.join("mock_delay_ms")) {
         if let Ok(ms) = ms.trim().parse::<u64>() {
             std::thread::sleep(std::time::Duration::from_millis(ms));
@@ -36,6 +37,14 @@ fn main() {
     let mut stdout = std::io::stdout();
     if let Ok(bytes) = std::fs::read(dir.join("mock_frames.bin")) {
         let _ = stdout.write_all(&bytes);
+        let _ = stdout.flush();
     }
-    let _ = stdout.flush();
+
+    // mock_hang_ms: sleep AFTER sending frames (brain sends output then hangs).
+    // Use this to arm the watchdog then go silent.
+    if let Ok(ms) = std::fs::read_to_string(dir.join("mock_hang_ms")) {
+        if let Ok(ms) = ms.trim().parse::<u64>() {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
+    }
 }

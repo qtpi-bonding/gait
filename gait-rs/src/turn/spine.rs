@@ -30,9 +30,19 @@ pub(crate) struct WatchdogCfg {
 
 impl Default for WatchdogCfg {
     fn default() -> Self {
+        // `GAIT_TEST_WATCHDOG_MS` / `GAIT_TEST_WATCHDOG_PING_MS` shrink the caps
+        // for integration tests so the watchdog fires in seconds. Never set in production.
+        let stall_cap_ms = std::env::var("GAIT_TEST_WATCHDOG_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(90_000);
+        let ping_ms = std::env::var("GAIT_TEST_WATCHDOG_PING_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(15_000);
         Self {
-            stall_cap_ms: 90_000,
-            ping_ms: 15_000,
+            stall_cap_ms,
+            ping_ms,
             absolute_backstop_ms: 660_000,
         }
     }

@@ -157,6 +157,10 @@ pub fn write_frames(gait_dir: &Path, signals: &[Signal]) {
 pub fn set_delay(gait_dir: &Path, ms: u64) {
     std::fs::write(gait_dir.join("mock_delay_ms"), ms.to_string()).unwrap();
 }
+/// Sleep AFTER frames are sent — arms the watchdog then goes silent.
+pub fn set_hang(gait_dir: &Path, ms: u64) {
+    std::fs::write(gait_dir.join("mock_hang_ms"), ms.to_string()).unwrap();
+}
 
 // ── driver + run ────────────────────────────────────────────────────────────
 pub struct MockDriver {
