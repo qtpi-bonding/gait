@@ -46,6 +46,8 @@ struct ClarifyArg {
 
 mod diag_sink;
 pub(crate) use diag_sink::DiagnosticSink;
+mod session_git;
+pub(crate) use session_git::SessionGit;
 mod session_log;
 pub(crate) use session_log::SessionLog;
 #[derive(serde::Deserialize)]

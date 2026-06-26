@@ -286,6 +286,10 @@ pub async fn relay_brain_turn(
     // path. See src/turn/diag_sink.rs for the gating/terminal discipline.
     let diag = DiagnosticSink::new(gait_dir, session_id);
 
+    // Session-scoped git handle — holds only traces+checkpoints Arcs (no codebase
+    // repo), so codebase mixing is structurally impossible.
+    let git = crate::turn::SessionGit::for_session(repos, gait_dir, session_id);
+
     // ── Spine-owned startup writes (brain is disk-write-free) ───────────────
     // These all write to gait-dir; the brain's seal has writable: [] so it
     // cannot do them. The spine does them before spawning the brain.
@@ -295,10 +299,10 @@ pub async fn relay_brain_turn(
     let tx_path = session_dir.join("log.jsonl");
 
     // 1. Session worktree (idempotent — callers may have already done this).
-    repos.traces.create_session_worktree(gait_dir, session_id)?;
+    git.ensure_worktree()?;
 
     // 2. Checkpoint repo init (idempotent — checks if HEAD exists).
-    repos.checkpoints.init(gait_dir, session_id, codebase)?;
+    git.checkpoint_init(codebase)?;
 
     // 3. Session lock — held for the duration of the brain process.
     let log = crate::turn::SessionLog::open(&session_dir)?;
@@ -597,19 +601,14 @@ pub async fn relay_brain_turn(
                 match crate::turn::SessionLog::open_retrying(&target_dir, 20).await {
                     Ok(target_log) => {
                         target_log.append_body(event).ok();
-                        // Use the injected `repos` (DI) — same handle as every other
-                        // persistence site in this turn, so a test mock observes this
-                        // cross-session commit too. (Was `Repos::production()`.)
-                        repos
-                            .traces
-                            .commit_session(
-                                gait_dir,
-                                &target_session,
-                                &format!(
-                                    "session({}): agent_update from {}",
-                                    target_session, from_session
-                                ),
-                            )
+                        // The cross-session commit names its target to construct the
+                        // handle — the foreignness is explicit and the wrong-session
+                        // mistake is structurally prevented.
+                        crate::turn::SessionGit::for_session(repos, gait_dir, &target_session)
+                            .commit(&format!(
+                                "session({}): agent_update from {}",
+                                target_session, from_session
+                            ))
                             .ok();
                     }
                     Err(e) => {
@@ -698,12 +697,10 @@ pub async fn relay_brain_turn(
         // but the turn itself is complete.
         let events = crate::session::log::read_events(&log_path).unwrap_or_default();
         let turn_n = crate::session::log::count_turn_complete(&events) as u32;
-        let _ = repos
-            .checkpoints
-            .checkpoint(gait_dir, session_id, codebase, turn_n);
+        let _ = git.checkpoint(codebase, turn_n);
 
         // Commit the transcript to the session worktree.
-        let _ = repos.traces.commit_session(gait_dir, session_id, &msg);
+        let _ = git.commit(&msg);
     }
 
     if let Some(result) = run_result {
