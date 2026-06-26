@@ -14,11 +14,16 @@ use std::sync::Arc;
 
 use crate::git::{checkpoint::CheckpointRepo, trace::TraceRepo};
 
-pub(crate) struct SessionGit {
-    gait_dir: PathBuf,
-    session_id: String,
-    traces: Arc<dyn TraceRepo>,
-    checkpoints: Arc<dyn CheckpointRepo>,
+pub(crate) enum SessionGit {
+    /// Production: session-scoped trace + checkpoint persistence.
+    Persistent {
+        gait_dir: PathBuf,
+        session_id: String,
+        traces: Arc<dyn TraceRepo>,
+        checkpoints: Arc<dyn CheckpointRepo>,
+    },
+    /// Ephemeral one-off: every git side-effect is a no-op.
+    Null,
 }
 
 impl SessionGit {
@@ -27,7 +32,7 @@ impl SessionGit {
         gait_dir: &Path,
         session_id: &str,
     ) -> Self {
-        Self {
+        Self::Persistent {
             gait_dir: gait_dir.to_path_buf(),
             session_id: session_id.to_string(),
             traces: Arc::clone(&repos.traces),
@@ -35,24 +40,56 @@ impl SessionGit {
         }
     }
 
+    pub(crate) fn null() -> Self {
+        Self::Null
+    }
+
     pub(crate) fn ensure_worktree(&self) -> anyhow::Result<()> {
-        self.traces
-            .create_session_worktree(&self.gait_dir, &self.session_id)
+        match self {
+            Self::Persistent {
+                traces,
+                gait_dir,
+                session_id,
+                ..
+            } => traces.create_session_worktree(gait_dir, session_id),
+            Self::Null => Ok(()),
+        }
     }
 
     pub(crate) fn checkpoint_init(&self, codebase: &Path) -> anyhow::Result<()> {
-        self.checkpoints
-            .init(&self.gait_dir, &self.session_id, codebase)
+        match self {
+            Self::Persistent {
+                checkpoints,
+                gait_dir,
+                session_id,
+                ..
+            } => checkpoints.init(gait_dir, session_id, codebase),
+            Self::Null => Ok(()),
+        }
     }
 
     pub(crate) fn checkpoint(&self, codebase: &Path, turn: u32) -> anyhow::Result<String> {
-        self.checkpoints
-            .checkpoint(&self.gait_dir, &self.session_id, codebase, turn)
+        match self {
+            Self::Persistent {
+                checkpoints,
+                gait_dir,
+                session_id,
+                ..
+            } => checkpoints.checkpoint(gait_dir, session_id, codebase, turn),
+            Self::Null => Ok(String::new()),
+        }
     }
 
     pub(crate) fn commit(&self, message: &str) -> anyhow::Result<()> {
-        self.traces
-            .commit_session(&self.gait_dir, &self.session_id, message)
+        match self {
+            Self::Persistent {
+                traces,
+                gait_dir,
+                session_id,
+                ..
+            } => traces.commit_session(gait_dir, session_id, message),
+            Self::Null => Ok(()),
+        }
     }
 }
 
@@ -155,5 +192,20 @@ mod tests {
             calls,
             vec!["worktree:sess", "init:sess", "ckpt:sess:3", "commit:sess"]
         );
+    }
+
+    #[test]
+    fn null_variant_no_ops_every_git_side_effect() {
+        let git = SessionGit::null();
+        git.ensure_worktree().unwrap();
+        git.checkpoint_init(std::path::Path::new("/tmp/cb"))
+            .unwrap();
+        assert_eq!(
+            git.checkpoint(std::path::Path::new("/tmp/cb"), 1).unwrap(),
+            ""
+        );
+        git.commit("msg").unwrap();
+        // No repos, no Arcs — nothing was touched.
+        assert!(matches!(git, SessionGit::Null));
     }
 }
