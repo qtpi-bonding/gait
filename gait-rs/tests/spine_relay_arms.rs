@@ -57,7 +57,7 @@ async fn stream_forward_reaches_sink_items() {
     let sf = Signal {
         corr_id: 0,
         body: Some(signal::Body::StreamForward(StreamForward {
-            item: Some(stream_item_text("hello").into()),
+            item: Some(stream_item_text("hello")),
         })),
     };
     let (sink, _calls) = run_one(tmp.path(), "r1", &[sf, terminated_ok("done")]).await;
