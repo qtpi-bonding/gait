@@ -96,6 +96,16 @@ pub struct ProfileInputs {
     pub hands_free: bool,
 }
 
+/// Selects whether a turn persists to the gait-dir. `Persistent` is every
+/// production/test caller; `Ephemeral` is the `gait -e` one-off, which serves the
+/// brain's input from memory and writes nothing to disk.
+pub enum TurnMode {
+    Persistent,
+    Ephemeral {
+        input: Vec<crate::proto::gait::log::v1::Event>,
+    },
+}
+
 /// Build the turn's `Profile` on the spine (disk scan: agent file, system-prompt
 /// layers, skills/mcp/plugins). Folds CLI allow/deny into config first, mirroring
 /// the brain's previous in-process logic.
@@ -261,6 +271,7 @@ pub async fn relay_brain_turn(
     // kill_all(). The caller must clear the slot after the turn completes.
     signal_slot: Option<&SignalSlot>,
     repos: &crate::git::Repos,
+    mode: &TurnMode,
 ) -> anyhow::Result<bool> {
     // ── Establish (or inherit) the cascade group for this turn ─────────────
     let group = crate::process::establish(cascade_group_arg);
@@ -292,55 +303,58 @@ pub async fn relay_brain_turn(
 
     // Session-scoped git handle — holds only traces+checkpoints Arcs (no codebase
     // repo), so codebase mixing is structurally impossible.
-    let git = crate::turn::SessionGit::for_session(repos, gait_dir, session_id);
+    // Session-scoped git handle — null in ephemeral mode (no worktree/checkpoint/commit).
+    let git = match mode {
+        TurnMode::Persistent => crate::turn::SessionGit::for_session(repos, gait_dir, session_id),
+        TurnMode::Ephemeral { .. } => crate::turn::SessionGit::null(),
+    };
 
-    // ── Spine-owned startup writes (brain is disk-write-free) ───────────────
-    // These all write to gait-dir; the brain's seal has writable: [] so it
-    // cannot do them. The spine does them before spawning the brain.
-    // `repos` is injected by the caller (DI) — production callers pass
-    // `Repos::production()`; test harnesses pass a recording mock.
     let session_dir = gait_dir.join("sessions").join(session_id);
-    let tx_path = session_dir.join("log.jsonl");
 
-    // 1. Session worktree (idempotent — callers may have already done this).
-    git.ensure_worktree()?;
-
-    // 2. Checkpoint repo init (idempotent — checks if HEAD exists).
-    git.checkpoint_init(codebase)?;
-
-    // 3. Session lock — held for the duration of the brain process.
-    let log = crate::turn::SessionLog::open(&session_dir)?;
-
-    // 5. SessionStart event — write once per session (idempotent via event check).
-    {
-        use crate::proto::gait::log::v1::{event, payload};
-        let ingestor = crate::session::Ingestor::from_session(gait_dir, session_id);
-        let has_start = ingestor.events().unwrap_or_default().iter().any(|e| {
-            matches!(
-                e.body.as_ref().and_then(|b| match b {
-                    event::Body::Payload(p) => p.kind.as_ref(),
-                    _ => None,
-                }),
-                Some(payload::Kind::SessionStart(_))
-            )
-        });
-        if !has_start {
-            let codebase_hash = repos.codebase.head_hash(codebase).unwrap_or_default();
-            let dirty_files = repos.codebase.dirty_files(codebase);
-            let codebase_dirty = !dirty_files.is_empty();
-            crate::session::log::init_session(crate::session::log::InitSessionOpts {
-                log_path: tx_path.clone(),
-                id: session_id.to_string(),
-                model: String::new(),
-                codebase_hash,
-                codebase_dirty,
-                assigned_by: None,
-                codebase_path: Some(codebase.to_string_lossy().into_owned()),
-                notify_done: false,
-            })?;
+    // Persistent: worktree + checkpoint init + lock + SessionStart, exactly as before.
+    // Ephemeral: an in-memory log seeded with the one-off input; no FS writes at all.
+    let log = match mode {
+        TurnMode::Persistent => {
+            git.ensure_worktree()?;
+            git.checkpoint_init(codebase)?;
+            let log = crate::turn::SessionLog::open(&session_dir)?;
+            // SessionStart — write once per session (idempotent via event check).
+            {
+                use crate::proto::gait::log::v1::{event, payload};
+                let ingestor = crate::session::Ingestor::from_session(gait_dir, session_id);
+                let has_start = ingestor.events().unwrap_or_default().iter().any(|e| {
+                    matches!(
+                        e.body.as_ref().and_then(|b| match b {
+                            event::Body::Payload(p) => p.kind.as_ref(),
+                            _ => None,
+                        }),
+                        Some(payload::Kind::SessionStart(_))
+                    )
+                });
+                if !has_start {
+                    let codebase_hash = repos.codebase.head_hash(codebase).unwrap_or_default();
+                    let dirty_files = repos.codebase.dirty_files(codebase);
+                    let codebase_dirty = !dirty_files.is_empty();
+                    let tx_path = log
+                        .log_path()
+                        .expect("persistent log has a path")
+                        .to_path_buf();
+                    crate::session::log::init_session(crate::session::log::InitSessionOpts {
+                        log_path: tx_path,
+                        id: session_id.to_string(),
+                        model: String::new(),
+                        codebase_hash,
+                        codebase_dirty,
+                        assigned_by: None,
+                        codebase_path: Some(codebase.to_string_lossy().into_owned()),
+                        notify_done: false,
+                    })?;
+                }
+            }
+            log
         }
-    }
-
+        TurnMode::Ephemeral { input } => crate::turn::SessionLog::ephemeral(input.clone()),
+    };
     // ── Spawn brain (enrolled as cascade group leader) ──────────────────────
     let mut child = {
         use tokio::process::Command as TokioCommand;
@@ -380,8 +394,6 @@ pub async fn relay_brain_turn(
     let child_stdin = Arc::new(Mutex::new(child.stdin.take().expect("piped stdin")));
     let mut child_stdout = child.stdout.take().expect("piped stdout");
 
-    let log_path = log.log_path().to_path_buf();
-
     // ── BrainInit: push config + full log + git so the brain reads zero disk. ──
     // The caller appended this turn's user input before relay_brain_turn, and the
     // SessionStart write above ran, so `events` is complete.
@@ -390,7 +402,7 @@ pub async fn relay_brain_turn(
         use tokio::io::AsyncWriteExt;
         let cfg = crate::config::load_config(gait_dir);
         let config_json = serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string());
-        let events = crate::session::log::read_events(&log_path).unwrap_or_default();
+        let events = log.events();
         let head_hash = repos.codebase.head_hash(codebase).unwrap_or_default();
         let dirty_files = repos.codebase.dirty_files(codebase);
         let profile = build_turn_profile(gait_dir, codebase, profile_inputs);
@@ -653,7 +665,7 @@ pub async fn relay_brain_turn(
     for call_id in pending_calls.drain() {
         let body =
             crate::proto::events::tool_result(call_id, "cancelled by user".into(), None, None);
-        let prev = crate::session::log::last_event(&log_path).ok().flatten();
+        let prev = log.last_event();
         let ev = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
         log.relay_event(&ev).ok();
     }
@@ -699,7 +711,7 @@ pub async fn relay_brain_turn(
         // Checkpoint the codebase (shadow repo in gait-dir). Best-effort — a
         // failure means `gait rewind` won't have a snapshot for this turn,
         // but the turn itself is complete.
-        let events = crate::session::log::read_events(&log_path).unwrap_or_default();
+        let events = log.events();
         let turn_n = crate::session::log::count_turn_complete(&events) as u32;
         let _ = git.checkpoint(codebase, turn_n);
 
@@ -1010,7 +1022,11 @@ fn turn_result_from_json(json: &str) -> crate::turn::TurnResult {
         Some(run_result::Result::Unlock(u)) => crate::turn::TurnResult::Unlock { items: u.items },
         Some(run_result::Result::Done(d)) => crate::turn::TurnResult::Done {
             message: d.message,
-            result: None,
+            result: d
+                .result
+                .as_ref()
+                .and_then(|v| serde_json::to_value(v).ok())
+                .filter(|v| !v.is_null()),
             changes: d.changes,
         },
         _ => crate::turn::TurnResult::Done {

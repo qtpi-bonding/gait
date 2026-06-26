@@ -17,7 +17,7 @@ pub use crate::port::output::{run_result_proto, CliSink, Diag, RecordingSink, Tu
 pub use crate::profile::ResolvedProfile;
 pub use crate::proto::gait::log::v1::{RunResult, StreamItem};
 pub use crate::session::Session;
-pub use crate::turn::spine::strip_task_from_args;
+pub use crate::turn::spine::{strip_task_from_args, TurnMode};
 pub use crate::turn::{TurnInput, TurnResult};
 pub use crate::Recorder;
 pub use cascade::CascadeKillHandle;
@@ -197,6 +197,7 @@ pub async fn run_loop(
             launch.cascade_group_arg,
             cascade.map(|h| &h.0),
             &session.repos,
+            &crate::turn::spine::TurnMode::Persistent,
         )
         .await;
         // Clear the cascade slot after each turn (parity with spine.rs:248).
@@ -412,4 +413,61 @@ impl<F: FnMut(JsonFrame)> TurnSink for JsonSink<F> {
         }
         (self.f)(JsonFrame::Diagnostic(level, msg.to_string()));
     }
+}
+
+/// Run ONE brain turn with no persistence (the `gait -e` one-off). Builds the
+/// user-input event in memory, drives the shared `relay_brain_turn` with
+/// `TurnMode::Ephemeral` + a hands-free profile, and returns the captured
+/// `{cmd|output}` result from the brain's Terminated signal via a RecordingSink.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_one_off_turn(
+    codebase: &std::path::Path,
+    api_key: &str,
+    exe: &std::path::Path,
+    sandbox_cfg: &crate::config::SandboxConfig,
+    sandbox_on: bool,
+    model: &str,
+    input_text: String,
+    schema: serde_json::Value,
+) -> anyhow::Result<crate::turn::TurnResult> {
+    // The brain requires a --gait-dir; a scratch tempdir is never written to.
+    let scratch = tempfile::tempdir()?;
+    let session_id = "ephemeral";
+
+    // Seed the in-memory transcript with the user input event.
+    let body = crate::proto::events::user_text(input_text, None);
+    let input = vec![crate::proto::envelope::mint(body, None, 0, 0)];
+
+    let profile_inputs = crate::turn::spine::ProfileInputs {
+        agent_name: None,
+        model_override: Some(model.to_string()),
+        allow: vec![],
+        deny: vec![],
+        result_schema: Some(schema),
+        hands_free: true,
+    };
+
+    let mut sink = RecordingSink::default();
+    crate::turn::spine::relay_brain_turn(
+        scratch.path(),
+        codebase,
+        session_id,
+        api_key,
+        exe,
+        sandbox_cfg,
+        sandbox_on,
+        /* auto */ true,
+        /* max_iter */ Some(2),
+        &profile_inputs,
+        &mut sink,
+        /* cascade_group_arg */ None,
+        /* signal_slot */ None,
+        &crate::git::Repos::production(),
+        &TurnMode::Ephemeral { input },
+    )
+    .await?;
+
+    sink.results
+        .pop()
+        .ok_or_else(|| anyhow::anyhow!("model returned no structured result"))
 }

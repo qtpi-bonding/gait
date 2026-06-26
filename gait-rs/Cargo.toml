@@ -52,6 +52,7 @@ pbjson-types   = "0.7"
 # content_hash pipeline: SHA-256 over JCS(RFC 8785) of the canonical body JSON.
 serde_jcs      = "0.1"
 jsonschema     = { version = "0.18", default-features = false }
+tempfile       = "3"
 
 [features]
 testing = []
