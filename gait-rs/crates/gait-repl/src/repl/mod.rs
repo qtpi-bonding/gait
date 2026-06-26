@@ -1,3 +1,4 @@
+pub mod commands;
 pub mod complete;
 pub(crate) mod driver;
 pub mod helper;

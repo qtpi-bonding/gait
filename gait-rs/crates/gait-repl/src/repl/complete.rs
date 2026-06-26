@@ -2,14 +2,7 @@
 use reedline::{Completer, Span, Suggestion};
 use std::path::PathBuf;
 
-const SLASH_COMMANDS: &[(&str, &str)] = &[
-    ("/new", "start a new session"),
-    ("/workflow", "run a named workflow"),
-    ("/undo", "undo last turn (both axes)"),
-    ("/uc", "undo code only"),
-    ("/ut", "undo transcript only"),
-    ("/exit", "quit"),
-];
+use super::commands;
 
 pub struct GaitCompleter {
     pub gait_dir: PathBuf,
@@ -55,8 +48,8 @@ impl Completer for GaitCompleter {
         // leading `/` → slash commands
         if head.starts_with('/') && !head.contains(' ') {
             let span = Span::new(0, pos);
-            return SLASH_COMMANDS
-                .iter()
+            return commands::completion_pairs()
+                .into_iter()
                 .filter(|(c, _)| c.starts_with(head))
                 .map(|(c, d)| suggestion(c.to_string(), d, span))
                 .collect();

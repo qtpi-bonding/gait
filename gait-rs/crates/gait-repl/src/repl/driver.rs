@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::rc::Rc;
 
-use crate::repl::{bang_command_str, is_bang_command};
+use crate::repl::{bang_command_str, commands as cmd, is_bang_command};
 use crate::theme::{DIM_FG, RESET};
 use crate::ui::{ReplBuilder, ViewSignal};
 use gait_core::embed::{user_turn_events, Diag, TurnSink, TurnSource, TurnStart};
@@ -247,6 +247,95 @@ impl TurnSource for ReplSource {
                 continue;
             }
 
+            // /help (or /?) — emit the grouped command guide via the sink (raw eprint
+            // bypasses the themed ReplRenderer; the help text is plain by design).
+            if line.trim() == "/help" || line.trim() == "/?" {
+                eprint!("{}", cmd::help_text().replace('\n', "\r\n"));
+                continue;
+            }
+
+            // /info — print current model, session id, gait-dir, codebase.
+            if line.trim() == "/info" {
+                let cfg = gait_core::config::load_config(&self.gait_dir);
+                let model = cfg.model.as_deref().unwrap_or("(none)");
+                eprint!(
+                    "model: {}\rsession: {}\rgait-dir: {}\rcodebase: {}\r\n",
+                    model,
+                    self.session_id,
+                    self.gait_dir.display(),
+                    self.codebase.display(),
+                );
+                continue;
+            }
+
+            // /model [provider/id] — list (no arg) or switch the model for subsequent turns.
+            if let Some(rest) = line.strip_prefix("/model") {
+                let arg = rest.trim();
+                if arg.is_empty() {
+                    match gait_core::models::get_models().await {
+                        Ok(models) => {
+                            let filtered = gait_core::models::filter_models(&models, None);
+                            for m in &filtered {
+                                eprint!("  {}/{}\r\n", m.provider, m.id);
+                            }
+                            eprint!("\r\n{} models\r\n", filtered.len());
+                        }
+                        Err(e) => {
+                            eprint!("[gait] /model: {e}\r\n");
+                        }
+                    }
+                    continue;
+                }
+                // Switch the session model by rewriting <gait-dir>/gait.jsonc.
+                let cfg_path = self.gait_dir.join("gait.jsonc");
+                let raw = std::fs::read_to_string(&cfg_path).unwrap_or_default();
+                let mut v: serde_json::Value =
+                    serde_json::from_str(&raw).unwrap_or(serde_json::json!({}));
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert(
+                        "model".to_string(),
+                        serde_json::Value::String(arg.to_string()),
+                    );
+                } else {
+                    v = serde_json::json!({ "model": arg });
+                }
+                let serialized =
+                    serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string());
+                if let Err(e) = std::fs::write(&cfg_path, serialized) {
+                    eprint!("[gait] /model: write {}: {e}\r\n", cfg_path.display());
+                    continue;
+                }
+                eprint!("model set to {arg}\r\n");
+                continue;
+            }
+
+            // /sh <desc> (alias /e) — one-off: ask the model for {cmd|output}, render it,
+            // append to shell history so $(N) recall works. Calls gait_core's
+            // run_one_off_turn directly (gait-repl may not depend on gait-cli).
+            if let Some(rest) = line.strip_prefix("/sh").or_else(|| line.strip_prefix("/e")) {
+                let desc = rest.trim();
+                if desc.is_empty() {
+                    eprint!("[gait] usage: /sh <describe a command>\r\n");
+                    continue;
+                }
+                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                match run_sh_one_off(desc.to_string(), None, cwd, self.gait_dir.clone()).await {
+                    Ok(text) => {
+                        let _ = gait_core::shell_history::append(
+                            &self.shell_history_path,
+                            desc,
+                            &text,
+                            gait_core::session::log::now_ms(),
+                        );
+                        eprint!("{text}\r\n");
+                    }
+                    Err(e) => {
+                        eprint!("[gait] /sh: {e}\r\n");
+                    }
+                }
+                continue;
+            }
+
             // /sandbox [off|on] — toggle per-session sandbox engagement. Takes effect on
             // the next turn (ephemeral: never mutates a live sealed process).
             // Must be checked before parse_skill_toggle so "sandbox" isn't treated as
@@ -420,9 +509,9 @@ impl TurnSource for ReplSource {
 }
 
 /// Reserved REPL built-in prefixes that must NOT be treated as skill names.
-const BUILTIN_PREFIXES: &[&str] = &[
-    "n", "new", "q", "exit", "quit", "u", "uc", "ut", "workflow", "unlock", "sandbox",
-];
+fn builtin_prefixes() -> &'static [&'static str] {
+    Box::leak(cmd::builtin_prefixes().into_boxed_slice())
+}
 
 /// Parse a REPL line as a skill-toggle command.
 ///
@@ -453,7 +542,7 @@ fn parse_skill_toggle(line: &str) -> Option<(String, bool)> {
     }
 
     // Reserved built-in names
-    if BUILTIN_PREFIXES.contains(&name) {
+    if builtin_prefixes().contains(&name) {
         return None;
     }
 
@@ -472,6 +561,73 @@ fn parse_skill_toggle(line: &str) -> Option<(String, bool)> {
     };
 
     Some((name.to_string(), enabled))
+}
+
+/// Drive the `/sh <desc>` one-off: resolve model + key from the loaded config,
+/// call `gait_core::embed::run_one_off_turn` directly (gait-repl may not depend
+/// on gait-cli), and parse the returned `Done.result` as `{cmd|output}`. Returns
+/// the plain text to print.
+async fn run_sh_one_off(
+    desc: String,
+    model_override: Option<String>,
+    codebase: std::path::PathBuf,
+    gait_dir: std::path::PathBuf,
+) -> anyhow::Result<String> {
+    let cfg = gait_core::config::load_config(&gait_dir);
+    let model = match model_override {
+        Some(m) => m,
+        None => cfg.model.ok_or_else(|| {
+            anyhow::anyhow!("no model set; pass --model provider/id or set config.model")
+        })?,
+    };
+    let provider = model
+        .split_once('/')
+        .map(|(p, _)| p)
+        .ok_or_else(|| anyhow::anyhow!("model must be 'provider/model-id'"))?;
+    let api_key = gait_core::auth::resolve_api_key(provider)
+        .ok_or_else(|| anyhow::anyhow!("no API key for `{provider}`"))?;
+    let exe = std::env::current_exe()?;
+    let schema = one_off_schema();
+    let res = gait_core::embed::run_one_off_turn(
+        &codebase,
+        &api_key,
+        &exe,
+        &gait_core::config::SandboxConfig::default(),
+        /* sandbox_on */ true,
+        &model,
+        desc,
+        schema,
+    )
+    .await?;
+    match res {
+        gait_core::turn::TurnResult::Done {
+            result: Some(r), ..
+        } => {
+            let cmd = r.get("cmd").and_then(|v| v.as_str());
+            let out = r.get("output").and_then(|v| v.as_str());
+            match (cmd, out) {
+                (Some(c), None) => Ok(c.to_string()),
+                (None, Some(o)) => Ok(o.to_string()),
+                _ => Err(anyhow::anyhow!(
+                    "expected exactly one of `cmd` or `output`, got: {r}"
+                )),
+            }
+        }
+        _ => Err(anyhow::anyhow!("model returned no structured result")),
+    }
+}
+
+/// Two-variant mutually-exclusive schema for the one-off structured result.
+fn one_off_schema() -> serde_json::Value {
+    let str_obj = |key: &str| {
+        serde_json::json!({
+            "type": "object",
+            "required": [key],
+            "additionalProperties": false,
+            "properties": { key: { "type": "string" } }
+        })
+    };
+    serde_json::json!({ "oneOf": [str_obj("cmd"), str_obj("output")] })
 }
 
 /// Inline workflow runner for the REPL `/workflow` command.
