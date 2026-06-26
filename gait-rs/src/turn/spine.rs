@@ -13,6 +13,7 @@ use crate::port::output::TurnSink;
 use crate::proto::gait::sandbox::v1::{
     network_scope::Mode, signal, Feedback, Impulse, NetworkScope, Notify, Scope, Signal,
 };
+#[allow(unused_imports)] // used in test-only wire::append calls
 use crate::proto::wire;
 use crate::sandbox::{NetworkPolicy, SandboxScope};
 use crate::turn::nerve;
@@ -300,7 +301,7 @@ pub async fn relay_brain_turn(
     repos.checkpoints.init(gait_dir, session_id, codebase)?;
 
     // 3. Session lock — held for the duration of the brain process.
-    let _lock = crate::turn::SessionLock::acquire(&session_dir)?;
+    let log = crate::turn::SessionLog::open(&session_dir)?;
 
     // 5. SessionStart event — write once per session (idempotent via event check).
     {
@@ -371,7 +372,7 @@ pub async fn relay_brain_turn(
     let child_stdin = Arc::new(Mutex::new(child.stdin.take().expect("piped stdin")));
     let mut child_stdout = child.stdout.take().expect("piped stdout");
 
-    let log_path = gait_dir.join("sessions").join(session_id).join("log.jsonl");
+    let log_path = log.log_path().to_path_buf();
 
     // ── BrainInit: push config + full log + git so the brain reads zero disk. ──
     // The caller appended this turn's user input before relay_brain_turn, and the
@@ -447,7 +448,7 @@ pub async fn relay_brain_turn(
                     since,
                     !pending_calls.is_empty(),
                 ) {
-                    emit_terminal_failure(&log_path, &diag, &mut brain_failed, last_phase, reason);
+                    emit_terminal_failure(&log, &diag, &mut brain_failed, last_phase, reason);
                     let _ = group.kill_all();
                     break;
                 }
@@ -510,7 +511,7 @@ pub async fn relay_brain_turn(
                         session_id,
                         sandbox_cfg,
                     );
-                    wire::append_with_id(&log_path, &evt).ok();
+                    log.relay_event(&evt).ok();
                 }
             }
             Some(signal::Body::StreamForward(fwd)) => {
@@ -593,40 +594,27 @@ pub async fn relay_brain_turn(
                     None,
                 );
                 let target_dir = gait_dir.join("sessions").join(&target_session);
-                let tx_path = target_dir.join("log.jsonl");
-                // Acquire lock with retry (parent may be running).
-                let mut lock: Option<crate::turn::SessionLock> = None;
-                for _ in 0..20 {
-                    match crate::turn::SessionLock::acquire(&target_dir) {
-                        Ok(l) => {
-                            lock = Some(l);
-                            break;
-                        }
-                        Err(e) if e.to_string().contains("already running") => {
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        }
-                        Err(e) => {
-                            eprintln!("[spine] warning: failed to acquire lock for notify: {e}");
-                            break;
-                        }
+                match crate::turn::SessionLog::open_retrying(&target_dir, 20).await {
+                    Ok(target_log) => {
+                        target_log.append_body(event).ok();
+                        // Use the injected `repos` (DI) — same handle as every other
+                        // persistence site in this turn, so a test mock observes this
+                        // cross-session commit too. (Was `Repos::production()`.)
+                        repos
+                            .traces
+                            .commit_session(
+                                gait_dir,
+                                &target_session,
+                                &format!(
+                                    "session({}): agent_update from {}",
+                                    target_session, from_session
+                                ),
+                            )
+                            .ok();
                     }
-                }
-                if let Some(_lock) = lock {
-                    wire::append(&tx_path, event).ok();
-                    // Use the injected `repos` (DI) — same handle as every other
-                    // persistence site in this turn, so a test mock observes this
-                    // cross-session commit too. (Was `Repos::production()`.)
-                    repos
-                        .traces
-                        .commit_session(
-                            gait_dir,
-                            &target_session,
-                            &format!(
-                                "session({}): agent_update from {}",
-                                target_session, from_session
-                            ),
-                        )
-                        .ok();
+                    Err(e) => {
+                        eprintln!("[spine] warning: failed to acquire lock for notify: {e}");
+                    }
                 }
                 // No Feedback needed — one-way signal like Append.
             }
@@ -648,7 +636,7 @@ pub async fn relay_brain_turn(
             since,
             !pending_calls.is_empty(),
         ) {
-            emit_terminal_failure(&log_path, &diag, &mut brain_failed, last_phase, reason);
+            emit_terminal_failure(&log, &diag, &mut brain_failed, last_phase, reason);
             let _ = group.kill_all();
             break;
         }
@@ -664,7 +652,7 @@ pub async fn relay_brain_turn(
             crate::proto::events::tool_result(call_id, "cancelled by user".into(), None, None);
         let prev = crate::session::log::last_event(&log_path).ok().flatten();
         let ev = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
-        wire::append_with_id(&log_path, &ev).ok();
+        log.relay_event(&ev).ok();
     }
 
     // Drop the brain's stdin writer to signal EOF — the brain's Nerve reader
@@ -930,7 +918,7 @@ pub async fn run_tool_as_spine(
 /// (best-effort). Single-threaded sole writer ⇒ back-to-back.
 /// Mirrors the orphan-tool repair append at spine.rs:631-636.
 fn emit_terminal_failure(
-    log_path: &Path,
+    log: &crate::turn::SessionLog,
     diag: &crate::turn::DiagnosticSink,
     brain_failed: &mut bool,
     phase: crate::diagnostic::Phase,
@@ -938,9 +926,9 @@ fn emit_terminal_failure(
 ) {
     // 1) Error event → log.jsonl FIRST (also sets brain_failed for exit parity).
     let body = crate::proto::events::error(detail.to_string(), crate::diagnostic::phase_str(phase));
-    let prev = crate::session::log::last_event(log_path).ok().flatten();
+    let prev = log.last_event();
     let evt = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
-    wire::append_with_id(log_path, &evt).ok();
+    log.relay_event(&evt).ok();
     *brain_failed = true;
 
     // 2) DiagRecord → diagnostic.jsonl SECOND (always, even when GAIT_DEBUG is
@@ -2622,11 +2610,10 @@ mod tests {
         let session = "sterm";
         let sdir = gait_dir.join("sessions").join(session);
         std::fs::create_dir_all(&sdir).unwrap();
-        let log_path = sdir.join("log.jsonl");
-
         let mut failed = false;
+        let session_log = crate::turn::SessionLog::open(&sdir).unwrap();
         super::emit_terminal_failure(
-            &log_path,
+            &session_log,
             &super::DiagnosticSink::new(gait_dir, session),
             &mut failed,
             crate::diagnostic::Phase::AwaitingHeaders,
@@ -2634,6 +2621,7 @@ mod tests {
         );
 
         assert!(failed, "brain_failed flag set for exit parity");
+        let log_path = sdir.join("log.jsonl");
         let log = std::fs::read_to_string(&log_path).unwrap();
         assert!(
             log.to_lowercase().contains("error"),
