@@ -1,5 +1,6 @@
 use serde_json::{json, Value};
 use std::io::IsTerminal;
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OneOff {
@@ -122,4 +123,83 @@ mod tests {
         assert_eq!(decide_key('q'), Some(RunDecision::Quit));
         assert_eq!(decide_key('x'), Some(RunDecision::Quit)); // any other key quits
     }
+}
+
+pub async fn run_one_off(
+    prompt: &str,
+    model_override: Option<String>,
+    codebase: &Path,
+) -> anyhow::Result<OneOff> {
+    // model: override > config.model (pwd-fallback load) ; never panic, never a default.
+    let model = match model_override {
+        Some(m) => m,
+        None => gait_core::config::load_config(codebase)
+            .model
+            .ok_or_else(|| {
+                anyhow::anyhow!("no model set; pass --model provider/id or set config.model")
+            })?,
+    };
+    let provider = model
+        .split_once('/')
+        .map(|(p, _)| p)
+        .ok_or_else(|| anyhow::anyhow!("model must be 'provider/model-id'"))?;
+    let api_key = gait_core::auth::resolve_api_key(provider).ok_or_else(|| {
+        anyhow::anyhow!("no API key for `{provider}`; run `gait auth add {provider}`")
+    })?;
+    let exe = std::env::current_exe()?;
+    let res = gait_core::embed::run_one_off_turn(
+        codebase,
+        &api_key,
+        &exe,
+        &Default::default(),
+        /* sandbox_on */ true,
+        &model,
+        prompt.to_string(),
+        one_off_schema(),
+    )
+    .await?;
+    let result = match res {
+        gait_core::turn::TurnResult::Done {
+            result: Some(r), ..
+        } => r,
+        _ => anyhow::bail!("model returned no structured result"),
+    };
+    parse_one_off(&result)
+}
+
+pub async fn cmd_exec(argv: &[String]) {
+    // Parse: optional `--model provider/id`, the rest is the prompt; append piped stdin.
+    let mut model = None;
+    let mut words: Vec<String> = Vec::new();
+    let mut it = argv.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--model" | "-m" => model = it.next().cloned(),
+            _ => words.push(a.clone()),
+        }
+    }
+    let mut prompt = words.join(" ");
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        use std::io::Read;
+        let mut piped = String::new();
+        let _ = std::io::stdin().read_to_string(&mut piped);
+        if !piped.trim().is_empty() {
+            if !prompt.is_empty() {
+                prompt.push('\n');
+            }
+            prompt.push_str(piped.trim_end());
+        }
+    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let code = match run_one_off(&prompt, model, &cwd).await {
+        Ok(one) => {
+            let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
+            render_and_maybe_run(one, is_tty).unwrap_or(1)
+        }
+        Err(e) => {
+            eprintln!("gait -e: {e}");
+            1
+        }
+    };
+    std::process::exit(code);
 }

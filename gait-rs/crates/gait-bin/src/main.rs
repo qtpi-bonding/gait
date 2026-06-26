@@ -48,6 +48,7 @@ async fn main() {
         .unwrap_or_else(cwd_or_dot);
 
     match args[1].as_str() {
+        "-e" | "--exec" => gait_cli::cli::exec::cmd_exec(&args[2..]).await,
         "run" => gait_cli::cli::args::cmd_run(&args[2..]).await,
 
         "init" => gait_cli::cli::init::cmd_init(&args[2..]),
