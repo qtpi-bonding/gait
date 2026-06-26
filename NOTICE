@@ -40,3 +40,7 @@ copyright notice and license text.
     LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     SOFTWARE.
+
+This product includes UX ideas adapted from aichat (https://github.com/sigoden/aichat),
+copyright (c) aichat-developers, dual-licensed under MIT OR Apache-2.0:
+the one-off "describe → confirm → run" shell-assistant flow and the REPL command-guide.

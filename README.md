@@ -587,4 +587,7 @@ text and [NOTICE](NOTICE) for third-party attributions.
 In short: you are free to use, study, modify, and redistribute gait, but
 derivative works must remain under the AGPL. Because it is the *Affero* GPL, if
 you run a modified version as a network service, you must also offer your users
-the corresponding source code (section 13).
+
+## Acknowledgements
+
+UX ideas adapted from [aichat](https://github.com/sigoden/aichat) (MIT OR Apache-2.0).
