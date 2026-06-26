@@ -1,5 +1,4 @@
 use serde_json::{json, Value};
-use std::io::IsTerminal;
 use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,46 +84,6 @@ fn read_single_key() -> anyhow::Result<char> {
     Ok(buf[0] as char)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn parses_cmd_variant() {
-        let v = json!({ "cmd": "tar xf a.tar" });
-        assert!(matches!(parse_one_off(&v).unwrap(), OneOff::Cmd(c) if c == "tar xf a.tar"));
-    }
-
-    #[test]
-    fn parses_output_variant() {
-        let v = json!({ "output": "Paris" });
-        assert!(matches!(parse_one_off(&v).unwrap(), OneOff::Output(o) if o == "Paris"));
-    }
-
-    #[test]
-    fn rejects_both_or_neither() {
-        assert!(parse_one_off(&json!({ "cmd": "x", "output": "y" })).is_err());
-        assert!(parse_one_off(&json!({})).is_err());
-    }
-
-    #[test]
-    fn schema_has_oneof_two_variants() {
-        let s = one_off_schema();
-        assert_eq!(s["oneOf"].as_array().unwrap().len(), 2);
-    }
-
-    #[test]
-    fn enter_is_noop_y_runs() {
-        assert_eq!(decide_key('y'), Some(RunDecision::Run));
-        assert_eq!(decide_key('Y'), Some(RunDecision::Run));
-        assert_eq!(decide_key('\n'), None); // Enter: no-op
-        assert_eq!(decide_key('\r'), None);
-        assert_eq!(decide_key('q'), Some(RunDecision::Quit));
-        assert_eq!(decide_key('x'), Some(RunDecision::Quit)); // any other key quits
-    }
-}
-
 pub async fn run_one_off(
     prompt: &str,
     model_override: Option<String>,
@@ -202,4 +161,44 @@ pub async fn cmd_exec(argv: &[String]) {
         }
     };
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parses_cmd_variant() {
+        let v = json!({ "cmd": "tar xf a.tar" });
+        assert!(matches!(parse_one_off(&v).unwrap(), OneOff::Cmd(c) if c == "tar xf a.tar"));
+    }
+
+    #[test]
+    fn parses_output_variant() {
+        let v = json!({ "output": "Paris" });
+        assert!(matches!(parse_one_off(&v).unwrap(), OneOff::Output(o) if o == "Paris"));
+    }
+
+    #[test]
+    fn rejects_both_or_neither() {
+        assert!(parse_one_off(&json!({ "cmd": "x", "output": "y" })).is_err());
+        assert!(parse_one_off(&json!({})).is_err());
+    }
+
+    #[test]
+    fn schema_has_oneof_two_variants() {
+        let s = one_off_schema();
+        assert_eq!(s["oneOf"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn enter_is_noop_y_runs() {
+        assert_eq!(decide_key('y'), Some(RunDecision::Run));
+        assert_eq!(decide_key('Y'), Some(RunDecision::Run));
+        assert_eq!(decide_key('\n'), None); // Enter: no-op
+        assert_eq!(decide_key('\r'), None);
+        assert_eq!(decide_key('q'), Some(RunDecision::Quit));
+        assert_eq!(decide_key('x'), Some(RunDecision::Quit)); // any other key quits
+    }
 }

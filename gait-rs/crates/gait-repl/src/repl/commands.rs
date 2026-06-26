@@ -35,7 +35,7 @@ pub const COMMANDS: &[ReplCommand] = &[
     },
     ReplCommand {
         slug: "/new",
-        aliases: &[],
+        aliases: &["/n"],
         desc: "Start a fresh session",
         group: "session",
     },
@@ -47,7 +47,7 @@ pub const COMMANDS: &[ReplCommand] = &[
     },
     ReplCommand {
         slug: "/undo",
-        aliases: &[],
+        aliases: &["/u"],
         desc: "Undo the last turn",
         group: "undo",
     },
@@ -77,7 +77,7 @@ pub const COMMANDS: &[ReplCommand] = &[
     },
     ReplCommand {
         slug: "/exit",
-        aliases: &["/quit"],
+        aliases: &["/quit", "/q"],
         desc: "Exit the REPL",
         group: "general",
     },

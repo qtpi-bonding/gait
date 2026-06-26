@@ -6,7 +6,6 @@ use gait_cli::cli::args::{extract_path_arg, gait_dir_or_env};
 fn cwd_or_dot() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
-eprintln!("  gait -e \"<request>\"     one-off: ask the model; offer to run a command");
 
 fn usage() -> ! {
     eprintln!("usage: gait <command> [options]");
@@ -32,6 +31,7 @@ fn usage() -> ! {
     eprintln!("  unregister <mcp|skill> <name>                              (was: unload)");
     eprintln!("  enable     <mcp|skill> <name>");
     eprintln!("  disable    <mcp|skill> <name>");
+    eprintln!("  -e \"<request>\"         one-off: ask the model; offer to run a command");
 
     std::process::exit(1);
 }
