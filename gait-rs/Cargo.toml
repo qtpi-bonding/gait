@@ -60,3 +60,7 @@ testing = []
 tempfile = "3"
 serial_test = "3"
 gait-workflow = { path = "crates/gait-workflow" }
+
+[[bin]]
+name = "mock_brain"
+path = "src/bin/mock_brain.rs"
