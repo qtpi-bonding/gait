@@ -102,6 +102,7 @@ impl BrainLaunch {
                 allow,
                 deny,
                 result_schema,
+                hands_free: false,
             },
         }
     }

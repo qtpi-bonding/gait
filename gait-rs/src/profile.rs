@@ -19,6 +19,9 @@ pub struct Profile {
     pub hooks: Vec<crate::config::HookDef>,
     pub wasm_plugins: Vec<crate::config::WasmPluginDef>,
     pub llm_params: crate::config::LlmParamsConfig,
+    /// Ephemeral one-off: register only `structured_done` (schema), no hands.
+    #[serde(default)]
+    pub hands_free: bool,
 }
 
 /// The live, resolved counterpart of `Profile`: the provider, tools, and
@@ -281,6 +284,7 @@ impl Profile {
             hooks: config.hooks.clone(),
             wasm_plugins: disk_plugins,
             llm_params,
+            hands_free: false,
         }
     }
 
@@ -344,23 +348,36 @@ impl Profile {
                 base
             }
         };
-        let mut tools = crate::tools::builtin_tools(
-            tool_ctx,
-            mcp_registry.clone(),
-            self.skills.clone(),
-            self.wasm_plugins.clone(),
-            repos,
-        );
-        for ct in &self.config_tools {
-            tools.push(build_config_tool(ct, &gait_dir, &codebase_path));
-        }
-        if let Some(schema) = &self.result_schema {
-            if let Some(pos) = tools.iter().position(|t| t.name() == "structured_done") {
-                tools[pos] = Box::new(crate::tools::StructuredDoneTool::with_schema(
-                    schema.clone(),
-                ));
+        let tools: Vec<Box<dyn crate::types::Tool>> = if self.hands_free {
+            // Hands-free: the only registered tool is the schema-aware structured_done.
+            // Nothing else exists, so tool routing can never reach a hand.
+            let schema = self
+                .result_schema
+                .clone()
+                .unwrap_or_else(|| serde_json::json!({ "type": "object" }));
+            vec![Box::new(crate::tools::StructuredDoneTool::with_schema(
+                schema,
+            ))]
+        } else {
+            let mut tools = crate::tools::builtin_tools(
+                tool_ctx,
+                mcp_registry.clone(),
+                self.skills.clone(),
+                self.wasm_plugins.clone(),
+                repos,
+            );
+            for ct in &self.config_tools {
+                tools.push(build_config_tool(ct, &gait_dir, &codebase_path));
             }
-        }
+            if let Some(schema) = &self.result_schema {
+                if let Some(pos) = tools.iter().position(|t| t.name() == "structured_done") {
+                    tools[pos] = Box::new(crate::tools::StructuredDoneTool::with_schema(
+                        schema.clone(),
+                    ));
+                }
+            }
+            tools
+        };
 
         let hooks: Vec<Box<dyn crate::types::Hook>> = self
             .hooks
@@ -369,9 +386,14 @@ impl Profile {
                 Box::new(crate::config_hook::ConfigHook::new(def.clone()))
             })
             .collect();
+        let (allow, deny) = if self.hands_free {
+            (vec!["structured_done".to_string()], vec![])
+        } else {
+            (self.allow, self.deny)
+        };
         let permissioned = crate::tools::RegisteredTools(tools)
             .into_enabled()
-            .with_permissions(self.allow, self.deny);
+            .with_permissions(allow, deny);
 
         Ok(ResolvedProfile {
             provider,
@@ -534,6 +556,7 @@ mod tests {
             hooks: vec![],
             wasm_plugins: vec![],
             llm_params: crate::config::LlmParamsConfig::default(),
+            hands_free: false,
         };
         let resolved = profile
             .resolve(
@@ -772,11 +795,51 @@ mod tests {
             hooks: vec![],
             wasm_plugins: vec![],
             llm_params: crate::config::LlmParamsConfig::default(),
+            hands_free: false,
         };
         let json = serde_json::to_string(&p).expect("serialize");
         let back: Profile = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.model, "anthropic/claude-x");
         assert_eq!(back.instructions, "sys");
         assert_eq!(back.allow, vec!["read".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn hands_free_resolves_only_structured_done() {
+        let schema = serde_json::json!({ "type": "object" });
+        let profile = Profile {
+            model: "anthropic/claude-haiku-4-5-20251001".into(),
+            instructions: String::new(),
+            allow: vec![],
+            deny: vec![],
+            mcp_servers: vec![],
+            skills: vec![],
+            config_tools: vec![],
+            config_enabled: std::collections::HashSet::new(),
+            output_schema_retries: 3,
+            result_schema: Some(schema),
+            hooks: vec![],
+            wasm_plugins: vec![],
+            llm_params: crate::config::LlmParamsConfig::default(),
+            hands_free: true,
+        };
+        let resolved = profile
+            .resolve(
+                std::path::PathBuf::from("/tmp/cb"),
+                "s".into(),
+                std::path::PathBuf::from("/tmp/gd"),
+                crate::git::Repos::production(),
+                Some("test-key".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        let names: Vec<_> = resolved
+            .permissioned
+            .tools()
+            .iter()
+            .map(|t| t.name())
+            .collect();
+        assert_eq!(names, vec!["structured_done"]);
     }
 }

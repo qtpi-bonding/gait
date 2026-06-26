@@ -92,6 +92,8 @@ pub struct ProfileInputs {
     pub allow: Vec<String>,
     pub deny: Vec<String>,
     pub result_schema: Option<serde_json::Value>,
+    /// Ephemeral one-off: brain registers only `structured_done` (no hands).
+    pub hands_free: bool,
 }
 
 /// Build the turn's `Profile` on the spine (disk scan: agent file, system-prompt
@@ -154,13 +156,15 @@ pub fn build_turn_profile(
             default.exists().then_some(default)
         }
     };
-    crate::profile::Profile::from_config_and_agent(
+    let mut profile = crate::profile::Profile::from_config_and_agent(
         &cfg,
         gait_dir,
         Some(codebase),
         agent_path.as_deref(),
         inputs.model_override.clone(),
-    )
+    );
+    profile.hands_free = inputs.hands_free;
+    profile
 }
 
 // ── brain_argv ────────────────────────────────────────────────────────────────
@@ -1559,6 +1563,7 @@ mod tests {
             allow: vec!["Bash".into()],
             deny: vec!["Net".into()],
             result_schema: None,
+            hands_free: false,
         };
         let argv = brain_argv(
             std::path::Path::new("/g"),
@@ -1595,6 +1600,7 @@ mod tests {
             allow: vec![],
             deny: vec![],
             result_schema: None,
+            hands_free: false,
         };
         let argv = brain_argv(
             std::path::Path::new("/g"),
@@ -1811,6 +1817,7 @@ mod tests {
             allow: vec![],
             deny: vec![],
             result_schema: Some(schema.clone()),
+            hands_free: false,
         };
         let p = build_turn_profile(ws.path(), ws.path(), &inputs);
         assert_eq!(p.result_schema, Some(schema));
@@ -1827,6 +1834,7 @@ mod tests {
             allow: vec!["read".into()],
             deny: vec![],
             result_schema: None,
+            hands_free: false,
         };
         let p = build_turn_profile(dir.path(), dir.path(), &inputs);
         assert_eq!(p.model, "anthropic/x");
@@ -1844,6 +1852,7 @@ mod tests {
             allow: vec![],
             deny: vec![],
             result_schema: None,
+            hands_free: false,
         };
         // Should panic: no model in config and no model_override supplied.
         let _ = build_turn_profile(dir.path(), dir.path(), &inputs);
