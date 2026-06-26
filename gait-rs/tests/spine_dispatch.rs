@@ -10,7 +10,9 @@
 mod common;
 use common::*;
 
-use gait_core::embed::{BrainLaunch, LoopConfig, TurnDriver, TurnSink};
+use gait_core::embed::{
+    BrainLaunch, CascadeKillHandle, LoopConfig, RecordingSink, TurnDriver, TurnSink,
+};
 use gait_core::turn::TurnResult;
 use std::cell::RefCell;
 use std::ops::ControlFlow;
