@@ -84,8 +84,8 @@ impl Tool for ReadTool {
     fn description(&self) -> &str {
         "Read a file from the codebase, optionally with line range. Each line is prefixed with \
          `#<id>|content`. `<id>` is a 4-char content hash (e.g. `#QMZP|`). Lines that repeat \
-         get a disambiguator: `#QMZP-VRWS|` (context) or `#QMZP-VRWS-2|` (ordinal). \
-         Pass the `<id>` exactly as shown to `edit` — to modify lines without reproducing old content. \
+         get a longer id: `#QMZPVRWS|` (8-char, context) or `#QMZPVRWS-2|` (ordinal). \
+         Pass the `<id>` exactly as shown to `edit` — use all 8 chars for context ids. \
          Paths are relative to the codebase root."
     }
     fn parameters(&self) -> &Value {
@@ -316,7 +316,7 @@ mod tests {
             .await
             .unwrap();
         let text = result.as_str().unwrap();
-        // Both occurrences of "same" get context tags (contain '-' before the '|same').
+        // Both occurrences of "same" get 8-char ids (tier-2, no dash between P4 and C4).
         let lines: Vec<&str> = text.lines().collect();
         let same_lines: Vec<&&str> = lines.iter().filter(|l| l.ends_with("|same")).collect();
         assert_eq!(
@@ -325,7 +325,15 @@ mod tests {
             "expected 2 annotated 'same' lines: {text}"
         );
         for l in &same_lines {
-            assert!(l.contains('-'), "dup 'same' should have context tag: {l}");
+            let id = l
+                .trim_start_matches('#')
+                .split_once('|')
+                .map(|(id, _)| id)
+                .unwrap_or("");
+            assert!(
+                id.len() >= 8,
+                "dup 'same' should have at least 8-char id: {l}"
+            );
         }
         // The two context tags differ (distinct neighbors).
         assert_ne!(
