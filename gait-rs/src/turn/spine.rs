@@ -16,6 +16,7 @@ use crate::proto::gait::sandbox::v1::{
 use crate::proto::wire;
 use crate::sandbox::{NetworkPolicy, SandboxScope};
 use crate::turn::nerve;
+use crate::turn::DiagnosticSink;
 
 // ── WatchdogCfg + watchdog_breach ────────────────────────────────────────────
 
@@ -279,6 +280,11 @@ pub async fn relay_brain_turn(
         sandbox_on,
     };
 
+    // Sole owner of diagnostic.jsonl writes for this turn. Built once after
+    // TurnCtx so the three call sites can use `&diag` without rebuilding the
+    // path. See src/turn/diag_sink.rs for the gating/terminal discipline.
+    let diag = DiagnosticSink::new(gait_dir, session_id);
+
     // ── Spine-owned startup writes (brain is disk-write-free) ───────────────
     // These all write to gait-dir; the brain's seal has writable: [] so it
     // cannot do them. The spine does them before spawning the brain.
@@ -441,14 +447,7 @@ pub async fn relay_brain_turn(
                     since,
                     !pending_calls.is_empty(),
                 ) {
-                    emit_terminal_failure(
-                        &log_path,
-                        gait_dir,
-                        session_id,
-                        &mut brain_failed,
-                        last_phase,
-                        reason,
-                    );
+                    emit_terminal_failure(&log_path, &diag, &mut brain_failed, last_phase, reason);
                     let _ = group.kill_all();
                     break;
                 }
@@ -544,7 +543,7 @@ pub async fn relay_brain_turn(
                         last_phase,
                         "brain reported failure via Terminated signal",
                     );
-                    write_diagnostic_line(gait_dir, session_id, &rec.to_json_line());
+                    diag.terminal(&rec.to_json_line());
                 }
                 run_result = Some(turn_result_from_json(&t.run_result_json));
                 break;
@@ -631,13 +630,11 @@ pub async fn relay_brain_turn(
                 }
                 // No Feedback needed — one-way signal like Append.
             }
-            Some(signal::Body::Diagnostic(diag)) => {
-                last_phase = crate::diagnostic::phase_from_str(&diag.phase);
-                last_phase_elapsed_ms = diag.elapsed_ms;
+            Some(signal::Body::Diagnostic(diag_msg)) => {
+                last_phase = crate::diagnostic::phase_from_str(&diag_msg.phase);
+                last_phase_elapsed_ms = diag_msg.elapsed_ms;
                 last_ping_at = Some(std::time::Instant::now());
-                if crate::diagnostic::debug_enabled() {
-                    write_diagnostic_line(gait_dir, session_id, &diag.record_json);
-                }
+                diag.ping(&diag_msg.record_json);
             }
             _ => {}
         }
@@ -651,14 +648,7 @@ pub async fn relay_brain_turn(
             since,
             !pending_calls.is_empty(),
         ) {
-            emit_terminal_failure(
-                &log_path,
-                gait_dir,
-                session_id,
-                &mut brain_failed,
-                last_phase,
-                reason,
-            );
+            emit_terminal_failure(&log_path, &diag, &mut brain_failed, last_phase, reason);
             let _ = group.kill_all();
             break;
         }
@@ -934,26 +924,6 @@ pub async fn run_tool_as_spine(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-/// Append one diagnostic record line to sessions/<id>/diagnostic.jsonl.
-/// Best-effort: an IO error is logged once to stderr and dropped — diagnostics
-/// must never fail a run or interfere with log.jsonl.
-pub(crate) fn write_diagnostic_line(gait_dir: &std::path::Path, session_id: &str, line: &str) {
-    use std::io::Write;
-    let path = gait_dir
-        .join("sessions")
-        .join(session_id)
-        .join("diagnostic.jsonl");
-    let res = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .and_then(|mut f| writeln!(f, "{line}"));
-    if let Err(e) = res {
-        eprintln!("[gait] diagnostic write failed: {e}");
-    }
-}
-
 /// THE single dual-emit site for terminal failures. Ordering is load-bearing:
 /// the Error event lands in log.jsonl FIRST (transcript correctness + exit
 /// parity via `brain_failed`), the DiagRecord in diagnostic.jsonl SECOND
@@ -961,8 +931,7 @@ pub(crate) fn write_diagnostic_line(gait_dir: &std::path::Path, session_id: &str
 /// Mirrors the orphan-tool repair append at spine.rs:631-636.
 fn emit_terminal_failure(
     log_path: &Path,
-    gait_dir: &Path,
-    session_id: &str,
+    diag: &crate::turn::DiagnosticSink,
     brain_failed: &mut bool,
     phase: crate::diagnostic::Phase,
     detail: &str,
@@ -976,8 +945,8 @@ fn emit_terminal_failure(
 
     // 2) DiagRecord → diagnostic.jsonl SECOND (always, even when GAIT_DEBUG is
     //    off — a terminal failure must always be explained).
-    let rec = crate::diagnostic::DiagRecord::terminal(session_id, phase, detail);
-    write_diagnostic_line(gait_dir, session_id, &rec.to_json_line());
+    let rec = crate::diagnostic::DiagRecord::terminal(diag.session_id(), phase, detail);
+    diag.terminal(&rec.to_json_line());
 }
 
 /// Build a Feedback carrying a string error result.
@@ -2574,8 +2543,8 @@ mod tests {
         let session = "stest";
         std::fs::create_dir_all(gait_dir.join("sessions").join(session)).unwrap();
 
-        super::write_diagnostic_line(gait_dir, session, "{\"phase\":\"awaiting_headers\"}");
-        super::write_diagnostic_line(gait_dir, session, "{\"phase\":\"streaming\"}");
+        super::DiagnosticSink::new(gait_dir, session).terminal(r#"{"phase":"awaiting_headers"}"#);
+        super::DiagnosticSink::new(gait_dir, session).terminal(r#"{"phase":"streaming"}"#);
 
         let p = gait_dir
             .join("sessions")
@@ -2658,8 +2627,7 @@ mod tests {
         let mut failed = false;
         super::emit_terminal_failure(
             &log_path,
-            gait_dir,
-            session,
+            &super::DiagnosticSink::new(gait_dir, session),
             &mut failed,
             crate::diagnostic::Phase::AwaitingHeaders,
             "watchdog: phase exceeded stall_cap",

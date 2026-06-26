@@ -44,6 +44,8 @@ struct ClarifyArg {
     options: Vec<String>,
 }
 
+mod diag_sink;
+pub(crate) use diag_sink::DiagnosticSink;
 #[derive(serde::Deserialize)]
 struct InformArg {
     id: String,
