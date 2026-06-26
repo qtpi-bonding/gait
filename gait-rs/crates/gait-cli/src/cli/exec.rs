@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use std::io::IsTerminal;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OneOff {
@@ -29,6 +30,60 @@ pub fn parse_one_off(result: &Value) -> anyhow::Result<OneOff> {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum RunDecision {
+    Run,
+    Quit,
+}
+
+/// `y`/`Y` → run; Enter → no-op (redraw); anything else (incl. `q`/EOF) → quit.
+pub fn decide_key(key: char) -> Option<RunDecision> {
+    match key {
+        'y' | 'Y' => Some(RunDecision::Run),
+        '\n' | '\r' => None,
+        _ => Some(RunDecision::Quit),
+    }
+}
+
+pub fn render_and_maybe_run(one_off: OneOff, is_tty: bool) -> anyhow::Result<i32> {
+    match one_off {
+        OneOff::Output(text) => {
+            println!("{text}");
+            Ok(0)
+        }
+        OneOff::Cmd(cmd) => {
+            println!("{cmd}");
+            if !is_tty {
+                return Ok(0); // piped: print only, scriptable
+            }
+            loop {
+                eprint!("run? [y/N] ");
+                let key = read_single_key()?;
+                match decide_key(key) {
+                    None => continue, // Enter: redraw the prompt
+                    Some(RunDecision::Quit) => return Ok(0),
+                    Some(RunDecision::Run) => {
+                        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+                        let status = std::process::Command::new(shell)
+                            .arg("-c")
+                            .arg(&cmd)
+                            .status()?;
+                        return Ok(status.code().unwrap_or(1));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Read a single key in raw mode (one byte from the controlling TTY).
+fn read_single_key() -> anyhow::Result<char> {
+    use std::io::Read;
+    let mut buf = [0u8; 1];
+    std::io::stdin().read_exact(&mut buf)?;
+    Ok(buf[0] as char)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,5 +111,15 @@ mod tests {
     fn schema_has_oneof_two_variants() {
         let s = one_off_schema();
         assert_eq!(s["oneOf"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn enter_is_noop_y_runs() {
+        assert_eq!(decide_key('y'), Some(RunDecision::Run));
+        assert_eq!(decide_key('Y'), Some(RunDecision::Run));
+        assert_eq!(decide_key('\n'), None); // Enter: no-op
+        assert_eq!(decide_key('\r'), None);
+        assert_eq!(decide_key('q'), Some(RunDecision::Quit));
+        assert_eq!(decide_key('x'), Some(RunDecision::Quit)); // any other key quits
     }
 }
