@@ -195,6 +195,7 @@ pub async fn run_loop(
             sink,
             launch.cascade_group_arg,
             cascade.map(|h| &h.0),
+            &session.repos,
         )
         .await;
         // Clear the cascade slot after each turn (parity with spine.rs:248).

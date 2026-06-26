@@ -244,6 +244,7 @@ pub async fn relay_brain_turn(
     // for the duration of the turn so an external signal handler can call
     // kill_all(). The caller must clear the slot after the turn completes.
     signal_slot: Option<&SignalSlot>,
+    repos: &crate::git::Repos,
 ) -> anyhow::Result<bool> {
     // ── Establish (or inherit) the cascade group for this turn ─────────────
     let group = crate::process::establish(cascade_group_arg);
@@ -257,7 +258,8 @@ pub async fn relay_brain_turn(
     // ── Spine-owned startup writes (brain is disk-write-free) ───────────────
     // These all write to gait-dir; the brain's seal has writable: [] so it
     // cannot do them. The spine does them before spawning the brain.
-    let repos = crate::git::Repos::production();
+    // `repos` is injected by the caller (DI) — production callers pass
+    // `Repos::production()`; test harnesses pass a recording mock.
     let session_dir = gait_dir.join("sessions").join(session_id);
     let tx_path = session_dir.join("log.jsonl");
 
