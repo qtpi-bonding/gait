@@ -109,4 +109,3 @@ async fn concurrent_turn_blocked_while_held() {
         sink.diagnostics
     );
 }
-
