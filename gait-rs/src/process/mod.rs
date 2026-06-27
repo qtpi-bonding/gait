@@ -242,8 +242,19 @@ mod macos {
             // Reap owned children to avoid zombies (S4) — release mutex before blocking waitpid.
             let pids: Vec<i32> = self.owned.lock().unwrap().drain(..).collect();
             for pid in pids {
-                unsafe {
-                    libc::waitpid(pid, std::ptr::null_mut(), 0);
+                // Retry on EINTR: tokio's SIGCHLD handler (or any signal) can
+                // interrupt this blocking waitpid on a still-running child, and
+                // without the retry that child leaks as a zombie. This is the sole
+                // brain reaper on the spine's EOF/Terminated teardown paths, so the
+                // retry is load-bearing, not cosmetic.
+                loop {
+                    let r = unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+                    if r == -1
+                        && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
+                    {
+                        continue;
+                    }
+                    break;
                 }
             }
             Ok(())
@@ -709,4 +720,47 @@ fn inherited_group_does_not_kill() {
     let g = establish(Some("424242".into()));
     // a subagent inheriting the parent's group must never killpg it
     assert!(g.kill_all().is_ok()); // inherited=true → no killpg
+}
+
+/// Regression: the spine teardown reaps the brain via `kill_all()`'s blocking
+/// `waitpid`, NOT tokio's `child.wait()` (whose macOS kqueue `EVFILT_PROC` never
+/// fires for an already-exited pid → infinite hang). This locks in that
+/// `kill_all()` reaps an ALREADY-EXITED owned child promptly and idempotently.
+#[cfg(target_os = "macos")]
+#[test]
+fn kill_all_reaps_already_exited_child_without_hanging() {
+    let g = establish(None);
+    let mut cmd = std::process::Command::new("true"); // exits 0 immediately
+    g.configure_enrolled(&mut cmd).expect("configure");
+    let child = cmd.spawn().expect("spawn true");
+    let pid = child.id() as i32;
+    g.register_pid(pid);
+    // std::process::Child does not reap on drop and stdio is inherited (no fds),
+    // so a plain drop leaks nothing — kill_all owns the reap.
+    drop(child);
+
+    // Let it become a zombie (exited, unreaped) — the wedging condition.
+    std::thread::sleep(std::time::Duration::from_millis(250));
+
+    // Run kill_all on a worker thread and bound the wait: a hang shows up as a
+    // recv timeout (hard test failure) instead of blocking the suite forever.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let gc = g.clone();
+    let h = std::thread::spawn(move || {
+        let _ = tx.send(gc.kill_all());
+    });
+    let res = rx.recv_timeout(std::time::Duration::from_secs(5));
+    assert!(
+        res.is_ok(),
+        "kill_all hung reaping an already-exited child (no result within 5s)"
+    );
+    res.unwrap().expect("kill_all returned an error");
+    h.join().ok();
+
+    // Reaped: a second waitpid returns ECHILD (no zombie leak).
+    let r = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
+    assert_eq!(r, -1, "child should already be reaped by kill_all (ECHILD)");
+
+    // Idempotent: a second kill_all is a clean no-op.
+    assert!(g.kill_all().is_ok());
 }

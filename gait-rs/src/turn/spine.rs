@@ -455,8 +455,6 @@ pub async fn relay_brain_turn(
         std::collections::HashMap::new();
     // Transitions: BrainPhase→HandsPhase on first ToolCall insert; back on drain.
     let mut spine_phase = SpinePhase::BrainPhase;
-    // Set when kill_all() already reaped the brain; skips child.wait() (Bug 1).
-    let mut group_killed = false;
 
     let wd = WatchdogCfg::default();
     let mut last_phase = crate::diagnostic::Phase::TurnBegin;
@@ -479,7 +477,6 @@ pub async fn relay_brain_turn(
                 {
                     emit_terminal_failure(&log, &diag, &mut brain_failed, last_phase, reason);
                     let _ = group.kill_all();
-                    group_killed = true;
                     break;
                 }
                 continue;
@@ -665,7 +662,6 @@ pub async fn relay_brain_turn(
         {
             emit_terminal_failure(&log, &diag, &mut brain_failed, last_phase, reason);
             let _ = group.kill_all();
-            group_killed = true;
             break;
         }
     }
@@ -688,16 +684,10 @@ pub async fn relay_brain_turn(
     // lets the brain's tokio runtime shut down and the process exit.
     drop(child_stdin);
 
-    // Bug 1: if kill_all() already reaped the brain via blocking waitpid, skip
-    // child.wait() — on macOS kqueue EVFILT_PROC never fires for an already-reaped
-    // pid, so await hangs indefinitely.
-    if !group_killed {
-        let _ = child.wait().await;
-    }
-
-    // Reap any stragglers (hands, sh grandchildren) the brain left behind.
-    // Idempotent — no-op if nothing remains in the group.
-    let _ = group.kill_all();
+    // Single authoritative reap for EVERY exit path (EOF / Terminated / watchdog).
+    // Reaps via kill_all() + Child drop — never tokio's child.wait(), which is
+    // fatal on macOS (see `reap_brain`).
+    reap_brain(Arc::clone(&group), child).await;
 
     if let Some(result) = &run_result {
         // The spine is the sole gait-dir writer. The brain skipped
@@ -742,6 +732,38 @@ pub async fn relay_brain_turn(
     }
 
     Ok(brain_failed)
+}
+
+/// Reap the brain subprocess at end-of-turn, then drop the tokio `Child` without
+/// ever awaiting it.
+///
+/// We deliberately do NOT call `child.wait().await`. On macOS, tokio registers a
+/// kqueue `EVFILT_PROC`/`NOTE_EXIT` filter lazily on the first poll of `wait()`,
+/// and registering that filter against a pid that has *already* exited never
+/// delivers an event — the await blocks **forever**. Every end-of-turn path
+/// reaches here with the brain already gone (its stdout pipe closed → EOF) or
+/// just signalled to die, so this was a live hang: the spine would sit alive at
+/// 0% CPU indefinitely, never running the post-turn checkpoint/commit.
+///
+/// `group.kill_all()` is the correct reaper and is idempotent (a no-op if the
+/// watchdog already reaped in-loop). Platform specifics:
+/// - macOS: `kill_all` blocking-`waitpid`s the brain — correct for an
+///   already-exited zombie. If the brain is still alive it blocks until a detached
+///   SIGTERM→(300ms)→SIGKILL escalation thread makes it exit. `spawn_blocking`
+///   keeps that potential block off the runtime workers.
+/// - Linux: `kill_all` reaps with `WNOHANG`, so a still-live brain is reaped by
+///   tokio's orphan reaper when `child` is dropped (the macOS kqueue defect that
+///   motivates this whole helper does not apply on Linux).
+///
+/// Either way we move `child` in and drop it WITHOUT awaiting. Reaping before the
+/// drop means tokio's SIGCHLD reaper can't race-steal the pid; the post-drop
+/// `try_wait` then sees `ECHILD` (harmless), so there is no zombie leak.
+pub(crate) async fn reap_brain(
+    group: Arc<dyn crate::process::Containment>,
+    child: tokio::process::Child,
+) {
+    let _ = tokio::task::spawn_blocking(move || group.kill_all()).await;
+    drop(child);
 }
 
 // ── run_tool_as_spine ────────────────────────────────────────────────────────
@@ -1587,9 +1609,48 @@ pub(super) fn test_ctx(ws: &std::path::Path, session_id: &str) -> TurnCtx {
 mod tests {
     use super::{
         brain_argv, build_subagent_feedback, build_turn_profile, enrich_permissions_preview,
-        error_feedback, handle_spawn_agent, test_ctx, watchdog_breach, ProfileInputs,
+        error_feedback, handle_spawn_agent, reap_brain, test_ctx, watchdog_breach, ProfileInputs,
         SpawnAgentArgs, SpinePhase, WatchdogCfg,
     };
+
+    /// Regression for the spine end-of-turn hang: `reap_brain` must return promptly
+    /// even when the brain has already exited. The old teardown called
+    /// `child.wait().await` here, which on macOS hangs forever for an already-exited
+    /// pid (kqueue `EVFILT_PROC` never fires) — the spine sat alive at 0% CPU and
+    /// never ran the post-turn checkpoint/commit. The fix reaps via
+    /// `group.kill_all()` (blocking waitpid) and never awaits the tokio `Child`.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn reap_brain_does_not_hang_on_already_exited_child() {
+        // Build the child exactly as the spine does: std::Command → configure_enrolled
+        // → tokio Command, so it joins a real cascade group the way the brain does.
+        let group = crate::process::establish(None);
+        let mut std_cmd = std::process::Command::new("true"); // exits 0 immediately
+        group
+            .configure_enrolled(&mut std_cmd)
+            .expect("configure enrolled");
+        let mut tokio_cmd = tokio::process::Command::from(std_cmd);
+        let child = tokio_cmd.spawn().expect("spawn child");
+        let pid = child.id().expect("pid") as i32;
+        group.register_pid(pid);
+
+        // Let it fully exit → it is now a zombie / already-reaped pid, the exact
+        // condition that wedged `child.wait().await`.
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+        // Must complete well within the bound. On the old code this would block
+        // indefinitely on macOS and the timeout would trip.
+        let res = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            reap_brain(group.clone(), child),
+        )
+        .await;
+        assert!(res.is_ok(), "reap_brain hung on an already-exited child");
+
+        // Brain is reaped — no zombie leak (second waitpid → ECHILD).
+        let r = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
+        assert_eq!(r, -1, "brain pid should already be reaped (ECHILD)");
+    }
 
     #[test]
     fn brain_argv_is_canonical_and_has_no_role_token() {
