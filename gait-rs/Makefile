@@ -2,18 +2,27 @@
 #   echo 'INSTALL_DIR = $(HOME)/develop' > Makefile.local
 -include Makefile.local
 INSTALL_DIR ?= /usr/local/bin
+MAN_DIR     ?= /usr/local/share/man/man1
 
-.PHONY: build install fmt lint test check hooks
+.PHONY: build install man fmt lint test check hooks
 
 build:
-	cargo build --release -p gait-bin
+	cargo build --release -p gait-bin -p gait-mangen
 
 TARGET_DIR := $(shell cargo metadata --no-deps --format-version 1 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['target_directory'])")
 
-install: build
+man:
+	@mkdir -p $(TARGET_DIR)/man
+	$(TARGET_DIR)/release/gait-mangen $(TARGET_DIR)/man
+	@echo "man pages → $(TARGET_DIR)/man/"
+
+install: build man
 	install -d $(INSTALL_DIR)
 	install -m 0755 $(TARGET_DIR)/release/gait $(INSTALL_DIR)/gait
 	@echo "installed → $(INSTALL_DIR)/gait"
+	install -d $(MAN_DIR)
+	install -m 0644 $(TARGET_DIR)/man/*.1 $(MAN_DIR)/
+	@echo "man pages → $(MAN_DIR)/"
 
 fmt:
 	cargo fmt --all

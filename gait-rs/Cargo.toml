@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/gait-bin", "crates/gait-repl", "crates/gait-cli", "crates/gait-proto", "crates/gait-workflow"]
+members = ["crates/gait-bin", "crates/gait-repl", "crates/gait-cli", "crates/gait-proto", "crates/gait-workflow", "crates/gait-mangen"]
 
 [workspace.package]
 version = "0.1.0"
