@@ -3,7 +3,7 @@
 
 use clap::Parser;
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// `gait auth list|add|remove [provider]`
 #[derive(Parser, Debug)]
@@ -540,23 +540,6 @@ pub(crate) fn cmd_enable_disable_inner(
     Ok(())
 }
 
-/// Kept private; `cmd_enable` / `cmd_disable` are the public dispatch entrypoints.
-fn cmd_enable_disable(
-    gait_dir: &std::path::Path,
-    args: &[String],
-    enable: bool,
-) -> anyhow::Result<()> {
-    let kind = args
-        .first()
-        .map(|s| s.as_str())
-        .ok_or_else(|| anyhow::anyhow!("usage: gait enable/disable <mcp|skill|plugin> <name>"))?;
-    let name = args
-        .get(1)
-        .map(|s| s.as_str())
-        .ok_or_else(|| anyhow::anyhow!("usage: gait enable/disable <mcp|skill|plugin> <name>"))?;
-    cmd_enable_disable_inner(gait_dir, kind, name, enable)
-}
-
 pub fn cmd_enable(args: EnableArgs) {
     let gait_dir: PathBuf = match args.gait_dir.clone().or_else(|| {
         std::env::var("GAIT_DIR")
@@ -707,7 +690,7 @@ mod tests {
             r#"{"model":"anthropic/claude-sonnet-4-6","mcp_servers":[]}"#,
         )
         .unwrap();
-        let args: Vec<String> = ["mcp", "slack", "--spawn", "node mcp-slack.js"]
+        let _args: Vec<String> = ["mcp", "slack", "--spawn", "node mcp-slack.js"]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -735,7 +718,7 @@ mod tests {
             r#"{"model":"anthropic/claude-sonnet-4-6","skills":[]}"#,
         )
         .unwrap();
-        let args: Vec<String> = [
+        let _args: Vec<String> = [
             "skill",
             "tdd",
             "--description",
@@ -768,7 +751,7 @@ mod tests {
             r#"{"model":"x","mcp_servers":[{"name":"slack","spawn":"node s.js","enabled":false}]}"#,
         )
         .unwrap();
-        let args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
+        let _args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
         cmd_enable_disable_inner(dir.path(), "mcp", "slack", true).unwrap();
         let val: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap())
@@ -784,7 +767,7 @@ mod tests {
             r#"{"model":"x","mcp_servers":[{"name":"slack","spawn":"node s.js","enabled":true}]}"#,
         )
         .unwrap();
-        let args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
+        let _args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
         cmd_enable_disable_inner(dir.path(), "mcp", "slack", false).unwrap();
         let val: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap())
@@ -800,7 +783,7 @@ mod tests {
             r#"{"model":"x","mcp_servers":[]}"#,
         )
         .unwrap();
-        let args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
+        let _args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
         assert!(cmd_enable_disable_inner(dir.path(), "mcp", "slack", true).is_err());
     }
 
@@ -812,7 +795,7 @@ mod tests {
             r#"{"model":"x","mcp_servers":[{"name":"slack","spawn":"node s.js","enabled":true}]}"#,
         )
         .unwrap();
-        let args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
+        let _args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
         cmd_unregister(unreg("mcp", "slack", dir.path())).unwrap();
         let val: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap())
@@ -824,7 +807,7 @@ mod tests {
     fn cmd_register_plugin_missing_wasm_errors() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"x"}"#).unwrap();
-        let args: Vec<String> = ["plugin", "foo"].iter().map(|s| s.to_string()).collect();
+        let _args: Vec<String> = ["plugin", "foo"].iter().map(|s| s.to_string()).collect();
         assert!(cmd_register(reg("plugin", "foo", dir.path())).is_err());
     }
 
@@ -836,7 +819,7 @@ mod tests {
             r#"{"model":"anthropic/claude-sonnet-4-6"}"#,
         )
         .unwrap();
-        let args: Vec<String> = [
+        let _args: Vec<String> = [
             "mcp",
             "slack",
             "--command",
@@ -870,7 +853,7 @@ mod tests {
             r#"{"model":"anthropic/claude-sonnet-4-6"}"#,
         )
         .unwrap();
-        let args: Vec<String> = ["mcp", "slack2", "--spawn", "node mcp-slack.js"]
+        let _args: Vec<String> = ["mcp", "slack2", "--spawn", "node mcp-slack.js"]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -899,7 +882,7 @@ mod tests {
             r#"{"command":"npx","args":[],"enabled":false}"#,
         )
         .unwrap();
-        let args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
+        let _args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
         cmd_enable_disable_inner(dir.path(), "mcp", "slack", true).unwrap();
         let val: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(mcp_dir.join("slack.json")).unwrap())
@@ -914,7 +897,7 @@ mod tests {
         std::fs::create_dir_all(&mcp_dir).unwrap();
         let disk_path = mcp_dir.join("slack.json");
         std::fs::write(&disk_path, r#"{"command":"npx","args":[],"enabled":false}"#).unwrap();
-        let args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
+        let _args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
         cmd_unregister(unreg("mcp", "slack", dir.path())).unwrap();
         assert!(!disk_path.exists(), "mcp/slack.json should be deleted");
     }
@@ -930,7 +913,7 @@ mod tests {
         // Create a dummy .wasm file to register
         let wasm_path = dir.path().join("myfmt.wasm");
         std::fs::write(&wasm_path, b"").unwrap();
-        let args: Vec<String> = [
+        let _args: Vec<String> = [
             "plugin",
             "myfmt",
             "--wasm",
@@ -975,7 +958,7 @@ mod tests {
             "---\nname: myfmt\nwasm: myfmt.wasm\nenabled: false\n---\n# docs\n",
         )
         .unwrap();
-        let args: Vec<String> = ["plugin", "myfmt"].iter().map(|s| s.to_string()).collect();
+        let _args: Vec<String> = ["plugin", "myfmt"].iter().map(|s| s.to_string()).collect();
         cmd_enable_disable_inner(dir.path(), "plugin", "myfmt", true).unwrap();
         let md = std::fs::read_to_string(plugin_dir.join("PLUGIN.md")).unwrap();
         assert!(md.contains("enabled: true"), "got: {md}");
@@ -995,7 +978,7 @@ mod tests {
             "---\nname: myfmt\nwasm: myfmt.wasm\nenabled: false\n---\n",
         )
         .unwrap();
-        let args: Vec<String> = ["plugin", "myfmt"].iter().map(|s| s.to_string()).collect();
+        let _args: Vec<String> = ["plugin", "myfmt"].iter().map(|s| s.to_string()).collect();
         cmd_unregister(unreg("plugin", "myfmt", dir.path())).unwrap();
         assert!(!plugin_dir.exists(), "plugins/myfmt/ should be deleted");
     }
