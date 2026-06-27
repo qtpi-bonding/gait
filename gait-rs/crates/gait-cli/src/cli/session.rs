@@ -1,19 +1,43 @@
-//! Session lifecycle + inspection commands:
-//! `finish`, `undo`, `sessions`, `allow|approve`, `deny|reject`, `status`, `cost`.
+//! Session lifecycle + inspection commands.
+//!
+//! Public clap structs: `PersistArgs`, `DiscardArgs`, `StopArgs`, `SessionsArgs`,
+//! `PsArgs`, `StatsArgs`, `AllowArgs`, `DenyArgs`, `UnlockArgs`, `UndoArgs`,
+//! `ReplyArgs`.
 
 use clap::Parser;
 use std::path::PathBuf;
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 #[command(no_binary_name = true)]
-struct FinishArgs {
-    session_id: String,
+pub struct PersistArgs {
+    pub session_id: String,
     #[arg(long, env = "GAIT_DIR")]
-    gait_dir: PathBuf,
+    pub gait_dir: PathBuf,
+    #[arg(long)]
+    pub json: bool,
 }
 
-pub fn cmd_finish(argv: &[String]) {
-    let args = FinishArgs::parse_from(argv);
+#[derive(Parser, Debug)]
+#[command(no_binary_name = true)]
+pub struct DiscardArgs {
+    pub session_id: String,
+    #[arg(long, env = "GAIT_DIR")]
+    pub gait_dir: PathBuf,
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Parser, Debug)]
+#[command(no_binary_name = true)]
+pub struct StopArgs {
+    pub session_id: String,
+    #[arg(long, env = "GAIT_DIR")]
+    pub gait_dir: PathBuf,
+    #[arg(long)]
+    pub json: bool,
+}
+
+pub fn cmd_persist(args: PersistArgs) {
     let repos = gait_core::git::Repos::production();
     if let Err(e) = repos
         .traces
@@ -31,25 +55,35 @@ pub fn cmd_finish(argv: &[String]) {
     eprintln!("[gait] session {} merged into main", args.session_id);
 }
 
-#[derive(Parser)]
-#[command(no_binary_name = true)]
-struct UndoArgs {
-    session_id: String,
-    #[arg(long)]
-    turn: Option<u32>,
-    #[arg(long)]
-    code: bool,
-    #[arg(long)]
-    transcript: bool,
-    #[arg(long)]
-    list: bool,
-    #[arg(long, env = "GAIT_DIR")]
-    gait_dir: PathBuf,
+pub fn cmd_discard(_args: DiscardArgs) {
+    eprintln!("[gait] error: discard not yet implemented");
+    std::process::exit(1);
 }
 
-pub fn cmd_undo(argv: &[String]) {
-    let args = UndoArgs::parse_from(argv);
+pub fn cmd_stop(_args: StopArgs) {
+    eprintln!("[gait] error: stop not yet implemented");
+    std::process::exit(1);
+}
 
+#[derive(Parser, Debug)]
+#[command(no_binary_name = true)]
+pub struct UndoArgs {
+    pub session_id: String,
+    #[arg(long)]
+    pub turn: Option<u32>,
+    #[arg(long)]
+    pub code: bool,
+    #[arg(long)]
+    pub transcript: bool,
+    #[arg(long)]
+    pub list: bool,
+    #[arg(long, env = "GAIT_DIR")]
+    pub gait_dir: PathBuf,
+    #[arg(long)]
+    pub json: bool,
+}
+
+pub fn cmd_undo(args: UndoArgs) {
     if let Err(e) = undo_command(
         &args.session_id,
         args.turn,
@@ -179,15 +213,16 @@ fn undo_transcript_to_turn(
     Ok(())
 }
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 #[command(no_binary_name = true)]
-struct SessionsArgs {
+pub struct SessionsArgs {
     #[arg(long, env = "GAIT_DIR")]
-    gait_dir: PathBuf,
+    pub gait_dir: PathBuf,
+    #[arg(long)]
+    pub json: bool,
 }
 
-pub fn cmd_sessions(argv: &[String]) {
-    let args = SessionsArgs::parse_from(argv);
+pub fn cmd_sessions(args: SessionsArgs) {
     match gait_core::git::Repos::production()
         .traces
         .list_active_sessions(&args.gait_dir)
@@ -205,34 +240,98 @@ pub fn cmd_sessions(argv: &[String]) {
     }
 }
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 #[command(no_binary_name = true)]
-struct AllowArgs {
-    session_id: String,
-    #[arg(long)]
-    pattern: Option<String>,
-    #[arg(long, value_name = "SCOPE")]
-    scope: Option<String>,
-    #[arg(long)]
-    agent: Option<String>,
+pub struct PsArgs {
     #[arg(long, env = "GAIT_DIR")]
-    gait_dir: PathBuf,
+    pub gait_dir: PathBuf,
+    #[arg(long)]
+    pub json: bool,
 }
 
-pub fn cmd_allow(argv: &[String]) {
+pub fn cmd_ps(args: PsArgs) {
+    use gait_core::session::log::{session_state, SessionState};
+
+    let sessions_dir = args.gait_dir.join("sessions");
+    let entries = match std::fs::read_dir(&sessions_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("[gait] error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let mut rows: Vec<(String, String)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let id = match path.file_name().and_then(|n| n.to_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let tx_path = path.join("log.jsonl");
+        let state_str = match session_state(&tx_path) {
+            Ok(SessionState::Idle) => "idle".to_string(),
+            Ok(SessionState::AwaitingPermission { .. }) => "awaiting-permission".to_string(),
+            Ok(SessionState::AwaitingClarify { .. }) => "awaiting-clarify".to_string(),
+            Ok(SessionState::AwaitingInform { .. }) => "awaiting-inform".to_string(),
+            Ok(SessionState::AwaitingUnlock { .. }) => "awaiting-unlock".to_string(),
+            Err(_) => continue, // skip unparseable / non-session dirs
+        };
+        rows.push((id, state_str));
+    }
+
+    if args.json {
+        let arr: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(id, st)| serde_json::json!({"session_id": id, "state": st}))
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&arr).unwrap_or_else(|e| {
+                eprintln!("[gait] error serializing ps: {}", e);
+                std::process::exit(1);
+            })
+        );
+        return;
+    }
+
+    for (id, st) in &rows {
+        println!("{}\t{}", id, st);
+    }
+}
+
+#[derive(Parser, Debug)]
+#[command(no_binary_name = true)]
+pub struct AllowArgs {
+    pub session_id: String,
+    #[arg(long)]
+    pub pattern: Option<String>,
+    #[arg(long, value_name = "SCOPE")]
+    pub scope: Option<String>,
+    #[arg(long)]
+    pub agent: Option<String>,
+    #[arg(long, env = "GAIT_DIR")]
+    pub gait_dir: PathBuf,
+    #[arg(long)]
+    pub json: bool,
+}
+
+pub fn cmd_allow(args: AllowArgs) {
     use gait_core::agent_frontmatter::{resolve_markdown_context_path, MarkdownKind};
     use gait_core::permission::{compute_allow_decisions, AllowParams, AllowScope};
     use gait_core::session::log::{session_state, write_permissions_reply, SessionState};
 
-    let args = AllowArgs::parse_from(argv);
-
     let scope = match args.scope.as_deref() {
         Some("global") => AllowScope::Global,
         Some("agent") => AllowScope::Agent,
-        Some("once") | None => AllowScope::Once,
+        // "session" scope not yet in AllowScope; treat as Once until gait-core adds it
+        Some("session") | Some("once") | None => AllowScope::Once,
         Some(other) => {
             eprintln!(
-                "[gait] error: unknown --scope '{}' (expected global|agent|once)",
+                "[gait] error: unknown --scope '{}' (expected global|agent|session|once)",
                 other
             );
             std::process::exit(1);
@@ -271,7 +370,6 @@ pub fn cmd_allow(argv: &[String]) {
             std::process::exit(1);
         }
     };
-
     let reply_items = match compute_allow_decisions(
         &items,
         &params,
@@ -296,19 +394,19 @@ pub fn cmd_allow(argv: &[String]) {
     );
 }
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 #[command(no_binary_name = true)]
-struct DenyArgs {
-    session_id: String,
+pub struct DenyArgs {
+    pub session_id: String,
     #[arg(long, env = "GAIT_DIR")]
-    gait_dir: PathBuf,
+    pub gait_dir: PathBuf,
+    #[arg(long)]
+    pub json: bool,
 }
 
-pub fn cmd_deny(argv: &[String]) {
+pub fn cmd_deny(args: DenyArgs) {
     use gait_core::proto::gait::log::v1 as pb;
     use gait_core::session::log::{session_state, write_permissions_reply, SessionState};
-
-    let args = DenyArgs::parse_from(argv);
 
     let tx_path = args
         .gait_dir
@@ -363,28 +461,28 @@ pub fn cmd_deny(argv: &[String]) {
     );
 }
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 #[command(no_binary_name = true)]
-struct UnlockArgs {
-    session_id: String,
+pub struct UnlockArgs {
+    pub session_id: String,
     /// Grant scope: once (default, log only) | session (log only) | global (→ gait.jsonc) | agent (→ agent file)
     #[arg(long, default_value = "once")]
-    scope: String,
+    pub scope: String,
     /// Agent name for agent-scoped grants (resolves to agents/<name>.md)
     #[arg(long)]
-    agent: Option<String>,
+    pub agent: Option<String>,
     #[arg(long, env = "GAIT_DIR")]
-    gait_dir: PathBuf,
+    pub gait_dir: PathBuf,
+    #[arg(long)]
+    pub json: bool,
 }
 
-pub fn cmd_unlock(argv: &[String]) {
+pub fn cmd_unlock(args: UnlockArgs) {
     use gait_core::config::{
         append_sandbox_network_host, append_sandbox_readable, append_sandbox_writable,
     };
     use gait_core::proto::gait::log::v1 as pb;
     use gait_core::session::log::{session_state, write_unlock_reply, SessionState};
-
-    let args = UnlockArgs::parse_from(argv);
 
     let scope = match args.scope.as_str() {
         "global" => pb::Scope::Global,
@@ -491,154 +589,19 @@ pub fn cmd_unlock(argv: &[String]) {
     );
 }
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 #[command(no_binary_name = true)]
-struct StatusArgs {
-    session_id: String,
+pub struct StatsArgs {
+    pub session_id: String,
     #[arg(long)]
-    json: bool,
+    pub json: bool,
     #[arg(long, env = "GAIT_DIR")]
-    gait_dir: PathBuf,
+    pub gait_dir: PathBuf,
 }
 
-pub fn cmd_status(argv: &[String]) {
-    use gait_core::session::log::{session_state, SessionState};
-
-    let args = StatusArgs::parse_from(argv);
-
-    let tx_path = args
-        .gait_dir
-        .join("sessions")
-        .join(&args.session_id)
-        .join("log.jsonl");
-    let state = match session_state(&tx_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[gait] error: {}", e);
-            std::process::exit(1);
-        }
-    };
-
-    if args.json {
-        use gait_core::proto::gait::state::v1 as sv1;
-        let proto_state = sv1::SessionState {
-            state: Some(match &state {
-                SessionState::Idle => sv1::session_state::State::Idle(sv1::Idle {}),
-                SessionState::AwaitingPermission { items } => {
-                    sv1::session_state::State::AwaitingPermission(sv1::AwaitingPermission {
-                        items: items.clone(),
-                    })
-                }
-                SessionState::AwaitingClarify { items } => {
-                    sv1::session_state::State::AwaitingClarify(sv1::AwaitingClarify {
-                        items: items.clone(),
-                    })
-                }
-                SessionState::AwaitingInform { items } => {
-                    sv1::session_state::State::AwaitingInform(sv1::AwaitingInform {
-                        items: items.clone(),
-                    })
-                }
-                SessionState::AwaitingUnlock { items } => {
-                    sv1::session_state::State::AwaitingUnlock(sv1::AwaitingUnlock {
-                        items: items.clone(),
-                    })
-                }
-            }),
-        };
-        let report = sv1::SessionStateReport {
-            session_id: args.session_id.clone(),
-            state: Some(proto_state),
-        };
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report).unwrap_or_else(|e| {
-                eprintln!("[gait] error serializing state: {}", e);
-                std::process::exit(1);
-            })
-        );
-        return;
-    }
-
-    // Human-readable output
-    match &state {
-        SessionState::Idle => {
-            println!("Session: {}", args.session_id);
-            println!("State:   idle (no pending requests)");
-        }
-        SessionState::AwaitingPermission { items } => {
-            println!("Session: {}", args.session_id);
-            println!("State:   awaiting_permission ({} item(s))", items.len());
-            for (n, it) in items.iter().enumerate() {
-                println!("  [{}] id: {}", n + 1, it.id);
-                if !it.tool_name.is_empty() {
-                    println!("      tool: {}", it.tool_name);
-                }
-                println!("      cmd:  {}", it.cmd);
-                if !it.reason.is_empty() {
-                    println!("      reason: {}", it.reason);
-                }
-                if !it.patterns.is_empty() {
-                    println!("      suggested patterns:");
-                    for p in &it.patterns {
-                        println!("        - {}", p);
-                    }
-                }
-            }
-        }
-        SessionState::AwaitingClarify { items } => {
-            println!("Session: {}", args.session_id);
-            println!("State:   awaiting_clarify ({} item(s))", items.len());
-            for (n, it) in items.iter().enumerate() {
-                println!("  [{}] id:    {}", n + 1, it.id);
-                println!("      kind:  {}", it.kind);
-                println!("      Q:     {}", it.content);
-                if !it.why.is_empty() {
-                    println!("      why:   {}", it.why);
-                }
-            }
-        }
-        SessionState::AwaitingInform { items } => {
-            println!("Session: {}", args.session_id);
-            println!("State:   awaiting_inform ({} item(s))", items.len());
-            for (n, it) in items.iter().enumerate() {
-                println!("  [{}] id:    {}", n + 1, it.id);
-                println!("      msg:   {}", it.content);
-                if let Some(ctx) = &it.context {
-                    println!("      ctx:   {}", ctx);
-                }
-            }
-        }
-        SessionState::AwaitingUnlock { items } => {
-            println!("Session: {}", args.session_id);
-            println!("State:   awaiting_unlock ({} item(s))", items.len());
-            for (n, it) in items.iter().enumerate() {
-                println!("  [{}] id:        {}", n + 1, it.id);
-                if !it.tool_name.is_empty() {
-                    println!("      tool:      {}", it.tool_name);
-                }
-                println!("      resource:  {}", it.resource);
-                println!("      dimension: {}", it.dimension);
-            }
-        }
-    }
-}
-
-#[derive(Parser)]
-#[command(no_binary_name = true)]
-struct CostArgs {
-    session_id: String,
-    #[arg(long)]
-    json: bool,
-    #[arg(long, env = "GAIT_DIR")]
-    gait_dir: PathBuf,
-}
-
-pub fn cmd_cost(argv: &[String]) {
+pub fn cmd_stats(args: StatsArgs) {
     use gait_core::proto::wire::read_events;
     use gait_core::session::retrace::total_usage;
-
-    let args = CostArgs::parse_from(argv);
 
     let tx_path = args
         .gait_dir
@@ -667,4 +630,20 @@ pub fn cmd_cost(argv: &[String]) {
             u.input + u.output + u.cache_read + u.cache_write
         );
     }
+}
+
+#[derive(Parser, Debug)]
+#[command(no_binary_name = true)]
+pub struct ReplyArgs {
+    pub session_id: String,
+    pub message: String,
+    #[arg(long, env = "GAIT_DIR")]
+    pub gait_dir: PathBuf,
+    #[arg(long)]
+    pub json: bool,
+}
+
+pub fn cmd_reply(_args: ReplyArgs) {
+    eprintln!("[gait] error: reply not yet implemented");
+    std::process::exit(1);
 }
