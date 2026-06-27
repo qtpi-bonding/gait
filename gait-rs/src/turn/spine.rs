@@ -50,18 +50,33 @@ impl Default for WatchdogCfg {
     }
 }
 
+/// Whether hands are currently running. Suppresses phase-duration caps in the
+/// watchdog; the ping check (brain-wedged detection) stays active in all phases.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SpinePhase {
+    /// Brain is thinking / calling the LLM — no tool tasks running.
+    BrainPhase,
+    /// One or more tool tasks are in flight (spine spawned tokio tasks for them).
+    HandsPhase,
+}
+
 /// Pure decision. `since_last_ping_ms = None` until the first ping (cold-start grace:
-/// both caps disarmed). `tool_in_flight = !pending_calls.is_empty()` from the spine loop.
+/// both caps disarmed). Pass `spine_phase` from the relay loop.
 pub(crate) fn watchdog_breach(
     cfg: &WatchdogCfg,
     phase: Phase,
     phase_elapsed_ms: u64,
     since_last_ping_ms: Option<u64>,
-    tool_in_flight: bool,
+    spine_phase: SpinePhase,
 ) -> Option<&'static str> {
     let since = since_last_ping_ms?;
+    // Ping check is always live: fires even when hands are running.
     if since > 2 * cfg.ping_ms {
         return Some("no diagnostic ping (brain wedged)");
+    }
+    // Phase-duration caps are suppressed while hands are running.
+    if matches!(spine_phase, SpinePhase::HandsPhase) {
+        return None;
     }
     match phase.cap() {
         Cap::StallCap => {
@@ -69,14 +84,7 @@ pub(crate) fn watchdog_breach(
         }
         Cap::AbsoluteBackstop => (phase_elapsed_ms > cfg.absolute_backstop_ms)
             .then_some("streaming exceeded absolute backstop"),
-        Cap::ToolAware => {
-            if tool_in_flight {
-                None
-            } else {
-                (phase_elapsed_ms > cfg.stall_cap_ms)
-                    .then_some("await_feedback stalled, no tool in flight")
-            }
-        }
+        Cap::ToolAware => (phase_elapsed_ms > cfg.stall_cap_ms).then_some("await_feedback stalled"),
     }
 }
 
@@ -441,9 +449,14 @@ pub async fn relay_brain_turn(
 
     let mut run_result: Option<crate::turn::TurnResult> = None;
     let mut brain_failed = false;
-    // Track in-flight ToolCall call_ids so we can synthesize a ToolResult for
-    // any that are orphaned if the brain is killed before it returns results.
-    let mut pending_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Track in-flight ToolCall call_ids (→ tool names) so we can synthesize a
+    // ToolResult for any that are orphaned if the brain is killed.
+    let mut pending_calls: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    // Transitions: BrainPhase→HandsPhase on first ToolCall insert; back on drain.
+    let mut spine_phase = SpinePhase::BrainPhase;
+    // Set when kill_all() already reaped the brain; skips child.wait() (Bug 1).
+    let mut group_killed = false;
 
     let wd = WatchdogCfg::default();
     let mut last_phase = crate::diagnostic::Phase::TurnBegin;
@@ -461,15 +474,12 @@ pub async fn relay_brain_turn(
             Err(_) => {
                 // read timed out → fall through to the watchdog check
                 let since = last_ping_at.map(|t| t.elapsed().as_millis() as u64);
-                if let Some(reason) = watchdog_breach(
-                    &wd,
-                    last_phase,
-                    last_phase_elapsed_ms,
-                    since,
-                    !pending_calls.is_empty(),
-                ) {
+                if let Some(reason) =
+                    watchdog_breach(&wd, last_phase, last_phase_elapsed_ms, since, spine_phase)
+                {
                     emit_terminal_failure(&log, &diag, &mut brain_failed, last_phase, reason);
                     let _ = group.kill_all();
+                    group_killed = true;
                     break;
                 }
                 continue;
@@ -516,10 +526,16 @@ pub async fn relay_brain_turn(
                     if let Some(event::Body::Payload(ref p)) = evt.body {
                         match p.kind.as_ref() {
                             Some(payload::Kind::ToolCall(tc)) => {
-                                pending_calls.insert(tc.call_id.clone());
+                                pending_calls.insert(tc.call_id.clone(), tc.name.clone());
+                                if pending_calls.len() == 1 {
+                                    spine_phase = SpinePhase::HandsPhase;
+                                }
                             }
                             Some(payload::Kind::ToolResult(tr)) => {
                                 pending_calls.remove(&tr.call_id);
+                                if pending_calls.is_empty() {
+                                    spine_phase = SpinePhase::BrainPhase;
+                                }
                             }
                             _ => {}
                         }
@@ -644,27 +660,24 @@ pub async fn relay_brain_turn(
 
         // Watchdog: runs after every signal (in addition to every read-timeout).
         let since = last_ping_at.map(|t| t.elapsed().as_millis() as u64);
-        if let Some(reason) = watchdog_breach(
-            &wd,
-            last_phase,
-            last_phase_elapsed_ms,
-            since,
-            !pending_calls.is_empty(),
-        ) {
+        if let Some(reason) =
+            watchdog_breach(&wd, last_phase, last_phase_elapsed_ms, since, spine_phase)
+        {
             emit_terminal_failure(&log, &diag, &mut brain_failed, last_phase, reason);
             let _ = group.kill_all();
+            group_killed = true;
             break;
         }
     }
     sink.end_turn();
 
     // Synthesize a ToolResult for each orphaned ToolCall (brain was killed before
-    // it could emit results). This ensures retrace::messages reconstructs with no
-    // orphan tool calls. Must run before commit_session so the repair lands in the
-    // same commit as the rest of the transcript.
-    for call_id in pending_calls.drain() {
-        let body =
-            crate::proto::events::tool_result(call_id, "cancelled by user".into(), None, None);
+    // it could emit results). Tools that completed already have real results in the
+    // log; only call_ids still in pending_calls are orphans. Must run before
+    // commit_session so the repair lands in the same commit as the transcript.
+    for (call_id, tool_name) in pending_calls.drain() {
+        let msg = format!("[LLM timed out before '{}' result was received]", tool_name);
+        let body = crate::proto::events::tool_result(call_id, msg, None, None);
         let prev = log.last_event();
         let ev = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
         log.relay_event(&ev).ok();
@@ -675,7 +688,12 @@ pub async fn relay_brain_turn(
     // lets the brain's tokio runtime shut down and the process exit.
     drop(child_stdin);
 
-    let _ = child.wait().await;
+    // Bug 1: if kill_all() already reaped the brain via blocking waitpid, skip
+    // child.wait() — on macOS kqueue EVFILT_PROC never fires for an already-reaped
+    // pid, so await hangs indefinitely.
+    if !group_killed {
+        let _ = child.wait().await;
+    }
 
     // Reap any stragglers (hands, sh grandchildren) the brain left behind.
     // Idempotent — no-op if nothing remains in the group.
@@ -938,7 +956,9 @@ fn emit_terminal_failure(
     detail: &str,
 ) {
     // 1) Error event → log.jsonl FIRST (also sets brain_failed for exit parity).
-    let body = crate::proto::events::error(detail.to_string(), crate::diagnostic::phase_str(phase));
+    // Always use ErrorPhase::Llm and a descriptive prefix so the transcript
+    // clearly names the timeout rather than mapping a diagnostic phase string.
+    let body = crate::proto::events::error(format!("LLM timed out: {detail}"), "llm");
     let prev = log.last_event();
     let evt = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
     log.relay_event(&evt).ok();
@@ -1568,7 +1588,7 @@ mod tests {
     use super::{
         brain_argv, build_subagent_feedback, build_turn_profile, enrich_permissions_preview,
         error_feedback, handle_spawn_agent, test_ctx, watchdog_breach, ProfileInputs,
-        SpawnAgentArgs, WatchdogCfg,
+        SpawnAgentArgs, SpinePhase, WatchdogCfg,
     };
 
     #[test]
@@ -2073,9 +2093,10 @@ mod tests {
         wire::append(&log_path, tc_body).expect("append tool_call");
 
         // 2. Simulate cancel: the spine synthesizes a ToolResult for the orphan.
+        // tool_name "read" is the value stored in pending_calls (call_id → tool_name).
         let body = crate::proto::events::tool_result(
             call_id.clone(),
-            "cancelled by user".into(),
+            "[LLM timed out before 'read' result was received]".into(),
             None,
             None,
         );
@@ -2094,7 +2115,11 @@ mod tests {
                         tr.call_id, call_id,
                         "synthesized ToolResult must match call_id"
                     );
-                    assert_eq!(tr.output, "cancelled by user");
+                    assert!(
+                        tr.output.contains("LLM timed out") && tr.output.contains("read"),
+                        "output must name the tool and the cause; got: {}",
+                        tr.output
+                    );
                 }
                 other => panic!("expected ToolResult, got {other:?}"),
             },
@@ -2587,40 +2612,97 @@ mod tests {
     #[test]
     fn phase_elapsed_cap_fires_while_alive() {
         // Fast phase past stall_cap is a breach EVEN with a fresh ping.
-        assert!(
-            watchdog_breach(&wd(), Phase::AwaitingHeaders, 95_000, Some(1_000), false).is_some()
-        );
+        assert!(watchdog_breach(
+            &wd(),
+            Phase::AwaitingHeaders,
+            95_000,
+            Some(1_000),
+            SpinePhase::BrainPhase
+        )
+        .is_some());
     }
 
     #[test]
     fn no_ping_cap_fires_when_wedged() {
         // streaming is "long", but no ping for >2*ping_ms means the runtime is wedged.
-        assert!(watchdog_breach(&wd(), Phase::Streaming, 10_000, Some(31_000), false).is_some());
+        assert!(watchdog_breach(
+            &wd(),
+            Phase::Streaming,
+            10_000,
+            Some(31_000),
+            SpinePhase::BrainPhase
+        )
+        .is_some());
     }
 
     #[test]
     fn streaming_with_fresh_pings_is_not_a_breach() {
-        assert!(watchdog_breach(&wd(), Phase::Streaming, 120_000, Some(2_000), false).is_none());
+        assert!(watchdog_breach(
+            &wd(),
+            Phase::Streaming,
+            120_000,
+            Some(2_000),
+            SpinePhase::BrainPhase
+        )
+        .is_none());
     }
 
     #[test]
-    fn await_feedback_with_tool_in_flight_is_not_a_breach() {
-        assert!(watchdog_breach(&wd(), Phase::AwaitFeedback, 200_000, Some(2_000), true).is_none());
-        // …same phase, NO tool in flight, past stall_cap → breach.
-        assert!(watchdog_breach(&wd(), Phase::AwaitFeedback, 95_000, Some(2_000), false).is_some());
+    fn hands_phase_suppresses_duration_caps_but_not_ping_check() {
+        // Duration cap suppressed while hands are running.
+        assert!(watchdog_breach(
+            &wd(),
+            Phase::AwaitFeedback,
+            200_000,
+            Some(2_000),
+            SpinePhase::HandsPhase
+        )
+        .is_none());
+        // Ping check still fires even in HandsPhase (brain-wedged detection).
+        assert!(watchdog_breach(
+            &wd(),
+            Phase::AwaitFeedback,
+            200_000,
+            Some(31_000),
+            SpinePhase::HandsPhase
+        )
+        .is_some());
+        // BrainPhase past stall_cap → breach.
+        assert!(watchdog_breach(
+            &wd(),
+            Phase::AwaitFeedback,
+            95_000,
+            Some(2_000),
+            SpinePhase::BrainPhase
+        )
+        .is_some());
     }
 
     #[test]
     fn no_ping_yet_disarms_both_caps() {
         // Before the first ping (None), neither cap fires (cold-start grace).
-        assert!(watchdog_breach(&wd(), Phase::AwaitingHeaders, 95_000, None, false).is_none());
+        assert!(watchdog_breach(
+            &wd(),
+            Phase::AwaitingHeaders,
+            95_000,
+            None,
+            SpinePhase::BrainPhase
+        )
+        .is_none());
     }
 
     #[test]
     fn fresh_pings_do_not_save_a_capped_fast_phase() {
         let cfg = wd();
         // ping just arrived (since=0) but awaiting_headers elapsed crossed stall_cap.
-        assert!(watchdog_breach(&cfg, Phase::AwaitingHeaders, 90_001, Some(0), false).is_some());
+        assert!(watchdog_breach(
+            &cfg,
+            Phase::AwaitingHeaders,
+            90_001,
+            Some(0),
+            SpinePhase::BrainPhase
+        )
+        .is_some());
     }
 
     // ── emit_terminal_failure ordering test ──────────────────────────────────

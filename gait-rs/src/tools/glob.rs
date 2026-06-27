@@ -79,27 +79,61 @@ impl Tool for GlobTool {
             )));
         }
 
-        let abs_pattern = format!("{}/{}", search_dir.display(), params.pattern);
+        let pattern = params.pattern.clone();
 
-        let mut files: Vec<(PathBuf, Option<std::time::SystemTime>)> = vec![];
+        // Run the filesystem walk on a blocking thread so the async reactor
+        // stays alive during the scan (large repos can take many seconds).
+        // This also ensures the spine can transition to HandsPhase before the
+        // stall-cap watchdog fires.
+        let files = tokio::task::spawn_blocking(
+            move || -> Result<Vec<(PathBuf, Option<std::time::SystemTime>)>, String> {
+                // Compile the glob pattern for per-path matching.
+                // We match against the path relative to search_dir so that
+                // patterns like `**/*.rs` and `src/foo.dart` work correctly.
+                let pat = ::glob::Pattern::new(&pattern)
+                    .map_err(|e| format!("Invalid glob pattern: {e}"))?;
 
-        let glob_results = ::glob::glob(&abs_pattern)
-            .map_err(|e| crate::tools::ToolError::Execute(format!("Invalid glob pattern: {e}")))?;
+                let mut files = Vec::new();
 
-        for entry in glob_results {
-            match entry {
-                Ok(path) if path.is_file() => {
-                    let mtime = path.metadata().ok().and_then(|m| m.modified().ok());
-                    files.push((path, mtime));
+                // ignore::WalkBuilder respects .gitignore, .git/info/exclude,
+                // and global gitignore — so build-artifact trees (.cargo-target,
+                // build/, .dart_tool/) are pruned automatically.
+                for entry in ignore::WalkBuilder::new(&search_dir)
+                    .hidden(false) // include dot-files (e.g. .env) unless gitignored
+                    .build()
+                {
+                    let entry = match entry {
+                        Ok(e) => e,
+                        Err(_) => continue,
+                    };
+                    let path = entry.path();
+                    if !path.is_file() {
+                        continue;
+                    }
+                    // Match against the relative path so the pattern doesn't
+                    // need to know the absolute search root.
+                    let rel = match path.strip_prefix(&search_dir) {
+                        Ok(r) => r,
+                        Err(_) => continue,
+                    };
+                    if pat.matches_path(rel) {
+                        let mtime = path.metadata().ok().and_then(|m| m.modified().ok());
+                        files.push((path.to_path_buf(), mtime));
+                    }
                 }
-                _ => {}
-            }
-        }
+
+                Ok(files)
+            },
+        )
+        .await
+        .map_err(|e| crate::tools::ToolError::Execute(format!("Glob task panicked: {e}")))?
+        .map_err(|e| crate::tools::ToolError::Execute(e))?;
 
         if files.is_empty() {
             return Ok(Value::String("No files found".into()));
         }
 
+        let mut files = files;
         files.sort_by(|a, b| b.1.cmp(&a.1));
 
         let lines: Vec<String> = files.iter().map(|(p, _)| p.display().to_string()).collect();
