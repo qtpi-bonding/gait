@@ -28,6 +28,8 @@ pub struct RunArgs {
     pub allow: Vec<String>,
     #[arg(long, action = clap::ArgAction::Append)]
     pub deny: Vec<String>,
+    #[arg(long, action = clap::ArgAction::Append)]
+    pub unlock: Vec<String>,
     #[arg(long)]
     pub max_iter: Option<usize>,
     // Task 7: sandbox engagement flags. `--sandbox` forces on, `--no-sandbox` forces off.

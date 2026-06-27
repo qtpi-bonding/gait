@@ -1,6 +1,18 @@
+use clap::Parser;
 use serde_json::{json, Value};
 use std::path::Path;
 
+/// `gait -e <prompt>` ephemeral one-off.
+#[derive(Parser, Debug)]
+#[command(no_binary_name = true)]
+pub struct ExecArgs {
+    /// Model override (provider/id)
+    #[arg(short = 'm', long)]
+    pub model: Option<String>,
+    /// The prompt (each positional is joined with spaces)
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub prompt: Vec<String>,
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OneOff {
     Cmd(String),
@@ -126,18 +138,9 @@ pub async fn run_one_off(
     parse_one_off(&result)
 }
 
-pub async fn cmd_exec(argv: &[String]) {
-    // Parse: optional `--model provider/id`, the rest is the prompt; append piped stdin.
-    let mut model = None;
-    let mut words: Vec<String> = Vec::new();
-    let mut it = argv.iter();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "--model" | "-m" => model = it.next().cloned(),
-            _ => words.push(a.clone()),
-        }
-    }
-    let mut prompt = words.join(" ");
+pub async fn cmd_exec(args: ExecArgs) {
+    let model = args.model;
+    let mut prompt = args.prompt.join(" ");
     if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         use std::io::Read;
         let mut piped = String::new();

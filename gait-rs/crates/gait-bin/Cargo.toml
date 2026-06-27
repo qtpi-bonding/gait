@@ -10,6 +10,10 @@ repository.workspace = true
 name = "gait"
 path = "src/main.rs"
 
+[lib]
+name = "gait_bin"
+path = "src/lib.rs"
+
 [dependencies]
 gait-core = { path = "../.." }
 gait-repl = { path = "../gait-repl" }

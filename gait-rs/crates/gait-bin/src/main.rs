@@ -1,151 +1,151 @@
 use clap::Parser;
+use gait_bin::{Cli, Commands};
 use std::path::PathBuf;
-
-use gait_cli::cli::args::{extract_path_arg, gait_dir_or_env};
 
 fn cwd_or_dot() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-fn usage() -> ! {
-    eprintln!("usage: gait <command> [options]");
-    eprintln!("  run      [--session <id>] [--task <text>] [--gait-dir <path>] [--codebase <path>] [--auto] [--model <provider/model>] [--result-schema <file>] [--allow <pat>]... [--deny <pat>]... [--max-iter <n>]");
-    eprintln!("  init     [<path>]");
-    eprintln!("  finish   <session-id> [--gait-dir <path>]");
-    eprintln!(
-        "  undo    <session-id> [--turn N | --list] [--code] [--transcript] [--gait-dir <path>]"
-    );
-    eprintln!("  sessions [--gait-dir <path>]");
-    eprintln!("  auth     <list|add|remove> [<provider>]");
-    eprintln!("  models   [<filter>]");
-    eprintln!("  workflow <run|list|continue|abort|log> [args...]");
-    eprintln!(
-        "  chat     [--gait-dir <path>] [--codebase <path>] [--agent <name>] [--session <id>]"
-    );
-    eprintln!("  allow    <session-id> [--pattern <pat>] [--scope <global|agent|once>] [--gait-dir <path>] [--agent <name>]  (was: approve)");
-    eprintln!("  deny     <session-id> [--gait-dir <path>]                                                              (was: reject)");
-    eprintln!("  unlock   <session-id> [--scope once|session|global|agent] [--agent <name>] [--gait-dir <path>]");
-    eprintln!("  status   <session-id> [--gait-dir <path>] [--json]");
-    eprintln!("  cost     <session-id> [--gait-dir <path>] [--json]");
-    eprintln!("  register   <mcp|skill> <name> [flags] [--yes]            (was: load)");
-    eprintln!("  unregister <mcp|skill> <name>                              (was: unload)");
-    eprintln!("  enable     <mcp|skill> <name>");
-    eprintln!("  disable    <mcp|skill> <name>");
-    eprintln!("  -e \"<request>\"         one-off: ask the model; offer to run a command");
-
-    std::process::exit(1);
-}
-
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        usage();
+    // Pre-check for IPC subcommands (__brain / __run-tool) before clap parsing.
+    // These are spawned by the spine and must bypass the Commands enum to avoid
+    // a crate DAG inversion (gait-core can't import from gait-bin).
+    let raw: Vec<String> = std::env::args().collect();
+    if raw.len() >= 2 && gait_core::is_role_argv(&raw[1..]) {
+        gait_cli::cli::args::cmd_dispatch_role(&raw[1..]).await;
+        return;
     }
-    // Resolve gait_dir once for subcommands that need a config path (register/unregister/enable/disable).
-    let gait_dir: PathBuf = extract_path_arg(&args[2..], "--gait-dir")
-        .or_else(|| gait_dir_or_env(&args[2..]))
-        .unwrap_or_else(cwd_or_dot);
 
-    match args[1].as_str() {
-        "-e" | "--exec" => gait_cli::cli::exec::cmd_exec(&args[2..]).await,
-        "run" => gait_cli::cli::args::cmd_run(&args[2..]).await,
+    let cli = Cli::parse();
 
-        "init" => gait_cli::cli::init::cmd_init(&args[2..]),
-        "finish" => gait_cli::cli::session::cmd_finish(&args[2..]),
-        "undo" => gait_cli::cli::session::cmd_undo(&args[2..]),
-        "sessions" => gait_cli::cli::session::cmd_sessions(&args[2..]),
-        "auth" => gait_cli::cli::admin::cmd_auth(&args[2..]),
-        "models" => gait_cli::cli::admin::cmd_models(&args[2..]).await,
-        "workflow" => gait_cli::cli::workflow::cmd_workflow(&args[2..]).await,
-        "chat" => cmd_chat(&args[2..]).await,
-        "allow" | "approve" => gait_cli::cli::session::cmd_allow(&args[2..]),
-        "deny" | "reject" => gait_cli::cli::session::cmd_deny(&args[2..]),
-        "unlock" => gait_cli::cli::session::cmd_unlock(&args[2..]),
-        "status" => gait_cli::cli::session::cmd_status(&args[2..]),
-        "cost" => gait_cli::cli::session::cmd_cost(&args[2..]),
-        "register" | "load" => {
-            let rest: Vec<String> = args[2..].to_vec();
-            if let Err(e) = gait_cli::cli::admin::cmd_register(&gait_dir, &rest) {
-                eprintln!("[gait] error: {}", e);
-                std::process::exit(1);
-            }
-        }
-        "unregister" | "unload" => {
-            let rest: Vec<String> = args[2..].to_vec();
-            if let Err(e) = gait_cli::cli::admin::cmd_unregister(&gait_dir, &rest) {
-                eprintln!("[gait] error: {}", e);
-                std::process::exit(1);
-            }
-        }
-        "enable" => {
-            let rest: Vec<String> = args[2..].to_vec();
-            if let Err(e) = gait_cli::cli::admin::cmd_enable_disable(&gait_dir, &rest, true) {
-                eprintln!("[gait] error: {}", e);
-                std::process::exit(1);
-            }
-        }
-        "disable" => {
-            let rest: Vec<String> = args[2..].to_vec();
-            if let Err(e) = gait_cli::cli::admin::cmd_enable_disable(&gait_dir, &rest, false) {
-                eprintln!("[gait] error: {}", e);
-                std::process::exit(1);
-            }
-        }
-        "daemons" => {
-            let rest: Vec<String> = args[2..].to_vec();
-            gait_cli::cli::daemons::cmd_daemons(&gait_dir, &rest);
-        }
-        _ if gait_core::is_role_argv(&args[1..]) => {
-            // gait-cli builds the GaitWorkflowRunner (avoids gait-bin needing gait-workflow dep).
-            gait_cli::cli::args::cmd_dispatch_role(&args[1..]).await;
-        }
-        _ => {
-            eprintln!("[gait] unknown command: {}", args[1]);
-            usage();
-        }
-    }
-}
-
-#[derive(Parser)]
-#[command(no_binary_name = true)]
-struct ChatArgs {
-    #[arg(long)]
-    codebase: Option<PathBuf>,
-    #[arg(long)]
-    agent: Option<String>,
-    #[arg(long)]
-    session: Option<String>,
-    // Optional: falls back to pwd (chat is interactive, so a missing gait-dir is non-fatal).
-    #[arg(long, env = "GAIT_DIR")]
-    gait_dir: Option<PathBuf>,
-    // Accepted to prevent "unexpected argument" errors. Container spawning is
-    // handled externally — gait never self-spawns into a container.
-    #[arg(long = "container", hide = true)]
-    container: bool,
-}
-
-async fn cmd_chat(argv: &[String]) {
-    let args = ChatArgs::parse_from(argv);
-
-    // Same precedence as every other subcommand: --gait-dir arg > $GAIT_DIR env var > pwd.
-    // Chat falls back to pwd rather than erroring because it's interactive.
-    let gait_dir = args.gait_dir.unwrap_or_else(cwd_or_dot);
-
-    let codebase = match args.codebase {
-        Some(ref p) if p == std::path::Path::new(".") => cwd_or_dot(),
-        Some(p) => p,
-        None => cwd_or_dot(),
+    let resolve_gait_dir = || -> PathBuf {
+        cli.gait_dir
+            .clone()
+            .or_else(|| {
+                std::env::var("GAIT_DIR")
+                    .ok()
+                    .filter(|v| !v.is_empty())
+                    .map(PathBuf::from)
+            })
+            .unwrap_or_else(cwd_or_dot)
     };
-    if !codebase.exists() {
-        eprintln!(
-            "[gait] warning: codebase path does not exist: {}",
-            codebase.display()
-        );
+
+    // Mode dispatch: -e (exec), -i (interactive), bare positional (task)
+    if let Some(exec_prompt) = cli.exec {
+        let args = gait_cli::cli::exec::ExecArgs {
+            model: cli.model,
+            prompt: vec![exec_prompt],
+        };
+        gait_cli::cli::exec::cmd_exec(args).await;
+        return;
     }
 
-    if let Err(e) = gait_repl::chat::run_chat(gait_dir, codebase, args.agent, args.session).await {
-        eprintln!("[gait] error: {}", e);
-        std::process::exit(1);
+    if cli.interactive {
+        let gait_dir = resolve_gait_dir();
+        let codebase = cli.codebase.unwrap_or_else(cwd_or_dot);
+        if let Err(e) = gait_repl::chat::run_chat(gait_dir, codebase, cli.agent, cli.session).await
+        {
+            eprintln!("[gait] error: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if cli.task.is_some() {
+        let gait_dir = resolve_gait_dir();
+        let codebase = cli.codebase.clone().unwrap_or_else(cwd_or_dot);
+
+        // Build argv for the existing cmd_run / RunArgs parser.
+        let mut run_argv: Vec<String> = vec![];
+        if let Some(ref task) = cli.task {
+            run_argv.extend(["--task".to_string(), task.clone()]);
+        }
+        if let Some(ref s) = cli.session {
+            run_argv.extend(["--session".to_string(), s.clone()]);
+        }
+        if cli.auto_approve {
+            run_argv.push("--auto".to_string());
+        }
+        if let Some(ref m) = cli.model {
+            run_argv.extend(["--model".to_string(), m.clone()]);
+        }
+        if let Some(ref a) = cli.agent {
+            run_argv.extend(["--agent".to_string(), a.clone()]);
+        }
+        for p in &cli.allow {
+            run_argv.extend(["--allow".to_string(), p.clone()]);
+        }
+        for p in &cli.deny {
+            run_argv.extend(["--deny".to_string(), p.clone()]);
+        }
+        for p in &cli.unlock {
+            run_argv.extend(["--unlock".to_string(), p.clone()]);
+        }
+        if let Some(n) = cli.max_iter {
+            run_argv.extend(["--max-iter".to_string(), n.to_string()]);
+        }
+        if let Some(ref rs) = cli.result_schema {
+            run_argv.extend([
+                "--result-schema".to_string(),
+                rs.to_string_lossy().to_string(),
+            ]);
+        }
+        run_argv.extend([
+            "--gait-dir".to_string(),
+            gait_dir.to_string_lossy().to_string(),
+        ]);
+        run_argv.extend([
+            "--codebase".to_string(),
+            codebase.to_string_lossy().to_string(),
+        ]);
+
+        gait_cli::cli::run::cmd_run(&run_argv, gait_dir, codebase).await;
+        return;
+    }
+
+    // Subcommand dispatch
+    let command = match cli.command {
+        Some(c) => c,
+        None => {
+            // No subcommand, no mode flag, no positional: print help.
+            use clap::CommandFactory;
+            Cli::command().print_help().unwrap();
+            println!();
+            std::process::exit(0);
+        }
+    };
+
+    match command {
+        Commands::Init(args) => gait_cli::cli::init::cmd_init(args),
+        Commands::Sessions(args) => gait_cli::cli::session::cmd_sessions(args),
+        Commands::Ps(args) => gait_cli::cli::session::cmd_ps(args),
+        Commands::Stop(args) => gait_cli::cli::session::cmd_stop(args),
+        Commands::Persist(args) => gait_cli::cli::session::cmd_persist(args),
+        Commands::Discard(args) => gait_cli::cli::session::cmd_discard(args),
+        Commands::Undo(args) => gait_cli::cli::session::cmd_undo(args),
+        Commands::Stats(args) => gait_cli::cli::session::cmd_stats(args),
+        Commands::Allow(args) => gait_cli::cli::session::cmd_allow(args),
+        Commands::Deny(args) => gait_cli::cli::session::cmd_deny(args),
+        Commands::Unlock(args) => gait_cli::cli::session::cmd_unlock(args),
+        Commands::Reply(args) => gait_cli::cli::session::cmd_reply(args),
+        Commands::Register(args) => {
+            if let Err(e) = gait_cli::cli::admin::cmd_register(args) {
+                eprintln!("[gait] error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::Unregister(args) => {
+            if let Err(e) = gait_cli::cli::admin::cmd_unregister(args) {
+                eprintln!("[gait] error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::Enable(args) => gait_cli::cli::admin::cmd_enable(args),
+        Commands::Disable(args) => gait_cli::cli::admin::cmd_disable(args),
+        Commands::Auth(args) => gait_cli::cli::admin::cmd_auth(args),
+        Commands::Models(args) => gait_cli::cli::admin::cmd_models(args).await,
+        Commands::Workflow(args) => gait_cli::cli::workflow::cmd_workflow(args).await,
+        Commands::Daemons(args) => gait_cli::cli::daemons::cmd_daemons(args),
     }
 }

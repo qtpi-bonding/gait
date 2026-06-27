@@ -1,34 +1,13 @@
 //! `gait init` — scaffold a gait-dir and make an initial commit.
 
+use clap::Parser;
+use std::path::PathBuf;
+
+#[derive(Parser, Debug)]
+#[command(no_binary_name = true)]
 pub struct InitArgs {
-    /// Target gait-dir. None = use cwd.
-    path: Option<std::path::PathBuf>,
-    /// User passed -h or --help.
-    help: bool,
-}
-
-/// Pure: parse `gait init [<path>] [-h|--help]`. No I/O, no side effects.
-pub fn parse_init_args(argv: &[String]) -> InitArgs {
-    let help = argv.iter().any(|a| a == "--help" || a == "-h");
-    let path = if help {
-        None
-    } else {
-        argv.iter()
-            .find(|a| !a.starts_with('-'))
-            .map(std::path::PathBuf::from)
-    };
-    InitArgs { path, help }
-}
-
-fn init_usage() -> ! {
-    eprintln!("usage: gait init [<path>]");
-    eprintln!();
-    eprintln!("Initialize a gait-dir at <path> (default: current directory).");
-    eprintln!("Like 'git init': creates the path if needed, safe to re-run.");
-    eprintln!();
-    eprintln!("Options:");
-    eprintln!("  -h, --help    Print this help");
-    std::process::exit(0);
+    /// Target gait-dir (default: current directory).
+    pub path: Option<PathBuf>,
 }
 
 fn print_init_summary(gait_dir: &std::path::Path) {
@@ -155,12 +134,7 @@ pub fn scaffold_gait_dir(gait_dir: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
-pub fn cmd_init(argv: &[String]) {
-    let args = parse_init_args(argv);
-    if args.help {
-        init_usage();
-    }
-
+pub fn cmd_init(args: InitArgs) {
     let gait_dir = match args.path {
         Some(p) => p,
         None => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
@@ -287,43 +261,6 @@ mod tests {
 
     mod init_tests {
         use super::*;
-
-        #[test]
-        fn parse_init_args_no_args_returns_cwd_and_no_help() {
-            let args: Vec<String> = vec![];
-            let a = parse_init_args(&args);
-            assert!(!a.help, "no --help flag");
-            assert!(a.path.is_none(), "no path -> None (caller resolves to cwd)");
-        }
-
-        #[test]
-        fn parse_init_args_with_path() {
-            let args = vec!["/tmp/myws".to_string()];
-            let a = parse_init_args(&args);
-            assert_eq!(a.path, Some(std::path::PathBuf::from("/tmp/myws")));
-            assert!(!a.help);
-        }
-
-        #[test]
-        fn parse_init_args_help_flag_long() {
-            let args = vec!["--help".to_string()];
-            let a = parse_init_args(&args);
-            assert!(a.help);
-        }
-
-        #[test]
-        fn parse_init_args_help_flag_short() {
-            let args = vec!["-h".to_string()];
-            let a = parse_init_args(&args);
-            assert!(a.help);
-        }
-
-        #[test]
-        fn parse_init_args_help_with_path_help_wins() {
-            let args = vec!["/tmp/x".to_string(), "--help".to_string()];
-            let a = parse_init_args(&args);
-            assert!(a.help, "--help anywhere in argv sets help=true");
-        }
 
         #[test]
         fn scaffold_creates_new_dir_layout() {

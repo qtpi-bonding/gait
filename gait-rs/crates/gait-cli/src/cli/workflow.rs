@@ -1,6 +1,7 @@
 //! `gait workflow <run|list|continue|abort|log>` commands.
 //! Pulled out of gait-bin so the bin can become a thin dispatcher.
 
+use clap::Parser;
 use std::path::PathBuf;
 
 use gait_workflow::observer::CliObserver;
@@ -8,20 +9,40 @@ use gait_workflow::progress;
 use gait_workflow::runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
 use gait_workflow::schema::WorkflowDef; // still needed for yaml parsing
 
-use crate::cli::args::resolve_gait_dir;
-
-pub async fn cmd_workflow(argv: &[String]) {
-    let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
-        eprintln!("[gait] {e}");
-        std::process::exit(1);
-    });
-    let sub = argv.first().map(|s| s.as_str()).unwrap_or("");
+/// `gait workflow <run|list|continue|abort|log>` subcommand.
+#[derive(Parser, Debug)]
+#[command(no_binary_name = true)]
+pub struct WorkflowArgs {
+    /// Gait dir (falls back to $GAIT_DIR)
+    #[arg(long, env = "GAIT_DIR")]
+    pub gait_dir: Option<PathBuf>,
+    /// Action: run | list | continue | abort | log
+    pub action: Option<String>,
+    /// Remaining args (workflow name, id, …)
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub rest: Vec<String>,
+}
+pub async fn cmd_workflow(args: WorkflowArgs) {
+    let gait_dir: PathBuf = match args.gait_dir.clone().or_else(|| {
+        std::env::var("GAIT_DIR")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    }) {
+        Some(d) => d,
+        None => {
+            eprintln!("[gait] no gait dir: pass --gait-dir <path> or set $GAIT_DIR");
+            std::process::exit(1);
+        }
+    };
+    let sub = args.action.as_deref().unwrap_or("");
+    let rest: Vec<String> = args.rest.clone();
     match sub {
-        "run" => cmd_workflow_run(&argv[1..], gait_dir).await,
-        "list" => cmd_workflow_list(&argv[1..], gait_dir),
-        "continue" => cmd_workflow_continue(&argv[1..], gait_dir).await,
-        "abort" => cmd_workflow_abort(&argv[1..], gait_dir),
-        "log" => cmd_workflow_log(&argv[1..], gait_dir),
+        "run" => cmd_workflow_run(&rest, gait_dir).await,
+        "list" => cmd_workflow_list(&rest, gait_dir),
+        "continue" => cmd_workflow_continue(&rest, gait_dir).await,
+        "abort" => cmd_workflow_abort(&rest, gait_dir),
+        "log" => cmd_workflow_log(&rest, gait_dir),
         _ => {
             eprintln!("[gait] usage: gait workflow <run|list|continue|abort|log>");
             std::process::exit(1);

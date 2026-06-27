@@ -1,6 +1,110 @@
 //! Registry/config administration + auth + models.
 //! Pulled out of gait-bin so the bin can become a thin dispatcher.
 
+use clap::Parser;
+use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
+
+/// `gait auth list|add|remove [provider]`
+#[derive(Parser, Debug)]
+pub struct AuthArgs {
+    /// Action: list (default), add, remove
+    pub action: Option<String>,
+    /// Provider name (used with add/remove)
+    pub provider: Option<String>,
+}
+
+/// `gait models [filter]`
+#[derive(Parser, Debug)]
+pub struct ModelsArgs {
+    /// Optional substring filter for model ids
+    pub filter: Option<String>,
+}
+
+/// `gait register mcp|skill|plugin <name> [flags]`
+#[derive(Parser, Debug)]
+#[command(no_binary_name = true)]
+pub struct RegisterArgs {
+    /// Kind: mcp | skill | plugin
+    pub kind: String,
+    /// Extension name
+    pub name: String,
+    /// MCP URL (mcp kind)
+    #[arg(long)]
+    pub url: Option<String>,
+    /// MCP command program (mcp kind)
+    #[arg(long)]
+    pub command: Option<String>,
+    /// MCP args string (mcp kind)
+    #[arg(long)]
+    pub args: Option<String>,
+    /// MCP compat spawn string (mcp kind)
+    #[arg(long)]
+    pub spawn: Option<String>,
+    /// MCP compat URL flag (mcp kind)
+    #[arg(long)]
+    pub connect: Option<String>,
+    /// Skill description (skill kind)
+    #[arg(long)]
+    pub description: Option<String>,
+    /// Skill content (skill kind)
+    #[arg(long)]
+    pub content: Option<String>,
+    /// Skill path (skill kind)
+    #[arg(long)]
+    pub path: Option<String>,
+    /// Plugin wasm source path (plugin kind)
+    #[arg(long)]
+    pub wasm: Option<String>,
+    /// Extra env vars (repeated)
+    #[arg(long, action = clap::ArgAction::Append)]
+    pub env: Vec<String>,
+    /// Skip confirmation prompts
+    #[arg(short = 'y', long)]
+    pub yes: bool,
+    /// Gait dir (falls back to $GAIT_DIR)
+    #[arg(long, env = "GAIT_DIR")]
+    pub gait_dir: Option<PathBuf>,
+}
+
+/// `gait unregister mcp|skill|plugin <name>`
+#[derive(Parser, Debug)]
+#[command(no_binary_name = true)]
+pub struct UnregisterArgs {
+    /// Kind: mcp | skill | plugin
+    pub kind: String,
+    /// Extension name
+    pub name: String,
+    /// Gait dir (falls back to $GAIT_DIR)
+    #[arg(long, env = "GAIT_DIR")]
+    pub gait_dir: Option<PathBuf>,
+}
+
+/// `gait enable mcp|skill|plugin <name>`
+#[derive(Parser, Debug)]
+#[command(no_binary_name = true)]
+pub struct EnableArgs {
+    /// Kind: mcp | skill | plugin
+    pub kind: String,
+    /// Extension name
+    pub name: String,
+    /// Gait dir (falls back to $GAIT_DIR)
+    #[arg(long, env = "GAIT_DIR")]
+    pub gait_dir: Option<PathBuf>,
+}
+
+/// `gait disable mcp|skill|plugin <name>`
+#[derive(Parser, Debug)]
+#[command(no_binary_name = true)]
+pub struct DisableArgs {
+    /// Kind: mcp | skill | plugin
+    pub kind: String,
+    /// Extension name
+    pub name: String,
+    /// Gait dir (falls back to $GAIT_DIR)
+    #[arg(long, env = "GAIT_DIR")]
+    pub gait_dir: Option<PathBuf>,
+}
 /// Parse --key value pairs from an arg slice into a HashMap.
 pub fn parse_flags(args: &[String]) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
@@ -57,10 +161,17 @@ pub fn set_frontmatter_bool(content: &str, key: &str, value: bool) -> anyhow::Re
     Ok(format!("---\n{}---\n{}", new_fm, body))
 }
 
-pub fn cmd_auth(argv: &[String]) {
+pub fn cmd_auth(args: AuthArgs) {
     use gait_core::auth;
-    match argv.first().map(|s| s.as_str()) {
-        None | Some("list") | Some("ls") => {
+    // Normalize: action defaults to "list"; accept "ls" as alias.
+    let action = args
+        .action
+        .as_deref()
+        .map(|s| if s == "ls" { "list" } else { s })
+        .unwrap_or("list");
+    let provider = args.provider.as_deref();
+    match action {
+        "list" => {
             let creds = auth::list_credentials();
             if creds.is_empty() {
                 println!("No credentials configured. Run: gait auth add <provider>");
@@ -72,9 +183,9 @@ pub fn cmd_auth(argv: &[String]) {
                 }
             }
         }
-        Some("add") => {
-            let provider = match argv.get(1) {
-                Some(p) => p.as_str(),
+        "add" => {
+            let provider = match provider {
+                Some(p) => p,
                 None => {
                     eprintln!("usage: gait auth add <provider>");
                     std::process::exit(1);
@@ -99,9 +210,9 @@ pub fn cmd_auth(argv: &[String]) {
             }
             println!("Saved {} credentials", provider);
         }
-        Some("remove") | Some("rm") => {
-            let provider = match argv.get(1) {
-                Some(p) => p.as_str(),
+        "remove" | "rm" => {
+            let provider = match provider {
+                Some(p) => p,
                 None => {
                     eprintln!("usage: gait auth remove <provider>");
                     std::process::exit(1);
@@ -113,7 +224,7 @@ pub fn cmd_auth(argv: &[String]) {
             }
             println!("Removed {} credentials", provider);
         }
-        Some(other) => {
+        other => {
             eprintln!("unknown auth subcommand: {}", other);
             eprintln!("usage: gait auth <list|add|remove> [<provider>]");
             std::process::exit(1);
@@ -121,12 +232,9 @@ pub fn cmd_auth(argv: &[String]) {
     }
 }
 
-pub async fn cmd_models(argv: &[String]) {
+pub async fn cmd_models(args: ModelsArgs) {
     use gait_core::models;
-    let filter = argv
-        .first()
-        .filter(|a| !a.starts_with('-'))
-        .map(|s| s.as_str());
+    let filter = args.filter.as_deref();
     match models::get_models().await {
         Ok(models) => {
             let filtered = models::filter_models(&models, filter);
@@ -148,7 +256,41 @@ pub async fn cmd_models(argv: &[String]) {
     }
 }
 
-pub fn cmd_register(gait_dir: &std::path::Path, args: &[String]) -> anyhow::Result<()> {
+fn build_flags_from_register_args(
+    args: &RegisterArgs,
+) -> std::collections::HashMap<String, String> {
+    let mut f = std::collections::HashMap::new();
+    if let Some(v) = &args.url {
+        f.insert("url".into(), v.clone());
+    }
+    if let Some(v) = &args.command {
+        f.insert("command".into(), v.clone());
+    }
+    if let Some(v) = &args.args {
+        f.insert("args".into(), v.clone());
+    }
+    if let Some(v) = &args.spawn {
+        f.insert("spawn".into(), v.clone());
+    }
+    if let Some(v) = &args.connect {
+        f.insert("connect".into(), v.clone());
+    }
+    if let Some(v) = &args.description {
+        f.insert("description".into(), v.clone());
+    }
+    if let Some(v) = &args.content {
+        f.insert("content".into(), v.clone());
+    }
+    if let Some(v) = &args.path {
+        f.insert("path".into(), v.clone());
+    }
+    if let Some(v) = &args.wasm {
+        f.insert("wasm".into(), v.clone());
+    }
+    f
+}
+
+pub fn cmd_register(args: RegisterArgs) -> anyhow::Result<()> {
     // Supported usage:
     //   gait register mcp <name> --command <prog> [--args "<args>"]
     //   gait register mcp <name> --spawn <cmd>  (compat)
@@ -159,19 +301,22 @@ pub fn cmd_register(gait_dir: &std::path::Path, args: &[String]) -> anyhow::Resu
     // Tier 1 (disk): MCPs → mcp/<name>.json
     // Tier 2 (legacy): Skills, old MCPs → gait.jsonc
 
-    let kind = args
-        .first()
-        .map(|s| s.as_str())
-        .ok_or_else(|| anyhow::anyhow!("usage: gait register <mcp|skill|plugin> <name> [flags]"))?;
-    let name = args
-        .get(1)
-        .map(|s| s.as_str())
-        .ok_or_else(|| anyhow::anyhow!("usage: gait register <mcp|skill|plugin> <name> [flags]"))?;
-    let flags = parse_flags(&args[2..]);
+    let kind = args.kind.as_str();
+    let name = args.name.as_str();
+    let flags = build_flags_from_register_args(&args);
+    let gait_dir: PathBuf = args
+        .gait_dir
+        .clone()
+        .or_else(|| {
+            std::env::var("GAIT_DIR")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+        })
+        .ok_or_else(|| anyhow::anyhow!("no gait dir: pass --gait-dir <path> or set $GAIT_DIR"))?;
 
     match kind {
         "mcp" => {
-            // Tier 1: create mcp/<name>.json (disk file)
             let mcp_dir = gait_dir.join("mcp");
             std::fs::create_dir_all(&mcp_dir)
                 .map_err(|e| anyhow::anyhow!("could not create mcp/ dir: {e}"))?;
@@ -184,10 +329,8 @@ pub fn cmd_register(gait_dir: &std::path::Path, args: &[String]) -> anyhow::Resu
                     name
                 ));
             }
-            // Build JSON content from flags
             let entry = if let Some(cmd) = flags.get("command") {
-                // New ecosystem format: --command <prog> [--args "<arg1> <arg2>"]
-                let args: Vec<serde_json::Value> = flags
+                let cmd_args: Vec<serde_json::Value> = flags
                     .get("args")
                     .map(|s| {
                         s.split_whitespace()
@@ -195,17 +338,16 @@ pub fn cmd_register(gait_dir: &std::path::Path, args: &[String]) -> anyhow::Resu
                             .collect()
                     })
                     .unwrap_or_default();
-                serde_json::json!({ "command": cmd, "args": args, "enabled": false })
+                json!({ "command": cmd, "args": cmd_args, "enabled": false })
             } else if let Some(spawn) = flags.get("spawn") {
-                // Compat: --spawn "npx -y @pkg" → convert to command+args on write
                 let mut parts = spawn.split_whitespace();
                 let prog = parts.next().unwrap_or("").to_string();
                 let rest: Vec<serde_json::Value> = parts
                     .map(|s| serde_json::Value::String(s.to_string()))
                     .collect();
-                serde_json::json!({ "command": prog, "args": rest, "enabled": false })
+                json!({ "command": prog, "args": rest, "enabled": false })
             } else if let Some(url) = flags.get("url").or_else(|| flags.get("connect")) {
-                serde_json::json!({ "url": url, "enabled": false })
+                json!({ "url": url, "enabled": false })
             } else {
                 return Err(anyhow::anyhow!(
                     "gait register mcp: requires --command <prog> [--args \"<args>\"], --spawn <cmd>, or --url <url>"
@@ -219,7 +361,7 @@ pub fn cmd_register(gait_dir: &std::path::Path, args: &[String]) -> anyhow::Resu
                 );
                 std::fs::write(
                     &disk_path,
-                    serde_json::to_string_pretty(&serde_json::Value::Object(obj))?,
+                    serde_json::to_string_pretty(&Value::Object(obj))?,
                 )?;
             } else {
                 std::fs::write(&disk_path, serde_json::to_string_pretty(&entry)?)?;
@@ -229,10 +371,8 @@ pub fn cmd_register(gait_dir: &std::path::Path, args: &[String]) -> anyhow::Resu
             Ok(())
         }
         "skill" => {
-            // Tier 2: legacy skills in gait.jsonc
             let config_path = gait_dir.join("gait.jsonc");
             let mut val = read_config_as_value(&config_path)?;
-
             let description = flags.get("description").ok_or_else(|| {
                 anyhow::anyhow!("gait register skill: requires --description <text>")
             })?;
@@ -246,19 +386,14 @@ pub fn cmd_register(gait_dir: &std::path::Path, args: &[String]) -> anyhow::Resu
                     "gait register skill: requires --path <file> or --content <text>"
                 ));
             };
-            let entry = serde_json::json!({
-                "name": name, "description": description,
-                "content": content, "enabled": false
-            });
-
+            let entry = json!({ "name": name, "description": description, "content": content, "enabled": false });
             if val.get("skills").is_none() {
-                val["skills"] = serde_json::json!([]);
+                val["skills"] = json!([]);
             }
             val["skills"]
                 .as_array_mut()
                 .ok_or_else(|| anyhow::anyhow!("skills is not an array"))?
                 .push(entry);
-
             eprintln!("Note: gait.jsonc comments are stripped on rewrite.");
             std::fs::write(&config_path, serde_json::to_string_pretty(&val)?)?;
             println!("Added skill '{}'.", name);
@@ -266,7 +401,6 @@ pub fn cmd_register(gait_dir: &std::path::Path, args: &[String]) -> anyhow::Resu
             Ok(())
         }
         "plugin" => {
-            // Tier 1: create plugins/<name>/ directory + PLUGIN.md scaffold
             let wasm_src = flags
                 .get("wasm")
                 .ok_or_else(|| anyhow::anyhow!("gait register plugin: requires --wasm <path>"))?;
@@ -285,7 +419,6 @@ pub fn cmd_register(gait_dir: &std::path::Path, args: &[String]) -> anyhow::Resu
             }
             std::fs::create_dir_all(&plugin_dir)
                 .map_err(|e| anyhow::anyhow!("could not create plugins/{} dir: {e}", name))?;
-            // Copy the .wasm binary into the plugin directory
             let wasm_filename = wasm_src_path
                 .file_name()
                 .ok_or_else(|| anyhow::anyhow!("invalid wasm path: {}", wasm_src))?;
@@ -298,10 +431,13 @@ pub fn cmd_register(gait_dir: &std::path::Path, args: &[String]) -> anyhow::Resu
                 .map(|s| s.as_str())
                 .unwrap_or("No description.");
             let plugin_md = plugin_dir.join("PLUGIN.md");
-            std::fs::write(&plugin_md, format!(
-                "---\nname: {}\nwasm: {}\nenabled: false\nallow_exec: []\nallow_fs: []\n---\n\n# {}\n\n{}\n",
-                name, wasm_rel, name, description
-            ))?;
+            std::fs::write(
+                &plugin_md,
+                format!(
+                    "---\nname: {}\nwasm: {}\nenabled: false\nallow_exec: []\nallow_fs: []\n---\n\n# {}\n\n{}\n",
+                    name, wasm_rel, name, description
+                ),
+            )?;
             println!("Registered plugin '{}'.", name);
             println!("→ Run 'gait enable plugin {}' to activate it.", name);
             Ok(())
@@ -313,20 +449,12 @@ pub fn cmd_register(gait_dir: &std::path::Path, args: &[String]) -> anyhow::Resu
     }
 }
 
-pub fn cmd_enable_disable(
+pub(crate) fn cmd_enable_disable_inner(
     gait_dir: &std::path::Path,
-    args: &[String],
+    kind: &str,
+    name: &str,
     enable: bool,
 ) -> anyhow::Result<()> {
-    let kind = args
-        .first()
-        .map(|s| s.as_str())
-        .ok_or_else(|| anyhow::anyhow!("usage: gait enable/disable <mcp|skill|plugin> <name>"))?;
-    let name = args
-        .get(1)
-        .map(|s| s.as_str())
-        .ok_or_else(|| anyhow::anyhow!("usage: gait enable/disable <mcp|skill|plugin> <name>"))?;
-
     // Disk-file path for mcp and plugin kinds
     let disk_path: Option<std::path::PathBuf> = match kind {
         "mcp" => {
@@ -412,15 +540,74 @@ pub fn cmd_enable_disable(
     Ok(())
 }
 
-pub fn cmd_unregister(gait_dir: &std::path::Path, args: &[String]) -> anyhow::Result<()> {
+/// Kept private; `cmd_enable` / `cmd_disable` are the public dispatch entrypoints.
+fn cmd_enable_disable(
+    gait_dir: &std::path::Path,
+    args: &[String],
+    enable: bool,
+) -> anyhow::Result<()> {
     let kind = args
         .first()
         .map(|s| s.as_str())
-        .ok_or_else(|| anyhow::anyhow!("usage: gait unregister <mcp|skill|plugin> <name>"))?;
+        .ok_or_else(|| anyhow::anyhow!("usage: gait enable/disable <mcp|skill|plugin> <name>"))?;
     let name = args
         .get(1)
         .map(|s| s.as_str())
-        .ok_or_else(|| anyhow::anyhow!("usage: gait unregister <mcp|skill|plugin> <name>"))?;
+        .ok_or_else(|| anyhow::anyhow!("usage: gait enable/disable <mcp|skill|plugin> <name>"))?;
+    cmd_enable_disable_inner(gait_dir, kind, name, enable)
+}
+
+pub fn cmd_enable(args: EnableArgs) {
+    let gait_dir: PathBuf = match args.gait_dir.clone().or_else(|| {
+        std::env::var("GAIT_DIR")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    }) {
+        Some(d) => d,
+        None => {
+            eprintln!("[gait] no gait dir: pass --gait-dir <path> or set $GAIT_DIR");
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = cmd_enable_disable_inner(&gait_dir, &args.kind, &args.name, true) {
+        eprintln!("[gait] error: {}", e);
+        std::process::exit(1);
+    }
+}
+
+pub fn cmd_disable(args: DisableArgs) {
+    let gait_dir: PathBuf = match args.gait_dir.clone().or_else(|| {
+        std::env::var("GAIT_DIR")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    }) {
+        Some(d) => d,
+        None => {
+            eprintln!("[gait] no gait dir: pass --gait-dir <path> or set $GAIT_DIR");
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = cmd_enable_disable_inner(&gait_dir, &args.kind, &args.name, false) {
+        eprintln!("[gait] error: {}", e);
+        std::process::exit(1);
+    }
+}
+
+pub fn cmd_unregister(args: UnregisterArgs) -> anyhow::Result<()> {
+    let kind = args.kind.as_str();
+    let name = args.name.as_str();
+    let gait_dir: PathBuf = args
+        .gait_dir
+        .clone()
+        .or_else(|| {
+            std::env::var("GAIT_DIR")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+        })
+        .ok_or_else(|| anyhow::anyhow!("no gait dir: pass --gait-dir <path> or set $GAIT_DIR"))?;
 
     // Disk-first for mcp and plugin
     if kind == "mcp" {
@@ -465,6 +652,51 @@ pub fn cmd_unregister(gait_dir: &std::path::Path, args: &[String]) -> anyhow::Re
 
 #[cfg(test)]
 mod tests {
+    fn reg(kind: &str, name: &str, dir: &std::path::Path) -> RegisterArgs {
+        RegisterArgs {
+            kind: kind.into(),
+            name: name.into(),
+            url: None,
+            command: None,
+            args: None,
+            spawn: None,
+            connect: None,
+            description: None,
+            content: None,
+            path: None,
+            wasm: None,
+            env: vec![],
+            yes: false,
+            gait_dir: Some(dir.to_path_buf()),
+        }
+    }
+    fn reg_flags(kind: &str, name: &str, dir: &std::path::Path, flags: &[&str]) -> RegisterArgs {
+        let mut a = reg(kind, name, dir);
+        for chunk in flags.chunks(2) {
+            if chunk.len() != 2 {
+                continue;
+            }
+            let v = chunk[1].to_string();
+            match chunk[0] {
+                "--spawn" => a.spawn = Some(v),
+                "--args" => a.args = Some(v),
+                "--description" => a.description = Some(v),
+                "--content" => a.content = Some(v),
+                "--path" => a.path = Some(v),
+                "--wasm" => a.wasm = Some(v),
+                "--command" => a.command = Some(v),
+                _ => {}
+            }
+        }
+        a
+    }
+    fn unreg(kind: &str, name: &str, dir: &std::path::Path) -> UnregisterArgs {
+        UnregisterArgs {
+            kind: kind.into(),
+            name: name.into(),
+            gait_dir: Some(dir.to_path_buf()),
+        }
+    }
     use super::*;
 
     #[test]
@@ -479,7 +711,13 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        cmd_register(dir.path(), &args).unwrap();
+        cmd_register(reg_flags(
+            "mcp",
+            "slack",
+            dir.path(),
+            &["--spawn", "node mcp-slack.js"],
+        ))
+        .unwrap();
         let val: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("mcp").join("slack.json")).unwrap(),
         )
@@ -508,7 +746,13 @@ mod tests {
         .iter()
         .map(|s| s.to_string())
         .collect();
-        cmd_register(dir.path(), &args).unwrap();
+        cmd_register(reg_flags(
+            "skill",
+            "tdd",
+            dir.path(),
+            &["--description", "tdd workflow", "--content", "# TDD"],
+        ))
+        .unwrap();
         let val: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap())
                 .unwrap();
@@ -525,7 +769,7 @@ mod tests {
         )
         .unwrap();
         let args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
-        cmd_enable_disable(dir.path(), &args, true).unwrap();
+        cmd_enable_disable_inner(dir.path(), "mcp", "slack", true).unwrap();
         let val: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap())
                 .unwrap();
@@ -541,7 +785,7 @@ mod tests {
         )
         .unwrap();
         let args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
-        cmd_enable_disable(dir.path(), &args, false).unwrap();
+        cmd_enable_disable_inner(dir.path(), "mcp", "slack", false).unwrap();
         let val: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap())
                 .unwrap();
@@ -557,7 +801,7 @@ mod tests {
         )
         .unwrap();
         let args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
-        assert!(cmd_enable_disable(dir.path(), &args, true).is_err());
+        assert!(cmd_enable_disable_inner(dir.path(), "mcp", "slack", true).is_err());
     }
 
     #[test]
@@ -569,7 +813,7 @@ mod tests {
         )
         .unwrap();
         let args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
-        cmd_unregister(dir.path(), &args).unwrap();
+        cmd_unregister(unreg("mcp", "slack", dir.path())).unwrap();
         let val: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap())
                 .unwrap();
@@ -581,7 +825,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"x"}"#).unwrap();
         let args: Vec<String> = ["plugin", "foo"].iter().map(|s| s.to_string()).collect();
-        assert!(cmd_register(dir.path(), &args).is_err());
+        assert!(cmd_register(reg("plugin", "foo", dir.path())).is_err());
     }
 
     #[test]
@@ -603,7 +847,13 @@ mod tests {
         .iter()
         .map(|s| s.to_string())
         .collect();
-        cmd_register(dir.path(), &args).unwrap();
+        cmd_register(reg_flags(
+            "mcp",
+            "slack",
+            dir.path(),
+            &["--command", "npx", "--args", "-y @pkg/slack"],
+        ))
+        .unwrap();
         let disk_path = dir.path().join("mcp").join("slack.json");
         assert!(disk_path.exists(), "mcp/slack.json should be created");
         let val: serde_json::Value =
@@ -624,7 +874,13 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        cmd_register(dir.path(), &args).unwrap();
+        cmd_register(reg_flags(
+            "mcp",
+            "slack2",
+            dir.path(),
+            &["--spawn", "node mcp-slack.js"],
+        ))
+        .unwrap();
         let val: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("mcp").join("slack2.json")).unwrap(),
         )
@@ -644,7 +900,7 @@ mod tests {
         )
         .unwrap();
         let args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
-        cmd_enable_disable(dir.path(), &args, true).unwrap();
+        cmd_enable_disable_inner(dir.path(), "mcp", "slack", true).unwrap();
         let val: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(mcp_dir.join("slack.json")).unwrap())
                 .unwrap();
@@ -659,7 +915,7 @@ mod tests {
         let disk_path = mcp_dir.join("slack.json");
         std::fs::write(&disk_path, r#"{"command":"npx","args":[],"enabled":false}"#).unwrap();
         let args: Vec<String> = ["mcp", "slack"].iter().map(|s| s.to_string()).collect();
-        cmd_unregister(dir.path(), &args).unwrap();
+        cmd_unregister(unreg("mcp", "slack", dir.path())).unwrap();
         assert!(!disk_path.exists(), "mcp/slack.json should be deleted");
     }
 
@@ -685,7 +941,18 @@ mod tests {
         .iter()
         .map(|s| s.to_string())
         .collect();
-        cmd_register(dir.path(), &args).unwrap();
+        cmd_register(reg_flags(
+            "plugin",
+            "myfmt",
+            dir.path(),
+            &[
+                "--wasm",
+                wasm_path.to_str().unwrap(),
+                "--description",
+                "A formatter",
+            ],
+        ))
+        .unwrap();
         let plugin_dir = dir.path().join("plugins").join("myfmt");
         assert!(plugin_dir.is_dir());
         assert!(
@@ -709,7 +976,7 @@ mod tests {
         )
         .unwrap();
         let args: Vec<String> = ["plugin", "myfmt"].iter().map(|s| s.to_string()).collect();
-        cmd_enable_disable(dir.path(), &args, true).unwrap();
+        cmd_enable_disable_inner(dir.path(), "plugin", "myfmt", true).unwrap();
         let md = std::fs::read_to_string(plugin_dir.join("PLUGIN.md")).unwrap();
         assert!(md.contains("enabled: true"), "got: {md}");
         assert!(
@@ -729,7 +996,7 @@ mod tests {
         )
         .unwrap();
         let args: Vec<String> = ["plugin", "myfmt"].iter().map(|s| s.to_string()).collect();
-        cmd_unregister(dir.path(), &args).unwrap();
+        cmd_unregister(unreg("plugin", "myfmt", dir.path())).unwrap();
         assert!(!plugin_dir.exists(), "plugins/myfmt/ should be deleted");
     }
 
