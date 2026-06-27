@@ -127,7 +127,7 @@ impl Tool for GlobTool {
         )
         .await
         .map_err(|e| crate::tools::ToolError::Execute(format!("Glob task panicked: {e}")))?
-        .map_err(|e| crate::tools::ToolError::Execute(e))?;
+        .map_err(crate::tools::ToolError::Execute)?;
 
         if files.is_empty() {
             return Ok(Value::String("No files found".into()));
