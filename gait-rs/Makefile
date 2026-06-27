@@ -2,7 +2,7 @@
 #   echo 'INSTALL_DIR = $(HOME)/develop' > Makefile.local
 -include Makefile.local
 INSTALL_DIR ?= /usr/local/bin
-MAN_DIR     ?= /usr/local/share/man/man1
+MAN_DIR     ?= $(INSTALL_DIR)/../share/man/man1
 
 .PHONY: build install man fmt lint test check hooks
 
