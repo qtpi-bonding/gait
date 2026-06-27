@@ -527,11 +527,19 @@ mod linux {
                     });
                 }
             }
-            // Reap owned children.
+            // Reap owned children. WNOHANG: a return of 0 means "alive, not yet
+            // reaped" (tokio's orphan reaper backstops on drop) and breaks; only
+            // -1/EINTR is a signal-interrupted call worth retrying.
             let pids: Vec<i32> = self.owned.lock().unwrap().drain(..).collect();
             for pid in pids {
-                unsafe {
-                    libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG);
+                loop {
+                    let r = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
+                    if r == -1
+                        && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
+                    {
+                        continue;
+                    }
+                    break;
                 }
             }
             Ok(())

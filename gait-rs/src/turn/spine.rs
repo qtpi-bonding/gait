@@ -758,10 +758,7 @@ pub async fn relay_brain_turn(
 /// Either way we move `child` in and drop it WITHOUT awaiting. Reaping before the
 /// drop means tokio's SIGCHLD reaper can't race-steal the pid; the post-drop
 /// `try_wait` then sees `ECHILD` (harmless), so there is no zombie leak.
-pub(crate) async fn reap_brain(
-    group: Arc<dyn crate::process::Containment>,
-    child: tokio::process::Child,
-) {
+async fn reap_brain(group: Arc<dyn crate::process::Containment>, child: tokio::process::Child) {
     let _ = tokio::task::spawn_blocking(move || group.kill_all()).await;
     drop(child);
 }
