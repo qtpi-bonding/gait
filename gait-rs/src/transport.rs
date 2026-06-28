@@ -4,7 +4,8 @@
 //! intentionally not `serde`-derived. Defaults are the policy; tests can override
 //! individual fields by struct-literal.
 
-use crate::provider::{ProviderError, StreamChunk, TimeoutPhase};
+use crate::provider::{ProviderError, TimeoutPhase};
+use eventsource_stream::EventStreamError;
 use futures_util::{Stream, StreamExt};
 use std::future::Future;
 use std::time::Duration;
@@ -56,41 +57,47 @@ pub(crate) fn backoff_delay(cfg: &TransportConfig, attempt: u32) -> Duration {
     cap.mul_f64(frac)
 }
 
-/// Wrap a streaming response with three nested deadlines: TTFB on the first
-/// poll, idle between subsequent polls, and absolute as an overall ceiling.
-/// Emits the matching `ProviderError::Timeout { phase }` on overrun and stops
-/// the stream (terminal — the spec is retry-pre-first-byte-only).
-pub(crate) fn guard_idle(
-    inner: impl Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static,
+/// Wrap the raw SSE event stream with three nested deadlines: TTFB on the first
+/// event, idle between subsequent events, and absolute as an overall ceiling.
+/// Every SSE event from the server — content, thinking, role frames, keepalives,
+/// `[DONE]` — counts as transport liveness and resets the idle timer. We measure
+/// events, not parsed chunks, so a model that emits thinking tokens the parser swallows
+/// is correctly seen as alive. Emits the matching `ProviderError::Timeout { phase }` on
+/// overrun and stops the stream (terminal — the spec is retry-pre-first-byte-only).
+pub(crate) fn guard_idle_sse(
+    inner: impl Stream<Item = Result<eventsource_stream::Event, eventsource_stream::EventStreamError>>
+        + Send
+        + 'static,
     cfg: TransportConfig,
-) -> impl Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static {
+) -> impl Stream<Item = Result<eventsource_stream::Event, ProviderError>> + Send + 'static {
     async_stream::stream! {
-        tokio::pin!(inner);
-        let deadline = tokio::time::Instant::now() + cfg.absolute_cap;
-        let mut first = true;
-        loop {
-            let gap = if first { cfg.ttfb_timeout } else { cfg.idle_timeout };
-            let phase = if first { TimeoutPhase::Ttfb } else { TimeoutPhase::Idle };
-            let next = inner.next();
-            tokio::select! {
-                biased;
-                _ = tokio::time::sleep_until(deadline) => {
-                    yield Err(ProviderError::Timeout { phase: TimeoutPhase::Absolute });
-                    return;
-                }
-                r = tokio::time::timeout(gap, next) => match r {
-                    Err(_)         => { yield Err(ProviderError::Timeout { phase }); return; }
-                    Ok(None)       => { crate::diagnostic::set_phase(crate::diagnostic::Phase::StreamEnd); return; }
-                    Ok(Some(item)) => {
-                        if first { crate::diagnostic::set_phase(crate::diagnostic::Phase::Streaming); }
-                        let stop = item.is_err();
-                        yield item;
-                        if stop { return; }
-                    }
-                },
-            }
-            first = false;
-        }
+    tokio::pin!(inner);
+    let deadline = tokio::time::Instant::now() + cfg.absolute_cap;
+    let mut first = true;
+    loop {
+    let gap = if first { cfg.ttfb_timeout } else { cfg.idle_timeout };
+    let phase = if first { TimeoutPhase::Ttfb } else { TimeoutPhase::Idle };
+    let next = inner.next();
+    tokio::select! {
+    biased;
+    _ = tokio::time::sleep_until(deadline) => {
+    yield Err(ProviderError::Timeout { phase: TimeoutPhase::Absolute });
+    return;
+    }
+    r = tokio::time::timeout(gap, next) => match r {
+    Err(_)         => { yield Err(ProviderError::Timeout { phase }); return; }
+    Ok(None)       => { crate::diagnostic::set_phase(crate::diagnostic::Phase::StreamEnd); return; }
+    Ok(Some(item)) => match item {
+    Ok(event) => {
+    if first { crate::diagnostic::set_phase(crate::diagnostic::Phase::Streaming); }
+    yield Ok(event);
+    }
+    Err(e) => { yield Err(ProviderError::Sse(e.to_string())); return; }
+    },
+    },
+    }
+    first = false;
+    }
     }
 }
 
@@ -138,7 +145,7 @@ where
             biased;
             _ = cancel.cancelled() => return Err(ProviderError::Other("cancelled".into())),
             // Bound the request/header-wait phase. `connect_timeout` only covers the
-            // TCP/TLS handshake, and `guard_idle` cannot start until response headers
+            // TCP/TLS handshake, and `guard_idle_sse` cannot start until response headers
             // arrive — so without a deadline here, a server that accepts the connection
             // then stalls before sending headers hangs forever (observed: an 18-minute
             // hang past the 600s absolute cap). Map the overrun to a retryable TTFB
