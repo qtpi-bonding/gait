@@ -902,9 +902,9 @@ pub async fn run_turn(
         let mut step_tool_calls: Vec<ToolCall> = vec![];
         let mut post_tool_text: Vec<String> = vec![];
         let mut seen_tool_complete = false;
+        let mut seen_first_content = false;
         let mut step_thinking_text = String::new();
         let mut step_thinking_signature = String::new();
-
         loop {
             let chunk_opt = tokio::select! {
                 biased;
@@ -937,9 +937,12 @@ pub async fn run_turn(
             };
             match chunk {
                 StreamChunk::Text(t) => {
+                    if !seen_first_content {
+                        crate::diagnostic::set_phase(crate::diagnostic::Phase::Streaming);
+                        seen_first_content = true;
+                    }
                     if seen_tool_complete {
                         post_tool_text.push(t.clone());
-                    } else {
                         emitter.publish_delta(t.clone());
                     }
                     step_text.push_str(&t);
@@ -962,6 +965,7 @@ pub async fn run_turn(
                 }
                 StreamChunk::Done => break,
                 StreamChunk::ThinkingDelta(t) => {
+                    crate::diagnostic::set_phase(crate::diagnostic::Phase::Reasoning);
                     step_thinking_text.push_str(&t);
                 }
                 StreamChunk::ThinkingSignature { signature, .. } => {
