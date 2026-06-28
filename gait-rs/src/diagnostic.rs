@@ -18,10 +18,8 @@ pub enum Phase {
     TurnBegin,
     AwaitFeedback,
     LlmRequest,
-    Connecting,
-    AwaitingHeaders,
-    AwaitingFirstByte,
     Streaming,
+    Reasoning, // model is in thinking/chain-of-thought; stream is healthy
     StreamEnd,
     TurnEnd,
     Unknown,
@@ -42,6 +40,7 @@ impl Phase {
     pub fn cap(&self) -> Cap {
         match self {
             Phase::Streaming => Cap::AbsoluteBackstop,
+            Phase::Reasoning => Cap::AbsoluteBackstop,
             Phase::AwaitFeedback => Cap::ToolAware,
             _ => Cap::StallCap,
         }
@@ -153,10 +152,8 @@ pub fn phase_str(p: Phase) -> &'static str {
         Phase::TurnBegin => "turn_begin",
         Phase::AwaitFeedback => "await_feedback",
         Phase::LlmRequest => "llm_request",
-        Phase::Connecting => "connecting",
-        Phase::AwaitingHeaders => "awaiting_headers",
-        Phase::AwaitingFirstByte => "awaiting_first_byte",
         Phase::Streaming => "streaming",
+        Phase::Reasoning => "reasoning",
         Phase::StreamEnd => "stream_end",
         Phase::TurnEnd => "turn_end",
         Phase::Unknown => "unknown",
@@ -168,10 +165,8 @@ pub fn phase_from_str(s: &str) -> Phase {
         "turn_begin" => Phase::TurnBegin,
         "await_feedback" => Phase::AwaitFeedback,
         "llm_request" => Phase::LlmRequest,
-        "connecting" => Phase::Connecting,
-        "awaiting_headers" => Phase::AwaitingHeaders,
-        "awaiting_first_byte" => Phase::AwaitingFirstByte,
         "streaming" => Phase::Streaming,
+        "reasoning" => Phase::Reasoning,
         "stream_end" => Phase::StreamEnd,
         "turn_end" => Phase::TurnEnd,
         _ => Phase::Unknown,
@@ -225,7 +220,7 @@ mod tests {
             mono_ms: 14233,
             session: "s3d6bf3d6".into(),
             turn: 4,
-            phase: Phase::AwaitingHeaders,
+            phase: Phase::Reasoning,
             event: PhaseEvent::Heartbeat,
             elapsed_ms: 45000,
             attempt: Some(1),
@@ -235,15 +230,14 @@ mod tests {
         let line = r.to_json_line();
         assert!(!line.contains('\n'), "exactly one line");
         let v: serde_json::Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(v["phase"], "awaiting_headers");
+        assert_eq!(v["phase"], "reasoning");
         assert_eq!(v["event"], "heartbeat");
         assert_eq!(v["elapsed_ms"], 45000);
     }
 
     #[test]
     fn fast_phases_use_stall_cap_long_phases_do_not() {
-        assert!(matches!(Phase::AwaitingHeaders.cap(), Cap::StallCap));
-        assert!(matches!(Phase::Connecting.cap(), Cap::StallCap));
+        assert!(matches!(Phase::Reasoning.cap(), Cap::AbsoluteBackstop));
         assert!(matches!(Phase::Streaming.cap(), Cap::AbsoluteBackstop));
         assert!(matches!(Phase::AwaitFeedback.cap(), Cap::ToolAware));
     }
