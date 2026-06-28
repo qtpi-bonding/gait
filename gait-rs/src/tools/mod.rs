@@ -29,7 +29,7 @@ pub use annotate::AnnotateTool;
 pub use clarify::ClarifyTool;
 pub use codesearch::CodesearchTool;
 pub use ctx::ToolCtx;
-pub use edit::EditTool;
+pub use edit::{EditAppendTool, EditPrependTool, EditReplaceTool};
 pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use inform::InformTool;
@@ -216,7 +216,9 @@ pub fn builtin_tool_names() -> &'static [&'static str] {
     &[
         "read",
         "write",
-        "edit",
+        "edit_replace",
+        "edit_append",
+        "edit_prepend",
         "glob",
         "grep",
         "ls",
@@ -246,7 +248,9 @@ pub fn builtin_tools(
     let mut tools: Vec<Box<dyn Tool>> = vec![
         ReadTool::new(ctx.clone()).boxed(),
         WriteTool::new(ctx.clone()).boxed(),
-        EditTool::new(ctx.clone()).boxed(),
+        EditReplaceTool::new(ctx.clone()).boxed(),
+        EditAppendTool::new(ctx.clone()).boxed(),
+        EditPrependTool::new(ctx.clone()).boxed(),
         GlobTool::new(ctx.clone()).boxed(),
         GrepTool::new(ctx.clone()).boxed(),
         LsTool::new(ctx.clone()).boxed(),
@@ -281,7 +285,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn builtin_tools_returns_sixteen() {
+    fn builtin_tools_returns_eighteen() {
         let tools = builtin_tools(
             ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "stest".into()),
             vec![],
@@ -289,7 +293,7 @@ mod tests {
             vec![],
             crate::git::Repos::production(),
         );
-        assert_eq!(tools.len(), 16);
+        assert_eq!(tools.len(), 18);
     }
 
     #[test]
@@ -406,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_tools_with_runner_returns_seventeen() {
+    fn builtin_tools_with_runner_returns_nineteen() {
         use crate::workflow_runner::WorkflowRunner;
         use std::sync::Arc;
 
@@ -424,8 +428,8 @@ mod tests {
         let tools = builtin_tools(ctx, vec![], vec![], vec![], crate::git::Repos::production());
         assert_eq!(
             tools.len(),
-            17,
-            "expected 17 tools with runner: {:?}",
+            19,
+            "expected 19 tools with runner: {:?}",
             tools.iter().map(|t| t.name()).collect::<Vec<_>>()
         );
     }
@@ -483,7 +487,7 @@ mod tests {
             }
         );
         assert_eq!(
-            by("edit"),
+            by("edit_replace"),
             ToolAccess {
                 reads: true,
                 writes: true,

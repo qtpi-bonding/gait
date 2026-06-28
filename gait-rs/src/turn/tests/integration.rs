@@ -1407,17 +1407,19 @@ async fn always_policy_streams_edit_preview_delta() {
         dir.path().to_path_buf(),
         "t".into(),
     );
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(crate::tools::EditTool::new(ctx))];
+    let tools: Vec<Box<dyn Tool>> = vec![Box::new(crate::tools::EditReplaceTool::new(ctx))];
     let args = serde_json::json!({
         "file_path": "f.rs",
-        "edits": [{"op": "replace", "pos": hash, "lines": ["    baz();"]}] // bare hash, no "2#"
+        "pos": hash,
+        "end": hash,
+        "lines": ["    baz();"]
     });
 
     stream_preview_if_always(
         PreviewPolicy::Always,
         tools
             .iter()
-            .find(|t| t.name() == "edit")
+            .find(|t| t.name() == "edit_replace")
             .map(|t| t.as_ref()),
         &args,
         &emitter,
@@ -1449,14 +1451,14 @@ async fn on_ask_policy_streams_nothing() {
         dir.path().to_path_buf(),
         "t".into(),
     );
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(crate::tools::EditTool::new(ctx))];
-    let args = serde_json::json!({"file_path": "f.rs", "edits": []});
+    let tools: Vec<Box<dyn Tool>> = vec![Box::new(crate::tools::EditReplaceTool::new(ctx))];
+    let args = serde_json::json!({"file_path": "f.rs", "pos": "AB", "end": "AB", "lines": []});
 
     stream_preview_if_always(
         PreviewPolicy::OnAsk,
         tools
             .iter()
-            .find(|t| t.name() == "edit")
+            .find(|t| t.name() == "edit_replace")
             .map(|t| t.as_ref()),
         &args,
         &emitter,

@@ -948,7 +948,7 @@ pub mod ceiling {
                 reads: true,
                 ..Default::default()
             },
-            "write" | "edit" => ToolAccess {
+            "write" | "edit_replace" | "edit_append" | "edit_prepend" => ToolAccess {
                 reads: true,
                 writes: true,
                 ..Default::default()
