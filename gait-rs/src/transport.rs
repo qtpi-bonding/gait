@@ -5,7 +5,6 @@
 //! individual fields by struct-literal.
 
 use crate::provider::{ProviderError, TimeoutPhase};
-use eventsource_stream::EventStreamError;
 use futures_util::{Stream, StreamExt};
 use std::future::Future;
 use std::time::Duration;
