@@ -390,6 +390,7 @@ fn body_stream(
 ) -> impl futures_util::Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static {
     use futures_util::StreamExt;
     async_stream::try_stream! {
+        tokio::pin!(guarded_events);
         let mut tool_ids:   HashMap<u32, String> = HashMap::new();
         let mut tool_names: HashMap<u32, String> = HashMap::new();
         let mut tool_args:  HashMap<u32, String> = HashMap::new();
