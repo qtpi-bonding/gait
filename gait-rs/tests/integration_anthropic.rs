@@ -92,8 +92,13 @@ impl MockSse {
 async fn stream_ending_without_message_stop_yields_incomplete() {
     use gait_core::anthropic::AnthropicProvider;
 
-    // 2 content_block_delta events, then the server drops the connection.
-    // No message_stop → the stream is incomplete.
+    // 2 content_block_delta events, then the server drops the connection (transport
+    // drop). Since guard_idle_sse now wraps the raw SSE layer, an EventStreamError::
+    // Transport error is converted to ProviderError::Sse before body_stream sees it.
+    // The Sse error propagates out as the terminal error.
+    // (If the server had closed cleanly with EOF — no more bytes — eventsource_stream
+    // would produce None, guard_idle_sse would end cleanly, and body_stream's
+    // `!saw_terminal` would fire → StreamIncomplete. Transport drop is a different path.)
     let server = mock_sse_server(vec![
         "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hel\"}}\n\n",
         "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"lo\"}}\n\n",
@@ -122,24 +127,23 @@ async fn stream_ending_without_message_stop_yields_incomplete() {
     while let Some(item) = stream.next().await {
         last = Some(item);
     }
+    // Transport drop → guard_idle_sse converts EventStreamError::Transport to Sse.
     assert!(
-        matches!(
-            last,
-            Some(Err(ProviderError::StreamIncomplete { received_bytes })) if received_bytes == 5
-        ),
-        "expected StreamIncomplete {{ received_bytes: 5 }}, got {:?}",
+        matches!(last, Some(Err(ProviderError::Sse(_)))),
+        "expected Sse (transport drop converted by guard_idle_sse), got {:?}",
         last
     );
 }
 
-/// Task 6 — usage accounting on mid-stream failure.
+/// Usage accounting on mid-stream transport failure.
 ///
-/// A stream that emits `StepUsage{input:100}` then fails with `StreamIncomplete`
+/// A stream that emits `StepUsage{input:100}` then fails with a transport drop
 /// must surface the error **and** account the partial usage exactly once.
 ///
-/// Current behavior (v1): the caller (turn/mod.rs) accumulates usage into
-/// `total_usage` before the stream error propagates. If the turn is retried at
-/// the orchestration spine, those 100 input tokens will be counted again.
+/// Since guard_idle_sse now wraps the SSE layer, a transport drop converts to
+/// `ProviderError::Sse` (not `StreamIncomplete`). The `StepUsage` chunk from
+/// `message_start` is emitted before the transport drop is detected, so partial
+/// usage still lands in the caller before the error surfaces.
 ///
 /// KNOWN: partial usage counted once here; re-counted on spine re-invoke if the
 /// caller retries. A usage-rollback mechanism belongs in a follow-up task once
@@ -152,7 +156,8 @@ async fn partial_usage_then_incomplete_is_accounted_once() {
     use gait_core::anthropic::AnthropicProvider;
 
     // Emits a MessageStart (100 input tokens) + one text delta, then drops the
-    // connection without a message_stop — triggering StreamIncomplete.
+    // connection (transport drop). guard_idle_sse converts the EventStreamError
+    // to ProviderError::Sse, which propagates as the terminal error.
     let server = mock_sse_server(vec![
         "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"x\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-x\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":100,\"output_tokens\":0}}}\n\n",
         "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
@@ -179,19 +184,20 @@ async fn partial_usage_then_incomplete_is_accounted_once() {
         .unwrap();
 
     let mut input_tokens_seen: u32 = 0;
-    let mut got_incomplete = false;
+    let mut got_sse_err = false;
     while let Some(item) = stream.next().await {
         match item {
             Ok(StreamChunk::StepUsage(u)) => input_tokens_seen += u.input_tokens,
-            Err(ProviderError::StreamIncomplete { .. }) => {
-                got_incomplete = true;
+            Err(ProviderError::Sse(_)) => {
+                got_sse_err = true;
                 break;
             }
             _ => {}
         }
     }
 
-    assert!(got_incomplete, "expected StreamIncomplete error");
+    // Transport drop → Sse error (guard_idle_sse converts EventStreamError::Transport).
+    assert!(got_sse_err, "expected Sse error from transport drop");
     // KNOWN: 100 tokens from MessageStart are counted once per stream invocation.
     // On spine-level retry these tokens would be counted again — see doc comment.
     assert_eq!(

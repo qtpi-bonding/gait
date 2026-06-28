@@ -63,12 +63,15 @@ pub(crate) fn backoff_delay(cfg: &TransportConfig, attempt: u32) -> Duration {
 /// events, not parsed chunks, so a model that emits thinking tokens the parser swallows
 /// is correctly seen as alive. Emits the matching `ProviderError::Timeout { phase }` on
 /// overrun and stops the stream (terminal — the spec is retry-pre-first-byte-only).
-pub(crate) fn guard_idle_sse(
-    inner: impl Stream<Item = Result<eventsource_stream::Event, eventsource_stream::EventStreamError>>
+pub(crate) fn guard_idle_sse<E>(
+    inner: impl Stream<Item = Result<eventsource_stream::Event, eventsource_stream::EventStreamError<E>>>
         + Send
         + 'static,
     cfg: TransportConfig,
-) -> impl Stream<Item = Result<eventsource_stream::Event, ProviderError>> + Send + 'static {
+) -> impl Stream<Item = Result<eventsource_stream::Event, ProviderError>> + Send + 'static
+where
+    E: std::fmt::Display + Send + 'static,
+{
     async_stream::stream! {
     tokio::pin!(inner);
     let deadline = tokio::time::Instant::now() + cfg.absolute_cap;

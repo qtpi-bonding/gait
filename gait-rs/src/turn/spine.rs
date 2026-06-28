@@ -21,31 +21,25 @@ use crate::turn::DiagnosticSink;
 
 // ── WatchdogCfg + watchdog_breach ────────────────────────────────────────────
 
-use crate::diagnostic::{Cap, Phase};
+use crate::diagnostic::Phase;
 
 #[derive(Clone, Copy)]
 pub(crate) struct WatchdogCfg {
-    pub stall_cap_ms: u64,
     pub ping_ms: u64,
-    pub absolute_backstop_ms: u64, // guard_idle absolute_cap(600s) + 60s margin
+    pub absolute_backstop_ms: u64, // guard_idle_sse absolute_cap(600s) + 120s margin
 }
 
 impl Default for WatchdogCfg {
     fn default() -> Self {
-        // `GAIT_TEST_WATCHDOG_MS` / `GAIT_TEST_WATCHDOG_PING_MS` shrink the caps
-        // for integration tests so the watchdog fires in seconds. Never set in production.
-        let stall_cap_ms = std::env::var("GAIT_TEST_WATCHDOG_MS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(90_000);
+        // `GAIT_TEST_WATCHDOG_PING_MS` shrinks the ping interval for integration tests
+        // so the watchdog fires in seconds. Never set in production.
         let ping_ms = std::env::var("GAIT_TEST_WATCHDOG_PING_MS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(15_000);
         Self {
-            stall_cap_ms,
             ping_ms,
-            absolute_backstop_ms: 660_000,
+            absolute_backstop_ms: 720_000,
         }
     }
 }
@@ -64,28 +58,25 @@ pub(crate) enum SpinePhase {
 /// both caps disarmed). Pass `spine_phase` from the relay loop.
 pub(crate) fn watchdog_breach(
     cfg: &WatchdogCfg,
-    phase: Phase,
+    _phase: Phase,
     phase_elapsed_ms: u64,
     since_last_ping_ms: Option<u64>,
     spine_phase: SpinePhase,
 ) -> Option<&'static str> {
     let since = since_last_ping_ms?;
-    // Ping check is always live: fires even when hands are running.
+    // Always live: fires even in HandsPhase (brain-wedged detection).
     if since > 2 * cfg.ping_ms {
         return Some("no diagnostic ping (brain wedged)");
     }
-    // Phase-duration caps are suppressed while hands are running.
-    if matches!(spine_phase, SpinePhase::HandsPhase) {
-        return None;
-    }
-    match phase.cap() {
-        Cap::StallCap => {
-            (phase_elapsed_ms > cfg.stall_cap_ms).then_some("phase exceeded stall_cap")
+    // Dead-man backstop: suppressed while tools are running.
+    // guard_idle_sse fires at 600s; this is a 120s buffer above that.
+    // Only reachable if guard_idle_sse itself fails to fire (runtime bug).
+    if matches!(spine_phase, SpinePhase::BrainPhase) {
+        if phase_elapsed_ms > cfg.absolute_backstop_ms {
+            return Some("absolute backstop exceeded");
         }
-        Cap::AbsoluteBackstop => (phase_elapsed_ms > cfg.absolute_backstop_ms)
-            .then_some("streaming exceeded absolute backstop"),
-        Cap::ToolAware => (phase_elapsed_ms > cfg.stall_cap_ms).then_some("await_feedback stalled"),
     }
+    None
 }
 
 // ── ProfileInputs + build_turn_profile ───────────────────────────────────────
@@ -2661,19 +2652,18 @@ mod tests {
 
     fn wd() -> WatchdogCfg {
         WatchdogCfg {
-            stall_cap_ms: 90_000,
             ping_ms: 15_000,
-            absolute_backstop_ms: 660_000,
+            absolute_backstop_ms: 720_000,
         }
     }
 
     #[test]
-    fn phase_elapsed_cap_fires_while_alive() {
-        // Fast phase past stall_cap is a breach EVEN with a fresh ping.
+    fn absolute_backstop_fires_past_720s() {
+        // BrainPhase past the 720s backstop is a breach even with a fresh ping.
         assert!(watchdog_breach(
             &wd(),
-            Phase::AwaitingHeaders,
-            95_000,
+            Phase::Streaming,
+            730_000,
             Some(1_000),
             SpinePhase::BrainPhase
         )
@@ -2706,12 +2696,12 @@ mod tests {
     }
 
     #[test]
-    fn hands_phase_suppresses_duration_caps_but_not_ping_check() {
-        // Duration cap suppressed while hands are running.
+    fn hands_phase_suppresses_backstop_but_not_ping_check() {
+        // Absolute backstop suppressed while hands are running.
         assert!(watchdog_breach(
             &wd(),
             Phase::AwaitFeedback,
-            200_000,
+            730_000,
             Some(2_000),
             SpinePhase::HandsPhase
         )
@@ -2725,11 +2715,11 @@ mod tests {
             SpinePhase::HandsPhase
         )
         .is_some());
-        // BrainPhase past stall_cap → breach.
+        // BrainPhase past absolute backstop → breach.
         assert!(watchdog_breach(
             &wd(),
-            Phase::AwaitFeedback,
-            95_000,
+            Phase::Streaming,
+            730_000,
             Some(2_000),
             SpinePhase::BrainPhase
         )
@@ -2741,8 +2731,8 @@ mod tests {
         // Before the first ping (None), neither cap fires (cold-start grace).
         assert!(watchdog_breach(
             &wd(),
-            Phase::AwaitingHeaders,
-            95_000,
+            Phase::Streaming,
+            730_000,
             None,
             SpinePhase::BrainPhase
         )
@@ -2750,13 +2740,13 @@ mod tests {
     }
 
     #[test]
-    fn fresh_pings_do_not_save_a_capped_fast_phase() {
+    fn fresh_pings_do_not_save_a_capped_stream() {
         let cfg = wd();
-        // ping just arrived (since=0) but awaiting_headers elapsed crossed stall_cap.
+        // ping just arrived (since=0) but elapsed crossed absolute backstop.
         assert!(watchdog_breach(
             &cfg,
-            Phase::AwaitingHeaders,
-            90_001,
+            Phase::Streaming,
+            720_001,
             Some(0),
             SpinePhase::BrainPhase
         )
@@ -2778,8 +2768,8 @@ mod tests {
             &session_log,
             &super::DiagnosticSink::new(gait_dir, session),
             &mut failed,
-            crate::diagnostic::Phase::AwaitingHeaders,
-            "watchdog: phase exceeded stall_cap",
+            crate::diagnostic::Phase::Streaming,
+            "absolute backstop exceeded",
         );
 
         assert!(failed, "brain_failed flag set for exit parity");
@@ -2790,6 +2780,6 @@ mod tests {
             "Error event in log.jsonl"
         );
         let diag = std::fs::read_to_string(sdir.join("diagnostic.jsonl")).unwrap();
-        assert!(diag.contains("awaiting_headers") && diag.contains("stall_cap"));
+        assert!(diag.contains("streaming") && diag.contains("absolute backstop"));
     }
 }
