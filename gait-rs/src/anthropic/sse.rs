@@ -1,7 +1,6 @@
 use crate::anthropic::types::{AnthropicEvent, ContentBlock, ContentDelta};
 use crate::provider::{ProviderError, StreamChunk};
 use crate::types::Usage;
-use eventsource_stream::{EventStreamError, Eventsource};
 use futures_util::{Stream, StreamExt};
 use reqwest::Client;
 use std::collections::HashMap;
@@ -45,33 +44,30 @@ impl SseClient {
         Ok(resp)
     }
 
-    /// Lazy: consume the Response body as SSE. Terminal errors only.
-    /// Takes the `Response` by value so the returned stream is owned (not borrowing &self).
+    /// Lazy: consume the SSE event stream into StreamChunks. Terminal errors only.
+    /// Takes the `impl Stream<Item = Result<eventsource_stream::Event, ProviderError>>`
+    /// by value so the returned stream is owned (not borrowing &self). The caller is
+    /// responsible for wrapping the raw eventsource stream with `guard_idle_sse` first.
     pub fn body_stream(
-        resp: reqwest::Response,
+        guarded_events: impl futures_util::Stream<
+                Item = Result<eventsource_stream::Event, crate::provider::ProviderError>,
+            > + Send
+            + 'static,
     ) -> impl Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static {
         async_stream::try_stream! {
+            tokio::pin!(guarded_events);
             let mut tool_name_map: HashMap<u32, String> = HashMap::new();
             let mut tool_id_map: HashMap<u32, String> = HashMap::new();
             let mut args_buf: HashMap<u32, String> = HashMap::new();
             let mut thinking_indices: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
-            let mut stream = resp.bytes_stream().eventsource();
             let mut saw_terminal = false;
             let mut received_bytes: usize = 0;
 
-            while let Some(event) = stream.next().await {
+            while let Some(event) = guarded_events.next().await {
                 let event = match event {
                     Ok(ev) => ev,
-                    // A transport-level drop (connection closed mid-body) before the
-                    // terminal marker is the silent-truncation case — surface it as
-                    // StreamIncomplete, not a parse error. Utf8/Parser errors are
-                    // genuine data corruption and stay terminal Sse errors.
-                    Err(EventStreamError::Transport(_)) if !saw_terminal => {
-                        Err(ProviderError::StreamIncomplete { received_bytes })?;
-                        break;
-                    }
-                    Err(e) => Err(ProviderError::Sse(e.to_string()))?,
+                    Err(e) => Err(e)?,  // already converted to ProviderError by guard_idle_sse
                 };
                 if event.event == "message_stop" { saw_terminal = true; break; }
                 if event.data.is_empty() || event.data == "[DONE]" { continue; }

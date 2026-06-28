@@ -306,8 +306,10 @@ impl Provider for AnthropicProvider {
             },
         )
         .await?;
-        let stream = crate::transport::guard_idle(SseClient::body_stream(resp), self.transport);
-        Ok(Box::pin(stream))
+        use eventsource_stream::Eventsource;
+        let guarded =
+            crate::transport::guard_idle_sse(resp.bytes_stream().eventsource(), self.transport);
+        Ok(Box::pin(SseClient::body_stream(guarded)))
     }
 
     fn model_id(&self) -> &str {
