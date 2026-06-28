@@ -71,10 +71,9 @@ pub(crate) fn watchdog_breach(
     // Dead-man backstop: suppressed while tools are running.
     // guard_idle_sse fires at 600s; this is a 120s buffer above that.
     // Only reachable if guard_idle_sse itself fails to fire (runtime bug).
-    if matches!(spine_phase, SpinePhase::BrainPhase) {
-        if phase_elapsed_ms > cfg.absolute_backstop_ms {
-            return Some("absolute backstop exceeded");
-        }
+    if matches!(spine_phase, SpinePhase::BrainPhase) && phase_elapsed_ms > cfg.absolute_backstop_ms
+    {
+        return Some("absolute backstop exceeded");
     }
     None
 }
