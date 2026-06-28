@@ -1,6 +1,6 @@
 use crate::provider::{ChunkStream, Provider, ProviderError, StreamChunk};
 use crate::types::{AssistantContent, AssistantPart, Message, MessageContent, Tool, Usage};
-use eventsource_stream::{EventStreamError, Eventsource};
+use eventsource_stream::Eventsource;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -133,6 +133,7 @@ struct StreamChoice {
 struct Delta {
     content: Option<String>,
     tool_calls: Option<Vec<ToolCallDelta>>,
+    reasoning_content: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -369,10 +370,9 @@ impl Provider for OpenAIProvider {
             },
         )
         .await?;
-        Ok(Box::pin(crate::transport::guard_idle(
-            body_stream(resp),
-            self.transport,
-        )))
+        let guarded =
+            crate::transport::guard_idle_sse(resp.bytes_stream().eventsource(), self.transport);
+        Ok(Box::pin(body_stream(guarded)))
     }
 
     fn model_id(&self) -> &str {
@@ -383,7 +383,10 @@ impl Provider for OpenAIProvider {
 /// Lazy SSE body parser for the OpenAI-compatible streaming shape.
 /// Errors here are terminal — the connect/classification already happened upstream.
 fn body_stream(
-    resp: reqwest::Response,
+    guarded_events: impl futures_util::Stream<
+            Item = Result<eventsource_stream::Event, crate::provider::ProviderError>,
+        > + Send
+        + 'static,
 ) -> impl futures_util::Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static {
     use futures_util::StreamExt;
     async_stream::try_stream! {
@@ -391,20 +394,15 @@ fn body_stream(
         let mut tool_names: HashMap<u32, String> = HashMap::new();
         let mut tool_args:  HashMap<u32, String> = HashMap::new();
 
-        let mut sse = resp.bytes_stream().eventsource();
         let mut saw_terminal = false;
         let mut received_bytes: usize = 0;
 
-        while let Some(event) = sse.next().await {
+        while let Some(event) = guarded_events.next().await {
             let event = match event {
                 Ok(ev) => ev,
                 // Connection dropped mid-body before [DONE] → silent-truncation
                 // case; surface StreamIncomplete. Parse/Utf8 errors stay Sse.
-                Err(EventStreamError::Transport(_)) if !saw_terminal => {
-                    Err(ProviderError::StreamIncomplete { received_bytes })?;
-                    break;
-                }
-                Err(e) => Err(ProviderError::Sse(e.to_string()))?,
+                Err(e) => Err(e)?,
             };
             if event.data == "[DONE]" { saw_terminal = true; break; }
             if event.data.is_empty() { continue; }
@@ -428,6 +426,12 @@ fn body_stream(
                     if !text.is_empty() {
                         received_bytes += text.len();
                         yield StreamChunk::Text(text.clone());
+                    }
+                }
+
+                if let Some(thinking) = &choice.delta.reasoning_content {
+                    if !thinking.is_empty() {
+                        yield StreamChunk::ThinkingDelta(thinking.clone());
                     }
                 }
 
