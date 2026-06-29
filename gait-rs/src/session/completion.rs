@@ -53,7 +53,7 @@ pub enum NotifyOutcome {
 
 impl Completion {
     /// Build the proto event body for this completion.
-    fn body(&self) -> Body {
+    pub fn body(&self) -> Body {
         match self {
             Completion::Daemon {
                 name,

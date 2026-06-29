@@ -120,6 +120,42 @@ pub fn active(gait_dir: &Path) -> io::Result<Vec<pb::DaemonStart>> {
 // Liveness + identity check
 // ---------------------------------------------------------------------------
 
+/// Names + exit codes of daemons owned by `session` that have a `Stop`
+/// record. `active()` drops stopped entries, so this surfaces them for
+/// completion polling. Reads the registry directly with a shared lock; an
+/// absent or unreadable file is not an error.
+pub fn stopped_for_session(gait_dir: &Path, session: &str) -> Vec<(String, i32)> {
+    use std::collections::HashMap;
+    let path = gait_dir.join("daemons.jsonl");
+    if !path.exists() {
+        return vec![];
+    }
+    let Ok(f) = OpenOptions::new().read(true).open(&path) else {
+        return vec![];
+    };
+    let _ = f.lock_shared();
+    let reader = BufReader::new(&f);
+    // name -> owning session, name -> recorded exit_code
+    let mut starts: HashMap<String, String> = HashMap::new();
+    let mut stops: HashMap<String, i32> = HashMap::new();
+    for line in reader.lines().map_while(Result::ok) {
+        match serde_json::from_str::<Line>(line.trim()) {
+            Ok(Line::Start(s)) => {
+                starts.insert(s.name.clone(), s.session.clone());
+            }
+            Ok(Line::Stop(s)) => {
+                stops.insert(s.name.clone(), s.exit_code);
+            }
+            _ => {}
+        }
+    }
+    let _ = f.unlock();
+    stops
+        .into_iter()
+        .filter(|(name, _)| starts.get(name).map(|s| s == session).unwrap_or(false))
+        .collect()
+}
+
 /// Returns `true` iff the process described by `rec` is still running **and**
 /// has the same start-time (guards against pid reuse).
 ///

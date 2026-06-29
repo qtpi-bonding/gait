@@ -59,6 +59,7 @@ struct InformArg {
 }
 
 pub(crate) mod brain;
+mod completion_poll;
 mod curate;
 mod exec;
 mod gate;
@@ -789,6 +790,23 @@ pub async fn run_turn(
                 )?;
             }
             return Ok(TurnResult::Cancelled);
+        }
+
+        // Per-step completion poll (Part 2): surface finished daemon completions
+        // mid-turn by recording *_update events before the next LLM request.
+        // Holds the session lock → emitter.record is the safe writer. retrace
+        // folds the new events into the outgoing rebuild on the very next line.
+        if relay.is_none() {
+            let events_snap = ingestor.events().unwrap_or_default();
+            let already = crate::turn::completion_poll::surfaced_daemon_names(&events_snap);
+            let pending = crate::turn::completion_poll::pending_daemon_completions(
+                &gait_dir,
+                &session_id,
+                &already,
+            );
+            for c in pending {
+                let _ = emitter.record(c.body());
+            }
         }
 
         // 1. Build transcript from log (log-first: all prior mutations already logged)
