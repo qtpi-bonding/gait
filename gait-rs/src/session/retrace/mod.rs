@@ -435,6 +435,21 @@ impl MessagesState {
         self.push_user(content, id);
     }
 
+    fn push_daemon_update(&mut self, du: &pb::DaemonUpdate, id: &str) {
+        let status = pb::DaemonStatus::try_from(du.status)
+            .map(|s| match s {
+                pb::DaemonStatus::Done => "done",
+                pb::DaemonStatus::Killed => "killed",
+                pb::DaemonStatus::Unspecified => "unspecified",
+            })
+            .unwrap_or("unspecified");
+        let content = format!(
+            "[daemon:{}] {} — exit {} — log: {}",
+            du.name, status, du.exit_code, du.log_path
+        );
+        self.push_user(content, id);
+    }
+
     fn push_clarify(&mut self, c: &pb::Clarify, id: &str) {
         let text = c
             .items
@@ -567,6 +582,7 @@ impl Projection for ActiveMessages {
                 let _ = ();
             } // metadata only
             payload::Kind::AgentUpdate(au) => st.push_agent_update(au, &ev.id),
+            payload::Kind::DaemonUpdate(du) => st.push_daemon_update(du, &ev.id),
             payload::Kind::Clarify(c) => st.push_clarify(c, &ev.id),
             payload::Kind::ClarifyReply(cr) => st.push_clarify_reply(cr, &ev.id),
             payload::Kind::ClarifyConvergence(cc) => st.push_clarify_convergence(cc, &ev.id),
@@ -681,6 +697,23 @@ impl Projection for ActiveRawMessages {
                     let v = serde_json::to_value(items).unwrap_or(serde_json::Value::Null);
                     content.push_str(&format!("\nitems: {}", v));
                 }
+                st.base.push(Message::User {
+                    content: MessageContent::Text(content),
+                    id: ev.id.clone(),
+                });
+            }
+            payload::Kind::DaemonUpdate(du) => {
+                let status = pb::DaemonStatus::try_from(du.status)
+                    .map(|s| match s {
+                        pb::DaemonStatus::Done => "done",
+                        pb::DaemonStatus::Killed => "killed",
+                        pb::DaemonStatus::Unspecified => "unspecified",
+                    })
+                    .unwrap_or("unspecified");
+                let content = format!(
+                    "[daemon:{}] {} — exit {} — log: {}",
+                    du.name, status, du.exit_code, du.log_path
+                );
                 st.base.push(Message::User {
                     content: MessageContent::Text(content),
                     id: ev.id.clone(),

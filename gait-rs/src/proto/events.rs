@@ -187,6 +187,23 @@ pub fn agent_update(
     }))
 }
 
+/// `DaemonUpdate` — completion event for a detached daemon. Status string →
+/// proto enum; the rendered form lives in `retrace::push_daemon_update` and
+/// its inline mirror at the raw-projection site.
+pub fn daemon_update(
+    name: String,
+    exit_code: i32,
+    status: &str,
+    log_path: String,
+) -> pb::event::Body {
+    wire::body(pb::payload::Kind::DaemonUpdate(pb::DaemonUpdate {
+        name,
+        exit_code,
+        status: daemon_status(status),
+        log_path,
+    }))
+}
+
 /// `Permissions`.
 pub fn permissions(items: &[pb::PermissionItem]) -> pb::event::Body {
     wire::body(pb::payload::Kind::Permissions(pb::Permissions {
@@ -550,6 +567,15 @@ fn agent_status(s: &str) -> i32 {
         "clarify" => pb::AgentStatus::Clarify,
         "inform" => pb::AgentStatus::Inform,
         _ => pb::AgentStatus::Unspecified,
+    };
+    a as i32
+}
+
+fn daemon_status(s: &str) -> i32 {
+    let a = match s {
+        "done" => pb::DaemonStatus::Done,
+        "killed" => pb::DaemonStatus::Killed,
+        _ => pb::DaemonStatus::Unspecified,
     };
     a as i32
 }

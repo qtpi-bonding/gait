@@ -1547,3 +1547,55 @@ fn active_unlock_session_grant_survives_turn_complete() {
     // once was cleared by TurnComplete
     assert!(result.once.is_empty());
 }
+
+#[test]
+fn daemon_update_renders_as_user_message() {
+    // The ActiveMessages projection folds a DaemonUpdate event into a user
+    // message formatted as "[daemon:<name>] <status> — exit <code> — log: <path>".
+    let bodies = vec![events::daemon_update(
+        "build".into(),
+        0,
+        "done",
+        "/tmp/build.log".into(),
+    )];
+    let msgs = messages(&mint_events(bodies)).unwrap();
+    assert_eq!(msgs.len(), 1);
+    match &msgs[0] {
+        Message::User {
+            content: MessageContent::Text(t),
+            ..
+        } => {
+            assert!(t.contains("[daemon:build]"), "got: {t}");
+            assert!(t.contains("exit 0"), "got: {t}");
+            assert!(t.contains("/tmp/build.log"), "got: {t}");
+        }
+        other => panic!("expected User message, got {other:?}"),
+    }
+}
+
+#[test]
+fn daemon_update_raw_messages_includes_user_message() {
+    // The ActiveRawMessages projection (raw transcript, no coalescing) must
+    // also render DaemonUpdate as a User message so the transcript survives
+    // mutation flows that route through the raw projection.
+    use std::collections::HashMap;
+    let evs = mint_events(vec![events::daemon_update(
+        "svc-x".into(),
+        124,
+        "killed",
+        "/var/log/svc.log".into(),
+    )]);
+    let raw = run_projection(&ActiveRawMessages, &evs, &HashMap::new());
+    assert_eq!(raw.base.len(), 1);
+    match &raw.base[0] {
+        Message::User {
+            content: MessageContent::Text(t),
+            ..
+        } => {
+            assert!(t.contains("[daemon:svc-x]"), "got: {t}");
+            assert!(t.contains("killed"), "got: {t}");
+            assert!(t.contains("exit 124"), "got: {t}");
+        }
+        other => panic!("expected User message, got {other:?}"),
+    }
+}
