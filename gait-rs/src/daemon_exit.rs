@@ -14,6 +14,7 @@ use crate::session::daemons;
 
 /// Args parsed from `argv[1..]` (with `no_binary_name`) when `argv[0]` is `__daemon-exit`.
 #[derive(clap::Parser, Debug)]
+#[command(no_binary_name = true)]
 pub struct DaemonExitArgs {
     #[arg(long)]
     pub gait_dir: PathBuf,

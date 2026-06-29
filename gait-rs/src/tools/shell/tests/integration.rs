@@ -708,3 +708,81 @@ async fn fast_command_unaffected_by_timeout() {
         .unwrap()
         .contains("hi"));
 }
+
+/// End-to-end idle-wake: a detached daemon finishes, the registry records a
+/// `Stop`, and the parent's session log gains a `daemon_update` event (the
+/// wake). Polls both conditions within a 5s deadline rather than sleeping.
+#[tokio::test]
+async fn detached_daemon_wakes_idle_parent_on_exit() {
+    use std::time::Duration;
+    use tokio::time::Instant;
+
+    // 1. Real gait_dir (TempDir) + a real parent session dir inside it.
+    let gd = TempDir::new().unwrap();
+    let parent_id = "swake001";
+    let parent_dir = gd.path().join("sessions").join(parent_id);
+    std::fs::create_dir_all(&parent_dir).unwrap();
+    // Empty log.jsonl — `wire::append` is fine writing the first event into it.
+    std::fs::write(parent_dir.join("log.jsonl"), "").unwrap();
+
+    // 2. Tool whose ctx.gait_dir == gd and ctx.session_id == parent_id.
+    let tool = ShellTool::new(crate::tools::ctx::ToolCtx::new(
+        gd.path().to_path_buf(),
+        gd.path().to_path_buf(),
+        parent_id.to_string(),
+    ));
+
+    // 3. Run a fast detached command; the wrapper fires __daemon-exit on exit.
+    let _ = tool
+        .execute(
+            serde_json::json!({
+                "cmd": "sleep 0.1",
+                "reason": "wake test",
+                "detached": true,
+                "name": "t",
+            }),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap();
+
+    // 4. Poll for BOTH conditions within 20s.
+    // Under the full workspace parallel test run (782+ tests simultaneously)
+    // the setsid'd subprocess can take several seconds to get scheduled; 20s
+    // is enough headroom while still catching real breakage. Standalone the
+    // hook fires in well under 1s.
+    let daemons_jsonl = gd.path().join("daemons.jsonl");
+    let parent_log = parent_dir.join("log.jsonl");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut stop_recorded = false;
+    let mut update_recorded = false;
+    while Instant::now() < deadline && !(stop_recorded && update_recorded) {
+        if !stop_recorded {
+            if let Ok(raw) = std::fs::read_to_string(&daemons_jsonl) {
+                stop_recorded = raw
+                    .lines()
+                    .any(|l| l.contains("\"kind\":\"stop\"") && l.contains("\"name\":\"t\""));
+            }
+        }
+        if !update_recorded {
+            if let Ok(raw) = std::fs::read_to_string(&parent_log) {
+                update_recorded = raw.contains("daemon_update") || raw.contains("daemonUpdate");
+            }
+        }
+        if stop_recorded && update_recorded {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert!(
+        stop_recorded,
+        "daemons.jsonl never got a stop line for name 't' within 5s; contents: {}",
+        std::fs::read_to_string(&daemons_jsonl).unwrap_or_default()
+    );
+    assert!(
+        update_recorded,
+        "parent log.jsonl never got a daemon_update event within 5s; contents: {}",
+        std::fs::read_to_string(&parent_log).unwrap_or_default()
+    );
+}

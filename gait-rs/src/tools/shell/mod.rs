@@ -165,7 +165,17 @@ impl Tool for ShellTool {
 
             // Run the user command, then fire the __daemon-exit hook with its
             // status. Single-quote-safe via shell_quote for the embedded values.
-            let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("gait"));
+            // Use current_exe() when it looks like the real gait binary (production).
+            // In test runners current_exe() is the test binary; fall back to "gait" in PATH.
+            let exe = {
+                let cur = std::env::current_exe().unwrap_or_default();
+                let name = cur.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if name == "gait" || name == "gait-bin" {
+                    cur
+                } else {
+                    std::path::PathBuf::from("gait")
+                }
+            };
             let gait_dir_str = self.ctx.gait_dir.to_string_lossy().into_owned();
             let session = self.ctx.session_id.clone();
             let wrapped = format!(
