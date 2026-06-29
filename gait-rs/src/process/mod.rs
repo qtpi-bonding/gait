@@ -5,6 +5,7 @@
 
 use std::io;
 use std::path::Path;
+pub mod scope;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 
