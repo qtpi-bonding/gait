@@ -339,6 +339,11 @@ pub struct GaitConfig {
     /// Max turn iterations before giving up. Defaults to 100 when absent.
     #[serde(default)]
     pub max_iter: Option<usize>,
+    /// Wall-clock timeout (seconds) for a foreground `shell` command. On expiry
+    /// the command's process subtree is SIGKILLed and the tool returns exit 124
+    /// with a nudge to use `detached:true`. User-set only; the agent never picks it.
+    #[serde(default = "default_shell_timeout_secs")]
+    pub shell_timeout_secs: u64,
     /// When to render edit/write previews. Defaults to on-ask.
     #[serde(default)]
     pub preview: PreviewPolicy,
@@ -374,6 +379,10 @@ fn default_output_schema_retries() -> u8 {
     defaults::default_output_schema_retries()
 }
 
+fn default_shell_timeout_secs() -> u64 {
+    300
+}
+
 impl Default for GaitConfig {
     fn default() -> Self {
         Self {
@@ -388,6 +397,7 @@ impl Default for GaitConfig {
             hooks: vec![],
             output_schema_retries: defaults::default_output_schema_retries(),
             max_iter: defaults::default_max_iter(),
+            shell_timeout_secs: 300,
             preview: defaults::default_preview(),
             result_schema: None,
             llm_params: LlmParamsConfig::default(),

@@ -570,3 +570,15 @@ fn strict_tools_round_trips_and_defaults_none() {
     let c: OpenAILlmParamsConfig = serde_json::from_str(r#"{"strict_tools": true}"#).unwrap();
     assert_eq!(c.strict_tools, Some(true));
 }
+
+#[test]
+fn shell_timeout_defaults_to_300() {
+    let cfg: GaitConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(cfg.shell_timeout_secs, 300);
+}
+
+#[test]
+fn shell_timeout_parses_override() {
+    let cfg: GaitConfig = serde_json::from_str(r#"{"shell_timeout_secs": 60}"#).unwrap();
+    assert_eq!(cfg.shell_timeout_secs, 60);
+}
