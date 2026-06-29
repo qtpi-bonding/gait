@@ -792,19 +792,28 @@ pub async fn run_turn(
             return Ok(TurnResult::Cancelled);
         }
 
-        // Per-step completion poll (Part 2): surface finished daemon completions
-        // mid-turn by recording *_update events before the next LLM request.
-        // Holds the session lock → emitter.record is the safe writer. retrace
-        // folds the new events into the outgoing rebuild on the very next line.
+        // Per-step completion poll (Part 2): surface finished daemon and child-agent
+        // completions mid-turn by recording *_update events before the next LLM
+        // request. Holds the session lock → emitter.record is the safe writer.
+        // retrace folds the new events into the outgoing rebuild on the very next line.
         if relay.is_none() {
             let events_snap = ingestor.events().unwrap_or_default();
-            let already = crate::turn::completion_poll::surfaced_daemon_names(&events_snap);
-            let pending = crate::turn::completion_poll::pending_daemon_completions(
+            // Daemon completions
+            let already_d = crate::turn::completion_poll::surfaced_daemon_names(&events_snap);
+            for c in crate::turn::completion_poll::pending_daemon_completions(
                 &gait_dir,
                 &session_id,
-                &already,
-            );
-            for c in pending {
+                &already_d,
+            ) {
+                let _ = emitter.record(c.body());
+            }
+            // Child-agent completions (Stage 4, Task 4)
+            let already_a = crate::turn::completion_poll::surfaced_agent_ids(&events_snap);
+            for c in crate::turn::completion_poll::pending_agent_completions(
+                &gait_dir,
+                &session_id,
+                &already_a,
+            ) {
                 let _ = emitter.record(c.body());
             }
         }
@@ -1899,14 +1908,23 @@ pub async fn run_turn(
     // write; skip in that case (the spine's own final-drain runs on its path).
     if relay.is_none() {
         let events_snap = ingestor.events().unwrap_or_default();
-        let already = crate::turn::completion_poll::surfaced_daemon_names(&events_snap);
-        let pending = crate::turn::completion_poll::pending_daemon_completions(
+        // Daemon completions
+        let already_d = crate::turn::completion_poll::surfaced_daemon_names(&events_snap);
+        let pending_d = crate::turn::completion_poll::pending_daemon_completions(
             &gait_dir,
             &session_id,
-            &already,
+            &already_d,
         );
-        if !pending.is_empty() {
-            for c in &pending {
+        // Child-agent completions (Stage 4, Task 4)
+        let already_a = crate::turn::completion_poll::surfaced_agent_ids(&events_snap);
+        let pending_a = crate::turn::completion_poll::pending_agent_completions(
+            &gait_dir,
+            &session_id,
+            &already_a,
+        );
+        let has_pending = !pending_d.is_empty() || !pending_a.is_empty();
+        if has_pending {
+            for c in pending_d.iter().chain(pending_a.iter()) {
                 let _ = emitter.record(c.body());
             }
             // Commit the ledger entries before spawning the successor so the

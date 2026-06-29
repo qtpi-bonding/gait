@@ -1,6 +1,8 @@
 mod error;
 pub use error::SessionError;
 
+pub mod children;
+pub use children::{children_of, ChildInfo};
 pub mod completion;
 pub mod daemons;
 pub mod ingestor;

@@ -3,8 +3,8 @@
 //! The turn loop calls into this module at the top of each step, just before
 //! building the next LLM request. The job is narrow:
 //!
-//! * Compute which daemon completions (and later child-agent completions) are
-//!   ready to surface to the parent right now.
+//! * Compute which daemon completions and child-agent completions are ready to
+//!   surface to the parent right now.
 //! * Filter out completions that are already represented by a `*_update`
 //!   event in the parent log (the dedup ledger).
 //! * Hand the canonical `Completion` values back to the loop, which records the
@@ -100,6 +100,46 @@ pub fn pending_daemon_completions(
                     log_path: rec.log_path.clone(),
                 });
             }
+        }
+    }
+    out
+}
+
+/// Child session ids that already have an `AgentUpdate` event in this session's log.
+///
+/// Symmetric to `surfaced_daemon_names`: the per-step poll reads this set and
+/// a completion whose child id is in the set has already been surfaced, so it
+/// must NOT be re-injected.
+pub fn surfaced_agent_ids(events: &[Event]) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for ev in events {
+        if let Some(payload::Kind::AgentUpdate(au)) = event_kind(ev) {
+            out.insert(au.session_id.clone());
+        }
+    }
+    out
+}
+
+/// Child sessions of `session_id` that have finished AND are not yet surfaced.
+///
+/// "Finished" = the child's session lock is absent or stale (dead PID). The
+/// summary comes from the child's last `AssistantText` event.
+pub fn pending_agent_completions(
+    gait_dir: &Path,
+    session_id: &str,
+    already: &HashSet<String>,
+) -> Vec<Completion> {
+    let mut out = Vec::new();
+    for child in crate::session::children_of(gait_dir, session_id) {
+        if already.contains(&child.id) {
+            continue;
+        }
+        if child.is_done {
+            out.push(Completion::Agent {
+                from: child.id.clone(),
+                status: "done".into(),
+                summary: child.summary.unwrap_or_default(),
+            });
         }
     }
     out
@@ -335,5 +375,99 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let already = HashSet::new();
         assert!(pending_daemon_completions(dir.path(), "NoSuchSession", &already).is_empty());
+    }
+
+    // ── Agent completion tests ────────────────────────────────────────────────
+
+    #[test]
+    fn surfaced_agent_ids_collects_agent_updates() {
+        let events = vec![ev(crate::proto::events::agent_update(
+            "schild01".into(),
+            "done",
+            "finished fine".into(),
+            None,
+        ))];
+        let s = surfaced_agent_ids(&events);
+        assert!(s.contains("schild01"), "schild01 must be in surfaced set");
+        assert_eq!(s.len(), 1);
+    }
+
+    #[test]
+    fn surfaced_agent_ids_ignores_non_agent_events() {
+        let events = vec![
+            ev(crate::proto::events::assistant_text("hi".into())),
+            ev(crate::proto::events::user_text("hello".into(), None)),
+        ];
+        let s = surfaced_agent_ids(&events);
+        assert!(s.is_empty(), "no AgentUpdate events → empty set");
+    }
+
+    #[test]
+    fn pending_agent_excludes_already_surfaced_and_running() {
+        use crate::session::log::{init_session, InitSessionOpts};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let gait_dir = dir.path();
+
+        // Child "schild02" done (no lock file), owned by "sparent".
+        let log_path = gait_dir.join("sessions").join("schild02").join("log.jsonl");
+        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        init_session(InitSessionOpts {
+            log_path,
+            id: "schild02".to_string(),
+            model: String::new(),
+            codebase_hash: String::new(),
+            codebase_dirty: false,
+            assigned_by: Some("sparent".to_string()),
+            codebase_path: None,
+            notify_done: false,
+        })
+        .unwrap();
+
+        // Child "schild03" still running — write lock file with OWN pid so is_alive check passes.
+        let child03_dir = gait_dir.join("sessions").join("schild03");
+        std::fs::create_dir_all(&child03_dir).unwrap();
+        let log_path3 = child03_dir.join("log.jsonl");
+        init_session(InitSessionOpts {
+            log_path: log_path3,
+            id: "schild03".to_string(),
+            model: String::new(),
+            codebase_hash: String::new(),
+            codebase_dirty: false,
+            assigned_by: Some("sparent".to_string()),
+            codebase_path: None,
+            notify_done: false,
+        })
+        .unwrap();
+        // Write our own pid as the lock — so kill(pid, 0) succeeds and is_done = false.
+        let lock_path3 = child03_dir.join("lock");
+        std::fs::write(&lock_path3, std::process::id().to_string()).unwrap();
+
+        let already = HashSet::new();
+        let pending = pending_agent_completions(gait_dir, "sparent", &already);
+        let ids: Vec<String> = pending
+            .iter()
+            .map(|c| match c {
+                Completion::Agent { from, .. } => from.clone(),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert!(
+            ids.contains(&"schild02".to_string()),
+            "done child must be surfaced: {ids:?}"
+        );
+        assert!(
+            !ids.contains(&"schild03".to_string()),
+            "running child must NOT be surfaced: {ids:?}"
+        );
+
+        // Dedup: schild02 already surfaced → empty.
+        let mut already_seen = HashSet::new();
+        already_seen.insert("schild02".to_string());
+        let pending2 = pending_agent_completions(gait_dir, "sparent", &already_seen);
+        assert!(
+            pending2.is_empty(),
+            "already-surfaced agent must be deduped: {pending2:?}"
+        );
     }
 }
