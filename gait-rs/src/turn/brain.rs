@@ -213,10 +213,12 @@ pub async fn run_brain(
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tick.tick().await;
-            let Some((phase, elapsed_ms)) = crate::diagnostic::current_phase() else {
+            let Some((phase, elapsed_ms, label)) = crate::diagnostic::current_phase_full() else {
                 continue;
             };
-            let rec = crate::diagnostic::DiagRecord::ping(&ping_session, 0, "", phase, elapsed_ms);
+            let mut rec =
+                crate::diagnostic::DiagRecord::ping(&ping_session, 0, "", phase, elapsed_ms);
+            rec.detail = label;
             let sig = Signal {
                 corr_id: 0,
                 body: Some(signal::Body::Diagnostic(Diagnostic {

@@ -5,6 +5,24 @@
 //! unchanged except which impl is constructed.
 #![allow(dead_code)] // planned seam: ScopeRequest.access used in Phase 2+ (spine scope enforcement)
 
+/// A short, single-line label for the heartbeat: `"<tool>: <cmd snippet>"`, or
+/// just the tool name when there's no `cmd`. Truncated to 60 chars (+ ellipsis).
+pub(crate) fn tool_label(name: &str, args: &serde_json::Value) -> String {
+    match args.get("cmd").and_then(|v| v.as_str()) {
+        Some(cmd) => {
+            let one_line = cmd.split('\n').next().unwrap_or(cmd).trim();
+            let snippet: String = one_line.chars().take(60).collect();
+            let ellipsis = if one_line.chars().count() > 60 {
+                "…"
+            } else {
+                ""
+            };
+            format!("{name}: {snippet}{ellipsis}")
+        }
+        None => name.to_string(),
+    }
+}
+
 use crate::proto::gait::log::v1::Event;
 use crate::proto::gait::log::v1::UnlockItem;
 use crate::proto::Recorder;
@@ -79,6 +97,11 @@ impl Synapse for RelaySynapse {
         args: serde_json::Value,
         _scope: ScopeRequest,
     ) -> Result<(serde_json::Value, Vec<Event>, Option<UnlockItem>), ToolError> {
+        crate::diagnostic::set_phase_labeled(
+            crate::diagnostic::Phase::AwaitFeedback,
+            Some(tool_label(tool.name(), &args)),
+        );
+
         // Convert args to proto Struct for the Impulse.
         let args_struct: pbjson_types::Struct = serde_json::from_value(args).unwrap_or_default();
 
@@ -231,5 +254,34 @@ mod tests {
         assert_eq!(result.as_str().unwrap_or(""), "relay-ok");
         assert!(events.is_empty());
         assert!(denied.is_none());
+    }
+
+    #[test]
+    fn tool_label_includes_cmd_snippet() {
+        let args = serde_json::json!({"cmd": "flutter pub get", "reason": "x"});
+        assert_eq!(tool_label("shell", &args), "shell: flutter pub get");
+    }
+
+    #[test]
+    fn tool_label_truncates_long_single_line() {
+        let long = format!("echo {}", "a".repeat(100));
+        let args = serde_json::json!({"cmd": long});
+        let l = tool_label("shell", &args);
+        assert!(l.starts_with("shell: echo "), "got: {l}");
+        assert!(l.ends_with('…'), "should be truncated: {l}");
+        // "shell: " (7) + 60 chars + "…"
+        assert_eq!(l.chars().count(), 7 + 60 + 1, "got: {l}");
+    }
+
+    #[test]
+    fn tool_label_uses_first_line_only() {
+        let args = serde_json::json!({"cmd": "set -e\nflutter pub get"});
+        assert_eq!(tool_label("shell", &args), "shell: set -e");
+    }
+
+    #[test]
+    fn tool_label_without_cmd_is_tool_name() {
+        let args = serde_json::json!({"path": "foo.rs"});
+        assert_eq!(tool_label("read", &args), "read");
     }
 }
