@@ -15,12 +15,14 @@ async fn builtin_tools_returns_expected_tools() {
         vec![],
         gait_core::git::Repos::production(),
     );
-    assert_eq!(tools.len(), 16);
+    assert_eq!(tools.len(), 18);
     let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
     for expected in &[
         "read",
         "write",
-        "edit",
+        "edit_replace",
+        "edit_append",
+        "edit_prepend",
         "glob",
         "grep",
         "ls",
@@ -33,6 +35,7 @@ async fn builtin_tools_returns_expected_tools() {
         "list_agents",
         "clarify",
         "inform",
+        "prune",
     ] {
         assert!(
             names.contains(expected),
@@ -148,7 +151,7 @@ async fn write_then_edit_then_read() {
         gait_core::git::Repos::production(),
     );
     let write = tools.iter().find(|t| t.name() == "write").unwrap();
-    let edit = tools.iter().find(|t| t.name() == "edit").unwrap();
+    let edit = tools.iter().find(|t| t.name() == "edit_replace").unwrap();
     let read = tools.iter().find(|t| t.name() == "read").unwrap();
 
     let src = "fn hello() -> &'static str { \"hello\" }";
@@ -182,10 +185,18 @@ async fn write_then_edit_then_read() {
         .trim()
         .to_string();
 
-    edit.execute(serde_json::json!({
-        "file_path": "code.rs",
-        "edits": [{"op": "replace", "pos": anchor, "lines": ["fn world() -> &'static str { \"world\" }"]}]
-    }), &gait_core::Recorder::detached()).await.unwrap();
+    // Single-line replace: pos == end == the line-1 anchor.
+    edit.execute(
+        serde_json::json!({
+            "file_path": "code.rs",
+            "pos": anchor,
+            "end": anchor,
+            "lines": ["fn world() -> &'static str { \"world\" }"]
+        }),
+        &gait_core::Recorder::detached(),
+    )
+    .await
+    .unwrap();
 
     let result = read
         .execute(
