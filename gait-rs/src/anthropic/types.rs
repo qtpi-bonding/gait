@@ -85,20 +85,20 @@ impl AnthropicSystemBlock {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AnthropicMessage {
     pub role: String, // "user" | "assistant"
     pub content: AnthropicContent,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum AnthropicContent {
     Text(String),
     Blocks(Vec<AnthropicBlock>),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AnthropicBlock {
     Text {
@@ -257,7 +257,7 @@ pub struct AnthropicErrorData {
 use crate::types::{AssistantContent, AssistantPart, Message, MessageContent};
 
 pub fn to_anthropic_messages(messages: &[Message]) -> Vec<AnthropicMessage> {
-    messages
+    let collected: Vec<AnthropicMessage> = messages
         .iter()
         .map(|m| match m {
             Message::User { content, .. } => AnthropicMessage {
@@ -322,7 +322,67 @@ pub fn to_anthropic_messages(messages: &[Message]) -> Vec<AnthropicMessage> {
                 ),
             },
         })
-        .collect()
+        .collect();
+    // Merge consecutive messages with the same role. The Anthropic API rejects
+    // adjacent same-role turns with HTTP 400. The most common trigger after
+    // Part 2's live-turn poll: a ToolResult (role "user") immediately followed
+    // by a daemon_update event folded to a User message (also role "user").
+    // We merge by accumulating content blocks — purely structural, no text concat.
+    merge_consecutive_same_role(collected)
+}
+
+/// Collapse runs of adjacent same-role messages into one by concatenating their
+/// content blocks. A solitary Text message is preserved as `AnthropicContent::Text`
+/// (wire-shape parity with the unmerged path); any merged group becomes `Blocks`.
+fn merge_consecutive_same_role(msgs: Vec<AnthropicMessage>) -> Vec<AnthropicMessage> {
+    let mut out: Vec<AnthropicMessage> = Vec::with_capacity(msgs.len());
+    let mut idx = 0usize;
+    while idx < msgs.len() {
+        let cur = msgs[idx].clone();
+        idx += 1;
+        let mut combined = content_into_blocks(&cur.content);
+        while idx < msgs.len() && msgs[idx].role == cur.role {
+            combined.extend(content_into_blocks(&msgs[idx].content));
+            idx += 1;
+        }
+        // Preserve Text shape for solo non-merged messages (unchanged wire output).
+        let content = if combined.len() == 1
+            && matches!(
+                combined[0],
+                AnthropicBlock::Text {
+                    cache_control: None,
+                    ..
+                }
+            )
+            && matches!(cur.content, AnthropicContent::Text(_))
+        {
+            let AnthropicBlock::Text { text, .. } = combined.into_iter().next().unwrap() else {
+                unreachable!()
+            };
+            AnthropicContent::Text(text)
+        } else {
+            AnthropicContent::Blocks(combined)
+        };
+        out.push(AnthropicMessage {
+            role: cur.role,
+            content,
+        });
+    }
+    out
+}
+
+/// Lift `AnthropicContent` into a flat block list so `merge_consecutive_same_role`
+/// can concatenate blocks from adjacent messages uniformly.
+fn content_into_blocks(c: &AnthropicContent) -> Vec<AnthropicBlock> {
+    match c {
+        AnthropicContent::Text(s) => {
+            vec![AnthropicBlock::Text {
+                text: s.clone(),
+                cache_control: None,
+            }]
+        }
+        AnthropicContent::Blocks(v) => v.to_vec(),
+    }
 }
 
 #[cfg(test)]
@@ -488,5 +548,70 @@ mod tests {
         } else {
             panic!("expected blocks");
         }
+    }
+
+    #[test]
+    fn tool_result_followed_by_user_merges_into_one_message() {
+        use crate::types::{AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind};
+        // Sequence: Assistant(tool_use) → ToolResult → User("injection")
+        // Without same-role merge: ToolResult and User both emit role="user" → 400.
+        // With merge: they collapse into one role="user" message with two blocks.
+        let messages = vec![
+            Message::Assistant {
+                id: String::new(),
+                content: AssistantContent::Parts(vec![AssistantPart::ToolCall(ToolCall {
+                    tool_call_id: "tc1".into(),
+                    tool_name: "shell".into(),
+                    args: serde_json::json!({"cmd": "ls"}),
+                })]),
+            },
+            Message::ToolResult {
+                id: String::new(),
+                content: vec![ToolResult {
+                    kind: ToolResultKind::ToolResult,
+                    tool_call_id: "tc1".into(),
+                    result: serde_json::json!("ok"),
+                }],
+            },
+            Message::User {
+                id: String::new(),
+                content: crate::types::MessageContent::Text(
+                    "[daemon:build] done — exit 0 — log: /tmp/build.log".into(),
+                ),
+            },
+        ];
+        let converted = to_anthropic_messages(&messages);
+        // Expect exactly 2 messages: one assistant, one user.
+        assert_eq!(
+            converted.len(),
+            2,
+            "expected 2 API messages (assistant + merged user), got {}: {converted:?}",
+            converted.len()
+        );
+        assert_eq!(converted[0].role, "assistant");
+        assert_eq!(converted[1].role, "user");
+        // The user message must be Blocks containing both the tool_result and the text.
+        let AnthropicContent::Blocks(blocks) = &converted[1].content else {
+            panic!(
+                "expected Blocks for merged user message, got {:?}",
+                converted[1].content
+            );
+        };
+        assert_eq!(
+            blocks.len(),
+            2,
+            "expected 2 blocks (tool_result + text), got {}",
+            blocks.len()
+        );
+        assert!(
+            matches!(blocks[0], AnthropicBlock::ToolResult { .. }),
+            "first block should be ToolResult, got {:?}",
+            blocks[0]
+        );
+        assert!(
+            matches!(blocks[1], AnthropicBlock::Text { .. }),
+            "second block should be Text, got {:?}",
+            blocks[1]
+        );
     }
 }
