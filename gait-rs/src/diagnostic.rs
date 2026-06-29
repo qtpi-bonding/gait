@@ -98,18 +98,29 @@ impl DiagRecord {
 // ── PhaseCell + process-global ────────────────────────────────────────────────
 
 #[derive(Clone)]
-pub struct PhaseCell(Arc<Mutex<(Phase, Instant)>>);
+pub struct PhaseCell(Arc<Mutex<(Phase, Instant, Option<String>)>>);
 
 impl PhaseCell {
     pub fn new() -> Self {
-        Self(Arc::new(Mutex::new((Phase::TurnBegin, Instant::now()))))
+        Self(Arc::new(Mutex::new((
+            Phase::TurnBegin,
+            Instant::now(),
+            None,
+        ))))
     }
     pub fn set(&self, p: Phase) {
         let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        *g = (p, Instant::now());
+        *g = (p, Instant::now(), None);
+    }
+    pub fn set_labeled(&self, p: Phase, label: Option<String>) {
+        let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        *g = (p, Instant::now(), label);
     }
     pub fn current(&self) -> Phase {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).0
+    }
+    pub fn current_label(&self) -> Option<String> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).2.clone()
     }
     pub fn elapsed_ms(&self) -> u64 {
         self.0
@@ -140,9 +151,26 @@ pub fn set_phase(p: Phase) {
     }
 }
 
+/// Set the current phase WITH a human label (e.g. the running tool). No-op if
+/// not installed (spine process / tests).
+pub fn set_phase_labeled(p: Phase, label: Option<String>) {
+    if let Some(c) = BRAIN_PHASE.get() {
+        c.set_labeled(p, label);
+    }
+}
+
 /// (phase, elapsed_ms) of the installed cell, or None.
 pub fn current_phase() -> Option<(Phase, u64)> {
     BRAIN_PHASE.get().map(|c| (c.current(), c.elapsed_ms()))
+}
+
+/// Atomic snapshot of (phase, elapsed_ms, label) — one lock, so the ping can't
+/// pair a fresh phase with a stale label. None if not installed.
+pub fn current_phase_full() -> Option<(Phase, u64, Option<String>)> {
+    BRAIN_PHASE.get().map(|c| {
+        let g = c.0.lock().unwrap_or_else(|e| e.into_inner());
+        (g.0, g.1.elapsed().as_millis() as u64, g.2.clone())
+    })
 }
 
 /// Phase ↔ snake_case string (matches the serde rename_all, but explicit for the
@@ -240,5 +268,20 @@ mod tests {
         assert!(matches!(Phase::Reasoning.cap(), Cap::AbsoluteBackstop));
         assert!(matches!(Phase::Streaming.cap(), Cap::AbsoluteBackstop));
         assert!(matches!(Phase::AwaitFeedback.cap(), Cap::ToolAware));
+    }
+
+    #[test]
+    fn phase_cell_carries_and_clears_label() {
+        let c = PhaseCell::new();
+        c.set_labeled(Phase::AwaitFeedback, Some("shell: flutter pub get".into()));
+        assert_eq!(c.current(), Phase::AwaitFeedback);
+        assert_eq!(
+            c.current_label(),
+            Some("shell: flutter pub get".to_string())
+        );
+        // A plain phase change clears the label.
+        c.set(Phase::Streaming);
+        assert_eq!(c.current(), Phase::Streaming);
+        assert_eq!(c.current_label(), None);
     }
 }
