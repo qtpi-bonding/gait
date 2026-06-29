@@ -163,8 +163,22 @@ impl Tool for ShellTool {
                 .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
             let log_path = daemons_dir.join(format!("{}.log", name));
 
+            // Run the user command, then fire the __daemon-exit hook with its
+            // status. Single-quote-safe via shell_quote for the embedded values.
+            let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("gait"));
+            let gait_dir_str = self.ctx.gait_dir.to_string_lossy().into_owned();
+            let session = self.ctx.session_id.clone();
+            let wrapped = format!(
+                "{user}\n__ec=$?\n{exe} __daemon-exit --gait-dir {gd} --session {sess} --name {name} --exit $__ec\n",
+                user = params.cmd,
+                exe = shell_quote(&exe.to_string_lossy()),
+                gd = shell_quote(&gait_dir_str),
+                sess = shell_quote(&session),
+                name = shell_quote(&name),
+            );
+
             let mut cmd = std::process::Command::new("sh");
-            cmd.args(["-c", &params.cmd])
+            cmd.args(["-c", &wrapped])
                 .current_dir(&cwd)
                 .env_clear()
                 .envs(std::env::vars().filter(|(k, _)| {
@@ -391,6 +405,12 @@ fn strip_ansi(s: &str) -> String {
         }
     }
     out
+}
+
+/// Single-quote a string for safe embedding in a POSIX shell snippet.
+/// Embedded single-quotes are escaped via the standard `\'\''` sequence.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 #[cfg(test)]

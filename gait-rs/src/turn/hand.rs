@@ -245,6 +245,9 @@ pub async fn run_hand(config: HandConfig) {
                 cmd,
                 cwd,
                 log_path,
+                // Owning session id (Task 6 — Review Correction [E]): the registry
+                // record must remember which parent session to wake/notify on exit.
+                session: config.session.clone(),
             })
         } else {
             None

@@ -32,6 +32,7 @@ message DaemonRecordProto {
   string cmd        = 5;
   string cwd        = 6;
   string log_path   = 7;
+  string session    = 8;  // owning session id — which parent to notify/wake on exit
 }
 
 // Hand → spine reply: the single response a hand emits on stdout for one
