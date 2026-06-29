@@ -1883,6 +1883,43 @@ pub async fn run_turn(
         });
     }
 
+    // Final drain: catch daemon completions that landed after the last per-step poll
+    // but before we release the session lock.  We can no longer inject mid-turn
+    // (the loop is over), so we write the ledger entry now (while we still hold the
+    // lock → we are the sole writer) and wake a successor turn to react to it.
+    //
+    // Dedup guarantee: `surfaced_daemon_names` reads the log we just finished
+    // writing, so any completion already surfaced by the per-step poll appears in
+    // `already` and is skipped here — no double-write, no wake storm.
+    //
+    // Wake-storm safety: the successor's own per-step poll will find the `*_update`
+    // already in the log (`already` non-empty) → `pending` empty → no further wake.
+    //
+    // Guard: relay.is_some() means the spine holds the lock and the brain must not
+    // write; skip in that case (the spine's own final-drain runs on its path).
+    if relay.is_none() {
+        let events_snap = ingestor.events().unwrap_or_default();
+        let already = crate::turn::completion_poll::surfaced_daemon_names(&events_snap);
+        let pending = crate::turn::completion_poll::pending_daemon_completions(
+            &gait_dir,
+            &session_id,
+            &already,
+        );
+        if !pending.is_empty() {
+            for c in &pending {
+                let _ = emitter.record(c.body());
+            }
+            // Commit the ledger entries before spawning the successor so the
+            // successor's retrace sees them on the very first step (M3 correction).
+            let _ = repos.traces.commit_session(
+                &gait_dir,
+                &session_id,
+                &format!("session({}): final-drain completions", session_id),
+            );
+            crate::session::completion::spawn_wake(&gait_dir, &session_id);
+        }
+    }
+
     anyhow::bail!(
         "reached max steps ({}) without turn_complete",
         max_iter.unwrap_or(100)

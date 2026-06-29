@@ -147,10 +147,14 @@ pub fn notify_parent(
     NotifyOutcome::Woke
 }
 
-/// Spawn a fresh `gait run --auto` for the parent session. Best-effort:
+/// Spawn a fresh `gait run --auto` for `session`. Best-effort:
 /// a spawn failure is logged as a diagnostic warn — a missed wake must
 /// never silently disappear.
-fn spawn_wake(gait_dir: &Path, parent_session: &str) {
+///
+/// `pub` so the final-drain in `turn::run_turn` can call it directly
+/// (the drain runs while holding the session lock, so it writes its own
+/// ledger entries and then hands off to a successor turn via this call).
+pub fn spawn_wake(gait_dir: &Path, parent_session: &str) {
     let gait_dir_str = gait_dir.to_string_lossy().into_owned();
     let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("gait"));
     let mut cmd = std::process::Command::new(&exe);
