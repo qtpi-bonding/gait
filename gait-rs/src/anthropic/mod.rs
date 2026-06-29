@@ -5,7 +5,7 @@ use crate::anthropic::sse::SseClient;
 use crate::anthropic::types::{
     to_anthropic_messages, AnthropicBlock, AnthropicContent, AnthropicOutputConfig,
     AnthropicRequest, AnthropicSystem, AnthropicSystemBlock, AnthropicThinkingRequest,
-    AnthropicTool, CacheControl,
+    AnthropicTool, AnthropicToolChoice, CacheControl,
 };
 use crate::provider::{ChunkStream, Provider, ProviderError};
 use crate::types::{Message, Tool};
@@ -275,6 +275,23 @@ impl Provider for AnthropicProvider {
 
         let max_tokens = params.max_tokens.unwrap_or(8096);
 
+        // Send tool_choice: "any" when tools are present so the model cannot call
+        // a hallucinated tool name — it must pick from the provided list.
+        // Extended thinking (kind="enabled") is API-incompatible with tool_choice.
+        let tool_choice = if !oai_tools.is_empty() {
+            let thinking_enabled = thinking
+                .as_ref()
+                .map(|t| t.kind == "enabled")
+                .unwrap_or(false);
+            if thinking_enabled {
+                None
+            } else {
+                Some(AnthropicToolChoice::Any)
+            }
+        } else {
+            None
+        };
+
         let req = AnthropicRequest {
             model: self.model.clone(),
             max_tokens,
@@ -287,6 +304,7 @@ impl Provider for AnthropicProvider {
             top_k,
             thinking,
             output_config,
+            tool_choice,
         };
         let body = serde_json::to_value(&req)?;
         // Pre-first-byte retry (Task 5): wrap the eager connect so a transient

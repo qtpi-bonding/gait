@@ -20,6 +20,19 @@ impl CacheControl {
 
 // ── Request ──────────────────────────────────────────────────────────────────
 
+/// Controls which tool(s) the model may call.
+/// Wire shape: `{"type": "auto"}`, `{"type": "any"}`, `{"type": "tool", "name": "X"}`.
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AnthropicToolChoice {
+    /// Model decides whether to call a tool (Anthropic default when tools are present).
+    Auto,
+    /// Model must call at least one of the provided tools (prevents hallucinated names).
+    Any,
+    /// Model must call exactly this named tool.
+    Tool { name: String },
+}
+
 #[derive(Debug, Serialize)]
 pub struct AnthropicThinkingRequest {
     #[serde(rename = "type")]
@@ -56,6 +69,8 @@ pub struct AnthropicRequest {
     pub thinking: Option<AnthropicThinkingRequest>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_config: Option<AnthropicOutputConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<AnthropicToolChoice>,
 }
 
 /// System prompt: either a plain string or an array of content blocks (needed for cache_control).
@@ -406,6 +421,7 @@ mod tests {
             top_k: None,
             thinking: None,
             output_config: None,
+            tool_choice: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["model"], "claude-3-5-sonnet-20241022");
@@ -430,6 +446,7 @@ mod tests {
             top_k: None,
             thinking: None,
             output_config: None,
+            tool_choice: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         let sys = &json["system"];
@@ -548,6 +565,67 @@ mod tests {
         } else {
             panic!("expected blocks");
         }
+    }
+
+    #[test]
+    fn tool_choice_any_serializes_correctly() {
+        let v = serde_json::to_value(AnthropicToolChoice::Any).unwrap();
+        assert_eq!(v, serde_json::json!({"type": "any"}));
+    }
+
+    #[test]
+    fn tool_choice_auto_serializes_correctly() {
+        let v = serde_json::to_value(AnthropicToolChoice::Auto).unwrap();
+        assert_eq!(v, serde_json::json!({"type": "auto"}));
+    }
+
+    #[test]
+    fn tool_choice_named_tool_serializes_correctly() {
+        let v = serde_json::to_value(AnthropicToolChoice::Tool {
+            name: "read_file".into(),
+        })
+        .unwrap();
+        assert_eq!(v, serde_json::json!({"type": "tool", "name": "read_file"}));
+    }
+
+    #[test]
+    fn request_with_tool_choice_any_serializes_field() {
+        let req = AnthropicRequest {
+            model: "claude-sonnet-4-6".into(),
+            max_tokens: 1024,
+            system: None,
+            messages: vec![],
+            tools: vec![],
+            stream: true,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            thinking: None,
+            output_config: None,
+            tool_choice: Some(AnthropicToolChoice::Any),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["tool_choice"], serde_json::json!({"type": "any"}));
+    }
+
+    #[test]
+    fn request_without_tool_choice_omits_field() {
+        let req = AnthropicRequest {
+            model: "claude-sonnet-4-6".into(),
+            max_tokens: 1024,
+            system: None,
+            messages: vec![],
+            tools: vec![],
+            stream: true,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            thinking: None,
+            output_config: None,
+            tool_choice: None,
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json.get("tool_choice").is_none());
     }
 
     #[test]
