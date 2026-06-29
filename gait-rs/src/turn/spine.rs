@@ -609,29 +609,27 @@ pub async fn relay_brain_turn(
                 status,
                 summary,
             })) => {
-                // Spine is sole gait-dir writer: write agent_update to parent session.
-                let event = crate::proto::events::agent_update(
-                    from_session.clone(),
-                    &status,
-                    summary.clone(),
-                    None,
-                );
-                let target_dir = gait_dir.join("sessions").join(&target_session);
-                match crate::turn::SessionLog::open_retrying(&target_dir, 20).await {
-                    Ok(target_log) => {
-                        target_log.append_body(event).ok();
-                        // The cross-session commit names its target to construct the
-                        // handle — the foreignness is explicit and the wrong-session
-                        // mistake is structurally prevented.
-                        crate::turn::SessionGit::for_session(repos, gait_dir, &target_session)
-                            .commit(&format!(
-                                "session({}): agent_update from {}",
-                                target_session, from_session
-                            ))
-                            .ok();
-                    }
-                    Err(e) => {
-                        eprintln!("[spine] warning: failed to acquire lock for notify: {e}");
+                // Route subagent completion through notify_parent (one-shot lock acquire,
+                // dedup, write, commit, spawn_wake). Replaces the 20-retry open_retrying
+                // path. ParentBusy → the live turn's per-step poll surfaces it next step.
+                let c = crate::session::completion::Completion::Agent {
+                    from: from_session.clone(),
+                    status: status.clone(),
+                    summary: summary.clone(),
+                };
+                match crate::session::completion::notify_parent(
+                    gait_dir,
+                    repos,
+                    &target_session,
+                    &c,
+                ) {
+                    crate::session::completion::NotifyOutcome::Woke => {}
+                    crate::session::completion::NotifyOutcome::ParentBusy => {}
+                    crate::session::completion::NotifyOutcome::AlreadySurfaced => {}
+                    crate::session::completion::NotifyOutcome::NoParent => {
+                        eprintln!(
+                            "[spine] warning: parent session {target_session} not found for notify"
+                        );
                     }
                 }
                 // No Feedback needed — one-way signal like Append.

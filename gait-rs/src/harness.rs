@@ -1,6 +1,4 @@
-use crate::proto::{events, wire};
 use crate::scheduler::Action;
-use crate::turn::SessionLock;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
@@ -30,6 +28,9 @@ pub struct NativeHarnessBackend {
     gait_dir: PathBuf,
     /// When `Some`, route `gait run` spawns via the Nerve's Spawn signal instead
     /// of calling `Command::spawn` directly (required when brain is sealed).
+    /// NOTE: spawn_tx is provisioned by the brain for future use; the Notify path
+    /// now routes through notify_parent (spine calls spawn_wake directly).
+    #[allow(dead_code)]
     spawn_tx: Option<mpsc::UnboundedSender<(Vec<String>, bool)>>,
     /// When `Some`, route NotifyAndResume writes via the Nerve's Notify signal
     /// instead of writing directly to disk (required when brain is sealed).
@@ -73,7 +74,9 @@ impl HarnessBackend for NativeHarnessBackend {
                 summary,
             } => {
                 if let Some(ref tx) = self.notify_tx {
-                    // Sealed brain path: delegate write + commit to spine via Nerve.
+                    // Sealed brain path: delegate write + commit + wake to spine via Nerve.
+                    // The spine's Notify handler calls notify_parent (one-shot lock acquire,
+                    // write, commit, spawn_wake) — no duplicate spawn needed here.
                     let payload = NotifyPayload {
                         target_session: target_session.clone(),
                         from_session: from_session.clone(),
@@ -82,70 +85,31 @@ impl HarnessBackend for NativeHarnessBackend {
                     };
                     let _ = tx.send(payload);
                 } else {
-                    // Non-sealed path (embed/REPL without relay): write directly.
-                    let event =
-                        events::agent_update(from_session.clone(), status, summary.clone(), None);
-
-                    let target_dir = self.gait_dir.join("sessions").join(target_session);
-                    let tx_path = target_dir.join("log.jsonl");
-
-                    // Only retry on "already running" — fail fast on I/O errors.
-                    let mut lock: Option<SessionLock> = None;
-                    for _ in 0..20 {
-                        match SessionLock::acquire(&target_dir) {
-                            Ok(l) => {
-                                lock = Some(l);
-                                break;
-                            }
-                            Err(e) => {
-                                if !e.to_string().contains("already running") {
-                                    return Err(e.context(format!(
-                                        "unexpected error acquiring lock on session {}",
-                                        target_session
-                                    )));
-                                }
-                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                            }
+                    // Non-sealed path: use notify_parent — one-shot lock acquire, dedup,
+                    // write, commit, and wake. Replaces the 20×500ms retry loop.
+                    // ParentBusy → the live turn's per-step poll will surface it.
+                    let c = crate::session::completion::Completion::Agent {
+                        from: from_session.clone(),
+                        status: status.clone(),
+                        summary: summary.clone(),
+                    };
+                    let repos = crate::git::Repos::production();
+                    match crate::session::completion::notify_parent(
+                        &self.gait_dir,
+                        &repos,
+                        target_session,
+                        &c,
+                    ) {
+                        crate::session::completion::NotifyOutcome::Woke => {}
+                        crate::session::completion::NotifyOutcome::ParentBusy => {}
+                        crate::session::completion::NotifyOutcome::AlreadySurfaced => {}
+                        crate::session::completion::NotifyOutcome::NoParent => {
+                            eprintln!(
+                                "[harness] notify: parent session {} not found",
+                                target_session
+                            );
                         }
                     }
-                    let _lock = lock.ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "failed to acquire lock on session {} after 20 attempts",
-                            target_session
-                        )
-                    })?;
-
-                    wire::append(&tx_path, event)?;
-                    let repos = crate::git::Repos::production();
-                    repos.traces.commit_session(
-                        &self.gait_dir,
-                        target_session,
-                        &format!(
-                            "session({}): agent_update from {}",
-                            target_session, from_session
-                        ),
-                    )?;
-                    drop(_lock);
-                }
-
-                let argv = vec![
-                    "run".to_string(),
-                    "--session".to_string(),
-                    target_session.clone(),
-                    "--gait-dir".to_string(),
-                    self.gait_dir.to_str().unwrap_or(".").to_string(),
-                    "--auto".to_string(),
-                ];
-                if let Some(tx) = &self.spawn_tx {
-                    let _ = tx.send((argv, false));
-                } else {
-                    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gait"));
-                    std::process::Command::new(&exe)
-                        .args(&argv)
-                        .stdin(std::process::Stdio::null())
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .spawn()?;
                 }
                 Ok(())
             }
