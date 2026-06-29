@@ -13,6 +13,7 @@ pub mod turn;
 pub mod types;
 pub mod workflow_runner;
 
+pub mod daemon_exit;
 pub mod diagnostic;
 pub mod embed;
 pub mod models_meta;
@@ -80,7 +81,7 @@ pub fn is_brain_argv(argv: &[String]) -> bool {
 pub fn is_role_argv(argv: &[String]) -> bool {
     matches!(
         argv.first().map(|s| s.as_str()),
-        Some("__brain") | Some("__run-tool")
+        Some("__brain") | Some("__run-tool") | Some("__daemon-exit")
     )
 }
 
@@ -194,6 +195,14 @@ pub async fn __dispatch_role(
                 seal: a.seal != "false",
             };
             run_hand(config).await;
+        }
+        Some("__daemon-exit") => {
+            use crate::daemon_exit::{cmd_daemon_exit, DaemonExitArgs};
+            let a = DaemonExitArgs::parse_from(&argv[1..]);
+            if let Err(e) = cmd_daemon_exit(a) {
+                eprintln!("[gait] __daemon-exit: {e:#}");
+                std::process::exit(1);
+            }
         }
         _ => {
             eprintln!(
