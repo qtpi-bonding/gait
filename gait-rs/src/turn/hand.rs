@@ -48,6 +48,23 @@ fn respond_err(msg: impl Into<String>) -> ! {
     }))
 }
 
+// ── sigterm guard ─────────────────────────────────────────────────────────────
+
+/// On a teardown SIGTERM (sent by the spine's `kill_all` before its 300ms→SIGKILL
+/// escalation), SIGKILL the in-flight command's subtree so an own-process-group
+/// command isn't orphaned, then exit. No-op-ish if no command is running.
+#[cfg(unix)]
+fn install_sigterm_guard() {
+    use tokio::signal::unix::{signal, SignalKind};
+    if let Ok(mut term) = signal(SignalKind::terminate()) {
+        tokio::spawn(async move {
+            term.recv().await;
+            crate::process::scope::kill_active();
+            std::process::exit(143);
+        });
+    }
+}
+
 // ── HandConfig ────────────────────────────────────────────────────────────────
 
 /// Configuration extracted from CLI args, passed to `run_hand`.
@@ -72,6 +89,9 @@ pub struct HandConfig {
 /// 3. Run the requested tool against a buffering `Recorder`.
 /// 4. Write binary `Feedback` on stdout.
 pub async fn run_hand(config: HandConfig) {
+    #[cfg(unix)]
+    install_sigterm_guard();
+
     // Read binary Impulse from stdin.
     let mut buf = Vec::new();
     if let Err(e) = std::io::stdin().read_to_end(&mut buf) {
