@@ -101,7 +101,7 @@ CancellationSignal cancellation_signal = 55;
     UnlockReply        unlock_reply        = 60;
     DaemonStart        daemon_start        = 61;
     DaemonStop         daemon_stop         = 62;
-
+    DaemonUpdate       daemon_update       = 63;
   }
   reserved 20 to 49;  // workflow family (WorkflowHook* / WorkflowNode* / WorkflowStart …) — deferred to the workflow-subsystem redo
 }
@@ -492,8 +492,25 @@ message DaemonStart {
   string cmd        = 5;
   string cwd        = 6;
   string log_path   = 7;
+  string session    = 8;  // owning session id — which parent to notify/wake on exit
 }
 
+// DaemonStop carries the exit code so consumers (retrace / cli) can tell apart
+// "exited 0" from "killed by signal" without an extra round-trip.
 message DaemonStop {
-  string name = 1;
+  string name      = 1;
+  int32  exit_code = 2;  // command exit status (124 = timeout-kill, negative = signal)
+}
+
+enum DaemonStatus {
+  DAEMON_STATUS_UNSPECIFIED = 0;
+  DAEMON_STATUS_DONE        = 1;  // exited on its own
+  DAEMON_STATUS_KILLED      = 2;  // killed (timeout / signal)
+}
+
+message DaemonUpdate {
+  string       name      = 1;  // the daemon's logical name (NOT a session id)
+  int32        exit_code = 2;
+  DaemonStatus status    = 3;
+  string       log_path  = 4;
 }

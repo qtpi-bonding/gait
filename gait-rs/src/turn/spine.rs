@@ -936,7 +936,10 @@ pub async fn run_tool_as_spine(
     // If the hand spawned a detached daemon, record it in daemons.jsonl.
     // The spine is the sole gait-dir writer; best-effort (ignore errors).
     if let Some(ref rec) = feedback.daemon {
-        let dr = crate::session::daemons::DaemonRecord {
+        // Build the proto-backed registry record. The owning `session` is
+        // filled in once `DaemonRecordProto` carries it (Task 6); for now we
+        // pass through an empty string.
+        let dr = crate::proto::gait::log::v1::DaemonStart {
             name: rec.name.clone(),
             pid: rec.pid,
             pgid: rec.pgid,
@@ -944,6 +947,7 @@ pub async fn run_tool_as_spine(
             cmd: rec.cmd.clone(),
             cwd: rec.cwd.clone(),
             log_path: rec.log_path.clone(),
+            session: String::new(),
         };
         let _ = crate::session::daemons::append_start(gait_dir, &dr);
     }

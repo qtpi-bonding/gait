@@ -595,8 +595,8 @@ async fn detached_daemon_start_record_lands_in_daemons_jsonl() {
     let proto = daemon_proto(&result);
     let pid = proto.get("pid").and_then(|v| v.as_i64()).expect("pid") as i32;
 
-    // Reconstruct the DaemonRecord as spine would, then write it.
-    let rec = daemons::DaemonRecord {
+    // Reconstruct the DaemonStart (proto) as spine would, then write it.
+    let rec = crate::proto::gait::log::v1::DaemonStart {
         name: proto
             .get("name")
             .and_then(|v| v.as_str())
@@ -623,6 +623,7 @@ async fn detached_daemon_start_record_lands_in_daemons_jsonl() {
             .and_then(|v| v.as_str())
             .expect("log_path")
             .to_owned(),
+        session: String::new(),
     };
 
     // Teardown: kill before we assert so the process doesn't linger on failure.

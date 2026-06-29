@@ -82,7 +82,10 @@ fn cmd_daemons_stop(gait_dir: &std::path::Path, name: &str) {
             } else {
                 println!("[gait daemons] {} is not running", name);
             }
-            let _ = append_stop(gait_dir, name);
+            // CLI stop is SIGTERM (graceful). We don't observe an exit code;
+            // record 0 to mean "cleanly stopped" until the daemon-exit hook
+            // writes the real one (see __daemon-exit in `cmd_daemon_exit`).
+            let _ = append_stop(gait_dir, name, 0);
         }
     }
 }

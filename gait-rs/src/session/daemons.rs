@@ -14,32 +14,20 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 
 use fs2::FileExt;
-use serde::{Deserialize, Serialize};
+
+use crate::proto::gait::log::v1 as pb;
 
 // ---------------------------------------------------------------------------
-// Public types
+// Internal wire type (what we actually write to the file).
+// The variant bodies are pbjson-serialized proto messages (they get serde
+// impls from pbjson); the outer enum is internally tagged as `kind` so the
+// line on disk looks like `{"kind":"start",...}` / `{"kind":"stop",...}`.
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DaemonRecord {
-    pub name: String,
-    pub pid: i32,
-    pub pgid: i32,
-    pub started_at: u64,
-    pub cmd: String,
-    pub cwd: String,
-    pub log_path: String,
-}
-
-// ---------------------------------------------------------------------------
-// Internal wire type (what we actually write to the file)
-// ---------------------------------------------------------------------------
-
-#[derive(Serialize, Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Line {
-    Start(DaemonRecord),
-    Stop { name: String },
+    Start(pb::DaemonStart),
+    Stop(pb::DaemonStop),
 }
 
 // ---------------------------------------------------------------------------
@@ -51,7 +39,7 @@ enum Line {
 /// Returns `Err(AlreadyExists)` if a live daemon with the same name is already
 /// registered in the gait-dir registry.  Note: this check is advisory (TOCTOU
 /// window between the read and the write); for a CLI tool that is acceptable.
-pub fn append_start(gait_dir: &Path, rec: &DaemonRecord) -> io::Result<()> {
+pub fn append_start(gait_dir: &Path, rec: &pb::DaemonStart) -> io::Result<()> {
     // Check for duplicate name among currently-active records.
     let existing = active(gait_dir)?;
     if existing.iter().any(|r| r.name == rec.name) {
@@ -74,13 +62,17 @@ pub fn append_start(gait_dir: &Path, rec: &DaemonRecord) -> io::Result<()> {
 }
 
 /// Append a `DaemonStop` entry to `<gait_dir>/daemons.jsonl`.
-pub fn append_stop(gait_dir: &Path, name: &str) -> io::Result<()> {
+///
+/// `exit_code` is the exit status of the daemon command: 0 for normal exit,
+/// 124 for timeout-kill, negative for signal-terminated processes.
+pub fn append_stop(gait_dir: &Path, name: &str, exit_code: i32) -> io::Result<()> {
     let path = gait_dir.join("daemons.jsonl");
     let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
     f.lock_exclusive()?;
-    let line = serde_json::to_string(&Line::Stop {
+    let line = serde_json::to_string(&Line::Stop(pb::DaemonStop {
         name: name.to_owned(),
-    })
+        exit_code,
+    }))
     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     writeln!(f, "{}", line)?;
     f.unlock()?;
@@ -89,7 +81,7 @@ pub fn append_stop(gait_dir: &Path, name: &str) -> io::Result<()> {
 
 /// Read `<gait_dir>/daemons.jsonl` and return the last-known record for every
 /// daemon that has a `Start` with no subsequent `Stop`.
-pub fn active(gait_dir: &Path) -> io::Result<Vec<DaemonRecord>> {
+pub fn active(gait_dir: &Path) -> io::Result<Vec<pb::DaemonStart>> {
     let path = gait_dir.join("daemons.jsonl");
     if !path.exists() {
         return Ok(vec![]);
@@ -97,8 +89,7 @@ pub fn active(gait_dir: &Path) -> io::Result<Vec<DaemonRecord>> {
     let f = OpenOptions::new().read(true).open(&path)?;
     f.lock_shared()?;
     let reader = BufReader::new(&f);
-    // Maintain insertion order: Vec of (name, record); update/remove in-place.
-    let mut records: Vec<DaemonRecord> = Vec::new();
+    let mut records: Vec<pb::DaemonStart> = Vec::new();
     for line in reader.lines() {
         let line = line?;
         let trimmed = line.trim();
@@ -113,8 +104,8 @@ pub fn active(gait_dir: &Path) -> io::Result<Vec<DaemonRecord>> {
                     records.push(rec);
                 }
             }
-            Ok(Line::Stop { name }) => {
-                records.retain(|r| r.name != name);
+            Ok(Line::Stop(s)) => {
+                records.retain(|r| r.name != s.name);
             }
             Err(_) => {
                 // Tolerate malformed lines — skip silently.
@@ -133,7 +124,7 @@ pub fn active(gait_dir: &Path) -> io::Result<Vec<DaemonRecord>> {
 /// has the same start-time (guards against pid reuse).
 ///
 /// Fail-closed: any read failure → `false`.
-pub fn is_alive(rec: &DaemonRecord) -> bool {
+pub fn is_alive(rec: &pb::DaemonStart) -> bool {
     // 1. Is the pid present in the kernel's process table?
     if unsafe { libc::kill(rec.pid, 0) } != 0 {
         return false;
@@ -227,7 +218,6 @@ fn proc_start_time_linux(pid: i32) -> Option<u64> {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,8 +225,8 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
 
-    fn make_rec(name: &str, pid: i32) -> DaemonRecord {
-        DaemonRecord {
+    fn make_rec(name: &str, pid: i32) -> pb::DaemonStart {
+        pb::DaemonStart {
             name: name.to_owned(),
             pid,
             pgid: pid,
@@ -244,6 +234,7 @@ mod tests {
             cmd: "echo hello".to_owned(),
             cwd: "/tmp".to_owned(),
             log_path: "/tmp/daemon.log".to_owned(),
+            session: String::new(),
         }
     }
 
@@ -263,17 +254,34 @@ mod tests {
         let dir = TempDir::new().unwrap();
         append_start(dir.path(), &make_rec("svc-b", 1111)).unwrap();
         append_start(dir.path(), &make_rec("svc-c", 2222)).unwrap();
-        append_stop(dir.path(), "svc-b").unwrap();
+        append_stop(dir.path(), "svc-b", 0).unwrap();
         let active = active(dir.path()).unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].name, "svc-c");
+    }
+
+    /// `append_stop` must persist the exit code on disk so consumers can read
+    /// it back from the raw jsonl. (active() drops stopped entries, so we
+    /// inspect the file directly.)
+    #[test]
+    fn stop_records_exit_code() {
+        let dir = TempDir::new().unwrap();
+        append_start(dir.path(), &make_rec("svc-x", 4242)).unwrap();
+        append_stop(dir.path(), "svc-x", 124).unwrap();
+        let raw = std::fs::read_to_string(dir.path().join("daemons.jsonl")).unwrap();
+        assert!(raw.contains("\"kind\":\"stop\""), "got: {raw}");
+        // pbjson serializes proto fields as camelCase by default; tolerate either.
+        assert!(
+            raw.contains("\"exit_code\":124") || raw.contains("\"exitCode\":124"),
+            "got: {raw}"
+        );
     }
 
     #[test]
     fn is_alive_true_for_self() {
         let my_pid = std::process::id() as i32;
         let start = proc_start_time(my_pid).expect("proc_start_time should work for own pid");
-        let rec = DaemonRecord {
+        let rec = pb::DaemonStart {
             name: "self".to_owned(),
             pid: my_pid,
             pgid: my_pid,
@@ -281,6 +289,7 @@ mod tests {
             cmd: "test".to_owned(),
             cwd: "".to_owned(),
             log_path: "".to_owned(),
+            session: String::new(),
         };
         assert!(is_alive(&rec), "current process should be alive");
     }
@@ -288,7 +297,7 @@ mod tests {
     #[test]
     fn is_alive_false_for_dead_pid() {
         // Use pid 1 with a deliberately wrong start-time so identity check fails.
-        let rec = DaemonRecord {
+        let rec = pb::DaemonStart {
             name: "dead".to_owned(),
             pid: 1,
             pgid: 1,
@@ -296,6 +305,7 @@ mod tests {
             cmd: "init".to_owned(),
             cwd: "".to_owned(),
             log_path: "".to_owned(),
+            session: String::new(),
         };
         assert!(
             !is_alive(&rec),
@@ -333,7 +343,7 @@ mod tests {
 
         let started_at = proc_start_time(pid).expect("proc_start_time for child");
 
-        let rec = DaemonRecord {
+        let rec = pb::DaemonStart {
             name: "test-sleep-alive".to_owned(),
             pid,
             pgid,
@@ -341,6 +351,7 @@ mod tests {
             cmd: "sleep 999".to_owned(),
             cwd: "/tmp".to_owned(),
             log_path: "/tmp/test-sleep.log".to_owned(),
+            session: String::new(),
         };
 
         append_start(dir.path(), &rec).unwrap();
@@ -381,7 +392,7 @@ mod tests {
 
         let started_at = proc_start_time(pid).expect("proc_start_time for child");
 
-        let rec = DaemonRecord {
+        let rec = pb::DaemonStart {
             name: "test-sleep-stop".to_owned(),
             pid,
             pgid,
@@ -389,6 +400,7 @@ mod tests {
             cmd: "sleep 999".to_owned(),
             cwd: "/tmp".to_owned(),
             log_path: "/tmp/test-sleep-stop.log".to_owned(),
+            session: String::new(),
         };
 
         append_start(dir.path(), &rec).unwrap();
@@ -399,7 +411,7 @@ mod tests {
         // Give the kernel a moment to reap.
         let _ = child.wait();
 
-        append_stop(dir.path(), "test-sleep-stop").unwrap();
+        append_stop(dir.path(), "test-sleep-stop", 0).unwrap();
 
         // 1. active() must not list it any more.
         let recs = active(dir.path()).unwrap();
