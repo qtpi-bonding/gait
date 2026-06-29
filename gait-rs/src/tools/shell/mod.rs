@@ -213,8 +213,10 @@ impl Tool for ShellTool {
         };
         let out_path = tmp_dir.join(format!("shell-{}.txt", run_id));
 
-        let mut child = tokio::process::Command::new("sh")
-            .args(["-c", &params.cmd])
+        let timeout_secs = crate::config::load_config(&self.ctx.gait_dir).shell_timeout_secs;
+
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", &params.cmd])
             .current_dir(&cwd)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
@@ -228,9 +230,14 @@ impl Tool for ShellTool {
             }))
             // Suppress colour output: programs check TERM and NO_COLOR before emitting ANSI.
             .env("TERM", "dumb")
-            .env("NO_COLOR", "1")
+            .env("NO_COLOR", "1");
+        crate::process::scope::configure_own_group(&mut cmd);
+        let mut child = cmd
             .spawn()
             .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
+        let child_pid = child.id().map(|p| p as i32).unwrap_or(0);
+        let scope = crate::process::scope::Scope::from_leader_pid(child_pid);
+        crate::process::scope::set_active(child_pid);
 
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let mut out_file = tokio::fs::File::create(&out_path)
@@ -297,7 +304,32 @@ impl Tool for ShellTool {
             Ok::<_, ToolError>((status, total, tail))
         };
 
-        let (status, total, mut tail) = drain_and_wait.await?;
+        let outcome = tokio::select! {
+            r = drain_and_wait => Some(r),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(timeout_secs)) => None,
+        };
+        crate::process::scope::clear_active();
+
+        let (status, total, mut tail) = match outcome {
+            Some(r) => r?,
+            None => {
+                // Timeout: SIGKILL the whole subtree (sh + any children) and return
+                // a real result so the brain continues. Partial output (if any) is in
+                // the tmp file; we do not await the drain (the pipe may never EOF if a
+                // grandchild holds it open).
+                scope.kill();
+                let msg = format!(
+                    "[shell: killed after {timeout_secs}s — command exceeded the configured \
+                     timeout. If this command is expected to run long, re-run with detached:true \
+                     to run it as a background daemon; partial output (if any) at {}]",
+                    out_path.display()
+                );
+                return Ok(serde_json::json!({
+                    "output": msg,
+                    "exit_code": 124,
+                }));
+            }
+        };
 
         let exit_code = status.code().unwrap_or(1);
         let tail_str = strip_ansi(&String::from_utf8_lossy(tail.make_contiguous()));

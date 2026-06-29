@@ -645,3 +645,65 @@ async fn detached_daemon_start_record_lands_in_daemons_jsonl() {
     assert_eq!(active[0].name, "jsonl-test-daemon");
     assert_eq!(active[0].cmd, "sleep 30", "cmd must be raw user command");
 }
+
+#[tokio::test]
+async fn times_out_and_nudges_to_detached() {
+    let dir = TempDir::new().unwrap();
+    // User config: 1-second timeout.
+    std::fs::write(
+        dir.path().join("gait.jsonc"),
+        r#"{"shell_timeout_secs": 1}"#,
+    )
+    .unwrap();
+    let tool = make_tool(&dir);
+
+    let start = std::time::Instant::now();
+    let result = tool
+        .execute(
+            serde_json::json!({ "cmd": "sleep 30", "reason": "test" }),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap();
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed.as_secs() < 5,
+        "should not wait for the full 30s: {elapsed:?}"
+    );
+    let exit_code = result
+        .get("exit_code")
+        .and_then(|v| v.as_i64())
+        .expect("exit_code");
+    let output = result
+        .get("output")
+        .and_then(|v| v.as_str())
+        .expect("output");
+    assert_eq!(exit_code, 124, "got: {result}");
+    assert!(output.contains("killed after 1s"), "got: {output}");
+    assert!(output.contains("detached:true"), "got: {output}");
+}
+
+#[tokio::test]
+async fn fast_command_unaffected_by_timeout() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("gait.jsonc"),
+        r#"{"shell_timeout_secs": 10}"#,
+    )
+    .unwrap();
+    let tool = make_tool(&dir);
+    let result = tool
+        .execute(
+            serde_json::json!({ "cmd": "echo hi", "reason": "test" }),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.get("exit_code").and_then(|v| v.as_i64()), Some(0));
+    assert!(result
+        .get("output")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .contains("hi"));
+}
