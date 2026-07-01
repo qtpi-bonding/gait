@@ -410,10 +410,21 @@ pub async fn run_brain(
     };
     nerve_writer.send_one_way(&terminated).await.ok();
     // Drop the nerve writer to close stdout — this signals EOF to the spine's
-    // relay loop, which breaks on pipe-closed. The spine then drops child_stdin
-    // to signal EOF to the brain's nerve reader, allowing the brain to exit.
+    // relay loop as a fallback if it's still reading (in practice the spine
+    // already breaks its loop on receiving Terminated itself, per spine.rs;
+    // this drop is a defensive no-op on that path). The explicit exit below,
+    // not this EOF signal, is what actually ends this process.
     drop(nerve_writer);
     let _ = tokio::io::stdout().flush().await;
+
+    // Explicit exit, not a plain return: run_brain spawned five background
+    // tasks (AppendRelay, StreamForward relay, Spawn relay, Notify relay, and
+    // the 15s ping loop) that only stop when send_one_way fails on a closed
+    // pipe — an unbounded wait. Every other exit path in this function already
+    // calls std::process::exit(1) on error; this mirrors that for the success
+    // path so the spine's reap_brain() isn't racing a brain that's still alive
+    // and able to relay a late Spawn/Notify signal after Terminated was sent.
+    std::process::exit(0);
 }
 
 // ── BrainSink ─────────────────────────────────────────────────────────────────
