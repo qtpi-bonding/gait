@@ -18,6 +18,7 @@ struct GrepParams {
     include: Option<String>,
 }
 
+#[derive(Debug)]
 struct MatchEntry {
     path: String,
     line_num: usize,
@@ -47,6 +48,7 @@ async fn rg_search(
     pattern: &str,
     search_path: &str,
     include: Option<&str>,
+    timeout_secs: u64,
 ) -> anyhow::Result<Option<Vec<MatchEntry>>> {
     let mut cmd = tokio::process::Command::new("rg");
     cmd.args([
@@ -62,11 +64,22 @@ async fn rg_search(
     }
     cmd.arg(search_path);
     cmd.current_dir(std::path::Path::new(search_path));
+    // Without this, a timeout only bounds the *wait* — tokio's default is to
+    // NOT kill the child on drop, so dropping the timed-out output() future
+    // leaves rg running as an orphan reaped whenever it eventually exits on
+    // its own. That's the exact process-escape class this plan exists to fix.
+    cmd.kill_on_drop(true);
 
-    let output = match cmd.output().await {
-        Ok(o) => o,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None), // rg not installed
-        Err(e) => return Err(e.into()),
+    let output = match tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        cmd.output(),
+    )
+    .await
+    {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None), // rg not installed
+        Ok(Err(e)) => return Err(e.into()),
+        Err(_) => anyhow::bail!("ripgrep search timed out after {timeout_secs}s"),
     };
 
     match output.status.code() {
@@ -174,10 +187,12 @@ impl Tool for GrepTool {
             None => self.ctx.codebase_path.clone(),
         };
 
+        let timeout_secs = crate::config::load_config(&self.ctx.gait_dir).tool_timeout_secs;
         let mut matches = match rg_search(
             &params.pattern,
             &resolved.display().to_string(),
             params.include.as_deref(),
+            timeout_secs,
         )
         .await
         .map_err(crate::tools::ToolError::Internal)?
@@ -321,6 +336,34 @@ mod tests {
             "array",
             "parse should be array type: {}",
             params
+        );
+    }
+    #[tokio::test]
+    async fn rg_search_times_out_on_hung_process() {
+        // A pattern that would make `rg` hang forever isn't practical to construct
+        // portably, so we exercise the timeout path directly: 0-second timeout
+        // guarantees the `tokio::time::timeout` wrapper fires before `rg` (which
+        // always takes >0ms to fork+exec) can return. This only exercises the
+        // timeout branch if `rg` is actually on PATH — if it's absent, rg_search
+        // takes the "rg not installed" branch instead and returns Ok(None), which
+        // would fail the assertions below with a confusing message. Skip cleanly
+        // in that case rather than false-failing.
+        if tokio::process::Command::new("rg")
+            .arg("--version")
+            .output()
+            .await
+            .is_err()
+        {
+            eprintln!("skipping: rg not on PATH");
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "needle").unwrap();
+        let result = rg_search("needle", &dir.path().display().to_string(), None, 0).await;
+        assert!(result.is_err(), "expected timeout error, got: {result:?}");
+        assert!(
+            result.unwrap_err().to_string().contains("timed out"),
+            "error should mention timeout"
         );
     }
 }
