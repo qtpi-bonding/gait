@@ -582,3 +582,15 @@ fn shell_timeout_parses_override() {
     let cfg: GaitConfig = serde_json::from_str(r#"{"shell_timeout_secs": 60}"#).unwrap();
     assert_eq!(cfg.shell_timeout_secs, 60);
 }
+
+#[test]
+fn tool_timeout_defaults_to_300() {
+    let cfg = GaitConfig::default();
+    assert_eq!(cfg.tool_timeout_secs, 300);
+}
+
+#[test]
+fn tool_timeout_parses_override() {
+    let cfg: GaitConfig = serde_json::from_str(r#"{"tool_timeout_secs": 10}"#).unwrap();
+    assert_eq!(cfg.tool_timeout_secs, 10);
+}

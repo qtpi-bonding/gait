@@ -344,6 +344,18 @@ pub struct GaitConfig {
     /// with a nudge to use `detached:true`. User-set only; the agent never picks it.
     #[serde(default = "default_shell_timeout_secs")]
     pub shell_timeout_secs: u64,
+    /// Wall-clock timeout (seconds) for a single ripgrep subprocess invocation
+    /// backed by grep/codesearch/ls. On expiry the tool returns an error result
+    /// instead of blocking the turn on a hung `rg` process — the same
+    /// unbounded-subprocess risk `shell_timeout_secs` guards against, so it
+    /// shares that default. NOT sized to preempt the spine's watchdog: the
+    /// watchdog's phase-duration cap is already suppressed while tools are
+    /// running (see `SpinePhase::HandsPhase` in `watchdog_breach`,
+    /// `turn/spine.rs`) and its only live check during a tool call is brain
+    /// ping-liveness, which is unaffected by how long a tool takes. User-set
+    /// only; the agent never picks it.
+    #[serde(default = "default_tool_timeout_secs")]
+    pub tool_timeout_secs: u64,
     /// When to render edit/write previews. Defaults to on-ask.
     #[serde(default)]
     pub preview: PreviewPolicy,
@@ -383,6 +395,10 @@ fn default_shell_timeout_secs() -> u64 {
     300
 }
 
+fn default_tool_timeout_secs() -> u64 {
+    300
+}
+
 impl Default for GaitConfig {
     fn default() -> Self {
         Self {
@@ -398,6 +414,7 @@ impl Default for GaitConfig {
             output_schema_retries: defaults::default_output_schema_retries(),
             max_iter: defaults::default_max_iter(),
             shell_timeout_secs: 300,
+            tool_timeout_secs: 300,
             preview: defaults::default_preview(),
             result_schema: None,
             llm_params: LlmParamsConfig::default(),
