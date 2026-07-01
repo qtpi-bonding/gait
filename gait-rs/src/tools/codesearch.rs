@@ -95,7 +95,13 @@ impl Tool for CodesearchTool {
             None => self.ctx.codebase_path.clone(),
         };
 
-        // Try ripgrep first (exit 0 = matches, exit 1 = no matches, other = not installed)
+        // Try ripgrep first (exit 0 = matches, exit 1 = no matches, other = not installed).
+        // Bounded subprocess — mirror of grep.rs rg_search. kill_on_drop is
+        // required so a timed-out future actually kills the child rather than
+        // leaving it running as an orphan (the exact process-escape class the
+        // daemon-escape plan exists to fix). On timeout we error the tool
+        // directly — falling through to the walkdir fallback would just trade
+        // one unbounded operation for another.
         let mut rg_cmd = tokio::process::Command::new("rg");
         rg_cmd
             .arg("--line-number")
@@ -105,9 +111,15 @@ impl Tool for CodesearchTool {
             rg_cmd.arg("-i");
         }
         rg_cmd.arg(&params.query).arg(&search_dir);
-
-        if let Ok(out) = rg_cmd.output().await {
-            match out.status.code() {
+        rg_cmd.kill_on_drop(true);
+        let timeout_secs = crate::config::load_config(&self.ctx.gait_dir).tool_timeout_secs;
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            rg_cmd.output(),
+        )
+        .await
+        {
+            Ok(Ok(out)) => match out.status.code() {
                 Some(0) => {
                     let text = String::from_utf8_lossy(&out.stdout);
                     let lines: Vec<&str> = text.lines().filter(|l| !l.is_empty()).collect();
@@ -125,6 +137,12 @@ impl Tool for CodesearchTool {
                 }
                 Some(1) => return Ok(Value::String("No matches found.".into())),
                 _ => {} // rg not installed or error — fall through to Rust fallback
+            },
+            Ok(Err(_)) => {} // rg not installed or spawn error — fall through to Rust fallback
+            Err(_) => {
+                return Err(crate::tools::ToolError::Execute(format!(
+                    "codesearch: ripgrep timed out after {timeout_secs}s"
+                )));
             }
         }
 
@@ -355,6 +373,48 @@ mod tests {
         let text = result.as_str().unwrap();
         assert!(text.contains("inside.txt"), "got: {}", text);
         assert!(!text.contains("outside.txt"), "got: {}", text);
+    }
+
+    #[tokio::test]
+    async fn execute_times_out_on_zero_timeout() {
+        // Only meaningful if `rg` is actually on PATH — if it's absent, execute()
+        // takes the "rg not installed" branch and falls back to the (unbounded)
+        // walkdir path, which would find "needle" and return Ok(...), failing
+        // the assertions below with a confusing message rather than a real
+        // signal that the timeout wiring is broken.
+        if tokio::process::Command::new("rg")
+            .arg("--version")
+            .output()
+            .await
+            .is_err()
+        {
+            eprintln!("skipping: rg not on PATH");
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn needle() {}").unwrap();
+        // No gait.jsonc in the temp dir → tool_timeout_secs would default to 300,
+        // which wouldn't exercise the timeout path in a fast unit test. Instead
+        // this test targets execute()'s error surface once wired: with a 0s
+        // config override written to gait.jsonc, the rg call must fail fast with
+        // a message mentioning "timed out" rather than hanging or silently
+        // falling back to the (also-unbounded) walkdir path.
+        std::fs::write(dir.path().join("gait.jsonc"), r#"{"tool_timeout_secs": 0}"#).unwrap();
+        let ctx = ToolCtx::new(
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            "test".into(),
+        );
+        let tool = CodesearchTool::new(ctx);
+        let result = tool
+            .execute(
+                serde_json::json!({"query": "needle"}),
+                &crate::Recorder::detached(),
+            )
+            .await;
+        assert!(result.is_err(), "expected a timeout error, got: {result:?}");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("timed out"), "got: {msg}");
     }
 
     #[test]
