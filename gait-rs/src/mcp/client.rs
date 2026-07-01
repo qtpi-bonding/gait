@@ -104,6 +104,7 @@ async fn connect_stdio(
 ) -> anyhow::Result<RunningService<RoleClient, ()>> {
     let transport = TokioChildProcess::new(tokio::process::Command::new(prog).configure(|c| {
         c.args(args);
+        c.kill_on_drop(true);
         if let Some(env) = env {
             for (k, v) in env {
                 c.env(k, v);
