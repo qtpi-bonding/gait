@@ -443,6 +443,7 @@ pub async fn relay_brain_turn(
     // ToolResult for any that are orphaned if the brain is killed.
     let mut pending_calls: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
+    let mut inflight: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
     // Transitions: BrainPhase→HandsPhase on first ToolCall insert; back on drain.
     let mut spine_phase = SpinePhase::BrainPhase;
 
@@ -478,7 +479,7 @@ pub async fn relay_brain_turn(
                 let stdin_writer = Arc::clone(&child_stdin);
                 if impulse.tool == "spawn_agent" || impulse.tool == "run_workflow" {
                     let ctx = ctx.clone();
-                    tokio::spawn(async move {
+                    inflight.spawn(async move {
                         let feedback = if impulse.tool == "spawn_agent" {
                             let args = parse_spawn_args(&impulse);
                             handle_spawn_agent(args, ctx).await
@@ -495,7 +496,7 @@ pub async fn relay_brain_turn(
                     let sid = session_id.to_string();
                     let exe_c = exe.to_path_buf();
                     let grp = Arc::clone(&group);
-                    tokio::spawn(async move {
+                    inflight.spawn(async move {
                         let feedback = run_tool_as_spine(
                             impulse, &cfg, &gd, &cb, &sid, sandbox_on, &exe_c, grp,
                         )
@@ -655,6 +656,13 @@ pub async fn relay_brain_turn(
     }
     sink.end_turn();
 
+    // Bound how long an in-flight tool call (or spawn_agent/run_workflow
+    // handler) can keep running after the read loop has already decided the
+    // turn is over. Must run before reap_brain: this is the spine's own
+    // in-process task leak, distinct from (and not covered by) reap_brain's
+    // OS-process-group kill.
+    drain_inflight(inflight, std::time::Duration::from_secs(3)).await;
+
     // Synthesize a ToolResult for each orphaned ToolCall (brain was killed before
     // it could emit results). Tools that completed already have real results in the
     // log; only call_ids still in pending_calls are orphans. Must run before
@@ -746,6 +754,28 @@ pub async fn relay_brain_turn(
 /// Either way we move `child` in and drop it WITHOUT awaiting. Reaping before the
 /// drop means tokio's SIGCHLD reaper can't race-steal the pid; the post-drop
 /// `try_wait` then sees `ECHILD` (harmless), so there is no zombie leak.
+/// Give in-flight Impulse-handler tasks (spawn_agent, run_workflow, and every
+/// other tool exec — see the `tokio::spawn` sites in `relay_brain_turn`) up to
+/// `grace` to finish naturally, then abort whatever's still running. Called
+/// once, right after the read loop exits (EOF / Terminated / watchdog), and
+/// BEFORE `reap_brain`: without this, a tool call that's still mid-flight when
+/// the loop breaks can keep running — spawning subagent processes and writing
+/// to the gait-dir — after the caller has already been told the turn is done.
+///
+/// `abort_all` cancels the *task* at its next await point but does not itself
+/// kill any OS process a task was waiting on (e.g. `run_tool_as_spine`'s hand
+/// subprocess, or `handle_run_workflow`'s workflow child) — both are enrolled
+/// in the cascade `group` when spawned (`configure_enrolled`/`register_pid` in
+/// `run_tool_as_spine`), so the `reap_brain` → `group.kill_all()` call that
+/// MUST run immediately after this one is what actually kills them. Calling
+/// this after `reap_brain`, or not at all, is the bug this function exists to
+/// fix — do not reorder.
+async fn drain_inflight(mut set: tokio::task::JoinSet<()>, grace: std::time::Duration) {
+    let _ = tokio::time::timeout(grace, async { while set.join_next().await.is_some() {} }).await;
+    set.abort_all();
+    while set.join_next().await.is_some() {}
+}
+
 async fn reap_brain(group: Arc<dyn crate::process::Containment>, child: tokio::process::Child) {
     let _ = tokio::task::spawn_blocking(move || group.kill_all()).await;
     drop(child);
@@ -1597,9 +1627,9 @@ pub(super) fn test_ctx(ws: &std::path::Path, session_id: &str) -> TurnCtx {
 #[cfg(test)]
 mod tests {
     use super::{
-        brain_argv, build_subagent_feedback, build_turn_profile, enrich_permissions_preview,
-        error_feedback, handle_spawn_agent, reap_brain, test_ctx, watchdog_breach, ProfileInputs,
-        SpawnAgentArgs, SpinePhase, WatchdogCfg,
+        brain_argv, build_subagent_feedback, build_turn_profile, drain_inflight,
+        enrich_permissions_preview, error_feedback, handle_spawn_agent, reap_brain, test_ctx,
+        watchdog_breach, ProfileInputs, SpawnAgentArgs, SpinePhase, WatchdogCfg,
     };
 
     /// Regression for the spine end-of-turn hang: `reap_brain` must return promptly
@@ -1607,6 +1637,47 @@ mod tests {
     /// `child.wait().await` here, which on macOS hangs forever for an already-exited
     /// pid (kqueue `EVFILT_PROC` never fires) — the spine sat alive at 0% CPU and
     /// never ran the post-turn checkpoint/commit. The fix reaps via
+    #[tokio::test]
+    async fn drain_inflight_lets_fast_tasks_finish_normally() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let mut set = tokio::task::JoinSet::new();
+        let finished = Arc::new(AtomicBool::new(false));
+        let f = finished.clone();
+        set.spawn(async move {
+            f.store(true, Ordering::SeqCst);
+        });
+        drain_inflight(set, std::time::Duration::from_millis(200)).await;
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "fast task should have completed, not been aborted"
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_inflight_aborts_tasks_that_outlive_the_grace_period() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let mut set = tokio::task::JoinSet::new();
+        let reached_end = Arc::new(AtomicBool::new(false));
+        let r = reached_end.clone();
+        set.spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            r.store(true, Ordering::SeqCst);
+        });
+        let start = std::time::Instant::now();
+        drain_inflight(set, std::time::Duration::from_millis(50)).await;
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "drain_inflight should abort stragglers promptly, took {:?}",
+            start.elapsed()
+        );
+        assert!(
+            !reached_end.load(Ordering::SeqCst),
+            "long task should have been aborted before completing"
+        );
+    }
+
     /// `group.kill_all()` (blocking waitpid) and never awaits the tokio `Child`.
     #[cfg(target_os = "macos")]
     #[tokio::test]
