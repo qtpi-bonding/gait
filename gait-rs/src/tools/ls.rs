@@ -86,6 +86,7 @@ fn collect_files_walkdir(dir: &std::path::Path, extra_ignore: &[String]) -> Vec<
 async fn collect_files_rg(
     dir: &std::path::Path,
     extra_ignore: &[String],
+    timeout_secs: u64,
 ) -> anyhow::Result<Option<(Vec<PathBuf>, bool)>> {
     let mut cmd = tokio::process::Command::new("rg");
     cmd.args(["--files", "--hidden", "--no-messages"]);
@@ -98,11 +99,18 @@ async fn collect_files_rg(
     }
     cmd.arg(dir);
     cmd.current_dir(dir);
+    cmd.kill_on_drop(true); // see grep.rs rg_search — without this a timeout orphans rg instead of killing it
 
-    let output = match cmd.output().await {
-        Ok(o) => o,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None), // rg not installed
-        Err(e) => return Err(e.into()),
+    let output = match tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        cmd.output(),
+    )
+    .await
+    {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None), // rg not installed
+        Ok(Err(e)) => return Err(e.into()),
+        Err(_) => anyhow::bail!("ripgrep file listing timed out after {timeout_secs}s"),
     };
 
     match output.status.code() {
@@ -238,12 +246,13 @@ impl Tool for LsTool {
             )));
         }
 
-        let (files, _) = match collect_files_rg(&search_dir, &extra_ignore)
+        let timeout_secs = crate::config::load_config(&self.ctx.gait_dir).tool_timeout_secs;
+        let files = match collect_files_rg(&search_dir, &extra_ignore, timeout_secs)
             .await
             .map_err(crate::tools::ToolError::Internal)?
         {
-            Some(r) => r, // rg ran — authoritative (even if empty)
-            None => (collect_files_walkdir(&search_dir, &extra_ignore), false),
+            Some((files, _truncated)) => files,
+            None => collect_files_walkdir(&search_dir, &extra_ignore),
         };
 
         Ok(Value::String(render_tree(&search_dir, &files)))
@@ -350,5 +359,25 @@ mod tests {
             "parse should be array type: {}",
             params
         );
+    }
+
+    #[tokio::test]
+    async fn collect_files_rg_times_out_on_zero_timeout() {
+        // Only meaningful if `rg` is on PATH — see the identical guard in
+        // grep.rs's rg_search_times_out_on_hung_process for why.
+        if tokio::process::Command::new("rg")
+            .arg("--version")
+            .output()
+            .await
+            .is_err()
+        {
+            eprintln!("skipping: rg not on PATH");
+            return;
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let result = collect_files_rg(dir.path(), &[], 0).await;
+        assert!(result.is_err(), "expected timeout error, got: {result:?}");
+        assert!(result.unwrap_err().to_string().contains("timed out"));
     }
 }
