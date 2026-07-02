@@ -24,11 +24,18 @@ pub mod providers;
 
 // Deferred — external callers in gait-cli/gait-repl; seal after public wrappers added
 pub mod agent_frontmatter;
-pub mod expand;
 pub mod permission;
-pub mod pty;
-pub mod shell_history;
 pub mod skills;
+
+// Shared CLI/REPL input machinery (item 12). The four submodules were
+// moved from `gait-rs/src/{expand,shell_history,pty,text}.rs` into
+// `gait-rs/src/input/` so both `gait "task"` and the REPL call one
+// documented expansion pipeline (`crate::input::expand_input`). The
+// `pub use` and `pub mod` re-exports at the bottom of this file keep
+// the historical `crate::expand::*` / `crate::shell_history::*` /
+// `crate::pty::*` / `crate::text::*` paths resolving unchanged for
+// external consumers, so the move is zero-diff for them.
+mod input;
 
 // anthropic / transport are pub for integration tests (AnthropicProvider, TransportConfig)
 pub mod anthropic;
@@ -41,7 +48,7 @@ pub(crate) mod prompt;
 pub mod sandbox;
 #[cfg(test)]
 mod test_utils;
-pub(crate) mod text;
+// (text moved to `input/`; see `pub use` re-export below)
 pub mod transport;
 pub(crate) mod wasm_plugins;
 
@@ -60,6 +67,38 @@ pub use scheduler::{Action, NativeScheduler, Scheduler, TurnEnded};
 pub use session::Ingestor;
 pub use session::{new_session_id, Session};
 pub use tools::builtin_tools;
+
+// Path-stable re-exports for the moved input modules (item 12). External
+// consumers historically imported via `use crate::expand::...`,
+// `use crate::shell_history::...`, `use crate::pty::...`, `use crate::text::...`.
+// The `pub use` lines below keep the top-level convenience paths resolving;
+// the `pub mod` re-export blocks right after keep the original module paths
+// resolving too. The single documented expansion entry point both the CLI
+// and the REPL call is `crate::input::expand_input`.
+pub use input::expand::{expand_input, ExpandCtx};
+pub use input::pty::{run_and_capture_pty_raw, CaptureResult};
+pub use input::shell_history::{
+    append as shell_history_append, recall as shell_history_recall, ShellEntry,
+};
+pub use input::text::split_into_blocks;
+
+// Module-path re-exports so `crate::expand::...`, `crate::shell_history::...`,
+// `crate::pty::...`, and `crate::text::...` still resolve for external
+// consumers after the move into `input/` (item 12). These keep the move
+// zero-diff: callers can continue using the old paths while new code calls
+// `crate::input::expand_input` directly.
+pub mod expand {
+    pub use crate::input::expand::*;
+}
+pub mod shell_history {
+    pub use crate::input::shell_history::*;
+}
+pub mod pty {
+    pub use crate::input::pty::*;
+}
+pub mod text {
+    pub use crate::input::text::*;
+}
 
 /// The built-in harness preamble, embedded from `prompts/gait-harness.md`.
 /// Wrapped in the `<harness>` layer of the composed system prompt.

@@ -1,5 +1,4 @@
-use crate::pty::{run_and_capture_pty_raw, CaptureResult};
-
+use super::pty::{run_and_capture_pty_raw, CaptureResult};
 fn looks_like_path(token: &str) -> bool {
     if token.is_empty() {
         return false;
@@ -56,7 +55,7 @@ pub fn expand_shell_marker(
 ) -> String {
     if let Ok(n) = inner.trim().parse::<usize>() {
         if n >= 1 {
-            return match crate::shell_history::recall(history_path, n) {
+            return match super::shell_history::recall(history_path, n) {
                 Ok(Some(entry)) => format!("[shell: {}]\n{}", entry.cmd, entry.output.trim_end()),
                 Ok(None) => format!("[no shell history entry $({n}): use !cmd in the REPL to run commands and build history]"),
                 Err(e) => format!("[shell history $({n}) error: {e}]"),
@@ -172,7 +171,7 @@ mod expand_tests {
 
     fn make_history(dir: &std::path::Path) -> std::path::PathBuf {
         let p = dir.join("hist.jsonl");
-        crate::shell_history::append(&p, "ls .", "file_a\nfile_b", 1).unwrap();
+        crate::input::shell_history::append(&p, "ls .", "file_a\nfile_b", 1).unwrap();
         p
     }
 
