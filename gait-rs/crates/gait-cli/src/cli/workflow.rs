@@ -5,7 +5,6 @@ use clap::Parser;
 use std::path::{Path, PathBuf};
 
 use gait_workflow::observer::CliObserver;
-use gait_workflow::progress;
 use gait_workflow::run_log::WorkflowRunLog;
 use gait_workflow::runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
 use gait_workflow::schema::WorkflowDef; // still needed for yaml parsing
@@ -183,13 +182,16 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) {
             std::process::exit(1);
         }
     };
-    let progress = match progress::read_progress(&gait_dir, &workflow_id) {
-        Some(p) => p,
-        None => {
-            eprintln!("[gait] no progress.yaml found for workflow {}", workflow_id);
+    let runs_dir = gait_dir.join("workflow-runs");
+    let run_log = match gait_workflow::run_log::WorkflowRunLog::open(&runs_dir, &workflow_id) {
+        Ok(l) => l,
+        Err(_) => {
+            eprintln!("[gait] no run log found for workflow {}", workflow_id);
             std::process::exit(1);
         }
     };
+    let events = run_log.read_events().unwrap_or_default();
+    let state = gait_workflow::state::reconstruct_state(&events);
     let yaml_path_str = read_yaml_path_from_run_log(&gait_dir, &workflow_id);
 
     if yaml_path_str.is_empty() {
@@ -213,7 +215,7 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) {
 
     eprintln!(
         "[gait workflow] resuming {} ({})",
-        progress.name, workflow_id
+        state.workflow_name, workflow_id
     );
 
     let mut sink = gait_core::embed::CliSink::stdio(false);
@@ -346,5 +348,22 @@ mod list_tests {
                 "done".to_string(),
             )]
         );
+    }
+
+    #[test]
+    fn continue_gate_uses_run_log_name() {
+        let td = tempfile::TempDir::new().unwrap();
+        let runs = td.path().join("workflow-runs");
+        let log = WorkflowRunLog::create(&runs, "deploy-9").unwrap();
+        log.workflow_start("deploy-9", "deploy", "wf.yaml", &[], &Workflow::default())
+            .unwrap();
+        let state = gait_workflow::state::reconstruct_state(
+            &WorkflowRunLog::open(&runs, "deploy-9")
+                .unwrap()
+                .read_events()
+                .unwrap(),
+        );
+        assert_eq!(state.workflow_name, "deploy");
+        assert!(WorkflowRunLog::open(&runs, "missing").is_err());
     }
 }
