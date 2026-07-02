@@ -80,6 +80,18 @@ fn node_type_name(node: &Node) -> &'static str {
     }
 }
 
+/// Run-workspace predicate (spec-06 §2). The run branch/worktree/lock exist only
+/// for a non-degenerate graph: the run worktree is the shared cwd for **shell**
+/// nodes, and the run lock guards concurrent executors of a multi-node run. A lone
+/// prompt node needs neither — its own session worktree + SessionLock suffice.
+fn needs_run_workspace(wf: &Workflow) -> bool {
+    wf.nodes.len() > 1
+        || wf
+            .nodes
+            .iter()
+            .any(|n| matches!(n.body.as_ref(), Some(node::Body::Shell(_))))
+}
+
 /// The effective gait session id for a node's turn (item 13b/13c).
 /// - prompt node, empty `continue_session` → a **fresh** session (own worktree+lock+log,
 ///   zero context carryover);
@@ -476,22 +488,27 @@ pub async fn run_workflow(
         WorkflowRunLog::create(&workflow_runs_dir, &run_id)?
     };
 
-    // One executor per run: RAII lock on the run dir (blocks a racing `continue`).
+    // Lazy run infrastructure (spec-06 §2): run_id + run log are always written
+    // (above). The run dir lock + branch + worktree exist only for a non-degenerate
+    // graph; a degenerate single-prompt run relies on its node session's own
+    // worktree + SessionLock.
     let run_dir = workflow_runs_dir.join(&run_id);
-    std::fs::create_dir_all(&run_dir)?;
-    let _run_lock = gait_core::turn::SessionLock::acquire(&run_dir)?;
-
-    // Isolate the run in its own branch + worktree (spec Open Question 1).
-    // Idempotent on resume.
     let run_worktree = run_dir.join("worktree");
-    if !run_worktree.join(".git").exists() {
-        repos.traces.create_branch_worktree(
-            &gait_dir,
-            "main",
-            &format!("run/{run_id}"),
-            &run_worktree,
-        )?;
-    }
+    let _run_lock = if needs_run_workspace(&wf) {
+        std::fs::create_dir_all(&run_dir)?;
+        let lock = gait_core::turn::SessionLock::acquire(&run_dir)?;
+        if !run_worktree.join(".git").exists() {
+            repos.traces.create_branch_worktree(
+                &gait_dir,
+                "main",
+                &format!("run/{run_id}"),
+                &run_worktree,
+            )?;
+        }
+        Some(lock)
+    } else {
+        None
+    };
 
     let wf_events = run_log.read_events().unwrap_or_default();
     let mut state = reconstruct_state(&wf_events);
@@ -1249,5 +1266,34 @@ mod tests {
         let got = ready_interactive_nodes(&nodes, &completed, &in_flight);
         // Only "a" (index 0): b blocked, c automated, d completed.
         assert_eq!(got, vec![0]);
+    }
+
+    #[test]
+    fn needs_run_workspace_predicate() {
+        use gait_core::proto::gait::workflow::v1::Workflow;
+        let one_prompt = Workflow {
+            nodes: vec![prompt_node("a", "")],
+            ..Default::default()
+        };
+        assert!(
+            !needs_run_workspace(&one_prompt),
+            "lone prompt node needs no run workspace"
+        );
+        let one_shell = Workflow {
+            nodes: vec![shell_node("s")],
+            ..Default::default()
+        };
+        assert!(
+            needs_run_workspace(&one_shell),
+            "a shell node needs the shared run worktree"
+        );
+        let two_prompts = Workflow {
+            nodes: vec![prompt_node("a", ""), prompt_node("b", "")],
+            ..Default::default()
+        };
+        assert!(
+            needs_run_workspace(&two_prompts),
+            ">1 node needs the run lock"
+        );
     }
 }
