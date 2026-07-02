@@ -2,12 +2,14 @@
 //! Pulled out of gait-bin so the bin can become a thin dispatcher.
 
 use clap::Parser;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gait_workflow::observer::CliObserver;
 use gait_workflow::progress;
+use gait_workflow::run_log::WorkflowRunLog;
 use gait_workflow::runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
 use gait_workflow::schema::WorkflowDef; // still needed for yaml parsing
+use gait_workflow::state::reconstruct_state;
 
 /// Read the `yaml_path` from a workflow run log.
 fn read_yaml_path_from_run_log(gait_dir: &PathBuf, run_id: &str) -> String {
@@ -131,20 +133,45 @@ pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) {
     }
 }
 
-pub fn cmd_workflow_list(_argv: &[String], gait_dir: PathBuf) {
-    let sessions = gait_core::git::Repos::production()
-        .traces
-        .list_active_sessions(&gait_dir)
-        .unwrap_or_default();
-    let mut found = false;
-    for session_id in &sessions {
-        if let Some(progress) = progress::read_progress(&gait_dir, session_id) {
-            println!("{} — {} ({})", session_id, progress.name, progress.status);
-            found = true;
+fn collect_workflow_summaries(workflow_runs_dir: &Path) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(workflow_runs_dir) else {
+        return out;
+    };
+    for entry in rd.flatten() {
+        if !entry.path().is_dir() {
+            continue;
         }
+        let Some(run_id) = entry.file_name().to_str().map(|s| s.to_string()) else {
+            continue;
+        };
+        let Ok(log) = WorkflowRunLog::open(workflow_runs_dir, &run_id) else {
+            continue;
+        };
+        let Ok(events) = log.read_events() else {
+            continue;
+        };
+        if events.is_empty() {
+            continue;
+        }
+        let state = reconstruct_state(&events);
+        out.push((
+            run_id,
+            state.workflow_name.clone(),
+            state.workflow_status().to_string(),
+        ));
     }
-    if !found {
-        println!("(no active workflow sessions)");
+    out
+}
+
+pub fn cmd_workflow_list(_argv: &[String], gait_dir: PathBuf) {
+    let summaries = collect_workflow_summaries(&gait_dir.join("workflow-runs"));
+    if summaries.is_empty() {
+        println!("(no workflow runs)");
+        return;
+    }
+    for (run_id, name, status) in summaries {
+        println!("{} — {} ({})", run_id, name, status);
     }
 }
 
@@ -287,5 +314,37 @@ mod tests {
         // Test with a non-existent run
         let yaml_path = read_yaml_path_from_run_log(&gait_dir, "nonexistent-run");
         assert_eq!(yaml_path, "");
+    }
+}
+
+#[cfg(test)]
+mod list_tests {
+    use super::*;
+    use gait_core::proto::gait::workflow::v1::Workflow;
+    use gait_workflow::run_log::WorkflowRunLog;
+
+    #[test]
+    fn summaries_derive_name_and_status_from_run_log() {
+        let td = tempfile::TempDir::new().unwrap();
+        let runs = td.path().join("workflow-runs");
+        let log = WorkflowRunLog::create(&runs, "deploy-1-2-3").unwrap();
+        log.workflow_start(
+            "deploy-1-2-3",
+            "deploy",
+            "wf.yaml",
+            &[],
+            &Workflow::default(),
+        )
+        .unwrap();
+        log.workflow_complete("deploy-1-2-3").unwrap();
+        let out = collect_workflow_summaries(&runs);
+        assert_eq!(
+            out,
+            vec![(
+                "deploy-1-2-3".to_string(),
+                "deploy".to_string(),
+                "done".to_string(),
+            )]
+        );
     }
 }
