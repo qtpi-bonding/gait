@@ -110,14 +110,12 @@ fn resolve_node_session(state: &mut WorkflowState, node: &Node) -> String {
     s
 }
 
-/// Nodes whose depends_on are all satisfied, not yet completed, and not in-flight.
-/// `exclude` is an optional set of node IDs to skip (used to exclude goto-only targets
-/// from the initial ready set — they should only be enqueued via ErrorGoto).
 /// Returns *automated* ready node indices only — deps satisfied, not completed,
-/// not in-flight, not excluded, and NOT interactive. Interactive (absent-prompt)
-/// nodes never enter the `FuturesUnordered` pool; they are handled exclusively
-/// by `ready_interactive_nodes` + `handle_open_node` once the automated frontier
-/// (this function's output) drains to empty.
+/// not in-flight, not excluded (`exclude` skips goto-only targets — they should
+/// only be enqueued via ErrorGoto), and NOT interactive. Interactive
+/// (absent-prompt) nodes never enter the `FuturesUnordered` pool; they are
+/// handled exclusively by `ready_interactive_nodes` + `handle_open_node` once
+/// the automated frontier (this function's output) drains to empty.
 fn compute_ready_nodes(
     nodes: &[Node],
     completed: &HashSet<String>,
@@ -137,6 +135,7 @@ fn compute_ready_nodes(
         .map(|(i, _)| i)
         .collect()
 }
+
 /// Node indices that are ready (deps satisfied, not completed, not in-flight)
 /// **and** interactive (absent-prompt). These are never enqueued into the pool;
 /// they are suspension points handled by `handle_open_node` after the automated
