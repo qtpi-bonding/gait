@@ -10,26 +10,6 @@ use gait_workflow::runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
 use gait_workflow::schema::WorkflowDef; // still needed for yaml parsing
 use gait_workflow::state::reconstruct_state;
 
-/// Read the `yaml_path` from a workflow run log.
-fn read_yaml_path_from_run_log(gait_dir: &PathBuf, run_id: &str) -> String {
-    let workflow_runs_dir = gait_dir.join("workflow-runs");
-    let events = gait_workflow::run_log::WorkflowRunLog::open(&workflow_runs_dir, run_id)
-        .and_then(|l| l.read_events())
-        .unwrap_or_default();
-    events
-        .iter()
-        .find_map(|e| {
-            use gait_core::proto::gait::workflow::v1::workflow_event::Kind;
-            match &e.kind {
-                Some(Kind::WorkflowStart(ws)) if !ws.yaml_path.is_empty() => {
-                    Some(ws.yaml_path.clone())
-                }
-                _ => None,
-            }
-        })
-        .unwrap_or_default()
-}
-
 /// `gait workflow <run|list|continue|abort|log>` subcommand.
 #[derive(Parser, Debug)]
 #[command(no_binary_name = true)]
@@ -174,16 +154,33 @@ pub fn cmd_workflow_list(_argv: &[String], gait_dir: PathBuf) {
     }
 }
 
+/// `gait workflow continue <run-id> [--force]`
+#[derive(clap::Parser, Debug)]
+#[command(no_binary_name = true)]
+struct ContinueArgs {
+    /// Workflow run id to resume.
+    run_id: String,
+    /// Resume the ORIGINAL logged graph even if the on-disk YAML changed.
+    /// Without this, an edited YAML is a hard error (never a silent divergence).
+    #[arg(long)]
+    force: bool,
+}
+
 pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) {
-    let workflow_id = match argv.first() {
-        Some(id) => id.clone(),
-        None => {
-            eprintln!("[gait] usage: gait workflow continue <workflow-id>");
+    let parsed = match ContinueArgs::try_parse_from(argv) {
+        Ok(a) => a,
+        Err(e) => {
+            eprint!("{e}");
             std::process::exit(1);
         }
     };
-    let runs_dir = gait_dir.join("workflow-runs");
-    let run_log = match gait_workflow::run_log::WorkflowRunLog::open(&runs_dir, &workflow_id) {
+    let workflow_id = parsed.run_id;
+
+    // Source of truth: the run log — NOT the session transcript, NOT disk YAML.
+    let run_log = match gait_workflow::run_log::WorkflowRunLog::open(
+        &gait_dir.join("workflow-runs"),
+        &workflow_id,
+    ) {
         Ok(l) => l,
         Err(_) => {
             eprintln!("[gait] no run log found for workflow {}", workflow_id);
@@ -191,42 +188,60 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) {
         }
     };
     let events = run_log.read_events().unwrap_or_default();
-    let state = gait_workflow::state::reconstruct_state(&events);
-    let yaml_path_str = read_yaml_path_from_run_log(&gait_dir, &workflow_id);
 
-    if yaml_path_str.is_empty() {
-        eprintln!("[gait] cannot find workflow YAML path in run log");
-        std::process::exit(1);
+    // Read on-disk YAML (if present) ONLY to detect drift; the graph that runs
+    // always comes from the logged def.
+    let logged_yaml_path = events
+        .iter()
+        .find_map(|e| {
+            use gait_core::proto::gait::workflow::v1::workflow_event;
+            match &e.kind {
+                Some(workflow_event::Kind::WorkflowStart(s)) => Some(s.yaml_path.clone()),
+                _ => None,
+            }
+        })
+        .unwrap_or_default();
+    let disk_yaml = std::fs::read_to_string(&logged_yaml_path).ok();
+
+    let resolved = match gait_workflow::convert::resolve_continue_def(
+        &events,
+        disk_yaml.as_deref(),
+        parsed.force,
+    ) {
+        Ok(r) => r,
+        Err(gait_workflow::convert::ContinueError::Drift { .. }) => {
+            eprintln!(
+                "[gait] {} changed since this run started; start a new run, \
+                     or pass --force to resume the original graph",
+                logged_yaml_path
+            );
+            std::process::exit(1);
+        }
+        Err(gait_workflow::convert::ContinueError::NoStart) => {
+            eprintln!("[gait] run log for {} has no workflow_start", workflow_id);
+            std::process::exit(1);
+        }
+    };
+
+    if parsed.force && disk_yaml.is_some() {
+        eprintln!(
+            "[gait workflow] --force: resuming the ORIGINAL logged graph (ignoring on-disk YAML edits)"
+        );
     }
-    let yaml_content = match std::fs::read_to_string(&yaml_path_str) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("[gait] cannot read {}: {}", yaml_path_str, e);
-            std::process::exit(1);
-        }
-    };
-    let wf: WorkflowDef = match serde_yaml::from_str(&yaml_content) {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("[gait] invalid workflow YAML: {}", e);
-            std::process::exit(1);
-        }
-    };
-
     eprintln!(
         "[gait workflow] resuming {} ({})",
-        state.workflow_name, workflow_id
+        resolved.workflow_name, workflow_id
     );
 
     let mut sink = gait_core::embed::CliSink::stdio(false);
     match run_workflow(
         WorkflowRunOpts {
-            workflow_def: gait_workflow::convert::to_proto(&wf),
-            yaml_path: yaml_path_str,
+            workflow_def: resolved.def,
+            yaml_path: resolved.yaml_path,
             run_id: workflow_id,
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.join("codebase"),
-            args: vec![],
+            args: resolved.args,
         },
         &mut sink,
         &mut CliObserver,
@@ -284,38 +299,16 @@ pub fn cmd_workflow_log(argv: &[String], gait_dir: PathBuf) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
+mod continue_arg_tests {
+    use super::ContinueArgs;
+    use clap::Parser;
     #[test]
-    fn read_yaml_path_from_run_log_extracts_yaml_path() {
-        let dir = TempDir::new().unwrap();
-        let gait_dir = dir.path().to_path_buf();
-        let workflow_runs_dir = gait_dir.join("workflow-runs");
-        std::fs::create_dir_all(&workflow_runs_dir).unwrap();
-
-        // Create a workflow run log with a WorkflowStart event
-        let run_id = "test-run-20260616-120000";
-        let log =
-            gait_workflow::run_log::WorkflowRunLog::create(&workflow_runs_dir, run_id).unwrap();
-        let def = gait_core::proto::gait::workflow::v1::Workflow::default();
-        log.workflow_start(run_id, "test-workflow", "workflows/test.yaml", &[], &def)
-            .unwrap();
-
-        // Test the helper function
-        let yaml_path = read_yaml_path_from_run_log(&gait_dir, run_id);
-        assert_eq!(yaml_path, "workflows/test.yaml");
-    }
-
-    #[test]
-    fn read_yaml_path_from_run_log_returns_empty_when_not_found() {
-        let dir = TempDir::new().unwrap();
-        let gait_dir = dir.path().to_path_buf();
-
-        // Test with a non-existent run
-        let yaml_path = read_yaml_path_from_run_log(&gait_dir, "nonexistent-run");
-        assert_eq!(yaml_path, "");
+    fn continue_args_parse_force_flag() {
+        let a = ContinueArgs::try_parse_from(["run-1", "--force"]).unwrap();
+        assert_eq!(a.run_id, "run-1");
+        assert!(a.force);
+        let b = ContinueArgs::try_parse_from(["run-1"]).unwrap();
+        assert!(!b.force);
     }
 }
 
