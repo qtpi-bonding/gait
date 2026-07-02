@@ -1157,6 +1157,7 @@ dependencies = [
  "futures-util",
  "gait-core",
  "gait-proto",
+ "git2",
  "regex",
  "serde",
  "serde_json",

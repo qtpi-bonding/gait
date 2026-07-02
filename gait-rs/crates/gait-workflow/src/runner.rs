@@ -377,6 +377,23 @@ pub async fn run_workflow(
         WorkflowRunLog::create(&workflow_runs_dir, &session_id)?
     };
 
+    // One executor per run: RAII lock on the run dir (blocks a racing `continue`).
+    let run_dir = workflow_runs_dir.join(&run_id);
+    std::fs::create_dir_all(&run_dir)?;
+    let _run_lock = gait_core::turn::SessionLock::acquire(&run_dir)?;
+
+    // Isolate the run in its own branch + worktree (spec Open Question 1).
+    // Idempotent on resume.
+    let run_worktree = run_dir.join("worktree");
+    if !run_worktree.join(".git").exists() {
+        repos.traces.create_branch_worktree(
+            &gait_dir,
+            "main",
+            &format!("run/{run_id}"),
+            &run_worktree,
+        )?;
+    }
+
     let wf_events = run_log.read_events().unwrap_or_default();
     let mut state = reconstruct_state(&wf_events);
 
