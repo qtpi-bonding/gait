@@ -6,6 +6,9 @@ use std::path::Path;
 pub struct NodeContext<'a> {
     pub workflow_id: &'a str,
     pub session_id: &'a str,
+    /// This node's effective turn session id (item 13b/13c) — fresh per default
+    /// prompt node, or the named `continue_session`; "" for shell/branch/gate.
+    pub node_session: &'a str,
     pub gait_dir: &'a Path,
     pub codebase: &'a Path,
     pub vars: VarContext,
@@ -49,6 +52,7 @@ pub async fn exec_shell_node(
         exit_code: result.status.code(),
         json: None,
         routed_to: None,
+        session_id: String::new(),
     })
 }
 
@@ -92,6 +96,7 @@ mod tests {
         NodeContext {
             workflow_id: "wf1",
             session_id: "s1",
+            node_session: "",
             gait_dir: ws,
             codebase: ws,
             workflow_tx: tx,

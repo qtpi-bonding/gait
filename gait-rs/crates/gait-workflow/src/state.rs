@@ -18,6 +18,10 @@ pub struct WorkflowState {
     node_statuses: HashMap<String, NodeStatus>,
     pub failed_node: Option<String>,
     pub gate_paused: Option<String>,
+    /// Per-node effective session id (item 13b/13c), keyed by node id. Recorded
+    /// at a node's first `NodeStart` (live or replayed) and reused on every
+    /// later re-entry (goto/branch loop) or resume — see `resolve_node_session`.
+    pub node_sessions: HashMap<String, String>,
 }
 
 impl WorkflowState {
@@ -68,6 +72,7 @@ pub fn reconstruct_state(events: &[WorkflowEvent]) -> WorkflowState {
         node_statuses: HashMap::new(),
         failed_node: None,
         gate_paused: None,
+        node_sessions: HashMap::new(),
     };
     for event in events {
         let Some(kind) = &event.kind else {
@@ -79,6 +84,11 @@ pub fn reconstruct_state(events: &[WorkflowEvent]) -> WorkflowState {
             }
             workflow_event::Kind::NodeStart(ns) => {
                 state.set_status(&ns.node_id, NodeStatus::Running);
+                if !ns.session_id.is_empty() {
+                    state
+                        .node_sessions
+                        .insert(ns.node_id.clone(), ns.session_id.clone());
+                }
             }
             workflow_event::Kind::NodeComplete(nc) => {
                 state.set_status(&nc.node_id, NodeStatus::Done);
@@ -92,6 +102,11 @@ pub fn reconstruct_state(events: &[WorkflowEvent]) -> WorkflowState {
                 } else {
                     Some(nc.routed_to.clone())
                 };
+                let session_id = state
+                    .node_sessions
+                    .get(&nc.node_id)
+                    .cloned()
+                    .unwrap_or_default();
                 state.node_outputs.insert(
                     nc.node_id.clone(),
                     NodeOutput {
@@ -99,6 +114,7 @@ pub fn reconstruct_state(events: &[WorkflowEvent]) -> WorkflowState {
                         exit_code: nc.exit_code,
                         json,
                         routed_to,
+                        session_id,
                     },
                 );
             }

@@ -26,6 +26,8 @@ pub struct NodeOutput {
     pub exit_code: Option<i32>,
     pub json: Option<serde_json::Value>,
     pub routed_to: Option<String>,
+    /// The effective turn session id for this node ("" for shell/branch/gate).
+    pub session_id: String,
 }
 
 impl NodeOutput {
@@ -37,6 +39,7 @@ impl NodeOutput {
             exit_code: None,
             json: None,
             routed_to: Some(NODE_OPEN_SENTINEL.to_string()),
+            session_id: String::new(),
         }
     }
 }
@@ -178,6 +181,7 @@ mod tests {
                 exit_code: Some(0),
                 json: Some(serde_json::json!({ "pr_url": "https://github.com/pr/1" })),
                 routed_to: None,
+                session_id: "s1".into(),
             },
         );
         VarContext {

@@ -218,11 +218,7 @@ pub async fn exec_prompt_node(
         .map(|cb| PathBuf::from(substitute(cb, &ctx.vars)))
         .unwrap_or_else(|| ctx.codebase.to_path_buf());
 
-    let session_id = if p.continue_session.is_empty() {
-        ctx.session_id.to_string()
-    } else {
-        p.continue_session.clone()
-    };
+    let session_id = ctx.node_session.to_string();
 
     // Open the session up-front so `run_loop` can use `session.repos` for
     // worktree creation.
@@ -272,7 +268,7 @@ pub async fn exec_prompt_node(
         let turn_result = sink
             .result
             .ok_or_else(|| anyhow::anyhow!("run_loop returned without a TurnResult"))?;
-        Ok(map_turn_result(turn_result))
+        Ok(map_turn_result(turn_result, &session_id))
     } else {
         // Absent prompt: interactive node.
         let Some(live) = input else {
@@ -318,7 +314,7 @@ pub async fn exec_prompt_node(
     }
 }
 
-fn map_turn_result(turn_result: TurnResult) -> NodeOutput {
+fn map_turn_result(turn_result: TurnResult, session_id: &str) -> NodeOutput {
     match turn_result {
         TurnResult::Done {
             message, result, ..
@@ -327,36 +323,42 @@ fn map_turn_result(turn_result: TurnResult) -> NodeOutput {
             exit_code: None,
             json: result,
             routed_to: None,
+            session_id: session_id.to_string(),
         },
         TurnResult::Permissions => NodeOutput {
             text: "(permissions required)".into(),
             exit_code: None,
             json: None,
             routed_to: None,
+            session_id: session_id.to_string(),
         },
         TurnResult::Clarify { .. } => NodeOutput {
             text: "(paused for clarification)".into(),
             exit_code: None,
             json: None,
             routed_to: None,
+            session_id: session_id.to_string(),
         },
         TurnResult::Inform { .. } => NodeOutput {
             text: "(paused to inform user)".into(),
             exit_code: None,
             json: None,
             routed_to: None,
+            session_id: session_id.to_string(),
         },
         TurnResult::Unlock { .. } => NodeOutput {
             text: "(paused for sandbox unlock)".into(),
             exit_code: None,
             json: None,
             routed_to: None,
+            session_id: session_id.to_string(),
         },
         TurnResult::Cancelled => NodeOutput {
             text: "(turn cancelled by user)".into(),
             exit_code: None,
             json: None,
             routed_to: None,
+            session_id: session_id.to_string(),
         },
     }
 }

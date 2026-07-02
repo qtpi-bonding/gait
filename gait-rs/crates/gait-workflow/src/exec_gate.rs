@@ -14,5 +14,6 @@ pub fn exec_gate_node(
         exit_code: None,
         json: None,
         routed_to: Some(GATE_PAUSED_SENTINEL.into()),
+        session_id: String::new(),
     })
 }

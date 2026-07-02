@@ -62,6 +62,7 @@ struct NodeRunParams {
     node: Node,
     workflow_id: String,
     session_id: String,
+    node_session: String,
     gait_dir: PathBuf,
     codebase: PathBuf,
     wf: Arc<Workflow>,
@@ -78,6 +79,36 @@ fn node_type_name(node: &Node) -> &'static str {
         Some(node::Body::Gate(_)) => "gate",
         None => "unknown",
     }
+}
+
+/// The effective gait session id for a node's turn (item 13b/13c).
+/// - prompt node, empty `continue_session` → a **fresh** session (own worktree+lock+log,
+///   zero context carryover);
+/// - prompt node, non-empty `continue_session` → attach to that session id;
+/// - shell/branch/gate → `""` (no session — matches workflow.proto:94).
+fn node_session_id(node: &Node) -> String {
+    match node.body.as_ref() {
+        Some(node::Body::Prompt(p)) if p.continue_session.is_empty() => {
+            gait_core::session::new_session_id()
+        }
+        Some(node::Body::Prompt(p)) => p.continue_session.clone(),
+        _ => String::new(),
+    }
+}
+
+/// Idempotent per-node session resolution. Reuses a session already recorded for
+/// this node (resume via `reconstruct_state`, or goto/branch re-entry within the
+/// live run); mints a fresh one only on the node's FIRST enqueue. This is what
+/// keeps an open/interactive node's transcript intact across pause/resume.
+fn resolve_node_session(state: &mut WorkflowState, node: &Node) -> String {
+    if let Some(prev) = state.node_sessions.get(&node.id) {
+        return prev.clone();
+    }
+    let s = node_session_id(node);
+    if !s.is_empty() {
+        state.node_sessions.insert(node.id.clone(), s.clone());
+    }
+    s
 }
 
 /// Nodes whose depends_on are all satisfied, not yet completed, and not in-flight.
@@ -169,6 +200,7 @@ async fn run_single_node(params: NodeRunParams) -> anyhow::Result<(String, NodeT
         let ctx = NodeContext {
             workflow_id: params.workflow_id.as_str(),
             session_id: params.session_id.as_str(),
+            node_session: params.node_session.as_str(),
             gait_dir: params.gait_dir.as_path(),
             codebase: params.codebase.as_path(),
             vars: params.vars.clone(),
@@ -252,6 +284,7 @@ async fn enqueue_node_task(
     }
 
     let ntype = node_type_name(&node);
+    let node_session = resolve_node_session(state, &node);
     rec.record(wire::raw(
         "node_start",
         serde_json::json!({
@@ -259,7 +292,7 @@ async fn enqueue_node_task(
             "node_type": ntype, "attempt": 1,
         }),
     ))?;
-    observer.on_event(&run_log.node_start(&node_id, ntype, 1, session_id)?);
+    observer.on_event(&run_log.node_start(&node_id, ntype, 1, &node_session)?);
     state.set_status(&node_id, NodeStatus::Running);
 
     let vars = VarContext {
@@ -279,6 +312,7 @@ async fn enqueue_node_task(
         node,
         workflow_id: workflow_id.to_string(),
         session_id: session_id.to_string(),
+        node_session,
         gait_dir: gait_dir.to_path_buf(),
         codebase: codebase.to_path_buf(),
         wf: wf.clone(),
@@ -406,7 +440,8 @@ pub async fn run_workflow(
                     // return NodeOpen so the caller can restart with a fresh source.
                     let node_id = node.id.clone();
                     let ntype = "prompt";
-                    observer.on_event(&run_log.node_start(&node_id, ntype, 1, &session_id)?);
+                    let node_session = resolve_node_session(&mut state, &node);
+                    observer.on_event(&run_log.node_start(&node_id, ntype, 1, &node_session)?);
                     state.set_status(&node_id, NodeStatus::Running);
                     let vars = VarContext {
                         workflow_id: workflow_id.clone(),
@@ -422,6 +457,7 @@ pub async fn run_workflow(
                     let ctx = crate::exec_shell::NodeContext {
                         workflow_id: &workflow_id,
                         session_id: &session_id,
+                        node_session: &node_session,
                         gait_dir: &gait_dir,
                         codebase: &codebase,
                         vars,
@@ -553,7 +589,7 @@ pub async fn run_workflow(
                     ))?;
                     observer.on_event(&run_log.node_complete(
                         &node_id,
-                        &session_id,
+                        &out.session_id,
                         &out.text,
                         out.exit_code,
                         &out.json.as_ref().map(|v| v.to_string()).unwrap_or_default(),
@@ -977,12 +1013,14 @@ async fn execute_node(
                     exit_code: None,
                     json: None,
                     routed_to: Some(routed),
+                    session_id: String::new(),
                 }),
                 None => Ok(NodeOutput {
                     text: String::new(),
                     exit_code: None,
                     json: None,
                     routed_to: None,
+                    session_id: String::new(),
                 }),
             }
         }
@@ -1168,6 +1206,7 @@ fn topological_sort(nodes: &[Node]) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gait_core::proto::gait::workflow::v1::{node, Node, PromptNode, ShellNode};
 
     fn node(id: &str, deps: &[&str]) -> Node {
         Node {
@@ -1175,6 +1214,93 @@ mod tests {
             depends_on: deps.iter().map(|s| s.to_string()).collect(),
             ..Default::default()
         }
+    }
+
+    fn prompt_node(id: &str, continue_session: &str) -> Node {
+        Node {
+            id: id.to_string(),
+            body: Some(node::Body::Prompt(PromptNode {
+                prompt: "do a thing".into(),
+                continue_session: continue_session.to_string(),
+                codebase: None,
+            })),
+            ..Default::default()
+        }
+    }
+
+    fn shell_node(id: &str) -> Node {
+        Node {
+            id: id.to_string(),
+            body: Some(node::Body::Shell(ShellNode {
+                command: "true".into(),
+                timeout_ms: None,
+            })),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn default_prompt_nodes_get_distinct_fresh_sessions() {
+        // The core item-13 correctness claim: two ready default prompt nodes must
+        // resolve to DISTINCT sessions, so their per-turn SessionLocks
+        // (turn/mod.rs:154) can never collide by construction.
+        let sa = node_session_id(&prompt_node("a", ""));
+        let sb = node_session_id(&prompt_node("b", ""));
+        assert!(
+            !sa.is_empty() && !sb.is_empty(),
+            "fresh sessions must be non-empty"
+        );
+        assert_ne!(
+            sa, sb,
+            "two default prompt nodes must NOT share a session id"
+        );
+    }
+
+    #[test]
+    fn continue_session_attaches_to_named_session() {
+        assert_eq!(
+            node_session_id(&prompt_node("a", "prior-sess")),
+            "prior-sess"
+        );
+    }
+
+    #[test]
+    fn non_prompt_nodes_have_no_session() {
+        assert_eq!(node_session_id(&shell_node("s")), "");
+    }
+
+    #[test]
+    fn node_session_is_reused_on_re_entry_and_resume() {
+        use gait_core::proto::gait::workflow::v1::{workflow_event, NodeStart, WorkflowEvent};
+        // Within one run (goto/branch re-entry): second resolve reuses the first.
+        let mut state = crate::state::reconstruct_state(&[]);
+        let n = prompt_node("a", "");
+        let first = resolve_node_session(&mut state, &n);
+        let second = resolve_node_session(&mut state, &n);
+        assert!(!first.is_empty());
+        assert_eq!(
+            first, second,
+            "re-entered node must reuse its session, not re-mint"
+        );
+
+        // Across a resume: state rebuilt from the run log's NodeStart carries it back.
+        let ns = WorkflowEvent {
+            version: 1,
+            ts: 0,
+            kind: Some(workflow_event::Kind::NodeStart(NodeStart {
+                node_id: "a".into(),
+                node_type: "prompt".into(),
+                attempt: 1,
+                session_id: first.clone(),
+            })),
+            ..Default::default()
+        };
+        let mut resumed = crate::state::reconstruct_state(&[ns]);
+        assert_eq!(
+            resolve_node_session(&mut resumed, &n),
+            first,
+            "resume must reuse the session recorded at the original NodeStart"
+        );
     }
 
     #[test]
