@@ -131,6 +131,29 @@ fn compute_ready_nodes(
         .map(|(i, _)| i)
         .collect()
 }
+/// Node indices that are ready (deps satisfied, not completed, not in-flight)
+/// **and** interactive (absent-prompt). These are never enqueued into the pool;
+/// they are suspension points handled by `handle_open_node` after the automated
+/// frontier drains. Mirrors `compute_ready_nodes`' predicate but keeps only
+/// interactive nodes.
+#[allow(dead_code)]
+fn ready_interactive_nodes(
+    nodes: &[Node],
+    completed: &HashSet<String>,
+    in_flight: &HashSet<String>,
+) -> Vec<usize> {
+    nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| {
+            !completed.contains(&n.id)
+                && !in_flight.contains(&n.id)
+                && is_interactive_node(n)
+                && n.depends_on.iter().all(|dep| completed.contains(dep))
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
 
 /// Returns the set of node IDs that are exclusively reachable via `on_error.goto`
 /// and have no `depends_on` entries (i.e., they would otherwise be picked up as
@@ -1135,4 +1158,32 @@ mod tests {
         let pos_b = order.iter().position(|&i| nodes[i].id == "b").unwrap();
         assert!(pos_a < pos_b, "a must come before b");
     }
+}
+#[test]
+fn ready_interactive_nodes_returns_only_dep_satisfied_interactive() {
+    use gait_core::proto::gait::workflow::v1::{node, Node, PromptNode};
+    fn prompt_node(id: &str, prompt: &str, deps: &[&str]) -> Node {
+        Node {
+            id: id.into(),
+            depends_on: deps.iter().map(|s| s.to_string()).collect(),
+            body: Some(node::Body::Prompt(PromptNode {
+                prompt: prompt.into(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+    }
+    // a: interactive (empty prompt), ready. b: interactive, blocked on missing dep.
+    // c: automated (has prompt), ready. d: interactive, but already completed.
+    let nodes = vec![
+        prompt_node("a", "", &[]),
+        prompt_node("b", "", &["z"]),
+        prompt_node("c", "do work", &[]),
+        prompt_node("d", "", &[]),
+    ];
+    let completed: std::collections::HashSet<String> = ["d".to_string()].into_iter().collect();
+    let in_flight = std::collections::HashSet::new();
+    let got = ready_interactive_nodes(&nodes, &completed, &in_flight);
+    // Only "a" (index 0): b blocked, c automated, d completed.
+    assert_eq!(got, vec![0]);
 }
