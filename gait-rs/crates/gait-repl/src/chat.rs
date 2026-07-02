@@ -242,7 +242,7 @@ pub async fn run_chat(
             gait_workflow::WorkflowRunOpts {
                 workflow_def: wf_def,
                 yaml_path: String::new(),
-                session_id: run_id,
+                run_id,
                 gait_dir: gait_dir.clone(),
                 codebase: codebase.clone(),
                 args: vec![],

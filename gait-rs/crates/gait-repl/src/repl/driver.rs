@@ -679,7 +679,7 @@ async fn run_workflow_from_repl(
             gait_workflow::WorkflowRunOpts {
                 workflow_def,
                 yaml_path: yaml_path_str,
-                session_id: run_id_task,
+                run_id: run_id_task,
                 gait_dir,
                 codebase,
                 args,
