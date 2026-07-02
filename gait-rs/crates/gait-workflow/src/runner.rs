@@ -33,7 +33,7 @@ use crate::vars::{substitute, NodeOutput, VarContext, NODE_OPEN_SENTINEL};
 pub struct WorkflowRunOpts {
     pub workflow_def: Workflow,
     pub yaml_path: String,
-    pub session_id: String,
+    pub run_id: String,
     pub gait_dir: PathBuf,
     pub codebase: PathBuf,
     pub args: Vec<String>,
@@ -353,11 +353,13 @@ pub async fn run_workflow(
     let WorkflowRunOpts {
         workflow_def: wf_owned,
         yaml_path,
-        session_id,
+        run_id,
         gait_dir,
         codebase,
         args,
     } = opts;
+    // Internal bookkeeping session (the run's transient session home, retired in Stages 2-3).
+    let session_id = run_id.clone();
     let wf = Arc::new(wf_owned);
 
     let repos = gait_core::git::Repos::production();

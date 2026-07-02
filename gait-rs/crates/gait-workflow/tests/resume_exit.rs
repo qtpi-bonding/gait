@@ -61,14 +61,14 @@ async fn absent_prompt_headless_exits_node_open() {
         .unwrap();
 
     let wf: WorkflowDef = serde_yaml::from_str(OPEN_NODE_YAML).unwrap();
-    let session_id = "test-open-node-001".to_string();
+    let run_id = "test-open-node-001".to_string();
 
     let mut sink = gait_core::embed::CliSink::stdio(true);
     let outcome = run_workflow(
         WorkflowRunOpts {
             workflow_def: to_proto(&wf),
             yaml_path: "open-node-test.yaml".to_string(),
-            session_id: session_id.clone(),
+            run_id: run_id.clone(),
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.clone(),
             args: vec![],
@@ -89,7 +89,7 @@ async fn absent_prompt_headless_exits_node_open() {
     assert_ne!(outcome, WorkflowOutcome::GatePaused);
 
     // (a-2) Run-log has NodeStart("chat") but NO NodeComplete("chat").
-    let run_log = WorkflowRunLog::open(&gait_dir.join("workflow-runs"), &session_id).unwrap();
+    let run_log = WorkflowRunLog::open(&gait_dir.join("workflow-runs"), &run_id).unwrap();
     let events = run_log.read_events().unwrap_or_default();
     let has_node_start = events.iter().any(|e| {
         matches!(
@@ -143,14 +143,14 @@ async fn gate_node_exits_gate_paused_not_node_open() {
         .unwrap();
 
     let wf: WorkflowDef = serde_yaml::from_str(GATE_YAML).unwrap();
-    let session_id = "test-gate-001".to_string();
+    let run_id = "test-gate-001".to_string();
 
     let mut sink = gait_core::embed::CliSink::stdio(true);
     let outcome = run_workflow(
         WorkflowRunOpts {
             workflow_def: to_proto(&wf),
             yaml_path: "gate-test.yaml".to_string(),
-            session_id: session_id.clone(),
+            run_id: run_id.clone(),
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.clone(),
             args: vec![],
@@ -171,7 +171,7 @@ async fn gate_node_exits_gate_paused_not_node_open() {
     assert_ne!(outcome, WorkflowOutcome::NodeOpen);
 
     // (b-2) Run-log has WorkflowGate event (specific to gate path).
-    let run_log = WorkflowRunLog::open(&gait_dir.join("workflow-runs"), &session_id).unwrap();
+    let run_log = WorkflowRunLog::open(&gait_dir.join("workflow-runs"), &run_id).unwrap();
     let events = run_log.read_events().unwrap_or_default();
     let has_workflow_gate = events.iter().any(|e| {
         matches!(

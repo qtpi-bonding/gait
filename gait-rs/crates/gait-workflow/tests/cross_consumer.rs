@@ -80,7 +80,7 @@ async fn cli_and_channel_observer_produce_identical_state() {
         WorkflowRunOpts {
             workflow_def: to_proto(&wf),
             yaml_path: "cross-consumer-test.yaml".to_string(),
-            session_id: session1.clone(),
+            run_id: session1.clone(),
             gait_dir: gait_dir1.clone(),
             codebase: gait_dir1.clone(),
             args: vec![],
@@ -111,7 +111,7 @@ async fn cli_and_channel_observer_produce_identical_state() {
         WorkflowRunOpts {
             workflow_def: to_proto(&wf),
             yaml_path: "cross-consumer-test.yaml".to_string(),
-            session_id: session2.clone(),
+            run_id: session2.clone(),
             gait_dir: gait_dir2.clone(),
             codebase: gait_dir2.clone(),
             args: vec![],

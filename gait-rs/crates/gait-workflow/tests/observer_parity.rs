@@ -89,7 +89,7 @@ async fn observer_parity_shell_workflow() {
         WorkflowRunOpts {
             workflow_def: gait_workflow::convert::to_proto(&wf),
             yaml_path: "workflows/parity-test.yaml".to_string(),
-            session_id: session_id.clone(),
+            run_id: session_id.clone(),
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.clone(),
             args: vec![],
@@ -180,7 +180,7 @@ async fn run_workflow_accepts_recording_sink() {
         WorkflowRunOpts {
             workflow_def: gait_workflow::convert::to_proto(&wf),
             yaml_path: "rec-test.yaml".to_string(),
-            session_id: session.clone(),
+            run_id: session.clone(),
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.clone(),
             args: vec![],

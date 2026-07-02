@@ -76,18 +76,15 @@ pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) {
         }
     };
 
-    let session_id = gait_workflow::convert::mint_run_id(&wf.name);
-    eprintln!(
-        "[gait workflow] starting {} as session {}",
-        name, session_id
-    );
+    let run_id = gait_workflow::convert::mint_run_id(&wf.name);
+    eprintln!("[gait workflow] starting {} as session {}", name, run_id);
 
     let mut sink = gait_core::embed::CliSink::stdio(false);
     match run_workflow(
         WorkflowRunOpts {
             workflow_def: gait_workflow::convert::to_proto(&wf),
             yaml_path: yaml_path.to_string_lossy().to_string(),
-            session_id,
+            run_id,
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.join("codebase"),
             args,
@@ -203,7 +200,7 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) {
         WorkflowRunOpts {
             workflow_def: gait_workflow::convert::to_proto(&wf),
             yaml_path: yaml_path_str,
-            session_id: workflow_id,
+            run_id: workflow_id,
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.join("codebase"),
             args: vec![],
