@@ -347,23 +347,26 @@ pub async fn run_workflow(
         codebase,
         args,
     } = opts;
-    // Internal bookkeeping session (the run's transient session home, retired in Stages 2-3).
+    // The run id doubles as the SESSION_ID env value nodes see and as the default
+    // workflow_id; it is NOT a git session — the run owns its own branch/worktree
+    // (`run/<run_id>` + `workflow-runs/<run_id>/worktree/`) below. There is no
+    // `sessions/<run_id>/` bookkeeping session anymore: sessions do not know
+    // workflows exist (plan item 3 / I1), and prompt nodes mint their own fresh
+    // per-node sessions.
     let session_id = run_id.clone();
     let wf = Arc::new(wf_owned);
 
     let repos = gait_core::git::Repos::production();
-    repos
-        .traces
-        .create_session_worktree(&gait_dir, &session_id)?;
-    let session_dir = gait_dir.join("sessions").join(&session_id);
-    let tx_path = session_dir.join("log.jsonl");
 
     let args_str = args.join(" ");
     let workflow_runs_dir = gait_dir.join("workflow-runs");
-    let run_log = if tx_path.exists() {
-        WorkflowRunLog::open(&workflow_runs_dir, &session_id)?
+    // Open-vs-create is keyed on the run log's OWN existence — the only correct
+    // predicate for resume (`gait workflow continue <run_id>` re-invokes this).
+    let run_log_path = workflow_runs_dir.join(&run_id).join("log.jsonl");
+    let run_log = if run_log_path.exists() {
+        WorkflowRunLog::open(&workflow_runs_dir, &run_id)?
     } else {
-        WorkflowRunLog::create(&workflow_runs_dir, &session_id)?
+        WorkflowRunLog::create(&workflow_runs_dir, &run_id)?
     };
 
     // One executor per run: RAII lock on the run dir (blocks a racing `continue`).
@@ -393,7 +396,10 @@ pub async fn run_workflow(
     };
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<StreamItem>();
-    let rec = Recorder::for_session(&gait_dir, &session_id, tx);
+    // The run-level recorder is used only for its `.sender()` (StreamItem fan-out
+    // to the sink); it never `.record()`s a session transcript, so it needs no
+    // log path. Prompt nodes construct their own session recorders internally.
+    let rec = Recorder::new(std::path::PathBuf::new(), tx);
 
     // Interactive (absent-prompt) nodes must be driven with the owned live
     // source outside the FuturesUnordered pool (which requires Send).  We
@@ -483,11 +489,6 @@ pub async fn run_workflow(
                         Some(sink),
                     )
                     .await?;
-                    repos.traces.commit_session(
-                        &gait_dir,
-                        &session_id,
-                        &format!("workflow: open node {}", node_id),
-                    )?;
                     return Ok(WorkflowOutcome::NodeOpen);
                 }
                 // No live input available → fall through to non-interactive path
@@ -563,11 +564,6 @@ pub async fn run_workflow(
                     // NodeStart was already recorded in enqueue_node_task;
                     // NodeComplete is NOT emitted — the node is left in Running
                     // state so reconstruct_state.open_node() returns it.
-                    repos.traces.commit_session(
-                        &gait_dir,
-                        &session_id,
-                        &format!("workflow: open node {}", node_id),
-                    )?;
                     return Ok(WorkflowOutcome::NodeOpen);
                 }
 
@@ -692,11 +688,6 @@ pub async fn run_workflow(
                 NodeTaskOutcome::GatePaused(ref out) => {
                     observer.on_event(&run_log.workflow_gate(&node_id, &out.text)?);
                     state.set_status(&node_id, NodeStatus::Paused);
-                    repos.traces.commit_session(
-                        &gait_dir,
-                        &session_id,
-                        &format!("workflow: gate {}", node_id),
-                    )?;
                     eprintln!("[gait workflow] paused at gate '{}'", node_id);
                     return Ok(WorkflowOutcome::GatePaused);
                 }
@@ -717,11 +708,6 @@ pub async fn run_workflow(
                     // Proto Workflow has no workflow-level error hook; per-node hooks
                     // on the failing node are already run above via node.hooks.
 
-                    repos.traces.commit_session(
-                        &gait_dir,
-                        &session_id,
-                        &format!("workflow: error at {}", node_id),
-                    )?;
                     anyhow::bail!("workflow aborted at node '{}': {}", node_id, msg);
                 }
 
@@ -803,12 +789,6 @@ pub async fn run_workflow(
                     }
                 }
             }
-
-            repos.traces.commit_session(
-                &gait_dir,
-                &session_id,
-                &format!("workflow: {}", node_id),
-            )?;
         }
 
         emit_workflow_complete(
@@ -857,13 +837,10 @@ async fn emit_workflow_start(
 ) -> anyhow::Result<()> {
     // wf is already proto Workflow — pass directly (no conversion needed).
     observer.on_event(&run_log.workflow_start(session_id, &wf.name, yaml_path, args, wf)?);
-    repos
-        .traces
-        .commit_session(gait_dir, session_id, "workflow: start")?;
 
     // Note: proto Workflow does not carry workflow-level hooks (only per-node hooks via Node.hooks).
     // Workflow-level before/after hooks are a serde-schema-only feature; omitted from proto IR.
-    let _ = (workflow_id, codebase, args_str, state); // suppress unused warnings
+    let _ = (repos, gait_dir, workflow_id, codebase, args_str, state); // suppress unused warnings
     Ok(())
 }
 
@@ -881,12 +858,9 @@ async fn emit_workflow_complete(
     observer: &mut dyn WorkflowObserver,
 ) -> anyhow::Result<()> {
     observer.on_event(&run_log.workflow_complete(session_id)?);
-    repos
-        .traces
-        .commit_session(gait_dir, session_id, "workflow: complete")?;
 
     // Note: proto Workflow does not carry workflow-level hooks.
-    let _ = (wf, workflow_id, codebase, args_str, state);
+    let _ = (repos, gait_dir, wf, workflow_id, codebase, args_str, state);
     Ok(())
 }
 

@@ -69,10 +69,19 @@ nodes:
         "greet node must be done"
     );
 
+    // Sessions must not know workflows exist (item 9 / I1): the run owns its own
+    // `run/<run_id>` branch, and NO bookkeeping `session/<run_id>` branch is created.
     let repo = git2::Repository::open(ws.path()).unwrap();
-    let branch_name = format!("session/{}", session_id);
-    let branch = repo.find_branch(&branch_name, git2::BranchType::Local);
-    assert!(branch.is_ok(), "session branch must exist");
+    assert!(
+        repo.find_branch(&format!("run/{}", session_id), git2::BranchType::Local)
+            .is_ok(),
+        "run branch must exist"
+    );
+    assert!(
+        repo.find_branch(&format!("session/{}", session_id), git2::BranchType::Local)
+            .is_err(),
+        "no bookkeeping session branch must be created for a workflow run"
+    );
 }
 
 #[tokio::test]
