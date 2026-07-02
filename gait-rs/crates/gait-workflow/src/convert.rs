@@ -3,6 +3,7 @@
 use gait_core::proto::gait::workflow::v1::{
     node, BranchNode, GateNode, Hooks, Node, OnError, PromptNode, ShellNode, Workflow,
 };
+use gait_core::proto::hash::content_hash;
 
 use crate::schema::{HooksConfig, NodeDef, OnErrorConfig, WorkflowDef};
 
@@ -16,6 +17,16 @@ pub fn to_proto(def: &WorkflowDef) -> Workflow {
         auto: def.auto,
         nodes: def.nodes.iter().map(node_to_proto).collect(),
     }
+}
+
+/// Content hash of the canonical def sub-message — the `Workflow` IR only,
+/// excluding run-scoped fields (run_id/yaml_path/args) that live in the
+/// surrounding `WorkflowStart`. Reuses the frozen `hash::content_hash` scheme
+/// so a logged def and a recompiled-from-YAML def hash identically iff the
+/// graphs are equal.
+pub fn def_content_hash(def: &Workflow) -> String {
+    let body = serde_json::to_value(def).expect("serialize workflow def to proto3-JSON");
+    content_hash(def.version, &body)
 }
 
 fn hooks(h: &Option<HooksConfig>) -> Option<Hooks> {
@@ -162,5 +173,20 @@ nodes:
         let b = mint_run_id("t");
         assert!(a.starts_with("t-"));
         assert_ne!(a, b, "consecutive mints must differ (monotonic suffix)");
+    }
+
+    #[test]
+    fn def_content_hash_stable_and_sensitive() {
+        let yaml_a = "name: t\nversion: \"1\"\nnodes:\n  - id: a\n    shell: \"ls\"\n";
+        let yaml_b = "name: t\nversion: \"1\"\nnodes:\n  - id: a\n    shell: \"pwd\"\n";
+        let a1 = def_content_hash(&to_proto(&serde_yaml::from_str(yaml_a).unwrap()));
+        let a2 = def_content_hash(&to_proto(&serde_yaml::from_str(yaml_a).unwrap()));
+        let b = def_content_hash(&to_proto(&serde_yaml::from_str(yaml_b).unwrap()));
+        assert_eq!(
+            a1, a2,
+            "same def must hash identically (deterministic to_proto)"
+        );
+        assert_ne!(a1, b, "edited command must change the def hash");
+        assert_eq!(a1.len(), 64, "sha-256 hex");
     }
 }
