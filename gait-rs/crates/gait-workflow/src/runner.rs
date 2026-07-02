@@ -113,6 +113,11 @@ fn resolve_node_session(state: &mut WorkflowState, node: &Node) -> String {
 /// Nodes whose depends_on are all satisfied, not yet completed, and not in-flight.
 /// `exclude` is an optional set of node IDs to skip (used to exclude goto-only targets
 /// from the initial ready set — they should only be enqueued via ErrorGoto).
+/// Returns *automated* ready node indices only — deps satisfied, not completed,
+/// not in-flight, not excluded, and NOT interactive. Interactive (absent-prompt)
+/// nodes never enter the `FuturesUnordered` pool; they are handled exclusively
+/// by `ready_interactive_nodes` + `handle_open_node` once the automated frontier
+/// (this function's output) drains to empty.
 fn compute_ready_nodes(
     nodes: &[Node],
     completed: &HashSet<String>,
@@ -126,6 +131,7 @@ fn compute_ready_nodes(
             !completed.contains(&n.id)
                 && !in_flight.contains(&n.id)
                 && !exclude.contains(&n.id)
+                && !is_interactive_node(n)
                 && n.depends_on.iter().all(|dep| completed.contains(dep))
         })
         .map(|(i, _)| i)
@@ -136,7 +142,6 @@ fn compute_ready_nodes(
 /// they are suspension points handled by `handle_open_node` after the automated
 /// frontier drains. Mirrors `compute_ready_nodes`' predicate but keeps only
 /// interactive nodes.
-#[allow(dead_code)]
 fn ready_interactive_nodes(
     nodes: &[Node],
     completed: &HashSet<String>,
@@ -356,6 +361,86 @@ fn is_interactive_node(node: &gait_core::proto::gait::workflow::v1::Node) -> boo
     matches!(node.body.as_ref(), Some(node::Body::Prompt(p)) if p.prompt.is_empty())
 }
 
+/// How the runner resumes at an open (interactive) node. Chosen by whether a live
+/// input source is in hand: REPL → `ResumeInline`; CLI/headless → `SuspendAndExit`.
+enum OpenResumption {
+    /// No live input: settle progress and let the caller return `NodeOpen`; the
+    /// process exits and `gait workflow continue` re-enters. (Advancing *past* an
+    /// open node — supplying the response, marking Done — is a future finalize
+    /// model, not item 8; item 8 only relocates the suspension point.)
+    SuspendAndExit,
+    /// Live source: drive the node inline off the source, rendering through the
+    /// runner's sink, then let the caller return `NodeOpen` (behavior-preserving;
+    /// a future finalize model may map the turn result to completion here).
+    ResumeInline(Box<dyn TurnSource>),
+}
+
+/// Handle a single open interactive node. Resolves the node's effective session
+/// (reuse-or-mint via `resolve_node_session`), records `node_start` **with that
+/// session**, then applies the resumption strategy. No completion is recorded —
+/// the node is deliberately left `Running` so `reconstruct_state`'s `open_node()`
+/// keeps returning it; the caller returns `WorkflowOutcome::NodeOpen` after this.
+///
+/// `session_id` is the *run's* bookkeeping session id (env/hooks); the node's
+/// own turn runs in `node_session` from `resolve_node_session`.
+#[allow(clippy::too_many_arguments)]
+async fn handle_open_node(
+    node: &Node,
+    wf: &Arc<Workflow>,
+    workflow_id: &str,
+    session_id: &str,
+    gait_dir: &Path,
+    codebase: &Path,
+    run_worktree: &Path,
+    args_str: &str,
+    state: &mut WorkflowState,
+    rec: &Recorder,
+    run_log: &WorkflowRunLog,
+    observer: &mut dyn WorkflowObserver,
+    sink: &mut dyn TurnSink,
+    strategy: OpenResumption,
+) -> anyhow::Result<()> {
+    let node_id = node.id.clone();
+    // Reuse a session already recorded for this node (resume/re-entry); mint
+    // only on first enqueue — never the bare `node_session_id` minter here, or
+    // a re-entered open node would orphan its own transcript on every resume.
+    let node_session = resolve_node_session(state, node);
+    observer.on_event(&run_log.node_start(&node_id, "prompt", 1, &node_session)?);
+    state.set_status(&node_id, NodeStatus::Running);
+
+    if let OpenResumption::ResumeInline(live) = strategy {
+        let vars = VarContext {
+            workflow_id: workflow_id.to_string(),
+            session_id: session_id.to_string(),
+            gait_dir: gait_dir.to_path_buf(),
+            codebase: codebase.to_path_buf(),
+            args: args_str.to_string(),
+            node_id: node_id.clone(),
+            node_outputs: state.node_outputs.clone(),
+            node_exit: None,
+            failed_node: state.failed_node.clone(),
+        };
+        let ctx = crate::exec_shell::NodeContext {
+            workflow_id,
+            session_id,
+            node_session: &node_session,
+            gait_dir,
+            codebase,
+            run_worktree,
+            vars,
+            workflow_tx: rec.sender(),
+        };
+        let p = match node.body.as_ref() {
+            Some(node::Body::Prompt(p)) => p,
+            _ => unreachable!("handle_open_node called on non-prompt node"),
+        };
+        let _open =
+            crate::exec_prompt::exec_prompt_node(node, p, &ctx, wf, Some(live), Some(sink)).await?;
+    }
+
+    Ok(())
+}
+
 pub async fn run_workflow(
     opts: WorkflowRunOpts,
     sink: &mut dyn TurnSink,
@@ -466,57 +551,12 @@ pub async fn run_workflow(
         // must not be enqueued at startup; they are only triggered on error.
         let goto_only = goto_only_nodes(&wf.nodes);
 
-        // Enqueue all initially ready nodes; run interactive ones inline.
+        // Enqueue all initially ready (automated) nodes. Interactive nodes are
+        // excluded from `compute_ready_nodes` and handled after the pool drains
+        // (see the `tasks.is_empty()` branch below via `handle_open_node`).
         let initially_ready = compute_ready_nodes(&wf.nodes, &completed, &in_flight, &goto_only);
         for idx in initially_ready {
             let node = wf.nodes[idx].clone();
-            if is_interactive_node(&node) {
-                if let Some(live) = live_input.take() {
-                    // Run the interactive node inline with the live source, then
-                    // return NodeOpen so the caller can restart with a fresh source.
-                    let node_id = node.id.clone();
-                    let ntype = "prompt";
-                    let node_session = resolve_node_session(&mut state, &node);
-                    observer.on_event(&run_log.node_start(&node_id, ntype, 1, &node_session)?);
-                    state.set_status(&node_id, NodeStatus::Running);
-                    let vars = VarContext {
-                        workflow_id: workflow_id.clone(),
-                        session_id: session_id.clone(),
-                        gait_dir: gait_dir.clone(),
-                        codebase: codebase.clone(),
-                        args: args_str.clone(),
-                        node_id: node_id.clone(),
-                        node_outputs: state.node_outputs.clone(),
-                        node_exit: None,
-                        failed_node: state.failed_node.clone(),
-                    };
-                    let ctx = crate::exec_shell::NodeContext {
-                        workflow_id: &workflow_id,
-                        session_id: &session_id,
-                        node_session: &node_session,
-                        gait_dir: &gait_dir,
-                        codebase: &codebase,
-                        run_worktree: &run_worktree,
-                        vars,
-                        workflow_tx: rec.sender(),
-                    };
-                    let _out = crate::exec_prompt::exec_prompt_node(
-                        &node,
-                        match node.body.as_ref() {
-                            Some(gait_core::proto::gait::workflow::v1::node::Body::Prompt(p)) => p,
-                            _ => unreachable!(),
-                        },
-                        &ctx,
-                        &wf,
-                        Some(live),
-                        Some(sink),
-                    )
-                    .await?;
-                    return Ok(WorkflowOutcome::NodeOpen);
-                }
-                // No live input available → fall through to non-interactive path
-                // (will return NodeOpen via task pool as before).
-            }
             enqueue_node_task(
                 node,
                 &wf,
@@ -538,7 +578,35 @@ pub async fn run_workflow(
 
         loop {
             if tasks.is_empty() {
-                break;
+                // Automated frontier exhausted. Suspend at the first ready
+                // interactive node, if any; otherwise the workflow is complete.
+                let open = ready_interactive_nodes(&wf.nodes, &completed, &in_flight);
+                let Some(&idx) = open.first() else {
+                    break;
+                };
+                let node = wf.nodes[idx].clone();
+                let strategy = match live_input.take() {
+                    Some(live) => OpenResumption::ResumeInline(live),
+                    None => OpenResumption::SuspendAndExit,
+                };
+                handle_open_node(
+                    &node,
+                    &wf,
+                    &workflow_id,
+                    &session_id,
+                    &gait_dir,
+                    &codebase,
+                    &run_worktree,
+                    &args_str,
+                    &mut state,
+                    &rec,
+                    &run_log,
+                    observer,
+                    sink,
+                    strategy,
+                )
+                .await?;
+                return Ok(WorkflowOutcome::NodeOpen);
             }
 
             // Drain stream items into the sink AS they arrive (not just when a
@@ -582,13 +650,9 @@ pub async fn run_workflow(
             );
 
             match outcome {
-                NodeTaskOutcome::Open => {
-                    // Absent-prompt node, no input: exit cleanly without settling.
-                    // NodeStart was already recorded in enqueue_node_task;
-                    // NodeComplete is NOT emitted — the node is left in Running
-                    // state so reconstruct_state.open_node() returns it.
-                    return Ok(WorkflowOutcome::NodeOpen);
-                }
+                NodeTaskOutcome::Open => unreachable!(
+                    "interactive nodes are excluded from the pool; open handled by handle_open_node"
+                ),
 
                 NodeTaskOutcome::Done(ref out) => {
                     observer.on_event(&run_log.node_complete(
