@@ -273,11 +273,30 @@ pub fn cmd_workflow_abort(argv: &[String], gait_dir: PathBuf) {
             std::process::exit(1);
         }
     };
-    let _ = gait_core::git::Repos::production().traces.commit_session(
-        &gait_dir,
-        &workflow_id,
-        "workflow: aborted",
-    );
+
+    // Abort must change recoverable state: write a terminal WorkflowError into the
+    // run log so `reconstruct_state` folds the run to "failed" and `list`/`continue`
+    // no longer treat it as resumable. (The run log is the sole source of truth —
+    // there is no bookkeeping session to commit.)
+    let workflow_runs_dir = gait_dir.join("workflow-runs");
+    let run_log = match WorkflowRunLog::open(&workflow_runs_dir, &workflow_id) {
+        Ok(l) => l,
+        Err(_) => {
+            eprintln!("[gait] no run log found for workflow {}", workflow_id);
+            std::process::exit(1);
+        }
+    };
+    // Best-effort: record the node that was in flight (if any) for context.
+    let failed_node = run_log
+        .read_events()
+        .ok()
+        .map(|evs| reconstruct_state(&evs))
+        .and_then(|state| state.open_node().map(|s| s.to_string()))
+        .unwrap_or_default();
+    if let Err(e) = run_log.workflow_error(&workflow_id, &failed_node, "aborted by user") {
+        eprintln!("[gait] failed to record abort for {}: {}", workflow_id, e);
+        std::process::exit(1);
+    }
     println!("[gait workflow] aborted {}", workflow_id);
 }
 
@@ -309,6 +328,52 @@ mod continue_arg_tests {
         assert!(a.force);
         let b = ContinueArgs::try_parse_from(["run-1"]).unwrap();
         assert!(!b.force);
+    }
+}
+
+#[cfg(test)]
+mod abort_tests {
+    use super::*;
+    use gait_core::proto::gait::workflow::v1::Workflow;
+    use gait_workflow::run_log::WorkflowRunLog;
+
+    #[test]
+    fn abort_folds_run_to_failed() {
+        let td = tempfile::TempDir::new().unwrap();
+        let gait_dir = td.path().to_path_buf();
+        let runs = gait_dir.join("workflow-runs");
+        // A run that is mid-flight: started, one node running, no terminal event.
+        let log = WorkflowRunLog::create(&runs, "deploy-abort-1").unwrap();
+        log.workflow_start(
+            "deploy-abort-1",
+            "deploy",
+            "wf.yaml",
+            &[],
+            &Workflow::default(),
+        )
+        .unwrap();
+        log.node_start("build", "shell", 1, "").unwrap();
+        // Pre-condition: without the abort, the run folds to "running" (resumable).
+        let before = reconstruct_state(
+            &WorkflowRunLog::open(&runs, "deploy-abort-1")
+                .unwrap()
+                .read_events()
+                .unwrap(),
+        );
+        assert_eq!(before.workflow_status(), "running");
+
+        cmd_workflow_abort(&["deploy-abort-1".to_string()], gait_dir.clone());
+
+        // Post-condition: abort wrote a terminal WorkflowError → folds to "failed",
+        // so list/continue no longer treat it as resumable.
+        let after = reconstruct_state(
+            &WorkflowRunLog::open(&runs, "deploy-abort-1")
+                .unwrap()
+                .read_events()
+                .unwrap(),
+        );
+        assert_eq!(after.workflow_status(), "failed");
+        assert_eq!(after.failed_node.as_deref(), Some("build"));
     }
 }
 
