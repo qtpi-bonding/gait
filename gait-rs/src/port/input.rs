@@ -10,6 +10,15 @@ pub enum TurnStart {
     Resume,
 }
 
+/// The port that yields turns to [`run_loop`]. **`?Send` by contract, not
+/// omission.** The run loop is *awaited on the caller's own task*, never
+/// `tokio::spawn`ed across threads, so no `Send` bound is needed anywhere in the
+/// turn/workflow path: the REPL's view state is single-threaded (`Rc<RefCell>`),
+/// and the workflow runner handles interactive nodes sequentially with automated
+/// work (see `runner::handle_open_node`). **Invariant a maintainer must not
+/// break:** do not spawn a `TurnSource`/`TurnDriver` onto another thread — drive
+/// them inline. If you ever need cross-thread execution, revisit
+/// `architecture-mapping/spec-05-interactive-suspension.md` first.
 #[async_trait::async_trait(?Send)]
 pub trait TurnSource {
     /// The next turn to run, or `None` at EOF (single-shot done / quit / disconnect).

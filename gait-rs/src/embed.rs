@@ -111,10 +111,12 @@ impl BrainLaunch {
 /// Per-turn machinery the loop can't own generically. `?Send`: the driver runs on
 /// the loop's own task (only the brain spawn is async), and a REPL driver/sink holds
 /// non-`Send` view state.
-///
 /// Post-Task-2: `resolve_profile` and `make_recorder` have been REMOVED — the brain
 /// resolves its own profile from `BrainInit`. The only public method is `brain_launch()`,
 /// which supplies the data `relay_brain_turn` needs to spawn a sealed brain.
+/// The `?Send` here is a deliberate contract mirrored on [`TurnSource`]: the loop
+/// is awaited inline, never spawned across threads. Do not `tokio::spawn` a
+/// driver. See `architecture-mapping/spec-05-interactive-suspension.md`.
 #[async_trait::async_trait(?Send)]
 pub trait TurnDriver {
     /// All data needed to spawn `gait __brain` for one turn.
