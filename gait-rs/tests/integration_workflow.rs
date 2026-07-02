@@ -46,7 +46,7 @@ nodes:
         WorkflowRunOpts {
             workflow_def: convert::to_proto(&wf),
             yaml_path: "workflows/test-shell.yaml".into(),
-            session_id: session_id.into(),
+            run_id: session_id.into(),
             gait_dir: ws.path().to_path_buf(),
             codebase: ws.path().to_path_buf(),
             args: vec![],
@@ -104,7 +104,7 @@ nodes:
         WorkflowRunOpts {
             workflow_def: convert::to_proto(&wf),
             yaml_path: "workflows/branch-test.yaml".into(),
-            session_id: session_id.into(),
+            run_id: session_id.into(),
             gait_dir: ws.path().to_path_buf(),
             codebase: ws.path().to_path_buf(),
             args: vec![],
@@ -135,8 +135,10 @@ nodes:
 /// Phase 3a proof: `run_workflow` now records its events through a `Recorder` +
 /// a spawned `StdioSink` consumer (no more `wire::emit`/`println!` to stdout).
 /// Two guarantees:
-///   1. `record` still writes the durable transcript — `workflow_start` and
-///      `workflow_complete` Raw events are present in `log.jsonl`.
+///   1. The run's own typed run log (`workflow-runs/<run_id>/log.jsonl`) carries
+///      `WorkflowStart`/`WorkflowComplete` — the durable transcript of the run
+///      (item 9: sessions must not know workflows exist, so this is no longer
+///      the session's `log.jsonl` — see `session_log_purity` in gait-workflow).
 ///   2. `.await.unwrap()` returns — the run drops the `Recorder` (closing the
 ///      channel) and joins the consumer cleanly, i.e. no deadlock on exit.
 #[tokio::test]
@@ -153,14 +155,14 @@ nodes:
 "#;
     std::fs::write(ws.path().join("workflows/rec-test.yaml"), yaml).unwrap();
     let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
-    let session_id = "swf_rec01";
+    let run_id = "swf_rec01";
 
     let mut sink = gait_core::embed::CliSink::stdio(true);
     run_workflow(
         WorkflowRunOpts {
             workflow_def: convert::to_proto(&wf),
             yaml_path: "workflows/rec-test.yaml".into(),
-            session_id: session_id.into(),
+            run_id: run_id.into(),
             gait_dir: ws.path().to_path_buf(),
             codebase: ws.path().to_path_buf(),
             args: vec![],
@@ -172,20 +174,31 @@ nodes:
     .await
     .unwrap();
 
-    let log = ws
+    let run_log = ws
         .path()
-        .join("sessions")
-        .join(session_id)
+        .join("workflow-runs")
+        .join(run_id)
         .join("log.jsonl");
-    let content = std::fs::read_to_string(&log).unwrap();
+    let content = std::fs::read_to_string(&run_log).unwrap();
     assert!(
-        content.contains("\"type\":\"workflow_start\""),
-        "log must contain workflow_start: {content}"
+        content.contains("\"workflowStart\""),
+        "run log must contain workflowStart: {content}"
     );
     assert!(
-        content.contains("\"type\":\"workflow_complete\""),
-        "log must contain workflow_complete: {content}"
+        content.contains("\"workflowComplete\""),
+        "run log must contain workflowComplete: {content}"
     );
+
+    // item 9: the session log must NOT carry workflow lifecycle events.
+    let session_log = ws.path().join("sessions").join(run_id).join("log.jsonl");
+    if session_log.exists() {
+        let session_content = std::fs::read_to_string(&session_log).unwrap();
+        assert!(
+            !session_content.contains("workflow_start")
+                && !session_content.contains("workflow_complete"),
+            "session log must not leak workflow events: {session_content}"
+        );
+    }
 }
 
 /// Phase 3b proof: a prompt node's sub-turn must publish its events to the
@@ -249,8 +262,10 @@ async fn prompt_subturn_publishes_to_workflow_channel() {
         let ctx = NodeContext {
             workflow_id: "wf1",
             session_id,
+            node_session: session_id,
             gait_dir: ws.path(),
             codebase: ws.path(),
+            run_worktree: ws.path(),
             workflow_tx: &tx,
             vars: VarContext {
                 workflow_id: "wf1".into(),
@@ -305,7 +320,7 @@ async fn smoke_parallel_workflow_completes() {
         WorkflowRunOpts {
             workflow_def: convert::to_proto(&wf),
             yaml_path: "smoke-parallel.yaml".into(),
-            session_id: session_id.into(),
+            run_id: session_id.into(),
             gait_dir: ws.path().to_path_buf(),
             codebase: ws.path().to_path_buf(),
             args: vec![],
@@ -352,7 +367,7 @@ async fn smoke_cycle_workflow_via_goto() {
         WorkflowRunOpts {
             workflow_def: convert::to_proto(&wf),
             yaml_path: "smoke-cycle.yaml".into(),
-            session_id: session_id.into(),
+            run_id: session_id.into(),
             gait_dir: ws.path().to_path_buf(),
             codebase: ws.path().to_path_buf(),
             args: vec![],
@@ -395,7 +410,7 @@ async fn smoke_retry_on_error_goto() {
         WorkflowRunOpts {
             workflow_def: convert::to_proto(&wf),
             yaml_path: "smoke-retry.yaml".into(),
-            session_id: session_id.into(),
+            run_id: session_id.into(),
             gait_dir: ws.path().to_path_buf(),
             codebase: ws.path().to_path_buf(),
             args: vec![],
@@ -409,14 +424,14 @@ async fn smoke_retry_on_error_goto() {
 
     let log = std::fs::read_to_string(
         ws.path()
-            .join("sessions")
+            .join("workflow-runs")
             .join(session_id)
             .join("log.jsonl"),
     )
     .unwrap();
     assert!(
-        log.contains("\"type\":\"node_error\""),
-        "flaky node must emit node_error"
+        log.contains("\"nodeError\""),
+        "run log must contain nodeError: {log}"
     );
     assert!(
         log.contains("on_error goto"),
