@@ -11,6 +11,7 @@ pub struct NodeContext<'a> {
     pub node_session: &'a str,
     pub gait_dir: &'a Path,
     pub codebase: &'a Path,
+    pub run_worktree: &'a Path,
     pub vars: VarContext,
     /// Live channel sender for the workflow run. Sub-turns (prompt nodes) clone
     /// this so their deltas/events reach the workflow's consumer (Phase 3b). It is
@@ -25,7 +26,7 @@ pub async fn exec_shell_node(
 ) -> anyhow::Result<NodeOutput> {
     let cmd = substitute(&shell.command, &ctx.vars);
     let timeout_ms: u64 = shell.timeout_ms.unwrap_or(120_000);
-    let cwd = ctx.codebase;
+    let cwd = ctx.run_worktree;
 
     let result = tokio::time::timeout(
         std::time::Duration::from_millis(timeout_ms),
@@ -86,6 +87,28 @@ mod tests {
         assert_eq!(out.exit_code, Some(1));
     }
 
+    #[tokio::test]
+    async fn shell_runs_in_the_run_worktree() {
+        let ws = TempDir::new().unwrap();
+        let run_wt = ws.path().join("wt");
+        std::fs::create_dir_all(&run_wt).unwrap();
+        std::fs::write(run_wt.join("marker"), "x").unwrap();
+
+        let shell = ShellNode {
+            command: "ls".into(),
+            timeout_ms: None,
+        };
+        let mut ctx = make_test_ctx(ws.path());
+        let leaked: &'static Path = Box::leak(Box::new(run_wt.clone()));
+        ctx.run_worktree = leaked; // shell must cwd here, not ctx.codebase
+        let out = exec_shell_node(&shell, &ctx).await.unwrap();
+        assert!(
+            out.text.contains("marker"),
+            "shell cwd must be the run worktree; got: {}",
+            out.text
+        );
+    }
+
     fn make_test_ctx(ws: &std::path::Path) -> NodeContext<'static> {
         let ws = Box::leak(Box::new(ws.to_path_buf()));
         // Leak a sender so the ctx is 'static; the receiver is dropped, so sends are
@@ -99,6 +122,7 @@ mod tests {
             node_session: "",
             gait_dir: ws,
             codebase: ws,
+            run_worktree: ws,
             workflow_tx: tx,
             vars: crate::vars::VarContext {
                 workflow_id: "wf1".into(),
