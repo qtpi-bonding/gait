@@ -125,6 +125,22 @@ pub fn is_role_argv(argv: &[String]) -> bool {
     )
 }
 
+/// Returns true when `argv[0]` is the `run` role token — how a spine self-spawns
+/// another `gait` process (`launch::RunLaunch::to_process_argv`, used by
+/// `launch_child`/`spawn_wake`/`spawn_agent`) rather than calling `cmd_run`
+/// in-process. `gait-bin`'s `Cli` has no `run` subcommand (task is a bare
+/// positional), so an un-intercepted `run` token would bind to `task` as a
+/// literal string instead of routing to `cmd_run`/`RunArgs`.
+///
+/// Pure function — testable without spawning a real process. This guards the
+/// exact regression fixed alongside spec-00-footguns.md item 4: a prior
+/// cli-redesign silently dropped this pre-check, so every self-spawned
+/// `gait run ...` (subagents, wake, detached agents) crashed on a clap parse
+/// error the moment it started.
+pub fn is_run_argv(argv: &[String]) -> bool {
+    argv.first().map(|s| s.as_str()) == Some("run")
+}
+
 /// Hidden entry point that runs the appropriate role for the given argv.
 /// `runner` is injected by the caller (gait-cli) because gait-core cannot construct
 /// `GaitWorkflowRunner` (that crate is downstream — constructing it here inverts the DAG).
@@ -230,5 +246,27 @@ mod role_dispatch_tests {
         assert!(is_role_argv(&["__brain".into()]));
         assert!(is_role_argv(&["__run-tool".into()])); // the hand subcommand
         assert!(!is_role_argv(&["run".into()]));
+    }
+
+    /// Regression test for the cli-redesign bug fixed alongside
+    /// spec-00-footguns.md item 4: `gait-bin`'s `main()` must intercept the
+    /// `run` role token *before* `Cli::parse()`, or a self-spawned
+    /// `gait run --auto --session <id> ...` (from `launch_child`/
+    /// `spawn_wake`/`spawn_agent`) binds `"run"` to the bare-positional
+    /// `task` field and fails to parse the flags that follow.
+    #[test]
+    fn is_run_argv_recognizes_the_run_role_token_and_only_that() {
+        assert!(is_run_argv(&["run".into()]));
+        assert!(is_run_argv(&[
+            "run".into(),
+            "--auto".into(),
+            "--session".into(),
+            "s1".into()
+        ]));
+        assert!(!is_run_argv(&[])); // empty argv must not panic or match
+        assert!(!is_run_argv(&["__brain".into()]));
+        assert!(!is_run_argv(&["__run-tool".into()])); // must not collide with the hand role
+        assert!(!is_run_argv(&["explain this code".into()])); // a real task string
+        assert!(!is_run_argv(&["running low on time".into()])); // starts with "run" as a substring, not equal
     }
 }

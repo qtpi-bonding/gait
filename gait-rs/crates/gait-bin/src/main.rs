@@ -25,7 +25,10 @@ async fn main() {
     // named `run`, so an un-intercepted `"run"` token would otherwise bind
     // to `task` as a literal string and fail to parse the flags that follow.
     // `cmd_run` resolves `--gait-dir`/`--codebase` from argv itself.
-    if raw.len() >= 2 && raw[1] == "run" {
+    // `is_run_argv` is a pure, unit-tested function (gait-rs/src/lib.rs) —
+    // see `is_run_argv_recognizes_the_run_role_token_and_only_that` for the
+    // regression test guarding this exact dispatch.
+    if raw.len() >= 2 && gait_core::is_run_argv(&raw[1..]) {
         gait_cli::cli::args::cmd_run(&raw[2..]).await;
         return;
     }
