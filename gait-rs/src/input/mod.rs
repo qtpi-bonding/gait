@@ -65,9 +65,10 @@ pub(crate) mod pty;
 pub(crate) mod shell_history;
 pub(crate) mod text;
 
-// Re-export the public pipeline API. The CLI and the REPL both call
-// `input::expand_input` — there are no other expansion entry points.
-pub use expand::{expand_input, ExpandCtx};
+// The public pipeline API lives at `input::expand::{expand_input, ExpandCtx}`
+// and is surfaced crate-wide by the `pub use input::expand::...` re-export in
+// `lib.rs`. The CLI and the REPL both call it — there are no other expansion
+// entry points.
 
 #[cfg(test)]
 mod cli_repl_equivalence {
@@ -89,7 +90,7 @@ mod cli_repl_equivalence {
     //! So we drive the equivalence both for "no prior blocks" (the CLI's
     //! default state) and for the REPL-style inputs that don't reference
     //! `>(N)` (where the two contexts reduce to the same expansion).
-    use super::{expand_input, ExpandCtx};
+    use super::expand::{expand_input, ExpandCtx};
     use std::path::PathBuf;
 
     fn cli_ctx<'a>(history: &'a std::path::Path, codebase: &'a std::path::Path) -> ExpandCtx<'a> {
@@ -114,7 +115,7 @@ mod cli_repl_equivalence {
 
     /// Asserts the CLI task-input path and the REPL input path produce
     /// identical expansion results for the same input string via
-    /// `input::expand_input` (item 12 done-condition). The shared pipeline
+    /// `input::expand::expand_input` (item 12 done-condition). The shared pipeline
     /// is the only expansion function both entry points call — this test
     /// pins that contract.
     #[test]
@@ -172,8 +173,8 @@ mod cli_repl_equivalence {
         assert_eq!(cli, repl);
     }
 
-    /// Belt-and-suspenders: also pin that the documented single entry point
-    /// (`input::expand_input`) is what the `pub use` re-export at
+    /// Belt-and-suspenders: also pin that the canonical entry point
+    /// (`input::expand::expand_input`) is what the `pub use` re-export at
     /// `crate::expand_input` resolves to, so the lib.rs convenience path
     /// and the canonical input-path agree on identity.
     #[test]

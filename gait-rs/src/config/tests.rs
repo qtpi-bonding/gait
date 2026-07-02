@@ -600,8 +600,7 @@ fn strict_errors_on_malformed_gait_jsonc() {
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("gait.jsonc"), "{ invalid json").unwrap();
     let err = load_config_with(dir.path(), ConfigLoadPolicy::Strict)
-        .err()
-        .expect("Strict must error on malformed gait.jsonc");
+        .expect_err("Strict must error on malformed gait.jsonc");
     let msg = format!("{err}");
     assert!(
         msg.contains("gait.jsonc parse error"),
