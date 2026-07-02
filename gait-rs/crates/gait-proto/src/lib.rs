@@ -37,6 +37,7 @@ pub mod gait {
 pub mod envelope;
 pub mod hash;
 pub mod wire;
+pub mod workflow_envelope;
 
 #[cfg(test)]
 mod tests;

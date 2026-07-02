@@ -3,7 +3,7 @@
 //! adds the domain-coupled pieces (`events` constructors, the `Recorder` sink).
 mod error;
 pub use error::ProtoError;
-pub use gait_proto::{envelope, gait, hash, wire};
+pub use gait_proto::{envelope, gait, hash, wire, workflow_envelope};
 
 use crate::proto::gait::log::v1::{event, payload, Event};
 
