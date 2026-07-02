@@ -176,16 +176,17 @@ impl Tool for ShellTool {
                     std::path::PathBuf::from("gait")
                 }
             };
-            let gait_dir_str = self.ctx.gait_dir.to_string_lossy().into_owned();
-            let session = self.ctx.session_id.clone();
-            let wrapped = format!(
-                "{user}\n__ec=$?\n{exe} __daemon-exit --gait-dir {gd} --session {sess} --name {name} --exit $__ec\n",
-                user = params.cmd,
-                exe = shell_quote(&exe.to_string_lossy()),
-                gd = shell_quote(&gait_dir_str),
-                sess = shell_quote(&session),
-                name = shell_quote(&name),
-            );
+            // Argv construction centralized via the typed launcher
+            // (spec-00-footguns.md item 4). This site stays a `sh -c`
+            // fragment (it must run the user's command, capture `$?`, *then*
+            // fire the hook) — `to_shell_fragment` sources the quoted
+            // fragment from the launcher instead of an inline `format!`.
+            let wrapped = crate::launch::DaemonExitLaunch {
+                gait_dir: self.ctx.gait_dir.clone(),
+                session: self.ctx.session_id.clone(),
+                name: name.clone(),
+            }
+            .to_shell_fragment(&exe.to_string_lossy(), &params.cmd);
 
             let mut cmd = std::process::Command::new("sh");
             cmd.args(["-c", &wrapped])
@@ -419,7 +420,11 @@ fn strip_ansi(s: &str) -> String {
 
 /// Single-quote a string for safe embedding in a POSIX shell snippet.
 /// Embedded single-quotes are escaped via the standard `\'\''` sequence.
-fn shell_quote(s: &str) -> String {
+///
+/// `pub(crate)` so `launch::DaemonExitLaunch::to_shell_fragment` (site 6's
+/// typed launcher) can reuse the exact same quoting discipline instead of
+/// re-implementing it.
+pub(crate) fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 

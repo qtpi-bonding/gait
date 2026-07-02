@@ -175,17 +175,14 @@ impl Tool for SpawnAgentTool {
         // or direct Command::spawn otherwise. Spine appends --sandbox-locked when
         // sandbox is active so the child cannot disable sandboxing.
         // detached=false → subagent (cascade-killed with parent); detached=true → peer (survives).
-        rec.spawn_process(
-            vec![
-                "run".to_string(),
-                "--session".to_string(),
-                new_id.clone(),
-                "--gait-dir".to_string(),
-                self.ctx.gait_dir.to_str().unwrap_or(".").to_string(),
-                "--auto".to_string(),
-            ],
-            is_detached,
-        );
+        let argv = crate::launch::RunLaunch {
+            session: Some(new_id.clone()),
+            gait_dir: Some(self.ctx.gait_dir.clone()),
+            auto: true,
+            ..Default::default()
+        }
+        .to_process_argv();
+        rec.spawn_process(argv, is_detached);
 
         Ok(serde_json::json!({ "session_id": new_id }))
     }

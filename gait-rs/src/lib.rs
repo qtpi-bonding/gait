@@ -16,6 +16,7 @@ pub mod workflow_runner;
 pub mod daemon_exit;
 pub mod diagnostic;
 pub mod embed;
+pub mod launch;
 pub mod models_meta;
 pub mod port;
 pub mod profile;
@@ -161,42 +162,9 @@ pub async fn __dispatch_role(
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
             });
 
-            #[derive(clap::Parser)]
-            #[command(no_binary_name = true)]
-            struct BrainArgs {
-                #[arg(long = "session")]
-                session_id: Option<String>,
-                #[arg(long)]
-                auto: bool,
-                #[arg(long = "model")]
-                model_override: Option<String>,
-                #[arg(long = "agent")]
-                agent_name: Option<String>,
-                #[arg(long, action = clap::ArgAction::Append)]
-                allow: Vec<String>,
-                #[arg(long, action = clap::ArgAction::Append)]
-                deny: Vec<String>,
-                #[arg(long)]
-                max_iter: Option<usize>,
-                #[arg(long)]
-                sandbox: bool,
-                #[arg(long = "no-sandbox")]
-                no_sandbox: bool,
-                #[arg(long = "sandbox-locked", hide = true)]
-                sandbox_locked: bool,
-                #[arg(long, hide = true)]
-                gait_dir: Option<std::path::PathBuf>,
-                #[arg(long, hide = true)]
-                codebase: Option<std::path::PathBuf>,
-                #[arg(long, hide = true)]
-                task: Option<String>,
-                #[arg(long = "result-schema", hide = true)]
-                result_schema_path: Option<String>,
-                #[arg(long = "cascade-group", hide = true)]
-                cascade_group: Option<String>,
-            }
-
-            let args = BrainArgs::parse_from(&argv[1..]);
+            // `BrainArgs` lives in `launch.rs` (hoisted out of this match arm
+            // so `launch::BrainLaunch`'s round-trip test can call it).
+            let args = crate::launch::BrainArgs::parse_from(&argv[1..]);
             let api_key = std::env::var("GAIT_BRAIN_API_KEY").ok();
             let config = BrainConfig {
                 session_id: args.session_id,

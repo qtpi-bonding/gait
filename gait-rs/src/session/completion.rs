@@ -155,20 +155,17 @@ pub fn notify_parent(
 /// (the drain runs while holding the session lock, so it writes its own
 /// ledger entries and then hands off to a successor turn via this call).
 pub fn spawn_wake(gait_dir: &Path, parent_session: &str) {
-    let gait_dir_str = gait_dir.to_string_lossy().into_owned();
+    let argv = crate::launch::WakeLaunch {
+        gait_dir: gait_dir.to_path_buf(),
+        parent_session: parent_session.to_string(),
+    }
+    .to_process_argv();
     let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("gait"));
     let mut cmd = std::process::Command::new(&exe);
-    cmd.args([
-        "run",
-        "--session",
-        parent_session,
-        "--gait-dir",
-        &gait_dir_str,
-        "--auto",
-    ])
-    .stdin(std::process::Stdio::null())
-    .stdout(std::process::Stdio::null())
-    .stderr(std::process::Stdio::null());
+    cmd.args(&argv)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
     if let Err(e) = cmd.spawn() {
         // Diagnostic warn: a failed wake is invisible to the parent, so we
         // surface it via the diagnostic module + stderr. The next daemon

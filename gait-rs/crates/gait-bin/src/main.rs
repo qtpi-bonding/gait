@@ -17,6 +17,19 @@ async fn main() {
         return;
     }
 
+    // Pre-check for the `run` role token before clap parsing, for the same
+    // DAG reason as above: `gait run …` is how a spine self-spawns another
+    // `gait` process (`launch::RunLaunch::to_process_argv`, used by
+    // launch_child/spawn_wake/spawn_agent) rather than calling `cmd_run`
+    // in-process. `Cli`'s bare positional `task` field has no subcommand
+    // named `run`, so an un-intercepted `"run"` token would otherwise bind
+    // to `task` as a literal string and fail to parse the flags that follow.
+    // `cmd_run` resolves `--gait-dir`/`--codebase` from argv itself.
+    if raw.len() >= 2 && raw[1] == "run" {
+        gait_cli::cli::args::cmd_run(&raw[2..]).await;
+        return;
+    }
+
     let cli = Cli::parse();
 
     let resolve_gait_dir = || -> PathBuf {
@@ -56,49 +69,29 @@ async fn main() {
         let gait_dir = resolve_gait_dir();
         let codebase = cli.codebase.clone().unwrap_or_else(cwd_or_dot);
 
-        // Build argv for the existing cmd_run / RunArgs parser.
-        let mut run_argv: Vec<String> = vec![];
-        if let Some(ref task) = cli.task {
-            run_argv.extend(["--task".to_string(), task.clone()]);
+        // Build argv for the existing cmd_run / RunArgs parser via the typed
+        // launcher (spec-00-footguns.md item 4) — centralizes this site with
+        // launch_child/spawn_wake/spawn_agent, which build the same argv shape
+        // when self-spawning a `gait run` process.
+        let run_argv = gait_core::launch::RunLaunch {
+            task: cli.task.clone(),
+            session: cli.session.clone(),
+            auto: cli.auto_approve,
+            model_override: cli.model.clone(),
+            agent_name: cli.agent.clone(),
+            allow: cli.allow.clone(),
+            deny: cli.deny.clone(),
+            unlock: cli.unlock.clone(),
+            max_iter: cli.max_iter,
+            result_schema_path: cli
+                .result_schema
+                .as_ref()
+                .map(|rs| rs.to_string_lossy().to_string()),
+            gait_dir: Some(gait_dir.clone()),
+            codebase: Some(codebase.clone()),
+            ..Default::default()
         }
-        if let Some(ref s) = cli.session {
-            run_argv.extend(["--session".to_string(), s.clone()]);
-        }
-        if cli.auto_approve {
-            run_argv.push("--auto".to_string());
-        }
-        if let Some(ref m) = cli.model {
-            run_argv.extend(["--model".to_string(), m.clone()]);
-        }
-        if let Some(ref a) = cli.agent {
-            run_argv.extend(["--agent".to_string(), a.clone()]);
-        }
-        for p in &cli.allow {
-            run_argv.extend(["--allow".to_string(), p.clone()]);
-        }
-        for p in &cli.deny {
-            run_argv.extend(["--deny".to_string(), p.clone()]);
-        }
-        for p in &cli.unlock {
-            run_argv.extend(["--unlock".to_string(), p.clone()]);
-        }
-        if let Some(n) = cli.max_iter {
-            run_argv.extend(["--max-iter".to_string(), n.to_string()]);
-        }
-        if let Some(ref rs) = cli.result_schema {
-            run_argv.extend([
-                "--result-schema".to_string(),
-                rs.to_string_lossy().to_string(),
-            ]);
-        }
-        run_argv.extend([
-            "--gait-dir".to_string(),
-            gait_dir.to_string_lossy().to_string(),
-        ]);
-        run_argv.extend([
-            "--codebase".to_string(),
-            codebase.to_string_lossy().to_string(),
-        ]);
+        .to_argv();
 
         gait_cli::cli::run::cmd_run(&run_argv, gait_dir, codebase).await;
         return;

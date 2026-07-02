@@ -436,4 +436,82 @@ mod tests {
         assert!(a.sandbox_locked);
         assert!(!a.no_sandbox);
     }
+
+    // ── RunLaunch round-trip (spec-00-footguns.md item 4) ───────────────────
+    //
+    // `gait_core::launch::RunLaunch` is gait-core's typed builder for the
+    // argv every self-invocation site that targets `RunArgs` builds
+    // (gait-bin's bare-positional path, spine's launch_child/spawn_wake, and
+    // spawn_agent's detached-agent spawn). The test lives here (not in
+    // gait-core's launch.rs) because `RunArgs` is defined in gait-cli, which
+    // depends on gait-core — gait-core cannot depend back on gait-cli.
+    #[test]
+    fn run_launch_round_trips_through_run_args() {
+        let launch = gait_core::launch::RunLaunch {
+            session: Some("s1".to_string()),
+            task: Some("do the thing".to_string()),
+            auto: true,
+            model_override: Some("anthropic/x".to_string()),
+            agent_name: Some("default".to_string()),
+            result_schema_path: Some("/schema.json".to_string()),
+            allow: vec!["Bash".to_string()],
+            deny: vec!["Net".to_string()],
+            unlock: vec!["/tmp".to_string()],
+            max_iter: Some(9),
+            sandbox: false,
+            no_sandbox: false,
+            sandbox_locked: true,
+            cascade_group: Some("pg123".to_string()),
+            gait_dir: Some(PathBuf::from("/g")),
+            codebase: Some(PathBuf::from("/c")),
+        };
+        let argv = launch.to_argv();
+        // Flags-only: no leading role/subcommand token (`RunArgs` is
+        // `no_binary_name = true` and has no positional field).
+        assert!(!argv.iter().any(|a| a == "run"));
+
+        let parsed = RunArgs::parse_from(&argv);
+        assert_eq!(parsed.session_id, launch.session);
+        assert_eq!(parsed.task, launch.task);
+        assert_eq!(parsed.auto, launch.auto);
+        assert_eq!(parsed.model_override, launch.model_override);
+        assert_eq!(parsed.agent_name, launch.agent_name);
+        assert_eq!(parsed.result_schema_path, launch.result_schema_path);
+        assert_eq!(parsed.allow, launch.allow);
+        assert_eq!(parsed.deny, launch.deny);
+        assert_eq!(parsed.unlock, launch.unlock);
+        assert_eq!(parsed.max_iter, launch.max_iter);
+        assert_eq!(parsed.sandbox, launch.sandbox);
+        assert_eq!(parsed.no_sandbox, launch.no_sandbox);
+        assert_eq!(parsed.sandbox_locked, launch.sandbox_locked);
+        assert_eq!(parsed.cascade_group, launch.cascade_group);
+        // `gait_dir`/`codebase` are private fields on `RunArgs` (consumed by
+        // the caller in args.rs to prevent "unexpected argument" errors) —
+        // parsing without error is the only thing observable from here, so
+        // assert that plus the round-trip of everything that is `pub`.
+    }
+
+    #[test]
+    fn run_launch_defaults_emit_no_optional_flags() {
+        let launch = gait_core::launch::RunLaunch::default();
+        let argv = launch.to_argv();
+        assert!(argv.is_empty());
+        let parsed = RunArgs::parse_from(&argv);
+        assert_eq!(parsed.task, None);
+        assert_eq!(parsed.session_id, None);
+        assert!(!parsed.auto);
+    }
+
+    #[test]
+    fn run_launch_to_process_argv_prepends_run_role_token() {
+        let launch = gait_core::launch::RunLaunch {
+            session: Some("s1".to_string()),
+            auto: true,
+            ..Default::default()
+        };
+        let argv = launch.to_process_argv();
+        assert_eq!(argv[0], "run");
+        // The remainder parses identically to `to_argv()` alone.
+        assert_eq!(&argv[1..], launch.to_argv().as_slice());
+    }
 }

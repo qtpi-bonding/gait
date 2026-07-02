@@ -194,40 +194,17 @@ pub(crate) fn brain_argv(
     sandbox_on: bool,
     profile: &ProfileInputs,
 ) -> Vec<String> {
-    let mut a = vec![
-        "--gait-dir".to_string(),
-        gait_dir.to_string_lossy().into_owned(),
-        "--codebase".to_string(),
-        codebase.to_string_lossy().into_owned(),
-        "--session".to_string(),
-        session_id.to_string(),
-    ];
-    if auto {
-        a.push("--auto".to_string());
+    crate::launch::BrainLaunch {
+        gait_dir: gait_dir.to_path_buf(),
+        codebase: codebase.to_path_buf(),
+        session_id: session_id.to_string(),
+        auto,
+        max_iter,
+        sandbox_on,
+        allow: profile.allow.clone(),
+        deny: profile.deny.clone(),
     }
-    if let Some(n) = max_iter {
-        a.push("--max-iter".to_string());
-        a.push(n.to_string());
-    }
-    for p in &profile.allow {
-        a.push("--allow".to_string());
-        a.push(p.clone());
-    }
-    for p in &profile.deny {
-        a.push("--deny".to_string());
-        a.push(p.clone());
-    }
-    // Sealed spine ⇒ sealed brain (and vice versa); the brain never escapes a
-    // sandboxed parent and is never sandboxed under an unsandboxed parent.
-    a.push(
-        if sandbox_on {
-            "--sandbox-locked"
-        } else {
-            "--no-sandbox"
-        }
-        .to_string(),
-    );
-    a
+    .to_argv()
 }
 
 // ── relay_brain_turn ─────────────────────────────────────────────────────────
@@ -1266,17 +1243,19 @@ async fn reply_feedback(
 /// Returns `Some(child)` for an enrolled subagent (retained for wait), or
 /// `None` for a breakaway peer (detached into its own process group/cgroup).
 fn launch_child(ctx: &TurnCtx, session_id: &str, detached: bool) -> Option<std::process::Child> {
-    let mut argv = vec![
-        "run".to_string(),
-        "--session".to_string(),
-        session_id.to_string(),
-        "--gait-dir".to_string(),
-        ctx.gait_dir.to_str().unwrap_or(".").to_string(),
-        "--auto".to_string(),
-    ];
-    if ctx.sandbox_on {
-        argv.push("--sandbox-locked".to_string());
+    let cascade_group = if detached { None } else { ctx.group.handle() };
+    if !detached && cascade_group.is_none() {
+        eprintln!("[spine] warning: spawn_agent cascade-group handle unavailable; subagent will not be enrolled in cascade group");
     }
+    let argv = crate::launch::RunLaunch {
+        session: Some(session_id.to_string()),
+        gait_dir: Some(ctx.gait_dir.clone()),
+        auto: true,
+        sandbox_locked: ctx.sandbox_on,
+        cascade_group,
+        ..Default::default()
+    }
+    .to_process_argv();
     if detached {
         let mut cmd = std::process::Command::new(&ctx.exe);
         cmd.args(&argv)
@@ -1286,13 +1265,6 @@ fn launch_child(ctx: &TurnCtx, session_id: &str, detached: bool) -> Option<std::
         let _ = ctx.group.spawn_detached(cmd);
         None
     } else {
-        // Subagent: enroll in cascade group.
-        let handle = ctx.group.handle();
-        if let Some(h) = handle {
-            argv.extend(["--cascade-group".to_string(), h]);
-        } else {
-            eprintln!("[spine] warning: spawn_agent cascade-group handle unavailable; subagent will not be enrolled in cascade group");
-        }
         let mut cmd = std::process::Command::new(&ctx.exe);
         cmd.args(&argv)
             .stdin(std::process::Stdio::null())
@@ -1627,9 +1599,9 @@ pub(super) fn test_ctx(ws: &std::path::Path, session_id: &str) -> TurnCtx {
 #[cfg(test)]
 mod tests {
     use super::{
-        brain_argv, build_subagent_feedback, build_turn_profile, drain_inflight,
-        enrich_permissions_preview, error_feedback, handle_spawn_agent, reap_brain, test_ctx,
-        watchdog_breach, ProfileInputs, SpawnAgentArgs, SpinePhase, WatchdogCfg,
+        build_subagent_feedback, build_turn_profile, drain_inflight, enrich_permissions_preview,
+        error_feedback, handle_spawn_agent, reap_brain, test_ctx, watchdog_breach, ProfileInputs,
+        SpawnAgentArgs, SpinePhase, WatchdogCfg,
     };
 
     /// Regression for the spine end-of-turn hang: `reap_brain` must return promptly
@@ -1712,72 +1684,11 @@ mod tests {
         assert_eq!(r, -1, "brain pid should already be reaped (ECHILD)");
     }
 
-    #[test]
-    fn brain_argv_is_canonical_and_has_no_role_token() {
-        let profile = ProfileInputs {
-            agent_name: Some("default".into()),
-            model_override: Some("anthropic/x".into()),
-            allow: vec!["Bash".into()],
-            deny: vec!["Net".into()],
-            result_schema: None,
-            hands_free: false,
-        };
-        let argv = brain_argv(
-            std::path::Path::new("/g"),
-            std::path::Path::new("/c"),
-            "s123",
-            true,
-            Some(7),
-            true,
-            &profile,
-        );
-        // The role token is added by the spawn, never by the builder.
-        assert!(!argv.iter().any(|a| a == "__brain"));
-        // Canonical required flags.
-        assert_eq!(argv[0], "--gait-dir");
-        assert_eq!(argv[1], "/g");
-        assert!(windowed(&argv, "--codebase", "/c"));
-        assert!(windowed(&argv, "--session", "s123"));
-        assert!(argv.iter().any(|a| a == "--auto"));
-        assert!(windowed(&argv, "--max-iter", "7"));
-        assert!(windowed(&argv, "--allow", "Bash"));
-        assert!(windowed(&argv, "--deny", "Net"));
-        // Sealed spine ⇒ sealed brain.
-        assert!(argv.iter().any(|a| a == "--sandbox-locked"));
-        // model/agent/result-schema flow via BrainInit, NOT argv.
-        assert!(!argv.iter().any(|a| a == "--model"));
-        assert!(!argv.iter().any(|a| a == "--agent"));
-    }
-
-    #[test]
-    fn brain_argv_unsandboxed_emits_no_sandbox() {
-        let profile = ProfileInputs {
-            agent_name: None,
-            model_override: None,
-            allow: vec![],
-            deny: vec![],
-            result_schema: None,
-            hands_free: false,
-        };
-        let argv = brain_argv(
-            std::path::Path::new("/g"),
-            std::path::Path::new("/c"),
-            "s",
-            false,
-            None,
-            false,
-            &profile,
-        );
-        assert!(argv.iter().any(|a| a == "--no-sandbox"));
-        assert!(!argv.iter().any(|a| a == "--sandbox-locked"));
-        assert!(!argv.iter().any(|a| a == "--auto"));
-        assert!(!argv.iter().any(|a| a == "--max-iter"));
-    }
-
-    // helper: true if `flag` is immediately followed by `val` in argv.
-    fn windowed(argv: &[String], flag: &str, val: &str) -> bool {
-        argv.windows(2).any(|w| w[0] == flag && w[1] == val)
-    }
+    // `brain_argv_is_canonical_and_has_no_role_token` and
+    // `brain_argv_unsandboxed_emits_no_sandbox` moved to
+    // `launch::tests` (spec-00-footguns.md item 4) — they now assert
+    // against `BrainLaunch::to_argv()` directly, plus a round-trip parse
+    // through `BrainArgs` that these two didn't have before.
 
     #[tokio::test]
     async fn handle_spawn_agent_creates_session_and_returns_id() {
