@@ -99,6 +99,10 @@ impl WorkflowRunLog {
         let ev = WorkflowEvent {
             version: WORKFLOW_LOG_VERSION,
             ts: now_ms(),
+            id: String::new(),
+            seq: 0,
+            content_hash: String::new(),
+            parents: vec![],
             kind: Some(
                 gait_core::proto::gait::workflow::v1::workflow_event::Kind::WorkflowStart(
                     WorkflowStart {
@@ -126,6 +130,10 @@ impl WorkflowRunLog {
         let ev = WorkflowEvent {
             version: WORKFLOW_LOG_VERSION,
             ts: now_ms(),
+            id: String::new(),
+            seq: 0,
+            content_hash: String::new(),
+            parents: vec![],
             kind: Some(
                 gait_core::proto::gait::workflow::v1::workflow_event::Kind::NodeStart(NodeStart {
                     node_id: node_id.to_string(),
@@ -152,6 +160,10 @@ impl WorkflowRunLog {
         let ev = WorkflowEvent {
             version: WORKFLOW_LOG_VERSION,
             ts: now_ms(),
+            id: String::new(),
+            seq: 0,
+            content_hash: String::new(),
+            parents: vec![],
             kind: Some(
                 gait_core::proto::gait::workflow::v1::workflow_event::Kind::NodeComplete(
                     NodeComplete {
@@ -179,6 +191,10 @@ impl WorkflowRunLog {
         let ev = WorkflowEvent {
             version: WORKFLOW_LOG_VERSION,
             ts: now_ms(),
+            id: String::new(),
+            seq: 0,
+            content_hash: String::new(),
+            parents: vec![],
             kind: Some(
                 gait_core::proto::gait::workflow::v1::workflow_event::Kind::NodeError(NodeError {
                     node_id: node_id.to_string(),
@@ -196,6 +212,10 @@ impl WorkflowRunLog {
         let ev = WorkflowEvent {
             version: WORKFLOW_LOG_VERSION,
             ts: now_ms(),
+            id: String::new(),
+            seq: 0,
+            content_hash: String::new(),
+            parents: vec![],
             kind: Some(
                 gait_core::proto::gait::workflow::v1::workflow_event::Kind::NodeSkip(NodeSkip {
                     node_id: node_id.to_string(),
@@ -212,6 +232,10 @@ impl WorkflowRunLog {
         let ev = WorkflowEvent {
             version: WORKFLOW_LOG_VERSION,
             ts: now_ms(),
+            id: String::new(),
+            seq: 0,
+            content_hash: String::new(),
+            parents: vec![],
             kind: Some(
                 gait_core::proto::gait::workflow::v1::workflow_event::Kind::WorkflowGate(
                     WorkflowGate {
@@ -230,6 +254,10 @@ impl WorkflowRunLog {
         let ev = WorkflowEvent {
             version: WORKFLOW_LOG_VERSION,
             ts: now_ms(),
+            id: String::new(),
+            seq: 0,
+            content_hash: String::new(),
+            parents: vec![],
             kind: Some(
                 gait_core::proto::gait::workflow::v1::workflow_event::Kind::WorkflowComplete(
                     WorkflowComplete {
@@ -252,6 +280,10 @@ impl WorkflowRunLog {
         let ev = WorkflowEvent {
             version: WORKFLOW_LOG_VERSION,
             ts: now_ms(),
+            id: String::new(),
+            seq: 0,
+            content_hash: String::new(),
+            parents: vec![],
             kind: Some(
                 gait_core::proto::gait::workflow::v1::workflow_event::Kind::WorkflowError(
                     WorkflowError {
@@ -306,5 +338,20 @@ mod tests {
         let events = log.read_events().unwrap();
         assert_eq!(events.len(), 1);
         assert!(events[0].kind.is_some());
+    }
+
+    #[test]
+    fn workflow_event_has_envelope_fields() {
+        let ev = gait_core::proto::gait::workflow::v1::WorkflowEvent {
+            version: WORKFLOW_LOG_VERSION,
+            id: "abc".into(),
+            seq: 1,
+            ts: 0,
+            content_hash: String::new(),
+            parents: vec![],
+            kind: None,
+        };
+        assert_eq!(ev.seq, 1);
+        assert_eq!(ev.id, "abc");
     }
 }

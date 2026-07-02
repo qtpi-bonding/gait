@@ -15,6 +15,12 @@ message WorkflowEvent {
   uint32 version = 1;  // format generation; increment on breaking schema changes
   uint64 ts      = 2;  // wall-clock ms
 
+  // Envelope — mirrors gait.log.v1 Event (own schema; not merged into log.proto).
+  string          id           = 11;  // UUIDv4 identity
+  uint64          seq          = 12;  // Lamport clock = prev.seq + 1
+  string          content_hash = 13;  // SHA-256(JCS(kind arm)); recorded, not verified on read
+  repeated string parents      = 14;  // [] root · [prev.id] linear
+
   oneof kind {
     WorkflowStart    workflow_start    = 3;
     NodeStart        node_start        = 4;

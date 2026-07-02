@@ -146,6 +146,10 @@ mod tests {
         WorkflowEvent {
             version: 1,
             ts: 0,
+            id: String::new(),
+            seq: 0,
+            content_hash: String::new(),
+            parents: vec![],
             kind: Some(kind),
         }
     }
