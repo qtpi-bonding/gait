@@ -1,8 +1,10 @@
 use gait_workflow::{
     convert,
     observer::CliObserver,
+    run_log::WorkflowRunLog,
     runner::{run_workflow, WorkflowRunOpts},
     schema::WorkflowDef,
+    state::{reconstruct_state, NodeStatus},
 };
 use tempfile::TempDir;
 
@@ -58,14 +60,14 @@ nodes:
     .await
     .unwrap();
 
-    let progress_path = ws
-        .path()
-        .join("sessions")
-        .join(session_id)
-        .join("progress.yaml");
-    assert!(progress_path.exists(), "progress.yaml must exist");
-    let progress_content = std::fs::read_to_string(&progress_path).unwrap();
-    assert!(progress_content.contains("done"), "greet node must be done");
+    let run_log = WorkflowRunLog::open(&ws.path().join("workflow-runs"), session_id).unwrap();
+    let events = run_log.read_events().unwrap();
+    let state = reconstruct_state(&events);
+    assert_eq!(
+        state.node_status("greet"),
+        NodeStatus::Done,
+        "greet node must be done"
+    );
 
     let repo = git2::Repository::open(ws.path()).unwrap();
     let branch_name = format!("session/{}", session_id);
@@ -116,18 +118,17 @@ nodes:
     .await
     .unwrap();
 
-    let progress_path = ws
-        .path()
-        .join("sessions")
-        .join(session_id)
-        .join("progress.yaml");
-    let content = std::fs::read_to_string(&progress_path).unwrap();
-    assert!(
-        content.contains("pass-node") && content.contains("done"),
+    let run_log = WorkflowRunLog::open(&ws.path().join("workflow-runs"), session_id).unwrap();
+    let events = run_log.read_events().unwrap();
+    let state = reconstruct_state(&events);
+    assert_eq!(
+        state.node_status("pass-node"),
+        NodeStatus::Done,
         "pass-node must be done"
     );
-    assert!(
-        content.contains("fail-node") && content.contains("skipped"),
+    assert_eq!(
+        state.node_status("fail-node"),
+        NodeStatus::Skipped,
         "fail-node must be skipped"
     );
 }
@@ -332,23 +333,22 @@ async fn smoke_parallel_workflow_completes() {
     .await
     .unwrap();
 
-    let progress = std::fs::read_to_string(
-        ws.path()
-            .join("sessions")
-            .join(session_id)
-            .join("progress.yaml"),
-    )
-    .unwrap();
-    assert!(
-        progress.contains("branch-a") && progress.contains("done"),
+    let run_log = WorkflowRunLog::open(&ws.path().join("workflow-runs"), session_id).unwrap();
+    let events = run_log.read_events().unwrap();
+    let state = reconstruct_state(&events);
+    assert_eq!(
+        state.node_status("branch-a"),
+        NodeStatus::Done,
         "branch-a must be done"
     );
-    assert!(
-        progress.contains("branch-b") && progress.contains("done"),
+    assert_eq!(
+        state.node_status("branch-b"),
+        NodeStatus::Done,
         "branch-b must be done"
     );
-    assert!(
-        progress.contains("join") && progress.contains("done"),
+    assert_eq!(
+        state.node_status("join"),
+        NodeStatus::Done,
         "join must be done"
     );
 }
@@ -379,19 +379,17 @@ async fn smoke_cycle_workflow_via_goto() {
     .await
     .unwrap();
 
-    let progress = std::fs::read_to_string(
-        ws.path()
-            .join("sessions")
-            .join(session_id)
-            .join("progress.yaml"),
-    )
-    .unwrap();
-    assert!(
-        progress.contains("producer") && progress.contains("done"),
+    let run_log = WorkflowRunLog::open(&ws.path().join("workflow-runs"), session_id).unwrap();
+    let events = run_log.read_events().unwrap();
+    let state = reconstruct_state(&events);
+    assert_eq!(
+        state.node_status("producer"),
+        NodeStatus::Done,
         "producer must be done"
     );
-    assert!(
-        progress.contains("consumer") && progress.contains("done"),
+    assert_eq!(
+        state.node_status("consumer"),
+        NodeStatus::Done,
         "consumer must be done"
     );
 }
@@ -437,15 +435,12 @@ async fn smoke_retry_on_error_goto() {
         log.contains("on_error goto"),
         "node_error must reference on_error goto"
     );
-    let progress = std::fs::read_to_string(
-        ws.path()
-            .join("sessions")
-            .join(session_id)
-            .join("progress.yaml"),
-    )
-    .unwrap();
-    assert!(
-        progress.contains("recovery") && progress.contains("done"),
+    let run_log = WorkflowRunLog::open(&ws.path().join("workflow-runs"), session_id).unwrap();
+    let events = run_log.read_events().unwrap();
+    let state = reconstruct_state(&events);
+    assert_eq!(
+        state.node_status("recovery"),
+        NodeStatus::Done,
         "recovery must be done"
     );
 }

@@ -7,7 +7,6 @@ pub mod exec_gate;
 pub mod exec_prompt;
 pub mod exec_shell;
 pub mod hooks;
-pub mod progress;
 pub mod runner;
 pub mod schema;
 pub mod state;

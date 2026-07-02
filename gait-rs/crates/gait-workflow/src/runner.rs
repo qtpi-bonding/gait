@@ -16,7 +16,6 @@ use crate::exec_prompt::exec_prompt_node;
 use crate::exec_shell::{exec_shell_node, NodeContext};
 use crate::hooks::run_hook;
 use crate::observer::WorkflowObserver;
-use crate::progress::{init_progress, write_progress, ProgressFile, ProgressNode};
 use crate::run_log::WorkflowRunLog;
 use crate::schema::GATE_PAUSED_SENTINEL;
 use crate::state::{reconstruct_state, NodeStatus, WorkflowState};
@@ -484,14 +483,6 @@ pub async fn run_workflow(
                         Some(sink),
                     )
                     .await?;
-                    update_progress(
-                        &gait_dir,
-                        &session_id,
-                        &workflow_id,
-                        &wf.name,
-                        &state,
-                        &wf.nodes,
-                    )?;
                     repos.traces.commit_session(
                         &gait_dir,
                         &session_id,
@@ -572,14 +563,6 @@ pub async fn run_workflow(
                     // NodeStart was already recorded in enqueue_node_task;
                     // NodeComplete is NOT emitted — the node is left in Running
                     // state so reconstruct_state.open_node() returns it.
-                    update_progress(
-                        &gait_dir,
-                        &session_id,
-                        &workflow_id,
-                        &wf.name,
-                        &state,
-                        &wf.nodes,
-                    )?;
                     repos.traces.commit_session(
                         &gait_dir,
                         &session_id,
@@ -709,14 +692,6 @@ pub async fn run_workflow(
                 NodeTaskOutcome::GatePaused(ref out) => {
                     observer.on_event(&run_log.workflow_gate(&node_id, &out.text)?);
                     state.set_status(&node_id, NodeStatus::Paused);
-                    update_progress(
-                        &gait_dir,
-                        &session_id,
-                        &workflow_id,
-                        &wf.name,
-                        &state,
-                        &wf.nodes,
-                    )?;
                     repos.traces.commit_session(
                         &gait_dir,
                         &session_id,
@@ -742,14 +717,6 @@ pub async fn run_workflow(
                     // Proto Workflow has no workflow-level error hook; per-node hooks
                     // on the failing node are already run above via node.hooks.
 
-                    update_progress(
-                        &gait_dir,
-                        &session_id,
-                        &workflow_id,
-                        &wf.name,
-                        &state,
-                        &wf.nodes,
-                    )?;
                     repos.traces.commit_session(
                         &gait_dir,
                         &session_id,
@@ -837,14 +804,6 @@ pub async fn run_workflow(
                 }
             }
 
-            update_progress(
-                &gait_dir,
-                &session_id,
-                &workflow_id,
-                &wf.name,
-                &state,
-                &wf.nodes,
-            )?;
             repos.traces.commit_session(
                 &gait_dir,
                 &session_id,
@@ -898,16 +857,13 @@ async fn emit_workflow_start(
 ) -> anyhow::Result<()> {
     // wf is already proto Workflow — pass directly (no conversion needed).
     observer.on_event(&run_log.workflow_start(session_id, &wf.name, yaml_path, args, wf)?);
-    let node_ids: Vec<&str> = wf.nodes.iter().map(|n| n.id.as_str()).collect();
-    let progress = init_progress(workflow_id, &wf.name, &node_ids);
-    write_progress(gait_dir, session_id, &progress)?;
     repos
         .traces
         .commit_session(gait_dir, session_id, "workflow: start")?;
 
     // Note: proto Workflow does not carry workflow-level hooks (only per-node hooks via Node.hooks).
     // Workflow-level before/after hooks are a serde-schema-only feature; omitted from proto IR.
-    let _ = (codebase, args_str, state); // suppress unused warnings
+    let _ = (workflow_id, codebase, args_str, state); // suppress unused warnings
     Ok(())
 }
 
@@ -925,20 +881,12 @@ async fn emit_workflow_complete(
     observer: &mut dyn WorkflowObserver,
 ) -> anyhow::Result<()> {
     observer.on_event(&run_log.workflow_complete(session_id)?);
-    update_progress_done(
-        gait_dir,
-        session_id,
-        workflow_id,
-        &wf.name,
-        state,
-        &wf.nodes,
-    )?;
     repos
         .traces
         .commit_session(gait_dir, session_id, "workflow: complete")?;
 
     // Note: proto Workflow does not carry workflow-level hooks.
-    let _ = (codebase, args_str, state);
+    let _ = (wf, workflow_id, codebase, args_str, state);
     Ok(())
 }
 
@@ -1013,76 +961,6 @@ fn propagate_branch_skips(
         }
     }
     Ok(())
-}
-
-fn update_progress(
-    gait_dir: &Path,
-    session_id: &str,
-    workflow_id: &str,
-    name: &str,
-    state: &WorkflowState,
-    nodes: &[Node],
-) -> anyhow::Result<()> {
-    let pf = build_progress(workflow_id, name, "running", state, nodes);
-    write_progress(gait_dir, session_id, &pf)
-}
-
-fn update_progress_done(
-    gait_dir: &Path,
-    session_id: &str,
-    workflow_id: &str,
-    name: &str,
-    state: &WorkflowState,
-    nodes: &[Node],
-) -> anyhow::Result<()> {
-    let pf = build_progress(workflow_id, name, "done", state, nodes);
-    write_progress(gait_dir, session_id, &pf)
-}
-
-fn build_progress(
-    workflow_id: &str,
-    name: &str,
-    wf_status: &str,
-    state: &WorkflowState,
-    nodes: &[Node],
-) -> ProgressFile {
-    ProgressFile {
-        workflow_id: workflow_id.to_string(),
-        name: name.to_string(),
-        status: wf_status.to_string(),
-        nodes: nodes
-            .iter()
-            .map(|n| {
-                let st = state.node_status(&n.id);
-                let out = state.node_outputs.get(&n.id);
-                ProgressNode {
-                    id: n.id.clone(),
-                    status: match &st {
-                        NodeStatus::Pending => "pending",
-                        NodeStatus::Running => "running",
-                        NodeStatus::Done => "done",
-                        NodeStatus::Skipped => "skipped",
-                        NodeStatus::Error(_) => "error",
-                        NodeStatus::Paused => "paused",
-                    }
-                    .to_string(),
-                    exit: out.and_then(|o| o.exit_code),
-                    iter: None,
-                    routed_to: out.and_then(|o| o.routed_to.clone()),
-                    paused_at: if st == NodeStatus::Paused {
-                        Some(gait_core::session::log::now_ms().to_string())
-                    } else {
-                        None
-                    },
-                    error: if let NodeStatus::Error(e) = st {
-                        Some(e)
-                    } else {
-                        None
-                    },
-                }
-            })
-            .collect(),
-    }
 }
 
 fn make_env_vars(
