@@ -30,6 +30,7 @@ message WorkflowEvent {
     WorkflowGate     workflow_gate     = 8;
     WorkflowComplete workflow_complete = 9;
     WorkflowError    workflow_error    = 10;
+    WorkflowHookRun  hook_run          = 15;
   }
 }
 
@@ -133,4 +134,11 @@ message WorkflowError {
   string run_id     = 1;
   string failed_node = 2;
   string error      = 3;
+}
+
+message WorkflowHookRun {
+  string node_id   = 1;
+  string hook_type = 2;  // "before" | "after"
+  string command   = 3;
+  int32  exit_code = 4;
 }

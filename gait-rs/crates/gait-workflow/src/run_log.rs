@@ -354,4 +354,16 @@ mod tests {
         assert_eq!(ev.seq, 1);
         assert_eq!(ev.id, "abc");
     }
+
+    #[test]
+    fn hook_run_is_a_typed_kind() {
+        use gait_core::proto::gait::workflow::v1::{workflow_event::Kind, WorkflowHookRun};
+        let k = Kind::HookRun(WorkflowHookRun {
+            node_id: "n".into(),
+            hook_type: "before".into(),
+            command: "echo hi".into(),
+            exit_code: 0,
+        });
+        assert!(matches!(k, Kind::HookRun(_)));
+    }
 }
