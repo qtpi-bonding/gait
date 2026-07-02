@@ -14,10 +14,12 @@ pub enum NodeStatus {
 
 pub struct WorkflowState {
     pub workflow_id: String,
+    pub workflow_name: String,
     pub node_outputs: HashMap<String, NodeOutput>,
     node_statuses: HashMap<String, NodeStatus>,
     pub failed_node: Option<String>,
     pub gate_paused: Option<String>,
+    workflow_status: String,
     /// Per-node effective session id (item 13b/13c), keyed by node id. Recorded
     /// at a node's first `NodeStart` (live or replayed) and reused on every
     /// later re-entry (goto/branch loop) or resume — see `resolve_node_session`.
@@ -25,6 +27,11 @@ pub struct WorkflowState {
 }
 
 impl WorkflowState {
+    /// Workflow-level status folded from the run log, mirroring `status::replay`.
+    pub fn workflow_status(&self) -> &str {
+        &self.workflow_status
+    }
+
     pub fn node_status(&self, id: &str) -> NodeStatus {
         self.node_statuses
             .get(id)
@@ -68,10 +75,12 @@ impl WorkflowState {
 pub fn reconstruct_state(events: &[WorkflowEvent]) -> WorkflowState {
     let mut state = WorkflowState {
         workflow_id: String::new(),
+        workflow_name: String::new(),
         node_outputs: HashMap::new(),
         node_statuses: HashMap::new(),
         failed_node: None,
         gate_paused: None,
+        workflow_status: "running".to_string(),
         node_sessions: HashMap::new(),
     };
     for event in events {
@@ -81,9 +90,11 @@ pub fn reconstruct_state(events: &[WorkflowEvent]) -> WorkflowState {
         match kind {
             workflow_event::Kind::WorkflowStart(ws) => {
                 state.workflow_id = ws.run_id.clone();
+                state.workflow_name = ws.workflow.clone();
             }
             workflow_event::Kind::NodeStart(ns) => {
                 state.set_status(&ns.node_id, NodeStatus::Running);
+                state.workflow_status = "running".to_string();
                 if !ns.session_id.is_empty() {
                     state
                         .node_sessions
@@ -92,6 +103,7 @@ pub fn reconstruct_state(events: &[WorkflowEvent]) -> WorkflowState {
             }
             workflow_event::Kind::NodeComplete(nc) => {
                 state.set_status(&nc.node_id, NodeStatus::Done);
+                state.workflow_status = "running".to_string();
                 let json = if nc.json_output.is_empty() {
                     None
                 } else {
@@ -127,11 +139,15 @@ pub fn reconstruct_state(events: &[WorkflowEvent]) -> WorkflowState {
             workflow_event::Kind::WorkflowGate(wg) => {
                 state.gate_paused = Some(wg.node_id.clone());
                 state.set_status(&wg.node_id, NodeStatus::Paused);
+                state.workflow_status = "gate-paused".to_string();
             }
             workflow_event::Kind::WorkflowError(we) => {
                 state.failed_node = Some(we.failed_node.clone());
+                state.workflow_status = "failed".to_string();
             }
-            workflow_event::Kind::WorkflowComplete(_) => {}
+            workflow_event::Kind::WorkflowComplete(_) => {
+                state.workflow_status = "done".to_string();
+            }
             workflow_event::Kind::HookRun(_) => {}
         }
     }
@@ -215,5 +231,46 @@ mod tests {
         let out = state.node_outputs.get("n1").unwrap();
         assert_eq!(out.exit_code, Some(0));
         assert_eq!(state.open_node(), None); // all nodes completed or skipped
+    }
+
+    #[test]
+    fn recovers_name_and_workflow_status() {
+        let running = reconstruct_state(&[
+            we(workflow_event::Kind::WorkflowStart(WorkflowStart {
+                run_id: "r".into(),
+                workflow: "deploy".into(),
+                ..Default::default()
+            })),
+            we(workflow_event::Kind::NodeStart(NodeStart {
+                node_id: "a".into(),
+                ..Default::default()
+            })),
+        ]);
+        assert_eq!(running.workflow_name, "deploy");
+        assert_eq!(running.workflow_status(), "running");
+
+        let done = reconstruct_state(&[
+            we(workflow_event::Kind::WorkflowStart(WorkflowStart {
+                run_id: "r".into(),
+                workflow: "deploy".into(),
+                ..Default::default()
+            })),
+            we(workflow_event::Kind::WorkflowComplete(
+                WorkflowComplete::default(),
+            )),
+        ]);
+        assert_eq!(done.workflow_status(), "done");
+
+        let gated = reconstruct_state(&[we(workflow_event::Kind::WorkflowGate(WorkflowGate {
+            node_id: "g".into(),
+            ..Default::default()
+        }))]);
+        assert_eq!(gated.workflow_status(), "gate-paused");
+
+        let failed = reconstruct_state(&[we(workflow_event::Kind::WorkflowError(WorkflowError {
+            failed_node: "x".into(),
+            ..Default::default()
+        }))]);
+        assert_eq!(failed.workflow_status(), "failed");
     }
 }
