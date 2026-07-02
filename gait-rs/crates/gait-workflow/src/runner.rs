@@ -8,7 +8,6 @@ use std::sync::Arc;
 use gait_core::embed::{TurnSink, TurnSource};
 use gait_core::proto::gait::log::v1::StreamItem;
 use gait_core::proto::gait::workflow::v1::{node, Node, Workflow};
-use gait_core::proto::wire;
 use gait_core::Recorder;
 
 use crate::exec_branch::resolve_branch;
@@ -276,25 +275,12 @@ async fn enqueue_node_task(
     if let Some(hooks) = &node.hooks {
         if let Some(cmd) = &hooks.before {
             let (exit, _) = run_hook(cmd, &env).await;
-            rec.record(wire::raw(
-                "hook_run",
-                serde_json::json!({
-                    "workflow_id": workflow_id, "node_id": node_id.clone(),
-                    "hook_type": "before", "cmd": cmd.clone(), "exit_code": exit,
-                }),
-            ))?;
+            observer.on_event(&run_log.hook_run(&node_id, "before", cmd, exit)?);
         }
     }
 
     let ntype = node_type_name(&node);
     let node_session = resolve_node_session(state, &node);
-    rec.record(wire::raw(
-        "node_start",
-        serde_json::json!({
-            "workflow_id": workflow_id, "node_id": node_id.clone(),
-            "node_type": ntype, "attempt": 1,
-        }),
-    ))?;
     observer.on_event(&run_log.node_start(&node_id, ntype, 1, &node_session)?);
     state.set_status(&node_id, NodeStatus::Running);
 
@@ -419,7 +405,6 @@ pub async fn run_workflow(
     let run_result: anyhow::Result<WorkflowOutcome> = async {
         if wf_events.is_empty() {
             emit_workflow_start(
-                &rec,
                 &repos,
                 &wf,
                 &workflow_id,
@@ -604,14 +589,6 @@ pub async fn run_workflow(
                 }
 
                 NodeTaskOutcome::Done(ref out) => {
-                    rec.record(wire::raw(
-                        "node_complete",
-                        serde_json::json!({
-                            "workflow_id": workflow_id.clone(), "node_id": node_id.clone(),
-                            "output": out.text.clone(), "exit_code": out.exit_code,
-                            "json_output": out.json.clone(), "routed_to": out.routed_to.clone(),
-                        }),
-                    ))?;
                     observer.on_event(&run_log.node_complete(
                         &node_id,
                         &out.session_id,
@@ -628,13 +605,7 @@ pub async fn run_workflow(
                     if let Some(hooks) = &node.hooks {
                         if let Some(cmd) = &hooks.after {
                             let (exit, _) = run_hook(cmd, &env).await;
-                            rec.record(wire::raw(
-                                "hook_run",
-                                serde_json::json!({
-                                    "workflow_id": workflow_id.clone(), "node_id": node_id.clone(),
-                                    "hook_type": "after", "cmd": cmd.clone(), "exit_code": exit,
-                                }),
-                            ))?;
+                            observer.on_event(&run_log.hook_run(&node_id, "after", cmd, exit)?);
                         }
                     }
 
@@ -642,13 +613,7 @@ pub async fn run_workflow(
                     if let Some(node::Body::Branch(_)) = node.body.as_ref() {
                         if let Some(routed_to) = &out.routed_to {
                             propagate_branch_skips(
-                                &node,
-                                routed_to,
-                                &mut state,
-                                &rec,
-                                &workflow_id,
-                                &run_log,
-                                observer,
+                                &node, routed_to, &mut state, &run_log, observer,
                             )?;
                             sync_completed(&mut completed, &state, &wf.nodes);
                             // Enqueue the branch target (supports cycles: re-enqueue even if completed)
@@ -742,14 +707,6 @@ pub async fn run_workflow(
                 }
 
                 NodeTaskOutcome::GatePaused(ref out) => {
-                    rec.record(wire::raw(
-                        "workflow_gate",
-                        serde_json::json!({
-                            "workflow_id": workflow_id.clone(),
-                            "node_id": node_id.clone(),
-                            "message": out.text.clone(),
-                        }),
-                    ))?;
                     observer.on_event(&run_log.workflow_gate(&node_id, &out.text)?);
                     state.set_status(&node_id, NodeStatus::Paused);
                     update_progress(
@@ -779,20 +736,6 @@ pub async fn run_workflow(
                     state.failed_node = Some(node_id.clone());
                     completed.insert(node_id.clone());
 
-                    rec.record(wire::raw(
-                        "node_error",
-                        serde_json::json!({
-                            "workflow_id": workflow_id.clone(), "node_id": node_id.clone(),
-                            "error": msg.clone(), "attempt": 1,
-                        }),
-                    ))?;
-                    rec.record(wire::raw(
-                        "workflow_error",
-                        serde_json::json!({
-                            "workflow_id": workflow_id.clone(), "failed_node": node_id.clone(),
-                            "error": msg.clone(),
-                        }),
-                    ))?;
                     observer.on_event(&run_log.node_error(&node_id, msg, 1)?);
                     observer.on_event(&run_log.workflow_error(&session_id, &node_id, msg)?);
 
@@ -862,13 +805,6 @@ pub async fn run_workflow(
                     state.failed_node = Some(node_id.clone());
                     completed.insert(node_id.clone());
 
-                    rec.record(wire::raw(
-                        "node_error",
-                        serde_json::json!({
-                            "workflow_id": workflow_id.clone(), "node_id": node_id.clone(),
-                            "error": format!("on_error goto: {}", goto_id), "attempt": 1,
-                        }),
-                    ))?;
                     observer.on_event(&run_log.node_error(
                         &node_id,
                         &format!("on_error goto: {}", goto_id),
@@ -917,7 +853,6 @@ pub async fn run_workflow(
         }
 
         emit_workflow_complete(
-            &rec,
             &repos,
             &wf,
             &workflow_id,
@@ -948,7 +883,6 @@ pub async fn run_workflow(
 
 #[allow(clippy::too_many_arguments)]
 async fn emit_workflow_start(
-    rec: &Recorder,
     repos: &gait_core::git::Repos,
     wf: &Workflow,
     workflow_id: &str,
@@ -962,15 +896,6 @@ async fn emit_workflow_start(
     run_log: &WorkflowRunLog,
     observer: &mut dyn WorkflowObserver,
 ) -> anyhow::Result<()> {
-    rec.record(wire::raw(
-        "workflow_start",
-        serde_json::json!({
-            "workflow_id": workflow_id,
-            "name": wf.name,
-            "yaml_path": yaml_path,
-            "args": args,
-        }),
-    ))?;
     // wf is already proto Workflow — pass directly (no conversion needed).
     observer.on_event(&run_log.workflow_start(session_id, &wf.name, yaml_path, args, wf)?);
     let node_ids: Vec<&str> = wf.nodes.iter().map(|n| n.id.as_str()).collect();
@@ -988,7 +913,6 @@ async fn emit_workflow_start(
 
 #[allow(clippy::too_many_arguments)]
 async fn emit_workflow_complete(
-    rec: &Recorder,
     repos: &gait_core::git::Repos,
     wf: &Workflow,
     workflow_id: &str,
@@ -1000,12 +924,6 @@ async fn emit_workflow_complete(
     run_log: &WorkflowRunLog,
     observer: &mut dyn WorkflowObserver,
 ) -> anyhow::Result<()> {
-    rec.record(wire::raw(
-        "workflow_complete",
-        serde_json::json!({
-            "workflow_id": workflow_id,
-        }),
-    ))?;
     observer.on_event(&run_log.workflow_complete(session_id)?);
     update_progress_done(
         gait_dir,
@@ -1063,8 +981,6 @@ fn propagate_branch_skips(
     branch_node: &Node,
     routed_to: &str,
     state: &mut WorkflowState,
-    rec: &Recorder,
-    workflow_id: &str,
     run_log: &WorkflowRunLog,
     observer: &mut dyn WorkflowObserver,
 ) -> anyhow::Result<()> {
@@ -1091,13 +1007,6 @@ fn propagate_branch_skips(
     for id in &inactive {
         if !state.is_done(id) && !state.is_skipped(id) {
             state.set_status(id, NodeStatus::Skipped);
-            rec.record(wire::raw(
-                "node_skip",
-                serde_json::json!({
-                    "workflow_id": workflow_id.to_string(), "node_id": id.clone(),
-                    "reason": format!("inactive branch (routed to {})", routed_to),
-                }),
-            ))?;
             observer.on_event(
                 &run_log.node_skip(id, &format!("inactive branch (routed to {})", routed_to))?,
             );
