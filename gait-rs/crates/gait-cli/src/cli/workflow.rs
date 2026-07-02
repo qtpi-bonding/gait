@@ -9,6 +9,26 @@ use gait_workflow::progress;
 use gait_workflow::runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
 use gait_workflow::schema::WorkflowDef; // still needed for yaml parsing
 
+/// Read the `yaml_path` from a workflow run log.
+fn read_yaml_path_from_run_log(gait_dir: &PathBuf, run_id: &str) -> String {
+    let workflow_runs_dir = gait_dir.join("workflow-runs");
+    let events = gait_workflow::run_log::WorkflowRunLog::open(&workflow_runs_dir, run_id)
+        .and_then(|l| l.read_events())
+        .unwrap_or_default();
+    events
+        .iter()
+        .find_map(|e| {
+            use gait_core::proto::gait::workflow::v1::workflow_event::Kind;
+            match &e.kind {
+                Some(Kind::WorkflowStart(ws)) if !ws.yaml_path.is_empty() => {
+                    Some(ws.yaml_path.clone())
+                }
+                _ => None,
+            }
+        })
+        .unwrap_or_default()
+}
+
 /// `gait workflow <run|list|continue|abort|log>` subcommand.
 #[derive(Parser, Debug)]
 #[command(no_binary_name = true)]
@@ -143,36 +163,10 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) {
             std::process::exit(1);
         }
     };
-    let tx_path = gait_dir
-        .join("sessions")
-        .join(&workflow_id)
-        .join("log.jsonl");
-    let events = gait_core::session::log::read_events(&tx_path).unwrap_or_default();
-    let yaml_path_str = events
-        .iter()
-        .find_map(|e| {
-            use gait_core::proto::gait::log::v1::{event, payload};
-            if let Some(event::Body::Payload(p)) = &e.body {
-                if let Some(payload::Kind::Raw(r)) = &p.kind {
-                    if r.r#type == "workflow_start" {
-                        let v = r
-                            .payload
-                            .as_ref()
-                            .and_then(|s| serde_json::to_value(s).ok())
-                            .unwrap_or(serde_json::Value::Null);
-                        return v
-                            .get("yaml_path")
-                            .and_then(|x| x.as_str())
-                            .map(|s| s.to_string());
-                    }
-                }
-            }
-            None
-        })
-        .unwrap_or_default();
+    let yaml_path_str = read_yaml_path_from_run_log(&gait_dir, &workflow_id);
 
     if yaml_path_str.is_empty() {
-        eprintln!("[gait] cannot find workflow YAML path in transcript");
+        eprintln!("[gait] cannot find workflow YAML path in run log");
         std::process::exit(1);
     }
     let yaml_content = match std::fs::read_to_string(&yaml_path_str) {
@@ -251,12 +245,47 @@ pub fn cmd_workflow_log(argv: &[String], gait_dir: PathBuf) {
             std::process::exit(1);
         }
     };
-    let tx_path = gait_dir
-        .join("sessions")
-        .join(&workflow_id)
-        .join("log.jsonl");
-    let events = gait_core::session::log::read_events(&tx_path).unwrap_or_default();
+    let workflow_runs_dir = gait_dir.join("workflow-runs");
+    let events = gait_workflow::run_log::WorkflowRunLog::open(&workflow_runs_dir, &workflow_id)
+        .and_then(|l| l.read_events())
+        .unwrap_or_default();
     for event in &events {
         println!("{}", serde_json::to_string(event).unwrap_or_default());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn read_yaml_path_from_run_log_extracts_yaml_path() {
+        let dir = TempDir::new().unwrap();
+        let gait_dir = dir.path().to_path_buf();
+        let workflow_runs_dir = gait_dir.join("workflow-runs");
+        std::fs::create_dir_all(&workflow_runs_dir).unwrap();
+
+        // Create a workflow run log with a WorkflowStart event
+        let run_id = "test-run-20260616-120000";
+        let log =
+            gait_workflow::run_log::WorkflowRunLog::create(&workflow_runs_dir, run_id).unwrap();
+        let def = gait_core::proto::gait::workflow::v1::Workflow::default();
+        log.workflow_start(run_id, "test-workflow", "workflows/test.yaml", &[], &def)
+            .unwrap();
+
+        // Test the helper function
+        let yaml_path = read_yaml_path_from_run_log(&gait_dir, run_id);
+        assert_eq!(yaml_path, "workflows/test.yaml");
+    }
+
+    #[test]
+    fn read_yaml_path_from_run_log_returns_empty_when_not_found() {
+        let dir = TempDir::new().unwrap();
+        let gait_dir = dir.path().to_path_buf();
+
+        // Test with a non-existent run
+        let yaml_path = read_yaml_path_from_run_log(&gait_dir, "nonexistent-run");
+        assert_eq!(yaml_path, "");
     }
 }
