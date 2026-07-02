@@ -159,7 +159,19 @@ pub async fn run_chat(
             builder,
             turn_done_blocks: None,
             control: None,
-            sandbox_on: gait_core::config::load_config(&gait_dir).sandbox.on,
+            // Entry point: surface gait.jsonc parse errors instead of silently
+            // defaulting. The REPL's whole UX hinges on `sandbox.on` being
+            // the value the user wrote, not the compiled-in default.
+            sandbox_on: match gait_core::config::load_config_with(
+                &gait_dir,
+                gait_core::config::ConfigLoadPolicy::Strict,
+            ) {
+                Ok(c) => c.sandbox.on,
+                Err(e) => {
+                    eprintln!("[gait] {e}");
+                    std::process::exit(1);
+                }
+            },
         }));
     let repos = gait_core::git::Repos::production();
 

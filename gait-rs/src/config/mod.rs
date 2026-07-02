@@ -447,21 +447,59 @@ pub fn strip_jsonc_comments(input: &str) -> String {
         .join("\n")
 }
 
-pub fn load_config(gait_dir: &Path) -> GaitConfig {
+/// How `load_config_with` reacts to a *present-but-invalid* `gait.jsonc`.
+///
+/// A missing file is not an error in either policy (the library must not
+/// require the config to exist). The split exists because silently defaulting
+/// at CLI/REPL entry points was the original footgun: one stray character and
+/// gait would run on full defaults (different model, default allow/deny) with
+/// no signal, then a later `append_*` could persist on top of the misparse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigLoadPolicy {
+    /// Surface parse errors to the caller. Use this at CLI/REPL entry points.
+    Strict,
+    /// Silently fall back to defaults on parse errors. Use this for the ~20
+    /// deep runtime reload sites (tools, spine mid-turn) where surfacing a
+    /// parse error mid-tool-call would be worse than the silent default.
+    Lenient,
+}
+
+pub fn load_config_with(gait_dir: &Path, policy: ConfigLoadPolicy) -> anyhow::Result<GaitConfig> {
     let path = gait_dir.join("gait.jsonc");
     if !path.exists() {
-        return GaitConfig::default();
+        return Ok(GaitConfig::default());
     }
     let raw = std::fs::read_to_string(&path).unwrap_or_default();
     let stripped = strip_jsonc_comments(&raw);
-    // Parse failures silently fall back to defaults; the library must not write to stderr.
-    let config: GaitConfig =
-        serde_json::from_str(&stripped).unwrap_or_else(|_| GaitConfig::default());
-    // O4: the `skills:` field is deprecated. Dropped silently — a library must not write to stderr.
-    let _ = &config.skills;
-    config
+    match serde_json::from_str::<GaitConfig>(&stripped) {
+        Ok(config) => {
+            // O4: the `skills:` field is deprecated. Dropped silently — a library must not write to stderr.
+            let _ = &config.skills;
+            Ok(config)
+        }
+        Err(e) => match policy {
+            ConfigLoadPolicy::Strict => Err(anyhow::anyhow!(
+                "gait.jsonc parse error in {}: {e}",
+                path.display()
+            )),
+            ConfigLoadPolicy::Lenient => Ok(GaitConfig::default()),
+        },
+    }
 }
 
+/// Infallible, lenient config load — preserves the historical signature so the
+/// ~20 deep mid-turn callers (tools, spine, exec_prompt, spawn_agent, etc.) do
+/// not need to handle parse errors. New CLI/REPL entry points should use
+/// `load_config_with(..., ConfigLoadPolicy::Strict)` instead.
+pub fn load_config(gait_dir: &Path) -> GaitConfig {
+    // Lenient + unwrap_or_default matches the historical `unwrap_or_default()`
+    // on both the file read and the parse. The `Err` branch of
+    // `load_config_with(_, Lenient)` is unreachable — Lenient always returns
+    // `Ok(default)` on parse failure and `Ok(default)` on missing file —
+    // but we keep `unwrap_or_default` so a future invariant violation still
+    // degrades to defaults rather than panicking the whole process.
+    load_config_with(gait_dir, ConfigLoadPolicy::Lenient).unwrap_or_default()
+}
 fn append_list_field(field: &str, pattern: &str, path: &Path) -> anyhow::Result<()> {
     let mut obj: serde_json::Map<String, serde_json::Value> = if path.exists() {
         let raw = std::fs::read_to_string(path)?;

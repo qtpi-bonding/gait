@@ -104,11 +104,21 @@ pub async fn run_one_off(
     // model: override > config.model (pwd-fallback load) ; never panic, never a default.
     let model = match model_override {
         Some(m) => m,
-        None => gait_core::config::load_config(codebase)
-            .model
-            .ok_or_else(|| {
-                anyhow::anyhow!("no model set; pass --model provider/id or set config.model")
-            })?,
+        None => {
+            // Entry point: surface gait.jsonc parse errors instead of silently
+            // defaulting. `gait -e <prompt>` has no other config-loaded path;
+            // silently defaulting here would let a broken `gait.jsonc` route
+            // through a model the user never picked.
+            match gait_core::config::load_config_with(
+                codebase,
+                gait_core::config::ConfigLoadPolicy::Strict,
+            ) {
+                Ok(c) => c.model.ok_or_else(|| {
+                    anyhow::anyhow!("no model set; pass --model provider/id or set config.model")
+                })?,
+                Err(e) => return Err(e),
+            }
+        }
     };
     let provider = model
         .split_once('/')

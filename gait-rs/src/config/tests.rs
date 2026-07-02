@@ -594,3 +594,57 @@ fn tool_timeout_parses_override() {
     let cfg: GaitConfig = serde_json::from_str(r#"{"tool_timeout_secs": 10}"#).unwrap();
     assert_eq!(cfg.tool_timeout_secs, 10);
 }
+
+#[test]
+fn strict_errors_on_malformed_gait_jsonc() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("gait.jsonc"), "{ invalid json").unwrap();
+    let err = load_config_with(dir.path(), ConfigLoadPolicy::Strict)
+        .err()
+        .expect("Strict must error on malformed gait.jsonc");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("gait.jsonc parse error"),
+        "error message should name the file + say 'parse error': {msg}"
+    );
+    assert!(
+        msg.contains(dir.path().join("gait.jsonc").to_str().unwrap()),
+        "error message should include the path: {msg}"
+    );
+}
+
+#[test]
+fn lenient_still_defaults_on_malformed_gait_jsonc() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("gait.jsonc"), "{ invalid json").unwrap();
+    let cfg = load_config_with(dir.path(), ConfigLoadPolicy::Lenient)
+        .expect("Lenient must NOT error on malformed gait.jsonc");
+    assert_eq!(cfg.model, GaitConfig::default().model);
+}
+
+#[test]
+fn load_config_infallible_still_defaults_on_malformed_gait_jsonc() {
+    // The historical `load_config(&Path) -> GaitConfig` must keep its
+    // lenient-on-malformed behavior — the ~20 deep callers depend on it
+    // never returning anything but a `GaitConfig`.
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("gait.jsonc"), "{ invalid json").unwrap();
+    let cfg = load_config(dir.path());
+    assert_eq!(cfg.model, GaitConfig::default().model);
+}
+
+#[test]
+fn strict_missing_file_returns_default() {
+    let dir = TempDir::new().unwrap();
+    let cfg = load_config_with(dir.path(), ConfigLoadPolicy::Strict)
+        .expect("missing file is not an error in Strict");
+    assert_eq!(cfg.model, GaitConfig::default().model);
+}
+
+#[test]
+fn lenient_missing_file_returns_default() {
+    let dir = TempDir::new().unwrap();
+    let cfg = load_config_with(dir.path(), ConfigLoadPolicy::Lenient)
+        .expect("missing file is not an error in Lenient");
+    assert_eq!(cfg.model, GaitConfig::default().model);
+}

@@ -573,7 +573,19 @@ async fn run_sh_one_off(
     codebase: std::path::PathBuf,
     gait_dir: std::path::PathBuf,
 ) -> anyhow::Result<String> {
-    let cfg = gait_core::config::load_config(&gait_dir);
+    // Entry point: surface gait.jsonc parse errors instead of silently
+    // defaulting. This is the model's identity for `/sh <desc>`; defaulting
+    // silently would mean the user runs commands with a model they never chose.
+    let cfg = match gait_core::config::load_config_with(
+        &gait_dir,
+        gait_core::config::ConfigLoadPolicy::Strict,
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[gait] {e}");
+            std::process::exit(1);
+        }
+    };
     let model = match model_override {
         Some(m) => m,
         None => cfg.model.ok_or_else(|| {

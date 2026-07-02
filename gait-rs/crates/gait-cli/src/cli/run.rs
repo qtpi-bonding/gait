@@ -205,7 +205,18 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
         id
     });
 
-    let mut config = gait_core::config::load_config(&gait_dir);
+    // Entry point: surface gait.jsonc parse errors instead of silently
+    // defaulting. CLI args layered on top still take precedence below.
+    let mut config = match gait_core::config::load_config_with(
+        &gait_dir,
+        gait_core::config::ConfigLoadPolicy::Strict,
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[gait] {e}");
+            std::process::exit(1);
+        }
+    };
     for p in &args.allow {
         if !config.allow.contains(p) {
             config.allow.push(p.clone());
