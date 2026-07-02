@@ -5,9 +5,9 @@
 //! Single-writer, append-only. State for a run is reconstructed by replaying
 //! events.
 //!
-//! The pattern mirrors the session transcript (`gait_core::proto::wire::append`)
-//! but skips the `Event` envelope: this log is not a Merkle chain, so events
-//! are just serialized `WorkflowEvent` JSON values appended line-by-line.
+//! Each line is an enveloped [`WorkflowEvent`] (`id`/`seq`/`parents`/
+//! `content_hash`) minted via `workflow_envelope::mint`; hashes are recorded,
+//! not verified on read (matches the session log).
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -96,27 +96,14 @@ impl WorkflowRunLog {
         args: &[String],
         def: &Workflow,
     ) -> anyhow::Result<WorkflowEvent> {
-        let ev = WorkflowEvent {
-            version: WORKFLOW_LOG_VERSION,
-            ts: now_ms(),
-            id: String::new(),
-            seq: 0,
-            content_hash: String::new(),
-            parents: vec![],
-            kind: Some(
-                gait_core::proto::gait::workflow::v1::workflow_event::Kind::WorkflowStart(
-                    WorkflowStart {
-                        run_id: run_id.to_string(),
-                        workflow: workflow.to_string(),
-                        yaml_path: yaml_path.to_string(),
-                        args: args.to_vec(),
-                        def: Some(def.clone()),
-                    },
-                ),
-            ),
-        };
-        self.append(&ev)?;
-        Ok(ev)
+        use gait_core::proto::gait::workflow::v1::workflow_event::Kind;
+        self.emit(Kind::WorkflowStart(WorkflowStart {
+            run_id: run_id.to_string(),
+            workflow: workflow.to_string(),
+            yaml_path: yaml_path.to_string(),
+            args: args.to_vec(),
+            def: Some(def.clone()),
+        }))
     }
 
     /// Append a node start event.
@@ -127,24 +114,13 @@ impl WorkflowRunLog {
         attempt: u32,
         session_id: &str,
     ) -> anyhow::Result<WorkflowEvent> {
-        let ev = WorkflowEvent {
-            version: WORKFLOW_LOG_VERSION,
-            ts: now_ms(),
-            id: String::new(),
-            seq: 0,
-            content_hash: String::new(),
-            parents: vec![],
-            kind: Some(
-                gait_core::proto::gait::workflow::v1::workflow_event::Kind::NodeStart(NodeStart {
-                    node_id: node_id.to_string(),
-                    node_type: node_type.to_string(),
-                    attempt,
-                    session_id: session_id.to_string(),
-                }),
-            ),
-        };
-        self.append(&ev)?;
-        Ok(ev)
+        use gait_core::proto::gait::workflow::v1::workflow_event::Kind;
+        self.emit(Kind::NodeStart(NodeStart {
+            node_id: node_id.to_string(),
+            node_type: node_type.to_string(),
+            attempt,
+            session_id: session_id.to_string(),
+        }))
     }
 
     /// Append a node complete event.
@@ -157,28 +133,15 @@ impl WorkflowRunLog {
         json_output: &str,
         routed_to: &str,
     ) -> anyhow::Result<WorkflowEvent> {
-        let ev = WorkflowEvent {
-            version: WORKFLOW_LOG_VERSION,
-            ts: now_ms(),
-            id: String::new(),
-            seq: 0,
-            content_hash: String::new(),
-            parents: vec![],
-            kind: Some(
-                gait_core::proto::gait::workflow::v1::workflow_event::Kind::NodeComplete(
-                    NodeComplete {
-                        node_id: node_id.to_string(),
-                        session_id: session_id.to_string(),
-                        output: output.to_string(),
-                        exit_code,
-                        json_output: json_output.to_string(),
-                        routed_to: routed_to.to_string(),
-                    },
-                ),
-            ),
-        };
-        self.append(&ev)?;
-        Ok(ev)
+        use gait_core::proto::gait::workflow::v1::workflow_event::Kind;
+        self.emit(Kind::NodeComplete(NodeComplete {
+            node_id: node_id.to_string(),
+            session_id: session_id.to_string(),
+            output: output.to_string(),
+            exit_code,
+            json_output: json_output.to_string(),
+            routed_to: routed_to.to_string(),
+        }))
     }
 
     /// Append a node error event.
@@ -188,86 +151,38 @@ impl WorkflowRunLog {
         error: &str,
         attempt: u32,
     ) -> anyhow::Result<WorkflowEvent> {
-        let ev = WorkflowEvent {
-            version: WORKFLOW_LOG_VERSION,
-            ts: now_ms(),
-            id: String::new(),
-            seq: 0,
-            content_hash: String::new(),
-            parents: vec![],
-            kind: Some(
-                gait_core::proto::gait::workflow::v1::workflow_event::Kind::NodeError(NodeError {
-                    node_id: node_id.to_string(),
-                    error: error.to_string(),
-                    attempt,
-                }),
-            ),
-        };
-        self.append(&ev)?;
-        Ok(ev)
+        use gait_core::proto::gait::workflow::v1::workflow_event::Kind;
+        self.emit(Kind::NodeError(NodeError {
+            node_id: node_id.to_string(),
+            error: error.to_string(),
+            attempt,
+        }))
     }
 
     /// Append a node skip event (e.g. inactive branch path).
     pub fn node_skip(&self, node_id: &str, reason: &str) -> anyhow::Result<WorkflowEvent> {
-        let ev = WorkflowEvent {
-            version: WORKFLOW_LOG_VERSION,
-            ts: now_ms(),
-            id: String::new(),
-            seq: 0,
-            content_hash: String::new(),
-            parents: vec![],
-            kind: Some(
-                gait_core::proto::gait::workflow::v1::workflow_event::Kind::NodeSkip(NodeSkip {
-                    node_id: node_id.to_string(),
-                    reason: reason.to_string(),
-                }),
-            ),
-        };
-        self.append(&ev)?;
-        Ok(ev)
+        use gait_core::proto::gait::workflow::v1::workflow_event::Kind;
+        self.emit(Kind::NodeSkip(NodeSkip {
+            node_id: node_id.to_string(),
+            reason: reason.to_string(),
+        }))
     }
 
     /// Append a workflow gate pause event.
     pub fn workflow_gate(&self, node_id: &str, message: &str) -> anyhow::Result<WorkflowEvent> {
-        let ev = WorkflowEvent {
-            version: WORKFLOW_LOG_VERSION,
-            ts: now_ms(),
-            id: String::new(),
-            seq: 0,
-            content_hash: String::new(),
-            parents: vec![],
-            kind: Some(
-                gait_core::proto::gait::workflow::v1::workflow_event::Kind::WorkflowGate(
-                    WorkflowGate {
-                        node_id: node_id.to_string(),
-                        message: message.to_string(),
-                    },
-                ),
-            ),
-        };
-        self.append(&ev)?;
-        Ok(ev)
+        use gait_core::proto::gait::workflow::v1::workflow_event::Kind;
+        self.emit(Kind::WorkflowGate(WorkflowGate {
+            node_id: node_id.to_string(),
+            message: message.to_string(),
+        }))
     }
 
     /// Append a workflow complete event.
     pub fn workflow_complete(&self, run_id: &str) -> anyhow::Result<WorkflowEvent> {
-        let ev = WorkflowEvent {
-            version: WORKFLOW_LOG_VERSION,
-            ts: now_ms(),
-            id: String::new(),
-            seq: 0,
-            content_hash: String::new(),
-            parents: vec![],
-            kind: Some(
-                gait_core::proto::gait::workflow::v1::workflow_event::Kind::WorkflowComplete(
-                    WorkflowComplete {
-                        run_id: run_id.to_string(),
-                    },
-                ),
-            ),
-        };
-        self.append(&ev)?;
-        Ok(ev)
+        use gait_core::proto::gait::workflow::v1::workflow_event::Kind;
+        self.emit(Kind::WorkflowComplete(WorkflowComplete {
+            run_id: run_id.to_string(),
+        }))
     }
 
     /// Append a workflow error event (terminal failure).
@@ -277,44 +192,48 @@ impl WorkflowRunLog {
         failed_node: &str,
         error: &str,
     ) -> anyhow::Result<WorkflowEvent> {
-        let ev = WorkflowEvent {
-            version: WORKFLOW_LOG_VERSION,
-            ts: now_ms(),
-            id: String::new(),
-            seq: 0,
-            content_hash: String::new(),
-            parents: vec![],
-            kind: Some(
-                gait_core::proto::gait::workflow::v1::workflow_event::Kind::WorkflowError(
-                    WorkflowError {
-                        run_id: run_id.to_string(),
-                        failed_node: failed_node.to_string(),
-                        error: error.to_string(),
-                    },
-                ),
-            ),
-        };
-        self.append(&ev)?;
-        Ok(ev)
+        use gait_core::proto::gait::workflow::v1::workflow_event::Kind;
+        self.emit(Kind::WorkflowError(WorkflowError {
+            run_id: run_id.to_string(),
+            failed_node: failed_node.to_string(),
+            error: error.to_string(),
+        }))
     }
 
-    /// Serialize `ev` as one JSON line and append to the log file.
-    fn append(&self, ev: &WorkflowEvent) -> anyhow::Result<()> {
+    /// Append a hook-run event (before/after node hook execution).
+    pub fn hook_run(
+        &self,
+        node_id: &str,
+        hook_type: &str,
+        command: &str,
+        exit_code: i32,
+    ) -> anyhow::Result<WorkflowEvent> {
+        use gait_core::proto::gait::workflow::v1::{workflow_event::Kind, WorkflowHookRun};
+        self.emit(Kind::HookRun(WorkflowHookRun {
+            node_id: node_id.to_string(),
+            hook_type: hook_type.to_string(),
+            command: command.to_string(),
+            exit_code,
+        }))
+    }
+
+    /// Mint an enveloped WorkflowEvent for `kind` (chained after the current
+    /// tail) and append it as one JSON line. Hashes are RECORDED, not verified
+    /// on read — mirrors the session log.
+    fn emit(
+        &self,
+        kind: gait_core::proto::gait::workflow::v1::workflow_event::Kind,
+    ) -> anyhow::Result<WorkflowEvent> {
+        let prev = self.read_events()?.pop();
+        let ev =
+            gait_core::proto::workflow_envelope::mint(WORKFLOW_LOG_VERSION, kind, prev.as_ref());
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.path)?;
-        let json = serde_json::to_string(ev)?;
-        writeln!(file, "{}", json)?;
-        Ok(())
+        writeln!(file, "{}", serde_json::to_string(&ev)?)?;
+        Ok(ev)
     }
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -353,6 +272,36 @@ mod tests {
         };
         assert_eq!(ev.seq, 1);
         assert_eq!(ev.id, "abc");
+    }
+
+    #[test]
+    fn appended_events_carry_monotonic_envelope() {
+        use gait_core::proto::hash::content_hash;
+        use gait_core::proto::workflow_envelope::body_json;
+        let dir = TempDir::new().unwrap();
+        let log = WorkflowRunLog::create(dir.path(), "run-x").unwrap();
+        log.node_start("a", "shell", 1, "sa").unwrap();
+        log.node_complete("a", "sa", "ok", Some(0), "{}", "")
+            .unwrap();
+        let evs = log.read_events().unwrap();
+        assert_eq!(evs[0].seq, 1);
+        assert!(evs[0].parents.is_empty());
+        assert_eq!(evs[1].seq, 2);
+        assert_eq!(evs[1].parents, vec![evs[0].id.clone()]);
+        assert!(!evs[0].id.is_empty() && evs[0].id != evs[1].id);
+        for e in &evs {
+            assert_eq!(e.content_hash, content_hash(e.version, &body_json(e)));
+        }
+    }
+
+    #[test]
+    fn hook_run_writer_records_typed_event() {
+        use gait_core::proto::gait::workflow::v1::workflow_event::Kind;
+        let dir = TempDir::new().unwrap();
+        let log = WorkflowRunLog::create(dir.path(), "run-h").unwrap();
+        log.hook_run("n", "before", "echo hi", 0).unwrap();
+        let evs = log.read_events().unwrap();
+        assert!(matches!(evs[0].kind, Some(Kind::HookRun(_))));
     }
 
     #[test]
