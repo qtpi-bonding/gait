@@ -132,6 +132,7 @@ pub fn reconstruct_state(events: &[WorkflowEvent]) -> WorkflowState {
                 state.failed_node = Some(we.failed_node.clone());
             }
             workflow_event::Kind::WorkflowComplete(_) => {}
+            workflow_event::Kind::HookRun(_) => {}
         }
     }
     state

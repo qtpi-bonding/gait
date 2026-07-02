@@ -263,6 +263,7 @@ fn replay(events: &[WorkflowEvent]) -> (RunStatus, u64) {
                     node: wg.node_id.clone(),
                 };
             }
+            Some(Kind::HookRun(_)) => {}
             None => {}
         }
     }

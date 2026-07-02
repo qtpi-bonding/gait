@@ -61,6 +61,7 @@ impl WorkflowObserver for CliObserver {
             Some(workflow_event::Kind::WorkflowError(s)) => {
                 eprintln!("[gait workflow] error: {} at {}", s.error, s.failed_node);
             }
+            Some(workflow_event::Kind::HookRun(_)) => {}
             None => {}
         }
     }
