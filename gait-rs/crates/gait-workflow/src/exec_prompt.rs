@@ -154,11 +154,12 @@ impl TurnSource for NodeSource {
 
 /// Drive a single prompt node through the unified `run_loop` boundary.
 ///
-/// `input` is `Some(live_source)` when the caller has a live interactive source
-/// (e.g. stdin for `gait workflow run`). If the node has a literal `prompt`
-/// field it is used directly (one-shot), ignoring `input`. If the node has no
-/// prompt and `input` is `None`, returns `NodeOutput::open()` immediately —
-/// the run exits cleanly and the node is left open for resume.
+/// If the node has a literal `prompt` field it is used directly (one-shot),
+/// ignoring `input`/`ui_sink`. If the node has no prompt (interactive), it is
+/// driven off `input`/`ui_sink`, which the runner's `handle_open_node` always
+/// supplies as `Some` (the headless/no-input case is intercepted earlier by
+/// `OpenResumption::SuspendAndExit`, which never calls this function) — see
+/// `runner::handle_open_node`.
 pub async fn exec_prompt_node(
     node: &Node,
     p: &PromptNode,
@@ -167,12 +168,6 @@ pub async fn exec_prompt_node(
     input: Option<Box<dyn TurnSource>>,
     ui_sink: Option<&mut dyn TurnSink>,
 ) -> anyhow::Result<NodeOutput> {
-    // Fast path: absent prompt + no input → open immediately, before any model
-    // resolution or session setup (those require a valid model config).
-    if p.prompt.is_empty() && input.is_none() {
-        return Ok(NodeOutput::open());
-    }
-
     use gait_core::config::resolver::{ConfigResolver, Overrides};
     let loaded = gait_core::config::load_config(ctx.gait_dir);
     // consumer layer: Workflow fields
@@ -270,43 +265,30 @@ pub async fn exec_prompt_node(
             .ok_or_else(|| anyhow::anyhow!("run_loop returned without a TurnResult"))?;
         Ok(map_turn_result(turn_result, &session_id))
     } else {
-        // Absent prompt: interactive node.
-        let Some(live) = input else {
-            // Headless and no input -> leave the node OPEN and exit.
-            return Ok(NodeOutput::open());
-        };
-        let source = NodeSource::Live(live);
-
-        match ui_sink {
-            Some(mut ui) => {
-                // Foreground interactive node: render straight through the
-                // caller's sink so begin_turn/result/diagnostic all reach it
-                // (the channel hop would drop everything but `item`).
-                embed::run_loop(
-                    source,
-                    &mut ui,
-                    session,
-                    ctx.gait_dir,
-                    &session_id,
-                    &mut driver,
-                    None,
-                )
-                .await?;
-            }
-            None => {
-                let mut sink = CapturingSink::new(ctx.workflow_tx.clone());
-                embed::run_loop(
-                    source,
-                    &mut sink,
-                    session,
-                    ctx.gait_dir,
-                    &session_id,
-                    &mut driver,
-                    None,
-                )
-                .await?;
-            }
-        }
+        // Absent prompt: interactive node. Reached only via `handle_open_node`'s
+        // `ResumeInline`, which always supplies a live source and the runner's
+        // sink — `SuspendAndExit` (headless, no input) never calls this function
+        // at all. Render straight through the caller's sink so begin_turn/
+        // result/diagnostic all reach it (the channel hop would drop everything
+        // but `item`).
+        let source = NodeSource::Live(input.expect(
+            "interactive node driven without a source: exec_prompt_node's absent-prompt \
+             branch is reachable only from handle_open_node's ResumeInline",
+        ));
+        let mut ui = ui_sink.expect(
+            "interactive node driven without a sink: handle_open_node always supplies \
+             the runner's sink",
+        );
+        embed::run_loop(
+            source,
+            &mut ui,
+            session,
+            ctx.gait_dir,
+            &session_id,
+            &mut driver,
+            None,
+        )
+        .await?;
 
         // Live node that returned (source exhausted) stays OPEN — no terminal
         // advance has been signalled. The run exits cleanly; resume re-enters.
