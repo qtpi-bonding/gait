@@ -1,40 +1,36 @@
-//! Turn setup — Stage 4 / Task 15.
+//! Turn setup — Stage 4 / Task 15, plus the post-resume half folded in by
+//! Task 19 (driver slimming).
 //!
-//! Owns everything `run_turn` needs before the permission-resume check: the
-//! destructured `ResolvedProfile`, the session-lock/worktree/SessionStart
-//! bootstrap, effective-allow computation, and the pre-resume event snapshot
-//! (`pre_events`/`current_turn`).
+//! `init()` owns everything `run_turn` needs before the permission-resume
+//! check: the destructured `ResolvedProfile`, the session-lock/worktree/
+//! SessionStart bootstrap, effective-allow computation, and the pre-resume
+//! event snapshot (`pre_events`/`current_turn`).
 //!
-//! **Scope note (deviation from the plan-01 sketch, re-derived against live
-//! code):** the plan's Task 15 also folds in the post-resume loadables/
-//! `ActiveAgent` projection block (former `:588–681`). That block genuinely
-//! depends on `resume::apply_if_pending` having already run — the projection
-//! reads the log, which resume may have just written approved/denied tool
-//! events into. Moving it into this same `init()` would require either
-//! calling resume from inside setup.rs (wrong: resume needs an `&mut
-//! TurnState` and `execute_tool_call`, layering concerns setup.rs shouldn't
-//! own) or splitting `init()` around a resume call the caller doesn't control
-//! (equally awkward). It stays a separate, later block in `run_turn` for now;
-//! this file owns strictly the pre-resume setup.
+//! `finish_after_resume()` owns the loadables/`ActiveAgent` projection, the
+//! dynamic system-prompt build, the Agent drift-guard, and the pre_turn hook
+//! loop — everything that runs *after* `resume::apply_if_pending` but
+//! *before* the step loop. It genuinely can't live in `init()`: the
+//! projection reads the log, which resume may have just written
+//! approved/denied tool events into, so it must run after resume, not before.
 //!
 //! `SetupData` owns everything; `init` acquires the session lock. Building
-//! `TurnEnv`/`Persistence` from a `&SetupData` happens in the caller (Task 19
-//! will formalize this as `TurnEnv::borrow`/`Persistence::from_setup`) —
+//! `TurnEnv`/`Persistence` from a `&SetupData` happens in the caller —
 //! `Persistence` can't be a `SetupData` field itself (it borrows from the
 //! very struct that would contain it), so `init` builds one internally, only
 //! to acquire the workspace lock, then discards it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::git::Repos;
 use crate::proto::events;
+use crate::proto::gait::log::v1 as pb;
 use crate::proto::gait::log::v1::{payload, Event};
 use crate::proto::Recorder;
 use crate::provider::Provider;
 use crate::session::log::{count_turn_complete, init_session, InitSessionOpts};
 use crate::session::retrace::{self, AgentState};
 use crate::session::{Ingestor, Session};
-use crate::types::Hook;
+use crate::types::{Hook, HookContext, LoadableEntry, LoadableKind};
 
 use super::persist::Persistence;
 use super::state::TurnState;
@@ -267,4 +263,212 @@ pub(crate) fn init(
         daemons: input.daemons,
         initial_git: input.initial_git,
     })
+}
+
+/// Everything after `resume::apply_if_pending` and before the step loop:
+/// the loadables/`ActiveAgent` projection (mutates `state.tools`/`state.entries`),
+/// the dynamic system-prompt build, the Agent drift-guard (detects whether
+/// the effective prompt or a pre_turn hook changed the checkpointed Agent and
+/// emits a Replace if so), and the pre_turn hook loop itself. Returns the
+/// final system_prompt for this turn (after any hook modifications).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn finish_after_resume(
+    ingestor: &Ingestor,
+    emitter: &Recorder,
+    agent: &pb::Agent,
+    agent_seed: &AgentState,
+    mcp_registry: &[crate::config::McpToolDef],
+    mcp_clients: &std::collections::HashMap<String, std::sync::Arc<crate::mcp::McpClient>>,
+    skill_registry: &[crate::config::SkillDef],
+    plugin_registry: &[crate::config::WasmPluginDef],
+    effective_allow: &[String],
+    hooks: &[Box<dyn Hook>],
+    session_id: &str,
+    gait_dir: &Path,
+    codebase_path: &Path,
+    system_prompt: String,
+    state: &mut TurnState,
+) -> anyhow::Result<String> {
+    // Derive enabled loadables from the FULL session (mutation-aware, via the
+    // ActiveAgent projection). Loadables are a "state" projection and persist
+    // across compaction — only the message context (ActiveMessages) resets on
+    // compaction; consistent with permissions and agent config.
+    let all_events = ingestor.events()?;
+    let mut muts = retrace::active_mutations(&all_events);
+    retrace::apply_cascade(&mut muts, &all_events);
+    let agent_state = retrace::run_projection(
+        &retrace::ActiveAgent {
+            seed: agent_seed.clone(),
+        },
+        &all_events,
+        &muts,
+    );
+    let enabled_names = agent_state.enabled_loadables();
+    for server_name in &enabled_names {
+        for def in mcp_registry
+            .iter()
+            .filter(|d| &d.server_name == server_name)
+        {
+            if let Some(client) = mcp_clients.get(&def.server_name) {
+                if !state.tools.iter().any(|t| t.name() == def.name) {
+                    // duplicate guard
+                    state
+                        .tools
+                        .push(super::prompt::make_mcp_tool_def(def, client.clone()));
+                }
+            }
+        }
+    }
+    // Skills are not pushed here — they surface via LoadTool.execute() return value.
+    // Phase 8: tool-gating — if the agent declared an explicit tools enable-set,
+    // filter the tool list to only those tools. Empty = no restriction (all pass through).
+    if !agent_state.tools.is_empty() {
+        state.tools.retain(|t| agent_state.tools.contains(t.name()));
+    }
+
+    // Warn about allow-list entries that don't match any builtin tool name.
+    // Catches stale names (e.g. "mcp", "skill") after tool renames.
+    {
+        let builtin_names: std::collections::HashSet<&str> =
+            crate::tools::builtin_tool_names().iter().copied().collect();
+        for entry in effective_allow {
+            if !entry.contains(':') && !builtin_names.contains(entry.as_str()) {
+                eprintln!("[gait] warning: allow entry {:?} doesn't match any builtin tool — will never auto-approve", entry);
+            }
+        }
+    }
+
+    // Step 5: Augment system prompt with unified <loadable-index>.
+    // Build entries: one per whitelisted MCP server, one per whitelisted skill.
+    // Group MCP tool defs by server name so we can show one entry per server.
+    let mut mcp_tools_by_server: std::collections::HashMap<&str, Vec<&crate::config::McpToolDef>> =
+        std::collections::HashMap::new();
+    for def in mcp_registry {
+        mcp_tools_by_server
+            .entry(def.server_name.as_str())
+            .or_default()
+            .push(def);
+    }
+    // MCP server entries — one per server. Description comes from
+    // McpServerDef.description (config layer); fall back to tool count.
+    // Note: we don't have direct access to McpServerDef in run_turn, so
+    // we build the description from the discovered tool count when
+    // there's no explicit description available. Run-level only.
+    for (server_name, defs) in &mcp_tools_by_server {
+        let description = format!(
+            "{} tool{}",
+            defs.len(),
+            if defs.len() == 1 { "" } else { "s" }
+        );
+        state.entries.push(LoadableEntry {
+            name: server_name.to_string(),
+            kind: LoadableKind::Mcp,
+            description,
+            enabled: enabled_names.contains(*server_name),
+        });
+    }
+    // Skill entries — one per skill.
+    for skill in skill_registry {
+        state.entries.push(LoadableEntry {
+            name: skill.name.clone(),
+            kind: LoadableKind::Skill,
+            description: skill.description.clone(),
+            enabled: enabled_names.contains(&skill.name),
+        });
+    }
+    // Plugin entries — one per wasm plugin.
+    for plugin in plugin_registry {
+        let basename = {
+            let p = plugin.path.as_str();
+            p.rsplit('/').next().unwrap_or(p)
+        };
+        state.entries.push(LoadableEntry {
+            name: plugin.name.clone(),
+            kind: LoadableKind::WasmPlugin,
+            description: format!("wasm plugin ({})", basename),
+            enabled: enabled_names.contains(&plugin.name),
+        });
+    }
+    let mut system_prompt =
+        super::prompt::build_dynamic_system_prompt(&system_prompt, &state.entries, hooks);
+
+    // MUST happen AFTER `build_dynamic_system_prompt` so `Agent.instructions`
+    // captures the effective prompt (loadable index + permissions included),
+    // not just the raw profile value. Capture the event ID so subsequent
+    // pre_turn hooks can emit a Replace targeting it when they modify the prompt.
+    let agent_event_id: String = {
+        let events_for_guard = ingestor.events()?;
+        let mut guard_muts = retrace::active_mutations(&events_for_guard);
+        retrace::apply_cascade(&mut guard_muts, &events_for_guard);
+        let guard_state = retrace::run_projection(
+            &retrace::ActiveAgent {
+                seed: agent_seed.clone(),
+            },
+            &events_for_guard,
+            &guard_muts,
+        );
+        // Rebuild agent with the dynamic instructions for the drift check.
+        let mut agent_with_dynamic = agent.clone();
+        agent_with_dynamic.instructions = system_prompt.clone();
+        let rebaselined = retrace::rebaseline_agent(agent_with_dynamic, &guard_state);
+        if retrace::active_agent_checkpoint(&events_for_guard) != Some(rebaselined.clone()) {
+            emitter
+                .record(crate::proto::wire::body(payload::Kind::Agent(rebaselined)))?
+                .id
+        } else {
+            // No new Agent event emitted; find the last one in the log to get its ID
+            // so subsequent Replace mutations can target it.
+            events_for_guard
+                .iter()
+                .rev()
+                .find(|e| matches!(event_kind(e), Some(payload::Kind::Agent(_))))
+                .map(|e| e.id.clone())
+                .unwrap_or_default()
+        }
+    };
+    // pre_turn — each hook sees the system_prompt as modified by the previous hook.
+    // Snapshot the prompt so we can detect whether any hook changed it (and
+    // therefore needs a Replace event against the Agent event above).
+    let system_prompt_before_hooks = system_prompt.clone();
+    for h in hooks {
+        let ctx = HookContext {
+            event: "pre_turn".to_string(),
+            session_id: session_id.to_string(),
+            gait_dir: gait_dir.to_path_buf(),
+            codebase: codebase_path.to_path_buf(),
+            system_prompt: system_prompt.clone(),
+            ..Default::default()
+        };
+        if let Some(new_sp) = h.pre_turn(&ctx, emitter) {
+            system_prompt = new_sp;
+        }
+    }
+    // If pre_turn hooks modified the system_prompt, emit a Replace on the Agent
+    // event so retrace can reconstruct the hook-modified instructions on replay.
+    // Skip when `agent_event_id` is empty (no prior Agent event to target —
+    // shouldn't happen because the drift guard above emits one on first run,
+    // but guard defensively in case of log corruption).
+    if system_prompt != system_prompt_before_hooks && !agent_event_id.is_empty() {
+        // Build the replacement Agent from the last checkpoint (preserves model,
+        // permissions, etc.) and overlay the hook-modified instructions.
+        let replacement_agent = match retrace::active_agent_checkpoint(&ingestor.events()?) {
+            Some(mut prev) => {
+                prev.instructions = system_prompt.clone();
+                prev
+            }
+            None => pb::Agent {
+                instructions: system_prompt.clone(),
+                ..Default::default()
+            },
+        };
+        let _ = emitter.record(events::replace(
+            agent_event_id.clone(),
+            pb::Payload {
+                kind: Some(pb::payload::Kind::Agent(replacement_agent)),
+            },
+            Some("pre_turn hook modified system_prompt".into()),
+        ));
+    }
+
+    Ok(system_prompt)
 }

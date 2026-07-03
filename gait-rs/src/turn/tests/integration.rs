@@ -1,9 +1,11 @@
 use super::super::*;
 use crate::git::trace::{GitTraceRepo, TraceRepo};
+use crate::proto::wire;
 use crate::provider::Provider;
 use crate::provider::ProviderError;
 use crate::provider::StreamChunk;
 use crate::session::log::read_events;
+use crate::session::retrace;
 use crate::test_utils::init_git_repo;
 use crate::tools::StructuredDoneTool;
 use crate::turn::exec::stream_preview_if_always;
