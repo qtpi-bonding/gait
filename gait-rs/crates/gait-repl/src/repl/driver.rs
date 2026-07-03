@@ -414,9 +414,8 @@ impl TurnSource for ReplSource {
                     None => eprint!("[gait] usage: /workflow <name> [args...]\r\n"),
                     Some(name) => {
                         let args: Vec<String> = parts.map(String::from).collect();
-                        // Inline workflow runner (replaces the removed GaitWorkflowRunner).
-                        let result = run_workflow_from_repl(
-                            name.to_string(),
+                        let result = run_named_workflow(
+                            name,
                             args,
                             self.gait_dir.clone(),
                             self.codebase.clone(),
@@ -642,12 +641,18 @@ fn one_off_schema() -> serde_json::Value {
     serde_json::json!({ "oneOf": [str_obj("cmd"), str_obj("output")] })
 }
 
-/// Inline workflow runner for the REPL `/workflow` command.
-/// Replaces the removed `GaitWorkflowRunner`. Task 7 will wire the spine-routed
-/// path; for now this spawns a dedicated OS thread + runtime (same pattern as
-/// the old GaitWorkflowRunner).
-async fn run_workflow_from_repl(
-    name: String,
+/// Run a named workflow (`workflows/<name>.yaml`) for the REPL `/workflow`
+/// command — awaits `run_workflow` inline (spec-06 §5 Task 4.1). The old
+/// `GaitWorkflowRunner` replacement spawned a detached `std::thread` + its own
+/// tokio runtime: an untracked resident thread, a daemonless-model violation
+/// (gait is 1 turn = 1 exit; no reapers/resident processes). Foreground is the
+/// existing convention for a bounded job — the prompt blocks until the run
+/// finishes or suspends at a gate/open node, deterministically, with no
+/// resident thread. (Backgrounding, if ever wanted, is `gait workflow run`
+/// launched through the existing tracked-detached-daemon path, not a new
+/// thread/subprocess mechanism here.)
+pub(crate) async fn run_named_workflow(
+    name: &str,
     args: Vec<String>,
     gait_dir: std::path::PathBuf,
     codebase: std::path::PathBuf,
@@ -668,31 +673,79 @@ async fn run_workflow_from_repl(
             }
         };
     let workflow_def = gait_workflow::convert::to_proto(&workflow_def_serde);
-    let run_id = gait_workflow::convert::mint_run_id(&name);
+    let run_id = gait_workflow::convert::mint_run_id(name);
     let yaml_path_str = yaml_path.to_string_lossy().to_string();
-    let run_id_task = run_id.clone();
-    let run_id_log = run_id.clone();
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-        let mut sink = gait_core::embed::CliSink::stdio(true);
-        if let Err(e) = rt.block_on(gait_workflow::run_workflow(
-            gait_workflow::WorkflowRunOpts {
-                workflow_def,
-                yaml_path: yaml_path_str,
-                run_id: run_id_task,
-                gait_dir,
-                codebase,
-                args,
-                ..Default::default()
-            },
-            &mut sink,
-            &mut gait_workflow::observer::CliObserver,
-            None,
-        )) {
-            eprintln!("[gait workflow] {run_id_log}: error: {e}");
-        }
-    });
-    format!("workflow started: {}", run_id)
+    let mut sink = gait_core::embed::CliSink::stdio(true);
+    match gait_workflow::run_workflow(
+        gait_workflow::WorkflowRunOpts {
+            workflow_def,
+            yaml_path: yaml_path_str,
+            run_id: run_id.clone(),
+            gait_dir,
+            codebase,
+            args,
+            ..Default::default()
+        },
+        &mut sink,
+        &mut gait_workflow::observer::CliObserver,
+        None,
+    )
+    .await
+    {
+        Ok(outcome) => format!("workflow {run_id}: {outcome:?}"),
+        Err(e) => format!("workflow error: {run_id}: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod run_named_workflow_tests {
+    use super::run_named_workflow;
+
+    /// Spec-06 §5 Task 4.1 smoke test: a 1-node workflow (empty prompt ->
+    /// `NodeOutput::open()`, no provider call) runs foreground through
+    /// `run_workflow` and leaves a run log under `workflow-runs/`. Proves the
+    /// `/workflow` command's new path awaits inline instead of detaching a
+    /// thread.
+    #[tokio::test]
+    async fn runs_named_workflow_and_leaves_a_run_log() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let gait_dir = tmp.path().to_path_buf();
+        std::process::Command::new("git")
+            .args(["init", "--initial-branch=main"])
+            .current_dir(&gait_dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "init"])
+            .current_dir(&gait_dir)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "t@t.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "t@t.com")
+            .output()
+            .unwrap();
+        std::fs::create_dir_all(gait_dir.join("workflows")).unwrap();
+        std::fs::write(
+            gait_dir.join("workflows/smoke.yaml"),
+            "name: smoke\nnodes:\n  - id: chat\n    prompt: \"\"\n",
+        )
+        .unwrap();
+
+        let result = run_named_workflow("smoke", vec![], gait_dir.clone(), gait_dir.clone()).await;
+
+        assert!(
+            result.starts_with("workflow smoke-"),
+            "unexpected result: {result}"
+        );
+        let runs_dir = gait_dir.join("workflow-runs");
+        let entries: Vec<_> = std::fs::read_dir(&runs_dir).unwrap().collect();
+        assert_eq!(entries.len(), 1, "expected exactly one run dir");
+        let run_dir = entries.into_iter().next().unwrap().unwrap().path();
+        assert!(
+            run_dir.join("log.jsonl").exists(),
+            "run log must exist after run_named_workflow"
+        );
+    }
 }
 
 #[cfg(test)]
