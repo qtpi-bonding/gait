@@ -11,7 +11,7 @@
 //! The invariant is a property of the matcher + the source-agnostic union,
 //! so test them directly with realistic requests.
 
-use crate::permission::{
+use crate::permissions::{
     command_patterns, is_request_approved, is_request_denied, mcp_permission, path_patterns,
 };
 use crate::types::PermissionRequest;

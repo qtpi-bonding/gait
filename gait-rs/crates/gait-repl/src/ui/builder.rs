@@ -199,7 +199,7 @@ impl ReplBuilder {
         agent_path: Option<&std::path::Path>,
     ) -> anyhow::Result<InteractionOutcome> {
         use crate::ui::permission::parse_permission_response;
-        use gait_core::permission::PermissionChoice;
+        use gait_core::permissions::PermissionChoice;
         let prompt_str = format!("  {}", RESET);
         let mut reply_items: Vec<pb::PermissionsReplyItem> = vec![];
         let mut cancelled = false;
@@ -285,37 +285,37 @@ impl ReplBuilder {
             };
 
             if let Err(e) =
-                gait_core::permission::save_choice(&choice, gait_dir, session_id, agent_path)
+                gait_core::permissions::save_choice(&choice, gait_dir, session_id, agent_path)
             {
                 eprint!("[gait] warning: could not save permission: {e}\r\n");
             }
 
             let perm = match &choice {
-                gait_core::permission::PermissionChoice::Once(p) => pb::PermissionsReplyItem {
+                gait_core::permissions::PermissionChoice::Once(p) => pb::PermissionsReplyItem {
                     id: item.id.clone(),
                     decision: pb::Decision::Allow as i32,
                     text: Some(p.clone()),
                     scope: pb::Scope::Once as i32,
                 },
-                gait_core::permission::PermissionChoice::Session(p) => pb::PermissionsReplyItem {
+                gait_core::permissions::PermissionChoice::Session(p) => pb::PermissionsReplyItem {
                     id: item.id.clone(),
                     decision: pb::Decision::Allow as i32,
                     text: Some(p.clone()),
                     scope: pb::Scope::Session as i32,
                 },
-                gait_core::permission::PermissionChoice::Agent(p) => pb::PermissionsReplyItem {
+                gait_core::permissions::PermissionChoice::Agent(p) => pb::PermissionsReplyItem {
                     id: item.id.clone(),
                     decision: pb::Decision::Allow as i32,
                     text: Some(p.clone()),
                     scope: pb::Scope::Agent as i32,
                 },
-                gait_core::permission::PermissionChoice::Global(p) => pb::PermissionsReplyItem {
+                gait_core::permissions::PermissionChoice::Global(p) => pb::PermissionsReplyItem {
                     id: item.id.clone(),
                     decision: pb::Decision::Allow as i32,
                     text: Some(p.clone()),
                     scope: pb::Scope::Global as i32,
                 },
-                gait_core::permission::PermissionChoice::Deny => pb::PermissionsReplyItem {
+                gait_core::permissions::PermissionChoice::Deny => pb::PermissionsReplyItem {
                     id: item.id.clone(),
                     decision: pb::Decision::Deny as i32,
                     text: None,
@@ -339,8 +339,8 @@ enum BulkScope {
 }
 
 impl BulkScope {
-    fn to_choice(&self, pattern: String) -> gait_core::permission::PermissionChoice {
-        use gait_core::permission::PermissionChoice;
+    fn to_choice(&self, pattern: String) -> gait_core::permissions::PermissionChoice {
+        use gait_core::permissions::PermissionChoice;
         match self {
             BulkScope::Once => PermissionChoice::Once(pattern),
             BulkScope::Session => PermissionChoice::Session(pattern),

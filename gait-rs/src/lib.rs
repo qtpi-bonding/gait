@@ -24,7 +24,7 @@ pub mod providers;
 
 // Deferred — external callers in gait-cli/gait-repl; seal after public wrappers added
 pub mod agent_frontmatter;
-pub mod permission;
+pub mod permissions;
 pub mod skills;
 
 // Shared CLI/REPL input machinery (item 12). The four submodules were

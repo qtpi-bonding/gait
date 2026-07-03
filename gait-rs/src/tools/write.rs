@@ -1,4 +1,4 @@
-use crate::permission::path_patterns;
+use crate::permissions::path_patterns;
 use crate::tools::ToolCtx;
 use crate::tools::ToolError;
 use crate::types::{PermissionRequest, Tool, ToolPermission};

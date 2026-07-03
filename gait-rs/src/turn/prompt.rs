@@ -154,7 +154,7 @@ pub(super) fn make_mcp_tool_def(def: &McpToolDef, client: Arc<McpClient>) -> Box
             })
         }),
         permission: Some(Box::new(move |_args| {
-            crate::permission::mcp_permission(&server, &tool_name)
+            crate::permissions::mcp_permission(&server, &tool_name)
         })),
     })
 }

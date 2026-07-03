@@ -321,7 +321,7 @@ pub struct AllowArgs {
 
 pub fn cmd_allow(args: AllowArgs) {
     use gait_core::agent_frontmatter::{resolve_markdown_context_path, MarkdownKind};
-    use gait_core::permission::{compute_allow_decisions, AllowParams, AllowScope};
+    use gait_core::permissions::{compute_allow_decisions, AllowParams, AllowScope};
     use gait_core::session::log::{session_state, write_permissions_reply, SessionState};
 
     let scope = match args.scope.as_deref() {

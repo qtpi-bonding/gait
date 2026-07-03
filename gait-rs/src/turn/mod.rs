@@ -23,7 +23,7 @@ use crate::session::Ingestor;
 
 use crate::git::checkpoint::CheckpointRepo;
 
-use crate::permission::find_matched_deny_pattern;
+use crate::permissions::find_matched_deny_pattern;
 
 use crate::proto::gait::log::v1 as pb;
 use crate::proto::gait::log::v1::{event, payload, Event};

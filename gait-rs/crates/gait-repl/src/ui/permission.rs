@@ -21,8 +21,8 @@ pub fn preview_block(preview: Option<&str>) -> Vec<String> {
 pub(crate) fn parse_permission_response(
     input: &str,
     patterns: &[String],
-) -> Option<gait_core::permission::PermissionChoice> {
-    use gait_core::permission::PermissionChoice;
+) -> Option<gait_core::permissions::PermissionChoice> {
+    use gait_core::permissions::PermissionChoice;
     let s = input.trim().to_lowercase();
     if s == "r" || s == "deny" || s == "reject" {
         return Some(PermissionChoice::Deny);
@@ -70,7 +70,7 @@ pub(crate) fn parse_permission_response(
 mod tests {
     use super::*;
 
-    use gait_core::permission::PermissionChoice::{Agent, Deny, Once, Session};
+    use gait_core::permissions::PermissionChoice::{Agent, Deny, Once, Session};
 
     // Matches command_patterns order: broad first, specific last.
     // [1] = most specific (patterns.last()), [2] = broadest (patterns.first()).

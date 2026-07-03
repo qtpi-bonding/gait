@@ -5,7 +5,7 @@
 //! emit-blocked-results loop stay in `mod.rs` — only the classification
 //! step itself is here.
 
-use crate::permission::{find_matched_allow_pattern, is_request_approved, is_request_denied};
+use crate::permissions::{find_matched_allow_pattern, is_request_approved, is_request_denied};
 use crate::proto::gait::log::v1 as pb;
 use crate::types::{Tool, ToolCall, ToolPermission};
 /// The classification of a single tool call against the current permission

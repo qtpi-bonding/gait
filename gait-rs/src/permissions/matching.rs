@@ -19,44 +19,7 @@ pub enum PermissionChoice {
     /// Deny — model receives "permission denied" and can react.
     Deny,
 }
-
-/// Persist a `PermissionChoice` to its backing store.
-///
-/// * `Global(pattern)` → appends to `<gait_dir>/gait.jsonc`
-/// * `Agent(pattern)` → appends to the agent's frontmatter at `agent_path`
-/// * `Once(pattern)`  → no side effect; the grant is recorded as a
-///   `PermissionsReply{scope:"once"}` log event by chat.rs and replayed by
-///   the `ActivePermissions` projection.
-/// * `Session(pattern)` → no side effect; the grant is recorded as a
-///   `PermissionsReply{scope:"session"}` log event by chat.rs and replayed
-///   by the `ActivePermissions` projection.
-/// * `Reject`         → no side effect
-pub fn save_choice(
-    choice: &PermissionChoice,
-    gait_dir: &Path,
-    _session_id: &str,
-    agent_path: Option<&Path>,
-) -> anyhow::Result<()> {
-    match choice {
-        PermissionChoice::Global(pattern) => {
-            crate::config::append_allow_pattern(gait_dir, pattern)?;
-        }
-        PermissionChoice::Agent(pattern) => {
-            if let Some(path) = agent_path {
-                crate::agent_frontmatter::append_agent_allow(path.to_path_buf(), pattern)?;
-            }
-        }
-        PermissionChoice::Once(_pattern) => {
-            // No side effect — derived from the PermissionsReply(once) log event.
-        }
-        PermissionChoice::Session(_pattern) => {
-            // No side effect — derived from the PermissionsReply(session) log event.
-        }
-        PermissionChoice::Deny => {}
-    }
-    Ok(())
-}
-
+// moved to permissions::persist (Task 3): save_choice + compute_allow_decisions
 #[derive(Debug, Clone)]
 pub enum AllowScope {
     Global,
@@ -69,72 +32,6 @@ pub struct AllowParams {
     pub scope: AllowScope,
     pub pattern: Option<String>,
 }
-
-/// Pure decision logic for an approval against already-loaded pending items.
-///
-/// Takes the items vector the caller has already loaded from the session log,
-/// runs the allow-pattern matching (calling `save_choice` to persist Global/Agent
-/// grants), and returns the `PermissionsReplyItem`s to write back. No session log
-/// reads or writes happen here — the caller is responsible for I/O.
-pub fn compute_allow_decisions(
-    items: &[crate::proto::gait::log::v1::PermissionItem],
-    params: &AllowParams,
-    gait_dir: &std::path::Path,
-    session_id: &str,
-    agent_path: Option<&std::path::Path>,
-) -> anyhow::Result<Vec<crate::proto::gait::log::v1::PermissionsReplyItem>> {
-    let mut reply_items: Vec<pb::PermissionsReplyItem> = Vec::new();
-
-    for item in items {
-        let effective_pattern = params.pattern.clone().unwrap_or_else(|| {
-            item.patterns
-                .first()
-                .cloned()
-                .unwrap_or_else(|| item.tool_name.clone())
-        });
-
-        let req = crate::types::PermissionRequest {
-            display: item.cmd.clone(),
-            patterns: item.patterns.clone(),
-        };
-
-        // When --pattern is supplied, only approve if that pattern would cover the request.
-        // When --pattern is absent, default to approving every pending item.
-        let covered = match params.pattern.as_ref() {
-            Some(p) => is_request_approved(&item.tool_name, &req, std::slice::from_ref(p)),
-            None => true,
-        };
-
-        if covered {
-            let choice = match &params.scope {
-                AllowScope::Global => PermissionChoice::Global(effective_pattern.clone()),
-                AllowScope::Agent => PermissionChoice::Agent(effective_pattern.clone()),
-                AllowScope::Once => PermissionChoice::Once(effective_pattern.clone()),
-            };
-            save_choice(&choice, gait_dir, session_id, agent_path)?;
-            reply_items.push(pb::PermissionsReplyItem {
-                id: item.id.clone(),
-                decision: pb::Decision::Allow as i32,
-                text: None,
-                scope: match &params.scope {
-                    AllowScope::Global => pb::Scope::Global as i32,
-                    AllowScope::Agent => pb::Scope::Agent as i32,
-                    AllowScope::Once => pb::Scope::Once as i32,
-                },
-            });
-        } else {
-            reply_items.push(pb::PermissionsReplyItem {
-                id: item.id.clone(),
-                decision: pb::Decision::Deny as i32,
-                text: None,
-                scope: pb::Scope::Unspecified as i32,
-            });
-        }
-    }
-
-    Ok(reply_items)
-}
-
 /// Generate allow-list patterns for a file path, from broadest to most specific.
 ///
 /// path_patterns("read", "src/tools/edit.rs")

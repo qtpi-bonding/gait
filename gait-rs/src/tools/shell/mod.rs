@@ -1,4 +1,4 @@
-use crate::permission::{command_patterns, split_commands};
+use crate::permissions::{command_patterns, split_commands};
 use crate::tools::ToolCtx;
 use crate::tools::ToolError;
 use crate::types::{PermissionRequest, Tool, ToolPermission};
