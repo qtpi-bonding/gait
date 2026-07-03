@@ -44,6 +44,8 @@ pub(crate) mod hashline;
 pub(crate) mod hook_runner;
 pub(crate) mod mcp;
 pub(crate) mod openai;
+#[cfg(test)]
+mod permissions_invariant_tests;
 pub(crate) mod prompt;
 pub mod sandbox;
 #[cfg(test)]
