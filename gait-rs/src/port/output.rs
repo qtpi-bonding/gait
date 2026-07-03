@@ -76,6 +76,32 @@ impl TurnSink for &mut dyn TurnSink {
     }
 }
 
+/// A single `TurnSink` invocation, reified so it can cross an mpsc channel and be
+/// replayed onto a downstream sink call-for-call — the widened channel element
+/// that lets a captured sub-turn round-trip EVERY sink call (spec-06 §4).
+#[derive(Clone)]
+pub enum SinkFrame {
+    BeginTurn,
+    Item(StreamItem),
+    EndTurn,
+    Result(TurnResult),
+    SessionId(String),
+    Diagnostic(Diag, String),
+}
+
+impl SinkFrame {
+    pub fn replay(self, sink: &mut dyn TurnSink) {
+        match self {
+            SinkFrame::BeginTurn => sink.begin_turn(),
+            SinkFrame::Item(it) => sink.item(&it),
+            SinkFrame::EndTurn => sink.end_turn(),
+            SinkFrame::Result(r) => sink.result(&r),
+            SinkFrame::SessionId(id) => sink.session_id(&id),
+            SinkFrame::Diagnostic(level, msg) => sink.diagnostic(level, &msg),
+        }
+    }
+}
+
 pub async fn drive(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<StreamItem>,
     sink: &mut impl TurnSink,
@@ -224,6 +250,29 @@ mod tests {
             ))),
         }
     }
+    #[test]
+    fn sink_frame_replays_every_variant_in_order() {
+        let frames = vec![
+            SinkFrame::BeginTurn,
+            SinkFrame::SessionId("s0000001".into()),
+            SinkFrame::Item(ev(events::tool_call(
+                "c1".into(),
+                "read".into(),
+                &serde_json::json!({}),
+            ))),
+            SinkFrame::Diagnostic(Diag::Error, "boom".into()),
+            SinkFrame::Result(crate::turn::TurnResult::Permissions),
+            SinkFrame::EndTurn,
+        ];
+        let mut rec = RecordingSink::default();
+        for f in frames {
+            f.replay(&mut rec);
+        }
+        assert_eq!(rec.items.len(), 1);
+        assert_eq!(rec.results.len(), 1);
+        assert_eq!(rec.diagnostics, vec![(Diag::Error, "boom".to_string())]);
+    }
+
     #[test]
     fn error_event_is_error() {
         assert_eq!(

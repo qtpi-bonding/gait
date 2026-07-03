@@ -13,7 +13,9 @@
 pub use crate::config::{load_config, GaitConfig};
 pub use crate::git::Repos;
 pub use crate::port::input::{TurnSource, TurnStart};
-pub use crate::port::output::{run_result_proto, CliSink, Diag, RecordingSink, TurnSink};
+pub use crate::port::output::{
+    run_result_proto, CliSink, Diag, RecordingSink, SinkFrame, TurnSink,
+};
 pub use crate::profile::ResolvedProfile;
 pub use crate::proto::gait::log::v1::{RunResult, StreamItem};
 pub use crate::session::Session;
