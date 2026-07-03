@@ -65,6 +65,7 @@ pub(crate) mod hand;
 pub mod nerve;
 mod persist;
 mod prompt;
+mod resume;
 pub(crate) mod spine;
 mod state;
 pub(crate) mod synapse;
@@ -75,6 +76,8 @@ use state::TurnState;
 // Re-exports
 #[allow(unused_imports)] // used by `#[cfg(test)]` in tests.rs
 pub(crate) use exec::apply_parse_filter;
+#[allow(unused_imports)]
+// used by `#[cfg(test)]` in tests.rs; call site moved to resume.rs (Task 14)
 pub(crate) use prompt::build_turn_context;
 pub use prompt::{
     build_loadable_catalog, build_loadable_enabled_state, build_permission_status,
@@ -426,152 +429,21 @@ pub async fn run_turn(
     // Synthetic turn context (built once, prepended to every step's outgoing in
     // the step loop per plan §5d). None on the resume path — the model already
     // has context from the prior turn.
-    let did_resume = if matches!(
-        pre_events.last().and_then(event_kind),
-        Some(payload::Kind::PermissionsReply(_))
-    ) {
-        // Find the Permissions event immediately preceding the reply
-        let perm_event = pre_events
-            .iter()
-            .rev()
-            .skip(1) // skip PermissionsReply
-            .find(|e| matches!(event_kind(e), Some(payload::Kind::Permissions(_))));
-        let reply_event = pre_events.last();
-
-        let perm_items = perm_event.and_then(|e| match event_kind(e) {
-            Some(payload::Kind::Permissions(p)) => Some(p.items),
-            _ => None,
-        });
-        let reply_items = reply_event.and_then(|e| match event_kind(e) {
-            Some(payload::Kind::PermissionsReply(r)) => Some(r.items),
-            _ => None,
-        });
-
-        if let (Some(perm_items), Some(reply_items)) = (perm_items, reply_items) {
-            use crate::proto::gait::log::v1::{Decision, Scope};
-            // Build a map: id → decision
-            let decisions: std::collections::HashMap<&str, Decision> = reply_items
-                .iter()
-                .map(|r| {
-                    (
-                        r.id.as_str(),
-                        Decision::try_from(r.decision).unwrap_or(Decision::Unspecified),
-                    )
-                })
-                .collect();
-
-            // Deduplicate by id: collect unique tool_call_ids and their items
-            let mut by_id: std::collections::BTreeMap<
-                String,
-                Vec<&crate::proto::gait::log::v1::PermissionItem>,
-            > = std::collections::BTreeMap::new();
-            for item in &perm_items {
-                by_id.entry(item.id.clone()).or_default().push(item);
-            }
-
-            // Execute or deny each unique tool call
-            for (id, items) in &by_id {
-                // All-or-nothing: all segments of this tool_call_id must be approved
-                let all_approved = items
-                    .iter()
-                    .all(|item| decisions.get(item.id.as_str()).copied() == Some(Decision::Allow));
-
-                if all_approved {
-                    // Execute using original tool_args from the first item (all share same args)
-                    let tc = ToolCall {
-                        tool_call_id: id.clone(),
-                        tool_name: items[0].tool_name.clone(),
-                        args: input_value(&items[0].tool_args),
-                    };
-                    // Build scope-aware prefix: tell the model whether the approval
-                    // was a one-shot or saved to the agent/global whitelist.
-                    let prefix = {
-                        let scope = reply_items
-                            .iter()
-                            .find(|r| r.id == *id)
-                            .map(|r| Scope::try_from(r.scope).unwrap_or(Scope::Unspecified));
-                        match scope {
-                            Some(Scope::Once) => Some("[User approved once.]".to_string()),
-                            Some(Scope::Agent) | Some(Scope::Global) => {
-                                let pattern = items
-                                    .iter()
-                                    .flat_map(|p| p.patterns.iter())
-                                    .next()
-                                    .cloned()
-                                    .unwrap_or_else(|| items[0].tool_name.clone());
-                                Some(format!("[User added to whitelist: {}]", pattern))
-                            }
-                            _ => Some("[User approved.]".to_string()),
-                        }
-                    };
-                    if let Err(e) = execute_tool_call(
-                        &tc,
-                        &state.tools,
-                        emitter,
-                        prefix,
-                        &codebase_path,
-                        &gait_dir,
-                        &session_id,
-                        sandbox_on,
-                        relay.as_ref(),
-                    )
-                    .await
-                    {
-                        // Emit error as tool result so model sees it
-                        emitter.record(events::tool_result(
-                            id.clone(),
-                            format!("error executing approved tool: {e}"),
-                            None,
-                            None,
-                        ))?;
-                    }
-                } else {
-                    // At least one segment denied — emit ToolCall FIRST, then ToolResult.
-                    // Without a preceding ToolCall, context.rs silently drops the orphan
-                    // ToolResult during reconstruction, and the model retries forever (gate loop).
-                    emitter.record(events::tool_call(
-                        id.clone(),
-                        items[0].tool_name.clone(),
-                        &input_value(&items[0].tool_args),
-                    ))?;
-                    emitter.record(events::tool_result(
-                        id.clone(),
-                        "permission denied by user".into(),
-                        None,
-                        None,
-                    ))?;
-                }
-            }
-
-            // Re-read events after execution and reconstruct messages.
-            // This is the ONLY source of truth — do not manually push to messages.
-            let events_after = ingestor.events()?;
-            state.messages = retrace::messages(&events_after)?;
-            // Do NOT inject UserTurn or turn_ctx — model already has context from the prior turn.
-            true
-        } else {
-            false
-        }
-    } else {
-        false
-    };
-
-    if !did_resume {
-        // The input event (user_turn / reply) is appended by the caller before the
-        // turn (Phase 4 Option A); here we only fold the log into messages.
-        let events = ingestor.events()?;
-        state.messages = retrace::messages(&events)?;
-        let cwd = retrace::active_cwd(&events, &codebase_path);
-        // turn_ctx is prepended to `outgoing` INSIDE the step loop (Task 5, plan §5d)
-        // so that pre_step mutations logged on this turn land in the transcript alongside
-        // a fresh turn_ctx for THIS step, not the prior turn's.
-        state.turn_ctx = Some(build_turn_context(
-            &codebase_hash,
-            &dirty_files,
-            &cwd,
-            &input.daemons,
-        ));
-    }
+    resume::apply_if_pending(
+        &pre_events,
+        &ingestor,
+        emitter,
+        &mut state,
+        &codebase_path,
+        &gait_dir,
+        &session_id,
+        sandbox_on,
+        relay.as_ref(),
+        &codebase_hash,
+        &dirty_files,
+        &input.daemons,
+    )
+    .await?;
 
     // Derive enabled loadables from the FULL session (mutation-aware, via the
     // ActiveAgent projection). Loadables are a "state" projection and persist
