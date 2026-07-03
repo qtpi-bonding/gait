@@ -66,7 +66,6 @@ pub(crate) fn watchdog_breach(
 /// `_phase`; the caps key off `last_phase_elapsed_ms` + `spine_phase`). It is
 /// carried for signature parity / future use, not because it is load-bearing —
 /// preserve the existing behavior exactly, do not "fix" this.
-#[allow(dead_code)] // adopted by relay.rs in a later stage
 pub(crate) struct Watchdog {
     cfg: WatchdogCfg,
     last_phase: crate::diagnostic::Phase,
@@ -75,7 +74,6 @@ pub(crate) struct Watchdog {
     last_ping_at: Option<std::time::Instant>,
 }
 
-#[allow(dead_code)] // adopted by relay.rs in a later stage
 impl Watchdog {
     pub(crate) fn new() -> Self {
         Self {
@@ -88,6 +86,13 @@ impl Watchdog {
 
     pub(crate) fn ping_ms(&self) -> u64 {
         self.cfg.ping_ms
+    }
+
+    /// The phase recorded at the last `observe()` ping (or `TurnBegin` before
+    /// the first ping). Used by callers to classify a breach for diagnostics —
+    /// not consumed by `watchdog_breach` itself (see the `Watchdog` struct note).
+    pub(crate) fn phase(&self) -> crate::diagnostic::Phase {
+        self.last_phase
     }
 
     /// Record a Diagnostic ping: refresh phase/elapsed and arm the timer.
