@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
 use crate::provider::StreamChunk;
-use crate::text::split_into_blocks;
 #[allow(unused_imports)] // `Tool` is used by `#[cfg(test)]` in tests.rs
 use crate::types::{
     AssistantContent, AssistantPart, ExecutionMode, ExecutionSignal, HookAction, HookContext,
@@ -11,7 +10,6 @@ use crate::types::{
 use futures_util::StreamExt;
 
 use crate::config::McpToolDef;
-use crate::proto::gait::log::v1::TurnTokenUsage;
 use crate::proto::Recorder;
 use crate::proto::{events, wire};
 use crate::session::log::{count_turn_complete, init_session, InitSessionOpts};
@@ -1082,54 +1080,16 @@ pub async fn run_turn(
         }
         if step_tool_calls.is_empty() {
             let message = step_text.clone();
-            let events_now = ingestor.events()?;
-            let turn_n = count_turn_complete(&events_now) as u32 + 1;
-            let code_checkpoint = persist.checkpoint(turn_n);
-            let changes = code_checkpoint.as_ref().and_then(|sha| {
-                repos
-                    .checkpoints
-                    .diff(&gait_dir, &session_id, sha)
-                    .ok()
-                    .flatten()
-            });
-            let usage = TurnTokenUsage {
-                input: state.total_usage.input_tokens as u64,
-                output: state.total_usage.output_tokens as u64,
-                cache_read: state.total_usage.cache_read_tokens as u64,
-                cache_write: state.total_usage.cache_write_tokens as u64,
-            };
-            emitter.record(events::turn_complete(events::TurnCompleteParams {
-                usage,
-                codebase_hash: codebase_hash.clone(),
-                codebase_dirty,
-                checkpoint: code_checkpoint,
-                blocks: split_into_blocks(&state.all_turn_text),
-                message: message.clone(),
-                result: None,
-                changes: changes.clone(),
-            }))?;
-            persist.commit(&format!("session({}): turn {}", session_id, turn_n))?;
-            {
-                let post_turn_ctx = HookContext {
-                    event: "post_turn".to_string(),
-                    session_id: session_id.clone(),
-                    gait_dir: gait_dir.clone(),
-                    codebase: codebase_path.clone(),
-                    system_prompt: system_prompt.clone(),
-                    step_count: step_index + 1,
-                    turn_outcome: "done".to_string(),
-                    final_response: message.clone(),
-                    ..Default::default()
-                };
-                for h in &hooks {
-                    h.post_turn(&post_turn_ctx, emitter);
-                }
-            }
-            return Ok(TurnResult::Done {
-                message,
-                result: None,
-                changes,
-            });
+            return finalize::finalize(
+                &env,
+                &mut state,
+                &persist,
+                finalize::StepOutcome::Done {
+                    message,
+                    result: None,
+                },
+            )
+            .await;
         }
 
         // Scope pre-check (supervised mode + sandbox on only): for each world-touching
@@ -1605,54 +1565,13 @@ pub async fn run_turn(
                         for t in post_tool_text.drain(..) {
                             emitter.publish_delta(t);
                         }
-                        let events_now = ingestor.events()?;
-                        let turn_n = count_turn_complete(&events_now) as u32 + 1;
-                        let code_checkpoint = persist.checkpoint(turn_n);
-                        let changes = code_checkpoint.as_ref().and_then(|sha| {
-                            repos
-                                .checkpoints
-                                .diff(&gait_dir, &session_id, sha)
-                                .ok()
-                                .flatten()
-                        });
-                        let usage = TurnTokenUsage {
-                            input: state.total_usage.input_tokens as u64,
-                            output: state.total_usage.output_tokens as u64,
-                            cache_read: state.total_usage.cache_read_tokens as u64,
-                            cache_write: state.total_usage.cache_write_tokens as u64,
-                        };
-                        emitter.record(events::turn_complete(events::TurnCompleteParams {
-                            usage,
-                            codebase_hash: codebase_hash.clone(),
-                            codebase_dirty,
-                            checkpoint: code_checkpoint,
-                            blocks: split_into_blocks(&state.all_turn_text),
-                            message: message.clone(),
-                            result: result.clone(),
-                            changes: changes.clone(),
-                        }))?;
-                        persist.commit(&format!("session({}): turn {}", session_id, turn_n))?;
-                        {
-                            let post_turn_ctx = HookContext {
-                                event: "post_turn".to_string(),
-                                session_id: session_id.clone(),
-                                gait_dir: gait_dir.clone(),
-                                codebase: codebase_path.clone(),
-                                system_prompt: system_prompt.clone(),
-                                step_count: step_index + 1,
-                                turn_outcome: "done".to_string(),
-                                final_response: message.clone(),
-                                ..Default::default()
-                            };
-                            for h in &hooks {
-                                h.post_turn(&post_turn_ctx, emitter);
-                            }
-                        }
-                        return Ok(TurnResult::Done {
-                            message,
-                            result,
-                            changes,
-                        });
+                        return finalize::finalize(
+                            &env,
+                            &mut state,
+                            &persist,
+                            finalize::StepOutcome::Done { message, result },
+                        )
+                        .await;
                     }
                     ExecutionSignal::Clarify => {
                         let items: Vec<pb::ClarifyItem> = tc
