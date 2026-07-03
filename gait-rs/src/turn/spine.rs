@@ -454,16 +454,11 @@ pub async fn relay_brain_turn(
         match signal.body {
             Some(signal::Body::Impulse(impulse)) => {
                 let stdin_writer = Arc::clone(&child_stdin);
-                if impulse.tool == "spawn_agent" || impulse.tool == "run_workflow" {
+                if impulse.tool == "spawn_agent" {
                     let ctx = ctx.clone();
                     inflight.spawn(async move {
-                        let feedback = if impulse.tool == "spawn_agent" {
-                            let args = parse_spawn_args(&impulse);
-                            handle_spawn_agent(args, ctx).await
-                        } else {
-                            let args = parse_run_workflow_args(&impulse);
-                            handle_run_workflow(args, ctx).await
-                        };
+                        let args = parse_spawn_args(&impulse);
+                        let feedback = handle_spawn_agent(args, ctx).await;
                         reply_feedback(stdin_writer, corr_id, feedback).await;
                     });
                 } else {
@@ -633,8 +628,8 @@ pub async fn relay_brain_turn(
     }
     sink.end_turn();
 
-    // Bound how long an in-flight tool call (or spawn_agent/run_workflow
-    // handler) can keep running after the read loop has already decided the
+    // Bound how long an in-flight tool call (or spawn_agent handler) can keep
+    // running after the read loop has already decided the
     // turn is over. Must run before reap_brain: this is the spine's own
     // in-process task leak, distinct from (and not covered by) reap_brain's
     // OS-process-group kill.
@@ -731,18 +726,18 @@ pub async fn relay_brain_turn(
 /// Either way we move `child` in and drop it WITHOUT awaiting. Reaping before the
 /// drop means tokio's SIGCHLD reaper can't race-steal the pid; the post-drop
 /// `try_wait` then sees `ECHILD` (harmless), so there is no zombie leak.
-/// Give in-flight Impulse-handler tasks (spawn_agent, run_workflow, and every
-/// other tool exec — see the `tokio::spawn` sites in `relay_brain_turn`) up to
-/// `grace` to finish naturally, then abort whatever's still running. Called
-/// once, right after the read loop exits (EOF / Terminated / watchdog), and
-/// BEFORE `reap_brain`: without this, a tool call that's still mid-flight when
-/// the loop breaks can keep running — spawning subagent processes and writing
+/// Give in-flight Impulse-handler tasks (spawn_agent and every other tool
+/// exec — see the `tokio::spawn` sites in `relay_brain_turn`) up to `grace`
+/// to finish naturally, then abort whatever's still running. Called once,
+/// right after the read loop exits (EOF / Terminated / watchdog), and BEFORE
+/// `reap_brain`: without this, a tool call that's still mid-flight when the
+/// loop breaks can keep running — spawning subagent processes and writing
 /// to the gait-dir — after the caller has already been told the turn is done.
 ///
 /// `abort_all` cancels the *task* at its next await point but does not itself
 /// kill any OS process a task was waiting on (e.g. `run_tool_as_spine`'s hand
-/// subprocess, or `handle_run_workflow`'s workflow child) — both are enrolled
-/// in the cascade `group` when spawned (`configure_enrolled`/`register_pid` in
+/// subprocess) — it is enrolled in the cascade `group` when spawned
+/// (`configure_enrolled`/`register_pid` in
 /// `run_tool_as_spine`), so the `reap_brain` → `group.kill_all()` call that
 /// MUST run immediately after this one is what actually kills them. Calling
 /// this after `reap_brain`, or not at all, is the bug this function exists to
@@ -1407,176 +1402,6 @@ pub(super) fn build_subagent_feedback(
             "session_id": session_id,
             "status": "failed",
             "summary": format!("subagent exited (code {exit_code}) without completing"),
-        })),
-    }
-}
-
-/// Arguments parsed from a `run_workflow` Impulse.
-pub(super) struct RunWorkflowArgs {
-    pub name: String,
-    pub wf_args: Vec<String>,
-    pub detached: bool,
-}
-
-/// Parse a proto `Struct` from an Impulse into `RunWorkflowArgs`.
-fn parse_run_workflow_args(impulse: &Impulse) -> RunWorkflowArgs {
-    let s = impulse.args.as_ref();
-    let get_str = |key: &str| -> Option<String> {
-        s.and_then(|st| st.fields.get(key))
-            .and_then(|v| match &v.kind {
-                Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.clone()),
-                _ => None,
-            })
-    };
-    let get_bool = |key: &str| -> bool {
-        s.and_then(|st| st.fields.get(key))
-            .and_then(|v| match &v.kind {
-                Some(pbjson_types::value::Kind::BoolValue(b)) => Some(*b),
-                _ => None,
-            })
-            .unwrap_or(false)
-    };
-    let wf_args: Vec<String> = s
-        .and_then(|st| st.fields.get("args"))
-        .and_then(|v| match &v.kind {
-            Some(pbjson_types::value::Kind::ListValue(lv)) => Some(
-                lv.values
-                    .iter()
-                    .filter_map(|v| match &v.kind {
-                        Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.clone()),
-                        _ => None,
-                    })
-                    .collect(),
-            ),
-            _ => None,
-        })
-        .unwrap_or_default();
-    RunWorkflowArgs {
-        name: get_str("name").unwrap_or_default(),
-        wf_args,
-        detached: get_bool("detached"),
-    }
-}
-
-/// Spine-side handler for `run_workflow`: launches `gait workflow run <name>` as a
-/// subprocess (enrolled or detached) and waits for it to finish (unless `detached`).
-pub(super) async fn handle_run_workflow(args: RunWorkflowArgs, ctx: TurnCtx) -> Feedback {
-    if args.name.is_empty() {
-        return error_feedback("run_workflow: missing required field: name");
-    }
-
-    if args.detached {
-        let _ = launch_workflow_child(&ctx, &args.name, &args.wf_args, true);
-        return feedback_result(serde_json::json!({
-            "status": "started",
-            "name": args.name,
-        }));
-    }
-
-    // Blocking: wait for the workflow process to exit, then read the run log.
-    let Some(mut child) = launch_workflow_child(&ctx, &args.name, &args.wf_args, false) else {
-        return error_feedback("run_workflow: failed to launch workflow subprocess");
-    };
-
-    let status = tokio::task::spawn_blocking(move || child.wait())
-        .await
-        .ok()
-        .and_then(|r| r.ok());
-
-    let was_signalled = status
-        .as_ref()
-        .map(|s| {
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::ExitStatusExt;
-                s.signal().is_some()
-            }
-            #[cfg(not(unix))]
-            {
-                false
-            }
-        })
-        .unwrap_or(false);
-
-    if was_signalled {
-        return feedback_result(serde_json::json!({
-            "name": args.name,
-            "status": "cancelled",
-        }));
-    }
-
-    let exit_code = status.as_ref().and_then(|s| s.code()).unwrap_or(-1);
-    build_workflow_feedback(&args.name, exit_code)
-}
-
-/// Launch `gait workflow run <name> [args…] --gait-dir … [--sandbox-locked] [--cascade-group …]`
-/// as a child process (enrolled or detached).
-fn launch_workflow_child(
-    ctx: &TurnCtx,
-    name: &str,
-    wf_args: &[String],
-    detached: bool,
-) -> Option<std::process::Child> {
-    let mut argv = vec![
-        "workflow".to_string(),
-        "run".to_string(),
-        name.to_string(),
-        "--gait-dir".to_string(),
-        ctx.gait_dir.to_str().unwrap_or(".").to_string(),
-    ];
-    for a in wf_args {
-        argv.push(a.clone());
-    }
-    if ctx.sandbox_on {
-        argv.push("--sandbox-locked".to_string());
-    }
-    if detached {
-        let mut cmd = std::process::Command::new(&ctx.exe);
-        cmd.args(&argv)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        let _ = ctx.group.spawn_detached(cmd);
-        None
-    } else {
-        let handle = ctx.group.handle();
-        if let Some(h) = handle {
-            argv.extend(["--cascade-group".to_string(), h]);
-        } else {
-            eprintln!("[spine] warning: run_workflow cascade-group handle unavailable");
-        }
-        let mut cmd = std::process::Command::new(&ctx.exe);
-        cmd.args(&argv)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        ctx.group.spawn_enrolled(cmd).ok()
-    }
-}
-
-/// Assemble a `Feedback` after the blocking workflow subprocess exits.
-///
-/// Exit-code mapping:
-///   0  → `"done"`            (`WorkflowOutcome::Completed`)
-///   2  → `"paused_at_gate"`  (`WorkflowOutcome::GatePaused`)
-///   other → `"failed"`
-///
-/// NOTE(SP-2c): the brain has only the workflow *name*; the subprocess re-reads
-/// `{gait_dir}/workflows/{name}.yaml` — acceptable, but does not exercise embedded-def resume.
-pub(super) fn build_workflow_feedback(name: &str, exit_code: i32) -> Feedback {
-    match exit_code {
-        0 => feedback_result(serde_json::json!({
-            "name": name,
-            "status": "done",
-        })),
-        2 => feedback_result(serde_json::json!({
-            "name": name,
-            "status": "paused_at_gate",
-        })),
-        _ => feedback_result(serde_json::json!({
-            "name": name,
-            "status": "failed",
-            "summary": format!("workflow subprocess exited with code {exit_code}"),
         })),
     }
 }
@@ -2446,161 +2271,6 @@ mod tests {
             _ => None,
         });
         assert_eq!(status, Some("failed"), "status must be 'failed'");
-    }
-
-    // ── run_workflow relay-routing tests ──────────────────────────────────────
-
-    /// `build_workflow_feedback` with exit_code 0 → `status == "done"`.
-    #[test]
-    fn build_workflow_feedback_exit_0_is_done() {
-        let fb = super::build_workflow_feedback("my-flow", 0);
-        let fields = match fb.result.as_ref().and_then(|v| v.kind.as_ref()) {
-            Some(pbjson_types::value::Kind::StructValue(s)) => &s.fields,
-            other => panic!("expected StructValue, got {other:?}"),
-        };
-        let status = fields
-            .get("status")
-            .and_then(|v| match &v.kind {
-                Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.as_str()),
-                _ => None,
-            })
-            .expect("status field missing");
-        assert_eq!(status, "done");
-        let name = fields
-            .get("name")
-            .and_then(|v| match &v.kind {
-                Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.as_str()),
-                _ => None,
-            })
-            .expect("name field missing");
-        assert_eq!(name, "my-flow");
-    }
-
-    /// `build_workflow_feedback` with non-zero exit → `status == "failed"`.
-    #[test]
-    fn build_workflow_feedback_nonzero_exit_is_failed() {
-        let fb = super::build_workflow_feedback("my-flow", 1);
-        let fields = match fb.result.as_ref().and_then(|v| v.kind.as_ref()) {
-            Some(pbjson_types::value::Kind::StructValue(s)) => &s.fields,
-            other => panic!("expected StructValue, got {other:?}"),
-        };
-        let status = fields
-            .get("status")
-            .and_then(|v| match &v.kind {
-                Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.as_str()),
-                _ => None,
-            })
-            .expect("status field missing");
-        assert_eq!(status, "failed");
-    }
-
-    /// `handle_run_workflow` with missing name → error feedback.
-    #[tokio::test]
-    async fn handle_run_workflow_empty_name_returns_error() {
-        let ws = tempfile::TempDir::new().unwrap();
-        let fb = super::handle_run_workflow(
-            super::RunWorkflowArgs {
-                name: String::new(),
-                wf_args: vec![],
-                detached: false,
-            },
-            test_ctx(ws.path(), "parent-wf"),
-        )
-        .await;
-        // error_feedback puts the message string at the top-level result.
-        let is_error = matches!(
-            fb.result.as_ref().and_then(|v| v.kind.as_ref()),
-            Some(pbjson_types::value::Kind::StringValue(_))
-        );
-        assert!(is_error, "expected error string feedback for empty name");
-    }
-
-    /// `build_workflow_feedback` with exit code 2 → `status == "paused_at_gate"`.
-    #[test]
-    fn build_workflow_feedback_exit_2_is_paused_at_gate() {
-        let fb = super::build_workflow_feedback("my-flow", 2);
-        let fields = match fb.result.as_ref().and_then(|v| v.kind.as_ref()) {
-            Some(pbjson_types::value::Kind::StructValue(s)) => &s.fields,
-            other => panic!("expected StructValue, got {other:?}"),
-        };
-        let status = fields
-            .get("status")
-            .and_then(|v| match &v.kind {
-                Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.as_str()),
-                _ => None,
-            })
-            .expect("status field missing");
-        assert_eq!(status, "paused_at_gate");
-    }
-
-    /// `handle_run_workflow` with `detached: false` (blocking relay path):
-    /// verifies the non-detached code path is exercised and never returns `"started"`.
-    /// In the test process context the cascade group has no leader yet so
-    /// `spawn_enrolled` may fail; in that case an error-string feedback is expected.
-    /// Either way the result must NOT be `"started"` (which is the detached return).
-    #[tokio::test]
-    async fn handle_run_workflow_blocking_returns_done_or_failed() {
-        let ws = tempfile::TempDir::new().unwrap();
-        // Use `/bin/true` as the exe — it accepts any argv and exits 0 immediately.
-        let mut ctx = test_ctx(ws.path(), "parent-wf-blocking");
-        ctx.exe = std::path::PathBuf::from("/bin/true");
-        let fb = super::handle_run_workflow(
-            super::RunWorkflowArgs {
-                name: "smoke".into(),
-                wf_args: vec![],
-                detached: false,
-            },
-            ctx,
-        )
-        .await;
-        // The result is either:
-        //  - a StructValue with status == "done" | "failed" (if spawn succeeded)
-        //  - a StringValue error message (if spawn_enrolled failed in test context)
-        // In both cases it must NOT be a StructValue with status == "started".
-        let is_started = match fb.result.as_ref().and_then(|v| v.kind.as_ref()) {
-            Some(pbjson_types::value::Kind::StructValue(s)) => {
-                s.fields.get("status").and_then(|v| match &v.kind {
-                    Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.as_str()),
-                    _ => None,
-                }) == Some("started")
-            }
-            _ => false,
-        };
-        assert!(
-            !is_started,
-            "blocking run_workflow must never return status=started"
-        );
-    }
-
-    /// `handle_run_workflow` detached with a real name → returns `status == "started"`.
-    /// (exe is a dummy; spawn_detached is fire-and-forget, we just verify the feedback shape.)
-    #[tokio::test]
-    async fn handle_run_workflow_detached_returns_started() {
-        let ws = tempfile::TempDir::new().unwrap();
-        // Use a dummy exe path — spawn_detached is fire-and-forget; we only check feedback shape.
-        let mut ctx = test_ctx(ws.path(), "parent-wf2");
-        ctx.exe = std::path::PathBuf::from("false"); // exits immediately
-        let fb = super::handle_run_workflow(
-            super::RunWorkflowArgs {
-                name: "smoke-test".into(),
-                wf_args: vec![],
-                detached: true,
-            },
-            ctx,
-        )
-        .await;
-        let fields = match fb.result.as_ref().and_then(|v| v.kind.as_ref()) {
-            Some(pbjson_types::value::Kind::StructValue(s)) => &s.fields,
-            other => panic!("expected StructValue, got {other:?}"),
-        };
-        let status = fields
-            .get("status")
-            .and_then(|v| match &v.kind {
-                Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.as_str()),
-                _ => None,
-            })
-            .expect("status field missing");
-        assert_eq!(status, "started");
     }
 
     #[test]
