@@ -1,8 +1,6 @@
 use regex::Regex;
-use std::path::Path;
 use std::sync::LazyLock;
 
-use crate::proto::gait::log::v1 as pb;
 use crate::types::{PermissionRequest, ToolPermission};
 
 /// The user's decision when prompted about a pending tool call.
@@ -19,6 +17,7 @@ pub enum PermissionChoice {
     /// Deny — model receives "permission denied" and can react.
     Deny,
 }
+
 // moved to permissions::persist (Task 3): save_choice + compute_allow_decisions
 #[derive(Debug, Clone)]
 pub enum AllowScope {
