@@ -408,7 +408,6 @@ async fn handle_open_node(
     frame_tx: &tokio::sync::mpsc::UnboundedSender<SinkFrame>,
     run_log: &WorkflowRunLog,
     observer: &mut dyn WorkflowObserver,
-    sink: &mut dyn TurnSink,
     strategy: OpenResumption,
 ) -> anyhow::Result<()> {
     let node_id = node.id.clone();
@@ -445,8 +444,7 @@ async fn handle_open_node(
             Some(node::Body::Prompt(p)) => p,
             _ => unreachable!("handle_open_node called on non-prompt node"),
         };
-        let _open =
-            crate::exec_prompt::exec_prompt_node(node, p, &ctx, wf, Some(live), Some(sink)).await?;
+        let _open = crate::exec_prompt::exec_prompt_node(node, p, &ctx, wf, Some(live)).await?;
     }
 
     Ok(())
@@ -624,10 +622,18 @@ pub async fn run_workflow(
                     &frame_tx,
                     &run_log,
                     observer,
-                    sink,
                     strategy,
                 )
                 .await?;
+                // Drain both channels: ResumeInline's exec_prompt_node rendered
+                // through frame_tx (one output path, spec-06 §4), not the caller's
+                // sink directly.
+                while let Ok(frame) = frame_rx.try_recv() {
+                    frame.replay(sink);
+                }
+                while let Ok(item) = item_rx.try_recv() {
+                    sink.item(&item);
+                }
                 return Ok(WorkflowOutcome::NodeOpen);
             }
 
@@ -990,7 +996,7 @@ async fn execute_node(
 ) -> anyhow::Result<NodeOutput> {
     match node.body.as_ref() {
         Some(node::Body::Shell(s)) => exec_shell_node(s, ctx).await,
-        Some(node::Body::Prompt(p)) => exec_prompt_node(node, p, ctx, wf, input, None).await,
+        Some(node::Body::Prompt(p)) => exec_prompt_node(node, p, ctx, wf, input).await,
         Some(node::Body::Branch(b)) => {
             let expr = substitute(&b.on, &ctx.vars);
             let mut b2 = b.clone();

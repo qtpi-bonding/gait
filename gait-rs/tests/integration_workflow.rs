@@ -289,8 +289,8 @@ async fn prompt_subturn_publishes_to_workflow_channel() {
                 failed_node: None,
             },
         };
-        // exec_prompt_node signature: (node, prompt_node, ctx, wf, input, ui_sink)
-        exec_prompt_node(proto_node, prompt_body, &ctx, &wf_proto, None, None)
+        // exec_prompt_node signature: (node, prompt_node, ctx, wf, input)
+        exec_prompt_node(proto_node, prompt_body, &ctx, &wf_proto, None)
             .await
             .unwrap();
     } // ctx drops here, releasing the &tx borrow

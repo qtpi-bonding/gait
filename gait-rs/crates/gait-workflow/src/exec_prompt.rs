@@ -168,18 +168,22 @@ impl TurnSource for NodeSource {
 /// Drive a single prompt node through the unified `run_loop` boundary.
 ///
 /// If the node has a literal `prompt` field it is used directly (one-shot),
-/// ignoring `input`/`ui_sink`. If the node has no prompt (interactive), it is
-/// driven off `input`/`ui_sink`, which the runner's `handle_open_node` always
-/// supplies as `Some` (the headless/no-input case is intercepted earlier by
-/// `OpenResumption::SuspendAndExit`, which never calls this function) — see
-/// `runner::handle_open_node`.
+/// ignoring `input`. If the node has no prompt (interactive) and `input` is
+/// `Some`, it is driven off that live source. `input: None` on an absent-prompt
+/// node returns `NodeOutput::open()` immediately (the headless/no-input case;
+/// the runner's `OpenResumption::SuspendAndExit` never reaches this function at
+/// all — see `runner::handle_open_node`).
+///
+/// One output path (spec-06 §4): every branch renders through
+/// `ctx.workflow_tx`'s `SinkFrame` channel via `CapturingSink` — there is no
+/// direct-sink bypass. `handle_open_node`'s caller sink sees the interactive
+/// node's output via that channel's drain, same as every automated node.
 pub async fn exec_prompt_node(
     node: &Node,
     p: &PromptNode,
     ctx: &NodeContext<'_>,
     wf: &Workflow,
     input: Option<Box<dyn TurnSource>>,
-    ui_sink: Option<&mut dyn TurnSink>,
 ) -> anyhow::Result<NodeOutput> {
     use gait_core::config::resolver::{ConfigResolver, Overrides};
     let loaded = gait_core::config::load_config(ctx.gait_dir);
@@ -278,23 +282,17 @@ pub async fn exec_prompt_node(
             .ok_or_else(|| anyhow::anyhow!("run_loop returned without a TurnResult"))?;
         Ok(map_turn_result(turn_result, &session_id))
     } else {
-        // Absent prompt: interactive node. Reached only via `handle_open_node`'s
-        // `ResumeInline`, which always supplies a live source and the runner's
-        // sink — `SuspendAndExit` (headless, no input) never calls this function
-        // at all. Render straight through the caller's sink so begin_turn/
-        // result/diagnostic all reach it (the channel hop would drop everything
-        // but `item`).
-        let source = NodeSource::Live(input.expect(
-            "interactive node driven without a source: exec_prompt_node's absent-prompt \
-             branch is reachable only from handle_open_node's ResumeInline",
-        ));
-        let mut ui = ui_sink.expect(
-            "interactive node driven without a sink: handle_open_node always supplies \
-             the runner's sink",
-        );
+        // Absent prompt: interactive node. `input: None` means no live source
+        // was supplied (headless/no-input) — return open immediately without
+        // driving anything.
+        let Some(live) = input else {
+            return Ok(NodeOutput::open());
+        };
+        let source = NodeSource::Live(live);
+        let mut sink = CapturingSink::new(ctx.workflow_tx.clone());
         embed::run_loop(
             source,
-            &mut ui,
+            &mut sink,
             session,
             ctx.gait_dir,
             &session_id,
