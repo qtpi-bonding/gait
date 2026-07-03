@@ -359,6 +359,12 @@ mod tests {
         system_prompt: String,
         codebase_hash: String,
         llm_params: crate::config::LlmParamsConfig,
+        effective_allow: Vec<String>,
+        model: String,
+        mcp_registry: Vec<crate::config::McpToolDef>,
+        mcp_clients: std::collections::HashMap<String, Arc<crate::mcp::McpClient>>,
+        plugin_registry: Vec<crate::config::WasmPluginDef>,
+        result_schema: Option<serde_json::Value>,
         spy_hook: Arc<SpyHook>,
         trace: Arc<SpyTrace>,
     }
@@ -394,6 +400,12 @@ mod tests {
             system_prompt: "sys".to_string(),
             codebase_hash: "deadbeef".to_string(),
             llm_params: crate::config::LlmParamsConfig::default(),
+            effective_allow: vec![],
+            model: "test/model".to_string(),
+            mcp_registry: vec![],
+            mcp_clients: std::collections::HashMap::new(),
+            plugin_registry: vec![],
+            result_schema: None,
             spy_hook,
             trace,
         }
@@ -431,6 +443,13 @@ mod tests {
             codebase_hash: &fx.codebase_hash,
             codebase_dirty: false,
             llm_params: &fx.llm_params,
+            effective_allow: &fx.effective_allow,
+            relay: None,
+            model: &fx.model,
+            mcp_registry: &fx.mcp_registry,
+            mcp_clients: &fx.mcp_clients,
+            plugin_registry: &fx.plugin_registry,
+            result_schema: &fx.result_schema,
         }
     }
 

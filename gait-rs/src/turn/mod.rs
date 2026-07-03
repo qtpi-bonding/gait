@@ -17,8 +17,6 @@ use crate::session::retrace::{
 
 use crate::git::checkpoint::CheckpointRepo;
 
-use crate::permissions::find_matched_deny_pattern;
-
 use crate::proto::gait::log::v1 as pb;
 use crate::proto::gait::log::v1::{event, payload, Event};
 
@@ -56,6 +54,7 @@ pub(crate) mod brain;
 mod completion_poll;
 mod curate;
 mod exec;
+mod execute;
 mod finalize;
 pub(crate) mod hand;
 pub mod nerve;
@@ -80,13 +79,6 @@ pub use prompt::{
     build_loadable_catalog, build_loadable_enabled_state, build_permission_status,
     build_session_state,
 };
-
-// Internal call-site imports — let run_turn reach the moved helpers
-// without prefixing every call. `super::*` would re-export our own
-// `curate` and `exec` modules' items, which is undesirable; explicit
-// `pub(super)` items imported by name keeps the surface narrow.
-use crate::permissions::gate::{classify as gate_classify, GateDecision};
-use exec::{apply_output_filter, error_tool_result, execute_tool_call, stream_preview_if_always};
 
 /// The substantive payload kind for a proto event, if it carries one.
 pub(super) fn event_kind(e: &Event) -> Option<payload::Kind> {
@@ -520,6 +512,13 @@ pub async fn run_turn(
         codebase_hash: &codebase_hash,
         codebase_dirty,
         llm_params: &llm_params,
+        effective_allow: &effective_allow,
+        relay: relay.as_ref(),
+        model: &model,
+        mcp_registry: &mcp_registry,
+        mcp_clients: &mcp_clients,
+        plugin_registry: &plugin_registry,
+        result_schema: &result_schema,
     };
     // If pre_turn hooks modified the system_prompt, emit a Replace on the Agent
     // event so retrace can reconstruct the hook-modified instructions on replay.
@@ -681,7 +680,7 @@ pub async fn run_turn(
         let stream::StepYield {
             step_text,
             step_tool_calls,
-            mut post_tool_text,
+            post_tool_text,
             mut step_thinking_text,
             mut step_thinking_signature,
         } = match stream::run_step(&env, &mut state, &outgoing, session_state_body.as_str()).await {
@@ -798,558 +797,21 @@ pub async fn run_turn(
             }
         }
 
-        // Single permission gate: classify all tool calls into allowed vs gated.
-        // Allowed tools execute below (parallel batch + serial). Gated tools either
-        // trigger a Permissions exit (non-auto) or never exist (auto mode, where
-        // the gate is short-circuited and all tools are allowed).
-        // B2: allowed tools execute and land in the transcript before we potentially
-        // exit for permissions — their results survive any subsequent permission exit.
-        let mut pending_permissions: Vec<pb::PermissionItem> = vec![];
-        let mut gated_ids: std::collections::HashSet<String> = Default::default();
-        let mut denied_ids: std::collections::HashSet<String> = Default::default();
-        let mut tool_approval_prefixes: HashMap<String, String> = HashMap::new();
-
-        for tc in &step_tool_calls {
-            let tool = state
-                .tools
-                .iter()
-                .find(|t| t.name() == tc.tool_name)
-                .map(|t| t.as_ref());
-            match gate_classify(tc, tool, &effective_allow, &deny, auto) {
-                GateDecision::Deny => {
-                    denied_ids.insert(tc.tool_call_id.clone());
-                }
-                GateDecision::Allow { approval_prefix } => {
-                    // Under relay the spine fills the diff from the executed result; skip the brain-side pre-stream.
-                    if persist.preview_allowed() {
-                        stream_preview_if_always(preview_policy, tool, &tc.args, emitter);
-                    }
-                    if let Some(p) = approval_prefix {
-                        tool_approval_prefixes.insert(tc.tool_call_id.clone(), p);
-                    }
-                }
-                GateDecision::Gate { items } => {
-                    gated_ids.insert(tc.tool_call_id.clone());
-                    pending_permissions.extend(items);
-                }
-            }
-        }
-
-        // Execute all allowed tool calls. Results are collected by original index
-        // so the assistant_parts / tool_results vectors stay in call order.
-        let mut tool_results: Vec<ToolResult> = vec![];
-        let mut assistant_parts: Vec<AssistantPart> = vec![];
-
-        if !step_text.is_empty() {
-            assistant_parts.push(AssistantPart::Text {
-                text: step_text.clone(),
-            });
-        }
-
-        // Emit blocked results for denied tools immediately (no prompt, model sees why)
-        for tc in step_tool_calls
-            .iter()
-            .filter(|tc| denied_ids.contains(&tc.tool_call_id))
+        match execute::run_tools(
+            &env,
+            &mut state,
+            &persist,
+            step_index,
+            step_text,
+            step_tool_calls,
+            post_tool_text,
+        )
+        .await
         {
-            let perm = state
-                .tools
-                .iter()
-                .find(|t| t.name() == tc.tool_name)
-                .map(|t| t.permission(&tc.args))
-                .unwrap_or_else(|| {
-                    ToolPermission::RequiresApproval(vec![crate::types::PermissionRequest {
-                        display: tc.tool_name.clone(),
-                        patterns: vec![tc.tool_name.clone()],
-                    }])
-                });
-            let pattern = if let ToolPermission::RequiresApproval(requests) = &perm {
-                requests
-                    .iter()
-                    .find_map(|req| find_matched_deny_pattern(&tc.tool_name, req, &deny))
-                    .unwrap_or_else(|| tc.tool_name.clone())
-            } else {
-                tc.tool_name.clone()
-            };
-            let output = format!("[Blocked by config: {}] permission denied", pattern);
-            emitter.record(events::tool_call(
-                tc.tool_call_id.clone(),
-                tc.tool_name.clone(),
-                &tc.args,
-            ))?;
-            emitter.record(events::tool_result(
-                tc.tool_call_id.clone(),
-                output.clone(),
-                None,
-                None,
-            ))?;
-            assistant_parts.push(AssistantPart::ToolCall(ToolCall {
-                tool_call_id: tc.tool_call_id.clone(),
-                tool_name: tc.tool_name.clone(),
-                args: tc.args.clone(),
-            }));
-            tool_results.push(ToolResult {
-                kind: ToolResultKind::ToolResult,
-                tool_call_id: tc.tool_call_id.clone(),
-                result: serde_json::Value::String(output),
-            });
+            Ok(finalize::StepOutcome::Continue) => {}
+            Ok(other) => break 'turn other,
+            Err(e) => break 'turn finalize::StepOutcome::Fail(e),
         }
-
-        {
-            let allowed: Vec<(usize, &ToolCall)> = step_tool_calls
-                .iter()
-                .enumerate()
-                .filter(|(_, tc)| {
-                    !gated_ids.contains(&tc.tool_call_id) && !denied_ids.contains(&tc.tool_call_id)
-                })
-                .collect();
-
-            // Everything else with ExecutionMode::Parallel runs as a concurrent batch.
-            let is_parallel_eligible = |tc: &ToolCall| -> bool {
-                state
-                    .tools
-                    .iter()
-                    .find(|t| t.name() == tc.tool_name)
-                    .map(|t| {
-                        t.execution_signal() == ExecutionSignal::Continue
-                            && t.execution_mode() == ExecutionMode::Parallel
-                    })
-                    .unwrap_or(false)
-            };
-
-            let (parallel_items, serial_items): (Vec<_>, Vec<_>) =
-                allowed.iter().partition(|(_, tc)| is_parallel_eligible(tc));
-
-            // Parallel batch — pre_tool hook may block individual items before join_all
-            let par_raw = futures_util::future::join_all(parallel_items.iter().map(|(_, tc)| {
-                let pre_tool_ctx = HookContext {
-                    event: "pre_tool".to_string(),
-                    session_id: session_id.clone(),
-                    gait_dir: gait_dir.clone(),
-                    codebase: codebase_path.clone(),
-                    system_prompt: system_prompt.clone(),
-                    step_index,
-                    tool_name: tc.tool_name.clone(),
-                    tool_call_id: tc.tool_call_id.clone(),
-                    tool_args: tc.args.clone(),
-                    ..Default::default()
-                };
-                let block_reason = hooks.iter().find_map(|h| {
-                    if let HookAction::Block { reason } = h.pre_tool(&pre_tool_ctx, emitter) {
-                        Some(reason)
-                    } else {
-                        None
-                    }
-                });
-                let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
-                let tc = *tc;
-                let tools = &state.tools;
-                let codebase_path = codebase_path.clone();
-                let gait_dir = gait_dir.clone();
-                let session_id = session_id.clone();
-                let relay_clone = relay.clone();
-                async move {
-                    if let Some(reason) = block_reason {
-                        Err(anyhow::anyhow!("[Blocked by hook] {}", reason))
-                    } else {
-                        execute_tool_call(
-                            tc,
-                            tools,
-                            emitter,
-                            prefix,
-                            &codebase_path,
-                            &gait_dir,
-                            &session_id,
-                            sandbox_on,
-                            relay_clone.as_ref(),
-                        )
-                        .await
-                    }
-                }
-            }))
-            .await;
-
-            // Serial items — run in original order, handle special cases inline
-            let mut all_results: Vec<Option<(AssistantPart, ToolResult)>> =
-                vec![None; step_tool_calls.len()];
-
-            for ((i, tc), raw) in parallel_items.iter().zip(par_raw) {
-                let mut exec = raw.unwrap_or_else(|e| error_tool_result(tc, e));
-                {
-                    let raw_result = exec.result.result.as_str().unwrap_or("").to_string();
-                    let post_tool_ctx = HookContext {
-                        event: "post_tool".to_string(),
-                        session_id: session_id.clone(),
-                        gait_dir: gait_dir.clone(),
-                        codebase: codebase_path.clone(),
-                        system_prompt: system_prompt.clone(),
-                        step_index,
-                        tool_name: tc.tool_name.clone(),
-                        tool_call_id: tc.tool_call_id.clone(),
-                        tool_args: tc.args.clone(),
-                        tool_result: raw_result,
-                        ..Default::default()
-                    };
-                    apply_output_filter(
-                        &mut exec,
-                        tc,
-                        &hooks,
-                        emitter,
-                        &post_tool_ctx,
-                        &model,
-                        provider.clone(),
-                    )
-                    .await;
-                }
-                // Task 6: if the hand signalled a seal denial and we're in supervised
-                // mode, pause immediately so the user can grant the unlock.
-                // In auto mode the tool failure result propagates normally.
-                if !auto && sandbox_on {
-                    if let Some(denial) = exec.denied.take() {
-                        break 'turn finalize::StepOutcome::Pause(finalize::PauseKind::Unlock(
-                            vec![denial],
-                        ));
-                    }
-                }
-                all_results[*i] = Some((exec.part, exec.result));
-            }
-
-            for (i, tc) in &serial_items {
-                // pre_tool hook — first block wins
-                let serial_pre_tool_ctx = HookContext {
-                    event: "pre_tool".to_string(),
-                    session_id: session_id.clone(),
-                    gait_dir: gait_dir.clone(),
-                    codebase: codebase_path.clone(),
-                    system_prompt: system_prompt.clone(),
-                    step_index,
-                    tool_name: tc.tool_name.clone(),
-                    tool_call_id: tc.tool_call_id.clone(),
-                    tool_args: tc.args.clone(),
-                    ..Default::default()
-                };
-                if let Some(reason) = hooks.iter().find_map(|h| {
-                    if let HookAction::Block { reason } = h.pre_tool(&serial_pre_tool_ctx, emitter)
-                    {
-                        Some(reason)
-                    } else {
-                        None
-                    }
-                }) {
-                    let output = format!("[Blocked by hook] {}", reason);
-                    emitter.record(events::tool_call(
-                        tc.tool_call_id.clone(),
-                        tc.tool_name.clone(),
-                        &tc.args,
-                    ))?;
-                    emitter.record(events::tool_result(
-                        tc.tool_call_id.clone(),
-                        output.clone(),
-                        None,
-                        None,
-                    ))?;
-                    all_results[*i] = Some((
-                        AssistantPart::ToolCall(ToolCall {
-                            tool_call_id: tc.tool_call_id.clone(),
-                            tool_name: tc.tool_name.clone(),
-                            args: tc.args.clone(),
-                        }),
-                        ToolResult {
-                            kind: ToolResultKind::ToolResult,
-                            tool_call_id: tc.tool_call_id.clone(),
-                            result: serde_json::Value::String(output),
-                        },
-                    ));
-                    continue;
-                }
-
-                let signal = state
-                    .tools
-                    .iter()
-                    .find(|t| t.name() == tc.tool_name)
-                    .map(|t| t.execution_signal())
-                    .unwrap_or(ExecutionSignal::Continue);
-
-                match signal {
-                    ExecutionSignal::LoadContext => {
-                        // load: server-granularity enable or disable.
-                        // item_name is a server name for MCPs, a skill name for skills.
-                        if let (Some(item_name), Some(on)) = (
-                            tc.args.get("name").and_then(|v| v.as_str()),
-                            tc.args.get("enabled").and_then(|v| v.as_bool()),
-                        ) {
-                            if on {
-                                // MCP: push all tools from this server (server-granularity)
-                                for def in
-                                    mcp_registry.iter().filter(|d| d.server_name == item_name)
-                                {
-                                    if let Some(client) = mcp_clients.get(&def.server_name) {
-                                        if !state.tools.iter().any(|t| t.name() == def.name) {
-                                            // duplicate guard
-                                            state.tools.push(prompt::make_mcp_tool_def(
-                                                def,
-                                                client.clone(),
-                                            ));
-                                        }
-                                    }
-                                }
-                                // Skill: no tools push needed — content is returned by LoadTool.execute()
-                            } else {
-                                // Remove all tools from this server
-                                state.tools.retain(|t| {
-                                    mcp_registry
-                                        .iter()
-                                        .find(|d| d.name == t.name())
-                                        .map(|d| d.server_name != item_name)
-                                        .unwrap_or(true)
-                                });
-                            }
-                            let toggle_kind =
-                                if mcp_registry.iter().any(|d| d.server_name == item_name) {
-                                    "mcp"
-                                } else if plugin_registry.iter().any(|d| d.name == item_name) {
-                                    "plugin"
-                                } else {
-                                    "skill"
-                                };
-                            emitter.record(events::toggle(toggle_kind, item_name, on))?;
-                        }
-                        let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
-                        let mut exec = execute_tool_call(
-                            tc,
-                            &state.tools,
-                            emitter,
-                            prefix,
-                            &codebase_path,
-                            &gait_dir,
-                            &session_id,
-                            sandbox_on,
-                            relay.as_ref(),
-                        )
-                        .await
-                        .unwrap_or_else(|e| error_tool_result(tc, e));
-                        {
-                            let raw_result = exec.result.result.as_str().unwrap_or("").to_string();
-                            let post_tool_ctx = HookContext {
-                                event: "post_tool".to_string(),
-                                session_id: session_id.clone(),
-                                gait_dir: gait_dir.clone(),
-                                codebase: codebase_path.clone(),
-                                system_prompt: system_prompt.clone(),
-                                step_index,
-                                tool_name: tc.tool_name.clone(),
-                                tool_call_id: tc.tool_call_id.clone(),
-                                tool_args: tc.args.clone(),
-                                tool_result: raw_result,
-                                ..Default::default()
-                            };
-                            apply_output_filter(
-                                &mut exec,
-                                tc,
-                                &hooks,
-                                emitter,
-                                &post_tool_ctx,
-                                &model,
-                                provider.clone(),
-                            )
-                            .await;
-                        }
-                        // Task 6: seal denial in supervised mode → pause for unlock.
-                        if !auto && sandbox_on {
-                            if let Some(denial) = exec.denied.take() {
-                                break 'turn finalize::StepOutcome::Pause(
-                                    finalize::PauseKind::Unlock(vec![denial]),
-                                );
-                            }
-                        }
-                        all_results[*i] = Some((exec.part, exec.result));
-                    }
-                    ExecutionSignal::TurnComplete => {
-                        let message = tc
-                            .args
-                            .get("message")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let result = tc.args.get("result").cloned();
-
-                        // Validate result against schema if configured.
-                        if let Some(ref schema) = result_schema {
-                            let value_to_validate =
-                                result.clone().unwrap_or(serde_json::Value::Null);
-                            if let Err(errors) = validate_against_schema(schema, &value_to_validate)
-                            {
-                                if state.schema_retries_remaining > 0 {
-                                    state.schema_retries_remaining -= 1;
-                                    emitter.record(events::tool_call(
-                                        tc.tool_call_id.clone(),
-                                        tc.tool_name.clone(),
-                                        &tc.args,
-                                    ))?;
-                                    let error_msg = format!(
-                                        "result schema validation failed ({} retries remaining):\n{}",
-                                        state.schema_retries_remaining, errors
-                                    );
-                                    emitter.record(events::tool_result(
-                                        tc.tool_call_id.clone(),
-                                        error_msg,
-                                        None,
-                                        None,
-                                    ))?;
-                                    step_index += 1;
-                                    continue 'turn;
-                                } else {
-                                    break 'turn finalize::StepOutcome::Fail(anyhow::anyhow!(
-                                        "result schema validation failed after all retries:\n{}",
-                                        errors
-                                    ));
-                                }
-                            }
-                        }
-
-                        // Emit call+result pair for transcript auditability before ending the turn.
-                        emitter.record(events::tool_call(
-                            tc.tool_call_id.clone(),
-                            tc.tool_name.clone(),
-                            &tc.args,
-                        ))?;
-                        emitter.record(events::tool_result(
-                            tc.tool_call_id.clone(),
-                            "recorded".to_string(),
-                            None,
-                            None,
-                        ))?;
-                        for t in post_tool_text.drain(..) {
-                            emitter.publish_delta(t);
-                        }
-                        break 'turn finalize::StepOutcome::Done { message, result };
-                    }
-                    ExecutionSignal::Clarify => {
-                        let items: Vec<pb::ClarifyItem> = tc
-                            .args
-                            .get("items")
-                            .and_then(|v| serde_json::from_value::<Vec<ClarifyArg>>(v.clone()).ok())
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|a| pb::ClarifyItem {
-                                id: a.id,
-                                content: a.content,
-                                why: a.why,
-                                kind: match a.kind.as_str() {
-                                    "is" => pb::ClarifyKind::Is as i32,
-                                    _ => pb::ClarifyKind::Ought as i32,
-                                },
-                                options: a.options,
-                            })
-                            .collect();
-                        emitter.record(events::clarify(&items))?;
-                        state.clarify_signal = Some(items);
-                    }
-                    ExecutionSignal::Inform => {
-                        let items: Vec<pb::InformItem> = tc
-                            .args
-                            .get("items")
-                            .and_then(|v| serde_json::from_value::<Vec<InformArg>>(v.clone()).ok())
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|a| pb::InformItem {
-                                id: a.id,
-                                content: a.content,
-                                context: a.context,
-                            })
-                            .collect();
-                        emitter.record(events::inform(&items))?;
-                        state.inform_signal = Some(items);
-                    }
-                    ExecutionSignal::Continue => {
-                        // skill (default) and any other serial tool
-                        let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
-                        let mut exec = execute_tool_call(
-                            tc,
-                            &state.tools,
-                            emitter,
-                            prefix,
-                            &codebase_path,
-                            &gait_dir,
-                            &session_id,
-                            sandbox_on,
-                            relay.as_ref(),
-                        )
-                        .await
-                        .unwrap_or_else(|e| error_tool_result(tc, e));
-                        {
-                            let raw_result = exec.result.result.as_str().unwrap_or("").to_string();
-                            let post_tool_ctx = HookContext {
-                                event: "post_tool".to_string(),
-                                session_id: session_id.clone(),
-                                gait_dir: gait_dir.clone(),
-                                codebase: codebase_path.clone(),
-                                system_prompt: system_prompt.clone(),
-                                step_index,
-                                tool_name: tc.tool_name.clone(),
-                                tool_call_id: tc.tool_call_id.clone(),
-                                tool_args: tc.args.clone(),
-                                tool_result: raw_result,
-                                ..Default::default()
-                            };
-                            apply_output_filter(
-                                &mut exec,
-                                tc,
-                                &hooks,
-                                emitter,
-                                &post_tool_ctx,
-                                &model,
-                                provider.clone(),
-                            )
-                            .await;
-                        }
-                        // Task 6: seal denial in supervised mode → pause for unlock.
-                        if !auto && sandbox_on {
-                            if let Some(denial) = exec.denied.take() {
-                                break 'turn finalize::StepOutcome::Pause(
-                                    finalize::PauseKind::Unlock(vec![denial]),
-                                );
-                            }
-                        }
-                        all_results[*i] = Some((exec.part, exec.result));
-                    }
-                }
-            }
-
-            for (part, result) in all_results.into_iter().flatten() {
-                assistant_parts.push(part);
-                tool_results.push(result);
-            }
-        }
-
-        // Emit any model text that arrived after tool calls in this step.
-        for t in post_tool_text.drain(..) {
-            emitter.publish_delta(t);
-        }
-
-        // Gated tools: emit Permissions and exit so the user can decide.
-        // (In auto mode gated_ids is always empty — this block is never reached.)
-        if !pending_permissions.is_empty() {
-            emitter.record(events::permissions(&pending_permissions))?;
-            break 'turn finalize::StepOutcome::Pause(finalize::PauseKind::Permissions);
-        }
-
-        // Exit turn for clarify/inform — event already in transcript+stdout via emit_event
-        if let Some(items) = state.clarify_signal.take() {
-            break 'turn finalize::StepOutcome::Pause(finalize::PauseKind::Clarify(items));
-        }
-        if let Some(items) = state.inform_signal.take() {
-            break 'turn finalize::StepOutcome::Pause(finalize::PauseKind::Inform(items));
-        }
-
-        // Append this step to messages for next iteration
-        state.messages.push(Message::Assistant {
-            content: AssistantContent::Parts(assistant_parts),
-            id: String::new(),
-        });
-        state.messages.push(Message::ToolResult {
-            content: tool_results,
-            id: String::new(),
-        });
         step_index += 1;
     };
 

@@ -6,6 +6,7 @@ use crate::provider::StreamChunk;
 use crate::session::log::read_events;
 use crate::test_utils::init_git_repo;
 use crate::tools::StructuredDoneTool;
+use crate::turn::exec::stream_preview_if_always;
 use crate::types::ToolDef;
 use async_stream::stream;
 use std::sync::atomic::{AtomicUsize, Ordering};

@@ -153,6 +153,15 @@ pub(crate) struct TurnEnv<'a> {
     pub codebase_dirty: bool,
     /// Needed by `stream::run_step` (Task 16) to build the provider.stream() call.
     pub llm_params: &'a crate::config::LlmParamsConfig,
+    /// Needed by `execute::run_tools` (Task 17) for gate_classify and
+    /// execute_tool_call.
+    pub effective_allow: &'a [String],
+    pub relay: Option<&'a crate::turn::nerve::NerveWriter>,
+    pub model: &'a str,
+    pub mcp_registry: &'a [crate::config::McpToolDef],
+    pub mcp_clients: &'a std::collections::HashMap<String, Arc<crate::mcp::McpClient>>,
+    pub plugin_registry: &'a [crate::config::WasmPluginDef],
+    pub result_schema: &'a Option<serde_json::Value>,
 }
 
 impl TurnState {
