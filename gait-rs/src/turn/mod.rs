@@ -927,7 +927,15 @@ pub async fn run_turn(
         let mut chunk_stream = tokio::select! {
             biased;
             _ = cancel_token_fut(&cancel) => {
-                return Err(anyhow::anyhow!("provider cancelled during connect"));
+                return finalize::finalize(
+                    &env,
+                    &mut state,
+                    &persist,
+                    finalize::StepOutcome::Fail(anyhow::anyhow!(
+                        "provider cancelled during connect"
+                    )),
+                )
+                .await;
             }
             res = stream_fut => res.map_err(|e| anyhow::anyhow!("provider error: {}", e))?,
         };
@@ -955,19 +963,47 @@ pub async fn run_turn(
                     eprintln!(
                         "[gait] transport_error kind=stream_incomplete received_bytes={received_bytes}"
                     );
-                    return Err(anyhow::anyhow!(
-                        "stream incomplete after {received_bytes} bytes"
-                    ));
+                    return finalize::finalize(
+                        &env,
+                        &mut state,
+                        &persist,
+                        finalize::StepOutcome::Fail(anyhow::anyhow!(
+                            "stream incomplete after {received_bytes} bytes"
+                        )),
+                    )
+                    .await;
                 }
                 Err(crate::provider::ProviderError::Timeout { phase }) => {
                     eprintln!("[gait] transport_error kind=timeout phase={phase:?}");
-                    return Err(anyhow::anyhow!("stream timeout in phase {phase:?}"));
+                    return finalize::finalize(
+                        &env,
+                        &mut state,
+                        &persist,
+                        finalize::StepOutcome::Fail(anyhow::anyhow!(
+                            "stream timeout in phase {phase:?}"
+                        )),
+                    )
+                    .await;
                 }
                 Err(crate::provider::ProviderError::Overloaded) => {
                     eprintln!("[gait] transport_error kind=overloaded");
-                    return Err(anyhow::anyhow!("provider overloaded"));
+                    return finalize::finalize(
+                        &env,
+                        &mut state,
+                        &persist,
+                        finalize::StepOutcome::Fail(anyhow::anyhow!("provider overloaded")),
+                    )
+                    .await;
                 }
-                Err(e) => return Err(anyhow::anyhow!("stream error: {}", e)),
+                Err(e) => {
+                    return finalize::finalize(
+                        &env,
+                        &mut state,
+                        &persist,
+                        finalize::StepOutcome::Fail(anyhow::anyhow!("stream error: {}", e)),
+                    )
+                    .await
+                }
             };
             match chunk {
                 StreamChunk::Text(t) => {
@@ -1073,9 +1109,15 @@ pub async fn run_turn(
                 ))?;
                 continue;
             } else {
-                return Err(anyhow::anyhow!(
-                    "subagent ended without calling structured_done after all nudges"
-                ));
+                return finalize::finalize(
+                    &env,
+                    &mut state,
+                    &persist,
+                    finalize::StepOutcome::Fail(anyhow::anyhow!(
+                        "subagent ended without calling structured_done after all nudges"
+                    )),
+                )
+                .await;
             }
         }
         if step_tool_calls.is_empty() {
@@ -1542,10 +1584,16 @@ pub async fn run_turn(
                                     ))?;
                                     continue;
                                 } else {
-                                    return Err(anyhow::anyhow!(
-                                        "result schema validation failed after all retries:\n{}",
-                                        errors
-                                    ));
+                                    return finalize::finalize(
+                                        &env,
+                                        &mut state,
+                                        &persist,
+                                        finalize::StepOutcome::Fail(anyhow::anyhow!(
+                                            "result schema validation failed after all retries:\n{}",
+                                            errors
+                                        )),
+                                    )
+                                    .await;
                                 }
                             }
                         }
