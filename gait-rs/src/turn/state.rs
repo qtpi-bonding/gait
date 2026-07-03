@@ -1,19 +1,37 @@
-//! `TurnState` — the mutable loop-carried state of `run_turn()`.
+//! `TurnState` and `TurnEnv` — the bundled locals of `run_turn()`.
 //!
-//! This is the State-half of the Stage-1 refactor in
-//! `architecture-mapping/plan-01-run-turn-decomposition.md` (Task 2). It is a
-//! pure mechanical hoist: the scattered `let mut` locals that span the
-//! pre-loop setup and the main `for step_index in 0..max_iter` loop are
-//! gathered here behind a single `let mut state = TurnState::new(&caps);`.
+//! These two structs are the State- and Env-halves of the Stage-1 refactor in
+//! `architecture-mapping/plan-01-run-turn-decomposition.md` (Tasks 2 and 3).
+//! Together they replace the forest of `let mut` locals that `run_turn` used
+//! to scatter across its setup section.
+//!
+//! ## `TurnState` (Task 2)
+//!
+//! **Mutable loop-carried state.** Built once via `TurnState::new(&caps)` and
+//! passed by `&mut` to every phase module. Per plan review M3, this includes
+//! `tools` and `entries` (mutated by `LoadContext` mid-loop) — they are state,
+//! not read-only env.
+//!
+//! ## `TurnEnv<'a>` (Task 3)
+//!
+//! **Read-only borrows** into `run_turn`'s frame. Constructed at the end of
+//! setup by `let env = TurnEnv { ... };`. Threaded through to phase modules
+//! starting in Stage 4; nothing consumes it yet (Task 3 is purely additive
+//! — `#![allow(dead_code)]` on the struct, and the binding is also allowed).
+//!
+//! Each field corresponds to a local that already exists by the construction
+//! point. Fields are added only when a future phase needs them
+//! (Reader-1's borrow table).
 //!
 //! **No behavior changes.** The Stage-0 golden-transcript suite
 //! (`src/turn/golden_tests.rs` + `src/turn/snapshots/`) pins every exit kind;
 //! a snapshot diff after this refactor indicates a behavior change and must be
 //! fixed in the refactor — never in the snapshot.
-//!
-//! **Read-only borrows** (session, ingestor, emitter, provider, repos, hooks,
-//! profiles, etc.) stay in `run_turn`'s frame and are folded into `TurnEnv`
-//! in Task 3 — that work is *not* in this module.
+
+use std::path::Path;
+use std::sync::Arc;
+
+use tokio_util::sync::CancellationToken;
 
 use crate::profile::ResolvedProfile;
 use crate::proto::gait::log::v1 as pb;
@@ -86,6 +104,48 @@ pub(crate) struct TurnState {
     /// once in setup and read every step by
     /// `prompt::build_loadable_enabled_state`.
     pub entries: Vec<LoadableEntry>,
+}
+
+/// Read-only borrows into the `run_turn()` frame, used by future phase modules.
+///
+/// This is the Env-half of the Stage-1 refactor in
+/// `architecture-mapping/plan-01-run-turn-decomposition.md` (Task 3). It is a
+/// pure mechanical hoist: the read-only borrows that the loop body and the
+/// future phase modules (`stream.rs`, `execute.rs`, `signal.rs`,
+/// `finalize.rs`) will all need are gathered here so they can be threaded in as a
+/// single borrow instead of a forest of &/&mut arguments.
+///
+/// **No behavior changes.** Each field is a borrow of a local that already exists in
+/// `run_turn()` by the construction point. Fields are added only when a future phase
+/// actually needs them (per Reader-1's borrow table).
+///
+/// **Unused for now.** Nothing references `env` yet — that wiring lands in Stage 4
+/// (Tasks 14–18). The `#[allow(dead_code)]` suppresses the unused-binding warning.
+///
+/// All references here are read-only; `TurnState` (above) carries everything mutable.
+///
+/// Fields are intentionally minimal — only the locals that exist by the time we reach the
+/// end of the post-loop setup. `model` and `result_schema` may be added later (Task 17/19)
+/// if a phase actually needs them. Same for `mcp_clients`/`skill_registry`/etc. if a phase
+/// beyond what's planned ever reads them post-construction.
+#[allow(dead_code)] // Threaded through starting Stage 4; no consumer yet.
+pub(crate) struct TurnEnv<'a> {
+    pub session: &'a crate::session::Session,
+    pub emitter: &'a crate::proto::Recorder,
+    pub repos: &'a crate::git::Repos,
+    pub gait_dir: &'a Path,
+    pub codebase_path: &'a Path,
+    pub session_id: &'a str,
+    pub provider: &'a Arc<dyn crate::provider::Provider>,
+    pub hooks: &'a [Box<dyn crate::types::Hook>],
+    pub sandbox_cfg: &'a crate::config::SandboxConfig,
+    pub sandbox_on: bool,
+    pub cancel: Option<&'a CancellationToken>,
+    pub deny: &'a [String],
+    pub preview_policy: crate::config::PreviewPolicy,
+    pub auto: bool,
+    pub daemons: &'a [(String, i32, bool, String)],
+    pub ingestor: &'a crate::session::Ingestor,
 }
 
 impl TurnState {

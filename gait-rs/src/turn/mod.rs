@@ -740,7 +740,31 @@ pub async fn run_turn(
             system_prompt = new_sp;
         }
     }
-
+    // MZNJ Task 3 — construct `TurnEnv` once the setup section has produced all the read-only
+    // locals. Bundles borrows of session, emitter, repos, gait_dir, codebase_path, session_id,
+    // provider, hooks, sandbox_cfg, sandbox_on, cancel, deny, preview_policy, auto, daemons,
+    // ingestor. Nothing reads `env` yet — Stage 4 will thread it into per-phase modules. The
+    // `#[allow(dead_code)]` suppresses the unused-binding warning until then. The construction
+    // point is after the post-loop setup (here), so every field borrows a live local in this
+    // frame for the lifetime of the run.
+    let _env = state::TurnEnv {
+        session,
+        emitter,
+        repos: &repos,
+        gait_dir: &gait_dir,
+        codebase_path: &codebase_path,
+        session_id: &session_id,
+        provider: &provider,
+        hooks: &hooks,
+        sandbox_cfg: &sandbox_cfg,
+        sandbox_on,
+        cancel: cancel.as_ref(),
+        deny: &deny,
+        preview_policy,
+        auto,
+        daemons: &input.daemons,
+        ingestor: &ingestor,
+    };
     // If pre_turn hooks modified the system_prompt, emit a Replace on the Agent
     // event so retrace can reconstruct the hook-modified instructions on replay.
     // Skip when `agent_event_id` is empty (no prior Agent event to target —
