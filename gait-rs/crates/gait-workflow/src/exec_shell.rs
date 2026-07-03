@@ -1,5 +1,5 @@
 use crate::vars::{substitute, NodeOutput, VarContext};
-use gait_core::proto::gait::log::v1::StreamItem;
+use gait_core::embed::SinkFrame;
 use gait_core::proto::gait::workflow::v1::ShellNode;
 use std::path::Path;
 
@@ -17,7 +17,7 @@ pub struct NodeContext<'a> {
     /// this so their deltas/events reach the workflow's consumer (Phase 3b). It is
     /// a borrow of the run's owning `Recorder` sender — never a long-lived clone —
     /// so dropping that `Recorder` remains the single point that closes the channel.
-    pub workflow_tx: &'a tokio::sync::mpsc::UnboundedSender<StreamItem>,
+    pub workflow_tx: &'a tokio::sync::mpsc::UnboundedSender<SinkFrame>,
 }
 
 pub async fn exec_shell_node(
@@ -114,7 +114,7 @@ mod tests {
         // Leak a sender so the ctx is 'static; the receiver is dropped, so sends are
         // silently ignored (these tests don't assert on the channel).
         let tx: &'static _ = Box::leak(Box::new(
-            tokio::sync::mpsc::unbounded_channel::<StreamItem>().0,
+            tokio::sync::mpsc::unbounded_channel::<SinkFrame>().0,
         ));
         NodeContext {
             workflow_id: "wf1",

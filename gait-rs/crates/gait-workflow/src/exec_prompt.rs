@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gait_core::embed::{
-    self, BrainLaunch, Diag, LoopConfig, TurnDriver, TurnSink, TurnSource, TurnStart,
+    self, BrainLaunch, Diag, LoopConfig, SinkFrame, TurnDriver, TurnSink, TurnSource, TurnStart,
 };
 use gait_core::proto::gait::log::v1::StreamItem;
 use gait_core::proto::gait::workflow::v1::{Node, PromptNode, Workflow};
@@ -81,20 +81,21 @@ impl TurnDriver for PromptNodeDriver {
     }
 }
 
-/// Capturing-and-forwarding sink: forwards every `StreamItem` to the
-/// workflow's channel (preserving the Phase 3b contract that sub-turn deltas
-/// reach the workflow's consumer), and captures the final `TurnResult` so the
-/// caller can return it as a `NodeOutput`.
+/// Capturing-and-forwarding sink: forwards every `TurnSink` call to the
+/// workflow's `SinkFrame` channel (spec-06 §4 — begin_turn/item/end_turn/
+/// result/session_id/diagnostic all round-trip, not just `item`), and
+/// captures the final `TurnResult` so the caller can return it as a
+/// `NodeOutput`.
 struct CapturingSink {
-    /// Borrowed workflow channel sender. Forwards every item we receive so the
-    /// workflow's `drive(rx, sink)` consumer sees the sub-turn's events.
-    workflow_tx: tokio::sync::mpsc::UnboundedSender<StreamItem>,
+    /// Borrowed workflow channel sender. Forwards every call we receive so the
+    /// workflow's drain consumer sees the sub-turn's full output, verbatim.
+    workflow_tx: tokio::sync::mpsc::UnboundedSender<SinkFrame>,
     result: Option<TurnResult>,
     failed: bool,
 }
 
 impl CapturingSink {
-    fn new(workflow_tx: tokio::sync::mpsc::UnboundedSender<StreamItem>) -> Self {
+    fn new(workflow_tx: tokio::sync::mpsc::UnboundedSender<SinkFrame>) -> Self {
         Self {
             workflow_tx,
             result: None,
@@ -104,19 +105,31 @@ impl CapturingSink {
 }
 
 impl TurnSink for CapturingSink {
+    fn begin_turn(&mut self) {
+        let _ = self.workflow_tx.send(SinkFrame::BeginTurn);
+    }
     fn item(&mut self, item: &StreamItem) {
         // Forward to the workflow's channel. `send` is sync + non-blocking;
         // if the receiver is gone the workflow is already torn down — ignore.
-        let _ = self.workflow_tx.send(item.clone());
+        let _ = self.workflow_tx.send(SinkFrame::Item(item.clone()));
+    }
+    fn end_turn(&mut self) {
+        let _ = self.workflow_tx.send(SinkFrame::EndTurn);
     }
     fn result(&mut self, r: &TurnResult) {
         self.result = Some(r.clone());
+        let _ = self.workflow_tx.send(SinkFrame::Result(r.clone()));
     }
-    fn session_id(&mut self, _id: &str) {}
-    fn diagnostic(&mut self, level: Diag, _msg: &str) {
+    fn session_id(&mut self, id: &str) {
+        let _ = self.workflow_tx.send(SinkFrame::SessionId(id.to_string()));
+    }
+    fn diagnostic(&mut self, level: Diag, msg: &str) {
         if level == Diag::Error {
             self.failed = true;
         }
+        let _ = self
+            .workflow_tx
+            .send(SinkFrame::Diagnostic(level, msg.to_string()));
     }
 }
 
@@ -363,5 +376,74 @@ mod tests {
         };
         // Verify the driver holds the paths used to construct BrainLaunch.
         assert_eq!(driver.codebase, PathBuf::from("/tmp/cb"));
+    }
+
+    #[tokio::test]
+    async fn capturing_sink_forwards_every_call_over_the_channel() {
+        use gait_core::embed::{Diag, SinkFrame, TurnSink};
+        use gait_core::proto::gait::log::v1::{stream_item, StreamItem, TextDelta};
+
+        #[derive(Default)]
+        struct SeqRecorder(Vec<SinkFrame>);
+        impl TurnSink for SeqRecorder {
+            fn begin_turn(&mut self) {
+                self.0.push(SinkFrame::BeginTurn);
+            }
+            fn item(&mut self, i: &StreamItem) {
+                self.0.push(SinkFrame::Item(i.clone()));
+            }
+            fn end_turn(&mut self) {
+                self.0.push(SinkFrame::EndTurn);
+            }
+            fn result(&mut self, r: &gait_core::turn::TurnResult) {
+                self.0.push(SinkFrame::Result(r.clone()));
+            }
+            fn session_id(&mut self, id: &str) {
+                self.0.push(SinkFrame::SessionId(id.into()));
+            }
+            fn diagnostic(&mut self, l: Diag, m: &str) {
+                self.0.push(SinkFrame::Diagnostic(l, m.into()));
+            }
+        }
+
+        fn delta(s: &str) -> StreamItem {
+            StreamItem {
+                item: Some(stream_item::Item::Delta(TextDelta {
+                    content: s.into(),
+                    ..Default::default()
+                })),
+            }
+        }
+
+        let play = |sink: &mut dyn TurnSink| {
+            sink.begin_turn();
+            sink.session_id("s0000001");
+            sink.item(&delta("hel"));
+            sink.item(&delta("lo"));
+            sink.diagnostic(Diag::Error, "warn");
+            sink.result(&gait_core::turn::TurnResult::Permissions);
+            sink.end_turn();
+        };
+
+        let mut baseline = SeqRecorder::default();
+        play(&mut baseline);
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SinkFrame>();
+        {
+            let mut cap = CapturingSink::new(tx);
+            play(&mut cap);
+        }
+        let mut drained = SeqRecorder::default();
+        while let Some(f) = rx.recv().await {
+            f.replay(&mut drained);
+        }
+
+        assert_eq!(
+            baseline.0.len(),
+            drained.0.len(),
+            "channel dropped {} of {} sink calls",
+            baseline.0.len() - drained.0.len(),
+            baseline.0.len()
+        );
     }
 }

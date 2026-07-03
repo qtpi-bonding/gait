@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use gait_core::embed::{TurnSink, TurnSource};
+use gait_core::embed::{SinkFrame, TurnSink, TurnSource};
 use gait_core::proto::gait::log::v1::StreamItem;
 use gait_core::proto::gait::workflow::v1::{node, Node, Workflow};
 use gait_core::Recorder;
@@ -66,7 +66,7 @@ struct NodeRunParams {
     run_worktree: PathBuf,
     wf: Arc<Workflow>,
     vars: VarContext,
-    workflow_tx: tokio::sync::mpsc::UnboundedSender<StreamItem>,
+    workflow_tx: tokio::sync::mpsc::UnboundedSender<SinkFrame>,
 }
 
 /// Derive the node type name from its proto body oneof.
@@ -295,7 +295,7 @@ async fn enqueue_node_task(
     state: &mut WorkflowState,
     in_flight: &mut HashSet<String>,
     tasks: &mut FuturesUnordered<NodeFuture>,
-    rec: &Recorder,
+    frame_tx: &tokio::sync::mpsc::UnboundedSender<SinkFrame>,
     run_log: &WorkflowRunLog,
     observer: &mut dyn WorkflowObserver,
 ) -> anyhow::Result<()> {
@@ -345,7 +345,7 @@ async fn enqueue_node_task(
         run_worktree: run_worktree.to_path_buf(),
         wf: wf.clone(),
         vars,
-        workflow_tx: rec.sender().clone(),
+        workflow_tx: frame_tx.clone(),
     })));
 
     Ok(())
@@ -405,7 +405,7 @@ async fn handle_open_node(
     run_worktree: &Path,
     args_str: &str,
     state: &mut WorkflowState,
-    rec: &Recorder,
+    frame_tx: &tokio::sync::mpsc::UnboundedSender<SinkFrame>,
     run_log: &WorkflowRunLog,
     observer: &mut dyn WorkflowObserver,
     sink: &mut dyn TurnSink,
@@ -439,7 +439,7 @@ async fn handle_open_node(
             codebase,
             run_worktree,
             vars,
-            workflow_tx: rec.sender(),
+            workflow_tx: frame_tx,
         };
         let p = match node.body.as_ref() {
             Some(node::Body::Prompt(p)) => p,
@@ -519,11 +519,17 @@ pub async fn run_workflow(
         state.workflow_id.clone()
     };
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<StreamItem>();
+    let (item_tx, mut item_rx) = tokio::sync::mpsc::unbounded_channel::<StreamItem>();
     // The run-level recorder is used only for its `.sender()` (StreamItem fan-out
     // to the sink); it never `.record()`s a session transcript, so it needs no
     // log path. Prompt nodes construct their own session recorders internally.
-    let rec = Recorder::new(std::path::PathBuf::new(), tx);
+    let rec = Recorder::new(std::path::PathBuf::new(), item_tx);
+    // Widened sub-turn channel (spec-06 §4): prompt-node sub-turns forward every
+    // `TurnSink` call (begin_turn/item/end_turn/result/session_id/diagnostic) as a
+    // `SinkFrame`, not just `item`. Kept separate from the Recorder's own
+    // `StreamItem` channel so this crate's blast radius doesn't widen the
+    // Recorder itself — the drain below `select!`s both.
+    let (frame_tx, mut frame_rx) = tokio::sync::mpsc::unbounded_channel::<SinkFrame>();
 
     // Interactive (absent-prompt) nodes must be driven with the owned live
     // source outside the FuturesUnordered pool (which requires Send).  We
@@ -585,7 +591,7 @@ pub async fn run_workflow(
                 &mut state,
                 &mut in_flight,
                 &mut tasks,
-                &rec,
+                &frame_tx,
                 &run_log,
                 observer,
             )
@@ -615,7 +621,7 @@ pub async fn run_workflow(
                     &run_worktree,
                     &args_str,
                     &mut state,
-                    &rec,
+                    &frame_tx,
                     &run_log,
                     observer,
                     sink,
@@ -631,7 +637,8 @@ pub async fn run_workflow(
             let (node_id, outcome) = loop {
                 tokio::select! {
                     biased;
-                    Some(item) = rx.recv() => { sink.item(&item); }
+                    Some(frame) = frame_rx.recv() => { frame.replay(sink); }
+                    Some(item) = item_rx.recv() => { sink.item(&item); }
                     res = tasks.next() => {
                         match res {
                             Some(Ok(r)) => break r,
@@ -642,7 +649,10 @@ pub async fn run_workflow(
                 }
             };
             // Flush anything buffered between the winning task completing and now.
-            while let Ok(item) = rx.try_recv() {
+            while let Ok(frame) = frame_rx.try_recv() {
+                frame.replay(sink);
+            }
+            while let Ok(item) = item_rx.try_recv() {
                 sink.item(&item);
             }
             in_flight.remove(&node_id);
@@ -716,7 +726,7 @@ pub async fn run_workflow(
                                         &mut state,
                                         &mut in_flight,
                                         &mut tasks,
-                                        &rec,
+                                        &frame_tx,
                                         &run_log,
                                         observer,
                                     )
@@ -754,7 +764,7 @@ pub async fn run_workflow(
                                     &mut state,
                                     &mut in_flight,
                                     &mut tasks,
-                                    &rec,
+                                    &frame_tx,
                                     &run_log,
                                     observer,
                                 )
@@ -780,7 +790,7 @@ pub async fn run_workflow(
                             &mut state,
                             &mut in_flight,
                             &mut tasks,
-                            &rec,
+                            &frame_tx,
                             &run_log,
                             observer,
                         )
@@ -840,7 +850,7 @@ pub async fn run_workflow(
                             &mut state,
                             &mut in_flight,
                             &mut tasks,
-                            &rec,
+                            &frame_tx,
                             &run_log,
                             observer,
                         )
@@ -883,7 +893,7 @@ pub async fn run_workflow(
                                 &mut state,
                                 &mut in_flight,
                                 &mut tasks,
-                                &rec,
+                                &frame_tx,
                                 &run_log,
                                 observer,
                             )
@@ -912,8 +922,13 @@ pub async fn run_workflow(
     .await;
 
     drop(rec);
-    // Final drain: flush any remaining items after rec is dropped (channel closed).
-    while let Ok(item) = rx.try_recv() {
+    drop(frame_tx);
+    // Final drain: flush any remaining items/frames after rec/frame_tx are
+    // dropped (channels closed).
+    while let Ok(frame) = frame_rx.try_recv() {
+        frame.replay(sink);
+    }
+    while let Ok(item) = item_rx.try_recv() {
         sink.item(&item);
     }
     match run_result? {

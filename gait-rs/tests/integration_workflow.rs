@@ -266,7 +266,7 @@ async fn prompt_subturn_publishes_to_workflow_channel() {
         .unwrap();
 
     // Test owns the channel; assert the sub-turn published to THIS sender.
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<StreamItem>();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<gait_core::embed::SinkFrame>();
 
     {
         let ctx = NodeContext {
@@ -296,16 +296,18 @@ async fn prompt_subturn_publishes_to_workflow_channel() {
     } // ctx drops here, releasing the &tx borrow
 
     let mut saw_event = false;
-    while let Ok(item) = rx.try_recv() {
-        if let Some(stream_item::Item::Event(ev)) = item.item {
-            if let Some(event::Body::Payload(p)) = ev.body {
-                if matches!(
-                    p.kind,
-                    Some(payload::Kind::UserText(_))
-                        | Some(payload::Kind::AssistantText(_))
-                        | Some(payload::Kind::ToolCall(_))
-                ) {
-                    saw_event = true;
+    while let Ok(frame) = rx.try_recv() {
+        if let gait_core::embed::SinkFrame::Item(item) = frame {
+            if let Some(stream_item::Item::Event(ev)) = item.item {
+                if let Some(event::Body::Payload(p)) = ev.body {
+                    if matches!(
+                        p.kind,
+                        Some(payload::Kind::UserText(_))
+                            | Some(payload::Kind::AssistantText(_))
+                            | Some(payload::Kind::ToolCall(_))
+                    ) {
+                        saw_event = true;
+                    }
                 }
             }
         }
