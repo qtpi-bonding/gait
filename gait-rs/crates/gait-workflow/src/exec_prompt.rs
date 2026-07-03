@@ -125,7 +125,9 @@ impl TurnSink for CapturingSink {
     fn item(&mut self, item: &StreamItem) {
         // Forward to the workflow's channel. `send` is sync + non-blocking;
         // if the receiver is gone the workflow is already torn down — ignore.
-        let _ = self.workflow_tx.send(SinkFrame::Item(item.clone()));
+        let _ = self
+            .workflow_tx
+            .send(SinkFrame::Item(Box::new(item.clone())));
     }
     fn end_turn(&mut self) {
         let _ = self.workflow_tx.send(SinkFrame::EndTurn);
@@ -430,7 +432,7 @@ mod tests {
                 self.0.push(SinkFrame::BeginTurn);
             }
             fn item(&mut self, i: &StreamItem) {
-                self.0.push(SinkFrame::Item(i.clone()));
+                self.0.push(SinkFrame::Item(Box::new(i.clone())));
             }
             fn end_turn(&mut self) {
                 self.0.push(SinkFrame::EndTurn);
@@ -448,10 +450,7 @@ mod tests {
 
         fn delta(s: &str) -> StreamItem {
             StreamItem {
-                item: Some(stream_item::Item::Delta(TextDelta {
-                    content: s.into(),
-                    ..Default::default()
-                })),
+                item: Some(stream_item::Item::Delta(TextDelta { content: s.into() })),
             }
         }
 

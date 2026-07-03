@@ -50,13 +50,11 @@ fn play_golden(sink: &mut dyn TurnSink) {
     sink.item(&StreamItem {
         item: Some(stream_item::Item::Delta(TextDelta {
             content: "Hello, ".into(),
-            ..Default::default()
         })),
     });
     sink.item(&StreamItem {
         item: Some(stream_item::Item::Delta(TextDelta {
             content: "world!".into(),
-            ..Default::default()
         })),
     });
     sink.item(&ev(events::tool_call(
@@ -132,7 +130,7 @@ impl TurnSink for ChannelSink {
         let _ = self.tx.send(SinkFrame::BeginTurn);
     }
     fn item(&mut self, item: &StreamItem) {
-        let _ = self.tx.send(SinkFrame::Item(item.clone()));
+        let _ = self.tx.send(SinkFrame::Item(Box::new(item.clone())));
     }
     fn end_turn(&mut self) {
         let _ = self.tx.send(SinkFrame::EndTurn);

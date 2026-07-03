@@ -82,7 +82,9 @@ impl TurnSink for &mut dyn TurnSink {
 #[derive(Clone)]
 pub enum SinkFrame {
     BeginTurn,
-    Item(StreamItem),
+    // Boxed: StreamItem (>600 bytes) would otherwise make every SinkFrame that
+    // large, even the zero-payload variants (clippy::large_enum_variant).
+    Item(Box<StreamItem>),
     EndTurn,
     Result(TurnResult),
     SessionId(String),
@@ -255,11 +257,11 @@ mod tests {
         let frames = vec![
             SinkFrame::BeginTurn,
             SinkFrame::SessionId("s0000001".into()),
-            SinkFrame::Item(ev(events::tool_call(
+            SinkFrame::Item(Box::new(ev(events::tool_call(
                 "c1".into(),
                 "read".into(),
                 &serde_json::json!({}),
-            ))),
+            )))),
             SinkFrame::Diagnostic(Diag::Error, "boom".into()),
             SinkFrame::Result(crate::turn::TurnResult::Permissions),
             SinkFrame::EndTurn,
