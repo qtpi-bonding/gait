@@ -358,6 +358,7 @@ mod tests {
         daemons: Vec<(String, i32, bool, String)>,
         system_prompt: String,
         codebase_hash: String,
+        llm_params: crate::config::LlmParamsConfig,
         spy_hook: Arc<SpyHook>,
         trace: Arc<SpyTrace>,
     }
@@ -392,6 +393,7 @@ mod tests {
             daemons: vec![],
             system_prompt: "sys".to_string(),
             codebase_hash: "deadbeef".to_string(),
+            llm_params: crate::config::LlmParamsConfig::default(),
             spy_hook,
             trace,
         }
@@ -428,6 +430,7 @@ mod tests {
             system_prompt: &fx.system_prompt,
             codebase_hash: &fx.codebase_hash,
             codebase_dirty: false,
+            llm_params: &fx.llm_params,
         }
     }
 

@@ -1,13 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use crate::provider::StreamChunk;
 #[allow(unused_imports)] // `Tool` is used by `#[cfg(test)]` in tests.rs
 use crate::types::{
     AssistantContent, AssistantPart, ExecutionMode, ExecutionSignal, HookAction, HookContext,
     InjectRole, Message, MessageContent, MessageMutation, MutationPayload, Tool, ToolCall,
     ToolPermission, ToolResult, ToolResultKind, Usage,
 };
-use futures_util::StreamExt;
 
 use crate::config::McpToolDef;
 use crate::proto::Recorder;
@@ -67,6 +65,7 @@ mod resume;
 mod setup;
 pub(crate) mod spine;
 mod state;
+mod stream;
 pub(crate) mod synapse;
 
 use persist::Persistence;
@@ -226,14 +225,6 @@ fn validate_against_schema(
         return Err(msgs.join("\n"));
     }
     Ok(())
-}
-
-/// Resolves when the cancellation token is cancelled; never resolves if no token.
-async fn cancel_token_fut(token: &Option<tokio_util::sync::CancellationToken>) {
-    match token {
-        Some(t) => t.cancelled().await,
-        None => std::future::pending::<()>().await,
-    }
 }
 
 fn role_str(role: &InjectRole) -> &'static str {
@@ -528,6 +519,7 @@ pub async fn run_turn(
         system_prompt: &system_prompt,
         codebase_hash: &codebase_hash,
         codebase_dirty,
+        llm_params: &llm_params,
     };
     // If pre_turn hooks modified the system_prompt, emit a Replace on the Agent
     // event so retrace can reconstruct the hook-modified instructions on replay.
@@ -686,112 +678,16 @@ pub async fn run_turn(
         );
         // `outgoing` is the per-step message list sent to the LLM (rebuilt from
         // the log every step under the log-first design).
-        // The eager-connect phase (Task 3): this `.await` performs the HTTP POST and
-        // returns a classified `ProviderError` if anything failed before the first
-        // byte. We must still Esc-cancel from here, so wrap it in the same
-        // cancel-select the loop below uses.
-        let stream_fut = provider.stream(
-            &system_prompt,
-            &outgoing,
-            &state.tools,
-            &llm_params,
-            Some(session_state_body.as_str()),
-        );
-        let mut chunk_stream = tokio::select! {
-            biased;
-            _ = cancel_token_fut(&cancel) => {
-                                break 'turn finalize::StepOutcome::Fail(anyhow::anyhow!(
-                        "provider cancelled during connect"
-                    ));
-            }
-            res = stream_fut => res.map_err(|e| anyhow::anyhow!("provider error: {}", e))?,
+        let stream::StepYield {
+            step_text,
+            step_tool_calls,
+            mut post_tool_text,
+            mut step_thinking_text,
+            mut step_thinking_signature,
+        } = match stream::run_step(&env, &mut state, &outgoing, session_state_body.as_str()).await {
+            Ok(y) => y,
+            Err(e) => break 'turn finalize::StepOutcome::Fail(e),
         };
-
-        let mut step_text = String::new();
-        let mut step_tool_calls: Vec<ToolCall> = vec![];
-        let mut post_tool_text: Vec<String> = vec![];
-        let mut seen_tool_complete = false;
-        let mut seen_first_content = false;
-        let mut step_thinking_text = String::new();
-        let mut step_thinking_signature = String::new();
-        loop {
-            let chunk_opt = tokio::select! {
-                biased;
-                _ = cancel_token_fut(&cancel) => None,
-                chunk = chunk_stream.next()   => chunk,
-            };
-            let Some(chunk_result) = chunk_opt else { break };
-            let chunk = match chunk_result {
-                Ok(c) => c,
-                Err(crate::provider::ProviderError::StreamIncomplete { received_bytes }) => {
-                    // Task 6: transport_error observability — v1 uses log::warn!
-                    // A structured recorder event can follow once transport errors
-                    // are promoted to first-class proto events.
-                    eprintln!(
-                        "[gait] transport_error kind=stream_incomplete received_bytes={received_bytes}"
-                    );
-                    break 'turn finalize::StepOutcome::Fail(anyhow::anyhow!(
-                        "stream incomplete after {received_bytes} bytes"
-                    ));
-                }
-                Err(crate::provider::ProviderError::Timeout { phase }) => {
-                    eprintln!("[gait] transport_error kind=timeout phase={phase:?}");
-                    break 'turn finalize::StepOutcome::Fail(anyhow::anyhow!(
-                        "stream timeout in phase {phase:?}"
-                    ));
-                }
-                Err(crate::provider::ProviderError::Overloaded) => {
-                    eprintln!("[gait] transport_error kind=overloaded");
-                    break 'turn finalize::StepOutcome::Fail(anyhow::anyhow!(
-                        "provider overloaded"
-                    ));
-                }
-                Err(e) => {
-                    break 'turn finalize::StepOutcome::Fail(anyhow::anyhow!(
-                        "stream error: {}",
-                        e
-                    ));
-                }
-            };
-            match chunk {
-                StreamChunk::Text(t) => {
-                    if !seen_first_content {
-                        crate::diagnostic::set_phase(crate::diagnostic::Phase::Streaming);
-                        seen_first_content = true;
-                    }
-                    if seen_tool_complete {
-                        post_tool_text.push(t.clone());
-                        emitter.publish_delta(t.clone());
-                    }
-                    step_text.push_str(&t);
-                }
-
-                StreamChunk::ToolCallComplete {
-                    tool_call_id,
-                    tool_name,
-                    args,
-                } => {
-                    seen_tool_complete = true;
-                    step_tool_calls.push(ToolCall {
-                        tool_call_id,
-                        tool_name,
-                        args,
-                    });
-                }
-                StreamChunk::StepUsage(u) => {
-                    state.total_usage = state.total_usage.add(&u);
-                }
-                StreamChunk::Done => break,
-                StreamChunk::ThinkingDelta(t) => {
-                    crate::diagnostic::set_phase(crate::diagnostic::Phase::Reasoning);
-                    step_thinking_text.push_str(&t);
-                }
-                StreamChunk::ThinkingSignature { signature, .. } => {
-                    step_thinking_signature = signature;
-                }
-                StreamChunk::ToolCallDelta { .. } => {}
-            }
-        }
         // ALWAYS emit ThinkingBlock to the log — show_thinking in GaitConfig
         // controls terminal rendering only; the event is always written.
         if !step_thinking_text.is_empty() {

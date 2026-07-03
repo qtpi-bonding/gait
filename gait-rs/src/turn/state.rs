@@ -151,6 +151,8 @@ pub(crate) struct TurnEnv<'a> {
     /// Needed by `finalize()`'s `Done` arm to build the `turn_complete` event (Task 6).
     pub codebase_hash: &'a str,
     pub codebase_dirty: bool,
+    /// Needed by `stream::run_step` (Task 16) to build the provider.stream() call.
+    pub llm_params: &'a crate::config::LlmParamsConfig,
 }
 
 impl TurnState {
