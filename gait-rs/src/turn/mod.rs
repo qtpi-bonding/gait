@@ -737,7 +737,7 @@ pub async fn run_turn(
     // `#[allow(dead_code)]` suppresses the unused-binding warning until then. The construction
     // point is after the post-loop setup (here), so every field borrows a live local in this
     // frame for the lifetime of the run.
-    let _env = state::TurnEnv {
+    let env = state::TurnEnv {
         session,
         emitter,
         repos: &repos,
@@ -1792,42 +1792,22 @@ pub async fn run_turn(
 
         // Exit turn for clarify/inform — event already in transcript+stdout via emit_event
         if let Some(items) = state.clarify_signal.take() {
-            persist.commit(&format!("session({}): clarify", session_id))?;
-            {
-                let post_turn_ctx = HookContext {
-                    event: "post_turn".to_string(),
-                    session_id: session_id.clone(),
-                    gait_dir: gait_dir.clone(),
-                    codebase: codebase_path.clone(),
-                    system_prompt: system_prompt.clone(),
-                    step_count: state.final_step_index + 1,
-                    turn_outcome: "clarify".to_string(),
-                    ..Default::default()
-                };
-                for h in &hooks {
-                    h.post_turn(&post_turn_ctx, emitter);
-                }
-            }
-            return Ok(TurnResult::Clarify { items });
+            return finalize::finalize(
+                &env,
+                &mut state,
+                &persist,
+                finalize::StepOutcome::Pause(finalize::PauseKind::Clarify(items)),
+            )
+            .await;
         }
         if let Some(items) = state.inform_signal.take() {
-            persist.commit(&format!("session({}): inform", session_id))?;
-            {
-                let post_turn_ctx = HookContext {
-                    event: "post_turn".to_string(),
-                    session_id: session_id.clone(),
-                    gait_dir: gait_dir.clone(),
-                    codebase: codebase_path.clone(),
-                    system_prompt: system_prompt.clone(),
-                    step_count: state.final_step_index + 1,
-                    turn_outcome: "inform".to_string(),
-                    ..Default::default()
-                };
-                for h in &hooks {
-                    h.post_turn(&post_turn_ctx, emitter);
-                }
-            }
-            return Ok(TurnResult::Inform { items });
+            return finalize::finalize(
+                &env,
+                &mut state,
+                &persist,
+                finalize::StepOutcome::Pause(finalize::PauseKind::Inform(items)),
+            )
+            .await;
         }
 
         // Append this step to messages for next iteration
