@@ -417,8 +417,7 @@ pub async fn run_turn(
         let mut muts = retrace::active_mutations(&evs);
         retrace::apply_cascade(&mut muts, &evs);
         let seed: std::collections::HashSet<String> = allow.iter().cloned().collect();
-        let st = retrace::run_projection(&retrace::ActivePermissions { seed }, &evs, &muts);
-        st.session.union(&st.once).cloned().collect()
+        crate::permissions::grants::effective_allow(seed, &evs, &muts)
     };
 
     // Detect resume after permission approval: last two transcript events are
