@@ -1771,23 +1771,13 @@ pub async fn run_turn(
         // (In auto mode gated_ids is always empty — this block is never reached.)
         if !pending_permissions.is_empty() {
             emitter.record(events::permissions(&pending_permissions))?;
-            persist.commit(&format!("session({}): permissions", session_id))?;
-            {
-                let post_turn_ctx = HookContext {
-                    event: "post_turn".to_string(),
-                    session_id: session_id.clone(),
-                    gait_dir: gait_dir.clone(),
-                    codebase: codebase_path.clone(),
-                    system_prompt: system_prompt.clone(),
-                    step_count: state.final_step_index + 1,
-                    turn_outcome: "permissions".to_string(),
-                    ..Default::default()
-                };
-                for h in &hooks {
-                    h.post_turn(&post_turn_ctx, emitter);
-                }
-            }
-            return Ok(TurnResult::Permissions);
+            return finalize::finalize(
+                &env,
+                &mut state,
+                &persist,
+                finalize::StepOutcome::Pause(finalize::PauseKind::Permissions),
+            )
+            .await;
         }
 
         // Exit turn for clarify/inform — event already in transcript+stdout via emit_event
