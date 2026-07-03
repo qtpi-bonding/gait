@@ -199,27 +199,6 @@ pub async fn run_chat(
             .join("tmp")
             .join(format!("shell-{}.jsonl", session_id));
 
-        // Build a degenerate single-node workflow that drives the interactive
-        // REPL session.  The prompt is empty so exec_prompt_node treats this
-        // as an interactive node and passes the live ReplSource through.
-        // continue_session pins the node to the current session's log.
-        let wf_node = gait_core::proto::gait::workflow::v1::Node {
-            id: "chat".to_string(),
-            body: Some(gait_core::proto::gait::workflow::v1::node::Body::Prompt(
-                gait_core::proto::gait::workflow::v1::PromptNode {
-                    prompt: String::new(),
-                    continue_session: session_id.clone(),
-                    ..Default::default()
-                },
-            )),
-            ..Default::default()
-        };
-        let wf_def = gait_core::proto::gait::workflow::v1::Workflow {
-            name: "chat".to_string(),
-            nodes: vec![wf_node],
-            ..Default::default()
-        };
-
         let source = crate::repl::ReplSource {
             shared: shared.clone(),
             gait_dir: gait_dir.clone(),
@@ -233,16 +212,20 @@ pub async fn run_chat(
             ran_turn: false,
         };
 
+        // Drive the interactive REPL session through the one blessed
+        // degenerate-workflow API (spec-06 §1). `prompt: None` builds an
+        // interactive/open node internally; `continue_session` pins it to the
+        // current session's log.
         let run_id = format!("chat-{}", session_id);
         let mut sink = crate::repl::ReplSink {
             shared: shared.clone(),
         };
         let mut observer = gait_workflow::observer::NullObserver;
-        let _outcome = gait_workflow::run_workflow(
-            gait_workflow::WorkflowRunOpts {
-                workflow_def: wf_def,
-                yaml_path: String::new(),
+        let _outcome = gait_workflow::single_prompt_run(
+            gait_workflow::SinglePromptOpts {
                 run_id,
+                continue_session: session_id.clone(),
+                prompt: None,
                 gait_dir: gait_dir.clone(),
                 codebase: codebase.clone(),
                 args: vec![],
