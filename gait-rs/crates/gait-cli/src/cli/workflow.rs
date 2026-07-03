@@ -89,6 +89,7 @@ pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) {
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.join("codebase"),
             args,
+            ..Default::default()
         },
         &mut sink,
         &mut CliObserver,
@@ -242,6 +243,7 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) {
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.join("codebase"),
             args: resolved.args,
+            ..Default::default()
         },
         &mut sink,
         &mut CliObserver,

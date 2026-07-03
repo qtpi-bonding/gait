@@ -72,6 +72,7 @@ async fn run_minimal_shell_workflow() -> (std::path::PathBuf, String) {
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.clone(),
             args: vec![],
+            ..Default::default()
         },
         &mut sink,
         &mut CliObserver,

@@ -229,6 +229,7 @@ pub async fn run_chat(
                 gait_dir: gait_dir.clone(),
                 codebase: codebase.clone(),
                 args: vec![],
+                ..Default::default()
             },
             &mut sink,
             &mut observer,

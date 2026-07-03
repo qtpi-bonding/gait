@@ -84,6 +84,7 @@ async fn cli_and_channel_observer_produce_identical_state() {
             gait_dir: gait_dir1.clone(),
             codebase: gait_dir1.clone(),
             args: vec![],
+            ..Default::default()
         },
         &mut sink1,
         &mut CliObserver,
@@ -115,6 +116,7 @@ async fn cli_and_channel_observer_produce_identical_state() {
             gait_dir: gait_dir2.clone(),
             codebase: gait_dir2.clone(),
             args: vec![],
+            ..Default::default()
         },
         &mut sink2,
         &mut obs2,

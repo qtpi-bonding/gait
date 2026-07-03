@@ -66,6 +66,7 @@ async fn second_same_run_id_invocation_resumes_instead_of_erroring() {
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.clone(),
             args: vec![],
+            ..Default::default()
         },
         &mut sink,
         &mut CliObserver,
@@ -86,6 +87,7 @@ async fn second_same_run_id_invocation_resumes_instead_of_erroring() {
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.clone(),
             args: vec![],
+            ..Default::default()
         },
         &mut sink2,
         &mut CliObserver,

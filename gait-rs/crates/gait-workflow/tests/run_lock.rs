@@ -74,6 +74,7 @@ async fn run_workflow_creates_run_branch_and_worktree() {
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.clone(),
             args: vec![],
+            ..Default::default()
         },
         &mut sink,
         &mut CliObserver,

@@ -28,6 +28,20 @@ struct PromptNodeDriver {
     auto: bool,
     /// Sandbox config (loaded once from gait.jsonc).
     sandbox_cfg: gait_core::config::SandboxConfig,
+    /// Whether the sandbox is active for this turn. Nodes default `true`
+    /// (workflow nodes are always sandboxed); the degenerate CLI node
+    /// overrides this from the CLI's `--sandbox`/`--no-sandbox`/config
+    /// resolution (spec-06 §3 Task 3.1/3.2).
+    sandbox_on: bool,
+    /// Optional cascade group handle (pgid or cgroup path) from a parent
+    /// spine — `None` for workflow nodes, `Some` when the degenerate CLI node
+    /// enrolls a spawned brain into the CLI's own cascade group.
+    cascade_group_arg: Option<String>,
+    /// Deny list — empty for workflow nodes; the degenerate CLI node forwards
+    /// `--deny`.
+    deny: Vec<String>,
+    /// Per-turn iteration cap (`--max-iter`) — `None` for workflow nodes.
+    max_iter: Option<usize>,
 }
 
 #[async_trait::async_trait(?Send)]
@@ -43,14 +57,14 @@ impl TurnDriver for PromptNodeDriver {
             api_key,
             gait_bin,
             self.sandbox_cfg.clone(),
-            true, // workflow nodes are always sandboxed
+            self.sandbox_on,
             self.auto,
-            None,
-            None, // cascade_group_arg
+            self.max_iter,
+            self.cascade_group_arg.clone(),
             self.agent_name.clone(),
             Some(self.model.clone()),
             self.allow.clone(),
-            vec![], // deny
+            self.deny.clone(),
             self.result_schema.clone(),
         )
     }
@@ -58,10 +72,10 @@ impl TurnDriver for PromptNodeDriver {
     fn turn_config(&mut self) -> LoopConfig {
         LoopConfig {
             auto: self.auto,
-            max_iter: None,
+            max_iter: self.max_iter,
             preview_policy: gait_core::config::PreviewPolicy::default(),
             cancel: None,
-            sandbox_on: true,
+            sandbox_on: self.sandbox_on,
             sandbox_cfg: self.sandbox_cfg.clone(),
             relay: None,
             initial_git: None,
@@ -245,14 +259,38 @@ pub async fn exec_prompt_node(
         cfg.sandbox
     };
 
+    // spec-06 §3 Task 3.2 (the C1 fix): a CLI-only override, when present,
+    // takes priority over the disk-resolved config above — this is what makes
+    // `gait run --model/--allow/--deny/--agent/--max-iter/--result-schema`
+    // still work now that `cmd_run` is routed through this same function
+    // instead of building its own driver directly. Every real workflow node
+    // has `ctx.profile == None` and is unaffected.
+    let ov = ctx.profile;
+    let model = ov.and_then(|p| p.model.clone()).unwrap_or(model);
+    let allow = ov
+        .filter(|p| !p.allow.is_empty())
+        .map(|p| p.allow.clone())
+        .unwrap_or(allow);
+    let deny = ov.map(|p| p.deny.clone()).unwrap_or_default();
+    let agent_name = ov
+        .and_then(|p| p.agent.clone())
+        .or_else(|| node.agent.clone());
+    let max_iter = ov.and_then(|p| p.max_iter);
+    let result_schema = ov.and_then(|p| p.result_schema.clone()).or(result_schema);
+    let sandbox_on = ctx.sandbox_on.unwrap_or(true); // workflow nodes default sandboxed
+
     let mut driver = PromptNodeDriver {
         codebase: codebase.clone(),
         model: model.clone(),
         allow: allow.clone(),
-        agent_name: node.agent.clone(),
+        agent_name,
         result_schema,
         auto,
         sandbox_cfg,
+        sandbox_on,
+        cascade_group_arg: ctx.cascade_group_arg.clone(),
+        deny,
+        max_iter,
     };
 
     if !p.prompt.is_empty() {
@@ -272,7 +310,7 @@ pub async fn exec_prompt_node(
             ctx.gait_dir,
             &session_id,
             &mut driver,
-            None,
+            ctx.cascade,
         )
         .await?;
 
@@ -297,7 +335,7 @@ pub async fn exec_prompt_node(
             ctx.gait_dir,
             &session_id,
             &mut driver,
-            None,
+            ctx.cascade,
         )
         .await?;
 
@@ -371,6 +409,10 @@ mod tests {
             result_schema: None,
             auto: false,
             sandbox_cfg: gait_core::config::SandboxConfig::default(),
+            sandbox_on: true,
+            cascade_group_arg: None,
+            deny: vec![],
+            max_iter: None,
         };
         // Verify the driver holds the paths used to construct BrainLaunch.
         assert_eq!(driver.codebase, PathBuf::from("/tmp/cb"));

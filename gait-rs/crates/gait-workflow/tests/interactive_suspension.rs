@@ -88,6 +88,7 @@ async fn automated_nodes_drain_before_interactive_suspension() {
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.clone(),
             args: vec![],
+            ..Default::default()
         },
         &mut sink,
         &mut CliObserver,

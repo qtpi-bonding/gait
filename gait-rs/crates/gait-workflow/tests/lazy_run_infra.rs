@@ -55,6 +55,7 @@ async fn degenerate_single_prompt_run_creates_no_run_worktree_or_lock() {
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.clone(),
             args: vec![],
+            ..Default::default()
         },
         &mut sink,
         &mut CliObserver,
@@ -95,6 +96,7 @@ async fn single_prompt_run_builds_degenerate_graph_and_stays_lazy() {
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.clone(),
             args: vec![],
+            ..Default::default()
         },
         &mut sink,
         &mut CliObserver,

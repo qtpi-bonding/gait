@@ -28,6 +28,7 @@ use crate::vars::{substitute, NodeOutput, VarContext, NODE_OPEN_SENTINEL};
 /// inside `exec_prompt_node`, driven through `run_loop`. This keeps workflow
 /// nodes independent of any provider the CLI/REPL constructed for the parent
 /// session.
+#[derive(Default)]
 pub struct WorkflowRunOpts {
     pub workflow_def: Workflow,
     pub yaml_path: String,
@@ -35,6 +36,17 @@ pub struct WorkflowRunOpts {
     pub gait_dir: PathBuf,
     pub codebase: PathBuf,
     pub args: Vec<String>,
+    /// CLI-only degenerate-run overrides (spec-06 §3 Task 3.2, the C1 fix): a
+    /// real multi-node `gait workflow run` graph leaves these `None`/empty and
+    /// every node resolves its config from disk, as before. `single_prompt_run`
+    /// (the CLI's one path here) sets them so the CLI's `--model`/`--allow`/
+    /// `--deny`/`--agent`/`--max-iter`/`--sandbox`/`--cascade-group`/result
+    /// schema reach the degenerate node's spawned brain instead of being
+    /// silently dropped by exec_prompt_node's disk-config re-resolution.
+    pub sandbox_on: Option<bool>,
+    pub cascade_group_arg: Option<String>,
+    pub cascade: Option<gait_core::embed::CascadeKillHandle>,
+    pub profile: Option<crate::single_prompt::ProfileOverride>,
 }
 
 type NodeFuture =
@@ -67,6 +79,23 @@ struct NodeRunParams {
     wf: Arc<Workflow>,
     vars: VarContext,
     workflow_tx: tokio::sync::mpsc::UnboundedSender<SinkFrame>,
+    overrides: RunOverrides,
+}
+
+/// CLI-only degenerate-run overrides (spec-06 §3 Task 3.2, the C1 fix), bundled
+/// so `enqueue_node_task`'s many call sites take one param. `Default` (all
+/// `None`/empty) is correct for every enqueue site EXCEPT the run's initial
+/// ready-node seeding and `handle_open_node` — a branch/goto/newly-ready
+/// enqueue only ever fires inside a real multi-node `gait workflow run` graph,
+/// which never carries CLI overrides in the first place (only
+/// `single_prompt_run`'s single node does, and a single node has no
+/// dependents to enqueue mid-run).
+#[derive(Clone, Default)]
+struct RunOverrides {
+    sandbox_on: Option<bool>,
+    cascade_group_arg: Option<String>,
+    cascade: Option<gait_core::embed::CascadeKillHandle>,
+    profile: Option<crate::single_prompt::ProfileOverride>,
 }
 
 /// Derive the node type name from its proto body oneof.
@@ -244,6 +273,10 @@ async fn run_single_node(params: NodeRunParams) -> anyhow::Result<(String, NodeT
             run_worktree: params.run_worktree.as_path(),
             vars: params.vars.clone(),
             workflow_tx: &params.workflow_tx,
+            sandbox_on: params.overrides.sandbox_on,
+            cascade_group_arg: params.overrides.cascade_group_arg.clone(),
+            cascade: params.overrides.cascade.as_ref(),
+            profile: params.overrides.profile.as_ref(),
         };
 
         // Interactive/absent-prompt nodes are run outside FuturesUnordered with
@@ -296,6 +329,7 @@ async fn enqueue_node_task(
     in_flight: &mut HashSet<String>,
     tasks: &mut FuturesUnordered<NodeFuture>,
     frame_tx: &tokio::sync::mpsc::UnboundedSender<SinkFrame>,
+    overrides: &RunOverrides,
     run_log: &WorkflowRunLog,
     observer: &mut dyn WorkflowObserver,
 ) -> anyhow::Result<()> {
@@ -346,6 +380,7 @@ async fn enqueue_node_task(
         wf: wf.clone(),
         vars,
         workflow_tx: frame_tx.clone(),
+        overrides: overrides.clone(),
     })));
 
     Ok(())
@@ -406,6 +441,7 @@ async fn handle_open_node(
     args_str: &str,
     state: &mut WorkflowState,
     frame_tx: &tokio::sync::mpsc::UnboundedSender<SinkFrame>,
+    overrides: &RunOverrides,
     run_log: &WorkflowRunLog,
     observer: &mut dyn WorkflowObserver,
     strategy: OpenResumption,
@@ -439,6 +475,10 @@ async fn handle_open_node(
             run_worktree,
             vars,
             workflow_tx: frame_tx,
+            sandbox_on: overrides.sandbox_on,
+            cascade_group_arg: overrides.cascade_group_arg.clone(),
+            cascade: overrides.cascade.as_ref(),
+            profile: overrides.profile.as_ref(),
         };
         let p = match node.body.as_ref() {
             Some(node::Body::Prompt(p)) => p,
@@ -463,6 +503,10 @@ pub async fn run_workflow(
         gait_dir,
         codebase,
         args,
+        sandbox_on,
+        cascade_group_arg,
+        cascade,
+        profile,
     } = opts;
     // The run id doubles as the SESSION_ID env value nodes see and as the default
     // workflow_id; it is NOT a git session — the run owns its own branch/worktree
@@ -472,6 +516,17 @@ pub async fn run_workflow(
     // per-node sessions.
     let session_id = run_id.clone();
     let wf = Arc::new(wf_owned);
+    // CLI-only degenerate-run overrides (spec-06 §3 Task 3.2). Only the initial
+    // ready-node seeding and `handle_open_node` (the two places the degenerate
+    // single-prompt run's one node is enqueued) receive these; every other
+    // enqueue site is exclusively reachable inside a real multi-node graph and
+    // gets `RunOverrides::default()`.
+    let run_overrides = RunOverrides {
+        sandbox_on,
+        cascade_group_arg,
+        cascade,
+        profile,
+    };
 
     let repos = gait_core::git::Repos::production();
 
@@ -590,6 +645,7 @@ pub async fn run_workflow(
                 &mut in_flight,
                 &mut tasks,
                 &frame_tx,
+                &run_overrides,
                 &run_log,
                 observer,
             )
@@ -620,6 +676,7 @@ pub async fn run_workflow(
                     &args_str,
                     &mut state,
                     &frame_tx,
+                    &run_overrides,
                     &run_log,
                     observer,
                     strategy,
@@ -733,6 +790,7 @@ pub async fn run_workflow(
                                         &mut in_flight,
                                         &mut tasks,
                                         &frame_tx,
+                                        &RunOverrides::default(),
                                         &run_log,
                                         observer,
                                     )
@@ -771,6 +829,7 @@ pub async fn run_workflow(
                                     &mut in_flight,
                                     &mut tasks,
                                     &frame_tx,
+                                    &RunOverrides::default(),
                                     &run_log,
                                     observer,
                                 )
@@ -797,6 +856,7 @@ pub async fn run_workflow(
                             &mut in_flight,
                             &mut tasks,
                             &frame_tx,
+                            &RunOverrides::default(),
                             &run_log,
                             observer,
                         )
@@ -857,6 +917,7 @@ pub async fn run_workflow(
                             &mut in_flight,
                             &mut tasks,
                             &frame_tx,
+                            &RunOverrides::default(),
                             &run_log,
                             observer,
                         )
@@ -900,6 +961,7 @@ pub async fn run_workflow(
                                 &mut in_flight,
                                 &mut tasks,
                                 &frame_tx,
+                                &RunOverrides::default(),
                                 &run_log,
                                 observer,
                             )

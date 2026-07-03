@@ -79,6 +79,7 @@ async fn workflow_run_creates_no_bookkeeping_session_and_leaks_no_raws() {
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.clone(),
             args: vec![],
+            ..Default::default()
         },
         &mut sink,
         &mut gait_workflow::observer::NullObserver,

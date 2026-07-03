@@ -18,6 +18,13 @@ pub struct NodeContext<'a> {
     /// a borrow of the run's owning `Recorder` sender — never a long-lived clone —
     /// so dropping that `Recorder` remains the single point that closes the channel.
     pub workflow_tx: &'a tokio::sync::mpsc::UnboundedSender<SinkFrame>,
+    /// CLI-only degenerate-run overrides (spec-06 §3 Task 3.2). `None`/absent
+    /// for every real workflow node — only `single_prompt_run`'s one node ever
+    /// sets these, so `exec_prompt_node` prefers them over disk config.
+    pub sandbox_on: Option<bool>,
+    pub cascade_group_arg: Option<String>,
+    pub cascade: Option<&'a gait_core::embed::CascadeKillHandle>,
+    pub profile: Option<&'a crate::single_prompt::ProfileOverride>,
 }
 
 pub async fn exec_shell_node(
@@ -124,6 +131,10 @@ mod tests {
             codebase: ws,
             run_worktree: ws,
             workflow_tx: tx,
+            sandbox_on: None,
+            cascade_group_arg: None,
+            cascade: None,
+            profile: None,
             vars: crate::vars::VarContext {
                 workflow_id: "wf1".into(),
                 session_id: "s1".into(),

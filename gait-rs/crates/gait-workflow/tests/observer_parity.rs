@@ -93,6 +93,7 @@ async fn observer_parity_shell_workflow() {
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.clone(),
             args: vec![],
+            ..Default::default()
         },
         &mut sink,
         &mut obs,
@@ -184,6 +185,7 @@ async fn run_workflow_accepts_recording_sink() {
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.clone(),
             args: vec![],
+            ..Default::default()
         },
         &mut sink,
         &mut gait_workflow::observer::NullObserver,

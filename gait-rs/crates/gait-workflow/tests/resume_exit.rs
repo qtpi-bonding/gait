@@ -72,6 +72,7 @@ async fn absent_prompt_headless_exits_node_open() {
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.clone(),
             args: vec![],
+            ..Default::default()
         },
         &mut sink,
         &mut CliObserver,
@@ -154,6 +155,7 @@ async fn gate_node_exits_gate_paused_not_node_open() {
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.clone(),
             args: vec![],
+            ..Default::default()
         },
         &mut sink,
         &mut CliObserver,

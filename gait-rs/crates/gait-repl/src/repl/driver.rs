@@ -683,6 +683,7 @@ async fn run_workflow_from_repl(
                 gait_dir,
                 codebase,
                 args,
+                ..Default::default()
             },
             &mut sink,
             &mut gait_workflow::observer::CliObserver,

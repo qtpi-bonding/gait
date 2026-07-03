@@ -52,6 +52,7 @@ nodes:
             gait_dir: ws.path().to_path_buf(),
             codebase: ws.path().to_path_buf(),
             args: vec![],
+            ..Default::default()
         },
         &mut sink,
         &mut CliObserver,
@@ -119,6 +120,7 @@ nodes:
             gait_dir: ws.path().to_path_buf(),
             codebase: ws.path().to_path_buf(),
             args: vec![],
+            ..Default::default()
         },
         &mut sink,
         &mut CliObserver,
@@ -176,6 +178,7 @@ nodes:
             gait_dir: ws.path().to_path_buf(),
             codebase: ws.path().to_path_buf(),
             args: vec![],
+            ..Default::default()
         },
         &mut sink,
         &mut CliObserver,
@@ -237,7 +240,7 @@ nodes:
 #[tokio::test]
 #[ignore = "requires real network call — run manually to verify prompt sub-turn channel wiring"]
 async fn prompt_subturn_publishes_to_workflow_channel() {
-    use gait_core::proto::gait::log::v1::{event, payload, stream_item, StreamItem};
+    use gait_core::proto::gait::log::v1::{event, payload, stream_item};
     use gait_core::proto::gait::workflow::v1::node;
     use gait_workflow::exec_prompt::exec_prompt_node;
     use gait_workflow::exec_shell::NodeContext;
@@ -277,6 +280,10 @@ async fn prompt_subturn_publishes_to_workflow_channel() {
             codebase: ws.path(),
             run_worktree: ws.path(),
             workflow_tx: &tx,
+            sandbox_on: None,
+            cascade_group_arg: None,
+            cascade: None,
+            profile: None,
             vars: VarContext {
                 workflow_id: "wf1".into(),
                 session_id: session_id.into(),
@@ -336,6 +343,7 @@ async fn smoke_parallel_workflow_completes() {
             gait_dir: ws.path().to_path_buf(),
             codebase: ws.path().to_path_buf(),
             args: vec![],
+            ..Default::default()
         },
         &mut sink,
         &mut CliObserver,
@@ -382,6 +390,7 @@ async fn smoke_cycle_workflow_via_goto() {
             gait_dir: ws.path().to_path_buf(),
             codebase: ws.path().to_path_buf(),
             args: vec![],
+            ..Default::default()
         },
         &mut sink,
         &mut CliObserver,
@@ -423,6 +432,7 @@ async fn smoke_retry_on_error_goto() {
             gait_dir: ws.path().to_path_buf(),
             codebase: ws.path().to_path_buf(),
             args: vec![],
+            ..Default::default()
         },
         &mut sink,
         &mut CliObserver,
