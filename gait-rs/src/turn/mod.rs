@@ -62,7 +62,6 @@ pub(crate) mod brain;
 mod completion_poll;
 mod curate;
 mod exec;
-mod gate;
 pub(crate) mod hand;
 pub mod nerve;
 mod prompt;
@@ -82,8 +81,8 @@ pub use prompt::{
 // without prefixing every call. `super::*` would re-export our own
 // `curate` and `exec` modules' items, which is undesirable; explicit
 // `pub(super)` items imported by name keeps the surface narrow.
+use crate::permissions::gate::{classify as gate_classify, GateDecision};
 use exec::{apply_output_filter, error_tool_result, execute_tool_call, stream_preview_if_always};
-use gate::{classify as gate_classify, GateDecision};
 
 /// The substantive payload kind for a proto event, if it carries one.
 pub(super) fn event_kind(e: &Event) -> Option<payload::Kind> {

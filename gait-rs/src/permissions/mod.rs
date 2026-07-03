@@ -1,3 +1,4 @@
+pub mod gate;
 pub mod matching;
 pub mod persist;
 pub use matching::*;

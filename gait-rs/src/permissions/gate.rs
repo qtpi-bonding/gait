@@ -5,14 +5,14 @@
 //! emit-blocked-results loop stay in `mod.rs` — only the classification
 //! step itself is here.
 
-use crate::permissions::{find_matched_allow_pattern, is_request_approved, is_request_denied};
+use super::matching::{find_matched_allow_pattern, is_request_approved, is_request_denied};
 use crate::proto::gait::log::v1 as pb;
 use crate::types::{Tool, ToolCall, ToolPermission};
 /// The classification of a single tool call against the current permission
 /// policy. Each variant tells the caller what to do next — the `Deny` variant
 /// is a unit (no fields) because the actual deny pattern is recomputed at
 /// the emit site where `find_matched_deny_pattern` is already called.
-pub(super) enum GateDecision {
+pub enum GateDecision {
     /// Tool is allowed. `approval_prefix` is the text to prepend to the tool
     /// result (e.g. `"[Auto mode.]"` or `"[Auto-approved: shell:*]"`). `None`
     /// means no prefix — the tool runs as-is.
@@ -35,7 +35,7 @@ pub(super) enum GateDecision {
 /// doesn't have in scope (unknown tool → treated as a "requires approval"
 /// call with the tool name as its own pattern, same as the original
 /// `unwrap_or_else(...)` fallback).
-pub(super) fn classify(
+pub fn classify(
     tc: &ToolCall,
     tool: Option<&dyn Tool>,
     effective_allow: &[String],
@@ -50,16 +50,6 @@ pub(super) fn classify(
     });
 
     // Tier 1: deny list — hard floor, checked before allow, applies even in auto mode.
-    let is_denied = match &perm {
-        ToolPermission::Passthrough => false,
-        ToolPermission::RequiresApproval(requests) => requests
-            .iter()
-            .any(|req| is_request_denied(&tc.tool_name, req, deny)),
-    };
-    if is_denied {
-        return GateDecision::Deny;
-    }
-
     // Tier 2: allow list (auto-mode skips the check).
     let is_allowed = auto
         || match &perm {
