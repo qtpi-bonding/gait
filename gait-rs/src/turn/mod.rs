@@ -66,7 +66,10 @@ pub(crate) mod hand;
 pub mod nerve;
 mod prompt;
 pub(crate) mod spine;
+mod state;
 pub(crate) mod synapse;
+
+use state::TurnState;
 
 // Re-exports
 #[allow(unused_imports)] // used by `#[cfg(test)]` in tests.rs
@@ -288,8 +291,10 @@ pub async fn run_turn(
     // destructured, so `events::agent_msg` stays the single source of truth.
     // Emitted later, under the drift guard.
     let agent = crate::proto::events::agent_msg(&caps);
+    let mut state = TurnState::new(&caps);
     let provider = caps.provider.clone();
-    let (mut tools, allow, deny) = caps.permissioned.into_parts();
+    let (tools, allow, deny) = caps.permissioned.into_parts();
+    state.tools = tools;
     let session_id = session.id.clone();
     let gait_dir = session.gait_dir.clone();
     let codebase_path = session.codebase_path.clone();
@@ -303,8 +308,6 @@ pub async fn run_turn(
     let config_enabled = caps.config_enabled;
     let hooks = caps.hooks;
     let result_schema = caps.result_schema;
-    let mut schema_retries_remaining: u8 = caps.output_schema_retries;
-    let mut done_nudges_remaining: u8 = caps.output_schema_retries;
     let llm_params = caps.llm_params.clone();
 
     // Build the agent-dimension seed (M3): config-derived genesis for ActiveAgent.
@@ -432,11 +435,9 @@ pub async fn run_turn(
     // turns in the log; the step starts at 0 and advances inside the loop.
     let current_turn = count_turn_complete(&pre_events) as u32;
     emitter.set_position(current_turn, 0);
-    let mut messages: Vec<Message> = Vec::new();
     // Synthetic turn context (built once, prepended to every step's outgoing in
     // the step loop per plan §5d). None on the resume path — the model already
     // has context from the prior turn.
-    let mut turn_ctx: Option<String> = None;
     let did_resume = if matches!(
         pre_events.last().and_then(event_kind),
         Some(payload::Kind::PermissionsReply(_))
@@ -517,7 +518,7 @@ pub async fn run_turn(
                     };
                     if let Err(e) = execute_tool_call(
                         &tc,
-                        &tools,
+                        &state.tools,
                         emitter,
                         prefix,
                         &codebase_path,
@@ -557,7 +558,7 @@ pub async fn run_turn(
             // Re-read events after execution and reconstruct messages.
             // This is the ONLY source of truth — do not manually push to messages.
             let events_after = ingestor.events()?;
-            messages = retrace::messages(&events_after)?;
+            state.messages = retrace::messages(&events_after)?;
             // Do NOT inject UserTurn or turn_ctx — model already has context from the prior turn.
             true
         } else {
@@ -571,12 +572,12 @@ pub async fn run_turn(
         // The input event (user_turn / reply) is appended by the caller before the
         // turn (Phase 4 Option A); here we only fold the log into messages.
         let events = ingestor.events()?;
-        messages = retrace::messages(&events)?;
+        state.messages = retrace::messages(&events)?;
         let cwd = retrace::active_cwd(&events, &codebase_path);
         // turn_ctx is prepended to `outgoing` INSIDE the step loop (Task 5, plan §5d)
         // so that pre_step mutations logged on this turn land in the transcript alongside
         // a fresh turn_ctx for THIS step, not the prior turn's.
-        turn_ctx = Some(build_turn_context(
+        state.turn_ctx = Some(build_turn_context(
             &codebase_hash,
             &dirty_files,
             &cwd,
@@ -605,9 +606,11 @@ pub async fn run_turn(
             .filter(|d| &d.server_name == server_name)
         {
             if let Some(client) = mcp_clients.get(&def.server_name) {
-                if !tools.iter().any(|t| t.name() == def.name) {
+                if !state.tools.iter().any(|t| t.name() == def.name) {
                     // duplicate guard
-                    tools.push(prompt::make_mcp_tool_def(def, client.clone()));
+                    state
+                        .tools
+                        .push(prompt::make_mcp_tool_def(def, client.clone()));
                 }
             }
         }
@@ -616,7 +619,7 @@ pub async fn run_turn(
     // Phase 8: tool-gating — if the agent declared an explicit tools enable-set,
     // filter the tool list to only those tools. Empty = no restriction (all pass through).
     if !agent_state.tools.is_empty() {
-        tools.retain(|t| agent_state.tools.contains(t.name()));
+        state.tools.retain(|t| agent_state.tools.contains(t.name()));
     }
 
     // Warn about allow-list entries that don't match any builtin tool name.
@@ -643,7 +646,6 @@ pub async fn run_turn(
             .or_default()
             .push(def);
     }
-    let mut entries: Vec<LoadableEntry> = Vec::new();
     // MCP server entries — one per server. Description comes from
     // McpServerDef.description (config layer); fall back to tool count.
     // Note: we don't have direct access to McpServerDef in run_turn, so
@@ -655,7 +657,7 @@ pub async fn run_turn(
             defs.len(),
             if defs.len() == 1 { "" } else { "s" }
         );
-        entries.push(LoadableEntry {
+        state.entries.push(LoadableEntry {
             name: server_name.to_string(),
             kind: LoadableKind::Mcp,
             description,
@@ -664,7 +666,7 @@ pub async fn run_turn(
     }
     // Skill entries — one per skill.
     for skill in &skill_registry {
-        entries.push(LoadableEntry {
+        state.entries.push(LoadableEntry {
             name: skill.name.clone(),
             kind: LoadableKind::Skill,
             description: skill.description.clone(),
@@ -677,14 +679,15 @@ pub async fn run_turn(
             let p = plugin.path.as_str();
             p.rsplit('/').next().unwrap_or(p)
         };
-        entries.push(LoadableEntry {
+        state.entries.push(LoadableEntry {
             name: plugin.name.clone(),
             kind: LoadableKind::WasmPlugin,
             description: format!("wasm plugin ({})", basename),
             enabled: enabled_names.contains(&plugin.name),
         });
     }
-    let mut system_prompt = prompt::build_dynamic_system_prompt(&system_prompt, &entries, &hooks);
+    let mut system_prompt =
+        prompt::build_dynamic_system_prompt(&system_prompt, &state.entries, &hooks);
 
     // MUST happen AFTER `build_dynamic_system_prompt` so `Agent.instructions`
     // captures the effective prompt (loadable index + permissions included),
@@ -765,17 +768,9 @@ pub async fn run_turn(
         ));
     }
 
-    let mut total_usage = Usage::default();
-    let mut clarify_signal: Option<Vec<pb::ClarifyItem>> = None;
-    let mut inform_signal: Option<Vec<pb::InformItem>> = None;
-    let mut all_turn_text = String::new();
-
-    // 0 covers the zero-iteration case; the loop overwrites it each iteration.
-    #[allow(unused_assignments)]
-    let mut final_step_index = 0usize;
     for step_index in 0..max_iter.unwrap_or(100) {
         // Check cancellation before starting this step
-        final_step_index = step_index;
+        state.final_step_index = step_index;
         // Stamp (turn, step) on the emitter so any event recorded this step
         // carries the correct position. Steps advance monotonically per turn.
         emitter.set_position(current_turn, step_index as u32);
@@ -897,9 +892,9 @@ pub async fn run_turn(
         // block (Anthropic) or final message (OpenAI), so churn in the tail
         // never invalidates the cached [tools + system + history] prefix.
         let permission_status = prompt::build_permission_status(&effective_allow, &deny);
-        let enabled_state = prompt::build_loadable_enabled_state(&entries);
+        let enabled_state = prompt::build_loadable_enabled_state(&state.entries);
         let session_state_body = prompt::build_session_state(
-            turn_ctx.as_deref().unwrap_or(""),
+            state.turn_ctx.as_deref().unwrap_or(""),
             &permission_status,
             &enabled_state,
         );
@@ -912,7 +907,7 @@ pub async fn run_turn(
         let stream_fut = provider.stream(
             &system_prompt,
             &outgoing,
-            &tools,
+            &state.tools,
             &llm_params,
             Some(session_state_body.as_str()),
         );
@@ -987,7 +982,7 @@ pub async fn run_turn(
                     });
                 }
                 StreamChunk::StepUsage(u) => {
-                    total_usage = total_usage.add(&u);
+                    state.total_usage = state.total_usage.add(&u);
                 }
                 StreamChunk::Done => break,
                 StreamChunk::ThinkingDelta(t) => {
@@ -1008,7 +1003,7 @@ pub async fn run_turn(
                 std::mem::take(&mut step_thinking_signature),
             ))?;
         }
-        all_turn_text.push_str(&step_text);
+        state.all_turn_text.push_str(&step_text);
         // Was Esc pressed during this step's stream?
         if cancel.as_ref().map(|c| c.is_cancelled()).unwrap_or(false) {
             emitter.record(events::cancellation_signal())?;
@@ -1029,7 +1024,7 @@ pub async fn run_turn(
                 codebase: codebase_path.clone(),
                 system_prompt: system_prompt.clone(),
                 step_index,
-                message_count: messages.len(),
+                message_count: state.messages.len(),
                 last_role: last_role.clone(),
                 response_text: step_text.clone(),
                 tool_count: step_tool_calls.len(),
@@ -1057,8 +1052,8 @@ pub async fn run_turn(
         // Exception: when a result_schema is configured the agent MUST call structured_done.
         // Nudge it back into generation until done_nudges_remaining is exhausted.
         if step_tool_calls.is_empty() && result_schema.is_some() {
-            if done_nudges_remaining > 0 {
-                done_nudges_remaining -= 1;
+            if state.done_nudges_remaining > 0 {
+                state.done_nudges_remaining -= 1;
                 emitter.record(events::user_text(
                     "You must finish by calling `structured_done` with a `result` matching \
                      the declared schema. Plain-text completion is not accepted for this task."
@@ -1095,17 +1090,17 @@ pub async fn run_turn(
                     .flatten()
             });
             let usage = TurnTokenUsage {
-                input: total_usage.input_tokens as u64,
-                output: total_usage.output_tokens as u64,
-                cache_read: total_usage.cache_read_tokens as u64,
-                cache_write: total_usage.cache_write_tokens as u64,
+                input: state.total_usage.input_tokens as u64,
+                output: state.total_usage.output_tokens as u64,
+                cache_read: state.total_usage.cache_read_tokens as u64,
+                cache_write: state.total_usage.cache_write_tokens as u64,
             };
             emitter.record(events::turn_complete(events::TurnCompleteParams {
                 usage,
                 codebase_hash: codebase_hash.clone(),
                 codebase_dirty,
                 checkpoint: code_checkpoint,
-                blocks: split_into_blocks(&all_turn_text),
+                blocks: split_into_blocks(&state.all_turn_text),
                 message: message.clone(),
                 result: None,
                 changes: changes.clone(),
@@ -1155,7 +1150,7 @@ pub async fn run_turn(
             };
             let mut pending_unlocks: Vec<pb::UnlockItem> = vec![];
             for tc in &step_tool_calls {
-                if let Some(tool) = tools.iter().find(|t| t.name() == tc.tool_name) {
+                if let Some(tool) = state.tools.iter().find(|t| t.name() == tc.tool_name) {
                     let items =
                         check_own_tool_scope(tc, tool.as_ref(), &codebase_path, &sandbox_cfg);
                     // Filter out items whose resource path is already granted
@@ -1198,7 +1193,8 @@ pub async fn run_turn(
         let mut tool_approval_prefixes: HashMap<String, String> = HashMap::new();
 
         for tc in &step_tool_calls {
-            let tool = tools
+            let tool = state
+                .tools
                 .iter()
                 .find(|t| t.name() == tc.tool_name)
                 .map(|t| t.as_ref());
@@ -1238,7 +1234,8 @@ pub async fn run_turn(
             .iter()
             .filter(|tc| denied_ids.contains(&tc.tool_call_id))
         {
-            let perm = tools
+            let perm = state
+                .tools
                 .iter()
                 .find(|t| t.name() == tc.tool_name)
                 .map(|t| t.permission(&tc.args))
@@ -1291,7 +1288,8 @@ pub async fn run_turn(
 
             // Everything else with ExecutionMode::Parallel runs as a concurrent batch.
             let is_parallel_eligible = |tc: &ToolCall| -> bool {
-                tools
+                state
+                    .tools
                     .iter()
                     .find(|t| t.name() == tc.tool_name)
                     .map(|t| {
@@ -1327,7 +1325,7 @@ pub async fn run_turn(
                 });
                 let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
                 let tc = *tc;
-                let tools = &tools;
+                let tools = &state.tools;
                 let codebase_path = codebase_path.clone();
                 let gait_dir = gait_dir.clone();
                 let session_id = session_id.clone();
@@ -1456,7 +1454,8 @@ pub async fn run_turn(
                     continue;
                 }
 
-                let signal = tools
+                let signal = state
+                    .tools
                     .iter()
                     .find(|t| t.name() == tc.tool_name)
                     .map(|t| t.execution_signal())
@@ -1476,9 +1475,9 @@ pub async fn run_turn(
                                     mcp_registry.iter().filter(|d| d.server_name == item_name)
                                 {
                                     if let Some(client) = mcp_clients.get(&def.server_name) {
-                                        if !tools.iter().any(|t| t.name() == def.name) {
+                                        if !state.tools.iter().any(|t| t.name() == def.name) {
                                             // duplicate guard
-                                            tools.push(prompt::make_mcp_tool_def(
+                                            state.tools.push(prompt::make_mcp_tool_def(
                                                 def,
                                                 client.clone(),
                                             ));
@@ -1488,7 +1487,7 @@ pub async fn run_turn(
                                 // Skill: no tools push needed — content is returned by LoadTool.execute()
                             } else {
                                 // Remove all tools from this server
-                                tools.retain(|t| {
+                                state.tools.retain(|t| {
                                     mcp_registry
                                         .iter()
                                         .find(|d| d.name == t.name())
@@ -1509,7 +1508,7 @@ pub async fn run_turn(
                         let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
                         let mut exec = execute_tool_call(
                             tc,
-                            &tools,
+                            &state.tools,
                             emitter,
                             prefix,
                             &codebase_path,
@@ -1580,8 +1579,8 @@ pub async fn run_turn(
                                 result.clone().unwrap_or(serde_json::Value::Null);
                             if let Err(errors) = validate_against_schema(schema, &value_to_validate)
                             {
-                                if schema_retries_remaining > 0 {
-                                    schema_retries_remaining -= 1;
+                                if state.schema_retries_remaining > 0 {
+                                    state.schema_retries_remaining -= 1;
                                     emitter.record(events::tool_call(
                                         tc.tool_call_id.clone(),
                                         tc.tool_name.clone(),
@@ -1589,7 +1588,7 @@ pub async fn run_turn(
                                     ))?;
                                     let error_msg = format!(
                                         "result schema validation failed ({} retries remaining):\n{}",
-                                        schema_retries_remaining, errors
+                                        state.schema_retries_remaining, errors
                                     );
                                     emitter.record(events::tool_result(
                                         tc.tool_call_id.clone(),
@@ -1643,17 +1642,17 @@ pub async fn run_turn(
                                 .flatten()
                         });
                         let usage = TurnTokenUsage {
-                            input: total_usage.input_tokens as u64,
-                            output: total_usage.output_tokens as u64,
-                            cache_read: total_usage.cache_read_tokens as u64,
-                            cache_write: total_usage.cache_write_tokens as u64,
+                            input: state.total_usage.input_tokens as u64,
+                            output: state.total_usage.output_tokens as u64,
+                            cache_read: state.total_usage.cache_read_tokens as u64,
+                            cache_write: state.total_usage.cache_write_tokens as u64,
                         };
                         emitter.record(events::turn_complete(events::TurnCompleteParams {
                             usage,
                             codebase_hash: codebase_hash.clone(),
                             codebase_dirty,
                             checkpoint: code_checkpoint,
-                            blocks: split_into_blocks(&all_turn_text),
+                            blocks: split_into_blocks(&state.all_turn_text),
                             message: message.clone(),
                             result: result.clone(),
                             changes: changes.clone(),
@@ -1706,7 +1705,7 @@ pub async fn run_turn(
                             })
                             .collect();
                         emitter.record(events::clarify(&items))?;
-                        clarify_signal = Some(items);
+                        state.clarify_signal = Some(items);
                     }
                     ExecutionSignal::Inform => {
                         let items: Vec<pb::InformItem> = tc
@@ -1722,14 +1721,14 @@ pub async fn run_turn(
                             })
                             .collect();
                         emitter.record(events::inform(&items))?;
-                        inform_signal = Some(items);
+                        state.inform_signal = Some(items);
                     }
                     ExecutionSignal::Continue => {
                         // skill (default) and any other serial tool
                         let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
                         let mut exec = execute_tool_call(
                             tc,
-                            &tools,
+                            &state.tools,
                             emitter,
                             prefix,
                             &codebase_path,
@@ -1817,7 +1816,7 @@ pub async fn run_turn(
                     gait_dir: gait_dir.clone(),
                     codebase: codebase_path.clone(),
                     system_prompt: system_prompt.clone(),
-                    step_count: final_step_index + 1,
+                    step_count: state.final_step_index + 1,
                     turn_outcome: "permissions".to_string(),
                     ..Default::default()
                 };
@@ -1829,7 +1828,7 @@ pub async fn run_turn(
         }
 
         // Exit turn for clarify/inform — event already in transcript+stdout via emit_event
-        if let Some(items) = clarify_signal.take() {
+        if let Some(items) = state.clarify_signal.take() {
             if relay.is_none() {
                 repos.traces.commit_session(
                     &gait_dir,
@@ -1844,7 +1843,7 @@ pub async fn run_turn(
                     gait_dir: gait_dir.clone(),
                     codebase: codebase_path.clone(),
                     system_prompt: system_prompt.clone(),
-                    step_count: final_step_index + 1,
+                    step_count: state.final_step_index + 1,
                     turn_outcome: "clarify".to_string(),
                     ..Default::default()
                 };
@@ -1854,7 +1853,7 @@ pub async fn run_turn(
             }
             return Ok(TurnResult::Clarify { items });
         }
-        if let Some(items) = inform_signal.take() {
+        if let Some(items) = state.inform_signal.take() {
             if relay.is_none() {
                 repos.traces.commit_session(
                     &gait_dir,
@@ -1869,7 +1868,7 @@ pub async fn run_turn(
                     gait_dir: gait_dir.clone(),
                     codebase: codebase_path.clone(),
                     system_prompt: system_prompt.clone(),
-                    step_count: final_step_index + 1,
+                    step_count: state.final_step_index + 1,
                     turn_outcome: "inform".to_string(),
                     ..Default::default()
                 };
@@ -1881,11 +1880,11 @@ pub async fn run_turn(
         }
 
         // Append this step to messages for next iteration
-        messages.push(Message::Assistant {
+        state.messages.push(Message::Assistant {
             content: AssistantContent::Parts(assistant_parts),
             id: String::new(),
         });
-        messages.push(Message::ToolResult {
+        state.messages.push(Message::ToolResult {
             content: tool_results,
             id: String::new(),
         });
