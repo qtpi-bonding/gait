@@ -64,6 +64,7 @@ mod curate;
 mod exec;
 pub(crate) mod hand;
 pub mod nerve;
+mod persist;
 mod prompt;
 pub(crate) mod spine;
 mod state;
