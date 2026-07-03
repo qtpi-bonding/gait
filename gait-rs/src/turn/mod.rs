@@ -783,20 +783,20 @@ pub async fn run_turn(
         ));
     }
 
-    for step_index in 0..max_iter.unwrap_or(100) {
+    let mut step_index = 0usize;
+    let outcome = 'turn: loop {
+        if step_index >= max_iter.unwrap_or(100) {
+            break 'turn finalize::StepOutcome::MaxSteps {
+                max_iter: max_iter.unwrap_or(100),
+            };
+        }
         // Check cancellation before starting this step
         state.final_step_index = step_index;
         // Stamp (turn, step) on the emitter so any event recorded this step
         // carries the correct position. Steps advance monotonically per turn.
         emitter.set_position(current_turn, step_index as u32);
         if cancel.as_ref().map(|c| c.is_cancelled()).unwrap_or(false) {
-            return finalize::finalize(
-                &env,
-                &mut state,
-                &persist,
-                finalize::StepOutcome::Cancelled,
-            )
-            .await;
+            break 'turn finalize::StepOutcome::Cancelled;
         }
 
         // Per-step completion poll (Part 2): surface finished daemon and child-agent
@@ -927,15 +927,9 @@ pub async fn run_turn(
         let mut chunk_stream = tokio::select! {
             biased;
             _ = cancel_token_fut(&cancel) => {
-                return finalize::finalize(
-                    &env,
-                    &mut state,
-                    &persist,
-                    finalize::StepOutcome::Fail(anyhow::anyhow!(
+                                break 'turn finalize::StepOutcome::Fail(anyhow::anyhow!(
                         "provider cancelled during connect"
-                    )),
-                )
-                .await;
+                    ));
             }
             res = stream_fut => res.map_err(|e| anyhow::anyhow!("provider error: {}", e))?,
         };
@@ -963,46 +957,27 @@ pub async fn run_turn(
                     eprintln!(
                         "[gait] transport_error kind=stream_incomplete received_bytes={received_bytes}"
                     );
-                    return finalize::finalize(
-                        &env,
-                        &mut state,
-                        &persist,
-                        finalize::StepOutcome::Fail(anyhow::anyhow!(
-                            "stream incomplete after {received_bytes} bytes"
-                        )),
-                    )
-                    .await;
+                    break 'turn finalize::StepOutcome::Fail(anyhow::anyhow!(
+                        "stream incomplete after {received_bytes} bytes"
+                    ));
                 }
                 Err(crate::provider::ProviderError::Timeout { phase }) => {
                     eprintln!("[gait] transport_error kind=timeout phase={phase:?}");
-                    return finalize::finalize(
-                        &env,
-                        &mut state,
-                        &persist,
-                        finalize::StepOutcome::Fail(anyhow::anyhow!(
-                            "stream timeout in phase {phase:?}"
-                        )),
-                    )
-                    .await;
+                    break 'turn finalize::StepOutcome::Fail(anyhow::anyhow!(
+                        "stream timeout in phase {phase:?}"
+                    ));
                 }
                 Err(crate::provider::ProviderError::Overloaded) => {
                     eprintln!("[gait] transport_error kind=overloaded");
-                    return finalize::finalize(
-                        &env,
-                        &mut state,
-                        &persist,
-                        finalize::StepOutcome::Fail(anyhow::anyhow!("provider overloaded")),
-                    )
-                    .await;
+                    break 'turn finalize::StepOutcome::Fail(anyhow::anyhow!(
+                        "provider overloaded"
+                    ));
                 }
                 Err(e) => {
-                    return finalize::finalize(
-                        &env,
-                        &mut state,
-                        &persist,
-                        finalize::StepOutcome::Fail(anyhow::anyhow!("stream error: {}", e)),
-                    )
-                    .await
+                    break 'turn finalize::StepOutcome::Fail(anyhow::anyhow!(
+                        "stream error: {}",
+                        e
+                    ));
                 }
             };
             match chunk {
@@ -1055,13 +1030,7 @@ pub async fn run_turn(
         state.all_turn_text.push_str(&step_text);
         // Was Esc pressed during this step's stream?
         if cancel.as_ref().map(|c| c.is_cancelled()).unwrap_or(false) {
-            return finalize::finalize(
-                &env,
-                &mut state,
-                &persist,
-                finalize::StepOutcome::Cancelled,
-            )
-            .await;
+            break 'turn finalize::StepOutcome::Cancelled;
         }
         {
             let ctx = HookContext {
@@ -1107,31 +1076,20 @@ pub async fn run_turn(
                         .into(),
                     Some("harness".into()),
                 ))?;
-                continue;
+                step_index += 1;
+                continue 'turn;
             } else {
-                return finalize::finalize(
-                    &env,
-                    &mut state,
-                    &persist,
-                    finalize::StepOutcome::Fail(anyhow::anyhow!(
-                        "subagent ended without calling structured_done after all nudges"
-                    )),
-                )
-                .await;
+                break 'turn finalize::StepOutcome::Fail(anyhow::anyhow!(
+                    "subagent ended without calling structured_done after all nudges"
+                ));
             }
         }
         if step_tool_calls.is_empty() {
             let message = step_text.clone();
-            return finalize::finalize(
-                &env,
-                &mut state,
-                &persist,
-                finalize::StepOutcome::Done {
-                    message,
-                    result: None,
-                },
-            )
-            .await;
+            break 'turn finalize::StepOutcome::Done {
+                message,
+                result: None,
+            };
         }
 
         // Scope pre-check (supervised mode + sandbox on only): for each world-touching
@@ -1165,13 +1123,9 @@ pub async fn run_turn(
                 }
             }
             if !pending_unlocks.is_empty() {
-                return finalize::finalize(
-                    &env,
-                    &mut state,
-                    &persist,
-                    finalize::StepOutcome::Pause(finalize::PauseKind::Unlock(pending_unlocks)),
-                )
-                .await;
+                break 'turn finalize::StepOutcome::Pause(finalize::PauseKind::Unlock(
+                    pending_unlocks,
+                ));
             }
         }
 
@@ -1382,13 +1336,9 @@ pub async fn run_turn(
                 // In auto mode the tool failure result propagates normally.
                 if !auto && sandbox_on {
                     if let Some(denial) = exec.denied.take() {
-                        return finalize::finalize(
-                            &env,
-                            &mut state,
-                            &persist,
-                            finalize::StepOutcome::Pause(finalize::PauseKind::Unlock(vec![denial])),
-                        )
-                        .await;
+                        break 'turn finalize::StepOutcome::Pause(finalize::PauseKind::Unlock(
+                            vec![denial],
+                        ));
                     }
                 }
                 all_results[*i] = Some((exec.part, exec.result));
@@ -1537,15 +1487,9 @@ pub async fn run_turn(
                         // Task 6: seal denial in supervised mode → pause for unlock.
                         if !auto && sandbox_on {
                             if let Some(denial) = exec.denied.take() {
-                                return finalize::finalize(
-                                    &env,
-                                    &mut state,
-                                    &persist,
-                                    finalize::StepOutcome::Pause(finalize::PauseKind::Unlock(
-                                        vec![denial],
-                                    )),
-                                )
-                                .await;
+                                break 'turn finalize::StepOutcome::Pause(
+                                    finalize::PauseKind::Unlock(vec![denial]),
+                                );
                             }
                         }
                         all_results[*i] = Some((exec.part, exec.result));
@@ -1582,18 +1526,13 @@ pub async fn run_turn(
                                         None,
                                         None,
                                     ))?;
-                                    continue;
+                                    step_index += 1;
+                                    continue 'turn;
                                 } else {
-                                    return finalize::finalize(
-                                        &env,
-                                        &mut state,
-                                        &persist,
-                                        finalize::StepOutcome::Fail(anyhow::anyhow!(
-                                            "result schema validation failed after all retries:\n{}",
-                                            errors
-                                        )),
-                                    )
-                                    .await;
+                                    break 'turn finalize::StepOutcome::Fail(anyhow::anyhow!(
+                                        "result schema validation failed after all retries:\n{}",
+                                        errors
+                                    ));
                                 }
                             }
                         }
@@ -1613,13 +1552,7 @@ pub async fn run_turn(
                         for t in post_tool_text.drain(..) {
                             emitter.publish_delta(t);
                         }
-                        return finalize::finalize(
-                            &env,
-                            &mut state,
-                            &persist,
-                            finalize::StepOutcome::Done { message, result },
-                        )
-                        .await;
+                        break 'turn finalize::StepOutcome::Done { message, result };
                     }
                     ExecutionSignal::Clarify => {
                         let items: Vec<pb::ClarifyItem> = tc
@@ -1703,15 +1636,9 @@ pub async fn run_turn(
                         // Task 6: seal denial in supervised mode → pause for unlock.
                         if !auto && sandbox_on {
                             if let Some(denial) = exec.denied.take() {
-                                return finalize::finalize(
-                                    &env,
-                                    &mut state,
-                                    &persist,
-                                    finalize::StepOutcome::Pause(finalize::PauseKind::Unlock(
-                                        vec![denial],
-                                    )),
-                                )
-                                .await;
+                                break 'turn finalize::StepOutcome::Pause(
+                                    finalize::PauseKind::Unlock(vec![denial]),
+                                );
                             }
                         }
                         all_results[*i] = Some((exec.part, exec.result));
@@ -1734,33 +1661,15 @@ pub async fn run_turn(
         // (In auto mode gated_ids is always empty — this block is never reached.)
         if !pending_permissions.is_empty() {
             emitter.record(events::permissions(&pending_permissions))?;
-            return finalize::finalize(
-                &env,
-                &mut state,
-                &persist,
-                finalize::StepOutcome::Pause(finalize::PauseKind::Permissions),
-            )
-            .await;
+            break 'turn finalize::StepOutcome::Pause(finalize::PauseKind::Permissions);
         }
 
         // Exit turn for clarify/inform — event already in transcript+stdout via emit_event
         if let Some(items) = state.clarify_signal.take() {
-            return finalize::finalize(
-                &env,
-                &mut state,
-                &persist,
-                finalize::StepOutcome::Pause(finalize::PauseKind::Clarify(items)),
-            )
-            .await;
+            break 'turn finalize::StepOutcome::Pause(finalize::PauseKind::Clarify(items));
         }
         if let Some(items) = state.inform_signal.take() {
-            return finalize::finalize(
-                &env,
-                &mut state,
-                &persist,
-                finalize::StepOutcome::Pause(finalize::PauseKind::Inform(items)),
-            )
-            .await;
+            break 'turn finalize::StepOutcome::Pause(finalize::PauseKind::Inform(items));
         }
 
         // Append this step to messages for next iteration
@@ -1772,58 +1681,10 @@ pub async fn run_turn(
             content: tool_results,
             id: String::new(),
         });
-    }
+        step_index += 1;
+    };
 
-    // Final drain: catch daemon completions that landed after the last per-step poll
-    // but before we release the session lock.  We can no longer inject mid-turn
-    // (the loop is over), so we write the ledger entry now (while we still hold the
-    // lock → we are the sole writer) and wake a successor turn to react to it.
-    //
-    // Dedup guarantee: `surfaced_daemon_names` reads the log we just finished
-    // writing, so any completion already surfaced by the per-step poll appears in
-    // `already` and is skipped here — no double-write, no wake storm.
-    //
-    // Wake-storm safety: the successor's own per-step poll will find the `*_update`
-    // already in the log (`already` non-empty) → `pending` empty → no further wake.
-    //
-    // Guard: relay.is_some() means the spine holds the lock and the brain must not
-    // write; skip in that case (the spine's own final-drain runs on its path).
-    if persist.is_unsealed() {
-        let events_snap = ingestor.events().unwrap_or_default();
-        // Daemon completions
-        let already_d = crate::turn::completion_poll::surfaced_daemon_names(&events_snap);
-        let pending_d = crate::turn::completion_poll::pending_daemon_completions(
-            &gait_dir,
-            &session_id,
-            &already_d,
-        );
-        // Child-agent completions (Stage 4, Task 4)
-        let already_a = crate::turn::completion_poll::surfaced_agent_ids(&events_snap);
-        let pending_a = crate::turn::completion_poll::pending_agent_completions(
-            &gait_dir,
-            &session_id,
-            &already_a,
-        );
-        let has_pending = !pending_d.is_empty() || !pending_a.is_empty();
-        if has_pending {
-            for c in pending_d.iter().chain(pending_a.iter()) {
-                let _ = emitter.record(c.body());
-            }
-            // Commit the ledger entries before spawning the successor so the
-            // successor's retrace sees them on the very first step (M3 correction).
-            let _ = repos.traces.commit_session(
-                &gait_dir,
-                &session_id,
-                &format!("session({}): final-drain completions", session_id),
-            );
-            crate::session::completion::spawn_wake(&gait_dir, &session_id);
-        }
-    }
-
-    anyhow::bail!(
-        "reached max steps ({}) without turn_complete",
-        max_iter.unwrap_or(100)
-    )
+    finalize::finalize(&env, &mut state, &persist, outcome).await
 }
 
 /// Check whether a single tool call targets any path outside its sandbox ceiling.

@@ -79,7 +79,10 @@ pub(crate) enum StepOutcome {
     Fail(anyhow::Error),
     /// Natural loop exhaustion. Runs the final-drain (record pending
     /// completions → swallowed commit → wake) then fails the turn.
-    MaxSteps,
+    /// Carries the resolved `max_iter` for the exact bail message.
+    MaxSteps {
+        max_iter: usize,
+    },
 }
 
 /// THE epilogue. Every `run_turn` return site funnels through here once
@@ -184,7 +187,7 @@ pub(crate) async fn finalize(
             Err(err)
         }
 
-        StepOutcome::MaxSteps => {
+        StepOutcome::MaxSteps { max_iter } => {
             if persist.is_unsealed() {
                 let events_snap = env.ingestor.events().unwrap_or_default();
                 let already_d = crate::turn::completion_poll::surfaced_daemon_names(&events_snap);
@@ -211,7 +214,7 @@ pub(crate) async fn finalize(
                     crate::session::completion::spawn_wake(env.gait_dir, env.session_id);
                 }
             }
-            anyhow::bail!("reached max steps without turn_complete")
+            anyhow::bail!("reached max steps ({}) without turn_complete", max_iter)
         }
     }
 }
@@ -684,10 +687,15 @@ mod tests {
             vec![],
         ));
 
-        let err = finalize(&env, &mut state, &persist, StepOutcome::MaxSteps)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("max steps"));
+        let err = finalize(
+            &env,
+            &mut state,
+            &persist,
+            StepOutcome::MaxSteps { max_iter: 100 },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("max steps (100)"));
         assert!(fx.spy_hook.outcomes().is_empty());
         // No pending daemon/agent completions in this fixture (empty ingestor,
         // no daemons.jsonl) — the drain body is a no-op, so no commit either.
