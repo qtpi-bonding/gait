@@ -3,11 +3,8 @@
 //! The `gait run` turn consumer.
 use clap::Parser;
 use std::path::PathBuf;
-use std::sync::Arc;
 
-use gait_core::embed::{
-    BrainLaunch, CliSink, Diag, LoopConfig, TurnDriver, TurnSink, TurnSource, TurnStart,
-};
+use gait_core::embed::{CliSink, Diag, TurnSink, TurnSource, TurnStart};
 
 #[derive(Parser, Debug)]
 #[command(no_binary_name = true)]
@@ -55,82 +52,6 @@ pub struct RunArgs {
     // handled externally — gait never self-spawns into a container.
     #[arg(long = "container", hide = true)]
     container: bool,
-}
-
-// ── CliDriver ─────────────────────────────────────────────────────────────────
-
-/// `TurnDriver` impl for `gait run`. Supplies `brain_launch()`
-/// with all data `relay_brain_turn` needs; `turn_config` is informational only (the
-/// actual config lands in `BrainInit` via `ProfileInputs`).
-struct CliDriver {
-    codebase: PathBuf,
-    api_key: String,
-    gait_bin: PathBuf,
-    sandbox_cfg: gait_core::config::SandboxConfig,
-    sandbox_on: bool,
-    // Profile-level inputs stored as individual fields to avoid naming the sealed type.
-    agent_name: Option<String>,
-    model_override: Option<String>,
-    allow: Vec<String>,
-    deny: Vec<String>,
-    result_schema: Option<serde_json::Value>,
-    cascade_group_arg: Option<String>,
-    /// For after_turn: scheduler/harness policy on success.
-    gait_dir: PathBuf,
-    session_id: String,
-    auto: bool,
-    max_iter: Option<usize>,
-}
-
-#[async_trait::async_trait(?Send)]
-impl TurnDriver for CliDriver {
-    fn brain_launch(&self, _session_id: &str) -> BrainLaunch {
-        BrainLaunch::new(
-            self.codebase.clone(),
-            self.api_key.clone(),
-            self.gait_bin.clone(),
-            self.sandbox_cfg.clone(),
-            self.sandbox_on,
-            self.auto,
-            self.max_iter,
-            self.cascade_group_arg.clone(),
-            self.agent_name.clone(),
-            self.model_override.clone(),
-            self.allow.clone(),
-            self.deny.clone(),
-            self.result_schema.clone(),
-        )
-    }
-
-    fn turn_config(&mut self) -> LoopConfig {
-        LoopConfig {
-            auto: self.auto,
-            max_iter: self.max_iter,
-            preview_policy: gait_core::config::PreviewPolicy::default(),
-            cancel: None,
-            sandbox_on: self.sandbox_on,
-            sandbox_cfg: self.sandbox_cfg.clone(),
-            relay: None,
-            initial_git: None,
-            daemons: vec![],
-        }
-    }
-
-    async fn after_turn(&mut self, sink: &mut dyn TurnSink, _result: &gait_core::turn::TurnResult) {
-        // The run consumer's after_turn reads the session meta and runs the Scheduler/Harness.
-        // Note: relay_brain_turn already called sink.result() with the real TurnResult;
-        // run_loop passes a synthetic dummy here — we skip harness for now (Task 3 wires this).
-        let _ = (sink, &self.gait_dir, &self.session_id);
-    }
-
-    fn on_turn_error(
-        &mut self,
-        sink: &mut dyn TurnSink,
-        e: anyhow::Error,
-    ) -> std::ops::ControlFlow<()> {
-        sink.diagnostic(Diag::Error, &format!("run_loop error: {e}"));
-        std::ops::ControlFlow::Break(())
-    }
 }
 
 // ── CliSource ─────────────────────────────────────────────────────────────────
@@ -265,24 +186,21 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
         args.model_override.clone(),
     );
     let model = profile.model.clone();
-    let provider_name = match model.split_once('/') {
-        Some((p, _)) => p.to_string(),
-        None => {
-            sink.diagnostic(
-                Diag::Error,
-                &format!("error: model must be 'provider/model', got: '{}'", model),
-            );
-            std::process::exit(1);
-        }
-    };
-    let api_key = gait_core::auth::resolve_api_key(&provider_name).unwrap_or_default();
+    // Validation only — `PromptNodeDriver::brain_launch` re-derives the
+    // provider (and resolves the API key) from `self.model` itself now that
+    // `cmd_run` no longer builds its own driver.
+    if model.split_once('/').is_none() {
+        sink.diagnostic(
+            Diag::Error,
+            &format!("error: model must be 'provider/model', got: '{}'", model),
+        );
+        std::process::exit(1);
+    }
 
-    let repos = gait_core::git::Repos::production();
-
-    // Expand and pre-write input events (brain runs Resume, sees them on first fold).
-    let user_bodies: Vec<gait_core::proto::gait::log::v1::event::Body> = if let Some(task_text) =
-        args.task.clone()
-    {
+    // Expand the task text (`single_prompt_run`'s literal branch builds the
+    // actual user_turn/context_status events from this, same as the old
+    // direct-run_loop path did inline).
+    let prompt: Option<String> = args.task.clone().map(|task_text| {
         let hist = gait_dir
             .join("tmp")
             .join(format!("shell-{}.jsonl", &session_id));
@@ -290,26 +208,15 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
             .events()
             .unwrap_or_default();
         let last_blocks = gait_core::session::retrace::last_turn_blocks(&events);
-        let expanded = gait_core::expand::expand_input(
+        gait_core::expand::expand_input(
             &task_text,
             &gait_core::expand::ExpandCtx {
                 codebase: &codebase_path,
                 history: &hist,
                 last_blocks: &last_blocks,
             },
-        );
-        gait_core::embed::user_turn_events(&repos, &codebase_path, expanded)
-    } else {
-        vec![]
-    };
-
-    let exe = std::env::current_exe().unwrap_or_else(|e| {
-        sink.diagnostic(Diag::Error, &format!("error: current_exe: {e}"));
-        std::process::exit(1);
+        )
     });
-
-    let sandbox_cfg = config.sandbox.clone();
-    let sandbox_on = config.sandbox.on;
 
     // Read per-spawn result schema if the child session has one written by the parent process.
     let result_schema: Option<serde_json::Value> = {
@@ -323,7 +230,8 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
     };
 
     // Process-lifetime cascade kill handle — held by the SIGINT/SIGTERM handler
-    // and threaded through run_loop so relay_brain_turn can register the active group.
+    // and threaded through run_loop (via SinglePromptOpts.cascade) so
+    // relay_brain_turn can register the active group.
     let kill_handle = gait_core::embed::CascadeKillHandle::new();
 
     // Spawn SIGINT/SIGTERM handler: kill current group (if any) then exit.
@@ -342,60 +250,70 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
         });
     }
 
-    // Build the Session for run_loop (this process is the trusted parent).
-    let session = Arc::new(gait_core::session::Session {
-        id: session_id.clone(),
-        gait_dir: gait_dir.clone(),
-        codebase_path: codebase_path.clone(),
-        assigned_by: None,
-        repos: repos.clone(),
-    });
-
-    let source = CliSource {
-        bodies: if user_bodies.is_empty() {
-            None
-        } else {
-            Some(user_bodies)
-        },
-        done: false,
+    // `prompt: Some(text)` -> literal one-shot node; `prompt: None` -> resume,
+    // driven by a live CliSource yielding exactly one `Resume` turn (the CLI
+    // has no interactive loop of its own — a single turn, then exit).
+    let input: Option<Box<dyn TurnSource>> = if prompt.is_none() {
+        Some(Box::new(CliSource {
+            bodies: None,
+            done: false,
+        }))
+    } else {
+        None
     };
 
-    let mut driver = CliDriver {
-        codebase: codebase_path,
-        api_key,
-        gait_bin: exe,
-        sandbox_cfg,
-        sandbox_on,
-        agent_name: args.agent_name.clone(),
-        model_override: args.model_override.clone(),
+    // spec-06 §3 (one orchestrator, one BrainLaunch site): `cmd_run` no longer
+    // builds its own driver/Session/run_loop call — it goes through the same
+    // `single_prompt_run` -> `run_workflow` -> `PromptNodeDriver` path the REPL
+    // uses. The CLI's resolved profile/sandbox/cascade travel as overrides
+    // (Task 3.2's C1 fix) so they still reach the spawned brain.
+    let profile_override = gait_workflow::ProfileOverride {
+        model: args.model_override.clone(),
         allow: args.allow.clone(),
         deny: args.deny.clone(),
-        result_schema,
-        cascade_group_arg: args.cascade_group.clone(),
-        gait_dir: gait_dir.clone(),
-        session_id: session_id.clone(),
-        auto: args.auto,
+        agent: args.agent_name.clone(),
         max_iter: config.max_iter,
+        result_schema,
     };
-
-    let run_result = gait_core::embed::run_loop(
-        source,
+    let outcome = gait_workflow::single_prompt_run(
+        gait_workflow::SinglePromptOpts {
+            run_id: gait_workflow::convert::mint_run_id("chat"),
+            continue_session: session_id.clone(),
+            prompt,
+            gait_dir: gait_dir.clone(),
+            codebase: codebase_path.clone(),
+            args: vec![],
+            sandbox_on: Some(config.sandbox.on),
+            cascade_group_arg: args.cascade_group.clone(),
+            cascade: Some(kill_handle.clone()),
+            profile: Some(profile_override),
+        },
         &mut sink,
-        session,
-        &gait_dir,
-        &session_id,
-        &mut driver,
-        Some(&kill_handle),
+        &mut gait_workflow::observer::NullObserver,
+        input,
     )
     .await;
 
-    if let Err(e) = run_result {
-        sink.diagnostic(Diag::Error, &format!("run_loop error: {e}"));
-        std::process::exit(1);
-    }
+    let outcome = match outcome {
+        Ok(o) => o,
+        Err(e) => {
+            sink.diagnostic(Diag::Error, &format!("run error: {e}"));
+            std::process::exit(1);
+        }
+    };
 
     if sink.failed {
         std::process::exit(1);
+    }
+
+    match outcome {
+        // GatePaused is unreachable for a degenerate single-prompt run (no gate
+        // node in the one-node graph `single_prompt_run` builds); mapped to 0
+        // for now. If `cmd_run` ever drives a real multi-node graph, a paused
+        // workflow is NOT "done" — revisit this arm then.
+        gait_workflow::WorkflowOutcome::Completed
+        | gait_workflow::WorkflowOutcome::NodeOpen
+        | gait_workflow::WorkflowOutcome::GatePaused => {}
     }
 }
 
@@ -406,6 +324,21 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_driver_is_gone() {
+        // Built via concat! so this assertion's own strings don't self-match
+        // include_str!'s scan of this file.
+        let src = include_str!("run.rs");
+        let struct_needle = concat!("struct ", "CliDriver");
+        let impl_needle = concat!("impl TurnDriver for ", "CliDriver");
+        assert!(!src.contains(struct_needle), "CliDriver must be deleted");
+        assert!(
+            !src.contains(impl_needle),
+            "CliDriver's TurnDriver impl must be deleted"
+        );
+    }
+
     #[test]
     fn parse_extracts_task_and_flags() {
         let argv: Vec<String> = [

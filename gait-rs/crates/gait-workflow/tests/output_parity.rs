@@ -23,9 +23,10 @@ fn ev(body: event::Body) -> StreamItem {
     }
 }
 
-/// Zero the id (minted fresh per `ev()` call, so it differs run-to-run) on
-/// every `Event` item — the parity check cares about payload fidelity, not
-/// identity, mirroring the plan's `norm()`.
+/// Zero the id and ts (minted fresh per `ev()` call — `ts` is wall-clock, so it
+/// can differ by a millisecond between the two independent `play_golden` runs
+/// — flaky otherwise) on every `Event` item. The parity check cares about
+/// payload fidelity, not identity/timing, mirroring the plan's `norm()`.
 fn norm_items(items: &[StreamItem]) -> Vec<StreamItem> {
     items
         .iter()
@@ -33,6 +34,7 @@ fn norm_items(items: &[StreamItem]) -> Vec<StreamItem> {
         .map(|mut it| {
             if let Some(stream_item::Item::Event(ev)) = it.item.as_mut() {
                 ev.id.clear();
+                ev.ts = 0;
             }
             it
         })
