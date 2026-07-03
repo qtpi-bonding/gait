@@ -34,15 +34,11 @@ pub fn resolve_codebase(args: &[String]) -> std::path::PathBuf {
 }
 
 // cmd_brain deleted (Task 5): dispatch now via gait_core::__dispatch_role.
-// `gait run` routes through cmd_run → CliDriver → run_loop.
+// `gait run` routes through cmd_run → single_prompt_run → run_workflow (spec-06 §3).
 
 /// Dispatch a hidden role subcommand (`__brain` or `__run-tool`) via `gait_core::__dispatch_role`.
-/// The WorkflowRunner for the `__brain` arm will be wired in Task 7 (spine-routed path).
-/// Until then, passes `None` so the brain omits the `run_workflow` tool (safe: workflow nodes
-/// don't self-recurse in the current feature set).
 pub async fn cmd_dispatch_role(argv: &[String]) {
-    let runner: Option<std::sync::Arc<dyn gait_core::workflow_runner::WorkflowRunner>> = None;
-    gait_core::__dispatch_role(argv, runner).await;
+    gait_core::__dispatch_role(argv).await;
 }
 
 pub async fn cmd_run(argv: &[String]) {

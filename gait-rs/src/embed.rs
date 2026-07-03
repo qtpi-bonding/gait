@@ -257,7 +257,6 @@ pub async fn resolve_profile(
     agent_path: Option<&Path>,
     model_override: Option<String>,
     repos: &crate::git::Repos,
-    workflow_runner: Option<std::sync::Arc<dyn crate::workflow_runner::WorkflowRunner>>,
     api_key: Option<String>,
 ) -> anyhow::Result<crate::profile::ResolvedProfile> {
     let profile = crate::profile::Profile::from_config_and_agent(
@@ -274,7 +273,6 @@ pub async fn resolve_profile(
             gait_dir.to_path_buf(),
             repos.clone(),
             api_key,
-            workflow_runner,
         )
         .await
 }

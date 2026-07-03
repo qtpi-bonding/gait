@@ -11,7 +11,6 @@ pub mod session;
 pub mod tools;
 pub mod turn;
 pub mod types;
-pub mod workflow_runner;
 
 pub mod daemon_exit;
 pub mod diagnostic;
@@ -142,16 +141,11 @@ pub fn is_run_argv(argv: &[String]) -> bool {
 }
 
 /// Hidden entry point that runs the appropriate role for the given argv.
-/// `runner` is injected by the caller (gait-cli) because gait-core cannot construct
-/// `GaitWorkflowRunner` (that crate is downstream — constructing it here inverts the DAG).
 ///
 /// # Panics
 /// Exits the process on unrecognised role argv (should not happen if `is_role_argv` gates).
 #[doc(hidden)]
-pub async fn __dispatch_role(
-    argv: &[String],
-    runner: Option<std::sync::Arc<dyn workflow_runner::WorkflowRunner>>,
-) {
+pub async fn __dispatch_role(argv: &[String]) {
     use clap::Parser as _;
     use turn::brain::{run_brain, BrainConfig};
     use turn::hand::{run_hand, HandConfig};
@@ -192,7 +186,7 @@ pub async fn __dispatch_role(
                 no_sandbox: args.no_sandbox,
                 sandbox: args.sandbox,
             };
-            run_brain(config, gait_dir, codebase, api_key, runner).await;
+            run_brain(config, gait_dir, codebase, api_key).await;
         }
         Some("__run-tool") => {
             #[derive(clap::Parser)]

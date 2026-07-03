@@ -298,7 +298,6 @@ impl Profile {
         gait_dir: std::path::PathBuf,
         repos: crate::git::Repos,
         api_key: Option<String>,
-        workflow_runner: Option<std::sync::Arc<dyn crate::workflow_runner::WorkflowRunner>>,
     ) -> anyhow::Result<ResolvedProfile> {
         // Provider (no network until .stream()).
         let provider: std::sync::Arc<dyn crate::provider::Provider> = std::sync::Arc::from(
@@ -336,18 +335,8 @@ impl Profile {
         }
 
         // Tools: builtins (moved from bin/gait.rs:242-249) + config tools (moved from bin/gait.rs:250-287).
-        let tool_ctx = {
-            let base = crate::tools::ToolCtx::new(
-                codebase_path.clone(),
-                gait_dir.clone(),
-                session_id.clone(),
-            );
-            if let Some(runner) = workflow_runner {
-                base.with_workflow_runner(runner)
-            } else {
-                base
-            }
-        };
+        let tool_ctx =
+            crate::tools::ToolCtx::new(codebase_path.clone(), gait_dir.clone(), session_id.clone());
         let tools: Vec<Box<dyn crate::types::Tool>> = if self.hands_free {
             // Hands-free: the only registered tool is the schema-aware structured_done.
             // Nothing else exists, so tool routing can never reach a hand.
@@ -565,7 +554,6 @@ mod tests {
                 std::path::PathBuf::from("."),
                 crate::git::Repos::production(),
                 Some("test-key".into()),
-                None, // workflow_runner
             )
             .await
             .unwrap();
@@ -830,7 +818,6 @@ mod tests {
                 std::path::PathBuf::from("/tmp/gd"),
                 crate::git::Repos::production(),
                 Some("test-key".into()),
-                None,
             )
             .await
             .unwrap();

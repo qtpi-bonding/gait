@@ -12,7 +12,6 @@
 //! - `run_brain()` — the brain's entry point (seal → nerve → run_loop → Terminated)
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
@@ -22,7 +21,6 @@ use crate::port::output::{CliSink, Diag, TurnSink};
 use crate::proto::gait::log::v1::{Event, StreamItem};
 use crate::proto::Recorder;
 use crate::turn::nerve::{self, NerveWriter};
-use crate::workflow_runner::WorkflowRunner;
 
 use gait_proto::gait::sandbox::v1::{
     signal, Append, Diagnostic, Notify, Signal, StreamForward, Terminated,
@@ -82,7 +80,6 @@ pub async fn run_brain(
     gait_dir: PathBuf,
     codebase_path: PathBuf,
     api_key: Option<String>,
-    workflow_runner: Option<Arc<dyn WorkflowRunner>>,
 ) {
     // ── Apply brain seal ──────────────────────────────────────────────────────
     let seal_status = crate::sandbox::platform_sandbox()
@@ -316,7 +313,6 @@ pub async fn run_brain(
         stream_fwd_tx,
         spawn_tx,
         notify_tx,
-        workflow_runner,
         log_mirror,
         initial_git,
         daemons,
@@ -478,7 +474,6 @@ struct BrainDriver {
     stream_fwd_tx: mpsc::UnboundedSender<StreamItem>,
     spawn_tx: mpsc::UnboundedSender<(Vec<String>, bool)>,
     notify_tx: mpsc::UnboundedSender<crate::harness::NotifyPayload>,
-    workflow_runner: Option<Arc<dyn WorkflowRunner>>,
     log_mirror: std::sync::Arc<std::sync::Mutex<Vec<crate::proto::gait::log::v1::Event>>>,
     initial_git: crate::turn::GitSnapshot,
     daemons: Vec<(String, i32, bool, String)>,
@@ -499,7 +494,6 @@ impl BrainDriver {
                 self.gait_dir.clone(),
                 self.repos.clone(),
                 self.api_key.clone(),
-                self.workflow_runner.take(),
             )
             .await
     }

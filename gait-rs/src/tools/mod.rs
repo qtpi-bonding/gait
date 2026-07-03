@@ -17,7 +17,6 @@ pub mod ls;
 pub mod preview;
 pub mod prune;
 pub mod read;
-pub mod run_workflow;
 pub mod shell;
 pub mod spawn_agent;
 pub mod strict;
@@ -38,7 +37,6 @@ pub use load::LoadTool;
 pub use ls::LsTool;
 pub use prune::PruneTool;
 pub use read::ReadTool;
-pub use run_workflow::RunWorkflowTool;
 pub use shell::ShellTool;
 pub use spawn_agent::SpawnAgentTool;
 pub use structured_done::StructuredDoneTool;
@@ -233,7 +231,6 @@ pub fn builtin_tool_names() -> &'static [&'static str] {
         "inform",
         "annotate",
         "prune",
-        "run_workflow",
     ]
 }
 
@@ -245,7 +242,7 @@ pub fn builtin_tools(
     plugins: Vec<crate::config::WasmPluginDef>,
     repos: crate::git::Repos,
 ) -> Vec<Box<dyn Tool>> {
-    let mut tools: Vec<Box<dyn Tool>> = vec![
+    let tools: Vec<Box<dyn Tool>> = vec![
         ReadTool::new(ctx.clone()).boxed(),
         WriteTool::new(ctx.clone()).boxed(),
         EditReplaceTool::new(ctx.clone()).boxed(),
@@ -272,9 +269,6 @@ pub fn builtin_tools(
         InformTool::new().boxed(),
         PruneTool::new().boxed(),
     ];
-    if let Some(runner) = ctx.workflow_runner {
-        tools.push(RunWorkflowTool::new(runner).boxed());
-    }
     tools
 }
 
@@ -401,36 +395,11 @@ mod tests {
     }
 
     #[test]
-    fn builtin_tool_names_includes_run_workflow() {
+    fn builtin_tool_names_has_no_run_workflow() {
         assert!(
-            builtin_tool_names().contains(&"run_workflow"),
-            "run_workflow missing from {:?}",
+            !builtin_tool_names().contains(&"run_workflow"),
+            "run_workflow must be gone: {:?}",
             builtin_tool_names()
-        );
-    }
-
-    #[test]
-    fn builtin_tools_with_runner_returns_nineteen() {
-        use crate::workflow_runner::WorkflowRunner;
-        use std::sync::Arc;
-
-        #[derive(Debug)]
-        struct StubRunner;
-        #[async_trait::async_trait]
-        impl WorkflowRunner for StubRunner {
-            async fn run(&self, _name: String, _args: Vec<String>) -> String {
-                String::new()
-            }
-        }
-
-        let ctx = ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "s1".into())
-            .with_workflow_runner(Arc::new(StubRunner));
-        let tools = builtin_tools(ctx, vec![], vec![], vec![], crate::git::Repos::production());
-        assert_eq!(
-            tools.len(),
-            19,
-            "expected 19 tools with runner: {:?}",
-            tools.iter().map(|t| t.name()).collect::<Vec<_>>()
         );
     }
 
