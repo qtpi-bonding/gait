@@ -1,0 +1,7 @@
+# unlock_precheck
+# result: Unlock
+# events: 3
+---
+000: SessionStart
+001: Unknown
+002: Unlock

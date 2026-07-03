@@ -128,6 +128,7 @@ pub struct GitSnapshot {
 }
 
 /// Per-call inputs for one turn (the things that vary every invocation).
+#[derive(Clone)]
 pub struct TurnInput {
     pub auto: bool,
     pub max_iter: Option<usize>,
@@ -2056,5 +2057,7 @@ pub(crate) fn pause_for_unlock(ctx: UnlockPauseCtx) -> anyhow::Result<TurnResult
     Ok(TurnResult::Unlock { items: ctx.items })
 }
 
+#[cfg(test)]
+mod golden_tests;
 #[cfg(test)]
 mod tests;

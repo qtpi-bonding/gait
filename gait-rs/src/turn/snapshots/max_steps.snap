@@ -1,0 +1,10 @@
+# max_steps
+# result: Err
+# events: 6
+---
+000: SessionStart
+001: Unknown
+002: ToolCall "tcr0" "read"
+003: ToolResult "tcr0"
+004: ToolCall "tcr1" "read"
+005: ToolResult "tcr1"

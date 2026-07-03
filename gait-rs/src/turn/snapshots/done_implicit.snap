@@ -1,0 +1,8 @@
+# done_implicit
+# result: Done
+# events: 4
+---
+000: SessionStart
+001: Unknown
+002: AssistantText "hello world"
+003: Unknown
