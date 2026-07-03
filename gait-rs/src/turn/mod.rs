@@ -792,9 +792,13 @@ pub async fn run_turn(
         // carries the correct position. Steps advance monotonically per turn.
         emitter.set_position(current_turn, step_index as u32);
         if cancel.as_ref().map(|c| c.is_cancelled()).unwrap_or(false) {
-            emitter.record(events::cancellation_signal())?;
-            persist.commit(&format!("session({}): cancelled", session_id))?;
-            return Ok(TurnResult::Cancelled);
+            return finalize::finalize(
+                &env,
+                &mut state,
+                &persist,
+                finalize::StepOutcome::Cancelled,
+            )
+            .await;
         }
 
         // Per-step completion poll (Part 2): surface finished daemon and child-agent
@@ -1017,9 +1021,13 @@ pub async fn run_turn(
         state.all_turn_text.push_str(&step_text);
         // Was Esc pressed during this step's stream?
         if cancel.as_ref().map(|c| c.is_cancelled()).unwrap_or(false) {
-            emitter.record(events::cancellation_signal())?;
-            persist.commit(&format!("session({}): cancelled", session_id))?;
-            return Ok(TurnResult::Cancelled);
+            return finalize::finalize(
+                &env,
+                &mut state,
+                &persist,
+                finalize::StepOutcome::Cancelled,
+            )
+            .await;
         }
         {
             let ctx = HookContext {
