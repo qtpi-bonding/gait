@@ -3,6 +3,7 @@
 use gait_core::proto::gait::workflow::v1::{node, Node, PromptNode, Workflow};
 use gait_workflow::observer::CliObserver;
 use gait_workflow::runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
+use gait_workflow::{single_prompt_run, SinglePromptOpts};
 
 use tempfile::TempDir;
 
@@ -77,4 +78,40 @@ async fn degenerate_single_prompt_run_creates_no_run_worktree_or_lock() {
             .is_err(),
         "degenerate run must NOT create branch run/{run_id}"
     );
+}
+
+#[tokio::test]
+async fn single_prompt_run_builds_degenerate_graph_and_stays_lazy() {
+    let tmp = TempDir::new().unwrap();
+    let gait_dir = tmp.path().to_path_buf();
+    init_git_repo(&gait_dir);
+    let run_id = "chat-spr-001".to_string();
+    let mut sink = gait_core::embed::CliSink::stdio(true);
+    let outcome = single_prompt_run(
+        SinglePromptOpts {
+            run_id: run_id.clone(),
+            continue_session: String::new(),
+            prompt: None,
+            gait_dir: gait_dir.clone(),
+            codebase: gait_dir.clone(),
+            args: vec![],
+        },
+        &mut sink,
+        &mut CliObserver,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        outcome,
+        WorkflowOutcome::NodeOpen,
+        "prompt:None + input:None → open node"
+    );
+    let run_dir = gait_dir.join("workflow-runs").join(&run_id);
+    assert!(run_dir.join("log.jsonl").exists());
+    assert!(
+        !run_dir.join("worktree").exists(),
+        "single prompt stays lazy through the blessed API"
+    );
+    // (No `lock`-absence assertion — see M2 note in Task 1.1: it's vacuous post-Drop.)
 }
