@@ -146,6 +146,11 @@ pub(crate) struct TurnEnv<'a> {
     pub auto: bool,
     pub daemons: &'a [(String, i32, bool, String)],
     pub ingestor: &'a crate::session::Ingestor,
+    /// Needed by `finalize()`'s `post_turn` `HookContext` (Task 6).
+    pub system_prompt: &'a str,
+    /// Needed by `finalize()`'s `Done` arm to build the `turn_complete` event (Task 6).
+    pub codebase_hash: &'a str,
+    pub codebase_dirty: bool,
 }
 
 impl TurnState {

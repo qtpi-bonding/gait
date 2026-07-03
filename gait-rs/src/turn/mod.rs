@@ -62,6 +62,7 @@ pub(crate) mod brain;
 mod completion_poll;
 mod curate;
 mod exec;
+mod finalize;
 pub(crate) mod hand;
 pub mod nerve;
 mod persist;
@@ -753,6 +754,9 @@ pub async fn run_turn(
         auto,
         daemons: &input.daemons,
         ingestor: &ingestor,
+        system_prompt: &system_prompt,
+        codebase_hash: &codebase_hash,
+        codebase_dirty,
     };
     // If pre_turn hooks modified the system_prompt, emit a Replace on the Agent
     // event so retrace can reconstruct the hook-modified instructions on replay.
