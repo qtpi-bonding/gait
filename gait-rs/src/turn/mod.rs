@@ -70,6 +70,7 @@ pub(crate) mod spine;
 mod state;
 pub(crate) mod synapse;
 
+use persist::Persistence;
 use state::TurnState;
 
 // Re-exports
@@ -353,29 +354,16 @@ pub async fn run_turn(
 
     // When running under a spine (relay.is_some()), the spine performs all
     // startup disk writes before spawning the brain. The brain's seal has
-    // writable: [] so it cannot write to gait-dir. Skip these writes to avoid
-    // EPERM — the spine already did (or will do) them.
-    if relay.is_none() {
-        repos
-            .traces
-            .create_session_worktree(&gait_dir, &session_id)?;
-        repos
-            .checkpoints
-            .init(&gait_dir, &session_id, &codebase_path)?;
-    }
+    // writable: [] so it cannot write to gait-dir. `Persistence` skips these
+    // writes to avoid EPERM — the spine already did (or will do) them.
+    let persist = Persistence::from_relay(&relay, &repos, &gait_dir, &session_id, &codebase_path);
+    let _lock = persist.init_workspace(repos.checkpoints.as_ref())?;
 
     let session_dir = gait_dir.join("sessions").join(&session_id);
     let tx_path = session_dir.join("log.jsonl");
     let ingestor = match emitter.log_mirror() {
         Some(mirror) => Ingestor::from_shared(mirror),
         None => Ingestor::from_session(&gait_dir, &session_id),
-    };
-
-    // SessionLock: brain doesn't hold the lock when under a spine (the spine holds it).
-    let _lock = if relay.is_none() {
-        Some(SessionLock::acquire(&session_dir)?)
-    } else {
-        None
     };
 
     let (codebase_hash, dirty_files) = match &input.initial_git {
@@ -393,7 +381,7 @@ pub async fn run_turn(
     // empty on the first turn.
     // When running under a spine, the spine writes SessionStart — skip to avoid
     // disk writes (brain has writable: []).
-    if relay.is_none() {
+    if persist.is_unsealed() {
         let has_session_start = ingestor
             .events()
             .unwrap_or_default()
@@ -801,13 +789,7 @@ pub async fn run_turn(
         emitter.set_position(current_turn, step_index as u32);
         if cancel.as_ref().map(|c| c.is_cancelled()).unwrap_or(false) {
             emitter.record(events::cancellation_signal())?;
-            if relay.is_none() {
-                repos.traces.commit_session(
-                    &gait_dir,
-                    &session_id,
-                    &format!("session({}): cancelled", session_id),
-                )?;
-            }
+            persist.commit(&format!("session({}): cancelled", session_id))?;
             return Ok(TurnResult::Cancelled);
         }
 
@@ -815,7 +797,7 @@ pub async fn run_turn(
         // completions mid-turn by recording *_update events before the next LLM
         // request. Holds the session lock → emitter.record is the safe writer.
         // retrace folds the new events into the outgoing rebuild on the very next line.
-        if relay.is_none() {
+        if persist.poll_completions_allowed() {
             let events_snap = ingestor.events().unwrap_or_default();
             // Daemon completions
             let already_d = crate::turn::completion_poll::surfaced_daemon_names(&events_snap);
@@ -1032,13 +1014,7 @@ pub async fn run_turn(
         // Was Esc pressed during this step's stream?
         if cancel.as_ref().map(|c| c.is_cancelled()).unwrap_or(false) {
             emitter.record(events::cancellation_signal())?;
-            if relay.is_none() {
-                repos.traces.commit_session(
-                    &gait_dir,
-                    &session_id,
-                    &format!("session({}): cancelled", session_id),
-                )?;
-            }
+            persist.commit(&format!("session({}): cancelled", session_id))?;
             return Ok(TurnResult::Cancelled);
         }
         {
@@ -1096,17 +1072,7 @@ pub async fn run_turn(
             let message = step_text.clone();
             let events_now = ingestor.events()?;
             let turn_n = count_turn_complete(&events_now) as u32 + 1;
-            let code_checkpoint = if relay.is_none() {
-                checkpoint_codebase(
-                    repos.checkpoints.as_ref(),
-                    &gait_dir,
-                    &session_id,
-                    &codebase_path,
-                    turn_n,
-                )
-            } else {
-                None // spine will checkpoint after the brain exits
-            };
+            let code_checkpoint = persist.checkpoint(turn_n);
             let changes = code_checkpoint.as_ref().and_then(|sha| {
                 repos
                     .checkpoints
@@ -1130,13 +1096,7 @@ pub async fn run_turn(
                 result: None,
                 changes: changes.clone(),
             }))?;
-            if relay.is_none() {
-                repos.traces.commit_session(
-                    &gait_dir,
-                    &session_id,
-                    &format!("session({}): turn {}", session_id, turn_n),
-                )?;
-            }
+            persist.commit(&format!("session({}): turn {}", session_id, turn_n))?;
             {
                 let post_turn_ctx = HookContext {
                     event: "post_turn".to_string(),
@@ -1194,14 +1154,13 @@ pub async fn run_turn(
                 return pause_for_unlock(UnlockPauseCtx {
                     emitter,
                     items: pending_unlocks,
-                    repos: &repos,
+                    persist: &persist,
                     gait_dir: &gait_dir,
                     session_id: &session_id,
                     codebase_path: &codebase_path,
                     system_prompt: &system_prompt,
                     hooks: &hooks,
                     step_count: step_index + 1,
-                    skip_commit: relay.is_some(),
                 });
             }
         }
@@ -1229,7 +1188,7 @@ pub async fn run_turn(
                 }
                 GateDecision::Allow { approval_prefix } => {
                     // Under relay the spine fills the diff from the executed result; skip the brain-side pre-stream.
-                    if relay.is_none() {
+                    if persist.preview_allowed() {
                         stream_preview_if_always(preview_policy, tool, &tc.args, emitter);
                     }
                     if let Some(p) = approval_prefix {
@@ -1416,14 +1375,13 @@ pub async fn run_turn(
                         return pause_for_unlock(UnlockPauseCtx {
                             emitter,
                             items: vec![denial],
-                            repos: &repos,
+                            persist: &persist,
                             gait_dir: &gait_dir,
                             session_id: &session_id,
                             codebase_path: &codebase_path,
                             system_prompt: &system_prompt,
                             hooks: &hooks,
                             step_count: step_index + 1,
-                            skip_commit: relay.is_some(),
                         });
                     }
                 }
@@ -1576,14 +1534,13 @@ pub async fn run_turn(
                                 return pause_for_unlock(UnlockPauseCtx {
                                     emitter,
                                     items: vec![denial],
-                                    repos: &repos,
+                                    persist: &persist,
                                     gait_dir: &gait_dir,
                                     session_id: &session_id,
                                     codebase_path: &codebase_path,
                                     system_prompt: &system_prompt,
                                     hooks: &hooks,
                                     step_count: step_index + 1,
-                                    skip_commit: relay.is_some(),
                                 });
                             }
                         }
@@ -1648,17 +1605,7 @@ pub async fn run_turn(
                         }
                         let events_now = ingestor.events()?;
                         let turn_n = count_turn_complete(&events_now) as u32 + 1;
-                        let code_checkpoint = if relay.is_none() {
-                            checkpoint_codebase(
-                                repos.checkpoints.as_ref(),
-                                &gait_dir,
-                                &session_id,
-                                &codebase_path,
-                                turn_n,
-                            )
-                        } else {
-                            None // spine will checkpoint after the brain exits
-                        };
+                        let code_checkpoint = persist.checkpoint(turn_n);
                         let changes = code_checkpoint.as_ref().and_then(|sha| {
                             repos
                                 .checkpoints
@@ -1682,13 +1629,7 @@ pub async fn run_turn(
                             result: result.clone(),
                             changes: changes.clone(),
                         }))?;
-                        if relay.is_none() {
-                            repos.traces.commit_session(
-                                &gait_dir,
-                                &session_id,
-                                &format!("session({}): turn {}", session_id, turn_n),
-                            )?;
-                        }
+                        persist.commit(&format!("session({}): turn {}", session_id, turn_n))?;
                         {
                             let post_turn_ctx = HookContext {
                                 event: "post_turn".to_string(),
@@ -1796,14 +1737,13 @@ pub async fn run_turn(
                                 return pause_for_unlock(UnlockPauseCtx {
                                     emitter,
                                     items: vec![denial],
-                                    repos: &repos,
+                                    persist: &persist,
                                     gait_dir: &gait_dir,
                                     session_id: &session_id,
                                     codebase_path: &codebase_path,
                                     system_prompt: &system_prompt,
                                     hooks: &hooks,
                                     step_count: step_index + 1,
-                                    skip_commit: relay.is_some(),
                                 });
                             }
                         }
@@ -1827,13 +1767,7 @@ pub async fn run_turn(
         // (In auto mode gated_ids is always empty — this block is never reached.)
         if !pending_permissions.is_empty() {
             emitter.record(events::permissions(&pending_permissions))?;
-            if relay.is_none() {
-                repos.traces.commit_session(
-                    &gait_dir,
-                    &session_id,
-                    &format!("session({}): permissions", session_id),
-                )?;
-            }
+            persist.commit(&format!("session({}): permissions", session_id))?;
             {
                 let post_turn_ctx = HookContext {
                     event: "post_turn".to_string(),
@@ -1854,13 +1788,7 @@ pub async fn run_turn(
 
         // Exit turn for clarify/inform — event already in transcript+stdout via emit_event
         if let Some(items) = state.clarify_signal.take() {
-            if relay.is_none() {
-                repos.traces.commit_session(
-                    &gait_dir,
-                    &session_id,
-                    &format!("session({}): clarify", session_id),
-                )?;
-            }
+            persist.commit(&format!("session({}): clarify", session_id))?;
             {
                 let post_turn_ctx = HookContext {
                     event: "post_turn".to_string(),
@@ -1879,13 +1807,7 @@ pub async fn run_turn(
             return Ok(TurnResult::Clarify { items });
         }
         if let Some(items) = state.inform_signal.take() {
-            if relay.is_none() {
-                repos.traces.commit_session(
-                    &gait_dir,
-                    &session_id,
-                    &format!("session({}): inform", session_id),
-                )?;
-            }
+            persist.commit(&format!("session({}): inform", session_id))?;
             {
                 let post_turn_ctx = HookContext {
                     event: "post_turn".to_string(),
@@ -1929,7 +1851,7 @@ pub async fn run_turn(
     //
     // Guard: relay.is_some() means the spine holds the lock and the brain must not
     // write; skip in that case (the spine's own final-drain runs on its path).
-    if relay.is_none() {
+    if persist.is_unsealed() {
         let events_snap = ingestor.events().unwrap_or_default();
         // Daemon completions
         let already_d = crate::turn::completion_poll::surfaced_daemon_names(&events_snap);
@@ -2033,16 +1955,13 @@ fn check_own_tool_scope(
 pub(crate) struct UnlockPauseCtx<'a> {
     emitter: &'a Recorder,
     items: Vec<pb::UnlockItem>,
-    repos: &'a crate::git::Repos,
+    persist: &'a Persistence<'a>,
     gait_dir: &'a std::path::Path,
     session_id: &'a str,
     codebase_path: &'a std::path::Path,
     system_prompt: &'a str,
     hooks: &'a [Box<dyn crate::types::Hook>],
     step_count: usize,
-    /// When Some, the brain is running under a spine — skip commit_session
-    /// (the spine owns all gait-dir writes).
-    skip_commit: bool,
 }
 
 /// Emit the sandbox-unlock pause and return `TurnResult::Unlock`.
@@ -2056,13 +1975,8 @@ pub(crate) struct UnlockPauseCtx<'a> {
 /// in auto-mode (caller must gate on `sandbox_on && !auto`).
 pub(crate) fn pause_for_unlock(ctx: UnlockPauseCtx) -> anyhow::Result<TurnResult> {
     ctx.emitter.record(events::unlock(&ctx.items))?;
-    if !ctx.skip_commit {
-        ctx.repos.traces.commit_session(
-            ctx.gait_dir,
-            ctx.session_id,
-            &format!("session({}): unlock", ctx.session_id),
-        )?;
-    }
+    ctx.persist
+        .commit(&format!("session({}): unlock", ctx.session_id))?;
     {
         let post_turn_ctx = HookContext {
             event: "post_turn".to_string(),

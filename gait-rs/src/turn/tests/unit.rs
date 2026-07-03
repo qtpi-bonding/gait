@@ -81,17 +81,24 @@ fn pause_for_unlock_returns_unlock_result_and_records_event() {
         preview: Some("write outside declared scope".into()),
     }];
 
+    let relay: Option<crate::turn::nerve::NerveWriter> = None;
+    let persist = crate::turn::persist::Persistence::from_relay(
+        &relay,
+        &repos,
+        std::path::Path::new("/tmp/gait-test"),
+        "test-session-1",
+        std::path::Path::new("/tmp/codebase"),
+    );
     let result = pause_for_unlock(UnlockPauseCtx {
         emitter: &emitter,
         items: items.clone(),
-        repos: &repos,
+        persist: &persist,
         gait_dir: std::path::Path::new("/tmp/gait-test"),
         session_id: "test-session-1",
         codebase_path: std::path::Path::new("/tmp/codebase"),
         system_prompt: "system-prompt",
         hooks: &[],
         step_count: 1,
-        skip_commit: false,
     })
     .expect("pause_for_unlock must succeed");
 

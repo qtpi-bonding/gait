@@ -25,7 +25,6 @@
 use std::path::Path;
 
 use crate::git::checkpoint::CheckpointRepo;
-use crate::git::trace::TraceRepo;
 use crate::git::Repos;
 use crate::turn::nerve::NerveWriter;
 
@@ -189,6 +188,13 @@ impl<'a> Persistence<'a> {
     ///
     /// Mirrors the guard at the former `src/turn/mod.rs:1212`.
     pub(crate) fn preview_allowed(&self) -> bool {
+        !matches!(self, Persistence::Sealed)
+    }
+
+    /// General-purpose "is the brain the sole writer" check, for guards that
+    /// don't fit the poll/preview naming (e.g. the one-time `init_session`
+    /// write, the max-steps final-drain gate).
+    pub(crate) fn is_unsealed(&self) -> bool {
         !matches!(self, Persistence::Sealed)
     }
 }
