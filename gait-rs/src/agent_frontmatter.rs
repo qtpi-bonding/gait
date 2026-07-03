@@ -69,11 +69,6 @@ pub fn append_agent_allow(path: PathBuf, pattern: &str) -> anyhow::Result<()> {
     append_to_list(path, "allow", pattern)
 }
 
-/// Append a pattern to the deny list in an agent file's YAML frontmatter.
-pub fn append_agent_deny(path: PathBuf, pattern: &str) -> anyhow::Result<()> {
-    append_to_list(path, "deny", pattern)
-}
-
 /// Which kind of named markdown context file to resolve.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarkdownKind {
@@ -266,21 +261,6 @@ mod tests {
         append_agent_allow(dir.path().join("agent.md"), "shell:git *").unwrap();
         let allow = read_agent_allow(dir.path().join("agent.md")).unwrap();
         assert!(allow.contains(&"shell:git *".to_string()));
-        let raw = std::fs::read_to_string(dir.path().join("agent.md")).unwrap();
-        assert!(raw.contains("# prompt"));
-    }
-
-    #[test]
-    fn appends_to_agent_deny() {
-        let dir = TempDir::new().unwrap();
-        std::fs::write(
-            dir.path().join("agent.md"),
-            "---\nallow:\n  - read\n---\n# prompt\n",
-        )
-        .unwrap();
-        append_agent_deny(dir.path().join("agent.md"), "shell:rm *").unwrap();
-        let deny = read_agent_deny(dir.path().join("agent.md")).unwrap();
-        assert!(deny.contains(&"shell:rm *".to_string()));
         let raw = std::fs::read_to_string(dir.path().join("agent.md")).unwrap();
         assert!(raw.contains("# prompt"));
     }

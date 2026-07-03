@@ -10,9 +10,14 @@
 //! materialize any Global/Agent grant. It performs matching via the shared
 //! `matching::is_request_approved` predicate, but its job is to write, not to
 //! classify — classification lives in `permissions::gate`.
+//! Deny persistence is intentionally unsupported today and is tracked in
+//! `spec-09-deny-persistence.md` (see `architecture-mapping/`). The
+//! `PermissionChoice::Deny` arm in `save_choice` is a no-op: persisting a
+//! user's deny choice via `save_choice` is unbuilt. Note this does **not**
+//! affect the deny floor at evaluation time — the gate still honors the
+//! in-memory and config-loaded `deny` list as a hard floor
+//! (`permissions/gate.rs`). Only *persisting* a deny pattern across restarts
 //!
-//! Deny persistence is intentionally unsupported today (the `PermissionChoice::Deny`
-//! arm is a no-op here) and is tracked in `spec-09-deny-persistence.md`.
 
 use std::path::Path;
 

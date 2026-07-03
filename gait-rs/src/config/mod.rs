@@ -529,10 +529,6 @@ pub fn append_allow_pattern(gait_dir: &Path, pattern: &str) -> anyhow::Result<()
     append_list_field("allow", pattern, &gait_dir.join("gait.jsonc"))
 }
 
-pub fn append_deny_pattern(gait_dir: &Path, pattern: &str) -> anyhow::Result<()> {
-    append_list_field("deny", pattern, &gait_dir.join("gait.jsonc"))
-}
-
 /// Append a value to a list nested at `obj["sandbox"][field]`, creating the
 /// sandbox block and/or array if absent. Strips JSONC comments (consistent
 /// with pre-existing behavior of `append_list_field`).
