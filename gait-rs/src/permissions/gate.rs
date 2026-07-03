@@ -50,6 +50,16 @@ pub fn classify(
     });
 
     // Tier 1: deny list — hard floor, checked before allow, applies even in auto mode.
+    let is_denied = match &perm {
+        ToolPermission::Passthrough => false,
+        ToolPermission::RequiresApproval(requests) => requests
+            .iter()
+            .any(|req| is_request_denied(&tc.tool_name, req, deny)),
+    };
+    if is_denied {
+        return GateDecision::Deny;
+    }
+
     // Tier 2: allow list (auto-mode skips the check).
     let is_allowed = auto
         || match &perm {
