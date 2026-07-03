@@ -33,6 +33,58 @@ fn append_assistant(text: &str) -> Signal {
     }
 }
 
+/// Build one `Signal::Append` carrying a ToolCall event.
+fn append_tool_call(call_id: &str, name: &str) -> Signal {
+    let body = events::tool_call(
+        call_id.to_string(),
+        name.to_string(),
+        &serde_json::json!({}),
+    );
+    let evt = envelope::mint(body, None, 0, 0);
+    Signal {
+        corr_id: 0,
+        body: Some(signal::Body::Append(Append { event: Some(evt) })),
+    }
+}
+
+/// End-to-end orphan-synthesis: a ToolCall with no matching ToolResult,
+/// followed by Terminated, must land a synthesized ToolResult in the log
+/// before the turn commits — driven through the real spine relay loop
+/// (`run_one`), not the isolated unit test in `src/turn/spine.rs`.
+#[tokio::test]
+async fn orphan_tool_call_gets_synthesized_result_before_commit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _ = run_one(
+        tmp.path(),
+        "p3",
+        &[
+            append_tool_call("call-orphan-1", "read"),
+            terminated_ok("done"),
+        ],
+    )
+    .await;
+
+    let log = std::fs::read_to_string(tmp.path().join("sessions/p3/log.jsonl"))
+        .expect("log.jsonl must exist after a completed turn");
+
+    let call_at = log
+        .find("call-orphan-1")
+        .expect("ToolCall for call-orphan-1 must appear in log");
+    // The synthesized ToolResult reuses the same call_id, so pin ordering by
+    // finding a second occurrence after the ToolCall.
+    let result_at = log[call_at + "call-orphan-1".len()..].find("call-orphan-1");
+    assert!(
+        result_at.is_some(),
+        "a synthesized ToolResult for call-orphan-1 must appear after its ToolCall: {log}"
+    );
+    // The synthesized result body carries a "toolResult" payload discriminant
+    // (pbjson camelCase), distinguishing it from the original "toolCall".
+    assert!(
+        log.contains("toolResult"),
+        "log must contain a synthesized toolResult payload: {log}"
+    );
+}
+
 #[tokio::test]
 async fn appends_persist_in_order_with_session_start_first() {
     // Bare tempdir — no git init. The mock Repos fakes the worktree /
