@@ -356,7 +356,17 @@ pub async fn run_brain(
                 match handle.await {
                     Ok(Ok(result)) => {
                         sink.result(&result);
-                        driver.after_turn(&mut sink, &result).await;
+                        // Failed turns skip the success epilogue (after_turn /
+                        // Scheduler/Harness policy) — the previous Fail/MaxSteps
+                        // paths returned Err and hit the Ok(Err) arm, which never
+                        // ran after_turn. Preserve that invariant.
+                        let is_failed = matches!(result, crate::turn::TurnResult::Failed { .. });
+                        if let crate::turn::TurnResult::Failed { message, .. } = &result {
+                            sink.diagnostic(Diag::Error, &format!("error: {message}"));
+                        }
+                        if !is_failed {
+                            driver.after_turn(&mut sink, &result).await;
+                        }
                         let failed = sink.inner.failed;
                         let json = sink.result_json.take().unwrap_or_else(|| "{}".to_string());
                         crate::diagnostic::set_phase(crate::diagnostic::Phase::TurnEnd);

@@ -1,5 +1,5 @@
 # schema_exhausted
-# result: Err
+# result: Failed
 # events: 9
 ---
 000: SessionStart

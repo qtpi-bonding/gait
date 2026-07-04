@@ -122,18 +122,24 @@ fn extract_kind(body: event::Body) -> Option<payload::Kind> {
 
 pub fn run_result_proto(r: &crate::turn::TurnResult) -> RunResult {
     use crate::turn::TurnResult;
-    let (result, ended) = match r {
+    // Returns `(Option<oneof>, ended)` — failures legitimately carry no oneof,
+    // so the field is `None` for `TurnResult::Failed`. `ended` is always set
+    // (the wire field is the discriminant; `result` may be None).
+    let (result, ended): (
+        Option<crate::proto::gait::log::v1::run_result::Result>,
+        &str,
+    ) = match r {
         TurnResult::Done {
             message,
             result,
             changes,
             implicit,
         } => (
-            run_result::Result::Done(StructuredDoneOutput {
+            Some(run_result::Result::Done(StructuredDoneOutput {
                 message: message.clone(),
                 result: events::to_value_opt(result),
                 changes: changes.clone(),
-            }),
+            })),
             if *implicit {
                 "implicit_done"
             } else {
@@ -141,43 +147,40 @@ pub fn run_result_proto(r: &crate::turn::TurnResult) -> RunResult {
             },
         ),
         TurnResult::Clarify { items } => (
-            match extract_kind(events::clarify(items.as_slice())) {
+            Some(match extract_kind(events::clarify(items.as_slice())) {
                 Some(payload::Kind::Clarify(c)) => run_result::Result::Clarify(c),
                 _ => run_result::Result::Clarify(Default::default()),
-            },
+            }),
             "clarify",
         ),
         TurnResult::Inform { items } => (
-            match extract_kind(events::inform(items.as_slice())) {
+            Some(match extract_kind(events::inform(items.as_slice())) {
                 Some(payload::Kind::Inform(i)) => run_result::Result::Inform(i),
                 _ => run_result::Result::Inform(Default::default()),
-            },
+            }),
             "inform",
         ),
         TurnResult::Permissions => (
-            run_result::Result::Permissions(Default::default()),
+            Some(run_result::Result::Permissions(Default::default())),
             "permissions",
         ),
         TurnResult::Unlock { items } => (
-            run_result::Result::Unlock(Unlock {
+            Some(run_result::Result::Unlock(Unlock {
                 items: items.clone(),
-            }),
+            })),
             "unlock",
         ),
         TurnResult::Cancelled => (
-            run_result::Result::Cancelled(Default::default()),
+            Some(run_result::Result::Cancelled(Default::default())),
             "cancelled",
         ),
-        TurnResult::Failed { ended, .. } => (
-            // No oneof result for a failure; `ended` carries the reason.
-            // Task 3 keeps the variant surface minimal; Task 4 wires the
-            // full failure-side path.
-            run_result::Result::Cancelled(Default::default()),
-            ended.as_str(),
-        ),
+        TurnResult::Failed { ended, .. } => {
+            // Failure carries no oneof — `ended` is the only reason signal.
+            (None, ended.as_str())
+        }
     };
     RunResult {
-        result: Some(result),
+        result,
         ended: ended.to_string(),
     }
 }
@@ -362,6 +365,18 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn run_result_failed_carries_ended_and_no_oneof() {
+        use crate::turn::TurnResult;
+        let r = TurnResult::Failed {
+            ended: "max_steps".into(),
+            message: "reached max steps (100) without turn_complete".into(),
+        };
+        let p = run_result_proto(&r);
+        assert_eq!(p.ended, "max_steps");
+        assert!(p.result.is_none(), "failure carries no oneof result");
+    }
+
     #[test]
     fn run_result_sets_ended_for_done_split() {
         use crate::turn::TurnResult;

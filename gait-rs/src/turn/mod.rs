@@ -119,7 +119,6 @@ pub enum TurnResult {
     /// ("max_steps" | "error"); `message` is the human-readable detail.
     /// The turn still counts as failed (exit 1) — this makes the *reason*
     /// legible. (Wired by Task 4; constructor lives in finalize.rs.)
-    #[allow(dead_code)]
     Failed {
         ended: String,
         message: String,

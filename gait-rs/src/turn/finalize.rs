@@ -191,8 +191,13 @@ pub(crate) async fn finalize(
         }
 
         StepOutcome::Fail(err) => {
-            // No event, no commit, no post_turn — preserved verbatim.
-            Err(err)
+            // No event, no commit, no post_turn — preserved.
+            // Now a typed outcome instead of a bare Err: the turn still counts
+            // as failed (exit 1), but `ended` carries the reason on stdout.
+            Ok(TurnResult::Failed {
+                ended: "error".into(),
+                message: err.to_string(),
+            })
         }
 
         StepOutcome::MaxSteps { max_iter } => {
@@ -222,7 +227,10 @@ pub(crate) async fn finalize(
                     crate::session::completion::spawn_wake(env.gait_dir, env.session_id);
                 }
             }
-            anyhow::bail!("reached max steps ({}) without turn_complete", max_iter)
+            Ok(TurnResult::Failed {
+                ended: "max_steps".into(),
+                message: format!("reached max steps ({max_iter}) without turn_complete"),
+            })
         }
     }
 }
@@ -682,7 +690,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finalize_fail_returns_err_with_no_epilogue() {
+    async fn finalize_fail_returns_typed_failed() {
         let fx = fixture();
         let env = env_from(&fx);
         let persist = unsealed(&fx);
@@ -693,21 +701,25 @@ mod tests {
             vec![],
         ));
 
-        let err = finalize(
+        let result = finalize(
             &env,
             &mut state,
             &persist,
             StepOutcome::Fail(anyhow::anyhow!("stream error: boom")),
         )
         .await
-        .unwrap_err();
-        assert!(err.to_string().contains("boom"));
+        .expect("Fail now returns Ok(Failed), not Err");
+        assert!(
+            matches!(&result, TurnResult::Failed { ended, message }
+                if ended == "error" && message.contains("boom")),
+            "expected Ok(Failed{{error, message contains boom}}), got: {result:?}"
+        );
         assert!(fx.spy_hook.outcomes().is_empty());
         assert!(fx.emitter.take_buffer().is_empty());
     }
 
     #[tokio::test]
-    async fn finalize_max_steps_runs_drain_then_bails() {
+    async fn finalize_max_steps_returns_typed_failed() {
         let fx = fixture();
         let env = env_from(&fx);
         let persist = unsealed(&fx);
@@ -718,15 +730,19 @@ mod tests {
             vec![],
         ));
 
-        let err = finalize(
+        let result = finalize(
             &env,
             &mut state,
             &persist,
             StepOutcome::MaxSteps { max_iter: 100 },
         )
         .await
-        .unwrap_err();
-        assert!(err.to_string().contains("max steps (100)"));
+        .expect("MaxSteps now returns Ok(Failed), not Err");
+        assert!(
+            matches!(&result, TurnResult::Failed { ended, message }
+                if ended == "max_steps" && message.contains("max steps (100)")),
+            "expected Ok(Failed{{max_steps, max steps (100)}}), got: {result:?}"
+        );
         assert!(fx.spy_hook.outcomes().is_empty());
         // No pending daemon/agent completions in this fixture (empty ingestor,
         // no daemons.jsonl) — the drain body is a no-op, so no commit either.
