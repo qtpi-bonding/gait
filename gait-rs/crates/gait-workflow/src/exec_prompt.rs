@@ -403,6 +403,13 @@ fn map_turn_result(turn_result: TurnResult, session_id: &str) -> NodeOutput {
             routed_to: None,
             session_id: session_id.to_string(),
         },
+        TurnResult::Failed { message, .. } => NodeOutput {
+            text: message,
+            exit_code: Some(1),
+            json: None,
+            routed_to: None,
+            session_id: session_id.to_string(),
+        },
     }
 }
 

@@ -473,7 +473,11 @@ pub(crate) async fn run_tools(
                     for t in post_tool_text.drain(..) {
                         env.emitter.publish_delta(t);
                     }
-                    return Ok(StepOutcome::Done { message, result });
+                    return Ok(StepOutcome::Done {
+                        message,
+                        result,
+                        implicit: false,
+                    });
                 }
                 ExecutionSignal::Clarify => {
                     let items: Vec<pb::ClarifyItem> = tc

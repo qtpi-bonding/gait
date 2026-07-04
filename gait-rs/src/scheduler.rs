@@ -53,6 +53,7 @@ fn summarize(result: &TurnResult) -> (String, String) {
             "cancelled".to_string(),
             "turn cancelled by user".to_string(),
         ),
+        TurnResult::Failed { ended, message } => (ended.clone(), message.clone()),
     }
 }
 
@@ -86,6 +87,7 @@ mod tests {
             message: "ok".into(),
             result: None,
             changes: None,
+            implicit: false,
         };
         let ended = TurnEnded {
             session_id: "s1",
@@ -102,6 +104,7 @@ mod tests {
             message: "built the parser".into(),
             result: None,
             changes: None,
+            implicit: false,
         };
         let ended = TurnEnded {
             session_id: "child",
@@ -142,6 +145,7 @@ mod tests {
             message: "ok".into(),
             result: None,
             changes: None,
+            implicit: false,
         };
         let ended = TurnEnded {
             session_id: "child",
@@ -158,6 +162,7 @@ mod tests {
             message: "peer done".into(),
             result: None,
             changes: None,
+            implicit: false,
         };
         let ended = TurnEnded {
             session_id: "peer",

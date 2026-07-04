@@ -122,32 +122,63 @@ fn extract_kind(body: event::Body) -> Option<payload::Kind> {
 
 pub fn run_result_proto(r: &crate::turn::TurnResult) -> RunResult {
     use crate::turn::TurnResult;
-    let result = match r {
+    let (result, ended) = match r {
         TurnResult::Done {
             message,
             result,
             changes,
-        } => run_result::Result::Done(StructuredDoneOutput {
-            message: message.clone(),
-            result: events::to_value_opt(result),
-            changes: changes.clone(),
-        }),
-        TurnResult::Clarify { items } => match extract_kind(events::clarify(items.as_slice())) {
-            Some(payload::Kind::Clarify(c)) => run_result::Result::Clarify(c),
-            _ => run_result::Result::Clarify(Default::default()),
-        },
-        TurnResult::Inform { items } => match extract_kind(events::inform(items.as_slice())) {
-            Some(payload::Kind::Inform(i)) => run_result::Result::Inform(i),
-            _ => run_result::Result::Inform(Default::default()),
-        },
-        TurnResult::Permissions => run_result::Result::Permissions(Default::default()),
-        TurnResult::Unlock { items } => run_result::Result::Unlock(Unlock {
-            items: items.clone(),
-        }),
-        TurnResult::Cancelled => run_result::Result::Cancelled(Default::default()),
+            implicit,
+        } => (
+            run_result::Result::Done(StructuredDoneOutput {
+                message: message.clone(),
+                result: events::to_value_opt(result),
+                changes: changes.clone(),
+            }),
+            if *implicit {
+                "implicit_done"
+            } else {
+                "structured_done"
+            },
+        ),
+        TurnResult::Clarify { items } => (
+            match extract_kind(events::clarify(items.as_slice())) {
+                Some(payload::Kind::Clarify(c)) => run_result::Result::Clarify(c),
+                _ => run_result::Result::Clarify(Default::default()),
+            },
+            "clarify",
+        ),
+        TurnResult::Inform { items } => (
+            match extract_kind(events::inform(items.as_slice())) {
+                Some(payload::Kind::Inform(i)) => run_result::Result::Inform(i),
+                _ => run_result::Result::Inform(Default::default()),
+            },
+            "inform",
+        ),
+        TurnResult::Permissions => (
+            run_result::Result::Permissions(Default::default()),
+            "permissions",
+        ),
+        TurnResult::Unlock { items } => (
+            run_result::Result::Unlock(Unlock {
+                items: items.clone(),
+            }),
+            "unlock",
+        ),
+        TurnResult::Cancelled => (
+            run_result::Result::Cancelled(Default::default()),
+            "cancelled",
+        ),
+        TurnResult::Failed { ended, .. } => (
+            // No oneof result for a failure; `ended` carries the reason.
+            // Task 3 keeps the variant surface minimal; Task 4 wires the
+            // full failure-side path.
+            run_result::Result::Cancelled(Default::default()),
+            ended.as_str(),
+        ),
     };
     RunResult {
         result: Some(result),
+        ended: ended.to_string(),
     }
 }
 
@@ -332,6 +363,30 @@ mod tests {
         }
     }
     #[test]
+    fn run_result_sets_ended_for_done_split() {
+        use crate::turn::TurnResult;
+        let implicit = TurnResult::Done {
+            message: "".into(),
+            result: None,
+            changes: None,
+            implicit: true,
+        };
+        let structured = TurnResult::Done {
+            message: "ok".into(),
+            result: None,
+            changes: None,
+            implicit: false,
+        };
+        assert_eq!(run_result_proto(&implicit).ended, "implicit_done");
+        assert_eq!(run_result_proto(&structured).ended, "structured_done");
+        assert_eq!(
+            run_result_proto(&TurnResult::Permissions).ended,
+            "permissions"
+        );
+        assert_eq!(run_result_proto(&TurnResult::Cancelled).ended, "cancelled");
+    }
+
+    #[test]
     fn run_result_permissions_maps() {
         let v: serde_json::Value = serde_json::from_str(
             &serde_json::to_string(&run_result_proto(&crate::turn::TurnResult::Permissions))
@@ -351,6 +406,7 @@ mod tests {
                 modified: vec![],
                 deleted: vec![],
             }),
+            implicit: false,
         };
         let v: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&run_result_proto(&r)).unwrap()).unwrap();

@@ -68,6 +68,7 @@ fn play_golden(sink: &mut dyn TurnSink) {
         message: "done".into(),
         result: Some(serde_json::json!({"ok": true})),
         changes: None,
+        implicit: false,
     });
     sink.end_turn();
 }

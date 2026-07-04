@@ -71,6 +71,9 @@ pub(crate) enum StepOutcome {
     Done {
         message: String,
         result: Option<serde_json::Value>,
+        /// `true` = implicit completion (model emitted no tool calls);
+        /// `false` = explicit `structured_done`/`output()`.
+        implicit: bool,
     },
     Pause(PauseKind),
     Cancelled,
@@ -99,7 +102,11 @@ pub(crate) async fn finalize(
             unreachable!("finalize is never called with StepOutcome::Continue")
         }
 
-        StepOutcome::Done { message, result } => {
+        StepOutcome::Done {
+            message,
+            result,
+            implicit,
+        } => {
             // M1: checkpoint → diff → changes → emit turn_complete → commit → post_turn.
             let events_now = env.ingestor.events()?;
             let turn_n = count_turn_complete(&events_now) as u32 + 1;
@@ -139,6 +146,7 @@ pub(crate) async fn finalize(
                 message,
                 result,
                 changes,
+                implicit,
             })
         }
 
@@ -481,6 +489,7 @@ mod tests {
             StepOutcome::Done {
                 message: "all done".into(),
                 result: None,
+                implicit: true,
             },
         )
         .await

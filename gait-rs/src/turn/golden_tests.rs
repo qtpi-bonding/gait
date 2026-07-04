@@ -416,6 +416,7 @@ impl Fixture {
                 crate::turn::TurnResult::Inform { .. } => "Inform".into(),
                 crate::turn::TurnResult::Unlock { .. } => "Unlock".into(),
                 crate::turn::TurnResult::Cancelled => "Cancelled".into(),
+                crate::turn::TurnResult::Failed { .. } => "Failed".into(),
             },
             Err(_) => "Err".into(),
         }

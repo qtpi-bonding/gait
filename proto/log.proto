@@ -310,6 +310,7 @@ message RunResult {
     CancellationSignal cancelled = 5;
     Unlock      unlock      = 6;
   }
+  string ended = 7;  // terminal-reason discriminant; set on every terminal path
 }
 
 

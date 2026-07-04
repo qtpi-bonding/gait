@@ -100,6 +100,9 @@ pub enum TurnResult {
         message: String,
         result: Option<serde_json::Value>,
         changes: Option<crate::proto::gait::log::v1::Changes>,
+        /// `true` = implicit completion (model emitted no tool calls);
+        /// `false` = explicit `structured_done`/`output()`.
+        implicit: bool,
     },
     Permissions,
     Clarify {
@@ -112,6 +115,15 @@ pub enum TurnResult {
         items: Vec<pb::UnlockItem>,
     },
     Cancelled,
+    /// A turn that ended in failure. `ended` is the typed reason
+    /// ("max_steps" | "error"); `message` is the human-readable detail.
+    /// The turn still counts as failed (exit 1) — this makes the *reason*
+    /// legible. (Wired by Task 4; constructor lives in finalize.rs.)
+    #[allow(dead_code)]
+    Failed {
+        ended: String,
+        message: String,
+    },
 }
 
 /// Git state at the start of a turn — captured once by the spine (BrainInit)
@@ -585,6 +597,7 @@ pub async fn run_turn(
             break 'turn finalize::StepOutcome::Done {
                 message,
                 result: None,
+                implicit: true,
             };
         }
 

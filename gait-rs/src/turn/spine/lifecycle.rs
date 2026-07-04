@@ -297,6 +297,9 @@ pub(crate) async fn teardown(
             crate::turn::TurnResult::Unlock { .. } => {
                 format!("session({}): unlock", session_id)
             }
+            crate::turn::TurnResult::Failed { .. } => {
+                format!("session({}): failed", session_id)
+            }
         };
 
         // Checkpoint the codebase (shadow repo in gait-dir). Best-effort — a

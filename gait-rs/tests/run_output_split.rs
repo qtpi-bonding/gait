@@ -41,6 +41,7 @@ fn stdout_is_only_the_result_stream_goes_to_stderr() {
             modified: vec!["a.rs".into()],
             deleted: vec![],
         }),
+        implicit: false,
     });
 
     let _ = sink; // release the &mut borrows on out/err

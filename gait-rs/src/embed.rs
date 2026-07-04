@@ -227,6 +227,7 @@ pub async fn run_loop(
                     message: String::new(),
                     result: None,
                     changes: None,
+                    implicit: true,
                 };
                 driver.after_turn(sink, &dummy).await;
             }
