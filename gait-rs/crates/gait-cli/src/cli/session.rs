@@ -420,7 +420,6 @@ pub fn cmd_deny(args: DenyArgs) {
             std::process::exit(1);
         }
     };
-
     let items = match state {
         SessionState::AwaitingPermission { items } => items,
         _ => {
@@ -477,10 +476,30 @@ pub struct UnlockArgs {
     pub json: bool,
 }
 
+/// Route a list of `UnlockItem`s through `SandboxGrant`. Replaces the two
+/// previously-duplicated `match item.dimension` blocks in the `Global` and
+/// `Agent` arms of `cmd_unlock` — both now share these warning semantics.
+fn persist_grant_items(
+    items: &[gait_core::proto::gait::log::v1::UnlockItem],
+    target_dir: &std::path::Path,
+) {
+    use gait_core::sandbox_grant::SandboxGrant;
+    for item in items {
+        match SandboxGrant::from_dimension(&item.dimension) {
+            Some(g) => {
+                if let Err(e) = g.apply(target_dir, &item.resource) {
+                    eprintln!("[gait] warning: could not persist grant to config: {e}");
+                }
+            }
+            None => eprintln!(
+                "[gait] warning: unknown dimension {:?}, skipping config write",
+                item.dimension
+            ),
+        }
+    }
+}
+
 pub fn cmd_unlock(args: UnlockArgs) {
-    use gait_core::config::{
-        append_sandbox_network_host, append_sandbox_readable, append_sandbox_writable,
-    };
     use gait_core::proto::gait::log::v1 as pb;
     use gait_core::session::log::{session_state, write_unlock_reply, SessionState};
 
@@ -523,23 +542,7 @@ pub fn cmd_unlock(args: UnlockArgs) {
 
     // For global grants, persist to config first
     if matches!(scope, pb::Scope::Global) {
-        for item in &items {
-            let result = match item.dimension.as_str() {
-                "write" => append_sandbox_writable(&args.gait_dir, &item.resource),
-                "read" => append_sandbox_readable(&args.gait_dir, &item.resource),
-                "network" => append_sandbox_network_host(&args.gait_dir, &item.resource),
-                other => {
-                    eprintln!(
-                        "[gait] warning: unknown dimension {:?}, skipping config write",
-                        other
-                    );
-                    continue;
-                }
-            };
-            if let Err(e) = result {
-                eprintln!("[gait] warning: could not persist grant to config: {e}");
-            }
-        }
+        persist_grant_items(&items, &args.gait_dir);
     } else if matches!(scope, pb::Scope::Agent) {
         // Agent-scoped: write to agent gait_dir sandbox block
         if let Some(agent_name) = &args.agent {
@@ -547,17 +550,7 @@ pub fn cmd_unlock(args: UnlockArgs) {
             let agent_path =
                 resolve_markdown_context_path(&args.gait_dir, MarkdownKind::Agent, agent_name);
             if let Some(parent) = agent_path.parent() {
-                for item in &items {
-                    let result = match item.dimension.as_str() {
-                        "write" => append_sandbox_writable(parent, &item.resource),
-                        "read" => append_sandbox_readable(parent, &item.resource),
-                        "network" => append_sandbox_network_host(parent, &item.resource),
-                        _ => continue,
-                    };
-                    if let Err(e) = result {
-                        eprintln!("[gait] warning: could not persist agent grant: {e}");
-                    }
-                }
+                persist_grant_items(&items, parent);
             }
         } else {
             eprintln!(

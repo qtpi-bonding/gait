@@ -8,7 +8,7 @@ pub mod tools;
 pub mod turn;
 pub use gait_provider::{anthropic, factory, openai, provider, providers, strict, transport};
 pub use gait_sandbox::{process, sandbox};
-pub use gait_types::{config, diagnostic, types};
+pub use gait_types::{config, diagnostic, sandbox_grant, types};
 pub mod daemon_exit;
 pub mod embed;
 pub mod launch;
