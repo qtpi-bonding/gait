@@ -144,15 +144,195 @@ pub fn cmd_discard(args: DiscardArgs) {
     }
 }
 
-// TEMP shim — replaced in Task 4.
 #[derive(Clone, Copy)]
 enum Verb {
     Persist,
     Discard,
 }
-fn run_bulk(_v: Verb, _gait_dir: &std::path::Path, _yes: bool, _json: bool) {
-    eprintln!("[gait] error: --all not yet implemented");
-    std::process::exit(1);
+
+impl Verb {
+    fn label(&self) -> &'static str {
+        match self {
+            Verb::Persist => "persist",
+            Verb::Discard => "discard",
+        }
+    }
+    fn past(&self) -> &'static str {
+        match self {
+            Verb::Persist => "persisted",
+            Verb::Discard => "discarded",
+        }
+    }
+    fn act(&self, gait_dir: &std::path::Path, id: &str) -> anyhow::Result<()> {
+        let repos = gait_core::git::Repos::production();
+        match self {
+            Verb::Persist => {
+                repos.traces.finish_session(gait_dir, id)?;
+                if let Err(e) = repos.checkpoints.remove(gait_dir, id) {
+                    eprintln!("warning: failed to remove checkpoint db for {}: {}", id, e);
+                }
+                Ok(())
+            }
+            Verb::Discard => repos.traces.discard_session(gait_dir, id),
+        }
+    }
+}
+
+/// Walk `sessions/*`; classify each dir as eligible (idle + not running) or
+/// skipped-with-reason. Dirs whose log.jsonl won't parse are silently omitted
+/// (non-session dirs), matching `cmd_ps`. Results are sorted by id.
+fn classify_bulk_targets(
+    gait_dir: &std::path::Path,
+) -> anyhow::Result<(Vec<String>, Vec<(String, String)>)> {
+    use gait_core::session::log::{session_state, SessionState};
+
+    let sessions_dir = gait_dir.join("sessions");
+    let mut eligible: Vec<String> = Vec::new();
+    let mut skipped: Vec<(String, String)> = Vec::new();
+
+    let entries = match std::fs::read_dir(&sessions_dir) {
+        Ok(e) => e,
+        Err(_) => return Ok((eligible, skipped)), // no sessions dir => nothing
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(id) = path.file_name().and_then(|n| n.to_str()).map(String::from) else {
+            continue;
+        };
+        // A dir with no log.jsonl is not a started session. `read_events` treats a
+        // MISSING file as empty => `session_state` returns Idle, which would wrongly
+        // mark such a dir eligible — so skip it explicitly here. (A malformed log
+        // still falls through to the `Err(_) => continue` arm below.)
+        if !path.join("log.jsonl").exists() {
+            continue;
+        }
+        let reason: Option<String> = match session_state(&path.join("log.jsonl")) {
+            Ok(SessionState::Idle) => {
+                if gait_core::turn::SessionLock::is_running(&path) {
+                    Some("running".to_string())
+                } else {
+                    None
+                }
+            }
+            Ok(SessionState::AwaitingPermission { .. }) => Some("awaiting-permission".to_string()),
+            Ok(SessionState::AwaitingClarify { .. }) => Some("awaiting-clarify".to_string()),
+            Ok(SessionState::AwaitingInform { .. }) => Some("awaiting-inform".to_string()),
+            Ok(SessionState::AwaitingUnlock { .. }) => Some("awaiting-unlock".to_string()),
+            Err(_) => continue, // unparseable => not a session dir
+        };
+        match reason {
+            None => eligible.push(id),
+            Some(r) => skipped.push((id, r)),
+        }
+    }
+    eligible.sort();
+    skipped.sort();
+    Ok((eligible, skipped))
+}
+
+fn print_bulk_json(
+    eligible: &[String],
+    skipped: &[(String, String)],
+    acted: &[String],
+    failed: &[(String, String)],
+) {
+    let v = serde_json::json!({
+        "eligible": eligible,
+        "skipped": skipped.iter()
+            .map(|(id, s)| serde_json::json!({"session_id": id, "state": s}))
+            .collect::<Vec<_>>(),
+        "acted": acted,
+        "failed": failed.iter()
+            .map(|(id, e)| serde_json::json!({"session_id": id, "error": e}))
+            .collect::<Vec<_>>(),
+    });
+    println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+}
+
+/// Bulk persist/discard over every idle, not-running session.
+fn run_bulk(verb: Verb, gait_dir: &std::path::Path, yes: bool, json: bool) {
+    let (eligible, skipped) = match classify_bulk_targets(gait_dir) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[gait] error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if !json {
+        println!("eligible ({}):", eligible.len());
+        for id in &eligible {
+            println!("  {}\tidle", id);
+        }
+        if !skipped.is_empty() {
+            println!("skipped ({}):", skipped.len());
+            for (id, reason) in &skipped {
+                println!("  {}\t{}", id, reason);
+            }
+        }
+    }
+
+    if eligible.is_empty() {
+        if json {
+            print_bulk_json(&eligible, &skipped, &[], &[]);
+        } else {
+            println!("nothing to {}.", verb.label());
+        }
+        return;
+    }
+
+    match confirm_action(
+        &format!("{} {} session(s)?", verb.label(), eligible.len()),
+        yes,
+    ) {
+        Confirmed::Yes => {}
+        Confirmed::No => {
+            eprintln!("[gait] aborted");
+            return;
+        }
+        Confirmed::RequiresYes => {
+            eprintln!(
+                "[gait] error: refusing to {} --all non-interactively without --yes",
+                verb.label()
+            );
+            std::process::exit(1);
+        }
+    }
+
+    let mut acted: Vec<String> = Vec::new();
+    let mut failed: Vec<(String, String)> = Vec::new();
+    for id in &eligible {
+        let session_dir = gait_dir.join("sessions").join(id);
+        // Re-check the lock at action time; a run may have started since classify.
+        let _lock = match gait_core::turn::SessionLock::acquire(&session_dir) {
+            Ok(l) => l,
+            Err(_) => {
+                failed.push((id.clone(), "started running".to_string()));
+                continue;
+            }
+        };
+        match verb.act(gait_dir, id) {
+            Ok(()) => acted.push(id.clone()),
+            Err(e) => failed.push((id.clone(), e.to_string())),
+        }
+    }
+
+    if json {
+        print_bulk_json(&eligible, &skipped, &acted, &failed);
+    } else {
+        print!("{} {}, skipped {}", verb.past(), acted.len(), skipped.len());
+        if !failed.is_empty() {
+            print!(", failed {}", failed.len());
+        }
+        println!();
+        for (id, e) in &failed {
+            eprintln!("  failed {}: {}", id, e);
+        }
+    }
 }
 
 pub fn cmd_stop(_args: StopArgs) {
@@ -802,5 +982,47 @@ mod bulk_tests {
         assert!(err.to_string().contains("--yes"));
         // Session must be untouched.
         assert!(ws.path().join("sessions/scli002").exists());
+    }
+
+    #[test]
+    fn classify_puts_idle_unlocked_in_eligible() {
+        let ws = ws_with_session("selig01");
+        // create_session_worktree wrote no log.jsonl; write an empty one => Idle.
+        std::fs::write(ws.path().join("sessions/selig01/log.jsonl"), "").unwrap();
+        let (eligible, skipped) = classify_bulk_targets(ws.path()).unwrap();
+        assert_eq!(eligible, vec!["selig01".to_string()]);
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn classify_skips_running_session() {
+        let ws = ws_with_session("srun01");
+        std::fs::write(ws.path().join("sessions/srun01/log.jsonl"), "").unwrap();
+        // Our own live PID in the lock => running.
+        std::fs::write(
+            ws.path().join("sessions/srun01/lock"),
+            std::process::id().to_string(),
+        )
+        .unwrap();
+        let (eligible, skipped) = classify_bulk_targets(ws.path()).unwrap();
+        assert!(eligible.is_empty());
+        assert_eq!(skipped, vec![("srun01".to_string(), "running".to_string())]);
+    }
+
+    #[test]
+    fn classify_omits_dir_without_log() {
+        let ws = ws_with_session("snolog");
+        // No log.jsonl written => the explicit "missing log" guard in classify skips
+        // it => omitted from both lists. (Missing file does NOT make session_state err.)
+        let (eligible, skipped) = classify_bulk_targets(ws.path()).unwrap();
+        assert!(!eligible.contains(&"snolog".to_string()));
+        assert!(skipped.iter().all(|(id, _)| id != "snolog"));
+    }
+
+    #[test]
+    fn classify_missing_sessions_dir_is_empty() {
+        let ws = TempDir::new().unwrap(); // no sessions/ at all
+        let (eligible, skipped) = classify_bulk_targets(ws.path()).unwrap();
+        assert!(eligible.is_empty() && skipped.is_empty());
     }
 }
