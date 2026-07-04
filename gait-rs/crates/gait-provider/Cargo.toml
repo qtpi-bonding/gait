@@ -19,3 +19,6 @@ thiserror         = "1"
 async-trait       = "0.1"
 async-stream      = "0.3"
 rand              = "0.8"
+
+[dev-dependencies]
+tokio             = { version = "1", features = ["test-util"] }

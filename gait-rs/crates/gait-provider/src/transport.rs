@@ -56,13 +56,19 @@ pub(crate) fn backoff_delay(cfg: &TransportConfig, attempt: u32) -> Duration {
     cap.mul_f64(frac)
 }
 
-/// Wrap the raw SSE event stream with three nested deadlines: TTFB on the first
-/// event, idle between subsequent events, and absolute as an overall ceiling.
+/// Wrap the raw SSE event stream with two nested deadlines: idle between
+/// successive events, and absolute as an overall ceiling. The first-event TTFB
+/// deadline is NOT this guard's concern — by the time a stream reaches here its
+/// first event has already been consumed by `connect_and_first_event`, which owns
+/// the retryable "connect → first event" unit and shares its budget with the
+/// connect phase. That helper also performs the `set_phase(Streaming)` transition
+/// that used to live on this guard's `first` branch.
 /// Every SSE event from the server — content, thinking, role frames, keepalives,
 /// `[DONE]` — counts as transport liveness and resets the idle timer. We measure
 /// events, not parsed chunks, so a model that emits thinking tokens the parser swallows
 /// is correctly seen as alive. Emits the matching `ProviderError::Timeout { phase }` on
-/// overrun and stops the stream (terminal — the spec is retry-pre-first-byte-only).
+/// overrun and stops the stream (terminal — once any event has arrived, a timeout here
+/// is never retried; a partial completion must never be re-requested).
 pub(crate) fn guard_idle_sse<E>(
     inner: impl Stream<Item = Result<eventsource_stream::Event, eventsource_stream::EventStreamError<E>>>
         + Send
@@ -75,10 +81,7 @@ where
     async_stream::stream! {
     tokio::pin!(inner);
     let deadline = tokio::time::Instant::now() + cfg.absolute_cap;
-    let mut first = true;
     loop {
-    let gap = if first { cfg.ttfb_timeout } else { cfg.idle_timeout };
-    let phase = if first { TimeoutPhase::Ttfb } else { TimeoutPhase::Idle };
     let next = inner.next();
     tokio::select! {
     biased;
@@ -86,19 +89,15 @@ where
     yield Err(ProviderError::Timeout { phase: TimeoutPhase::Absolute });
     return;
     }
-    r = tokio::time::timeout(gap, next) => match r {
-    Err(_)         => { yield Err(ProviderError::Timeout { phase }); return; }
+    r = tokio::time::timeout(cfg.idle_timeout, next) => match r {
+    Err(_)         => { yield Err(ProviderError::Timeout { phase: TimeoutPhase::Idle }); return; }
     Ok(None)       => { gait_types::diagnostic::set_phase(gait_types::diagnostic::Phase::StreamEnd); return; }
     Ok(Some(item)) => match item {
-    Ok(event) => {
-    if first { gait_types::diagnostic::set_phase(gait_types::diagnostic::Phase::Streaming); }
-    yield Ok(event);
-    }
+    Ok(event) => { yield Ok(event); }
     Err(e) => { yield Err(ProviderError::Sse(e.to_string())); return; }
     },
     },
     }
-    first = false;
     }
     }
 }
@@ -260,5 +259,60 @@ mod tests {
         assert!(b1 <= cfg.max_backoff);
         // initial * 2^1 = 1s, jittered down — a hard upper bound.
         assert!(b1 <= Duration::from_millis(1000));
+    }
+
+    // Task 1: guard_idle_sse now owns only idle + absolute. A stream whose first
+    // event arrives immediately, then stalls past idle_timeout, must yield
+    // Timeout{Idle} — never Timeout{Ttfb} (that responsibility moved to
+    // connect_and_first_event, Task 2).
+    #[tokio::test(start_paused = true)]
+    async fn guard_idle_only_covers_idle_and_absolute() {
+        use futures_util::stream;
+
+        let event = eventsource_stream::Event {
+            event: String::new(),
+            data: "first".to_string(),
+            id: String::new(),
+            retry: None,
+        };
+        // One event immediately, then the stream never yields again (simulates a
+        // healthy connection that stalls between events).
+        type BoxedEvents = std::pin::Pin<
+            Box<
+                dyn Stream<
+                        Item = Result<
+                            eventsource_stream::Event,
+                            eventsource_stream::EventStreamError<std::io::Error>,
+                        >,
+                    > + Send,
+            >,
+        >;
+        let inner: BoxedEvents =
+            Box::pin(stream::once(async { Ok(event) }).chain(stream::pending()));
+
+        let cfg = TransportConfig {
+            idle_timeout: Duration::from_millis(50),
+            absolute_cap: Duration::from_secs(60),
+            ..TransportConfig::default()
+        };
+
+        let guarded = guard_idle_sse(inner, cfg);
+        tokio::pin!(guarded);
+
+        // First item passes through untouched.
+        match guarded.next().await {
+            Some(Ok(e)) => assert_eq!(e.data, "first"),
+            other => panic!("expected first event, got {other:?}"),
+        }
+
+        // Advance past idle_timeout with nothing else arriving.
+        tokio::time::advance(cfg.idle_timeout + Duration::from_millis(10)).await;
+
+        match guarded.next().await {
+            Some(Err(ProviderError::Timeout {
+                phase: TimeoutPhase::Idle,
+            })) => {}
+            other => panic!("expected Timeout{{Idle}}, got {other:?}"),
+        }
     }
 }
