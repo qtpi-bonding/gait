@@ -23,6 +23,12 @@ gait-rs/docs/plans/
 gait-rs/docs/specs/
 gait-rs/docs/superpowers/
 
+# Per-item plan/spec scratch under architecture-mapping/ — same "internal
+# planning, not public tree" rule as docs/plans + docs/specs above. (Already-
+# tracked specs like spec-02-spine-decomposition.md are unaffected.)
+architecture-mapping/plan-*.md
+architecture-mapping/spec-*.md
+
 # Subagent-driven-development scratch ledgers (briefs/reports/progress).
 .superpowers/
 
