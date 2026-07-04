@@ -190,7 +190,9 @@ pub fn wildcard_match(pattern: &str, value: &str) -> bool {
 pub fn near_miss_suggestion(display: &str, allow: &[String]) -> Option<String> {
     for entry in allow {
         // entry is "tool:pat" (or bare "tool"); we only diagnose the pat side.
-        let Some((tool, pat)) = entry.split_once(':') else { continue };
+        let Some((tool, pat)) = entry.split_once(':') else {
+            continue;
+        };
         // A pattern that already matches is not a near-miss.
         if wildcard_match(pat, display) {
             continue;
@@ -199,8 +201,7 @@ pub fn near_miss_suggestion(display: &str, allow: &[String]) -> Option<String> {
         // command-prefix of display, the space-star form would have matched.
         if let Some(prefix) = pat.strip_suffix('*') {
             if !prefix.ends_with(' ') && !prefix.is_empty() {
-                let is_prefix = display == prefix
-                    || display.starts_with(&format!("{prefix} "));
+                let is_prefix = display == prefix || display.starts_with(&format!("{prefix} "));
                 if is_prefix {
                     return Some(format!("{tool}:{prefix} *"));
                 }
@@ -547,8 +548,14 @@ mod tests {
             "a trailing '*' with no space is a near-miss for the space-star form"
         );
         // A genuinely unrelated allow entry is not a near-miss.
-        assert_eq!(near_miss_suggestion("rm -rf /", &["shell:ls*".to_string()]), None);
+        assert_eq!(
+            near_miss_suggestion("rm -rf /", &["shell:ls*".to_string()]),
+            None
+        );
         // The correct form is not a near-miss (it already matches).
-        assert_eq!(near_miss_suggestion("rm -rf /", &["shell:rm *".to_string()]), None);
+        assert_eq!(
+            near_miss_suggestion("rm -rf /", &["shell:rm *".to_string()]),
+            None
+        );
     }
 }
