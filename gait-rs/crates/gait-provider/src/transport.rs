@@ -182,6 +182,106 @@ where
     }
 }
 
+/// The single retryable unit that owns "connect → await first event", sharing
+/// one budget across both phases. `connect` performs the whole per-attempt
+/// request (POST + `.bytes_stream().eventsource()`), so a retry re-issues the
+/// entire request rather than resuming a partial one — replayability holds
+/// because nothing has been consumed from the server yet.
+///
+/// Retryable: a bounded `connect()` overrun, a bounded first-event overrun
+/// (both zero-byte), and any connect-phase error `connect()` itself returns
+/// (e.g. `Connect`, `Http 429/5xx`) via the same `is_retryable` classification
+/// `retry_phase1` uses — unchanged policy. Terminal: a real SSE error or the
+/// stream ending before any event — once bytes have been produced by the
+/// server, this helper does not re-request them.
+///
+/// Each attempt resets the phase clock (`set_phase(LlmRequest)`) so a bounded
+/// retry sequence cannot falsely trip the stall watchdog.
+pub(crate) async fn connect_and_first_event<C, Fut, S, E>(
+    cfg: TransportConfig,
+    cancel: &CancellationToken,
+    connect: C,
+) -> Result<
+    impl Stream<Item = Result<eventsource_stream::Event, ProviderError>> + Send + 'static,
+    ProviderError,
+>
+where
+    C: Fn() -> Fut,
+    Fut: Future<Output = Result<S, ProviderError>>,
+    S: Stream<Item = Result<eventsource_stream::Event, eventsource_stream::EventStreamError<E>>>
+        + Send
+        + 'static,
+    E: std::fmt::Display + Send + 'static,
+{
+    let mut attempt: u32 = 0;
+    // Loop breaks with (Option<first_event>, owned_rest_stream). `None` = the
+    // stream ended before any event (terminal, not a timeout) — the single
+    // generator below drains an immediately-empty guarded stream in that case.
+    let (first, rest): (Option<eventsource_stream::Event>, std::pin::Pin<Box<S>>) = loop {
+        // Reset the phase clock each attempt (watchdog discipline, parity with retry_phase1).
+        gait_types::diagnostic::set_phase(gait_types::diagnostic::Phase::LlmRequest);
+        let attempt_res: Result<
+            (Option<eventsource_stream::Event>, std::pin::Pin<Box<S>>),
+            ProviderError,
+        > = async {
+            // 1) Connect (POST + header check) — BOUNDED, else a header-stall hangs forever.
+            let stream = match tokio::time::timeout(cfg.ttfb_timeout, connect()).await {
+                Err(_) => {
+                    return Err(ProviderError::Timeout {
+                        phase: TimeoutPhase::Ttfb,
+                    })
+                }
+                Ok(r) => r?, // connect-phase errors (Connect / Http 429·5xx) surface here
+            };
+            let mut stream = Box::pin(stream); // owned, Unpin, Send + 'static
+                                               // 2) First event — BOUNDED. Zero bytes on overrun → retryable Ttfb.
+            match tokio::time::timeout(cfg.ttfb_timeout, stream.next()).await {
+                Err(_) => Err(ProviderError::Timeout {
+                    phase: TimeoutPhase::Ttfb,
+                }),
+                Ok(None) => Ok((None, stream)), // ended before any event → terminal
+                Ok(Some(Err(e))) => Err(ProviderError::Sse(e.to_string())), // real error → terminal
+                Ok(Some(Ok(first))) => Ok((Some(first), stream)), // got it → hand off
+            }
+        }
+        .await;
+
+        match attempt_res {
+            Ok(pair) => break pair,
+            Err(e) => {
+                let attempts_used = attempt + 1;
+                if !e.is_retryable() || attempts_used >= cfg.max_attempts as u32 {
+                    return Err(e);
+                }
+                eprintln!(
+                    "[gait] transport_retry attempt={attempts_used}/{} reason={e:?}",
+                    cfg.max_attempts
+                );
+                let delay = e
+                    .retry_after()
+                    .unwrap_or_else(|| backoff_delay(&cfg, attempt));
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return Err(ProviderError::Other("cancelled".into())),
+                    _ = tokio::time::sleep(delay) => {}
+                }
+                attempt += 1;
+            }
+        }
+    };
+
+    // Single generator (one opaque type). Guard only idle+absolute on the remainder.
+    let guarded = guard_idle_sse(rest, cfg);
+    Ok(async_stream::stream! {
+        if let Some(first) = first {
+            gait_types::diagnostic::set_phase(gait_types::diagnostic::Phase::Streaming);
+            yield Ok(first);
+        }
+        tokio::pin!(guarded);
+        while let Some(item) = guarded.next().await { yield item; }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,6 +413,163 @@ mod tests {
                 phase: TimeoutPhase::Idle,
             })) => {}
             other => panic!("expected Timeout{{Idle}}, got {other:?}"),
+        }
+    }
+
+    // Concrete stream type shared by connect_and_first_event tests: connect()
+    // closures must return the same `S` on every call, so we box+pin the raw
+    // eventsource stream once here.
+    type BoxedSse = std::pin::Pin<
+        Box<
+            dyn Stream<
+                    Item = Result<
+                        eventsource_stream::Event,
+                        eventsource_stream::EventStreamError<std::io::Error>,
+                    >,
+                > + Send,
+        >,
+    >;
+
+    fn sse_event(data: &str) -> eventsource_stream::Event {
+        eventsource_stream::Event {
+            event: String::new(),
+            data: data.to_string(),
+            id: String::new(),
+            retry: None,
+        }
+    }
+
+    // AC1: a zero-byte first-event TTFB timeout on attempt 1 is retried, and a
+    // fresh connect on attempt 2 that succeeds hands off the captured first
+    // event plus the remainder of the stream.
+    #[tokio::test(start_paused = true)]
+    async fn first_event_timeout_zero_bytes_retries_then_succeeds() {
+        use futures_util::stream;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let cfg = TransportConfig {
+            ttfb_timeout: Duration::from_millis(20),
+            max_attempts: 3,
+            initial_backoff: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(1),
+            ..TransportConfig::default()
+        };
+        let cancel = CancellationToken::new();
+
+        let calls2 = calls.clone();
+        let connect = move || {
+            let calls = calls2.clone();
+            async move {
+                let n = calls.fetch_add(1, Ordering::SeqCst);
+                let s: BoxedSse = if n == 0 {
+                    // Attempt 1: connects fine, but never yields a first event.
+                    Box::pin(stream::pending())
+                } else {
+                    // Attempt 2: yields two events immediately.
+                    Box::pin(stream::iter(vec![
+                        Ok(sse_event("first")),
+                        Ok(sse_event("second")),
+                    ]))
+                };
+                Ok::<_, ProviderError>(s)
+            }
+        };
+
+        let result_stream = connect_and_first_event(cfg, &cancel, connect).await;
+        let stream = result_stream.expect("expected Ok stream after retry");
+        tokio::pin!(stream);
+
+        match stream.next().await {
+            Some(Ok(e)) => assert_eq!(e.data, "first"),
+            other => panic!("expected first event, got {other:?}"),
+        }
+        match stream.next().await {
+            Some(Ok(e)) => assert_eq!(e.data, "second"),
+            other => panic!("expected second event, got {other:?}"),
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "connect should be called twice"
+        );
+    }
+
+    // AC3: a real SSE error as the first item is terminal — no retry, no
+    // reconnection, connect is called exactly once.
+    #[tokio::test(start_paused = true)]
+    async fn first_event_real_error_is_terminal_no_retry() {
+        use futures_util::stream;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let cfg = TransportConfig {
+            ttfb_timeout: Duration::from_millis(20),
+            max_attempts: 3,
+            initial_backoff: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(1),
+            ..TransportConfig::default()
+        };
+        let cancel = CancellationToken::new();
+
+        let calls2 = calls.clone();
+        let connect = move || {
+            let calls = calls2.clone();
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                let bad_utf8 = String::from_utf8(vec![0xff]).unwrap_err();
+                let s: BoxedSse = Box::pin(stream::iter(vec![Err(
+                    eventsource_stream::EventStreamError::Utf8(bad_utf8),
+                )]));
+                Ok::<_, ProviderError>(s)
+            }
+        };
+
+        let result = connect_and_first_event(cfg, &cancel, connect).await;
+        match result {
+            Err(ProviderError::Sse(_)) => {}
+            other => panic!(
+                "expected terminal Sse error, got a stream result: {}",
+                other.is_ok()
+            ),
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "connect should be called exactly once"
+        );
+    }
+
+    // CRITICAL-1 regression, ported from retry_phase1_bounds_a_hanging_request:
+    // a connect() whose future never resolves (a header stall before any bytes)
+    // must be bounded by ttfb_timeout and exhausted via retries, not hang forever.
+    #[tokio::test(start_paused = true)]
+    async fn connect_hang_is_bounded_not_infinite() {
+        let cfg = TransportConfig {
+            ttfb_timeout: Duration::from_millis(20),
+            max_attempts: 2,
+            initial_backoff: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(1),
+            ..TransportConfig::default()
+        };
+        let cancel = CancellationToken::new();
+
+        let connect = || async {
+            // Never resolves — simulates a stalled header wait.
+            std::future::pending::<Result<BoxedSse, ProviderError>>().await
+        };
+
+        let result = connect_and_first_event(cfg, &cancel, connect).await;
+        match result {
+            Err(ProviderError::Timeout {
+                phase: TimeoutPhase::Ttfb,
+            }) => {}
+            other => panic!(
+                "expected retryable TTFB timeout, got a stream result: {}",
+                other.is_ok()
+            ),
         }
     }
 }
