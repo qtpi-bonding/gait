@@ -13,7 +13,10 @@ source of truth.
 
 | Crate | Role |
 |---|---|
-| **gait-core** | the library: `turn/` (incl. the sealed runtimes `brain.rs`/`spine.rs`/`hand.rs`), `tools/`, `provider/`, `session/`, `sandbox.rs`, `embed.rs` |
+| **gait-types** | foundation leaf: `types` (`Tool`/`Hook` traits, `ToolError`, the `Rec` recorder-surface trait), `config/`, `diagnostic.rs`. Depends only on `gait-proto`. |
+| **gait-provider** | generation/wire leaf: `provider.rs`, `transport.rs`, `factory.rs`, `providers.rs`, `anthropic/`, `openai/`, `strict.rs`. Depends only on `gait-types`. |
+| **gait-sandbox** | containment leaf: `sandbox.rs` (incl. `brain_scope()`), `process/` (incl. `proc_start_time()`). Depends only on `gait-types`. |
+| **gait-core** | the library: `turn/` (incl. the sealed runtimes `brain.rs`/`spine.rs`/`hand.rs`), `tools/`, `session/`, `embed.rs`. Depends on `gait-types`/`gait-provider`/`gait-sandbox`, re-exporting their modules at the crate root (`crate::types`, `crate::config`, `crate::diagnostic`, `crate::provider`, `crate::sandbox`, `crate::process`, …) so internal `crate::…` paths are unchanged. |
 | **gait-proto** | proto codegen + the log codec: `gait.{log,state,sandbox,workflow}.v1` and `envelope`/`wire`/`hash` (mint, append, `content_hash`) |
 | **gait-cli** | command implementations — `cmd_run`, `cmd_spine`, `cmd_brain`, `cmd_run_tool` — thin arg-parsers over the `gait-core` runtimes |
 | **gait-repl** | the REPL/TUI (`chat.rs`, `repl_loop.rs`) — another embedder over `run_loop` |
@@ -23,6 +26,16 @@ source of truth.
 The three sealed runtimes live in **gait-core** so both the CLI and the REPL can reach
 them; `gait-cli`'s `cmd_brain` / `cmd_run_tool` just parse args and call `run_brain` /
 `run_hand`.
+
+`gait-types`/`gait-provider`/`gait-sandbox` form a compiler-enforced DAG under
+`gait-core`: `gait-types` is the sole foundation leaf (depends only on `gait-proto`),
+and `gait-provider`/`gait-sandbox` each depend on `gait-types` alone — neither can
+reach `turn`/`session`/`spine`/`permissions`, which is enforced by each building
+standalone (`cargo build -p gait-types`, `-p gait-provider`, `-p gait-sandbox`).
+This broke a live `types ↔ tools` cycle (`ToolError` moved down into `gait-types`;
+a `Rec` trait replaced the concrete `Recorder` in the `Tool`/`Hook` trait surface)
+and inverted two upward edges (`brain_scope` out of `turn` into `sandbox`;
+`proc_start_time` out of `session::daemons` into `process`).
 
 ---
 
