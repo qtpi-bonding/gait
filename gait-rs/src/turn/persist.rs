@@ -267,6 +267,9 @@ mod tests {
         fn merge_branch_ff(&self, _gait_dir: &Path, _tgt: &str, _src: &str) -> anyhow::Result<()> {
             Ok(())
         }
+        fn discard_session(&self, _gait_dir: &Path, _session_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
     }
 
     fn spy_repos(trace: &Arc<SpyTrace>) -> Repos {
@@ -363,6 +366,9 @@ mod tests {
             fn merge_branch_ff(&self, _: &Path, _: &str, _: &str) -> anyhow::Result<()> {
                 Ok(())
             }
+            fn discard_session(&self, _gait_dir: &Path, _session_id: &str) -> anyhow::Result<()> {
+                Ok(())
+            }
         }
 
         let trace: Arc<ErrorTrace> = Arc::new(ErrorTrace);
@@ -422,6 +428,9 @@ mod tests {
                 Ok(())
             }
             fn merge_branch_ff(&self, _: &Path, _: &str, _: &str) -> anyhow::Result<()> {
+                Ok(())
+            }
+            fn discard_session(&self, _gait_dir: &Path, _session_id: &str) -> anyhow::Result<()> {
                 Ok(())
             }
         }

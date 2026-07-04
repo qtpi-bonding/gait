@@ -13,6 +13,7 @@ pub trait TraceRepo: Send + Sync {
     ) -> anyhow::Result<()>;
     fn list_active_sessions(&self, gait_dir: &Path) -> anyhow::Result<Vec<String>>;
     fn finish_session(&self, gait_dir: &Path, session_id: &str) -> anyhow::Result<()>;
+    fn discard_session(&self, gait_dir: &Path, session_id: &str) -> anyhow::Result<()>;
     fn create_branch_worktree(
         &self,
         gait_dir: &Path,
@@ -225,6 +226,32 @@ impl TraceRepo for GitTraceRepo {
         Ok(())
     }
 
+    fn discard_session(&self, gait_dir: &Path, session_id: &str) -> anyhow::Result<()> {
+        let repo = Repository::open(gait_dir)?;
+        let branch_name = format!("session/{}", session_id);
+
+        // Prune worktree registration (while the dir still exists), then remove
+        // the dir. This wipes worktree + log.jsonl + codebase.git + lock in one
+        // shot, since all of them live under session_dir.
+        let session_dir = gait_dir.join("sessions").join(session_id);
+        if session_dir.exists() {
+            if let Ok(wt) = repo.find_worktree(session_dir.to_str().unwrap_or("")) {
+                let mut o = git2::WorktreePruneOptions::new();
+                o.valid(true);
+                let _ = wt.prune(Some(&mut o));
+            }
+            let _ = std::fs::remove_dir_all(&session_dir);
+        }
+
+        // Delete the branch WITHOUT merging. git2's Branch::delete removes the
+        // ref regardless of merge status (unlike `git branch -d`) — exactly the
+        // no-merge semantics discard wants. No-op if the branch is already gone.
+        if let Ok(mut b) = repo.find_branch(&branch_name, BranchType::Local) {
+            b.delete()?;
+        }
+        Ok(())
+    }
+
     fn create_branch_worktree(
         &self,
         gait_dir: &Path,
@@ -433,6 +460,44 @@ mod tests {
         let git_ws = GitTraceRepo;
         // Should not error for a non-existent session
         git_ws.finish_session(ws.path(), "snonexistent").unwrap();
+    }
+
+    #[test]
+    fn discard_session_removes_dir_and_branch_without_merge() {
+        let ws = TempDir::new().unwrap();
+        init_repo(ws.path());
+        let git_ws = GitTraceRepo;
+        git_ws
+            .create_session_worktree(ws.path(), "sdisc01")
+            .unwrap();
+        std::fs::write(ws.path().join("sessions/sdisc01/result.txt"), "junk").unwrap();
+        git_ws
+            .commit_session(ws.path(), "sdisc01", "session(sdisc01): turn 1")
+            .unwrap();
+
+        // Record main HEAD before discard.
+        let repo = git2::Repository::open(ws.path()).unwrap();
+        let head_before = repo.head().unwrap().peel_to_commit().unwrap().id();
+
+        git_ws.discard_session(ws.path(), "sdisc01").unwrap();
+
+        // Dir gone.
+        assert!(!ws.path().join("sessions/sdisc01").exists());
+        // Branch gone (not in active list, and find_branch fails).
+        assert!(repo
+            .find_branch("session/sdisc01", git2::BranchType::Local)
+            .is_err());
+        // main HEAD unchanged — no merge commit created.
+        let head_after = repo.head().unwrap().peel_to_commit().unwrap().id();
+        assert_eq!(head_before, head_after, "discard must not touch main");
+    }
+
+    #[test]
+    fn discard_session_noop_when_not_found() {
+        let ws = TempDir::new().unwrap();
+        init_repo(ws.path());
+        let git_ws = GitTraceRepo;
+        git_ws.discard_session(ws.path(), "snope").unwrap(); // must not error
     }
 
     #[test]

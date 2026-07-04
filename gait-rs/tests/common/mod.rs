@@ -57,6 +57,9 @@ impl TraceRepo for RecTrace {
     fn merge_branch_ff(&self, _: &Path, _: &str, _: &str) -> anyhow::Result<()> {
         unimplemented!("not used in turn path")
     }
+    fn discard_session(&self, _gait_dir: &Path, _session_id: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 struct RecCheckpoint(Calls);

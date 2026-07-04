@@ -135,6 +135,9 @@ mod tests {
         fn merge_branch_ff(&self, _: &Path, _: &str, _: &str) -> anyhow::Result<()> {
             unimplemented!()
         }
+        fn discard_session(&self, _gait_dir: &Path, _session_id: &str) -> anyhow::Result<()> {
+            unimplemented!()
+        }
     }
 
     impl CheckpointRepo for Rec {

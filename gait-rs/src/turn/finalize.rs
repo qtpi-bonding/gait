@@ -338,6 +338,9 @@ mod tests {
         fn merge_branch_ff(&self, _: &Path, _: &str, _: &str) -> anyhow::Result<()> {
             Ok(())
         }
+        fn discard_session(&self, _gait_dir: &Path, _session_id: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
     }
 
     /// Spy `Hook` recording every `post_turn` outcome string.
