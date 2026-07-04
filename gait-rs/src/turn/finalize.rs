@@ -250,10 +250,10 @@ mod tests {
     use crate::git::checkpoint::MockCheckpointRepo;
     use crate::git::trace::TraceRepo;
     use crate::git::Repos;
-    use crate::provider::{ChunkStream, Provider, ProviderError, StreamChunk};
     use crate::session::Ingestor;
     use crate::session::Session;
     use crate::types::Hook;
+    use gait_provider::provider::{ChunkStream, Provider, ProviderError, StreamChunk};
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 

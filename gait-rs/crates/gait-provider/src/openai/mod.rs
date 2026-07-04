@@ -1,6 +1,6 @@
 use crate::provider::{ChunkStream, Provider, ProviderError, StreamChunk};
-use crate::types::{AssistantContent, AssistantPart, Message, MessageContent, Tool, Usage};
 use eventsource_stream::Eventsource;
+use gait_types::types::{AssistantContent, AssistantPart, Message, MessageContent, Tool, Usage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -176,7 +176,7 @@ fn to_chat_messages(system: &str, messages: &[Message]) -> Vec<ChatMessage> {
                     MessageContent::Parts(parts) => parts
                         .iter()
                         .map(|p| match p {
-                            crate::types::ContentPart::Text { text } => text.as_str(),
+                            gait_types::types::ContentPart::Text { text } => text.as_str(),
                         })
                         .collect::<Vec<_>>()
                         .join(""),
@@ -262,7 +262,7 @@ impl Provider for OpenAIProvider {
         system: &str,
         messages: &[Message],
         tools: &[Box<dyn Tool>],
-        params: &crate::config::LlmParamsConfig,
+        params: &gait_types::config::LlmParamsConfig,
         tail_context: Option<&str>,
     ) -> Result<ChunkStream, ProviderError> {
         let http = self.http.clone();
@@ -275,9 +275,9 @@ impl Provider for OpenAIProvider {
             .map(|t| {
                 let base = t.parameters().clone();
                 let (parameters, strict) = if want_strict {
-                    match crate::tools::strict::to_strict_schema(
+                    match crate::strict::to_strict_schema(
                         &base,
-                        crate::tools::strict::StrictDialect::OpenAi,
+                        crate::strict::StrictDialect::OpenAi,
                     ) {
                         Some(s) => (s, Some(true)),
                         None => (base, None),
@@ -289,7 +289,7 @@ impl Provider for OpenAIProvider {
                     r#type: "function".into(),
                     function: ChatToolDef {
                         name: t.name().to_string(),
-                        description: crate::types::render_description(t.as_ref()),
+                        description: gait_types::types::render_description(t.as_ref()),
                         parameters,
                         strict,
                     },
@@ -347,7 +347,7 @@ impl Provider for OpenAIProvider {
             &self.transport,
             &tokio_util::sync::CancellationToken::new(),
             || async {
-                crate::diagnostic::set_phase(crate::diagnostic::Phase::LlmRequest);
+                gait_types::diagnostic::set_phase(gait_types::diagnostic::Phase::LlmRequest);
                 let resp = http
                     .post(&url)
                     .header("Authorization", format!("Bearer {}", api_key))
@@ -520,11 +520,8 @@ mod tests {
             "properties": {"a": {"type": "string"}, "b": {"type": "integer"}},
             "required": ["a"]
         });
-        let strict = crate::tools::strict::to_strict_schema(
-            &base,
-            crate::tools::strict::StrictDialect::OpenAi,
-        )
-        .unwrap();
+        let strict =
+            crate::strict::to_strict_schema(&base, crate::strict::StrictDialect::OpenAi).unwrap();
         let def = ChatToolDef {
             name: "t".into(),
             description: "d".into(),

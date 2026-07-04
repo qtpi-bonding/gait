@@ -1,7 +1,7 @@
 use crate::anthropic::types::{AnthropicEvent, ContentBlock, ContentDelta};
 use crate::provider::{ProviderError, StreamChunk};
-use crate::types::Usage;
 use futures_util::{Stream, StreamExt};
+use gait_types::types::Usage;
 use reqwest::Client;
 use std::collections::HashMap;
 

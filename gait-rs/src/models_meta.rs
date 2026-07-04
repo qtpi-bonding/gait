@@ -101,7 +101,7 @@ mod tests {
         let raw: serde_json::Value = serde_json::from_str(super::SNAPSHOT).unwrap();
         for pid in raw.as_object().unwrap().keys() {
             assert!(
-                crate::providers::lookup(pid).is_some(),
+                gait_provider::providers::lookup(pid).is_some(),
                 "snapshot has provider {pid} absent from PROVIDERS table"
             );
         }

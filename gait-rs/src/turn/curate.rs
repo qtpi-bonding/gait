@@ -17,7 +17,7 @@ pub(super) async fn apply_curate_filter(
     gait_dir: &Path,
     codebase_path: &Path,
     model: &str,
-    provider: Arc<dyn crate::provider::Provider>,
+    provider: Arc<dyn gait_provider::provider::Provider>,
 ) -> serde_json::Value {
     use crate::tools::annotate::AnnotateTool;
 

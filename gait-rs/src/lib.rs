@@ -1,14 +1,13 @@
 pub mod auth;
-pub mod factory;
 pub mod git;
 pub mod harness;
 pub mod models;
 pub mod process;
-pub mod provider;
 pub mod scheduler;
 pub mod session;
 pub mod tools;
 pub mod turn;
+pub use gait_provider::{anthropic, factory, openai, provider, providers, strict, transport};
 pub use gait_types::{config, diagnostic, types};
 
 pub mod daemon_exit;
@@ -18,7 +17,6 @@ pub mod models_meta;
 pub mod port;
 pub mod profile;
 pub mod proto;
-pub mod providers;
 
 // Deferred — external callers in gait-cli/gait-repl; seal after public wrappers added
 pub mod agent_frontmatter;
@@ -36,12 +34,10 @@ pub mod skills;
 mod input;
 
 // anthropic / transport are pub for integration tests (AnthropicProvider, TransportConfig)
-pub mod anthropic;
 pub(crate) mod config_hook;
 pub(crate) mod hashline;
 pub(crate) mod hook_runner;
 pub(crate) mod mcp;
-pub(crate) mod openai;
 #[cfg(test)]
 mod permissions_invariant_tests;
 pub(crate) mod prompt;
@@ -49,7 +45,6 @@ pub mod sandbox;
 #[cfg(test)]
 mod test_utils;
 // (text moved to `input/`; see `pub use` re-export below)
-pub mod transport;
 pub(crate) mod wasm_plugins;
 
 // Types — explicit list replaces pub use types::*
@@ -59,7 +54,7 @@ pub use types::{
     ToolCall, ToolDef, ToolPermission, ToolResult, ToolResultKind, Usage,
 };
 
-pub use factory::load_provider;
+pub use crate::factory::load_provider;
 pub use harness::{HarnessBackend, NativeHarnessBackend, NoopHarnessBackend, NotifyPayload};
 pub use profile::{Profile, ResolvedProfile};
 pub use proto::Recorder;

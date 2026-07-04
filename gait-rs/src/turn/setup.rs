@@ -26,11 +26,11 @@ use crate::proto::events;
 use crate::proto::gait::log::v1 as pb;
 use crate::proto::gait::log::v1::{payload, Event};
 use crate::proto::Recorder;
-use crate::provider::Provider;
 use crate::session::log::{count_turn_complete, init_session, InitSessionOpts};
 use crate::session::retrace::{self, AgentState};
 use crate::session::{Ingestor, Session};
 use crate::types::{Hook, HookContext, LoadableEntry, LoadableKind};
+use gait_provider::provider::Provider;
 
 use super::persist::Persistence;
 use super::state::TurnState;

@@ -88,10 +88,10 @@ where
     }
     r = tokio::time::timeout(gap, next) => match r {
     Err(_)         => { yield Err(ProviderError::Timeout { phase }); return; }
-    Ok(None)       => { crate::diagnostic::set_phase(crate::diagnostic::Phase::StreamEnd); return; }
+    Ok(None)       => { gait_types::diagnostic::set_phase(gait_types::diagnostic::Phase::StreamEnd); return; }
     Ok(Some(item)) => match item {
     Ok(event) => {
-    if first { crate::diagnostic::set_phase(crate::diagnostic::Phase::Streaming); }
+    if first { gait_types::diagnostic::set_phase(gait_types::diagnostic::Phase::Streaming); }
     yield Ok(event);
     }
     Err(e) => { yield Err(ProviderError::Sse(e.to_string())); return; }

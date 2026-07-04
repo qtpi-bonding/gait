@@ -683,7 +683,7 @@ mod tests {
         // override the fields the mapping reads. We pass a real Tool (Output)
         // so the Vec<Box<dyn Tool>> is constructable in for_test.
         let mut profile = ResolvedProfile::for_test(
-            Arc::new(DummyProvider) as Arc<dyn crate::provider::Provider>,
+            Arc::new(DummyProvider) as Arc<dyn gait_provider::provider::Provider>,
             vec![Box::new(StructuredDoneTool::new())],
             vec!["read".into()],
             vec!["shell:rm *".into()],
@@ -953,9 +953,9 @@ mod tests {
     }
 
     // ── Dummy provider for the mapping test (we never call into it) ──────────
-    use crate::provider::{Provider, ProviderError, StreamChunk};
     use crate::types::{Message, Tool};
     use async_trait::async_trait;
+    use gait_provider::provider::{Provider, ProviderError, StreamChunk};
 
     pub struct DummyProvider;
     #[async_trait]

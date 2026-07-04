@@ -31,11 +31,11 @@ use crate::config::{LlmParamsConfig, PreviewPolicy, SandboxConfig};
 use crate::proto::gait::log::v1::{event, payload};
 use crate::proto::wire;
 use crate::proto::Recorder;
-use crate::provider::{ChunkStream, Provider, ProviderError, StreamChunk, TimeoutPhase};
 use crate::test_utils::init_git_repo;
 use crate::tools::ToolCtx;
 use crate::tools::{ReadTool, ShellTool, StructuredDoneTool, WriteTool};
 use crate::types::{Tool, ToolDef};
+use gait_provider::provider::{ChunkStream, Provider, ProviderError, StreamChunk, TimeoutPhase};
 
 use crate::turn::TurnInput;
 

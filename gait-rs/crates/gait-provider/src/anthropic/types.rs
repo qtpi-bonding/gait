@@ -267,9 +267,9 @@ pub struct AnthropicErrorData {
     pub message: String,
 }
 
-// ── Conversion: crate::types::Message → AnthropicMessage ─────────────────────
+// ── Conversion: gait_types::types::Message → AnthropicMessage ─────────────────────
 
-use crate::types::{AssistantContent, AssistantPart, Message, MessageContent};
+use gait_types::types::{AssistantContent, AssistantPart, Message, MessageContent};
 
 pub fn to_anthropic_messages(messages: &[Message]) -> Vec<AnthropicMessage> {
     let collected: Vec<AnthropicMessage> = messages
@@ -283,10 +283,12 @@ pub fn to_anthropic_messages(messages: &[Message]) -> Vec<AnthropicMessage> {
                         parts
                             .iter()
                             .map(|p| match p {
-                                crate::types::ContentPart::Text { text } => AnthropicBlock::Text {
-                                    text: text.clone(),
-                                    cache_control: None,
-                                },
+                                gait_types::types::ContentPart::Text { text } => {
+                                    AnthropicBlock::Text {
+                                        text: text.clone(),
+                                        cache_control: None,
+                                    }
+                                }
                             })
                             .collect(),
                     ),
@@ -515,7 +517,7 @@ mod tests {
 
     #[test]
     fn malformed_tool_use_input_is_coerced_to_object() {
-        use crate::types::{AssistantContent, AssistantPart, ToolCall};
+        use gait_types::types::{AssistantContent, AssistantPart, ToolCall};
         // Simulate a poisoned history: a tool_use whose input was stored as a bare
         // JSON string (the truncated-buffer bug). It must serialize as an object,
         // otherwise the provider 400s on `tool_use.input` and the session dies.
@@ -543,7 +545,7 @@ mod tests {
 
     #[test]
     fn tool_message_converts_to_user_with_tool_result_blocks() {
-        use crate::types::{ToolResult, ToolResultKind};
+        use gait_types::types::{ToolResult, ToolResultKind};
         let messages = vec![Message::ToolResult {
             id: String::new(),
             content: vec![ToolResult {
@@ -630,7 +632,9 @@ mod tests {
 
     #[test]
     fn tool_result_followed_by_user_merges_into_one_message() {
-        use crate::types::{AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind};
+        use gait_types::types::{
+            AssistantContent, AssistantPart, ToolCall, ToolResult, ToolResultKind,
+        };
         // Sequence: Assistant(tool_use) → ToolResult → User("injection")
         // Without same-role merge: ToolResult and User both emit role="user" → 400.
         // With merge: they collapse into one role="user" message with two blocks.
@@ -653,7 +657,7 @@ mod tests {
             },
             Message::User {
                 id: String::new(),
-                content: crate::types::MessageContent::Text(
+                content: gait_types::types::MessageContent::Text(
                     "[daemon:build] done — exit 0 — log: /tmp/build.log".into(),
                 ),
             },

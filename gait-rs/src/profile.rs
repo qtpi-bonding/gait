@@ -29,7 +29,7 @@ pub struct Profile {
 /// which is the single place that wires up the model API, MCP discovery,
 /// built-in tools, and config-defined tools.
 pub struct ResolvedProfile {
-    pub(crate) provider: std::sync::Arc<dyn crate::provider::Provider>,
+    pub(crate) provider: std::sync::Arc<dyn gait_provider::provider::Provider>,
     pub(crate) permissioned: crate::tools::PermissionedTools,
     pub model: String,
     pub instructions: String,
@@ -300,8 +300,8 @@ impl Profile {
         api_key: Option<String>,
     ) -> anyhow::Result<ResolvedProfile> {
         // Provider (no network until .stream()).
-        let provider: std::sync::Arc<dyn crate::provider::Provider> = std::sync::Arc::from(
-            crate::factory::load_provider(&self.model, api_key)
+        let provider: std::sync::Arc<dyn gait_provider::provider::Provider> = std::sync::Arc::from(
+            gait_provider::factory::load_provider(&self.model, api_key)
                 .map_err(|e| anyhow::anyhow!("provider: {e}"))?,
         );
 
@@ -406,7 +406,7 @@ impl ResolvedProfile {
     /// Minimal constructor for tests: caller supplies provider + tools + allow/deny;
     /// everything else is empty/default.
     pub fn for_test(
-        provider: std::sync::Arc<dyn crate::provider::Provider>,
+        provider: std::sync::Arc<dyn gait_provider::provider::Provider>,
         tools: Vec<Box<dyn crate::types::Tool>>,
         allow: Vec<String>,
         deny: Vec<String>,
@@ -415,7 +415,7 @@ impl ResolvedProfile {
     }
 
     pub fn for_test_with_schema(
-        provider: std::sync::Arc<dyn crate::provider::Provider>,
+        provider: std::sync::Arc<dyn gait_provider::provider::Provider>,
         tools: Vec<Box<dyn crate::types::Tool>>,
         allow: Vec<String>,
         deny: Vec<String>,

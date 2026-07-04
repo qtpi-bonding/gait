@@ -1,5 +1,5 @@
-use crate::types::{Message, Tool, Usage};
 use futures_util::Stream;
+use gait_types::types::{Message, Tool, Usage};
 use std::pin::Pin;
 
 // A chunk of streaming output from the LLM
@@ -134,7 +134,7 @@ pub trait Provider: Send + Sync {
         system: &str,
         messages: &[Message],
         tools: &[Box<dyn Tool>],
-        params: &crate::config::LlmParamsConfig,
+        params: &gait_types::config::LlmParamsConfig,
         tail_context: Option<&str>,
     ) -> Result<ChunkStream, ProviderError>;
 

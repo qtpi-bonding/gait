@@ -258,9 +258,9 @@ mod exec_replace_tests {
     // Local minimal provider — never invoked, only the type is required by
     // `apply_output_filter`'s signature. Avoids the privacy of
     // `crate::proto::events::tests::DummyProvider` (non-`pub` mod).
-    use crate::provider::{Provider, ProviderError, StreamChunk};
     use crate::types::Message;
     use async_trait::async_trait;
+    use gait_provider::provider::{Provider, ProviderError, StreamChunk};
 
     struct TestProvider;
     #[async_trait]

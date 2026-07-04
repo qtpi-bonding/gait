@@ -23,8 +23,8 @@
 
 use futures_util::StreamExt;
 
-use crate::provider::StreamChunk;
 use crate::types::{Message, ToolCall};
+use gait_provider::provider::StreamChunk;
 
 use super::state::{TurnEnv, TurnState};
 
@@ -95,7 +95,7 @@ pub(crate) async fn run_step(
         let Some(chunk_result) = chunk_opt else { break };
         let chunk = match chunk_result {
             Ok(c) => c,
-            Err(crate::provider::ProviderError::StreamIncomplete { received_bytes }) => {
+            Err(gait_provider::provider::ProviderError::StreamIncomplete { received_bytes }) => {
                 // Task 6: transport_error observability — v1 uses log::warn!
                 // A structured recorder event can follow once transport errors
                 // are promoted to first-class proto events.
@@ -106,11 +106,11 @@ pub(crate) async fn run_step(
                     "stream incomplete after {received_bytes} bytes"
                 ));
             }
-            Err(crate::provider::ProviderError::Timeout { phase }) => {
+            Err(gait_provider::provider::ProviderError::Timeout { phase }) => {
                 eprintln!("[gait] transport_error kind=timeout phase={phase:?}");
                 return Err(anyhow::anyhow!("stream timeout in phase {phase:?}"));
             }
-            Err(crate::provider::ProviderError::Overloaded) => {
+            Err(gait_provider::provider::ProviderError::Overloaded) => {
                 eprintln!("[gait] transport_error kind=overloaded");
                 return Err(anyhow::anyhow!("provider overloaded"));
             }

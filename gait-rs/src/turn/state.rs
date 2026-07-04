@@ -136,7 +136,7 @@ pub(crate) struct TurnEnv<'a> {
     pub gait_dir: &'a Path,
     pub codebase_path: &'a Path,
     pub session_id: &'a str,
-    pub provider: &'a Arc<dyn crate::provider::Provider>,
+    pub provider: &'a Arc<dyn gait_provider::provider::Provider>,
     pub hooks: &'a [Box<dyn crate::types::Hook>],
     pub sandbox_cfg: &'a crate::config::SandboxConfig,
     pub sandbox_on: bool,
@@ -194,8 +194,8 @@ impl TurnState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::{Provider, ProviderError, StreamChunk};
     use async_trait::async_trait;
+    use gait_provider::provider::{Provider, ProviderError, StreamChunk};
     use std::sync::Arc;
 
     /// Minimal provider that never yields; required by `for_test`.

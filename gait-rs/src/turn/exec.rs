@@ -306,7 +306,7 @@ pub(super) async fn apply_output_filter(
     emitter: &Recorder,
     ctx: &HookContext,
     model: &str,
-    provider: Arc<dyn crate::provider::Provider>,
+    provider: Arc<dyn gait_provider::provider::Provider>,
 ) {
     // Post-tool hooks — ctx.tool_result is set by the caller to the original raw output
     for h in hooks {

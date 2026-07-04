@@ -19,7 +19,6 @@ pub mod prune;
 pub mod read;
 pub mod shell;
 pub mod spawn_agent;
-pub mod strict;
 pub mod structured_done;
 pub mod webfetch;
 pub mod write;

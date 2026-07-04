@@ -8,7 +8,7 @@ use crate::anthropic::types::{
     AnthropicTool, AnthropicToolChoice, CacheControl,
 };
 use crate::provider::{ChunkStream, Provider, ProviderError};
-use crate::types::{Message, Tool};
+use gait_types::types::{Message, Tool};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AnthropicModelGen {
@@ -177,7 +177,7 @@ impl Provider for AnthropicProvider {
         system: &str,
         messages: &[Message],
         tools: &[Box<dyn Tool>],
-        params: &crate::config::LlmParamsConfig,
+        params: &gait_types::config::LlmParamsConfig,
         tail_context: Option<&str>,
     ) -> Result<ChunkStream, ProviderError> {
         let system_field = if system.is_empty() {
@@ -197,9 +197,9 @@ impl Provider for AnthropicProvider {
             .map(|t| {
                 let base = t.parameters().clone();
                 let (schema, strict) = if want_strict {
-                    match crate::tools::strict::to_strict_schema(
+                    match crate::strict::to_strict_schema(
                         &base,
-                        crate::tools::strict::StrictDialect::Anthropic,
+                        crate::strict::StrictDialect::Anthropic,
                     ) {
                         Some(s) => (s, Some(true)),
                         None => (base, None), // un-strictifiable tool falls back individually
@@ -209,7 +209,7 @@ impl Provider for AnthropicProvider {
                 };
                 AnthropicTool {
                     name: t.name().to_string(),
-                    description: crate::types::render_description(t.as_ref()),
+                    description: gait_types::types::render_description(t.as_ref()),
                     input_schema: schema,
                     strict,
                     cache_control: None,
@@ -319,7 +319,7 @@ impl Provider for AnthropicProvider {
             &self.transport,
             &tokio_util::sync::CancellationToken::new(),
             || {
-                crate::diagnostic::set_phase(crate::diagnostic::Phase::LlmRequest);
+                gait_types::diagnostic::set_phase(gait_types::diagnostic::Phase::LlmRequest);
                 self.sse.connect(&body)
             },
         )
@@ -351,7 +351,7 @@ mod cache_prefix_tests {
     //! a move that is irrelevant to Anthropic's content-based prefix match at
     //! read time.)
     use super::*;
-    use crate::types::{Message, MessageContent};
+    use gait_types::types::{Message, MessageContent};
 
     fn history() -> Vec<Message> {
         vec![
@@ -442,7 +442,7 @@ mod cache_prefix_tests {
 #[cfg(test)]
 mod strict_tool_tests {
     use super::*;
-    use crate::tools::strict::{to_strict_schema, StrictDialect};
+    use crate::strict::{to_strict_schema, StrictDialect};
 
     #[test]
     fn strict_tool_gets_strict_flag_and_transformed_schema() {

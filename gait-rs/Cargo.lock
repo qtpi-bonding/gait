@@ -1064,6 +1064,7 @@ dependencies = [
  "fs2",
  "futures-util",
  "gait-proto",
+ "gait-provider",
  "gait-types",
  "gait-workflow",
  "git2",
@@ -1124,6 +1125,25 @@ dependencies = [
  "sha2",
  "tempfile",
  "uuid",
+]
+
+[[package]]
+name = "gait-provider"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "eventsource-stream",
+ "futures-util",
+ "gait-types",
+ "rand 0.8.6",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
