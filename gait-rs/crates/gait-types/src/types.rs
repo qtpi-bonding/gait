@@ -351,7 +351,7 @@ pub enum ToolError {
 }
 
 /// The recorder surface the tool/hook layer is allowed to touch. The concrete
-/// `Recorder` (gait-core::proto::emitter) implements this; the foundation names
+/// recorder (`gait-core::proto::emitter`) implements this; the foundation names
 /// only this trait so `types` never depends on the high-layer emitter.
 pub trait Rec: Send + Sync {
     fn record(&self, body: event::Body) -> anyhow::Result<Event>;

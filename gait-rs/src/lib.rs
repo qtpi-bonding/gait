@@ -1,5 +1,4 @@
 pub mod auth;
-pub mod config;
 pub mod factory;
 pub mod git;
 pub mod harness;
@@ -10,10 +9,9 @@ pub mod scheduler;
 pub mod session;
 pub mod tools;
 pub mod turn;
-pub mod types;
+pub use gait_types::{config, diagnostic, types};
 
 pub mod daemon_exit;
-pub mod diagnostic;
 pub mod embed;
 pub mod launch;
 pub mod models_meta;

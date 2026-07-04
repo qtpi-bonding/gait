@@ -1064,6 +1064,7 @@ dependencies = [
  "fs2",
  "futures-util",
  "gait-proto",
+ "gait-types",
  "gait-workflow",
  "git2",
  "glob",
@@ -1146,6 +1147,21 @@ dependencies = [
  "tokio",
  "tokio-util",
  "unicode-width 0.2.2",
+]
+
+[[package]]
+name = "gait-types"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "gait-proto",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
 ]
 
 [[package]]
