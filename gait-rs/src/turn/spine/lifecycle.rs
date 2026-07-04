@@ -226,6 +226,24 @@ pub(crate) fn emit_terminal_failure(
 ///
 /// Steps 1–4 must complete before 5–6 so the transcript is final before commit.
 /// Returns `brain_failed` (the value relay_brain_turn must return).
+/// When the brain dies (crash / watchdog breach) without ever reaching
+/// `finalize`, `run_result` stays `None` and no result is emitted on stdout.
+/// Coalesce that missing result under `brain_failed` so the spine still
+/// surfaces a typed terminal reason. The discriminator value is `"aborted"` —
+/// distinct from the in-finalize `"error"` / `"max_steps"` reasons emitted by
+/// `run_result_proto`, which the brain emits itself when it owns the turn.
+fn synthesize_aborted_if_missing(
+    run_result: Option<crate::turn::TurnResult>,
+    brain_failed: bool,
+) -> Option<crate::turn::TurnResult> {
+    run_result.or_else(|| {
+        brain_failed.then(|| crate::turn::TurnResult::Failed {
+            ended: "aborted".into(),
+            message: "brain exited without a Terminated signal".into(),
+        })
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn teardown(
     sink: &mut dyn crate::port::output::TurnSink,
@@ -242,6 +260,11 @@ pub(crate) async fn teardown(
     brain_failed: bool,
 ) -> anyhow::Result<bool> {
     sink.end_turn();
+    // Coalesce a missing result under brain death into a typed terminal
+    // outcome (Task 5). Applied once here so both the commit-keyed match
+    // below and the `sink.result` emission see the synthesized value, and
+    // the abort is committed and emitted consistently.
+    let run_result = synthesize_aborted_if_missing(run_result, brain_failed);
 
     // Bound how long an in-flight tool call (or spawn_agent handler) can keep
     // running after the read loop has already decided the
@@ -582,5 +605,43 @@ mod tests {
         );
         let diag = std::fs::read_to_string(sdir.join("diagnostic.jsonl")).unwrap();
         assert!(diag.contains("streaming") && diag.contains("absolute backstop"));
+    }
+
+    // ── aborted synthesis (Task 5) ─────────────────────────────────────────
+    //
+    // When the brain dies without ever reaching finalize, `run_result` is
+    // `None`. The spine must surface a typed terminal reason so the headless
+    // stdout path carries `ended=aborted` instead of nothing.
+    #[test]
+    fn synthesize_aborted_when_brain_failed_and_no_result() {
+        let synth = synthesize_aborted_if_missing(None, true);
+        match synth {
+            Some(crate::turn::TurnResult::Failed { ended, message }) => {
+                assert_eq!(ended, "aborted");
+                assert!(message.contains("Terminated"));
+            }
+            other => panic!("expected Some(Failed{{aborted}}), got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn synthesize_aborted_is_noop_when_brain_succeeded() {
+        // brain_failed=false + None → stays None (do not invent a reason for
+        // a healthy empty case).
+        assert!(synthesize_aborted_if_missing(None, false).is_none());
+    }
+
+    #[test]
+    fn synthesize_aborted_preserves_existing_result() {
+        // If the brain DID reach finalize, that result wins — abort is only
+        // a default, never an override.
+        let r = crate::turn::TurnResult::Done {
+            message: "ok".into(),
+            result: None,
+            changes: None,
+            implicit: true,
+        };
+        let synth = synthesize_aborted_if_missing(Some(r.clone()), true);
+        assert!(matches!(synth, Some(crate::turn::TurnResult::Done { .. })));
     }
 }
