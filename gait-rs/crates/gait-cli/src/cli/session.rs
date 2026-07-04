@@ -178,12 +178,13 @@ impl Verb {
     }
 }
 
+/// `(eligible session ids, skipped (id, reason) pairs)`.
+type BulkTargets = (Vec<String>, Vec<(String, String)>);
+
 /// Walk `sessions/*`; classify each dir as eligible (idle + not running) or
 /// skipped-with-reason. Dirs whose log.jsonl won't parse are silently omitted
 /// (non-session dirs), matching `cmd_ps`. Results are sorted by id.
-fn classify_bulk_targets(
-    gait_dir: &std::path::Path,
-) -> anyhow::Result<(Vec<String>, Vec<(String, String)>)> {
+fn classify_bulk_targets(gait_dir: &std::path::Path) -> anyhow::Result<BulkTargets> {
     use gait_core::session::log::{session_state, SessionState};
 
     let sessions_dir = gait_dir.join("sessions");
