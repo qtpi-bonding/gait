@@ -340,7 +340,7 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl Hook for SpyHook {
-        fn post_turn(&self, ctx: &HookContext, _rec: &crate::Recorder) {
+        fn post_turn(&self, ctx: &HookContext, _rec: &dyn crate::types::Rec) {
             self.outcomes.lock().unwrap().push(ctx.turn_outcome.clone());
         }
     }
@@ -416,7 +416,7 @@ mod tests {
     struct SpyHookHandle(Arc<SpyHook>);
     #[async_trait::async_trait]
     impl Hook for SpyHookHandle {
-        fn post_turn(&self, ctx: &HookContext, rec: &crate::Recorder) {
+        fn post_turn(&self, ctx: &HookContext, rec: &dyn crate::types::Rec) {
             self.0.post_turn(ctx, rec);
         }
     }

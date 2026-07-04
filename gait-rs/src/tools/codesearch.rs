@@ -85,7 +85,7 @@ impl Tool for CodesearchTool {
         crate::types::OutputFilter::Curate
     }
 
-    async fn execute(&self, args: Value, _rec: &crate::Recorder) -> Result<Value, ToolError> {
+    async fn execute(&self, args: Value, _rec: &dyn crate::types::Rec) -> Result<Value, ToolError> {
         let params: CodesearchParams = serde_json::from_value(args)
             .map_err(|e| crate::tools::ToolError::InvalidParams(e.to_string()))?;
         let case_sensitive = params.case_sensitive.unwrap_or(false);

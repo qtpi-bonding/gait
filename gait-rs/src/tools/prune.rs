@@ -125,12 +125,12 @@ impl Tool for PruneTool {
         ToolPermission::Passthrough
     }
 
-    async fn execute(&self, args: Value, rec: &crate::Recorder) -> Result<Value, ToolError> {
+    async fn execute(&self, args: Value, rec: &dyn crate::types::Rec) -> Result<Value, ToolError> {
         let params: PruneParams = serde_json::from_value(args)
             .map_err(|e| ToolError::Execute(format!("prune: invalid args: {e}")))?;
 
         // Read the current log to resolve call_ids and compute the recency boundary.
-        let log_path = &rec.tx_path;
+        let log_path = rec.tx_path();
         let all_events = read_events(log_path)
             .map_err(|e| ToolError::Execute(format!("prune: read log: {e}")))?;
 

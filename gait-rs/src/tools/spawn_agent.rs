@@ -129,7 +129,7 @@ impl Tool for SpawnAgentTool {
         Some(&self.output_schema)
     }
 
-    async fn execute(&self, args: Value, rec: &crate::Recorder) -> Result<Value, ToolError> {
+    async fn execute(&self, args: Value, rec: &dyn crate::types::Rec) -> Result<Value, ToolError> {
         let task = args["task"]
             .as_str()
             .ok_or_else(|| {

@@ -222,7 +222,7 @@ impl Tool for LsTool {
         crate::types::OutputFilter::Parse
     }
 
-    async fn execute(&self, args: Value, _rec: &crate::Recorder) -> Result<Value, ToolError> {
+    async fn execute(&self, args: Value, _rec: &dyn crate::types::Rec) -> Result<Value, ToolError> {
         let params: LsParams = serde_json::from_value(args)
             .map_err(|e| crate::tools::ToolError::InvalidParams(e.to_string()))?;
         let extra_ignore = params.ignore.unwrap_or_default();

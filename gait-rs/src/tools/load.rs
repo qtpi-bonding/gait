@@ -65,7 +65,7 @@ impl Tool for LoadTool {
         ExecutionSignal::LoadContext
     }
 
-    async fn execute(&self, args: Value, _rec: &crate::Recorder) -> Result<Value, ToolError> {
+    async fn execute(&self, args: Value, _rec: &dyn crate::types::Rec) -> Result<Value, ToolError> {
         let name = args
             .get("name")
             .and_then(|v| v.as_str())

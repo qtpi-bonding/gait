@@ -383,7 +383,7 @@ mod synapse_routing_tests {
         async fn execute(
             &self,
             _a: serde_json::Value,
-            rec: &crate::proto::Recorder,
+            rec: &dyn crate::types::Rec,
         ) -> Result<serde_json::Value, crate::tools::ToolError> {
             rec.record(crate::proto::events::cwd("/from-tool")).ok();
             Ok(serde_json::Value::String("ok".into()))

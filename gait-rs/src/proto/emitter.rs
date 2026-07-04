@@ -219,6 +219,21 @@ impl Recorder {
     }
 }
 
+impl crate::types::Rec for Recorder {
+    fn record(&self, body: event::Body) -> anyhow::Result<Event> {
+        self.record(body)
+    }
+    fn publish_delta(&self, content: String) {
+        self.publish_delta(content)
+    }
+    fn spawn_process(&self, argv: Vec<String>, detached: bool) {
+        self.spawn_process(argv, detached)
+    }
+    fn tx_path(&self) -> &std::path::Path {
+        &self.tx_path
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

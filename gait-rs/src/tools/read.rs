@@ -99,7 +99,7 @@ impl Tool for ReadTool {
         crate::types::OutputFilter::Parse
     }
 
-    async fn execute(&self, args: Value, _rec: &crate::Recorder) -> Result<Value, ToolError> {
+    async fn execute(&self, args: Value, _rec: &dyn crate::types::Rec) -> Result<Value, ToolError> {
         let params: ReadParams = serde_json::from_value(args)
             .map_err(|e| crate::tools::ToolError::InvalidParams(e.to_string()))?;
         let offset = params.offset.unwrap_or(0) as usize;

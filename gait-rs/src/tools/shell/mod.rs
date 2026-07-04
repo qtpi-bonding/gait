@@ -101,7 +101,7 @@ impl Tool for ShellTool {
         ToolPermission::RequiresApproval(requests)
     }
 
-    async fn execute(&self, args: Value, rec: &crate::Recorder) -> Result<Value, ToolError> {
+    async fn execute(&self, args: Value, rec: &dyn crate::types::Rec) -> Result<Value, ToolError> {
         // Extract __cwd BEFORE deserializing ShellParams so the reserved key (which
         // ShellParams silently ignores) is available. __cwd is injected by cmd_run_tool
         // from the brain's active-cwd state, replacing the old Ingestor refold.

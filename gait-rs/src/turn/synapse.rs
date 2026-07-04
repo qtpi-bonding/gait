@@ -168,7 +168,7 @@ mod tests {
         async fn execute(
             &self,
             args: serde_json::Value,
-            rec: &crate::proto::Recorder,
+            rec: &dyn crate::types::Rec,
         ) -> Result<serde_json::Value, crate::tools::ToolError> {
             rec.record(crate::proto::events::cwd("/seen")).ok();
             Ok(args)

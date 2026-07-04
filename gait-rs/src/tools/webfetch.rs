@@ -219,7 +219,7 @@ impl Tool for WebfetchTool {
         crate::types::OutputFilter::Curate
     }
 
-    async fn execute(&self, args: Value, _rec: &crate::Recorder) -> Result<Value, ToolError> {
+    async fn execute(&self, args: Value, _rec: &dyn crate::types::Rec) -> Result<Value, ToolError> {
         let params: WebfetchParams = serde_json::from_value(args)
             .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
 

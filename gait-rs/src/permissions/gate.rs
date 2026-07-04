@@ -138,7 +138,7 @@ mod tests {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _rec: &crate::Recorder,
+            _rec: &dyn crate::types::Rec,
         ) -> Result<serde_json::Value, crate::tools::ToolError> {
             Ok(serde_json::Value::Null)
         }

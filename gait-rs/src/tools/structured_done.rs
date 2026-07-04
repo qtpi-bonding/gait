@@ -82,7 +82,7 @@ impl Tool for StructuredDoneTool {
     async fn execute(
         &self,
         _args: Value,
-        _rec: &crate::Recorder,
+        _rec: &dyn crate::types::Rec,
     ) -> Result<Value, crate::tools::ToolError> {
         Ok(Value::String("recorded".into()))
     }

@@ -65,7 +65,7 @@ impl Tool for ClarifyTool {
     async fn execute(
         &self,
         _args: Value,
-        _rec: &crate::Recorder,
+        _rec: &dyn crate::types::Rec,
     ) -> Result<Value, crate::tools::ToolError> {
         // turn.rs intercepts this call before execution and handles the signal.
         // This path only runs in tests or if called outside turn.rs.

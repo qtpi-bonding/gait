@@ -64,7 +64,7 @@ impl Tool for ListAgentsTool {
     async fn execute(
         &self,
         _args: Value,
-        _rec: &crate::Recorder,
+        _rec: &dyn crate::types::Rec,
     ) -> Result<Value, crate::tools::ToolError> {
         // C1 fix: read transcript from the branch's committed git tree, NOT from the filesystem
         // working copy. Worktree dirs may be cleaned up after finish_session; the branch remains.

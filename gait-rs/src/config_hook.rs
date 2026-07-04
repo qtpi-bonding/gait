@@ -49,7 +49,7 @@ impl ConfigHook {
         exit_code: i32,
         output: &str,
         ctx: &HookContext,
-        rec: &crate::Recorder,
+        rec: &dyn crate::types::Rec,
     ) {
         let _ = rec.record(events::hook_run(
             phase,
@@ -63,7 +63,7 @@ impl ConfigHook {
 
 #[async_trait::async_trait]
 impl Hook for ConfigHook {
-    fn pre_turn(&self, ctx: &HookContext, rec: &crate::Recorder) -> Option<String> {
+    fn pre_turn(&self, ctx: &HookContext, rec: &dyn crate::types::Rec) -> Option<String> {
         if !self.matches_event(ctx) {
             return None;
         }
@@ -79,7 +79,7 @@ impl Hook for ConfigHook {
     fn pre_step(
         &self,
         ctx: &HookContext,
-        rec: &crate::Recorder,
+        rec: &dyn crate::types::Rec,
         _messages: &[Message],
     ) -> Option<Vec<crate::types::MessageMutation>> {
         if !self.matches_event(ctx) {
@@ -93,7 +93,7 @@ impl Hook for ConfigHook {
         None
     }
 
-    fn post_step(&self, ctx: &HookContext, rec: &crate::Recorder) {
+    fn post_step(&self, ctx: &HookContext, rec: &dyn crate::types::Rec) {
         if !self.matches_event(ctx) {
             return;
         }
@@ -101,7 +101,7 @@ impl Hook for ConfigHook {
         self.record("post_step", exit, &output, ctx, rec);
     }
 
-    fn pre_tool(&self, ctx: &HookContext, rec: &crate::Recorder) -> HookAction {
+    fn pre_tool(&self, ctx: &HookContext, rec: &dyn crate::types::Rec) -> HookAction {
         if !self.matches_event(ctx) || !self.matches_tool(ctx) {
             return HookAction::Continue;
         }
@@ -114,7 +114,7 @@ impl Hook for ConfigHook {
         }
     }
 
-    async fn post_tool(&self, ctx: &HookContext, rec: &crate::Recorder) -> Option<String> {
+    async fn post_tool(&self, ctx: &HookContext, rec: &dyn crate::types::Rec) -> Option<String> {
         if !self.matches_event(ctx) || !self.matches_tool(ctx) {
             return None;
         }
@@ -133,7 +133,7 @@ impl Hook for ConfigHook {
         }
     }
 
-    fn post_turn(&self, ctx: &HookContext, rec: &crate::Recorder) {
+    fn post_turn(&self, ctx: &HookContext, rec: &dyn crate::types::Rec) {
         if !self.matches_event(ctx) {
             return;
         }

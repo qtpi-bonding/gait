@@ -1,3 +1,4 @@
+use gait_proto::gait::log::v1::{event, Event};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -259,13 +260,13 @@ impl Default for HookContext {
 }
 
 /// Lifecycle hooks for the agent turn loop. All methods receive a `HookContext`
-/// populated with everything the turn loop knows at that point, and a `&Recorder`
+/// populated with everything the turn loop knows at that point, and a `&dyn Rec`
 /// so every hook fire can be logged to the transcript for replay and debugging.
 /// All methods have no-op defaults; implement only the hooks you need.
 #[async_trait::async_trait]
 pub trait Hook: Send + Sync {
     /// Once per outer turn, before the step loop. Return Some to replace the system prompt.
-    fn pre_turn(&self, _ctx: &HookContext, _rec: &crate::Recorder) -> Option<String> {
+    fn pre_turn(&self, _ctx: &HookContext, _rec: &dyn Rec) -> Option<String> {
         None
     }
     /// Before each inner LLM call. `messages` is the current outgoing history.
@@ -273,23 +274,23 @@ pub trait Hook: Send + Sync {
     fn pre_step(
         &self,
         _ctx: &HookContext,
-        _rec: &crate::Recorder,
+        _rec: &dyn Rec,
         _messages: &[Message],
     ) -> Option<Vec<MessageMutation>> {
         None
     }
     /// After each inner LLM response, before tools execute.
-    fn post_step(&self, _ctx: &HookContext, _rec: &crate::Recorder) {}
+    fn post_step(&self, _ctx: &HookContext, _rec: &dyn Rec) {}
     /// Before a tool executes. Return Block to prevent execution.
-    fn pre_tool(&self, _ctx: &HookContext, _rec: &crate::Recorder) -> HookAction {
+    fn pre_tool(&self, _ctx: &HookContext, _rec: &dyn Rec) -> HookAction {
         HookAction::Continue
     }
     /// After a tool returns. Return Some to replace the result seen by the LLM.
-    async fn post_tool(&self, _ctx: &HookContext, _rec: &crate::Recorder) -> Option<String> {
+    async fn post_tool(&self, _ctx: &HookContext, _rec: &dyn Rec) -> Option<String> {
         None
     }
     /// Once per outer turn, at every exit point (Done, Clarify, Inform, Permissions).
-    fn post_turn(&self, _ctx: &HookContext, _rec: &crate::Recorder) {}
+    fn post_turn(&self, _ctx: &HookContext, _rec: &dyn Rec) {}
 }
 
 /// The filesystem dimension a tool operates on for a specific path argument.
@@ -349,6 +350,16 @@ pub enum ToolError {
     Internal(#[from] anyhow::Error),
 }
 
+/// The recorder surface the tool/hook layer is allowed to touch. The concrete
+/// `Recorder` (gait-core::proto::emitter) implements this; the foundation names
+/// only this trait so `types` never depends on the high-layer emitter.
+pub trait Rec: Send + Sync {
+    fn record(&self, body: event::Body) -> anyhow::Result<Event>;
+    fn publish_delta(&self, content: String);
+    fn spawn_process(&self, argv: Vec<String>, detached: bool);
+    fn tx_path(&self) -> &std::path::Path;
+}
+
 /// Extensible tool interface. Implement this to define a callable tool for `run_turn`.
 /// `ToolDef` implements this for ad-hoc closure-based tools.
 #[async_trait::async_trait]
@@ -359,7 +370,7 @@ pub trait Tool: Send + Sync {
     async fn execute(
         &self,
         args: serde_json::Value,
-        _rec: &crate::Recorder,
+        _rec: &dyn Rec,
     ) -> Result<serde_json::Value, ToolError>;
 
     /// What this tool needs from the sandbox. Drives routing (brain vs hand) and,
@@ -442,7 +453,7 @@ impl Tool for ToolDef {
     async fn execute(
         &self,
         args: serde_json::Value,
-        _rec: &crate::Recorder,
+        _rec: &dyn Rec,
     ) -> Result<serde_json::Value, ToolError> {
         // (self.execute) with parens = field access, not recursive method call.
         (self.execute)(args).await
@@ -644,6 +655,18 @@ mod tests {
         assert_eq!(c.cache_write_tokens, 50);
     }
 
+    struct MockRec;
+    impl Rec for MockRec {
+        fn record(&self, _b: event::Body) -> anyhow::Result<Event> {
+            unreachable!()
+        }
+        fn publish_delta(&self, _c: String) {}
+        fn spawn_process(&self, _a: Vec<String>, _d: bool) {}
+        fn tx_path(&self) -> &std::path::Path {
+            std::path::Path::new("")
+        }
+    }
+
     #[tokio::test]
     async fn tool_def_implements_tool_trait() {
         let tool = ToolDef {
@@ -655,10 +678,7 @@ mod tests {
             }),
             permission: None,
         };
-        let result = tool
-            .execute(serde_json::json!({}), &crate::Recorder::detached())
-            .await
-            .unwrap();
+        let result = tool.execute(serde_json::json!({}), &MockRec).await.unwrap();
         assert_eq!(result, serde_json::Value::String("hello".into()));
         assert_eq!(tool.name(), "greet");
     }
