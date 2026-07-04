@@ -10,7 +10,12 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(no_binary_name = true)]
 pub struct PersistArgs {
-    pub session_id: String,
+    #[arg(conflicts_with = "all")]
+    pub session_id: Option<String>,
+    #[arg(long, conflicts_with = "session_id")]
+    pub all: bool,
+    #[arg(long, short = 'y')]
+    pub yes: bool,
     #[arg(long, env = "GAIT_DIR")]
     pub gait_dir: PathBuf,
     #[arg(long)]
@@ -20,7 +25,12 @@ pub struct PersistArgs {
 #[derive(Parser, Debug)]
 #[command(no_binary_name = true)]
 pub struct DiscardArgs {
-    pub session_id: String,
+    #[arg(conflicts_with = "all")]
+    pub session_id: Option<String>,
+    #[arg(long, conflicts_with = "session_id")]
+    pub all: bool,
+    #[arg(long, short = 'y')]
+    pub yes: bool,
     #[arg(long, env = "GAIT_DIR")]
     pub gait_dir: PathBuf,
     #[arg(long)]
@@ -37,26 +47,111 @@ pub struct StopArgs {
     pub json: bool,
 }
 
-pub fn cmd_persist(args: PersistArgs) {
-    let repos = gait_core::git::Repos::production();
-    if let Err(e) = repos
+enum Confirmed {
+    Yes,
+    No,
+    RequiresYes,
+}
+
+/// Gate a mutating action. `--yes` (or `--json`, folded into `yes` by the caller)
+/// short-circuits. On a TTY, prompt y/N. Non-TTY without `yes` => RequiresYes.
+fn confirm_action(prompt: &str, yes: bool) -> Confirmed {
+    use std::io::{IsTerminal, Write};
+    if yes {
+        return Confirmed::Yes;
+    }
+    if !std::io::stdin().is_terminal() {
+        return Confirmed::RequiresYes;
+    }
+    eprint!("{} [y/N] ", prompt);
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_err() {
+        return Confirmed::No;
+    }
+    match line.trim().to_ascii_lowercase().as_str() {
+        "y" | "yes" => Confirmed::Yes,
+        _ => Confirmed::No,
+    }
+}
+
+/// Discard a single session: lock it, confirm, tear it down (no merge).
+fn discard_one(gait_dir: &std::path::Path, id: &str, yes: bool, json: bool) -> anyhow::Result<()> {
+    let session_dir = gait_dir.join("sessions").join(id);
+    let _lock = gait_core::turn::SessionLock::acquire(&session_dir)
+        .map_err(|e| anyhow::anyhow!("cannot discard: {} (is a turn in progress?)", e))?;
+    match confirm_action(
+        &format!("discard session {id} permanently (no merge, unrecoverable)"),
+        yes,
+    ) {
+        Confirmed::Yes => {}
+        Confirmed::No => {
+            eprintln!("[gait] aborted");
+            return Ok(());
+        }
+        Confirmed::RequiresYes => {
+            anyhow::bail!("refusing to discard non-interactively without --yes")
+        }
+    }
+    gait_core::git::Repos::production()
         .traces
-        .finish_session(&args.gait_dir, &args.session_id)
-    {
+        .discard_session(gait_dir, id)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"session_id": id, "action": "discarded"})
+        );
+    } else {
+        eprintln!("[gait] session {id} discarded");
+    }
+    Ok(())
+}
+
+pub fn cmd_persist(args: PersistArgs) {
+    let yes = args.yes || args.json;
+    if args.all {
+        run_bulk(Verb::Persist, &args.gait_dir, yes, args.json);
+        return;
+    }
+    let Some(id) = args.session_id.as_deref() else {
+        eprintln!("[gait] error: specify a session id or --all");
+        std::process::exit(1);
+    };
+    let repos = gait_core::git::Repos::production();
+    if let Err(e) = repos.traces.finish_session(&args.gait_dir, id) {
         eprintln!("[gait] error: {}", e);
         std::process::exit(1);
     }
-    if let Err(e) = repos.checkpoints.remove(&args.gait_dir, &args.session_id) {
-        eprintln!(
-            "warning: failed to remove checkpoint db for {}: {}",
-            args.session_id, e
-        );
+    if let Err(e) = repos.checkpoints.remove(&args.gait_dir, id) {
+        eprintln!("warning: failed to remove checkpoint db for {}: {}", id, e);
     }
-    eprintln!("[gait] session {} merged into main", args.session_id);
+    eprintln!("[gait] session {} merged into main", id);
 }
 
-pub fn cmd_discard(_args: DiscardArgs) {
-    eprintln!("[gait] error: discard not yet implemented");
+pub fn cmd_discard(args: DiscardArgs) {
+    let yes = args.yes || args.json;
+    if args.all {
+        run_bulk(Verb::Discard, &args.gait_dir, yes, args.json);
+        return;
+    }
+    let Some(id) = args.session_id.as_deref() else {
+        eprintln!("[gait] error: specify a session id or --all");
+        std::process::exit(1);
+    };
+    if let Err(e) = discard_one(&args.gait_dir, id, yes, args.json) {
+        eprintln!("[gait] error: {}", e);
+        std::process::exit(1);
+    }
+}
+
+// TEMP shim — replaced in Task 4.
+#[derive(Clone, Copy)]
+enum Verb {
+    Persist,
+    Discard,
+}
+fn run_bulk(_v: Verb, _gait_dir: &std::path::Path, _yes: bool, _json: bool) {
+    eprintln!("[gait] error: --all not yet implemented");
     std::process::exit(1);
 }
 
@@ -639,4 +734,73 @@ pub struct ReplyArgs {
 pub fn cmd_reply(_args: ReplyArgs) {
     eprintln!("[gait] error: reply not yet implemented");
     std::process::exit(1);
+}
+
+#[cfg(test)]
+mod bulk_tests {
+    use super::*;
+    // NB: no `TraceRepo` import — trait-object method calls (`traces.finish_session`
+    // etc.) don't need the trait in scope, and `gait_core::git::TraceRepo` is not a
+    // public path (the trait lives at `gait_core::git::trace::TraceRepo`).
+    use gait_core::git::Repos;
+    use tempfile::TempDir;
+
+    // Build a gait-dir with one committed session worktree; returns (tempdir, id).
+    fn ws_with_session(id: &str) -> TempDir {
+        let ws = TempDir::new().unwrap();
+        let repo = git2::Repository::init(ws.path()).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "t").unwrap();
+        cfg.set_str("user.email", "t@t.com").unwrap();
+        let sig = git2::Signature::now("t", "t@t.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        drop(tree);
+        repo.find_branch("master", git2::BranchType::Local)
+            .or_else(|_| repo.find_branch("main", git2::BranchType::Local))
+            .and_then(|mut b| {
+                b.rename("main", false)?;
+                Ok(())
+            })
+            .ok();
+        let traces = Repos::production().traces;
+        traces.create_session_worktree(ws.path(), id).unwrap();
+        ws
+    }
+
+    #[test]
+    fn confirm_action_requires_yes_when_non_tty_and_no_flag() {
+        // Test harness has no TTY on stdin.
+        assert!(matches!(
+            confirm_action("go?", false),
+            Confirmed::RequiresYes
+        ));
+    }
+
+    #[test]
+    fn confirm_action_yes_flag_short_circuits() {
+        assert!(matches!(confirm_action("go?", true), Confirmed::Yes));
+    }
+
+    #[test]
+    fn discard_one_with_yes_removes_session() {
+        let ws = ws_with_session("scli001");
+        discard_one(ws.path(), "scli001", true, false).unwrap();
+        assert!(!ws.path().join("sessions/scli001").exists());
+        let repo = git2::Repository::open(ws.path()).unwrap();
+        assert!(repo
+            .find_branch("session/scli001", git2::BranchType::Local)
+            .is_err());
+    }
+
+    #[test]
+    fn discard_one_refuses_non_tty_without_yes() {
+        let ws = ws_with_session("scli002");
+        let err = discard_one(ws.path(), "scli002", false, false).unwrap_err();
+        assert!(err.to_string().contains("--yes"));
+        // Session must be untouched.
+        assert!(ws.path().join("sessions/scli002").exists());
+    }
 }
