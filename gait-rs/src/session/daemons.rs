@@ -166,89 +166,10 @@ pub fn is_alive(rec: &pb::DaemonStart) -> bool {
         return false;
     }
     // 2. Identity check: start-time must match what we recorded.
-    match proc_start_time(rec.pid) {
+    match crate::process::proc_start_time(rec.pid) {
         Some(t) => t == rec.started_at,
         None => false, // fail-closed
     }
-}
-
-/// Return the kernel-reported process start time (seconds since boot epoch)
-/// for the given pid.  Returns `None` on any error.
-///
-/// `pub(crate)` so Task 2's `spawn_detached_to_file` can call it directly.
-pub(crate) fn proc_start_time(pid: i32) -> Option<u64> {
-    #[cfg(target_os = "macos")]
-    {
-        proc_start_time_macos(pid)
-    }
-    #[cfg(target_os = "linux")]
-    {
-        proc_start_time_linux(pid)
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        let _ = pid;
-        None
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Platform implementations
-// ---------------------------------------------------------------------------
-
-#[cfg(target_os = "macos")]
-fn proc_start_time_macos(pid: i32) -> Option<u64> {
-    // Define only the fields of extern_proc we need.
-    // On macOS (64-bit), p_un.__p_starttime is the FIRST field in extern_proc
-    // (it is inside a union p_un at offset 0).
-    // timeval on Darwin 64-bit: { tv_sec: i64, tv_usec: i32 } = 12 bytes, padded to 16.
-    // We read KERN_PROC / KERN_PROC_PID into a raw buffer large enough for
-    // kinfo_proc (~648 bytes on arm64/x86_64) and extract bytes [0..8] as tv_sec.
-    const KINFO_PROC_SIZE: usize = 648;
-    let mut buf = [0u8; KINFO_PROC_SIZE];
-    let mut size: libc::size_t = KINFO_PROC_SIZE;
-    let mut mib: [libc::c_int; 4] = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
-    let ret = unsafe {
-        libc::sysctl(
-            mib.as_mut_ptr(),
-            4,
-            buf.as_mut_ptr() as *mut libc::c_void,
-            &mut size,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    if ret != 0 || size < 8 {
-        return None;
-    }
-    // extern_proc.p_un.__p_starttime.tv_sec is at offset 0 of extern_proc,
-    // and extern_proc is the first field of kinfo_proc (kp_proc).
-    // On 64-bit Darwin tv_sec is a long (8 bytes, little-endian).
-    let tv_sec = i64::from_ne_bytes(buf[0..8].try_into().ok()?);
-    if tv_sec <= 0 {
-        None
-    } else {
-        Some(tv_sec as u64)
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn proc_start_time_linux(pid: i32) -> Option<u64> {
-    use std::fs;
-    // /proc/<pid>/stat — field 22 (1-indexed) is starttime (clock ticks since boot).
-    // We return it as raw ticks; callers must compare with a value obtained the
-    // same way, so units cancel out.
-    let content = fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
-    // The second field is the comm wrapped in parens and may contain spaces.
-    // Find the last ')' to skip the comm field safely.
-    let after_comm = content.rfind(')')?.checked_add(1)?;
-    let rest = content[after_comm..].trim_start();
-    // Remaining fields are space-separated; starttime is at 0-indexed position 19
-    // (fields 3..21 counting from after comm, 1-indexed fields 3–22 in the man page).
-    let fields: Vec<&str> = rest.split_whitespace().collect();
-    // field 22 (1-indexed) = index 19 in the post-comm slice (fields start at 3).
-    let starttime_str = fields.get(19)?;
-    starttime_str.parse::<u64>().ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -316,7 +237,8 @@ mod tests {
     #[test]
     fn is_alive_true_for_self() {
         let my_pid = std::process::id() as i32;
-        let start = proc_start_time(my_pid).expect("proc_start_time should work for own pid");
+        let start = crate::process::proc_start_time(my_pid)
+            .expect("proc_start_time should work for own pid");
         let rec = pb::DaemonStart {
             name: "self".to_owned(),
             pid: my_pid,
@@ -377,7 +299,7 @@ mod tests {
         let pgid = unsafe { libc::getpgid(pid) };
         assert!(pgid > 0, "getpgid should succeed");
 
-        let started_at = proc_start_time(pid).expect("proc_start_time for child");
+        let started_at = crate::process::proc_start_time(pid).expect("proc_start_time for child");
 
         let rec = pb::DaemonStart {
             name: "test-sleep-alive".to_owned(),
@@ -426,7 +348,7 @@ mod tests {
         let pgid = unsafe { libc::getpgid(pid) };
         assert!(pgid > 0);
 
-        let started_at = proc_start_time(pid).expect("proc_start_time for child");
+        let started_at = crate::process::proc_start_time(pid).expect("proc_start_time for child");
 
         let rec = pb::DaemonStart {
             name: "test-sleep-stop".to_owned(),

@@ -1065,6 +1065,7 @@ dependencies = [
  "futures-util",
  "gait-proto",
  "gait-provider",
+ "gait-sandbox",
  "gait-types",
  "gait-workflow",
  "git2",
@@ -1167,6 +1168,21 @@ dependencies = [
  "tokio",
  "tokio-util",
  "unicode-width 0.2.2",
+]
+
+[[package]]
+name = "gait-sandbox"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs-next",
+ "gait-types",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
 ]
 
 [[package]]

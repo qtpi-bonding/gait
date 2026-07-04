@@ -229,7 +229,7 @@ mod tests {
         let pid = child.id() as i32;
         let pgid = unsafe { libc::getpgid(pid) };
         assert!(pgid > 0);
-        let started_at = daemons::proc_start_time(pid).expect("proc_start_time");
+        let started_at = crate::process::proc_start_time(pid).expect("proc_start_time");
         let start2 = pb::DaemonStart {
             name: "live1".into(),
             pid,

@@ -2,14 +2,13 @@ pub mod auth;
 pub mod git;
 pub mod harness;
 pub mod models;
-pub mod process;
 pub mod scheduler;
 pub mod session;
 pub mod tools;
 pub mod turn;
 pub use gait_provider::{anthropic, factory, openai, provider, providers, strict, transport};
+pub use gait_sandbox::{process, sandbox};
 pub use gait_types::{config, diagnostic, types};
-
 pub mod daemon_exit;
 pub mod embed;
 pub mod launch;
@@ -41,13 +40,9 @@ pub(crate) mod mcp;
 #[cfg(test)]
 mod permissions_invariant_tests;
 pub(crate) mod prompt;
-pub mod sandbox;
 #[cfg(test)]
 mod test_utils;
-// (text moved to `input/`; see `pub use` re-export below)
 pub(crate) mod wasm_plugins;
-
-// Types — explicit list replaces pub use types::*
 pub use types::{
     AssistantContent, AssistantPart, ContentPart, ExecutionMode, ExecutionSignal, Hook, HookAction,
     HookContext, Message, MessageContent, OutputFilter, PermissionRequest, StepFinish, Tool,

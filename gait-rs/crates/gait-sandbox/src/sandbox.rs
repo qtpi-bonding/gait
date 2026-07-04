@@ -96,7 +96,7 @@ impl Sandbox for SeatbeltSandbox {
     fn apply(&self, scope: &SandboxScope) -> anyhow::Result<SandboxStatus> {
         #[cfg(target_os = "macos")]
         {
-            let profile = crate::sandbox::sbpl::build_sbpl(scope);
+            let profile = sbpl::build_sbpl(scope);
             let c = std::ffi::CString::new(profile)
                 .map_err(|e| anyhow::anyhow!("SBPL contained null byte: {e}"))?;
             let mut err: *mut libc::c_char = std::ptr::null_mut();
@@ -158,6 +158,29 @@ pub fn platform_sandbox() -> Box<dyn Sandbox> {
         Box::new(SeatbeltSandbox)
     } else {
         Box::new(NoopSandbox)
+    }
+}
+
+// ── brain_scope ───────────────────────────────────────────────────────────────
+
+/// Build the brain's self-seal scope: compute + network only; all disk data arrives
+/// via `BrainInit` / spine relay.
+///
+/// The brain is a pure compute process — it holds no codebase paths, reads no files,
+/// and writes nothing to disk. All context (session log, file previews, permissions)
+/// is delivered in-memory by the spine before the seal is applied. Outbound network
+/// is required for LLM API calls (api.anthropic.com:443 via reqwest+rustls).
+///
+/// Validated spike (macOS 15 / Darwin 24.5.0): platform-default read paths
+/// (dyld, /usr, /System, /Library, /private, /bin, /sbin, /var, /etc, /dev)
+/// are sufficient for process exec + DNS + TLS with bundled webpki-roots.
+/// No codebase or gait-dir reads are needed after `BrainInit` is delivered.
+pub fn brain_scope() -> SandboxScope {
+    SandboxScope {
+        read_all: false,
+        readable: vec![],
+        writable: vec![],
+        network: NetworkPolicy::All,
     }
 }
 
@@ -389,7 +412,7 @@ mod tests {
     /// (Steps 1 and 4 in task-2-brief.md) before relaxing `read_all`.
     #[test]
     fn brain_scope_emits_confined_read_profile() {
-        let scope = crate::turn::brain::brain_scope();
+        let scope = brain_scope();
         assert!(!scope.read_all, "brain_scope must NOT set read_all=true");
         assert!(
             scope.readable.is_empty(),
@@ -434,7 +457,7 @@ mod tests {
 
     #[test]
     fn bound_request_ignores_brain_claimed_scope() {
-        use crate::config::SandboxConfig;
+        use gait_types::config::SandboxConfig;
         use std::path::Path;
         // A read tool with a bogus claimed writable must get empty writable.
         let cfg = SandboxConfig::default();
@@ -446,7 +469,7 @@ mod tests {
 
     #[test]
     fn bound_request_shell_gets_writes_and_spawns() {
-        use crate::config::SandboxConfig;
+        use gait_types::config::SandboxConfig;
         use std::path::{Path, PathBuf};
         let cfg = SandboxConfig::default();
         let scope = super::ceiling::bound_request(
@@ -461,7 +484,7 @@ mod tests {
 
     #[test]
     fn bound_request_unknown_tool_gets_no_access() {
-        use crate::config::SandboxConfig;
+        use gait_types::config::SandboxConfig;
         use std::path::Path;
         let cfg = SandboxConfig::default();
         let scope = super::ceiling::bound_request(
@@ -477,8 +500,8 @@ mod tests {
 
     #[test]
     fn read_only_tool_gets_no_writable() {
-        use crate::config::SandboxConfig;
-        use crate::types::ToolAccess;
+        use gait_types::config::SandboxConfig;
+        use gait_types::types::ToolAccess;
         use std::path::Path;
         let cfg = SandboxConfig::default();
         let scope = super::ceiling::compute_scope(
@@ -499,8 +522,8 @@ mod tests {
 
     #[test]
     fn write_tool_gets_codebase_and_jail_writable() {
-        use crate::config::SandboxConfig;
-        use crate::types::ToolAccess;
+        use gait_types::config::SandboxConfig;
+        use gait_types::types::ToolAccess;
         use std::path::{Path, PathBuf};
         let cfg = SandboxConfig::default();
         let scope = super::ceiling::compute_scope(
@@ -519,8 +542,8 @@ mod tests {
 
     #[test]
     fn network_tool_denied_when_config_off() {
-        use crate::config::SandboxConfig;
-        use crate::types::ToolAccess;
+        use gait_types::config::SandboxConfig;
+        use gait_types::types::ToolAccess;
         use std::path::Path;
         let cfg = SandboxConfig::default(); // network: Off
         let scope = super::ceiling::compute_scope(
@@ -537,8 +560,8 @@ mod tests {
 
     #[test]
     fn strict_config_confines_reads_by_default() {
-        use crate::config::SandboxConfig;
-        use crate::types::ToolAccess;
+        use gait_types::config::SandboxConfig;
+        use gait_types::types::ToolAccess;
         use std::path::{Path, PathBuf};
         let cfg = SandboxConfig::default(); // readable: []
         let scope = super::ceiling::compute_scope(
@@ -556,8 +579,8 @@ mod tests {
 
     #[test]
     fn star_readable_opens_reads() {
-        use crate::config::SandboxConfig;
-        use crate::types::ToolAccess;
+        use gait_types::config::SandboxConfig;
+        use gait_types::types::ToolAccess;
         use std::path::Path;
         let cfg = SandboxConfig {
             readable: vec!["*".into()],
@@ -577,8 +600,8 @@ mod tests {
 
     #[test]
     fn codebase_var_expands_in_readable_and_writable() {
-        use crate::config::SandboxConfig;
-        use crate::types::ToolAccess;
+        use gait_types::config::SandboxConfig;
+        use gait_types::types::ToolAccess;
         use std::path::{Path, PathBuf};
         let cfg = SandboxConfig {
             readable: vec!["$CODEBASE".into()],
@@ -604,8 +627,8 @@ mod tests {
 
     #[test]
     fn compute_scope_nofs_read_tool_gets_readable_paths() {
-        use crate::config::SandboxConfig;
-        use crate::types::ToolAccess;
+        use gait_types::config::SandboxConfig;
+        use gait_types::types::ToolAccess;
         use std::path::Path;
         let cfg = SandboxConfig::default();
         let scope = super::ceiling::compute_scope_nofs(
@@ -627,8 +650,8 @@ mod tests {
 
     #[test]
     fn compute_scope_nofs_write_tool_gets_writable() {
-        use crate::config::SandboxConfig;
-        use crate::types::ToolAccess;
+        use gait_types::config::SandboxConfig;
+        use gait_types::types::ToolAccess;
         use std::path::{Path, PathBuf};
         let cfg = SandboxConfig::default();
         let scope = super::ceiling::compute_scope_nofs(
@@ -650,8 +673,8 @@ mod tests {
         // compute_scope_nofs produces same shape (count, read_all) as compute_scope.
         // The actual path values may differ when the OS has symlinks (e.g. /tmp →
         // /private/tmp on macOS), so we only compare structure, not exact paths.
-        use crate::config::SandboxConfig;
-        use crate::types::ToolAccess;
+        use gait_types::config::SandboxConfig;
+        use gait_types::types::ToolAccess;
         use std::path::Path;
         let cfg = SandboxConfig::default();
         let access = ToolAccess {
@@ -934,8 +957,8 @@ pub mod ceiling {
     //! the access flags can only narrow. No I/O, no FFI: same inputs → same output.
 
     use super::{NetworkPolicy, SandboxScope};
-    use crate::config::{NetworkConfig, SandboxConfig};
-    use crate::types::ToolAccess;
+    use gait_types::config::{NetworkConfig, SandboxConfig};
+    use gait_types::types::ToolAccess;
     use std::path::{Path, PathBuf};
 
     /// Return the `ToolAccess` declared by the named builtin tool.

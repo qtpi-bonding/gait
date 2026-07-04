@@ -26,28 +26,10 @@ use gait_proto::gait::sandbox::v1::{
     signal, Append, Diagnostic, Notify, Signal, StreamForward, Terminated,
 };
 
-// ── brain_scope ───────────────────────────────────────────────────────────────
-
-/// Build the brain's self-seal scope: compute + network only; all disk data arrives
-/// via `BrainInit` / spine relay.
-///
-/// The brain is a pure compute process — it holds no codebase paths, reads no files,
-/// and writes nothing to disk. All context (session log, file previews, permissions)
-/// is delivered in-memory by the spine before the seal is applied. Outbound network
-/// is required for LLM API calls (api.anthropic.com:443 via reqwest+rustls).
-///
-/// Validated spike (macOS 15 / Darwin 24.5.0): platform-default read paths
-/// (dyld, /usr, /System, /Library, /private, /bin, /sbin, /var, /etc, /dev)
-/// are sufficient for process exec + DNS + TLS with bundled webpki-roots.
-/// No codebase or gait-dir reads are needed after `BrainInit` is delivered.
-pub fn brain_scope() -> crate::sandbox::SandboxScope {
-    crate::sandbox::SandboxScope {
-        read_all: false,
-        readable: vec![],
-        writable: vec![],
-        network: crate::sandbox::NetworkPolicy::All,
-    }
-}
+// `brain_scope()` now lives in `gait-sandbox::sandbox` (re-exported at the crate
+// root as `crate::sandbox::brain_scope`) — it constructs a `SandboxScope`, so it
+// belongs in `sandbox`, not here.
+pub use crate::sandbox::brain_scope;
 
 // ── BrainConfig ───────────────────────────────────────────────────────────────
 

@@ -35,6 +35,79 @@ pub trait Containment: Send + Sync {
     fn handle(&self) -> Option<String>;
 }
 
+// ── proc_start_time (relocated from session/daemons.rs, D6) ────────────────────
+
+/// Return the kernel-reported process start time (seconds since boot epoch on
+/// macOS, clock ticks since boot on Linux) for the given pid. Returns `None`
+/// on any error. The Linux path returns raw ticks; callers must compare with
+/// a value obtained the same way, so units cancel out.
+pub fn proc_start_time(pid: i32) -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        proc_start_time_macos(pid)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        proc_start_time_linux(pid)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn proc_start_time_macos(pid: i32) -> Option<u64> {
+    // On macOS (64-bit), p_un.__p_starttime is the FIRST field in extern_proc
+    // (it is inside a union p_un at offset 0).
+    // timeval on Darwin 64-bit: { tv_sec: i64, tv_usec: i32 } = 12 bytes, padded to 16.
+    // We read KERN_PROC / KERN_PROC_PID into a raw buffer large enough for
+    // kinfo_proc (~648 bytes on arm64/x86_64) and extract bytes [0..8] as tv_sec.
+    const KINFO_PROC_SIZE: usize = 648;
+    let mut buf = [0u8; KINFO_PROC_SIZE];
+    let mut size: libc::size_t = KINFO_PROC_SIZE;
+    let mut mib: [libc::c_int; 4] = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
+    let ret = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            4,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if ret != 0 || size < 8 {
+        return None;
+    }
+    // extern_proc.p_un.__p_starttime.tv_sec is at offset 0 of extern_proc,
+    // and extern_proc is the first field of kinfo_proc (kp_proc).
+    // On 64-bit Darwin tv_sec is a long (8 bytes, little-endian).
+    let tv_sec = i64::from_ne_bytes(buf[0..8].try_into().ok()?);
+    if tv_sec <= 0 {
+        None
+    } else {
+        Some(tv_sec as u64)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn proc_start_time_linux(pid: i32) -> Option<u64> {
+    use std::fs;
+    // /proc/<pid>/stat — field 22 (1-indexed) is starttime (clock ticks since boot).
+    let content = fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
+    // The second field is the comm wrapped in parens and may contain spaces.
+    // Find the last ')' to skip the comm field safely.
+    let after_comm = content.rfind(')')?.checked_add(1)?;
+    let rest = content[after_comm..].trim_start();
+    // Remaining fields are space-separated; starttime is at 0-indexed position 19
+    // (fields 3..21 counting from after comm, 1-indexed fields 3–22 in the man page).
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    let starttime_str = fields.get(19)?;
+    starttime_str.parse::<u64>().ok()
+}
+
 /// Spawn `cmd` as a daemon fully outside the cascade group:
 /// - its own session (setsid in pre_exec) so SIGHUP from the hand's exit is not delivered,
 /// - stdout+stderr redirected to `log_path` (created/truncated),
@@ -62,7 +135,7 @@ pub fn spawn_detached_to_file(mut cmd: Command, log_path: &Path) -> io::Result<(
     let pid = child.id() as i32;
     // After setsid the child is its own session+group leader, so pgid == pid.
     // Do NOT call getpgid here — it races the child's pre_exec.
-    let started_at = match crate::session::daemons::proc_start_time(pid) {
+    let started_at = match proc_start_time(pid) {
         Some(t) if t > 0 => t,
         _ => {
             // Cannot establish process identity — kill the child and fail the spawn.
