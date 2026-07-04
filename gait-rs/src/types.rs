@@ -95,11 +95,7 @@ pub struct ToolDef {
         dyn Fn(
                 serde_json::Value,
             ) -> std::pin::Pin<
-                Box<
-                    dyn std::future::Future<
-                            Output = Result<serde_json::Value, crate::tools::ToolError>,
-                        > + Send,
-                >,
+                Box<dyn std::future::Future<Output = Result<serde_json::Value, ToolError>> + Send>,
             > + Send
             + Sync,
     >,
@@ -338,6 +334,21 @@ impl ToolAccess {
     }
 }
 
+/// Errors a tool can surface. Public so the trait boundary stays in the foundation
+/// while `tools::ToolError` keeps resolving via a re-export.
+#[derive(Debug, thiserror::Error)]
+pub enum ToolError {
+    /// User-facing error: returned to the model as tool output text.
+    #[error("{0}")]
+    Execute(String),
+    /// Bad tool arguments — returned verbatim so the model can self-correct.
+    #[error("invalid parameters: {0}")]
+    InvalidParams(String),
+    /// Internal programming error: should not reach the model as-is.
+    #[error("internal tool error: {0}")]
+    Internal(#[from] anyhow::Error),
+}
+
 /// Extensible tool interface. Implement this to define a callable tool for `run_turn`.
 /// `ToolDef` implements this for ad-hoc closure-based tools.
 #[async_trait::async_trait]
@@ -349,7 +360,7 @@ pub trait Tool: Send + Sync {
         &self,
         args: serde_json::Value,
         _rec: &crate::Recorder,
-    ) -> Result<serde_json::Value, crate::tools::ToolError>;
+    ) -> Result<serde_json::Value, ToolError>;
 
     /// What this tool needs from the sandbox. Drives routing (brain vs hand) and,
     /// in later phases, the per-call seal. Default: brain-side (no world access).
@@ -432,7 +443,7 @@ impl Tool for ToolDef {
         &self,
         args: serde_json::Value,
         _rec: &crate::Recorder,
-    ) -> Result<serde_json::Value, crate::tools::ToolError> {
+    ) -> Result<serde_json::Value, ToolError> {
         // (self.execute) with parens = field access, not recursive method call.
         (self.execute)(args).await
     }
