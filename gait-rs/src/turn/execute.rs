@@ -579,6 +579,20 @@ pub(crate) async fn run_tools(
     // Gated tools: emit Permissions and exit so the user can decide.
     // (In auto mode gated_ids is always empty — this block is never reached.)
     if !pending_permissions.is_empty() {
+        for item in &pending_permissions {
+            eprintln!(
+                "[gait] no allow pattern matched {:?} (auto-approve off) — turn will pause",
+                item.cmd
+            );
+            if let Some(fix) =
+                crate::permissions::matching::near_miss_suggestion(&item.cmd, env.effective_allow)
+            {
+                eprintln!(
+                    "[gait] hint: patterns match commands as \"<cmd> *\" (note the space) — did you mean --allow {:?}?",
+                    fix
+                );
+            }
+        }
         env.emitter
             .record(events::permissions(&pending_permissions))?;
         return Ok(StepOutcome::Pause(PauseKind::Permissions));

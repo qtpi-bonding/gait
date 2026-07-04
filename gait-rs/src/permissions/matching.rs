@@ -182,6 +182,33 @@ pub fn wildcard_match(pattern: &str, value: &str) -> bool {
     }
 }
 
+/// Diagnostic-only: given a request `display` (e.g. "rm -rf /") and the allow
+/// list, return a corrected pattern string if some allow entry is a *near-miss*
+/// — it does not match today but would if its trailing `*` were the `" *"`
+/// (space-star) form the request side generates. Returns `None` when no entry
+/// is close. Never affects matching; purely to explain a silent non-match.
+pub fn near_miss_suggestion(display: &str, allow: &[String]) -> Option<String> {
+    for entry in allow {
+        // entry is "tool:pat" (or bare "tool"); we only diagnose the pat side.
+        let Some((tool, pat)) = entry.split_once(':') else { continue };
+        // A pattern that already matches is not a near-miss.
+        if wildcard_match(pat, display) {
+            continue;
+        }
+        // "rm*" (no space) → strip the trailing '*' → "rm"; if that is a
+        // command-prefix of display, the space-star form would have matched.
+        if let Some(prefix) = pat.strip_suffix('*') {
+            if !prefix.ends_with(' ') && !prefix.is_empty() {
+                let is_prefix = display == prefix
+                    || display.starts_with(&format!("{prefix} "));
+                if is_prefix {
+                    return Some(format!("{tool}:{prefix} *"));
+                }
+            }
+        }
+    }
+    None
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -508,5 +535,20 @@ mod tests {
             }
             _ => panic!("expected RequiresApproval"),
         }
+    }
+
+    #[test]
+    fn near_miss_flags_missing_space_star() {
+        // The generated pattern is "shell:rm *" (space-star); "shell:rm*" never matches.
+        let allow = vec!["shell:rm*".to_string()];
+        assert_eq!(
+            near_miss_suggestion("rm -rf /", &allow),
+            Some("shell:rm *".to_string()),
+            "a trailing '*' with no space is a near-miss for the space-star form"
+        );
+        // A genuinely unrelated allow entry is not a near-miss.
+        assert_eq!(near_miss_suggestion("rm -rf /", &["shell:ls*".to_string()]), None);
+        // The correct form is not a near-miss (it already matches).
+        assert_eq!(near_miss_suggestion("rm -rf /", &["shell:rm *".to_string()]), None);
     }
 }

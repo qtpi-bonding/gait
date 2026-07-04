@@ -274,6 +274,7 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
         agent: args.agent_name.clone(),
         max_iter: config.max_iter,
         result_schema,
+        auto: args.auto.then_some(true),
     };
     let outcome = gait_workflow::single_prompt_run(
         gait_workflow::SinglePromptOpts {

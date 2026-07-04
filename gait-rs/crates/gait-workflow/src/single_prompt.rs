@@ -22,6 +22,10 @@ pub struct ProfileOverride {
     pub agent: Option<String>,
     pub max_iter: Option<usize>,
     pub result_schema: Option<serde_json::Value>,
+    /// CLI `--auto`: `Some(true)` forces auto-approve on for the degenerate CLI
+    /// node; `None` falls back to the node/workflow default. Never set on real
+    /// workflow nodes (they carry no ProfileOverride).
+    pub auto: Option<bool>,
 }
 
 pub struct SinglePromptOpts {

@@ -39,7 +39,7 @@ pub struct Cli {
     /// Agent file to load
     #[arg(long, short = 'a')]
     pub agent: Option<String>,
-    /// Auto-approve all permission requests
+    /// auto-approve all tool-permission prompts; the sandbox ceiling still applies (kernel-enforced)
     #[arg(long)]
     pub auto_approve: bool,
     /// Pre-approve tool pattern (repeatable)

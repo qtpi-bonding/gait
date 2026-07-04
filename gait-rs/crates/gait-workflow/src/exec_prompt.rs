@@ -181,6 +181,15 @@ impl TurnSource for NodeSource {
     }
 }
 
+/// Resolve the effective `auto` flag for a node. `base` is the node/workflow
+/// default (i.e. `node.auto.unwrap_or(wf.auto)`); a `ProfileOverride.auto` of
+/// `Some(b)` forces `b`, `None` falls back to `base`. The CLI sets
+/// `Some(true)` when `--auto` is passed on a headless run; workflow nodes
+/// carry no `ProfileOverride` and the base always wins.
+fn resolve_auto(base: bool, ov: Option<&crate::single_prompt::ProfileOverride>) -> bool {
+    ov.and_then(|p| p.auto).unwrap_or(base)
+}
+
 /// Drive a single prompt node through the unified `run_loop` boundary.
 ///
 /// If the node has a literal `prompt` field it is used directly (one-shot),
@@ -279,6 +288,7 @@ pub async fn exec_prompt_node(
         .or_else(|| node.agent.clone());
     let max_iter = ov.and_then(|p| p.max_iter);
     let result_schema = ov.and_then(|p| p.result_schema.clone()).or(result_schema);
+    let auto = resolve_auto(auto, ov);
     let sandbox_on = ctx.sandbox_on.unwrap_or(true); // workflow nodes default sandboxed
 
     let mut driver = PromptNodeDriver {
@@ -418,6 +428,27 @@ mod tests {
         };
         // Verify the driver holds the paths used to construct BrainLaunch.
         assert_eq!(driver.codebase, PathBuf::from("/tmp/cb"));
+    }
+
+    #[test]
+    fn cli_auto_override_wins_over_node_default() {
+        use crate::single_prompt::ProfileOverride;
+        let on = ProfileOverride {
+            auto: Some(true),
+            ..Default::default()
+        };
+        let off = ProfileOverride::default(); // auto: None
+                                              // base = node.auto.unwrap_or(wf.auto) — false for the degenerate CLI node
+        assert!(resolve_auto(false, Some(&on)), "--auto must force auto on");
+        assert!(
+            !resolve_auto(false, Some(&off)),
+            "absent override falls back to node/wf default"
+        );
+        assert!(!resolve_auto(false, None), "no profile → node/wf default");
+        assert!(
+            resolve_auto(true, Some(&off)),
+            "absent override preserves a true base"
+        );
     }
 
     #[tokio::test]
