@@ -116,72 +116,6 @@ pub(crate) fn parse_retry_after(resp: &reqwest::Response) -> Option<Duration> {
         .map(Duration::from_secs)
 }
 
-/// Pre-first-byte retry loop. Runs `f` up to `cfg.max_attempts` times on
-/// classified retryable `ProviderError`s, with full-jitter exponential
-/// backoff (or `Retry-After` if the server supplied one). Cancel-aware: every
-/// `await` — both `f()` and the backoff sleep — is `select!`-ed against the
-/// cancel token, so an Esc during a retry never blocks the turn-cancel path.
-///
-/// Mid-stream errors (Sse/StreamIncomplete/Overloaded/Json/Other) are terminal
-/// per the spec; `is_retryable` returns false for them and we surface
-/// immediately.
-///
-/// v1: threading is the simpler outer `tokio::select!` already in `turn/mod.rs`
-/// — the call site cancels the whole `stream().await`, including any in-flight
-/// retry. The token here is a `CancellationToken::new()` placeholder so the
-/// helper is always cancel-aware; the call sites pass `&CancellationToken::new()`
-/// when no token is in scope (acceptable per the plan note).
-pub(crate) async fn retry_phase1<T, F, Fut>(
-    cfg: &TransportConfig,
-    cancel: &CancellationToken,
-    f: F,
-) -> Result<T, ProviderError>
-where
-    F: Fn() -> Fut,
-    Fut: Future<Output = Result<T, ProviderError>>,
-{
-    let mut attempt: u32 = 0;
-    loop {
-        let result = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => return Err(ProviderError::Other("cancelled".into())),
-            // Bound the request/header-wait phase. `connect_timeout` only covers the
-            // TCP/TLS handshake, and `guard_idle_sse` cannot start until response headers
-            // arrive — so without a deadline here, a server that accepts the connection
-            // then stalls before sending headers hangs forever (observed: an 18-minute
-            // hang past the 600s absolute cap). Map the overrun to a retryable TTFB
-            // timeout so this loop backs off and retries pre-first-byte.
-            r = tokio::time::timeout(cfg.ttfb_timeout, f()) => match r {
-                Err(_) => Err(ProviderError::Timeout { phase: TimeoutPhase::Ttfb }),
-                Ok(r) => r,
-            },
-        };
-        match result {
-            Ok(v) => return Ok(v),
-            Err(e) => {
-                let attempts_used = attempt + 1;
-                if !e.is_retryable() || attempts_used >= cfg.max_attempts as u32 {
-                    return Err(e);
-                }
-                // Task 6: transport_retry observability — v1 uses log::warn!
-                eprintln!(
-                    "[gait] transport_retry attempt={attempts_used}/{} reason={e:?}",
-                    cfg.max_attempts
-                );
-                let delay = e
-                    .retry_after()
-                    .unwrap_or_else(|| backoff_delay(cfg, attempt));
-                tokio::select! {
-                    biased;
-                    _ = cancel.cancelled() => return Err(ProviderError::Other("cancelled".into())),
-                    _ = tokio::time::sleep(delay) => {}
-                }
-                attempt += 1;
-            }
-        }
-    }
-}
-
 /// The single retryable unit that owns "connect → await first event", sharing
 /// one budget across both phases. `connect` performs the whole per-attempt
 /// request (POST + `.bytes_stream().eventsource()`), so a retry re-issues the
@@ -190,10 +124,10 @@ where
 ///
 /// Retryable: a bounded `connect()` overrun, a bounded first-event overrun
 /// (both zero-byte), and any connect-phase error `connect()` itself returns
-/// (e.g. `Connect`, `Http 429/5xx`) via the same `is_retryable` classification
-/// `retry_phase1` uses — unchanged policy. Terminal: a real SSE error or the
-/// stream ending before any event — once bytes have been produced by the
-/// server, this helper does not re-request them.
+/// (e.g. `Connect`, `Http 429/5xx`) via the unchanged `is_retryable`
+/// classification. Terminal: a real SSE error or the stream ending before any
+/// event — once bytes have been produced by the server, this helper does not
+/// re-request them.
 ///
 /// Each attempt resets the phase clock (`set_phase(LlmRequest)`) so a bounded
 /// retry sequence cannot falsely trip the stall watchdog.
@@ -322,32 +256,10 @@ mod tests {
         let _ = Duration::from_secs(0);
     }
 
-    // Regression: a server that accepts the connection then never sends response
-    // headers must NOT hang retry_phase1 forever. The per-attempt ttfb_timeout
-    // converts the stall into a retryable TTFB error; with max_attempts the loop
-    // gives up promptly instead of blocking past the absolute cap.
-    #[tokio::test]
-    async fn retry_phase1_bounds_a_hanging_request() {
-        let cfg = TransportConfig {
-            ttfb_timeout: Duration::from_millis(20),
-            max_attempts: 2,
-            initial_backoff: Duration::from_millis(1),
-            max_backoff: Duration::from_millis(1),
-            ..TransportConfig::default()
-        };
-        let cancel = CancellationToken::new();
-        let result = retry_phase1::<(), _, _>(&cfg, &cancel, || async {
-            // Never resolves — simulates a stalled header wait.
-            std::future::pending::<Result<(), ProviderError>>().await
-        })
-        .await;
-        match result {
-            Err(ProviderError::Timeout {
-                phase: TimeoutPhase::Ttfb,
-            }) => {}
-            other => panic!("expected retryable TTFB timeout, got {other:?}"),
-        }
-    }
+    // The hanging-connect regression (a server that accepts the connection then
+    // never sends response headers must not hang forever) is now covered by
+    // `connect_hang_is_bounded_not_infinite` below, ported onto
+    // `connect_and_first_event` (this helper subsumes the old `retry_phase1`).
 
     #[test]
     fn backoff_is_bounded_and_increasing() {

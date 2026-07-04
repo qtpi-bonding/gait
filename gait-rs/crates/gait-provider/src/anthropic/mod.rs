@@ -307,27 +307,27 @@ impl Provider for AnthropicProvider {
             tool_choice,
         };
         let body = serde_json::to_value(&req)?;
-        // Pre-first-byte retry (Task 5): wrap the eager connect so a transient
-        // 429/5xx/Connect/Timeout is retried with full-jitter backoff before the
-        // first byte ever arrives. Cancel-continuity lives at the call site in
-        // turn/mod.rs (the outer select on `cancel_token_fut(&cancel)`), per the
-        // plan's v1 note; here we pass a fresh placeholder token.
+        // Retry the zero-byte first-event TTFB stall in place (plan-12): the
+        // retryable unit is "connect -> await first event", sharing one budget
+        // across both phases, instead of the old retry_phase1 + guard_idle_sse
+        // compose (which could only retry pre-headers). Cancel-continuity lives
+        // at the call site in turn/mod.rs (the outer select on
+        // `cancel_token_fut(&cancel)`); here we pass a fresh placeholder token.
         // set_phase is called inside the closure so each retry attempt resets the
-        // PhaseCell clock — otherwise 3 attempts × 30s TTFB + backoffs can exceed
-        // the watchdog's 90s stall_cap before it fires.
-        let resp = crate::transport::retry_phase1(
-            &self.transport,
+        // PhaseCell clock — otherwise several attempts × ttfb_timeout + backoffs
+        // can exceed the watchdog's 90s stall_cap before it fires.
+        use eventsource_stream::Eventsource;
+        let stream = crate::transport::connect_and_first_event(
+            self.transport,
             &tokio_util::sync::CancellationToken::new(),
-            || {
+            || async {
                 gait_types::diagnostic::set_phase(gait_types::diagnostic::Phase::LlmRequest);
-                self.sse.connect(&body)
+                let resp = self.sse.connect(&body).await?;
+                Ok(resp.bytes_stream().eventsource())
             },
         )
         .await?;
-        use eventsource_stream::Eventsource;
-        let guarded =
-            crate::transport::guard_idle_sse(resp.bytes_stream().eventsource(), self.transport);
-        Ok(Box::pin(SseClient::body_stream(guarded)))
+        Ok(Box::pin(SseClient::body_stream(stream)))
     }
 
     fn model_id(&self) -> &str {

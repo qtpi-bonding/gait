@@ -14,7 +14,8 @@ pub struct SseClient {
 impl SseClient {
     /// Eager: POST, await response, check status. Returns the streaming Response.
     /// This is the retry-eligible phase: classified errors flow out as `ProviderError`
-    /// and can be retried by `retry_phase1` (Task 5). No body is consumed here.
+    /// and are retried by `connect_and_first_event` (plan-12), which shares this
+    /// connect budget with the first-event wait. No body is consumed here.
     pub async fn connect(
         &self,
         body: &serde_json::Value,
