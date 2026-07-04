@@ -72,4 +72,22 @@ mod tests {
             "applied writable grant must appear in sandbox.writable"
         );
     }
+
+    #[test]
+    fn apply_readable_and_network_persist_to_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        SandboxGrant::Readable.apply(tmp.path(), "docs/").unwrap();
+        SandboxGrant::NetworkHost
+            .apply(tmp.path(), "api.example.com")
+            .unwrap();
+        let sb = load_sandbox(tmp.path());
+        assert!(sb.readable.iter().any(|p| p == "docs/"));
+        // network is enum NetworkConfig::{Off, All, Hosts(Vec<String>)} (config/mod.rs).
+        assert!(
+            matches!(&sb.network, crate::config::NetworkConfig::Hosts(h)
+                if h.iter().any(|x| x == "api.example.com")),
+            "network-host grant must land in NetworkConfig::Hosts, got {:?}",
+            sb.network
+        );
+    }
 }
