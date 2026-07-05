@@ -571,9 +571,7 @@ mod tests {
         // PermissionItem — the actual rendering is exercised end-to-end by
         // `docs/superpowers/plans/2026-07-04-repl-test-harness.md`'s harness
         // if/when this file adopts it. Assert the reply carries a Deny.
-        assert!(matches!(
-            outcome.respawn,
-            true // "r" is a live deny, not a cancel — respawn still folds the reply
-        ));
+        // "r" is a live deny, not a cancel — respawn still folds the reply.
+        assert!(outcome.respawn);
     }
 }
