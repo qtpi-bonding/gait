@@ -22,10 +22,7 @@ pub(crate) fn signature_or_default(
 }
 
 pub(crate) fn checkpoint_git_dir(gait_dir: &Path, session_id: &str) -> PathBuf {
-    gait_dir
-        .join("sessions")
-        .join(session_id)
-        .join("codebase.git")
+    crate::session::live::worktree_dir(gait_dir, session_id).join("codebase.git")
 }
 
 /// Bundle of the three git-context repos, injected from composition roots.
@@ -45,5 +42,19 @@ impl Repos {
             traces: Arc::new(GitTraceRepo),
             checkpoints: Arc::new(GitCheckpointRepo),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checkpoint_git_dir_is_under_the_active_mount() {
+        let gait_dir = std::path::Path::new("/tmp/gd");
+        assert_eq!(
+            checkpoint_git_dir(gait_dir, "sabc123"),
+            std::path::Path::new("/tmp/gd/.active/sabc123/codebase.git")
+        );
     }
 }
