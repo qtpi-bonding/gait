@@ -9,3 +9,5 @@ pub use builder::{InteractionOutcome, ReplBuilder};
 pub use renderer::ReplRenderer;
 pub use state::{ReplState, ViewSignal};
 pub use view::ReplViewItem;
+#[cfg(test)]
+mod harness;
