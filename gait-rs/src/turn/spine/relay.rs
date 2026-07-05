@@ -57,8 +57,9 @@ impl RelayState {
 /// * `Terminated`    → parse `TurnResult`, `sink.end_turn()`, `sink.result()`, return
 ///
 /// The spine is the sole gait-dir writer. Before spawning the brain, it performs
-/// all startup disk writes (worktree, checkpoint, session.json, lock, SessionStart)
-/// so the brain can run with `writable: []`. The brain's `run_turn` skips these
+/// all startup disk writes (worktree, checkpoint, lock, SessionStart)
+/// so the brain can run with `writable: []`. (session.json was dropped
+/// per the design spec §2; SessionStart and the lock remain.) The brain's `run_turn` skips these
 /// when `relay.is_some()`.
 ///
 /// Returns `Ok(true)` if the brain signalled failure, `Ok(false)` on success.
@@ -119,15 +120,13 @@ pub async fn relay_brain_turn(
         TurnMode::Ephemeral { .. } => crate::turn::SessionGit::null(),
     };
 
-    let session_dir = gait_dir.join("sessions").join(session_id);
-
     // Persistent: worktree + checkpoint init + lock + SessionStart, exactly as before.
     // Ephemeral: an in-memory log seeded with the one-off input; no FS writes at all.
     let log = match mode {
         TurnMode::Persistent => {
             git.ensure_worktree()?;
             git.checkpoint_init(codebase)?;
-            let log = crate::turn::SessionLog::open(&session_dir)?;
+            let log = crate::turn::SessionLog::open(gait_dir, session_id)?;
             // SessionStart — write once per session (idempotent via event check).
             {
                 use crate::proto::gait::log::v1::{event, payload};

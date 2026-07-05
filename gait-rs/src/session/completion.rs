@@ -105,7 +105,7 @@ pub fn notify_parent(
     parent_session: &str,
     c: &Completion,
 ) -> NotifyOutcome {
-    let target_dir = gait_dir.join("sessions").join(parent_session);
+    let target_dir = crate::session::live::worktree_dir(gait_dir, parent_session);
     if !target_dir.exists() {
         return NotifyOutcome::NoParent;
     }
@@ -119,7 +119,14 @@ pub fn notify_parent(
     // completion, drop the lock and report it. Lets the caller be sure
     // notify_parent is safe to call speculatively (Part 2's post-drop scan
     // and final-drain coexist).
-    let tx_path = target_dir.join("log.jsonl");
+    let tx_path = crate::session::live::log_path(gait_dir, parent_session);
+    // Unlike the old flat log.jsonl (a sibling of the always-present worktree
+    // root), the nested sessions/<id>/ directory may not exist yet — wire::append
+    // opens the file directly with no create_dir_all of its own (see
+    // gait-proto's write_to_transcript). Ensure it exists before appending.
+    if let Some(parent) = tx_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     if let Ok(events) = crate::proto::wire::read_events(&tx_path) {
         if events.iter().any(|ev| c.matches(ev)) {
             return NotifyOutcome::AlreadySurfaced;
@@ -186,7 +193,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn init_parent(gait_dir: &std::path::Path, id: &str) {
-        let dir = gait_dir.join("sessions").join(id);
+        let dir = crate::session::live::worktree_dir(gait_dir, id);
         std::fs::create_dir_all(&dir).unwrap();
     }
 
@@ -206,7 +213,8 @@ mod tests {
             matches!(outcome, NotifyOutcome::Woke),
             "expected Woke, got {outcome:?}"
         );
-        let log = std::fs::read_to_string(gd.path().join("sessions/sparent/log.jsonl")).unwrap();
+        let log =
+            std::fs::read_to_string(crate::session::live::log_path(gd.path(), "sparent")).unwrap();
         assert!(
             log.contains("\"daemonUpdate\""),
             "expected daemonUpdate in log, got: {log}"
@@ -218,7 +226,11 @@ mod tests {
         let gd = TempDir::new().unwrap();
         init_parent(gd.path(), "sbusy");
         // Hold the lock to simulate a live turn.
-        let _held = crate::turn::SessionLock::acquire(&gd.path().join("sessions/sbusy")).unwrap();
+        let _held = crate::turn::SessionLock::acquire(&crate::session::live::worktree_dir(
+            gd.path(),
+            "sbusy",
+        ))
+        .unwrap();
         let repos = crate::git::Repos::production();
         let c = Completion::Daemon {
             name: "x".into(),
@@ -269,7 +281,8 @@ mod tests {
             matches!(second, NotifyOutcome::AlreadySurfaced),
             "expected AlreadySurfaced, got {second:?}"
         );
-        let log = std::fs::read_to_string(gd.path().join("sessions/sdup/log.jsonl")).unwrap();
+        let log =
+            std::fs::read_to_string(crate::session::live::log_path(gd.path(), "sdup")).unwrap();
         // Exactly one event line: the dedup hit must not append a duplicate.
         let event_lines = log.lines().filter(|l| l.contains("daemonUpdate")).count();
         assert_eq!(event_lines, 1, "expected 1 event line, got: {log}");

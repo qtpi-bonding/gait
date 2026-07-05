@@ -172,7 +172,7 @@ pub async fn run_loop(
     driver: &mut impl TurnDriver,
     cascade: Option<&CascadeKillHandle>,
 ) -> anyhow::Result<()> {
-    let tx_path = gait_dir.join("sessions").join(session_id).join("log.jsonl");
+    let tx_path = crate::session::live::log_path(gait_dir, session_id);
     while let Some(start) = source.next().await {
         if let TurnStart::Input(bodies) = start {
             // Pre-write input events (spine is the sole gait-dir writer).

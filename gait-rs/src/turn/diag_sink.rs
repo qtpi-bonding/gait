@@ -1,4 +1,5 @@
-//! DiagnosticSink — single owner of writes to `sessions/<id>/diagnostic.jsonl`.
+//! DiagnosticSink — single owner of writes to
+//! `.active/<id>/sessions/<id>/diagnostic.jsonl`.
 //!
 //! Two disciplines, enforced in one place:
 //!
@@ -31,15 +32,12 @@ pub(crate) struct DiagnosticSink {
 
 impl DiagnosticSink {
     /// Build the sink for a given session. Resolves the canonical
-    /// `sessions/<id>/diagnostic.jsonl` path; the directory is created lazily
-    /// on first write (no need to mkdir here).
+    /// `.active/<id>/sessions/<id>/diagnostic.jsonl` path (live nested shape,
+    /// matching the persisted tree shape — see `crate::session::live`);
+    /// the directory is created lazily on first write (no need to mkdir here).
     pub(crate) fn new(gait_dir: &Path, session_id: &str) -> Self {
-        let path = gait_dir
-            .join("sessions")
-            .join(session_id)
-            .join("diagnostic.jsonl");
         Self {
-            path,
+            path: crate::session::live::diagnostic_path(gait_dir, session_id),
             session_id: session_id.to_string(),
         }
     }
@@ -70,6 +68,13 @@ impl DiagnosticSink {
 
     fn write_line(&self, line: &str) {
         use std::io::Write;
+        // The nested sessions/<id>/ directory (see crate::session::live) may
+        // not exist yet on a brand new session — create it lazily here so a
+        // terminal-failure record (which must ALWAYS be written) doesn't
+        // silently drop because its parent directory was never created.
+        if let Some(parent) = self.path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         let res = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -100,17 +105,11 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let session = "diag_ping_off";
-        std::fs::create_dir_all(tmp.path().join("sessions").join(session)).unwrap();
+        let path = crate::session::live::diagnostic_path(tmp.path(), session);
         let sink = DiagnosticSink::new(tmp.path(), session);
 
         sink.ping(r#"{"phase":"awaiting_headers"}"#);
         sink.ping(r#"{"phase":"streaming"}"#);
-
-        let path = tmp
-            .path()
-            .join("sessions")
-            .join(session)
-            .join("diagnostic.jsonl");
         assert!(
             !path.exists(),
             "diagnostic.jsonl must NOT be created when GAIT_DEBUG is unset; \
@@ -131,7 +130,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let session = "diag_terminal";
-        std::fs::create_dir_all(tmp.path().join("sessions").join(session)).unwrap();
+        let path = crate::session::live::diagnostic_path(tmp.path(), session);
         let sink = DiagnosticSink::new(tmp.path(), session);
 
         let rec = crate::diagnostic::DiagRecord::terminal(
@@ -140,12 +139,6 @@ mod tests {
             "brain reported failure via Terminated signal",
         );
         sink.terminal(&rec.to_json_line());
-
-        let path = tmp
-            .path()
-            .join("sessions")
-            .join(session)
-            .join("diagnostic.jsonl");
         assert!(
             path.exists(),
             "terminal record MUST be written even when GAIT_DEBUG is unset"

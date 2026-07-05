@@ -162,7 +162,6 @@ pub(crate) fn init(
         Persistence::from_relay(&relay, &repos, &gait_dir, &session_id, &codebase_path);
     let lock = init_persist.init_workspace(repos.checkpoints.as_ref())?;
 
-    let session_dir = crate::session::live::worktree_dir(&gait_dir, &session_id);
     let tx_path = crate::session::live::log_path(&gait_dir, &session_id);
     let ingestor = match emitter.log_mirror() {
         Some(mirror) => Ingestor::from_shared(mirror),

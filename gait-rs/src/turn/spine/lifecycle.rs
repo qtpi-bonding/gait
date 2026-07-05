@@ -584,10 +584,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let gait_dir = tmp.path();
         let session = "sterm";
-        let sdir = gait_dir.join("sessions").join(session);
-        std::fs::create_dir_all(&sdir).unwrap();
+        std::fs::create_dir_all(crate::session::live::worktree_dir(gait_dir, session)).unwrap();
         let mut failed = false;
-        let session_log = crate::turn::SessionLog::open(&sdir).unwrap();
+        let session_log = crate::turn::SessionLog::open(gait_dir, session).unwrap();
         emit_terminal_failure(
             &session_log,
             &crate::turn::DiagnosticSink::new(gait_dir, session),
@@ -597,13 +596,15 @@ mod tests {
         );
 
         assert!(failed, "brain_failed flag set for exit parity");
-        let log_path = sdir.join("log.jsonl");
+        let log_path = crate::session::live::log_path(gait_dir, session);
         let log = std::fs::read_to_string(&log_path).unwrap();
         assert!(
             log.to_lowercase().contains("error"),
             "Error event in log.jsonl"
         );
-        let diag = std::fs::read_to_string(sdir.join("diagnostic.jsonl")).unwrap();
+        let diag =
+            std::fs::read_to_string(crate::session::live::diagnostic_path(gait_dir, session))
+                .unwrap();
         assert!(diag.contains("streaming") && diag.contains("absolute backstop"));
     }
 

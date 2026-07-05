@@ -83,10 +83,7 @@ pub(super) async fn apply_curate_filter(
 
     let _ = repos.checkpoints.remove(gait_dir, &session_id);
 
-    let tx_path = gait_dir
-        .join("sessions")
-        .join(&session_id)
-        .join("log.jsonl");
+    let tx_path = crate::session::live::log_path(gait_dir, &session_id);
     read_events(&tx_path)
         .ok()
         .and_then(|events| {

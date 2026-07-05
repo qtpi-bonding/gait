@@ -47,25 +47,17 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let gait_dir = tmp.path();
         let session = "stest";
-        std::fs::create_dir_all(gait_dir.join("sessions").join(session)).unwrap();
 
         crate::turn::DiagnosticSink::new(gait_dir, session)
             .terminal(r#"{"phase":"awaiting_headers"}"#);
         crate::turn::DiagnosticSink::new(gait_dir, session).terminal(r#"{"phase":"streaming"}"#);
 
-        let p = gait_dir
-            .join("sessions")
-            .join(session)
-            .join("diagnostic.jsonl");
+        let p = crate::session::live::diagnostic_path(gait_dir, session);
         let body = std::fs::read_to_string(&p).unwrap();
         let lines: Vec<&str> = body.lines().collect();
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("awaiting_headers"));
         // And it did NOT touch log.jsonl
-        assert!(!gait_dir
-            .join("sessions")
-            .join(session)
-            .join("log.jsonl")
-            .exists());
+        assert!(!crate::session::live::log_path(gait_dir, session).exists());
     }
 }

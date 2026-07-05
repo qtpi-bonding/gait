@@ -72,10 +72,9 @@ pub async fn run_tool_as_spine(
     // RelaySynapse sends empty cwd because the brain doesn't read the session
     // log for cwd — the spine owns it.
     let cwd = if impulse.cwd.is_empty() {
-        let events = crate::session::log::read_events(
-            &gait_dir.join("sessions").join(session_id).join("log.jsonl"),
-        )
-        .unwrap_or_default();
+        let events =
+            crate::session::log::read_events(&crate::session::live::log_path(gait_dir, session_id))
+                .unwrap_or_default();
         crate::session::retrace::active_cwd(&events, codebase)
             .to_string_lossy()
             .into_owned()

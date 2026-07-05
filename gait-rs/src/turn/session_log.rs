@@ -30,11 +30,23 @@ pub(crate) enum SessionLog {
 }
 
 impl SessionLog {
-    /// Acquire the session lock (hard-fail on contention) and bind the log path.
-    pub(crate) fn open(session_dir: &Path) -> anyhow::Result<Self> {
-        let lock = SessionLock::acquire(session_dir)?;
+    /// Acquire the session lock (on the worktree-root mount) and bind the
+    /// (nested) log path. These two are no longer siblings under one
+    /// directory: the lock lives at `gait_dir/.active/<id>/lock`, the log at
+    /// `gait_dir/.active/<id>/sessions/<id>/log.jsonl` — see
+    /// `crate::session::live`.
+    pub(crate) fn open(gait_dir: &Path, session_id: &str) -> anyhow::Result<Self> {
+        let lock_dir = crate::session::live::worktree_dir(gait_dir, session_id);
+        let lock = SessionLock::acquire(&lock_dir)?;
+        let log_path = crate::session::live::log_path(gait_dir, session_id);
+        // The nested `sessions/<id>/` directory may not exist yet on a brand
+        // new session (create_session_worktree's orphan commit is empty) —
+        // SessionLog owns log.jsonl, so it ensures its own parent exists.
+        if let Some(parent) = log_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         Ok(Self::Persistent {
-            log_path: session_dir.join("log.jsonl"),
+            log_path,
             _lock: lock,
         })
     }
@@ -122,13 +134,13 @@ mod tests {
 
     #[test]
     fn append_body_chains_and_persists_in_order() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("sessions/s");
-        std::fs::create_dir_all(&dir).unwrap();
-        let log = SessionLog::open(&dir).unwrap();
+        let gait_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(crate::session::live::worktree_dir(gait_dir.path(), "s")).unwrap();
+        let log = SessionLog::open(gait_dir.path(), "s").unwrap();
         log.append_body(body("first")).unwrap();
         log.append_body(body("second")).unwrap();
-        let raw = std::fs::read_to_string(dir.join("log.jsonl")).unwrap();
+        let raw =
+            std::fs::read_to_string(crate::session::live::log_path(gait_dir.path(), "s")).unwrap();
         let a = raw.find("first").unwrap();
         let b = raw.find("second").unwrap();
         assert!(a < b, "append order must be preserved");
@@ -136,25 +148,26 @@ mod tests {
 
     #[test]
     fn open_hard_fails_when_session_locked_by_live_holder() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("sessions/s2");
-        std::fs::create_dir_all(&dir).unwrap();
-        let _held = SessionLog::open(&dir).expect("first open acquires");
+        let gait_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(crate::session::live::worktree_dir(gait_dir.path(), "s2")).unwrap();
+        let _held = SessionLog::open(gait_dir.path(), "s2").expect("first open acquires");
         // Same live PID holds the lock → second open must hard-fail.
-        let second = SessionLog::open(&dir);
+        let second = SessionLog::open(gait_dir.path(), "s2");
         assert!(second.is_err(), "open must hard-fail while lock is held");
     }
 
     #[test]
     fn drop_releases_lock() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("sessions/s3");
-        std::fs::create_dir_all(&dir).unwrap();
+        let gait_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(crate::session::live::worktree_dir(gait_dir.path(), "s3")).unwrap();
         {
-            let _l = SessionLog::open(&dir).unwrap();
+            let _l = SessionLog::open(gait_dir.path(), "s3").unwrap();
         }
         // After drop, re-open must succeed.
-        assert!(SessionLog::open(&dir).is_ok(), "drop must release the lock");
+        assert!(
+            SessionLog::open(gait_dir.path(), "s3").is_ok(),
+            "drop must release the lock"
+        );
     }
 
     #[test]
