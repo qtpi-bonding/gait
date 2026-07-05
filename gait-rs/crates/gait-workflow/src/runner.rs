@@ -665,7 +665,16 @@ pub async fn run_workflow(
                     Some(live) => OpenResumption::ResumeInline(live),
                     None => OpenResumption::SuspendAndExit,
                 };
-                handle_open_node(
+                // Drive the interactive node while draining its sink frames LIVE.
+                // `exec_prompt_node` renders every delta/event through `frame_tx`
+                // (one output path, spec-06 §4); an interactive session runs many
+                // turns before it returns (the user quits). Awaiting it to
+                // completion here and draining afterward — as this once did —
+                // buffers the whole session's streamed output until quit, so the
+                // reply never renders live. Instead race the node against the
+                // channel drain in a `select!`, exactly like the automated
+                // frontier below (the biased arms keep frames flushing promptly).
+                let open_fut = handle_open_node(
                     &node,
                     &wf,
                     &workflow_id,
@@ -680,11 +689,18 @@ pub async fn run_workflow(
                     &run_log,
                     observer,
                     strategy,
-                )
-                .await?;
-                // Drain both channels: ResumeInline's exec_prompt_node rendered
-                // through frame_tx (one output path, spec-06 §4), not the caller's
-                // sink directly.
+                );
+                tokio::pin!(open_fut);
+                loop {
+                    tokio::select! {
+                        biased;
+                        Some(frame) = frame_rx.recv() => { frame.replay(sink); }
+                        Some(item) = item_rx.recv() => { sink.item(&item); }
+                        r = &mut open_fut => { r?; break; }
+                    }
+                }
+                // Final drain: flush anything buffered between the node's last
+                // yield and its return.
                 while let Ok(frame) = frame_rx.try_recv() {
                     frame.replay(sink);
                 }
