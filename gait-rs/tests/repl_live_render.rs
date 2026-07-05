@@ -197,4 +197,16 @@ async fn interactive_reply_renders_live_not_after_session_ends() {
         "the streamed delta text must have been rendered: {:?}",
         deltas.lock().unwrap()
     );
+    // The reply text arrived as a delta whose newline closes a REPL block — i.e.
+    // the view WILL render it as a Block (see gait-repl harness unit tests for the
+    // block-rendering proof; here we assert the pipe delivers renderable content).
+    assert!(
+        deltas
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|d| d.contains("hello from the brain") && d.contains('\n')),
+        "e2e: streamed reply must be renderable block content: {:?}",
+        deltas.lock().unwrap()
+    );
 }
