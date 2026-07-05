@@ -583,20 +583,7 @@ pub(crate) async fn run_tools(
     // Gated tools: emit Permissions and exit so the user can decide.
     // (In auto mode gated_ids is always empty — this block is never reached.)
     if !pending_permissions.is_empty() {
-        for item in &pending_permissions {
-            eprintln!(
-                "[gait] no allow pattern matched {:?} (auto-approve off) — turn will pause",
-                item.cmd
-            );
-            if let Some(fix) =
-                crate::permissions::matching::near_miss_suggestion(&item.cmd, env.effective_allow)
-            {
-                eprintln!(
-                    "[gait] hint: patterns match commands as \"<cmd> *\" (note the space) — did you mean --allow {:?}?",
-                    fix
-                );
-            }
-        }
+        attach_near_miss_hints(&mut pending_permissions, env.effective_allow);
         env.emitter
             .record(events::permissions(&pending_permissions))?;
         return Ok(StepOutcome::Pause(PauseKind::Permissions));
@@ -621,4 +608,64 @@ pub(crate) async fn run_tools(
     });
 
     Ok(StepOutcome::Continue)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(cmd: &str) -> pb::PermissionItem {
+        pb::PermissionItem {
+            id: "p1".into(),
+            cmd: cmd.into(),
+            reason: format!("{cmd} requires permission"),
+            patterns: vec![cmd.into()],
+            tool_name: "shell".into(),
+            tool_args: None,
+            preview: None,
+        }
+    }
+
+    #[test]
+    fn attach_near_miss_hints_appends_suggestion_when_near_miss_exists() {
+        let mut items = vec![item("rm -rf /tmp/x")];
+        attach_near_miss_hints(&mut items, &["shell:rm*".to_string()]);
+        assert!(
+            items[0].reason.contains("did you mean --allow"),
+            "reason was: {}",
+            items[0].reason
+        );
+        assert!(items[0].reason.contains("shell:rm *"));
+    }
+
+    #[test]
+    fn attach_near_miss_hints_leaves_reason_untouched_when_no_near_miss() {
+        let mut items = vec![item("curl https://evil")];
+        let original = items[0].reason.clone();
+        attach_near_miss_hints(&mut items, &["shell:ls *".to_string()]);
+        assert_eq!(items[0].reason, original);
+    }
+
+    #[test]
+    fn attach_near_miss_hints_handles_empty_item_list() {
+        let mut items: Vec<pb::PermissionItem> = vec![];
+        attach_near_miss_hints(&mut items, &["shell:rm *".to_string()]);
+        assert!(items.is_empty());
+    }
+}
+/// Appends a near-miss `--allow` suggestion to each item's `reason` when the
+/// gated command almost matches an existing allow pattern (e.g. missing the
+/// trailing space before `*`). Mutates in place so the hint rides the same
+/// `PermissionItem` event already sent over `env.emitter` — no separate
+/// stderr print (which used to race the REPL's status-line timer thread),
+/// no new proto field.
+fn attach_near_miss_hints(items: &mut [pb::PermissionItem], allow: &[String]) {
+    for item in items.iter_mut() {
+        if let Some(fix) = crate::permissions::matching::near_miss_suggestion(&item.cmd, allow) {
+            item.reason = format!(
+                "{} (hint: patterns match as \"<cmd> *\" — did you mean --allow {:?}?)",
+                item.reason, fix
+            );
+        }
+    }
 }
