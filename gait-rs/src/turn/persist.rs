@@ -92,7 +92,7 @@ impl<'a> Persistence<'a> {
             } => {
                 repos.traces.create_session_worktree(gait_dir, session_id)?;
                 checkpoints.init(gait_dir, session_id, codebase_path)?;
-                let session_dir = gait_dir.join("sessions").join(session_id);
+                let session_dir = crate::session::live::worktree_dir(gait_dir, session_id);
                 Ok(Some(crate::turn::SessionLock::acquire(&session_dir)?))
             }
         }
