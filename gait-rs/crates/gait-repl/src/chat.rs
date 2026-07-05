@@ -124,23 +124,30 @@ pub async fn run_chat(
         .join(format!("shell-{}.jsonl", session_id));
     if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
         let wordmark_crlf = hints::WORDMARK.replace('\n', "\r\n");
-        eprint!("{}{}{}", theme.accent.fg(), wordmark_crlf, RESET);
-        let rev = gait_core::GAIT_BUILD_GIT_HASH
-            .get(..7)
-            .unwrap_or(gait_core::GAIT_BUILD_GIT_HASH);
-        eprint!("{}  {}{}\r\n", DIM_FG, rev, RESET);
+        // No `ReplBuilder` constructed yet at startup — nothing to synchronize against.
+        #[allow(clippy::print_stderr)]
+        {
+            eprint!("{}{}{}", theme.accent.fg(), wordmark_crlf, RESET);
+            let rev = gait_core::GAIT_BUILD_GIT_HASH
+                .get(..7)
+                .unwrap_or(gait_core::GAIT_BUILD_GIT_HASH);
+            eprint!("{}  {}{}\r\n", DIM_FG, rev, RESET);
+        }
     }
-    eprint!(
-        "{}gait{}  {}session {}{}  {}{}{}\r\n",
-        theme.accent.fg(),
-        RESET,
-        DIM_FG,
-        session_id,
-        RESET,
-        DIM_FG,
-        hints::STARTUP,
-        RESET,
-    );
+    #[allow(clippy::print_stderr)] // still pre-`shared`
+    {
+        eprint!(
+            "{}gait{}  {}session {}{}  {}{}{}\r\n",
+            theme.accent.fg(),
+            RESET,
+            DIM_FG,
+            session_id,
+            RESET,
+            DIM_FG,
+            hints::STARTUP,
+            RESET,
+        );
+    }
 
     let history_file = gait_dir.join("repl_history");
     let rl = build_line_editor(
@@ -168,7 +175,12 @@ pub async fn run_chat(
             ) {
                 Ok(c) => c.sandbox.on,
                 Err(e) => {
-                    eprintln!("[gait] {e}");
+                    // No `ReplBuilder` constructed yet — this closure runs while
+                    // building the `ReplShared` it would otherwise write through.
+                    #[allow(clippy::print_stderr)]
+                    {
+                        eprintln!("[gait] {e}");
+                    }
                     std::process::exit(1);
                 }
             },
@@ -244,7 +256,10 @@ pub async fn run_chat(
         match control {
             Some(crate::repl::Control::NewSession(id)) => {
                 session_id = id;
-                eprint!("new session {}\r\n", session_id);
+                shared
+                    .borrow_mut()
+                    .builder
+                    .write_raw(&format!("new session {}\r\n", session_id));
                 continue;
             }
             Some(crate::repl::Control::Quit) | None => break,
@@ -256,7 +271,11 @@ pub async fn run_chat(
     if gait_dir != cwd {
         resume.push_str(&format!(" --gait-dir {}", gait_dir.display()));
     }
-    eprint!("{}{}{}\r\n", DIM_FG, resume, RESET);
+    #[allow(clippy::print_stderr)]
+    // post-loop, `shared`'s builder is going out of scope; nothing left to synchronize against
+    {
+        eprint!("{}{}{}\r\n", DIM_FG, resume, RESET);
+    }
 
     Ok(())
 }

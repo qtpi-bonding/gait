@@ -56,26 +56,29 @@ impl TurnSink for ReplSink {
     fn result(&mut self, r: &TurnResult) {
         match r {
             TurnResult::Cancelled => {
-                eprint!("\u{2298} interrupted\r\n");
+                self.shared
+                    .borrow_mut()
+                    .builder
+                    .write_raw("\u{2298} interrupted\r\n");
             }
             TurnResult::Unlock { items } => {
                 let warning_fg = self.shared.borrow().builder.theme().warning.fg();
-                eprint!(
+                self.shared.borrow_mut().builder.write_raw(&format!(
                     "\r\n{}sandbox: {} item(s) need unlock{}\r\n",
                     warning_fg,
                     items.len(),
                     RESET
-                );
+                ));
                 for item in items {
-                    eprint!(
+                    self.shared.borrow_mut().builder.write_raw(&format!(
                         "  {}[{}] {}{}\r\n",
                         DIM_FG, item.dimension, item.resource, RESET
-                    );
+                    ));
                 }
-                eprint!(
+                self.shared.borrow_mut().builder.write_raw(&format!(
                     "  {}run: /unlock [once|session|global|agent]{}\r\n",
                     DIM_FG, RESET
-                );
+                ));
             }
             _ => {}
         }
@@ -85,7 +88,10 @@ impl TurnSink for ReplSink {
 
     fn diagnostic(&mut self, level: Diag, msg: &str) {
         if level == Diag::Error {
-            eprint!("[gait] {msg}\r\n");
+            self.shared
+                .borrow_mut()
+                .builder
+                .write_raw(&format!("[gait] {msg}\r\n"));
         }
     }
 
@@ -165,15 +171,18 @@ impl TurnSource for ReplSource {
                     {
                         return Some(TurnStart::Resume); // fold the appended reply (no re-append)
                     }
-                    eprint!("\r\n");
+                    self.shared.borrow_mut().builder.write_raw("\r\n");
                 }
                 Some(Err(e)) => {
-                    eprint!("[gait] {e}\r\n");
+                    self.shared
+                        .borrow_mut()
+                        .builder
+                        .write_raw(&format!("[gait] {e}\r\n"));
                     self.shared.borrow_mut().control = Some(Control::Quit);
                     return None;
                 }
                 None => {
-                    eprint!("\r\n");
+                    self.shared.borrow_mut().builder.write_raw("\r\n");
                 } // turn done, no interaction
             }
         }
@@ -202,7 +211,7 @@ impl TurnSource for ReplSource {
             let read = self.shared.borrow_mut().builder.readline(&prompt);
             let line = match read {
                 Ok(reedline::Signal::Success(buf)) => {
-                    eprint!("{}", RESET);
+                    self.shared.borrow_mut().builder.write_raw(RESET);
                     buf.trim().to_string()
                 }
                 Ok(reedline::Signal::CtrlD) => {
@@ -210,7 +219,7 @@ impl TurnSource for ReplSource {
                     return None;
                 }
                 Ok(reedline::Signal::CtrlC) => {
-                    eprint!("{}", RESET);
+                    self.shared.borrow_mut().builder.write_raw(RESET);
                     continue;
                 }
                 Ok(_) => {
@@ -233,7 +242,10 @@ impl TurnSource for ReplSource {
                     CaptureResult::Interactive => (String::new(), Some(0)),
                 };
                 if code != Some(0) {
-                    eprint!("[!] exit {}\r\n", code.unwrap_or(1));
+                    self.shared
+                        .borrow_mut()
+                        .builder
+                        .write_raw(&format!("[!] exit {}\r\n", code.unwrap_or(1)));
                 }
                 let _ = gait_core::shell_history::append(
                     &self.shell_history_path,
@@ -247,7 +259,10 @@ impl TurnSource for ReplSource {
             // /help (or /?) — emit the grouped command guide via the sink (raw eprint
             // bypasses the themed ReplRenderer; the help text is plain by design).
             if line.trim() == "/help" || line.trim() == "/?" {
-                eprint!("{}", cmd::help_text().replace('\n', "\r\n"));
+                self.shared
+                    .borrow_mut()
+                    .builder
+                    .write_raw(&cmd::help_text().replace('\n', "\r\n"));
                 continue;
             }
 
@@ -255,13 +270,13 @@ impl TurnSource for ReplSource {
             if line.trim() == "/info" {
                 let cfg = gait_core::config::load_config(&self.gait_dir);
                 let model = cfg.model.as_deref().unwrap_or("(none)");
-                eprint!(
+                self.shared.borrow_mut().builder.write_raw(&format!(
                     "model: {}\rsession: {}\rgait-dir: {}\rcodebase: {}\r\n",
                     model,
                     self.session_id,
                     self.gait_dir.display(),
                     self.codebase.display(),
-                );
+                ));
                 continue;
             }
 
@@ -273,12 +288,21 @@ impl TurnSource for ReplSource {
                         Ok(models) => {
                             let filtered = gait_core::models::filter_models(&models, None);
                             for m in &filtered {
-                                eprint!("  {}/{}\r\n", m.provider, m.id);
+                                self.shared
+                                    .borrow_mut()
+                                    .builder
+                                    .write_raw(&format!("  {}/{}\r\n", m.provider, m.id));
                             }
-                            eprint!("\r\n{} models\r\n", filtered.len());
+                            self.shared
+                                .borrow_mut()
+                                .builder
+                                .write_raw(&format!("\r\n{} models\r\n", filtered.len()));
                         }
                         Err(e) => {
-                            eprint!("[gait] /model: {e}\r\n");
+                            self.shared
+                                .borrow_mut()
+                                .builder
+                                .write_raw(&format!("[gait] /model: {e}\r\n"));
                         }
                     }
                     continue;
@@ -299,10 +323,16 @@ impl TurnSource for ReplSource {
                 let serialized =
                     serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string());
                 if let Err(e) = std::fs::write(&cfg_path, serialized) {
-                    eprint!("[gait] /model: write {}: {e}\r\n", cfg_path.display());
+                    self.shared.borrow_mut().builder.write_raw(&format!(
+                        "[gait] /model: write {}: {e}\r\n",
+                        cfg_path.display()
+                    ));
                     continue;
                 }
-                eprint!("model set to {arg}\r\n");
+                self.shared
+                    .borrow_mut()
+                    .builder
+                    .write_raw(&format!("model set to {arg}\r\n"));
                 continue;
             }
 
@@ -312,7 +342,10 @@ impl TurnSource for ReplSource {
             if let Some(rest) = line.strip_prefix("/sh").or_else(|| line.strip_prefix("/e")) {
                 let desc = rest.trim();
                 if desc.is_empty() {
-                    eprint!("[gait] usage: /sh <describe a command>\r\n");
+                    self.shared
+                        .borrow_mut()
+                        .builder
+                        .write_raw("[gait] usage: /sh <describe a command>\r\n");
                     continue;
                 }
                 let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -324,10 +357,16 @@ impl TurnSource for ReplSource {
                             &text,
                             gait_core::session::log::now_ms(),
                         );
-                        eprint!("{text}\r\n");
+                        self.shared
+                            .borrow_mut()
+                            .builder
+                            .write_raw(&format!("{text}\r\n"));
                     }
                     Err(e) => {
-                        eprint!("[gait] /sh: {e}\r\n");
+                        self.shared
+                            .borrow_mut()
+                            .builder
+                            .write_raw(&format!("[gait] /sh: {e}\r\n"));
                     }
                 }
                 continue;
@@ -339,12 +378,18 @@ impl TurnSource for ReplSource {
             // a skill name.
             if line.trim() == "/sandbox" || line.trim() == "/sandbox on" {
                 self.shared.borrow_mut().sandbox_on = true;
-                eprint!("sandbox enabled\r\n");
+                self.shared
+                    .borrow_mut()
+                    .builder
+                    .write_raw("sandbox enabled\r\n");
                 continue;
             }
             if line.trim() == "/sandbox off" {
                 self.shared.borrow_mut().sandbox_on = false;
-                eprint!("sandbox disabled\r\n");
+                self.shared
+                    .borrow_mut()
+                    .builder
+                    .write_raw("sandbox disabled\r\n");
                 continue;
             }
 
@@ -368,15 +413,18 @@ impl TurnSource for ReplSource {
                             .map(|s| s.success())
                             .unwrap_or(false);
                         if !ok {
-                            eprint!(
+                            self.shared.borrow_mut().builder.write_raw(&format!(
                                 "[gait] unlock failed — check: gait status {} --gait-dir {}\r\n",
                                 self.session_id,
                                 self.gait_dir.display()
-                            );
+                            ));
                         }
                     }
                     _ => {
-                        eprint!("[gait] usage: /unlock [once|session|global|agent]\r\n");
+                        self.shared
+                            .borrow_mut()
+                            .builder
+                            .write_raw("[gait] usage: /unlock [once|session|global|agent]\r\n");
                     }
                 }
                 continue;
@@ -386,20 +434,20 @@ impl TurnSource for ReplSource {
             if let Some((skill_name, enabled)) = parse_skill_toggle(&line) {
                 let available = gait_core::skills::scan_skills(&self.gait_dir);
                 if !available.iter().any(|s| s.name == skill_name) {
-                    eprint!(
+                    self.shared.borrow_mut().builder.write_raw(&format!(
                         "[gait] no such skill {:?} — is skills/{}/SKILL.md present?\r\n",
                         skill_name, skill_name
-                    );
+                    ));
                 } else {
                     let _ = wire::append(
                         &self.log_path(),
                         events::toggle("skill", &skill_name, enabled),
                     );
-                    eprint!(
+                    self.shared.borrow_mut().builder.write_raw(&format!(
                         "skill {} {}\r\n",
                         skill_name,
                         if enabled { "enabled" } else { "disabled" }
-                    );
+                    ));
                 }
                 continue;
             }
@@ -408,7 +456,11 @@ impl TurnSource for ReplSource {
             if let Some(rest) = line.strip_prefix("/workflow") {
                 let mut parts = rest.split_whitespace();
                 match parts.next() {
-                    None => eprint!("[gait] usage: /workflow <name> [args...]\r\n"),
+                    None => self
+                        .shared
+                        .borrow_mut()
+                        .builder
+                        .write_raw("[gait] usage: /workflow <name> [args...]\r\n"),
                     Some(name) => {
                         let args: Vec<String> = parts.map(String::from).collect();
                         let result = run_named_workflow(
@@ -472,15 +524,17 @@ impl TurnSource for ReplSource {
                         .map(|s| s.success())
                         .unwrap_or(false);
                     if !ok {
-                        eprint!("[undo] failed — is there a turn {n} for this session?\r\n");
+                        self.shared.borrow_mut().builder.write_raw(&format!(
+                            "[undo] failed — is there a turn {n} for this session?\r\n"
+                        ));
                         continue;
                     }
                     format!("[undo] restored {label} to turn {n}")
                 } else {
-                    eprint!(
+                    self.shared.borrow_mut().builder.write_raw(&format!(
                         "{}\r\n",
                         crate::chat::hints::UNDO_USAGE.replace('\n', "\r\n")
-                    );
+                    ));
                     continue;
                 }
             } else {
@@ -578,7 +632,12 @@ async fn run_sh_one_off(
     ) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[gait] {e}");
+            // No `Shared`/`ReplBuilder` reachable in this free fn, and the
+            // process exits on the next line anyway — nothing to race.
+            #[allow(clippy::print_stderr)]
+            {
+                eprintln!("[gait] {e}");
+            }
             std::process::exit(1);
         }
     };
