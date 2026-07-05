@@ -195,7 +195,7 @@ impl ReplState {
                 let name = self.pending_tool.take().unwrap_or_else(|| "?".to_string());
                 // Revert status line to "thinking…" while LLM processes the result.
                 if let Some(t) = &self.timer {
-                    t.set_activity("thinking\u{2026}");
+                    t.set_activity("thinking…");
                 }
                 self.pending.push(ReplItem::ToolResult {
                     ok,
@@ -278,6 +278,11 @@ impl ReplState {
 
     pub fn has_interaction(&self) -> bool {
         !matches!(self.interaction_pending, Pending::None)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn peek_pending(&self) -> &Pending {
+        &self.interaction_pending
     }
 
     pub(crate) fn take_pending(&mut self) -> Pending {
@@ -384,7 +389,6 @@ mod tests {
     }
 
     #[test]
-
     fn structured_done_message_emitted_as_done_message() {
         use gait_core::proto::gait::log::v1::TurnTokenUsage;
         use gait_core::proto::{envelope, events};
@@ -419,7 +423,6 @@ mod tests {
     }
 
     #[test]
-
     fn structured_done_result_emitted_as_json_only_box() {
         use gait_core::proto::gait::log::v1::TurnTokenUsage;
         use gait_core::proto::{envelope, events};
@@ -463,6 +466,7 @@ mod tests {
             block_contents
         );
     }
+
     #[test]
     fn apply_event_turn_complete_returns_done() {
         use gait_core::proto::events;

@@ -48,7 +48,7 @@ pub struct ReplSink {
 impl TurnSink for ReplSink {
     fn item(&mut self, it: &StreamItem) {
         let mut s = self.shared.borrow_mut();
-        if let ViewSignal::TurnDone(b) = s.builder.handle_stream_item(it.clone()) {
+        if let ViewSignal::TurnDone(b) = s.builder.handle_stream_item(it.clone()).signal {
             s.turn_done_blocks = Some(b);
         }
     }

@@ -5,12 +5,18 @@ use crate::theme::{DIM_FG, RESET};
 use crate::ui::renderer::ReplRenderer;
 use crate::ui::state::Pending;
 use crate::ui::state::{ReplState, ViewSignal};
+use crate::ui::view::ReplViewItem;
 use gait_core::proto::events;
 use gait_core::proto::gait::log::v1 as pb;
 
 pub struct InteractionOutcome {
     pub event_body: pb::event::Body,
     pub respawn: bool,
+}
+
+pub struct StreamRender {
+    pub signal: ViewSignal,
+    pub painted: Vec<ReplViewItem>,
 }
 
 pub struct ReplBuilder {
@@ -33,7 +39,7 @@ impl ReplBuilder {
         self.state.begin_turn();
     }
 
-    pub fn handle_stream_item(&mut self, item: pb::StreamItem) -> ViewSignal {
+    pub fn handle_stream_item(&mut self, item: pb::StreamItem) -> StreamRender {
         use pb::stream_item::Item;
         let signal = match item.item {
             Some(Item::Event(ev)) => self.state.apply_event(&ev),
@@ -43,16 +49,16 @@ impl ReplBuilder {
             }
             None => ViewSignal::Continue,
         };
-        self.renderer.paint(&mut self.state);
-        signal
+        let painted = self.renderer.paint(&mut self.state);
+        StreamRender { signal, painted }
     }
 
-    pub fn flush(&mut self) {
+    pub fn flush(&mut self) -> Vec<ReplViewItem> {
         if let Some(mut t) = self.state.timer.take() {
             t.stop();
         }
         self.state.flush_buf();
-        self.renderer.paint(&mut self.state);
+        self.renderer.paint(&mut self.state)
     }
 
     pub fn has_interaction(&self) -> bool {
@@ -69,6 +75,11 @@ impl ReplBuilder {
 
     pub fn theme(&self) -> &crate::theme::Theme {
         self.renderer.theme()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn state(&self) -> &ReplState {
+        &self.state
     }
 
     fn make_prompt(&self, prefix: &str) -> DefaultPrompt {
@@ -114,11 +125,8 @@ impl ReplBuilder {
         let prompt_str = RESET.to_string();
         let mut replies = Vec::new();
 
-        let bar = "\u{2500}".repeat(56);
-        eprint!(
-            "\r\n{}  \u{2500}\u{2500} clarify {}{}\r\n",
-            DIM_FG, bar, RESET
-        );
+        let bar = "─".repeat(56);
+        eprint!("\r\n{}  ── clarify {}{}\r\n", DIM_FG, bar, RESET);
 
         for item in &items {
             eprint!("\r\n");
@@ -158,11 +166,8 @@ impl ReplBuilder {
         let prompt_str = RESET.to_string();
         let mut replies = Vec::new();
 
-        let bar = "\u{2500}".repeat(57);
-        eprint!(
-            "\r\n{}  \u{2500}\u{2500} inform {}{}\r\n",
-            DIM_FG, bar, RESET
-        );
+        let bar = "─".repeat(57);
+        eprint!("\r\n{}  ── inform {}{}\r\n", DIM_FG, bar, RESET);
 
         for item in &items {
             eprint!("\r\n");
@@ -452,6 +457,7 @@ mod tests {
             panic!("expected Payload body");
         }
     }
+
     #[test]
     fn permissions_reply_event_has_correct_kind() {
         use gait_core::proto::gait::log::v1::payload;

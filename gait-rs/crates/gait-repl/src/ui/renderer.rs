@@ -115,19 +115,19 @@ impl ReplRenderer {
     /// enables terminal raw mode during turns. In raw mode `\n` is a bare line
     /// feed (no carriage return), so without `\r` each line would start at the
     /// column where the previous line ended rather than column 0.
-    pub fn paint(&self, state: &mut ReplState) {
+    pub fn paint(&self, state: &mut ReplState) -> Vec<ReplViewItem> {
         if state.pending.is_empty() {
-            return;
+            return Vec::new();
         }
         let _guard = state.paint_lock.as_ref().and_then(|l| l.lock().ok());
-        // Erase the live status line before printing content so they don't overlap.
         eprint!("\r\x1b[2K");
         let pending = std::mem::take(&mut state.pending);
         let view_items: Vec<ReplViewItem> = pending.into_iter().flat_map(clean_repl_item).collect();
-        for v in view_items {
-            self.paint_view_item(&v);
+        for v in &view_items {
+            self.paint_view_item(v);
         }
         let _ = std::io::stderr().flush();
+        view_items
     }
 
     fn paint_view_item(&self, v: &ReplViewItem) {
@@ -293,6 +293,7 @@ mod word_wrap_tests {
         assert!(segs.len() >= 4);
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,6 +322,23 @@ mod tests {
         let mut state = ReplState::new();
         r.paint(&mut state);
         assert!(state.pending.is_empty());
+    }
+
+    #[test]
+    fn paint_returns_the_block_it_rendered() {
+        let r = ReplRenderer::new(Theme::detect());
+        let mut state = ReplState::new();
+        state.pending.push(ReplItem::Block {
+            content: "Hello!".into(),
+            block_num: 1,
+        });
+        let painted = r.paint(&mut state);
+        assert!(
+            painted.iter().any(
+                |v| matches!(v, ReplViewItem::Block { content, .. } if content.contains("Hello!"))
+            ),
+            "paint must return the Block it rendered: {painted:?}"
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@
 
 /// Render-ready item. The renderer matches on these variants; column conventions
 /// are encoded by the variant, not by literal strings at the call site.
+#[derive(Debug)]
 pub enum ReplViewItem {
     /// A numbered assistant text block — full markdown content rendered through termimad.
     Block {
