@@ -104,17 +104,14 @@ impl Recorder {
         *self.position.lock().expect("position mutex poisoned") = (turn, step);
     }
 
-    /// Construct from a session layout: writes to `<gait_dir>/sessions/<id>/log.jsonl`.
+    /// Construct from a session layout: writes to `<gait_dir>/.active/<id>/sessions/<id>/log.jsonl`.
     /// Mirror of [`Ingestor::from_session`](crate::session::Ingestor::from_session).
     pub fn for_session(
         gait_dir: &Path,
         session_id: &str,
         sender: UnboundedSender<StreamItem>,
     ) -> Self {
-        Self::new(
-            gait_dir.join("sessions").join(session_id).join("log.jsonl"),
-            sender,
-        )
+        Self::new(crate::session::live::log_path(gait_dir, session_id), sender)
     }
 
     /// A no-op recorder for tests that need a `&Recorder` but don't assert on emission. Records are
@@ -251,7 +248,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let (tx, _rx) = mpsc::unbounded_channel();
         let em = Recorder::for_session(dir.path(), "s1234567", tx);
-        assert_eq!(em.tx_path, dir.path().join("sessions/s1234567/log.jsonl"));
+        assert_eq!(
+            em.tx_path,
+            dir.path()
+                .join(".active/s1234567/sessions/s1234567/log.jsonl")
+        );
     }
 
     #[test]

@@ -21,7 +21,7 @@ impl Ingestor {
     }
 
     pub fn from_session(gait_dir: &Path, session_id: &str) -> Self {
-        Self::new(gait_dir.join("sessions").join(session_id).join("log.jsonl"))
+        Self::new(crate::session::live::log_path(gait_dir, session_id))
     }
 
     /// In-memory ingestor backed by a shared log mirror (the brain under a spine).
@@ -59,7 +59,7 @@ mod tests {
         use crate::proto::gait::log::v1::{payload, AssistantText};
         use crate::proto::wire::{append, body};
         let dir = tempdir().unwrap();
-        let log_path = dir.path().join("sessions/s1234567/log.jsonl");
+        let log_path = crate::session::live::log_path(dir.path(), "s1234567");
         std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
         append(
             &log_path,
@@ -70,6 +70,21 @@ mod tests {
         .unwrap();
         let ingestor = Ingestor::from_session(dir.path(), "s1234567");
         assert_eq!(ingestor.events().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn from_session_resolves_the_live_nested_path() {
+        // Child modules in Rust see the parent module's private items, so
+        // `inner`/`IngestorInner` are reachable directly from this in-file
+        // #[cfg(test)] module — no accessor needed.
+        let ingestor = Ingestor::from_session(std::path::Path::new("/tmp/gd"), "sabc");
+        match ingestor.inner {
+            IngestorInner::File(p) => assert_eq!(
+                p,
+                std::path::Path::new("/tmp/gd/.active/sabc/sessions/sabc/log.jsonl")
+            ),
+            _ => panic!("expected File variant"),
+        }
     }
 
     #[test]
