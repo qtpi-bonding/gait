@@ -6,6 +6,7 @@ pub use children::{children_of, ChildInfo};
 pub mod completion;
 pub mod daemons;
 pub mod ingestor;
+pub mod live;
 pub mod log;
 pub mod retrace;
 pub use ingestor::Ingestor;
