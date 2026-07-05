@@ -33,11 +33,13 @@ pub fn write_child_session(opts: WriteChildSessionOpts<'_>) -> anyhow::Result<()
         .codebase
         .head_hash(opts.codebase)
         .unwrap_or_default();
-    let tx_path = opts
-        .gait_dir
-        .join("sessions")
-        .join(opts.new_id)
-        .join("log.jsonl");
+    let tx_path = crate::session::live::log_path(opts.gait_dir, opts.new_id);
+    // The nested sessions/<id>/ dir doesn't exist on a fresh session — `gait init`
+    // creates .active/ but not its children. Ensure the log's parent dir exists
+    // before init_session and wire::append try to open it.
+    if let Some(parent) = tx_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
 
     let session_model = config.model.clone().ok_or_else(|| {
         anyhow::anyhow!(
@@ -153,11 +155,7 @@ impl Tool for SpawnAgentTool {
 
         // Persist per-spawn schema so the child CLI can read it into ProfileInputs.
         if let Some(schema) = args.get("schema").filter(|v| !v.is_null()) {
-            let schema_path = self
-                .ctx
-                .gait_dir
-                .join("sessions")
-                .join(&new_id)
+            let schema_path = crate::session::live::worktree_dir(&self.ctx.gait_dir, &new_id)
                 .join("result_schema.json");
             match serde_json::to_vec_pretty(schema) {
                 Ok(bytes) => {
@@ -229,8 +227,8 @@ mod tests {
         let new_id = result["session_id"].as_str().unwrap();
         assert!(new_id.starts_with('s'));
 
-        let tx = ws.path().join(format!("sessions/{}/log.jsonl", new_id));
-        assert!(tx.exists());
+        let tx = crate::session::live::log_path(ws.path(), new_id);
+        assert!(tx.exists(), "child session log must exist at {tx:?}");
         let events = read_events(&tx).unwrap();
         let ek = |e: &crate::proto::gait::log::v1::Event| -> Option<payload::Kind> {
             match &e.body {

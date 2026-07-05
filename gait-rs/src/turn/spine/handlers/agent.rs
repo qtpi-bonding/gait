@@ -123,11 +123,8 @@ pub(crate) async fn handle_spawn_agent(args: SpawnAgentArgs, ctx: TurnCtx) -> Fe
 
     // Persist per-spawn schema so the child CLI can read it into ProfileInputs.
     if let Some(ref schema) = args.schema {
-        let schema_path = ctx
-            .gait_dir
-            .join("sessions")
-            .join(&new_id)
-            .join("result_schema.json");
+        let schema_path =
+            crate::session::live::worktree_dir(&ctx.gait_dir, &new_id).join("result_schema.json");
         match serde_json::to_vec_pretty(schema) {
             Ok(bytes) => {
                 if let Err(e) = std::fs::write(&schema_path, &bytes) {
@@ -147,11 +144,7 @@ pub(crate) async fn handle_spawn_agent(args: SpawnAgentArgs, ctx: TurnCtx) -> Fe
     }
 
     // Blocking subagent: wait for the child process to exit, then read its result.
-    let tx_path = ctx
-        .gait_dir
-        .join("sessions")
-        .join(&new_id)
-        .join("log.jsonl");
+    let tx_path = crate::session::live::log_path(&ctx.gait_dir, &new_id);
 
     let Some(mut child) = launch_child(&ctx, &new_id, false) else {
         return error_feedback("spawn_agent: failed to launch subagent");
@@ -252,9 +245,10 @@ mod tests {
                 _ => None,
             })
             .unwrap();
+        let tx_path = crate::session::live::log_path(ws.path(), id);
         assert!(
-            ws.path().join(format!("sessions/{id}/log.jsonl")).exists(),
-            "child session log must exist at sessions/{id}/log.jsonl"
+            tx_path.exists(),
+            "child session log must exist at {tx_path:?}"
         );
     }
 
@@ -302,11 +296,8 @@ mod tests {
                 _ => None,
             })
             .expect("Feedback must carry session_id");
-        let schema_path = ws
-            .path()
-            .join("sessions")
-            .join(&id)
-            .join("result_schema.json");
+        let schema_path =
+            crate::session::live::worktree_dir(ws.path(), &id).join("result_schema.json");
         assert!(
             schema_path.exists(),
             "result_schema.json must exist at {schema_path:?}"

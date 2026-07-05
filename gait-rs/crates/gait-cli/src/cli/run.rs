@@ -220,9 +220,7 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
 
     // Read per-spawn result schema if the child session has one written by the parent process.
     let result_schema: Option<serde_json::Value> = {
-        let schema_path = gait_dir
-            .join("sessions")
-            .join(&session_id)
+        let schema_path = gait_core::session::live::worktree_dir(&gait_dir, &session_id)
             .join("result_schema.json");
         std::fs::read(&schema_path)
             .ok()
