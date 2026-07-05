@@ -115,11 +115,15 @@ pub(super) async fn apply_curate_filter(
                 .and_then(|r| r.as_array())
                 .map(|a| a.len())
                 .unwrap_or(0);
-            eprintln!(
-                "[gait] curate-filter: {}/{} items kept",
-                relevant_items.len(),
-                relevant_items.len() + irrelevant_count
-            );
+            #[allow(clippy::print_stderr)]
+            // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
+            {
+                eprintln!(
+                    "[gait] curate-filter: {}/{} items kept",
+                    relevant_items.len(),
+                    relevant_items.len() + irrelevant_count
+                );
+            }
             let body = relevant_items.join("\n");
             if irrelevant_count > 0 {
                 serde_json::Value::String(format!(

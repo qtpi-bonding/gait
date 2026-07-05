@@ -285,7 +285,11 @@ pub(crate) fn apply_parse_filter(raw: &str, ops: &serde_json::Value) -> String {
     let in_lines = raw.lines().count();
     let out_lines = current.lines().count();
     if out_lines != in_lines {
-        eprintln!("[gait] parse-filter: {}/{} lines kept", out_lines, in_lines);
+        #[allow(clippy::print_stderr)]
+        // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
+        {
+            eprintln!("[gait] parse-filter: {}/{} lines kept", out_lines, in_lines);
+        }
     }
     current
 }

@@ -99,19 +99,31 @@ pub(crate) async fn run_step(
                 // Task 6: transport_error observability — v1 uses log::warn!
                 // A structured recorder event can follow once transport errors
                 // are promoted to first-class proto events.
-                eprintln!(
-                    "[gait] transport_error kind=stream_incomplete received_bytes={received_bytes}"
-                );
+                #[allow(clippy::print_stderr)]
+                // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
+                {
+                    eprintln!(
+                        "[gait] transport_error kind=stream_incomplete received_bytes={received_bytes}"
+                    );
+                }
                 return Err(anyhow::anyhow!(
                     "stream incomplete after {received_bytes} bytes"
                 ));
             }
             Err(gait_provider::provider::ProviderError::Timeout { phase }) => {
-                eprintln!("[gait] transport_error kind=timeout phase={phase:?}");
+                #[allow(clippy::print_stderr)]
+                // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
+                {
+                    eprintln!("[gait] transport_error kind=timeout phase={phase:?}");
+                }
                 return Err(anyhow::anyhow!("stream timeout in phase {phase:?}"));
             }
             Err(gait_provider::provider::ProviderError::Overloaded) => {
-                eprintln!("[gait] transport_error kind=overloaded");
+                #[allow(clippy::print_stderr)]
+                // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
+                {
+                    eprintln!("[gait] transport_error kind=overloaded");
+                }
                 return Err(anyhow::anyhow!("provider overloaded"));
             }
             Err(e) => return Err(anyhow::anyhow!("stream error: {}", e)),

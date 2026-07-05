@@ -5,6 +5,14 @@ pub mod models;
 pub mod scheduler;
 pub mod session;
 pub mod tools;
+// `run_turn` (and everything under it, sealed-brain or in-process) must never
+// touch the terminal directly — see docs/architecture.md's "The Turn I/O
+// Boundary": all output is proto events over the log/Nerve channel, consumed
+// by an adapter (StdioSink/JsonSink/the REPL). Existing violations are
+// individually `#[allow]`ed with a tracked-debt comment (see
+// docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md); no new one may
+// land without the same explicit acknowledgement.
+#[deny(clippy::print_stderr)]
 pub mod turn;
 pub use gait_provider::{anthropic, factory, openai, provider, providers, strict, transport};
 pub use gait_sandbox::{process, sandbox};

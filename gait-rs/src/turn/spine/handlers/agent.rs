@@ -47,7 +47,11 @@ pub(crate) fn launch_child(
 ) -> Option<std::process::Child> {
     let cascade_group = if detached { None } else { ctx.group.handle() };
     if !detached && cascade_group.is_none() {
-        eprintln!("[spine] warning: spawn_agent cascade-group handle unavailable; subagent will not be enrolled in cascade group");
+        #[allow(clippy::print_stderr)]
+        // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
+        {
+            eprintln!("[spine] warning: spawn_agent cascade-group handle unavailable; subagent will not be enrolled in cascade group");
+        }
     }
     let argv = crate::launch::RunLaunch {
         session: Some(session_id.to_string()),
@@ -128,11 +132,19 @@ pub(crate) async fn handle_spawn_agent(args: SpawnAgentArgs, ctx: TurnCtx) -> Fe
         match serde_json::to_vec_pretty(schema) {
             Ok(bytes) => {
                 if let Err(e) = std::fs::write(&schema_path, &bytes) {
-                    eprintln!("[spine] warning: failed to write result_schema.json: {e}");
+                    #[allow(clippy::print_stderr)]
+                    // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
+                    {
+                        eprintln!("[spine] warning: failed to write result_schema.json: {e}");
+                    }
                 }
             }
             Err(e) => {
-                eprintln!("[spine] warning: failed to serialize result schema: {e}");
+                #[allow(clippy::print_stderr)]
+                // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
+                {
+                    eprintln!("[spine] warning: failed to serialize result schema: {e}");
+                }
             }
         }
     }

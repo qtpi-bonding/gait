@@ -224,10 +224,14 @@ fn checkpoint_codebase(
         Ok(sha) if !sha.is_empty() => Some(sha),
         Ok(_) => None, // non-git codebase
         Err(e) => {
-            eprintln!(
-                "checkpoint failed for session {}: {}; checkpoint unavailable for this turn",
-                session_id, e
-            );
+            #[allow(clippy::print_stderr)]
+            // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
+            {
+                eprintln!(
+                    "checkpoint failed for session {}: {}; checkpoint unavailable for this turn",
+                    session_id, e
+                );
+            }
             None
         }
     }

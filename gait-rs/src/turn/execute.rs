@@ -610,6 +610,23 @@ pub(crate) async fn run_tools(
     Ok(StepOutcome::Continue)
 }
 
+/// Appends a near-miss `--allow` suggestion to each item's `reason` when the
+/// gated command almost matches an existing allow pattern (e.g. missing the
+/// trailing space before `*`). Mutates in place so the hint rides the same
+/// `PermissionItem` event already sent over `env.emitter` — no separate
+/// stderr print (which used to race the REPL's status-line timer thread),
+/// no new proto field.
+fn attach_near_miss_hints(items: &mut [pb::PermissionItem], allow: &[String]) {
+    for item in items.iter_mut() {
+        if let Some(fix) = crate::permissions::matching::near_miss_suggestion(&item.cmd, allow) {
+            item.reason = format!(
+                "{} (hint: patterns match as \"<cmd> *\" — did you mean --allow {:?}?)",
+                item.reason, fix
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -651,21 +668,5 @@ mod tests {
         let mut items: Vec<pb::PermissionItem> = vec![];
         attach_near_miss_hints(&mut items, &["shell:rm *".to_string()]);
         assert!(items.is_empty());
-    }
-}
-/// Appends a near-miss `--allow` suggestion to each item's `reason` when the
-/// gated command almost matches an existing allow pattern (e.g. missing the
-/// trailing space before `*`). Mutates in place so the hint rides the same
-/// `PermissionItem` event already sent over `env.emitter` — no separate
-/// stderr print (which used to race the REPL's status-line timer thread),
-/// no new proto field.
-fn attach_near_miss_hints(items: &mut [pb::PermissionItem], allow: &[String]) {
-    for item in items.iter_mut() {
-        if let Some(fix) = crate::permissions::matching::near_miss_suggestion(&item.cmd, allow) {
-            item.reason = format!(
-                "{} (hint: patterns match as \"<cmd> *\" — did you mean --allow {:?}?)",
-                item.reason, fix
-            );
-        }
     }
 }

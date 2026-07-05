@@ -81,7 +81,11 @@ impl DiagnosticSink {
             .open(&self.path)
             .and_then(|mut f| writeln!(f, "{line}"));
         if let Err(e) = res {
-            eprintln!("[gait] diagnostic write failed: {e}");
+            #[allow(clippy::print_stderr)]
+            // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
+            {
+                eprintln!("[gait] diagnostic write failed: {e}");
+            }
         }
     }
 }

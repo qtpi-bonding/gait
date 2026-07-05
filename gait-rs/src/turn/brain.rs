@@ -83,12 +83,20 @@ pub async fn run_brain(
         Ok(sig) => match sig.body {
             Some(gait_proto::gait::sandbox::v1::signal::Body::BrainInit(b)) => b,
             other => {
-                eprintln!("[brain] error: expected BrainInit as first frame, got {other:?}");
+                #[allow(clippy::print_stderr)]
+                // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
+                {
+                    eprintln!("[brain] error: expected BrainInit as first frame, got {other:?}");
+                }
                 std::process::exit(1);
             }
         },
         Err(e) => {
-            eprintln!("[brain] error: failed to read BrainInit frame: {e}");
+            #[allow(clippy::print_stderr)]
+            // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
+            {
+                eprintln!("[brain] error: failed to read BrainInit frame: {e}");
+            }
             std::process::exit(1);
         }
     };
@@ -178,7 +186,11 @@ pub async fn run_brain(
     let session_id = match config.session_id.clone() {
         Some(id) => id,
         None => {
-            eprintln!("[brain] error: --session is required for __brain");
+            #[allow(clippy::print_stderr)]
+            // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
+            {
+                eprintln!("[brain] error: --session is required for __brain");
+            }
             std::process::exit(1);
         }
     };
@@ -214,7 +226,11 @@ pub async fn run_brain(
 
     let mut cfg: crate::config::GaitConfig = serde_json::from_str(&init.config_json)
         .unwrap_or_else(|e| {
-            eprintln!("[brain] warning: bad config_json in BrainInit ({e}); using defaults");
+            #[allow(clippy::print_stderr)]
+            // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
+            {
+                eprintln!("[brain] warning: bad config_json in BrainInit ({e}); using defaults");
+            }
             crate::config::GaitConfig::default()
         });
     for p in &config.allow {
@@ -240,7 +256,11 @@ pub async fn run_brain(
 
     let profile: crate::profile::Profile =
         serde_json::from_str(&init.profile_json).unwrap_or_else(|e| {
-            eprintln!("[brain] error: bad profile_json in BrainInit: {e}");
+            #[allow(clippy::print_stderr)]
+            // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
+            {
+                eprintln!("[brain] error: bad profile_json in BrainInit: {e}");
+            }
             std::process::exit(1);
         });
 
@@ -320,7 +340,11 @@ pub async fn run_brain(
         let profile_result = driver.resolve_profile().await;
         match profile_result {
             Err(e) => {
-                eprintln!("[brain] error resolving profile: {e}");
+                #[allow(clippy::print_stderr)]
+                // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
+                {
+                    eprintln!("[brain] error resolving profile: {e}");
+                }
                 ("{}".to_string(), true)
             }
             Ok(profile) => {

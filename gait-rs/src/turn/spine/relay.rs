@@ -395,7 +395,11 @@ pub async fn relay_brain_turn(
                     if let Some(handle) = group.handle() {
                         argv.extend(["--cascade-group".to_string(), handle]);
                     } else {
-                        eprintln!("[spine] warning: spawn_agent cascade-group handle unavailable; subagent will not be enrolled in cascade group");
+                        #[allow(clippy::print_stderr)]
+                        // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
+                        {
+                            eprintln!("[spine] warning: spawn_agent cascade-group handle unavailable; subagent will not be enrolled in cascade group");
+                        }
                     }
                     let mut cmd = std::process::Command::new(exe);
                     cmd.args(&argv)
@@ -429,9 +433,13 @@ pub async fn relay_brain_turn(
                     crate::session::completion::NotifyOutcome::ParentBusy => {}
                     crate::session::completion::NotifyOutcome::AlreadySurfaced => {}
                     crate::session::completion::NotifyOutcome::NoParent => {
-                        eprintln!(
-                            "[spine] warning: parent session {target_session} not found for notify"
-                        );
+                        #[allow(clippy::print_stderr)]
+                        // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
+                        {
+                            eprintln!(
+                                "[spine] warning: parent session {target_session} not found for notify"
+                            );
+                        }
                     }
                 }
                 // No Feedback needed — one-way signal like Append.

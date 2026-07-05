@@ -332,7 +332,11 @@ pub(crate) fn finish_after_resume(
             crate::tools::builtin_tool_names().iter().copied().collect();
         for entry in effective_allow {
             if !entry.contains(':') && !builtin_names.contains(entry.as_str()) {
-                eprintln!("[gait] warning: allow entry {:?} doesn't match any builtin tool — will never auto-approve", entry);
+                #[allow(clippy::print_stderr)]
+                // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
+                {
+                    eprintln!("[gait] warning: allow entry {:?} doesn't match any builtin tool — will never auto-approve", entry);
+                }
             }
         }
     }
