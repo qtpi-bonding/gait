@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::collections::VecDeque;
 use std::io;
 
@@ -17,11 +18,16 @@ impl LineReader for ReedlineReader {
     }
 }
 
-/// Test reader: returns queued signals, then `CtrlD` (EOF) when drained.
+/// Test reader: returns queued signals, then `CtrlD` (EOF) when drained. Only
+/// ever constructed from `#[cfg(test)]` code (line_reader/ui/harness/driver
+/// command tests) — gated out of production builds so clippy's `dead_code`
+/// lint doesn't flag it as unused there.
+#[cfg(test)]
 pub(crate) struct ScriptedReader {
     queue: VecDeque<Signal>,
 }
 
+#[cfg(test)]
 impl ScriptedReader {
     pub(crate) fn new(lines: impl IntoIterator<Item = Signal>) -> Self {
         Self {
@@ -35,6 +41,7 @@ impl ScriptedReader {
     }
 }
 
+#[cfg(test)]
 impl LineReader for ScriptedReader {
     fn read_line(&mut self, _prompt: &dyn Prompt) -> io::Result<Signal> {
         Ok(self.queue.pop_front().unwrap_or(Signal::CtrlD))
