@@ -124,8 +124,15 @@ pub(crate) async fn run_step(
                 }
                 if seen_tool_complete {
                     post_tool_text.push(t.clone());
-                    env.emitter.publish_delta(t.clone());
                 }
+                // Stream ALL assistant text live, pre- and post-tool. The pre-tool
+                // `else { publish_delta }` branch was dropped in c13b565's stream.rs
+                // extraction (which claimed "preserved exactly"), which silently
+                // stopped plain no-tool replies from ever emitting a delta — and the
+                // REPL renders ONLY deltas (AssistantText is a view no-op), so plain
+                // replies vanished. Publishing every Text chunk restores the original
+                // behavior and keeps post-tool text streaming exactly once.
+                env.emitter.publish_delta(t.clone());
                 step_text.push_str(&t);
             }
 

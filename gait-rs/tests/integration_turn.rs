@@ -382,3 +382,83 @@ async fn second_turn_resumes_session() {
         "session_start should appear exactly once"
     );
 }
+
+/// Regression: a plain reply (assistant text with NO tool call) must be streamed
+/// as text deltas, not merely recorded as a final `AssistantText` event. The REPL
+/// view renders ONLY deltas (AssistantText is a no-op), so when `stream.rs`
+/// dropped the pre-tool `publish_delta` (commit c13b565), plain replies silently
+/// stopped appearing on screen — "I'm not seeing the reply". This drives a real
+/// turn through `run_turn`/`stream::run_step` with a live stream channel and
+/// asserts the reply text arrived as a delta.
+#[tokio::test]
+async fn plain_reply_is_streamed_as_delta() {
+    use gait_core::proto::gait::log::v1::stream_item;
+
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+
+    const REPLY: &str = "Hello! How can I help you today?";
+    let provider = Arc::new(ScriptedProvider {
+        // One step, no tool call: just stream the reply text, then finish.
+        calls: Arc::new(vec![vec![
+            StreamChunk::Text(REPLY.into()),
+            StreamChunk::Done,
+        ]]),
+        idx: Arc::new(AtomicUsize::new(0)),
+    });
+
+    let repos = gait_core::git::Repos::production();
+    let session = gait_core::session::Session {
+        id: "splain01".into(),
+        gait_dir: ws.path().to_path_buf(),
+        codebase_path: ws.path().to_path_buf(),
+        assigned_by: None,
+        repos: repos.clone(),
+    };
+
+    // Keep the stream receiver ALIVE (unlike `discard_emitter`) so we can observe
+    // the deltas the turn publishes to the live channel.
+    let (tx, mut rx) =
+        tokio::sync::mpsc::unbounded_channel::<gait_core::proto::gait::log::v1::StreamItem>();
+    let emitter = gait_core::Recorder::for_session(ws.path(), "splain01", tx);
+    repos
+        .traces
+        .create_session_worktree(ws.path(), "splain01")
+        .unwrap();
+    for body in gait_core::embed::user_turn_events(&repos, ws.path(), "hello".into()) {
+        emitter.record(body).unwrap();
+    }
+
+    run_turn(
+        &session,
+        &emitter,
+        gait_core::profile::ResolvedProfile::for_test(provider, vec![], vec![], vec![]),
+        gait_core::turn::TurnInput {
+            auto: true,
+            max_iter: None,
+            preview_policy: gait_core::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: true,
+            sandbox_cfg: Default::default(),
+            relay: None,
+            initial_git: None,
+            daemons: vec![],
+        },
+    )
+    .await
+    .unwrap();
+
+    let mut streamed = String::new();
+    while let Ok(item) = rx.try_recv() {
+        if let Some(stream_item::Item::Delta(d)) = item.item {
+            streamed.push_str(&d.content);
+        }
+    }
+
+    assert!(
+        streamed.contains(REPLY),
+        "plain no-tool reply must be published as a streamed delta so the REPL can \
+         render it (regression: stream.rs dropped the pre-tool publish_delta); \
+         streamed deltas were: {streamed:?}"
+    );
+}
