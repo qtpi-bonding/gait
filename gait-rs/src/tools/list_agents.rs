@@ -104,12 +104,20 @@ impl Tool for ListAgentsTool {
                 Ok(t) => t,
                 Err(_) => continue,
             };
-            let blob_content = match tree.get_name("log.jsonl") {
-                Some(entry) => match repo.find_blob(entry.id()) {
-                    Ok(blob) => match std::str::from_utf8(blob.content()) {
-                        Ok(s) => s.to_string(),
-                        Err(_) => continue,
-                    },
+            // Read sessions/<id>/log.jsonl from the tree (the persisted/
+            // nested shape every session branch has had since its first,
+            // orphan commit — see GitTraceRepo::create_session_worktree),
+            // NOT a flat log.jsonl at the tree root.
+            let log_entry_path = std::path::Path::new("sessions")
+                .join(&session_id)
+                .join("log.jsonl");
+            let blob_content = match tree
+                .get_path(&log_entry_path)
+                .ok()
+                .and_then(|entry| repo.find_blob(entry.id()).ok())
+            {
+                Some(blob) => match std::str::from_utf8(blob.content()) {
+                    Ok(s) => s.to_string(),
                     Err(_) => continue,
                 },
                 None => continue,
@@ -203,7 +211,8 @@ mod tests {
         GitTraceRepo
             .create_session_worktree(ws.path(), "srunning1")
             .unwrap();
-        let tx1 = ws.path().join("sessions/srunning1/log.jsonl");
+        let tx1 = crate::session::live::log_path(ws.path(), "srunning1");
+        std::fs::create_dir_all(tx1.parent().unwrap()).unwrap();
         wire::append(&tx1, events::user_text("task".into(), None)).unwrap();
         GitTraceRepo
             .commit_session(ws.path(), "srunning1", "session(srunning1): init")
@@ -212,7 +221,8 @@ mod tests {
         GitTraceRepo
             .create_session_worktree(ws.path(), "sdone1")
             .unwrap();
-        let tx2 = ws.path().join("sessions/sdone1/log.jsonl");
+        let tx2 = crate::session::live::log_path(ws.path(), "sdone1");
+        std::fs::create_dir_all(tx2.parent().unwrap()).unwrap();
         let usage = TurnTokenUsage {
             input: 1,
             output: 1,
@@ -260,6 +270,42 @@ mod tests {
         assert!(
             !ids.contains(&"sdone1"),
             "done session should be filtered out: {:?}",
+            ids
+        );
+    }
+
+    #[tokio::test]
+    async fn list_agents_reads_the_nested_persisted_log_path() {
+        let ws = TempDir::new().unwrap();
+        init_git_repo(ws.path());
+
+        GitTraceRepo
+            .create_session_worktree(ws.path(), "snested1")
+            .unwrap();
+        let tx = crate::session::live::log_path(ws.path(), "snested1");
+        std::fs::create_dir_all(tx.parent().unwrap()).unwrap();
+        wire::append(&tx, events::user_text("task".into(), None)).unwrap();
+        GitTraceRepo
+            .commit_session(ws.path(), "snested1", "session(snested1): init")
+            .unwrap();
+
+        let tool = ListAgentsTool::new(ToolCtx::new(
+            ws.path().to_path_buf(),
+            ws.path().to_path_buf(),
+            "test".into(),
+        ));
+        let result = tool
+            .execute(serde_json::json!({}), &crate::Recorder::detached())
+            .await
+            .unwrap();
+        let sessions: Vec<serde_json::Value> = serde_json::from_value(result).unwrap();
+        let ids: Vec<&str> = sessions
+            .iter()
+            .map(|s| s["session_id"].as_str().unwrap())
+            .collect();
+        assert!(
+            ids.contains(&"snested1"),
+            "list_agents must find sessions via the nested sessions/<id>/log.jsonl tree path: {:?}",
             ids
         );
     }
