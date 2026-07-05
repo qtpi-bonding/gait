@@ -77,7 +77,7 @@ fn confirm_action(prompt: &str, yes: bool) -> Confirmed {
 
 /// Discard a single session: lock it, confirm, tear it down (no merge).
 fn discard_one(gait_dir: &std::path::Path, id: &str, yes: bool, json: bool) -> anyhow::Result<()> {
-    let session_dir = gait_dir.join("sessions").join(id);
+    let session_dir = gait_core::session::live::worktree_dir(gait_dir, id);
     let _lock = gait_core::turn::SessionLock::acquire(&session_dir)
         .map_err(|e| anyhow::anyhow!("cannot discard: {} (is a turn in progress?)", e))?;
     match confirm_action(
@@ -187,13 +187,13 @@ type BulkTargets = (Vec<String>, Vec<(String, String)>);
 fn classify_bulk_targets(gait_dir: &std::path::Path) -> anyhow::Result<BulkTargets> {
     use gait_core::session::log::{session_state, SessionState};
 
-    let sessions_dir = gait_dir.join("sessions");
+    let sessions_dir = gait_dir.join(".active");
     let mut eligible: Vec<String> = Vec::new();
     let mut skipped: Vec<(String, String)> = Vec::new();
 
     let entries = match std::fs::read_dir(&sessions_dir) {
         Ok(e) => e,
-        Err(_) => return Ok((eligible, skipped)), // no sessions dir => nothing
+        Err(_) => return Ok((eligible, skipped)), // no .active dir => nothing
     };
 
     for entry in entries.flatten() {
@@ -204,14 +204,15 @@ fn classify_bulk_targets(gait_dir: &std::path::Path) -> anyhow::Result<BulkTarge
         let Some(id) = path.file_name().and_then(|n| n.to_str()).map(String::from) else {
             continue;
         };
-        // A dir with no log.jsonl is not a started session. `read_events` treats a
+        let tx_path = gait_core::session::live::log_path(gait_dir, &id);
+        // A session with no log.jsonl is not a started session. `read_events` treats a
         // MISSING file as empty => `session_state` returns Idle, which would wrongly
         // mark such a dir eligible — so skip it explicitly here. (A malformed log
         // still falls through to the `Err(_) => continue` arm below.)
-        if !path.join("log.jsonl").exists() {
+        if !tx_path.exists() {
             continue;
         }
-        let reason: Option<String> = match session_state(&path.join("log.jsonl")) {
+        let reason: Option<String> = match session_state(&tx_path) {
             Ok(SessionState::Idle) => {
                 if gait_core::turn::SessionLock::is_running(&path) {
                     Some("running".to_string())
@@ -307,7 +308,7 @@ fn run_bulk(verb: Verb, gait_dir: &std::path::Path, yes: bool, json: bool) {
     let mut acted: Vec<String> = Vec::new();
     let mut failed: Vec<(String, String)> = Vec::new();
     for id in &eligible {
-        let session_dir = gait_dir.join("sessions").join(id);
+        let session_dir = gait_core::session::live::worktree_dir(gait_dir, id);
         // Re-check the lock at action time; a run may have started since classify.
         let _lock = match gait_core::turn::SessionLock::acquire(&session_dir) {
             Ok(l) => l,
@@ -388,8 +389,8 @@ fn undo_command(
         anyhow::bail!("--list and --turn are mutually exclusive");
     }
 
-    let session_dir = gait_dir.join("sessions").join(session_id);
-    let tx_path = session_dir.join("log.jsonl");
+    let session_dir = gait_core::session::live::worktree_dir(&gait_dir, session_id);
+    let tx_path = gait_core::session::live::log_path(&gait_dir, session_id);
     let events = read_events(&tx_path)?;
 
     // Collect (turn_index, summary, checkpoint) from TurnComplete events.
@@ -467,7 +468,7 @@ fn undo_transcript_to_turn(
     session_id: &str,
     turn: u32,
 ) -> anyhow::Result<()> {
-    let session_dir = gait_dir.join("sessions").join(session_id);
+    let session_dir = gait_core::session::live::worktree_dir(gait_dir, session_id);
     let repo = git2::Repository::open(&session_dir)?;
     let needle = format!("session({}): turn {}", session_id, turn);
     let mut walk = repo.revwalk()?;
@@ -528,7 +529,7 @@ pub struct PsArgs {
 pub fn cmd_ps(args: PsArgs) {
     use gait_core::session::log::{session_state, SessionState};
 
-    let sessions_dir = args.gait_dir.join("sessions");
+    let sessions_dir = args.gait_dir.join(".active");
     let entries = match std::fs::read_dir(&sessions_dir) {
         Ok(e) => e,
         Err(e) => {
@@ -547,7 +548,7 @@ pub fn cmd_ps(args: PsArgs) {
             Some(s) => s.to_string(),
             None => continue,
         };
-        let tx_path = path.join("log.jsonl");
+        let tx_path = gait_core::session::live::log_path(&args.gait_dir, &id);
         let state_str = match session_state(&tx_path) {
             Ok(SessionState::Idle) => "idle".to_string(),
             Ok(SessionState::AwaitingPermission { .. }) => "awaiting-permission".to_string(),
@@ -624,11 +625,7 @@ pub fn cmd_allow(args: AllowArgs) {
         pattern: args.pattern,
     };
 
-    let tx_path = args
-        .gait_dir
-        .join("sessions")
-        .join(&args.session_id)
-        .join("log.jsonl");
+    let tx_path = gait_core::session::live::log_path(&args.gait_dir, &args.session_id);
     let state = match session_state(&tx_path) {
         Ok(s) => s,
         Err(e) => {
@@ -684,11 +681,7 @@ pub fn cmd_deny(args: DenyArgs) {
     use gait_core::proto::gait::log::v1 as pb;
     use gait_core::session::log::{session_state, write_permissions_reply, SessionState};
 
-    let tx_path = args
-        .gait_dir
-        .join("sessions")
-        .join(&args.session_id)
-        .join("log.jsonl");
+    let tx_path = gait_core::session::live::log_path(&args.gait_dir, &args.session_id);
     let state = match session_state(&tx_path) {
         Ok(s) => s,
         Err(e) => {
@@ -786,11 +779,7 @@ pub fn cmd_unlock(args: UnlockArgs) {
         _ => pb::Scope::Once,
     };
 
-    let tx_path = args
-        .gait_dir
-        .join("sessions")
-        .join(&args.session_id)
-        .join("log.jsonl");
+    let tx_path = gait_core::session::live::log_path(&args.gait_dir, &args.session_id);
 
     let state = match session_state(&tx_path) {
         Ok(s) => s,
@@ -872,11 +861,7 @@ pub fn cmd_stats(args: StatsArgs) {
     use gait_core::proto::wire::read_events;
     use gait_core::session::retrace::total_usage;
 
-    let tx_path = args
-        .gait_dir
-        .join("sessions")
-        .join(&args.session_id)
-        .join("log.jsonl");
+    let tx_path = gait_core::session::live::log_path(&args.gait_dir, &args.session_id);
     let events = read_events(&tx_path).unwrap_or_else(|e| {
         eprintln!("[gait] cannot read session {}: {e}", args.session_id);
         std::process::exit(1);
@@ -969,7 +954,7 @@ mod bulk_tests {
     fn discard_one_with_yes_removes_session() {
         let ws = ws_with_session("scli001");
         discard_one(ws.path(), "scli001", true, false).unwrap();
-        assert!(!ws.path().join("sessions/scli001").exists());
+        assert!(!gait_core::session::live::worktree_dir(ws.path(), "scli001").exists());
         let repo = git2::Repository::open(ws.path()).unwrap();
         assert!(repo
             .find_branch("session/scli001", git2::BranchType::Local)
@@ -982,14 +967,16 @@ mod bulk_tests {
         let err = discard_one(ws.path(), "scli002", false, false).unwrap_err();
         assert!(err.to_string().contains("--yes"));
         // Session must be untouched.
-        assert!(ws.path().join("sessions/scli002").exists());
+        assert!(gait_core::session::live::worktree_dir(ws.path(), "scli002").exists());
     }
 
     #[test]
     fn classify_puts_idle_unlocked_in_eligible() {
         let ws = ws_with_session("selig01");
         // create_session_worktree wrote no log.jsonl; write an empty one => Idle.
-        std::fs::write(ws.path().join("sessions/selig01/log.jsonl"), "").unwrap();
+        let log_path = gait_core::session::live::log_path(ws.path(), "selig01");
+        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        std::fs::write(log_path, "").unwrap();
         let (eligible, skipped) = classify_bulk_targets(ws.path()).unwrap();
         assert_eq!(eligible, vec!["selig01".to_string()]);
         assert!(skipped.is_empty());
@@ -998,10 +985,12 @@ mod bulk_tests {
     #[test]
     fn classify_skips_running_session() {
         let ws = ws_with_session("srun01");
-        std::fs::write(ws.path().join("sessions/srun01/log.jsonl"), "").unwrap();
+        let log_path = gait_core::session::live::log_path(ws.path(), "srun01");
+        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        std::fs::write(log_path, "").unwrap();
         // Our own live PID in the lock => running.
         std::fs::write(
-            ws.path().join("sessions/srun01/lock"),
+            gait_core::session::live::worktree_dir(ws.path(), "srun01").join("lock"),
             std::process::id().to_string(),
         )
         .unwrap();
