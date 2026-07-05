@@ -153,7 +153,7 @@ pub async fn run_chat(
 
     // One builder, shared by the per-session source + sink. It outlives every
     // `run_loop` so editor history and view state persist across `/n`.
-    let builder = ReplBuilder::new(rl, theme.clone());
+    let builder = ReplBuilder::new(Box::new(crate::repl::ReedlineReader(rl)), theme.clone());
     let shared: crate::repl::Shared =
         std::rc::Rc::new(std::cell::RefCell::new(crate::repl::ReplShared {
             builder,

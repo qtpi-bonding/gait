@@ -1,4 +1,4 @@
-use reedline::{DefaultPrompt, DefaultPromptSegment, Prompt, Reedline, Signal};
+use reedline::{DefaultPrompt, DefaultPromptSegment, Prompt, Signal};
 
 use crate::theme::Theme;
 use crate::theme::{DIM_FG, RESET};
@@ -14,16 +14,16 @@ pub struct InteractionOutcome {
 }
 
 pub struct ReplBuilder {
-    pub rl: Reedline,
+    reader: Box<dyn crate::repl::LineReader>,
     state: ReplState,
     renderer: ReplRenderer,
 }
 
 impl ReplBuilder {
-    pub fn new(rl: Reedline, theme: Theme) -> Self {
+    pub(crate) fn new(reader: Box<dyn crate::repl::LineReader>, theme: Theme) -> Self {
         // Keybindings are configured at build time in chat.rs::build_line_editor.
         Self {
-            rl,
+            reader,
             state: ReplState::new(),
             renderer: ReplRenderer::new(theme),
         }
@@ -64,7 +64,7 @@ impl ReplBuilder {
     }
 
     pub fn readline(&mut self, prompt: &dyn Prompt) -> std::io::Result<Signal> {
-        self.rl.read_line(prompt)
+        self.reader.read_line(prompt)
     }
 
     pub fn theme(&self) -> &crate::theme::Theme {
@@ -80,7 +80,7 @@ impl ReplBuilder {
 
     fn read_line_raw(&mut self, prefix: &str) -> String {
         let prompt = self.make_prompt(prefix);
-        match self.rl.read_line(&prompt) {
+        match self.reader.read_line(&prompt) {
             Ok(Signal::Success(s)) => {
                 eprint!("{}", RESET);
                 s.trim().to_string()
@@ -256,7 +256,7 @@ impl ReplBuilder {
             } else {
                 loop {
                     let pmt = self.make_prompt(&prompt_str);
-                    match self.rl.read_line(&pmt) {
+                    match self.reader.read_line(&pmt) {
                         Ok(Signal::Success(input)) => {
                             eprint!("{}", RESET);
                             let trimmed = input.trim().to_string();

@@ -56,7 +56,7 @@ impl TurnSink for ReplSink {
     fn result(&mut self, r: &TurnResult) {
         match r {
             TurnResult::Cancelled => {
-                eprint!("{}\u{2298} interrupted{}\r\n", DIM_FG, RESET);
+                eprint!("\u{2298} interrupted\r\n");
             }
             TurnResult::Unlock { items } => {
                 let warning_fg = self.shared.borrow().builder.theme().warning.fg();
@@ -836,8 +836,10 @@ mod repl_sink_tests {
     use gait_core::proto::gait::log::v1 as pb;
 
     fn shared() -> crate::repl::Shared {
-        let rl = reedline::Reedline::create();
-        let builder = crate::ui::ReplBuilder::new(rl, crate::theme::Theme::dark());
+        let builder = crate::ui::ReplBuilder::new(
+            Box::new(crate::repl::ReedlineReader(reedline::Reedline::create())),
+            crate::theme::Theme::dark(),
+        );
         std::rc::Rc::new(std::cell::RefCell::new(crate::repl::ReplShared {
             builder,
             turn_done_blocks: None,

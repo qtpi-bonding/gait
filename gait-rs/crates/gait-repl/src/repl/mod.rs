@@ -15,3 +15,6 @@ pub use highlight::GaitHighlighter;
 pub use hinter::GaitHinter;
 pub use input::{bang_command_str, is_bang_command};
 pub use prompt::GaitPrompt;
+
+pub(crate) mod line_reader;
+pub(crate) use line_reader::{LineReader, ReedlineReader, ScriptedReader};
