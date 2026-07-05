@@ -116,10 +116,7 @@ pub struct ReplSource {
 
 impl ReplSource {
     fn log_path(&self) -> PathBuf {
-        self.gait_dir
-            .join("sessions")
-            .join(&self.session_id)
-            .join("log.jsonl")
+        gait_core::session::live::log_path(&self.gait_dir, &self.session_id)
     }
 
     fn agent_label(&self) -> String {

@@ -1,8 +1,8 @@
 //! Child-session enumeration for the live-turn agent-completion poll.
 //!
-//! `children_of(gait_dir, parent)` scans the `sessions/` directory and returns
-//! all sessions whose `SessionStart.assigned_by` matches `parent` and that are
-//! no longer running (dead or stale lock file, or no lock at all).
+//! `children_of(gait_dir, parent)` scans the `.active/` mount directory and
+//! returns all sessions whose `SessionStart.assigned_by` matches `parent` and
+//! that are no longer running (dead or stale lock file, or no lock at all).
 //!
 //! Used by `turn::completion_poll::pending_agent_completions` to surface
 //! finished child sessions to the parent mid-turn (or in the final drain).
@@ -28,7 +28,7 @@ pub struct ChildInfo {
 /// "Done" = no lock file, OR lock file exists with a dead PID (stale lock).
 /// The caller must check `child.is_done` before surfacing.
 pub fn children_of(gait_dir: &Path, parent_session_id: &str) -> Vec<ChildInfo> {
-    let sessions_dir = gait_dir.join("sessions");
+    let sessions_dir = gait_dir.join(".active");
     let Ok(entries) = std::fs::read_dir(&sessions_dir) else {
         return vec![];
     };
@@ -43,7 +43,10 @@ pub fn children_of(gait_dir: &Path, parent_session_id: &str) -> Vec<ChildInfo> {
         if session_id.is_empty() {
             continue;
         }
-        let log_path = session_dir.join("log.jsonl");
+        // Live-session log path is nested one level under the worktree mount;
+        // re-derive via the helper rather than `session_dir.join("log.jsonl")`
+        // (which would be missing the `sessions/<id>/` nesting).
+        let log_path = crate::session::live::log_path(gait_dir, &session_id);
         let Ok(events) = crate::session::log::read_events(&log_path) else {
             continue;
         };
@@ -52,7 +55,8 @@ pub fn children_of(gait_dir: &Path, parent_session_id: &str) -> Vec<ChildInfo> {
             continue;
         }
 
-        // "done" = lock absent or stale (dead PID).
+        // "done" = lock absent or stale (dead PID). The lock lives at the
+        // worktree-root mount, not nested under sessions/<id>/.
         let lock_path = session_dir.join("lock");
         let is_done = if !lock_path.exists() {
             true // no lock → not currently running
@@ -94,7 +98,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn make_session(gait_dir: &Path, id: &str, assigned_by: Option<&str>) {
-        let log_path = gait_dir.join("sessions").join(id).join("log.jsonl");
+        let log_path = crate::session::live::log_path(gait_dir, id);
         std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
         init_session(InitSessionOpts {
             log_path,
@@ -125,7 +129,7 @@ mod tests {
     #[test]
     fn children_of_empty_when_no_sessions() {
         let dir = TempDir::new().unwrap();
-        // sessions/ dir doesn't even exist yet
+        // .active/ dir doesn't even exist yet
         let children = children_of(dir.path(), "sparent");
         assert!(children.is_empty());
     }
@@ -135,7 +139,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         make_session(dir.path(), "schild02", Some("sparent"));
         // Write a lock file with a PID that is definitely dead (PID 0 is not a real process).
-        let lock_path = dir.path().join("sessions/schild02/lock");
+        let lock_path = dir.path().join(".active/schild02/lock");
         std::fs::write(&lock_path, "999999999").unwrap(); // absurdly high PID → dead
         let children = children_of(dir.path(), "sparent");
         assert_eq!(children.len(), 1);

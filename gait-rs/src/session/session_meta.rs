@@ -39,11 +39,12 @@ pub fn from_events(events: &[Event], session_id: &str) -> SessionMeta {
     }
 }
 
-/// Read identity from `sessions/<id>/log.jsonl`'s `SessionStart` event.
+/// Read identity from `<gait_dir>/.active/<id>/sessions/<id>/log.jsonl`'s
+/// `SessionStart` event (the live-session path — see `crate::session::live`).
 /// Returns a default (id only) when the log or its `SessionStart` is absent
 /// (new session, or a session predating `codebase_path` in `SessionStart`).
 pub fn read_session_meta(gait_dir: &Path, session_id: &str) -> anyhow::Result<SessionMeta> {
-    let log_path = gait_dir.join("sessions").join(session_id).join("log.jsonl");
+    let log_path = crate::session::live::log_path(gait_dir, session_id);
     Ok(from_events(&read_events(&log_path)?, session_id))
 }
 
@@ -56,7 +57,7 @@ mod tests {
     #[test]
     fn reads_codebase_path_and_assigned_by_from_log() {
         let dir = TempDir::new().unwrap();
-        let log_path = dir.path().join("sessions/s1234567/log.jsonl");
+        let log_path = crate::session::live::log_path(dir.path(), "s1234567");
         std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
         init_session(InitSessionOpts {
             log_path,
