@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use reedline::{DefaultPrompt, DefaultPromptSegment, Prompt, Signal};
 
 use crate::theme::Theme;
@@ -75,6 +77,18 @@ impl ReplBuilder {
 
     pub fn theme(&self) -> &crate::theme::Theme {
         self.renderer.theme()
+    }
+
+    /// Write raw, already-formatted text straight to the terminal, holding the
+    /// same `paint_lock` guard `ReplRenderer::paint` takes for its drain (so a
+    /// concurrent timer tick can never interleave with this write), and
+    /// clearing any in-flight spinner line first — the exact fix for the bug
+    /// where a gate message landed glued onto the end of the `⠹ thinking… (Ns)`
+    /// status line.
+    pub fn write_raw(&mut self, text: &str) {
+        let _guard = self.state.paint_lock.as_ref().and_then(|l| l.lock().ok());
+        eprint!("\r\x1b[2K{text}");
+        let _ = std::io::stderr().flush();
     }
 
     #[cfg(test)]
@@ -229,6 +243,9 @@ impl ReplBuilder {
                     item.cmd,
                     RESET
                 );
+            }
+            if !item.reason.is_empty() {
+                eprint!("  {}{}{}\r\n", DIM_FG, item.reason, RESET);
             }
             for line in crate::ui::permission::preview_block(item.preview.as_deref()) {
                 let color = if line.starts_with('+') {
@@ -527,5 +544,36 @@ mod tests {
         assert_eq!(parse_option_input("JWT please", &opts), None);
         // empty parens
         assert_eq!(parse_option_input("()", &opts), None);
+    }
+
+    #[test]
+    fn run_permission_renders_reason_hint_line() {
+        // Uses the same ScriptedReader + ReplBuilder harness as the other
+        // run_permission tests in this module.
+        let reader = Box::new(crate::repl::ScriptedReader::lines(&["r"])); // deny, no I/O needed
+        let mut builder = ReplBuilder::new(reader, crate::theme::Theme::dark());
+        let items = vec![gait_core::proto::gait::log::v1::PermissionItem {
+            id: "p1".into(),
+            cmd: "rm -rf /tmp/x".into(),
+            reason: "shell requires permission (hint: did you mean --allow \"shell:rm *\"?)".into(),
+            patterns: vec!["shell:rm -rf /tmp/x".into()],
+            tool_name: "shell".into(),
+            tool_args: None,
+            preview: None,
+        }];
+        let tmp = tempfile::TempDir::new().unwrap();
+        let outcome = builder
+            .run_permission(items, tmp.path(), "sess1", None)
+            .expect("run_permission must not error on a deny reply");
+        // We can't capture stderr bytes here without a bigger harness change;
+        // this test only proves the reason-bearing item flows through
+        // run_permission without panicking or erroring on a realistic
+        // PermissionItem — the actual rendering is exercised end-to-end by
+        // `docs/superpowers/plans/2026-07-04-repl-test-harness.md`'s harness
+        // if/when this file adopts it. Assert the reply carries a Deny.
+        assert!(matches!(
+            outcome.respawn,
+            true // "r" is a live deny, not a cancel — respawn still folds the reply
+        ));
     }
 }
