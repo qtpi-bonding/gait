@@ -65,8 +65,10 @@ pub fn scaffold_gait_dir(gait_dir: &std::path::Path) -> std::io::Result<()> {
     // skills/ — installed skills (disk presence = available)
     std::fs::create_dir_all(gait_dir.join("skills"))?;
 
-    // sessions/ — turn history
-    std::fs::create_dir_all(gait_dir.join("sessions"))?;
+    // .active/ — live (not-yet-persisted) session worktree mounts. `sessions/`
+    // itself is NOT pre-created here — it comes into existence via git
+    // checkout the first time a session is persisted into main.
+    std::fs::create_dir_all(gait_dir.join(".active"))?;
 
     // gait.jsonc — default config (never clobber).
     // allow must match gait_core::config::defaults::default_allow().
@@ -115,7 +117,7 @@ pub fn scaffold_gait_dir(gait_dir: &std::path::Path) -> std::io::Result<()> {
     // .gitignore — merge required entries, no duplicates
     let gi_path = gait_dir.join(".gitignore");
     let mut gi = std::fs::read_to_string(&gi_path).unwrap_or_default();
-    let required = ["sessions/", "USER.md", ".gait-ws.lock"];
+    let required = [".active/", "USER.md", ".gait-ws.lock"];
     let mut changed = false;
     for entry in &required {
         if !gi.lines().any(|l| l.trim() == *entry) {
@@ -229,6 +231,24 @@ mod tests {
     }
 
     #[test]
+    fn init_creates_active_dir_not_sessions_and_gitignore_omits_sessions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gait_dir = tmp.path();
+        scaffold_gait_dir(gait_dir).unwrap();
+        assert!(gait_dir.join(".active").exists(), ".active/ must exist");
+        assert!(
+            !gait_dir.join("sessions").exists(),
+            "sessions/ must not be pre-created — it comes into existence via git \\
+             checkout once a session is persisted"
+        );
+        let gi = std::fs::read_to_string(gait_dir.join(".gitignore")).unwrap();
+        assert!(
+            !gi.lines().any(|l| l.trim() == "sessions/"),
+            "root .gitignore must not list sessions/ (it's tracked, persisted content now): {gi}"
+        );
+    }
+
+    #[test]
     fn scaffold_creates_empty_affordances_and_gitignores_user() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join(".gitignore"), "sessions/\n").unwrap();
@@ -287,8 +307,8 @@ mod tests {
                 "USER.md in .gitignore"
             );
             assert!(
-                gi.lines().any(|l| l.trim() == "sessions/"),
-                "sessions/ in .gitignore"
+                gi.lines().any(|l| l.trim() == ".active/"),
+                ".active/ in .gitignore"
             );
         }
 
@@ -324,7 +344,7 @@ mod tests {
             scaffold_gait_dir(dir.path()).unwrap();
             let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
             assert_eq!(gi.matches("USER.md").count(), 1, "USER.md appears once");
-            assert_eq!(gi.matches("sessions/").count(), 1, "sessions/ appears once");
+            assert_eq!(gi.matches(".active/").count(), 1, ".active/ appears once");
         }
     }
 }
