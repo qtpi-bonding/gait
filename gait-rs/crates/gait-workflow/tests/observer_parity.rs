@@ -32,7 +32,7 @@ async fn observer_parity_shell_workflow() {
     let gait_dir = dir.path().to_path_buf();
 
     // Minimal gait-dir structure
-    std::fs::create_dir_all(gait_dir.join("sessions")).unwrap();
+    std::fs::create_dir_all(gait_dir.join(".active")).unwrap();
     std::fs::create_dir_all(gait_dir.join("workflow-runs")).unwrap();
     // git repo needed by Repos::production() / commit_session
     std::process::Command::new("git")
@@ -141,7 +141,7 @@ async fn observer_parity_shell_workflow() {
 /// Set up a real git-backed gait-dir (the same shape `observer_parity_shell_workflow`
 /// builds) so a shell workflow can create session worktrees offline.
 fn setup_git_gait_dir(gait_dir: &std::path::Path) {
-    std::fs::create_dir_all(gait_dir.join("sessions")).unwrap();
+    std::fs::create_dir_all(gait_dir.join(".active")).unwrap();
     std::fs::create_dir_all(gait_dir.join("workflow-runs")).unwrap();
     for args in [
         vec!["init"],

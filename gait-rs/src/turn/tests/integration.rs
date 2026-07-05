@@ -73,6 +73,17 @@ async fn run_turn_test_call_seeded(
         .repos
         .traces
         .create_session_worktree(&session.gait_dir, &session.id)?;
+    // create_session_worktree's orphan tree starts empty -- the nested
+    // sessions/<id>/ dir (see crate::session::live) doesn't exist until the
+    // session's first write. run_turn's own setup (init_session) would
+    // normally create it, but this helper writes user_turn events directly
+    // via emitter.record() BEFORE run_turn runs, so it must create the
+    // directory itself first.
+    std::fs::create_dir_all(
+        crate::session::live::log_path(&session.gait_dir, &session.id)
+            .parent()
+            .unwrap(),
+    )?;
     for body in crate::embed::user_turn_events(&session.repos, &session.codebase_path, task.into())
     {
         emitter.record(body)?;
@@ -230,7 +241,7 @@ async fn run_turn_writes_transcript_and_commits() {
     .unwrap();
 
     // Verify transcript has expected events
-    let tx_path = ws.path().join("sessions/stest001/log.jsonl");
+    let tx_path = crate::session::live::log_path(ws.path(), "stest001");
     let events = read_events(&tx_path).unwrap();
     let types: Vec<&str> = events
         .iter()
@@ -251,7 +262,8 @@ async fn run_turn_writes_transcript_and_commits() {
     assert!(types.contains(&"turn_complete"), "got: {:?}", types);
 
     // Verify git commit was created
-    let repo = git2::Repository::open(ws.path().join("sessions/stest001")).unwrap();
+    let repo =
+        git2::Repository::open(crate::session::live::worktree_dir(ws.path(), "stest001")).unwrap();
     let msg = repo
         .head()
         .unwrap()
@@ -308,7 +320,7 @@ async fn output_tool_result_used_in_turn_complete() {
     .await
     .unwrap();
 
-    let tx_path = ws.path().join("sessions/stest_out/log.jsonl");
+    let tx_path = crate::session::live::log_path(ws.path(), "stest_out");
     let events = read_events(&tx_path).unwrap();
     let tc = events
         .iter()
@@ -366,7 +378,7 @@ async fn output_tool_exempt_from_permission_gating() {
     .await
     .unwrap();
 
-    let tx_path = ws.path().join("sessions/stest_out2/log.jsonl");
+    let tx_path = crate::session::live::log_path(ws.path(), "stest_out2");
     let events = read_events(&tx_path).unwrap();
     let has_tc = events
         .iter()
@@ -422,7 +434,7 @@ async fn permission_gating_pauses_turn_in_non_auto_mode() {
     .await
     .unwrap();
 
-    let tx_path = ws.path().join("sessions/stest002/log.jsonl");
+    let tx_path = crate::session::live::log_path(ws.path(), "stest002");
     let events = read_events(&tx_path).unwrap();
     let has_permissions = events
         .iter()
@@ -570,7 +582,7 @@ async fn streaming_text_does_not_produce_extra_transcript_events() {
     .await
     .unwrap();
 
-    let tx_path = ws.path().join("sessions/sdelta01/log.jsonl");
+    let tx_path = crate::session::live::log_path(ws.path(), "sdelta01");
     let events = read_events(&tx_path).unwrap();
     let text_events: Vec<_> = events
         .iter()
@@ -642,7 +654,7 @@ async fn denied_tool_gets_blocked_result_without_prompting() {
     .await
     .unwrap();
 
-    let tx_path = ws.path().join("sessions/sdeny001/log.jsonl");
+    let tx_path = crate::session::live::log_path(ws.path(), "sdeny001");
     let events = read_events(&tx_path).unwrap();
 
     // Must have a ToolResult indicating blocked by config
@@ -724,7 +736,7 @@ async fn deny_wins_when_tool_in_both_allow_and_deny() {
     .await
     .unwrap();
 
-    let tx_path = ws.path().join("sessions/sdeny002/log.jsonl");
+    let tx_path = crate::session::live::log_path(ws.path(), "sdeny002");
     let events = read_events(&tx_path).unwrap();
 
     // Same assertions as the first deny test
@@ -757,8 +769,8 @@ async fn resume_executes_approved_tool_directly() {
     GitTraceRepo
         .create_session_worktree(ws.path(), session_id)
         .unwrap();
-    let session_dir = ws.path().join("sessions").join(session_id);
-    let tx_path = session_dir.join("log.jsonl");
+    let tx_path = crate::session::live::log_path(ws.path(), session_id);
+    std::fs::create_dir_all(tx_path.parent().unwrap()).unwrap();
 
     // Pre-populate transcript: SessionStart + UserTurn + Permissions + PermissionsReply
     let perm_item = pb::PermissionItem {
@@ -871,8 +883,8 @@ async fn resume_emits_denied_tool_result_for_rejected_call() {
     GitTraceRepo
         .create_session_worktree(ws.path(), session_id)
         .unwrap();
-    let session_dir = ws.path().join("sessions").join(session_id);
-    let tx_path = session_dir.join("log.jsonl");
+    let tx_path = crate::session::live::log_path(ws.path(), session_id);
+    std::fs::create_dir_all(tx_path.parent().unwrap()).unwrap();
 
     let perm_item = pb::PermissionItem {
         id: "tc-deny-1".into(),
@@ -990,11 +1002,8 @@ async fn resume_with_scope_agent_shows_whitelist_prefix() {
     GitTraceRepo
         .create_session_worktree(ws.path(), session_id)
         .unwrap();
-    let tx_path = ws
-        .path()
-        .join("sessions")
-        .join(session_id)
-        .join("log.jsonl");
+    let tx_path = crate::session::live::log_path(ws.path(), session_id);
+    std::fs::create_dir_all(tx_path.parent().unwrap()).unwrap();
 
     // Pre-write a transcript with a Permissions+PermissionsReply already in it,
     // simulating a previous turn that was interrupted mid-permission-prompt.
@@ -1146,11 +1155,7 @@ async fn run_turn_records_code_checkpoint_for_git_codebase() {
     .await
     .unwrap();
 
-    let tx_path = ws
-        .path()
-        .join("sessions")
-        .join(session_id)
-        .join("log.jsonl");
+    let tx_path = crate::session::live::log_path(ws.path(), session_id);
     let events = read_events(&tx_path).unwrap();
     let cp = events
         .iter()
@@ -1373,7 +1378,7 @@ async fn load_skill_emits_toggle_event() {
     .await
     .unwrap();
 
-    let tx_path = ws.path().join("sessions/slogtgl01/log.jsonl");
+    let tx_path = crate::session::live::log_path(ws.path(), "slogtgl01");
     let events = crate::proto::wire::read_events(&tx_path).unwrap();
     let toggles: Vec<_> = events
         .iter()
@@ -1941,11 +1946,7 @@ async fn run_turn_uses_seeded_git_hash_from_initial_git() {
     .await
     .unwrap();
 
-    let tx_path = ws
-        .path()
-        .join("sessions")
-        .join(session_id)
-        .join("log.jsonl");
+    let tx_path = crate::session::live::log_path(ws.path(), session_id);
     let events = read_events(&tx_path).unwrap();
 
     // The TurnComplete event must carry the seeded hash, not the real git SHA.

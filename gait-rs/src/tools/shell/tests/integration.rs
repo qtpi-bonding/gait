@@ -144,7 +144,12 @@ async fn cwd_param_persists_across_calls() {
 async fn shell_cd_publishes_cwd_event() {
     use crate::proto::gait::log::v1::{event, payload, stream_item};
     let dir = TempDir::new().unwrap();
-    std::fs::create_dir_all(dir.path().join("sessions").join("sh1")).unwrap();
+    std::fs::create_dir_all(
+        crate::session::live::log_path(dir.path(), "sh1")
+            .parent()
+            .unwrap(),
+    )
+    .unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let rec = crate::Recorder::for_session(dir.path(), "sh1", tx);
     let tool = ShellTool::new(crate::tools::ctx::ToolCtx::new(
@@ -201,7 +206,7 @@ async fn cwd_nonexistent_errors_without_emitting() {
     assert_eq!(exit_code, 1, "got: {result}");
     assert!(output.contains("no such directory"), "got: {output}");
     // No Cwd event written: the session log is absent or empty.
-    let log = dir.path().join("sessions").join("test").join("log.jsonl");
+    let log = crate::session::live::log_path(dir.path(), "test");
     let folded = crate::proto::wire::read_events(&log).unwrap_or_default();
     assert!(
         folded.is_empty(),
@@ -720,10 +725,12 @@ async fn detached_daemon_wakes_idle_parent_on_exit() {
     // 1. Real gait_dir (TempDir) + a real parent session dir inside it.
     let gd = TempDir::new().unwrap();
     let parent_id = "swake001";
-    let parent_dir = gd.path().join("sessions").join(parent_id);
+    let parent_dir = crate::session::live::worktree_dir(gd.path(), parent_id);
     std::fs::create_dir_all(&parent_dir).unwrap();
+    let parent_log_path = crate::session::live::log_path(gd.path(), parent_id);
+    std::fs::create_dir_all(parent_log_path.parent().unwrap()).unwrap();
     // Empty log.jsonl — `wire::append` is fine writing the first event into it.
-    std::fs::write(parent_dir.join("log.jsonl"), "").unwrap();
+    std::fs::write(&parent_log_path, "").unwrap();
 
     // 2. Tool whose ctx.gait_dir == gd and ctx.session_id == parent_id.
     let tool = ShellTool::new(crate::tools::ctx::ToolCtx::new(
@@ -752,7 +759,7 @@ async fn detached_daemon_wakes_idle_parent_on_exit() {
     // is enough headroom while still catching real breakage. Standalone the
     // hook fires in well under 1s.
     let daemons_jsonl = gd.path().join("daemons.jsonl");
-    let parent_log = parent_dir.join("log.jsonl");
+    let parent_log = parent_log_path;
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut stop_recorded = false;
     let mut update_recorded = false;

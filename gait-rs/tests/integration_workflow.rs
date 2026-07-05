@@ -203,7 +203,7 @@ nodes:
     );
 
     // item 9: the session log must NOT carry workflow lifecycle events.
-    let session_log = ws.path().join("sessions").join(run_id).join("log.jsonl");
+    let session_log = gait_core::session::live::log_path(ws.path(), run_id);
     if session_log.exists() {
         let session_content = std::fs::read_to_string(&session_log).unwrap();
         assert!(

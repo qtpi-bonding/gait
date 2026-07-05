@@ -308,9 +308,8 @@ fn unlock_once_grant_round_trip_no_config_change() {
     let dir = TempDir::new().unwrap();
     let gait_dir = dir.path();
     let session_id = "test-unlock-rt".to_string();
-    let session_dir = gait_dir.join("sessions").join(&session_id);
-    std::fs::create_dir_all(&session_dir).unwrap();
-    let tx_path = session_dir.join("log.jsonl");
+    let tx_path = crate::session::live::log_path(gait_dir, &session_id);
+    std::fs::create_dir_all(tx_path.parent().unwrap()).unwrap();
 
     // Step 1: Write an Unlock event (simulating pause_for_unlock)
     let resource_path = "/some/external/path.txt";

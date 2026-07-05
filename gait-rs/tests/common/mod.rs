@@ -31,7 +31,13 @@ impl TraceRepo for RecTrace {
     }
     fn create_session_worktree(&self, gait_dir: &Path, session_id: &str) -> anyhow::Result<()> {
         // real mkdir so the FS-backed log.jsonl + SessionLock land — but no git.
-        std::fs::create_dir_all(gait_dir.join("sessions").join(session_id))?;
+        // Nested one level (see gait_core::session::live) to match the real
+        // create_session_worktree's .active/<id>/sessions/<id>/ shape.
+        std::fs::create_dir_all(
+            gait_core::session::live::log_path(gait_dir, session_id)
+                .parent()
+                .unwrap(),
+        )?;
         self.0.push(format!("create_session_worktree:{session_id}"));
         Ok(())
     }

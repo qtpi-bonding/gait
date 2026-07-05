@@ -1019,11 +1019,11 @@ mod command_tests {
             "---\nname: tdd\n---\n",
         )
         .unwrap();
-        std::fs::create_dir_all(d.path().join("sessions/scmd0001")).unwrap();
+        let log_path = gait_core::session::live::log_path(d.path(), "scmd0001");
+        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
         let (mut src, _s) = source_with(d.path(), &["/tdd", "/q"]);
         let _ = src.next().await;
-        let log = std::fs::read_to_string(d.path().join("sessions/scmd0001/log.jsonl"))
-            .unwrap_or_default();
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
         if log.contains("toggle") || log.contains("Toggle") {
             // Strong assertion: toggle event written to session log.
         } else {

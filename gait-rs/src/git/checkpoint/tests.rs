@@ -7,7 +7,7 @@ use tempfile::TempDir;
 fn fixture() -> (TempDir, TempDir, String) {
     let ws = TempDir::new().unwrap();
     let session_id = "stest001".to_string();
-    std::fs::create_dir_all(ws.path().join("sessions").join(&session_id)).unwrap();
+    std::fs::create_dir_all(crate::session::live::worktree_dir(ws.path(), &session_id)).unwrap();
 
     let cb = TempDir::new().unwrap();
     let repo = Repository::init(cb.path()).unwrap();
@@ -78,7 +78,7 @@ fn init_idempotent() {
 fn init_creates_shadow_for_non_git_codebase() {
     let ws = TempDir::new().unwrap();
     let id = "snogit".to_string();
-    std::fs::create_dir_all(ws.path().join("sessions").join(&id)).unwrap();
+    std::fs::create_dir_all(crate::session::live::worktree_dir(ws.path(), &id)).unwrap();
     let cb = TempDir::new().unwrap(); // not a git repo
     GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
     assert!(checkpoint_git_dir(ws.path(), &id).join("HEAD").exists());
@@ -141,7 +141,7 @@ fn checkpoint_captures_shell_style_changes_and_ignores_dotgit() {
 fn checkpoint_works_without_codebase_git() {
     let ws = TempDir::new().unwrap();
     let id = "snogit2".to_string();
-    std::fs::create_dir_all(ws.path().join("sessions").join(&id)).unwrap();
+    std::fs::create_dir_all(crate::session::live::worktree_dir(ws.path(), &id)).unwrap();
     let cb = TempDir::new().unwrap();
     GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
     std::fs::write(cb.path().join("a.txt"), "v1\n").unwrap();
@@ -155,7 +155,7 @@ fn checkpoint_works_without_codebase_git() {
 fn checkpoint_and_diff_work_for_non_git_codebase() {
     let ws = TempDir::new().unwrap();
     let id = "snogit3".to_string();
-    std::fs::create_dir_all(ws.path().join("sessions").join(&id)).unwrap();
+    std::fs::create_dir_all(crate::session::live::worktree_dir(ws.path(), &id)).unwrap();
     let cb = TempDir::new().unwrap(); // NOT a git repo
     GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
     assert!(checkpoint_git_dir(ws.path(), &id).join("HEAD").exists());
@@ -292,7 +292,7 @@ fn init_works_for_worktree_codebase() {
     use git2::WorktreeAddOptions;
     let ws = TempDir::new().unwrap();
     let id = "swt001".to_string();
-    std::fs::create_dir_all(ws.path().join("sessions").join(&id)).unwrap();
+    std::fs::create_dir_all(crate::session::live::worktree_dir(ws.path(), &id)).unwrap();
 
     // main codebase repo with one commit
     let main = TempDir::new().unwrap();

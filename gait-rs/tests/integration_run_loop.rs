@@ -109,7 +109,8 @@ async fn run_turn_prim_fresh_session_folds_after_user_turn_appended() {
         .head_hash(ws.path())
         .expect("test repo must have a commit");
     let bodies = gait_core::embed::user_turn_events(&repos, ws.path(), "do the thing".into());
-    let log_path = ws.path().join("sessions").join(id).join("log.jsonl");
+    let log_path = gait_core::session::live::log_path(ws.path(), id);
+    std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
     for body in &bodies {
         gait_core::proto::wire::append(&log_path, body.clone()).unwrap();
     }
@@ -162,7 +163,7 @@ async fn run_turn_prim_resume_runs_one_turn_without_user_turn() {
         vec![],
         vec![],
     );
-    let log_path = ws.path().join("sessions").join(id).join("log.jsonl");
+    let log_path = gait_core::session::live::log_path(ws.path(), id);
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<StreamItem>();
     let emitter = gait_core::proto::Recorder::for_session(ws.path(), id, tx);
 

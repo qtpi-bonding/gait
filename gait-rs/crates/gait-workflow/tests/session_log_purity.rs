@@ -38,7 +38,7 @@ nodes:
 "#;
 
 fn setup_git_gait_dir(gait_dir: &std::path::Path) {
-    std::fs::create_dir_all(gait_dir.join("sessions")).unwrap();
+    std::fs::create_dir_all(gait_dir.join(".active")).unwrap();
     std::fs::create_dir_all(gait_dir.join("workflow-runs")).unwrap();
     for args in [
         vec!["init", "--initial-branch=main"],
@@ -89,8 +89,8 @@ async fn workflow_run_creates_no_bookkeeping_session_and_leaks_no_raws() {
     .expect("run should succeed");
     assert_eq!(outcome, WorkflowOutcome::Completed);
 
-    // (1) No bookkeeping session directory for the run.
-    let run_session_dir = gait_dir.join("sessions").join(&run_id);
+    // (1) No bookkeeping session directory (live worktree mount) for the run.
+    let run_session_dir = gait_core::session::live::worktree_dir(&gait_dir, &run_id);
     assert!(
         !run_session_dir.exists(),
         "workflow run must not create a bookkeeping session dir at {}",
@@ -112,9 +112,14 @@ async fn workflow_run_creates_no_bookkeeping_session_and_leaks_no_raws() {
     );
 
     // (3) Leak guard: any session log that exists must be free of workflow raws.
-    let sessions = gait_dir.join("sessions");
+    // Live (not-yet-persisted) session logs live nested under
+    // .active/<id>/sessions/<id>/log.jsonl (see gait_core::session::live).
+    let sessions = gait_dir.join(".active");
     for entry in std::fs::read_dir(&sessions).unwrap().flatten() {
-        let log = entry.path().join("log.jsonl");
+        let Some(id) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let log = gait_core::session::live::log_path(&gait_dir, &id);
         if !log.exists() {
             continue;
         }

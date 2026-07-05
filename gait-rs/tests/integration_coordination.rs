@@ -176,7 +176,7 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
     );
 
     // Verify child transcript has user_turn with from = agent:sparent001
-    let tx = ws.path().join(format!("sessions/{}/log.jsonl", child_id));
+    let tx = gait_core::session::live::log_path(ws.path(), &child_id);
     let events = read_events(&tx).unwrap();
     let user_turn = events
         .iter()

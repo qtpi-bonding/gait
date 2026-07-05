@@ -128,7 +128,7 @@ async fn interactive_reply_renders_live_not_after_session_ends() {
     let ws = TempDir::new().unwrap();
     let gait_dir = ws.path().to_path_buf();
     init_git_repo(&gait_dir);
-    std::fs::create_dir_all(gait_dir.join("sessions")).unwrap();
+    std::fs::create_dir_all(gait_dir.join(".active")).unwrap();
     std::fs::create_dir_all(gait_dir.join("workflow-runs")).unwrap();
 
     // A model must resolve (ConfigResolver::resolve_checked); the mock brain

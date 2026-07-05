@@ -23,7 +23,7 @@ async fn lock_released_after_turn() {
     // follow-up `acquire` from the test must succeed. This pins the *lifetime* contract:
     // held during turn, released after. A refactor that leaks the lock (e.g. moves it into
     // a long-lived cache) will fail this test.
-    let dir = tmp.path().join("sessions/l1");
+    let dir = gait_core::session::live::worktree_dir(tmp.path(), "l1");
     let lock = gait_core::turn::SessionLock::acquire(&dir);
     assert!(
         lock.is_ok(),
@@ -55,7 +55,7 @@ async fn lock_released_after_turn() {
 #[ignore = "TOCTOU race between holder release and spine acquire; see comment in spine_locking.rs"]
 async fn concurrent_turn_blocked_while_held() {
     let tmp = tempfile::tempdir().unwrap();
-    let session_dir = tmp.path().join("sessions/l2");
+    let session_dir = gait_core::session::live::worktree_dir(tmp.path(), "l2");
     std::fs::create_dir_all(&session_dir).unwrap();
 
     // Hold the lock from this process (current PID, which the spine's `kill(pid, 0)` sees as alive).

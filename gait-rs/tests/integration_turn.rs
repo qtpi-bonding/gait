@@ -121,6 +121,16 @@ async fn full_turn_creates_transcript_and_git_commit() {
         .traces
         .create_session_worktree(ws.path(), "sint001")
         .unwrap();
+    // create_session_worktree's orphan tree starts empty -- the nested
+    // sessions/<id>/ dir doesn't exist until the session's first write, which
+    // run_turn's own setup would normally create; since we write directly via
+    // emitter.record() before run_turn, we must create it ourselves first.
+    std::fs::create_dir_all(
+        gait_core::session::live::log_path(ws.path(), "sint001")
+            .parent()
+            .unwrap(),
+    )
+    .unwrap();
     for body in gait_core::embed::user_turn_events(&repos, ws.path(), "list the files".into()) {
         emitter.record(body).unwrap();
     }
@@ -148,7 +158,7 @@ async fn full_turn_creates_transcript_and_git_commit() {
     .await
     .unwrap();
     // Verify transcript
-    let tx = ws.path().join("sessions/sint001/log.jsonl");
+    let tx = gait_core::session::live::log_path(ws.path(), "sint001");
     let events = read_events(&tx).unwrap();
     let event_types: Vec<String> = events
         .iter()
@@ -204,7 +214,9 @@ async fn full_turn_creates_transcript_and_git_commit() {
     }
 
     // Verify git commit in session branch
-    let session_repo = git2::Repository::open(ws.path().join("sessions/sint001")).unwrap();
+    let session_repo =
+        git2::Repository::open(gait_core::session::live::worktree_dir(ws.path(), "sint001"))
+            .unwrap();
     let commit_msg = session_repo
         .head()
         .unwrap()
@@ -365,7 +377,7 @@ async fn second_turn_resumes_session() {
     .await
     .unwrap();
 
-    let tx = ws.path().join("sessions/sint002/log.jsonl");
+    let tx = gait_core::session::live::log_path(ws.path(), "sint002");
     let events = read_events(&tx).unwrap();
     let turn_count = events
         .iter()
@@ -425,6 +437,12 @@ async fn plain_reply_is_streamed_as_delta() {
         .traces
         .create_session_worktree(ws.path(), "splain01")
         .unwrap();
+    std::fs::create_dir_all(
+        gait_core::session::live::log_path(ws.path(), "splain01")
+            .parent()
+            .unwrap(),
+    )
+    .unwrap();
     for body in gait_core::embed::user_turn_events(&repos, ws.path(), "hello".into()) {
         emitter.record(body).unwrap();
     }

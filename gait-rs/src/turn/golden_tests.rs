@@ -429,6 +429,13 @@ impl Fixture {
         let gait_dir = self.ws.path().to_path_buf();
         let codebase_path = self.ws.path().to_path_buf();
         let session_id = self.session_id.clone();
+        // Note: no manual directory setup needed here — run_turn's own setup
+        // path (Persistence::init_workspace) calls
+        // repos.traces.create_session_worktree(gait_dir, session_id) itself,
+        // which creates the .active/<id>/ mount (and, on commit, the nested
+        // sessions/<id>/ dir) via the real orphan-tree flow. Pre-creating it
+        // here would make libgit2's worktree checkout fail (it requires the
+        // target directory not already exist).
         let provider: Arc<dyn Provider> = self.provider.clone();
         let tools = self.tools.clone_for_test();
         let allow = self.allow.clone();
@@ -460,12 +467,7 @@ impl Fixture {
     }
 
     fn bodies_from_log(&self) -> Vec<BodyKind> {
-        let tx_path = self
-            .ws
-            .path()
-            .join("sessions")
-            .join(&self.session_id)
-            .join("log.jsonl");
+        let tx_path = crate::session::live::log_path(self.ws.path(), &self.session_id);
         let events = wire::read_events(&tx_path).unwrap_or_default();
         events
             .iter()

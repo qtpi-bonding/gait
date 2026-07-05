@@ -410,7 +410,7 @@ mod tests {
         let gait_dir = dir.path();
 
         // Child "schild02" done (no lock file), owned by "sparent".
-        let log_path = gait_dir.join("sessions").join("schild02").join("log.jsonl");
+        let log_path = crate::session::live::log_path(gait_dir, "schild02");
         std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
         init_session(InitSessionOpts {
             log_path,
@@ -425,9 +425,10 @@ mod tests {
         .unwrap();
 
         // Child "schild03" still running — write lock file with OWN pid so is_alive check passes.
-        let child03_dir = gait_dir.join("sessions").join("schild03");
+        let child03_dir = crate::session::live::worktree_dir(gait_dir, "schild03");
         std::fs::create_dir_all(&child03_dir).unwrap();
-        let log_path3 = child03_dir.join("log.jsonl");
+        let log_path3 = crate::session::live::log_path(gait_dir, "schild03");
+        std::fs::create_dir_all(log_path3.parent().unwrap()).unwrap();
         init_session(InitSessionOpts {
             log_path: log_path3,
             id: "schild03".to_string(),

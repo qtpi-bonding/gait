@@ -252,7 +252,12 @@ mod tests {
         use crate::proto::gait::log::v1::{event, payload, stream_item};
         use tempfile::TempDir;
         let dir = TempDir::new().unwrap();
-        std::fs::create_dir_all(dir.path().join("sessions").join("h")).unwrap();
+        std::fs::create_dir_all(
+            crate::session::live::log_path(dir.path(), "h")
+                .parent()
+                .unwrap(),
+        )
+        .unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let rec = crate::Recorder::for_session(dir.path(), "h", tx);
         let hook = ConfigHook::new(hook_def("post_tool", Some("edit"), "exit 0"));

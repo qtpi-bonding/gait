@@ -103,7 +103,7 @@ async fn diagnostic_writes_diagnostic_jsonl_only_when_gait_debug_set() {
     };
     let _ = run_one(tmp.path(), "r2", &[d, terminated_ok("done")]).await;
 
-    let path = tmp.path().join("sessions/r2/diagnostic.jsonl");
+    let path = gait_core::session::live::diagnostic_path(tmp.path(), "r2");
     assert!(
         !path.exists(),
         "diagnostic.jsonl must NOT exist for per-phase Diagnostic pings when \
@@ -135,8 +135,9 @@ async fn notify_writes_agent_update_to_parent_session() {
     // The parent log.jsonl must now carry the AgentUpdate event. The AgentUpdate
     // payload carries the child's `from_session` as `sessionId` (pbjson camelCase)
     // and the child's `summary` as `summary`. Status → enum int (1 = Done).
-    let parent_log = std::fs::read_to_string(tmp.path().join("sessions/parent/log.jsonl"))
-        .expect("parent log.jsonl must exist after the seed turn");
+    let parent_log =
+        std::fs::read_to_string(gait_core::session::live::log_path(tmp.path(), "parent"))
+            .expect("parent log.jsonl must exist after the seed turn");
     assert!(
         parent_log.contains("agentUpdate"),
         "Notify must append an AgentUpdate event to the parent's log.jsonl; got:\n{parent_log}"

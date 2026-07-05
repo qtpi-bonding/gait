@@ -29,7 +29,7 @@ async fn failed_terminated_sets_error_and_writes_diagnostic() {
 
     // (2) Terminal DiagRecord is written to diagnostic.jsonl regardless of
     //     GAIT_DEBUG — that's the load-bearing "always explained" rule.
-    let diag_path = tmp.path().join("sessions/tf1/diagnostic.jsonl");
+    let diag_path = gait_core::session::live::diagnostic_path(tmp.path(), "tf1");
     assert!(
         diag_path.exists(),
         "diagnostic.jsonl must exist for a failed Terminated (no GAIT_DEBUG gate); \

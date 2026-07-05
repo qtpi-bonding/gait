@@ -400,7 +400,12 @@ mod synapse_routing_tests {
     async fn world_tool_events_are_recorded_by_caller() {
         let dir = tempdir().unwrap();
         // Create session directory so the log file can be written.
-        std::fs::create_dir_all(dir.path().join("sessions/stest123")).unwrap();
+        std::fs::create_dir_all(
+            crate::session::live::log_path(dir.path(), "stest123")
+                .parent()
+                .unwrap(),
+        )
+        .unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let rec = crate::proto::Recorder::for_session(dir.path(), "stest123", tx);
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(TouchTool)];

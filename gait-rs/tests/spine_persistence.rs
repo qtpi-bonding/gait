@@ -64,7 +64,7 @@ async fn orphan_tool_call_gets_synthesized_result_before_commit() {
     )
     .await;
 
-    let log = std::fs::read_to_string(tmp.path().join("sessions/p3/log.jsonl"))
+    let log = std::fs::read_to_string(gait_core::session::live::log_path(tmp.path(), "p3"))
         .expect("log.jsonl must exist after a completed turn");
 
     let call_at = log
@@ -103,7 +103,7 @@ async fn appends_persist_in_order_with_session_start_first() {
     .await;
 
     // log.jsonl is real FS (not behind Repos) — assert real content + ordering.
-    let log = std::fs::read_to_string(tmp.path().join("sessions/p1/log.jsonl"))
+    let log = std::fs::read_to_string(gait_core::session::live::log_path(tmp.path(), "p1"))
         .expect("log.jsonl must exist after a completed turn");
     let lines: Vec<&str> = log.lines().collect();
     assert!(

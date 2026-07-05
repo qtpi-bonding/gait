@@ -201,6 +201,14 @@ pub fn init_session(opts: InitSessionOpts) -> Result<(), SessionError> {
     );
     let prev = last_event(&opts.log_path)?;
     let ev = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
+    // The nested sessions/<id>/ directory (see crate::session::live) does not
+    // exist yet on a brand new session — create_session_worktree's orphan
+    // tree starts empty, and nothing creates sessions/<id>/ before this,
+    // the session's very first write. Create it lazily here (mirrors
+    // SessionLog::open's own create_dir_all).
+    if let Some(parent) = opts.log_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

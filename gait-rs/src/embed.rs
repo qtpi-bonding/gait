@@ -181,6 +181,13 @@ pub async fn run_loop(
                 .repos
                 .traces
                 .create_session_worktree(gait_dir, session_id)?;
+            // create_session_worktree's orphan tree starts empty -- the nested
+            // sessions/<id>/ dir (see crate::session::live) doesn't exist until
+            // the session's first write. Create it before this, the first
+            // real write to tx_path.
+            if let Some(parent) = tx_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
             for body in bodies {
                 crate::proto::wire::append(&tx_path, body)?;
             }

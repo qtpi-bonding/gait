@@ -75,11 +75,8 @@ async fn embed_drives_a_turn_and_emits_pbjson() {
 
     // Pre-write the user_turn (simulating what the spine does before spawning the brain).
     let bodies = user_turn_events(&repos, ws.path(), "embed me".into());
-    let log = ws
-        .path()
-        .join("sessions")
-        .join(session_id)
-        .join("log.jsonl");
+    let log = gait_core::session::live::log_path(ws.path(), session_id);
+    std::fs::create_dir_all(log.parent().unwrap()).unwrap();
     for body in &bodies {
         gait_core::proto::wire::append(&log, body.clone()).unwrap();
     }
