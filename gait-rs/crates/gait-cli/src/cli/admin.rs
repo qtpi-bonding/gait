@@ -371,8 +371,18 @@ pub fn cmd_register(args: RegisterArgs) -> anyhow::Result<()> {
             Ok(())
         }
         "skill" => {
-            let config_path = gait_dir.join("gait.jsonc");
-            let mut val = read_config_as_value(&config_path)?;
+            let skills_root = gait_dir.join("skills");
+            std::fs::create_dir_all(&skills_root)
+                .map_err(|e| anyhow::anyhow!("could not create skills/ dir: {e}"))?;
+            let skill_dir = skills_root.join(name);
+            if skill_dir.exists() {
+                return Err(anyhow::anyhow!(
+                    "skill '{}' already registered at {}. Use 'gait unregister skill {}' first.",
+                    name,
+                    skill_dir.display(),
+                    name
+                ));
+            }
             let description = flags.get("description").ok_or_else(|| {
                 anyhow::anyhow!("gait register skill: requires --description <text>")
             })?;
@@ -386,17 +396,17 @@ pub fn cmd_register(args: RegisterArgs) -> anyhow::Result<()> {
                     "gait register skill: requires --path <file> or --content <text>"
                 ));
             };
-            let entry = json!({ "name": name, "description": description, "content": content, "enabled": false });
-            if val.get("skills").is_none() {
-                val["skills"] = json!([]);
-            }
-            val["skills"]
-                .as_array_mut()
-                .ok_or_else(|| anyhow::anyhow!("skills is not an array"))?
-                .push(entry);
-            eprintln!("Note: gait.jsonc comments are stripped on rewrite.");
-            std::fs::write(&config_path, serde_json::to_string_pretty(&val)?)?;
-            println!("Added skill '{}'.", name);
+            std::fs::create_dir_all(&skill_dir)
+                .map_err(|e| anyhow::anyhow!("could not create skills/{} dir: {e}", name))?;
+            let skill_md = skill_dir.join("SKILL.md");
+            std::fs::write(
+                &skill_md,
+                format!(
+                    "---\nname: {}\ndescription: {}\nenabled: false\n---\n\n{}",
+                    name, description, content
+                ),
+            )?;
+            println!("Registered skill '{}'.", name);
             println!("→ Run 'gait enable skill {}' to activate it.", name);
             Ok(())
         }
@@ -455,7 +465,7 @@ pub(crate) fn cmd_enable_disable_inner(
     name: &str,
     enable: bool,
 ) -> anyhow::Result<()> {
-    // Disk-file path for mcp and plugin kinds
+    // Disk-file path for mcp, plugin, and skill kinds
     let disk_path: Option<std::path::PathBuf> = match kind {
         "mcp" => {
             let p = gait_dir.join("mcp").join(format!("{}.json", name));
@@ -467,6 +477,14 @@ pub(crate) fn cmd_enable_disable_inner(
         }
         "plugin" => {
             let p = gait_dir.join("plugins").join(name).join("PLUGIN.md");
+            if p.exists() {
+                Some(p)
+            } else {
+                None
+            }
+        }
+        "skill" => {
+            let p = gait_dir.join("skills").join(name).join("SKILL.md");
             if p.exists() {
                 Some(p)
             } else {
@@ -485,6 +503,11 @@ pub(crate) fn cmd_enable_disable_inner(
                 std::fs::write(&path, serde_json::to_string_pretty(&val)?)?;
             }
             "plugin" => {
+                let content = std::fs::read_to_string(&path)?;
+                let new_content = set_frontmatter_bool(&content, "enabled", enable)?;
+                std::fs::write(&path, new_content)?;
+            }
+            "skill" => {
                 let content = std::fs::read_to_string(&path)?;
                 let new_content = set_frontmatter_bool(&content, "enabled", enable)?;
                 std::fs::write(&path, new_content)?;
@@ -592,7 +615,7 @@ pub fn cmd_unregister(args: UnregisterArgs) -> anyhow::Result<()> {
         })
         .ok_or_else(|| anyhow::anyhow!("no gait dir: pass --gait-dir <path> or set $GAIT_DIR"))?;
 
-    // Disk-first for mcp and plugin
+    // Disk-first for mcp, plugin, and skill
     if kind == "mcp" {
         let disk_path = gait_dir.join("mcp").join(format!("{}.json", name));
         if disk_path.exists() {
@@ -609,6 +632,15 @@ pub fn cmd_unregister(args: UnregisterArgs) -> anyhow::Result<()> {
             return Ok(());
         }
         return Err(anyhow::anyhow!("plugin '{}' not found", name));
+    }
+    if kind == "skill" {
+        let skill_dir = gait_dir.join("skills").join(name);
+        if skill_dir.exists() {
+            std::fs::remove_dir_all(&skill_dir)?;
+            eprintln!("Removed skill '{}'.", name);
+            return Ok(());
+        }
+        return Err(anyhow::anyhow!("skill '{}' not found", name));
     }
 
     // Fall back to gait.jsonc
@@ -713,22 +745,7 @@ mod tests {
     #[test]
     fn cmd_register_skill_writes_entry() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("gait.jsonc"),
-            r#"{"model":"anthropic/claude-sonnet-4-6","skills":[]}"#,
-        )
-        .unwrap();
-        let _args: Vec<String> = [
-            "skill",
-            "tdd",
-            "--description",
-            "tdd workflow",
-            "--content",
-            "# TDD",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+        // Skill registration writes to disk directly — no gait.jsonc needed.
         cmd_register(reg_flags(
             "skill",
             "tdd",
@@ -736,11 +753,46 @@ mod tests {
             &["--description", "tdd workflow", "--content", "# TDD"],
         ))
         .unwrap();
-        let val: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap())
-                .unwrap();
-        assert_eq!(val["skills"][0]["name"], "tdd");
-        assert_eq!(val["skills"][0]["enabled"], false);
+        let skill_md = dir.path().join("skills").join("tdd").join("SKILL.md");
+        assert!(skill_md.exists(), "skills/tdd/SKILL.md should be created");
+        let md = std::fs::read_to_string(&skill_md).unwrap();
+        assert!(md.contains("name: tdd"));
+        assert!(md.contains("description: tdd workflow"));
+        assert!(md.contains("enabled: false"));
+        assert!(md.contains("# TDD"));
+    }
+
+    #[test]
+    fn cmd_enable_skill_prefers_disk_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("skills").join("tdd");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: tdd\ndescription: x\nenabled: false\n---\n# body\n",
+        )
+        .unwrap();
+        cmd_enable_disable_inner(dir.path(), "skill", "tdd", true).unwrap();
+        let md = std::fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();
+        assert!(md.contains("enabled: true"), "got: {md}");
+        assert!(
+            !md.contains("enabled: false"),
+            "old value should be gone: {md}"
+        );
+    }
+
+    #[test]
+    fn cmd_unregister_skill_removes_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("skills").join("tdd");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: tdd\ndescription: x\nenabled: false\n---\n",
+        )
+        .unwrap();
+        cmd_unregister(unreg("skill", "tdd", dir.path())).unwrap();
+        assert!(!skill_dir.exists(), "skills/tdd/ should be deleted");
     }
 
     #[test]

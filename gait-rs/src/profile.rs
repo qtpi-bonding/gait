@@ -226,17 +226,10 @@ impl Profile {
         let deny = merge_deny(&config.deny, &agent_deny);
 
         // Phase 5: skills come from disk first; fall back to config.skills for
-        // backward compat with gait.jsonc inline bodies.
-        let mut disk_skills = crate::skills::scan_skills(gait_dir);
-        // Merge: disk wins over config for same name; config-only entries kept.
-        let config_skill_names: std::collections::HashSet<String> =
-            disk_skills.iter().map(|s| s.name.clone()).collect();
-        for s in &config.skills {
-            if !config_skill_names.contains(&s.name) {
-                disk_skills.push(s.clone());
-            }
-        }
-        let merged_skills = disk_skills;
+        // backward compat with gait.jsonc inline bodies. The merge logic is
+        // extracted to `skills::merged_skill_registry` so it can be reused
+        // and tested independently.
+        let merged_skills = crate::skills::merged_skill_registry(gait_dir, config);
 
         // MCP: disk files first; gait.jsonc entries kept if not already on disk (by name).
         let mut disk_mcp = crate::mcp::scan_mcp_servers(gait_dir);
