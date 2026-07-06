@@ -6,6 +6,16 @@ The name is a backronym: **g**AI**t**. Also just a word for the way something mo
 
 ---
 
+## Prerequisites
+
+- **Rust** (stable toolchain, edition 2021 — built/tested with 1.92) and **Cargo**. Install via [rustup](https://rustup.rs) if you don't have it: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.org | sh`.
+- **macOS (Apple Silicon or Intel) or Linux.** The sandbox is kernel-enforced per platform — Seatbelt on macOS, Landlock on Linux — and works out of the box on Apple Silicon. Windows is untested and not currently supported.
+
+  Note: the `git` CLI is **not** required at runtime — gait talks to git exclusively through `git2`/libgit2. Building from source shells out to `git rev-parse HEAD` to stamp the binary with a build hash, but degrades gracefully to `"unknown"` if `git` isn't on `PATH`.
+- An **API key** for at least one model provider (Anthropic, OpenAI, MiniMax, etc. — see [Providers](#providers)). Add it after install with `gait auth add <provider>`.
+
+---
+
 ## Install
 
 ```bash
@@ -47,6 +57,8 @@ gait -i
 # 8. Ephemeral one-off (no session, no git — just an answer or a shell command)
 gait -e "what's the current git branch?"
 ```
+
+Driving gait from another coding agent (as a dispatched subagent) or a human REPL session? See [`skills/gait-agent/SKILL.md`](skills/gait-agent/SKILL.md) — a portable, agent-agnostic skill covering both.
 
 ---
 
@@ -390,6 +402,69 @@ When a turn hits a sandbox boundary it wasn't granted, the session pauses in `aw
 | `enable` | Toggle an MCP server/skill/plugin on for the rest of the turn |
 
 All tools go through the permission gate. Tools in `allow` run immediately; others prompt the user (or auto-approve with `--auto-approve`). The sandbox (above) applies underneath the permission gate regardless of `allow`.
+
+---
+
+## Hooks
+
+Hooks run a shell command at fixed points in the turn loop — for validation, logging, or injecting context — configured via the `hooks` array in `gait.jsonc` or agent frontmatter:
+
+```jsonc
+"hooks": [
+  { "event": "post_tool", "tool": "shell", "run": "echo ran a shell tool" }
+]
+```
+
+| Field | Meaning |
+|---|---|
+| `event` | One of the six lifecycle events below. |
+| `tool` | Optional tool-name filter — only for `pre_tool`/`post_tool`; omit to match every tool. |
+| `run` | Shell command, executed via `sh -c`. |
+
+### Events
+
+| Event | Fires | Effect |
+|---|---|---|
+| `pre_turn` | Once, after the system prompt is built, before the step loop starts. | Exit 0 with non-empty stdout **replaces the system prompt** for the turn. |
+| `pre_step` | Before each LLM call. | Observation only — output has no effect on the step. |
+| `post_step` | After the LLM response streams in, before its tool calls run. | Observation only. |
+| `pre_tool` | Before each tool call (respecting the `tool` filter). | **Non-zero exit blocks the tool call** — its stdout+stderr is returned to the model as the block reason instead of running the tool. |
+| `post_tool` | After a tool call executes. | Exit 0 with non-empty stdout **replaces the tool result**; non-zero exit appends the hook's output as an error annotation to the original result. |
+| `post_turn` | Once, at the very end of the turn. | Observation only. |
+
+Every hook run is recorded to the session log as a `hook_run` event, so hook activity replays with the rest of the transcript.
+
+### Environment passed to the hook command
+
+| Variable | Available on | Value |
+|---|---|---|
+| `GAIT_EVENT` | all | The event name. |
+| `GAIT_SESSION_ID`, `GAIT_DIR`, `GAIT_CODEBASE` | all | Session id, gait-dir, codebase path. |
+| `GAIT_STEP_INDEX`, `GAIT_STEP_COUNT`, `GAIT_MESSAGE_COUNT`, `GAIT_LAST_ROLE` | all | Turn-loop position. |
+| `GAIT_SYSTEM_PROMPT` | from `pre_turn` onward | Current system prompt text. |
+| `GAIT_RESPONSE_TEXT`, `GAIT_TOOL_COUNT`, `GAIT_TOOL_NAMES` | from `post_step` onward | The assistant's text and the tools it just called. |
+| `GAIT_TOOL_NAME`, `GAIT_TOOL_CALL_ID` | `pre_tool`, `post_tool` | Which tool call this is. |
+| `GAIT_ARG_<KEY>` | `pre_tool`, `post_tool` | One var per tool argument — key uppercased, `-`→`_` (e.g. a `file-path` argument becomes `GAIT_ARG_FILE_PATH`). |
+| `GAIT_TOOL_RESULT` | `post_tool` | The tool's raw output, before any hook rewrite. |
+| `GAIT_TURN_OUTCOME` | `post_step`, `post_turn` | `done` \| `clarify` \| `inform` \| `permissions` \| empty if still in progress. |
+| `GAIT_FINAL_RESPONSE` | `post_turn` | The turn's final response text. |
+
+Hooks run with no timeout and inherit gait's working directory — keep them fast, and have long-running work spawn its own background process instead of blocking the hook.
+
+---
+
+## Extending gait
+
+Four ways to add capability without changing gait's source:
+
+| Mechanism | What it adds | Where it lives | Managed with |
+|---|---|---|---|
+| **MCP servers** | New tools, proxied from an external MCP server. | `<gait-dir>/mcp/<name>.json` | `gait register/enable/disable/unregister mcp` — see [Commands](#gait-register--unregister--enable--disable). |
+| **Skills** | Prompt fragments appended to the system prompt (conventions, playbooks). | `<gait-dir>/skills/<name>/SKILL.md` (frontmatter: `name`, `description`; body = markdown injected verbatim) | Auto-loaded from disk — drop a `SKILL.md` in and it's picked up on the next turn. The `gait register skill` / inline `gait.jsonc` `skills` array path still works but is deprecated. |
+| **Hooks** | Shell-command side effects and content rewrites at fixed points in the turn loop. | `hooks` array in `gait.jsonc` or agent frontmatter | Edit the config directly — see [Hooks](#hooks) above. |
+| **WASM plugins** | *(scaffolding only — not yet executed at runtime.)* | `<gait-dir>/plugins/<name>/PLUGIN.md` (frontmatter: `name`, `wasm`, `enabled`, `allow_exec`, `allow_fs`) | `gait register/enable/disable/unregister plugin` registers and toggles the manifest; there is no plugin execution path yet, so an enabled plugin currently has no runtime effect. |
+
+For deeper custom logic than a hook or skill can express, `spawn_agent` (see [Subagents](#subagents)) lets a running turn delegate work to a whole new gait session with its own agent/model/tool config.
 
 ---
 
