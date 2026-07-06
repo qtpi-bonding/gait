@@ -50,10 +50,14 @@ impl Tool for WriteTool {
             self.ctx.codebase_path.join(&params.file_path)
         };
         if let Some(parent) = resolved.parent() {
-            std::fs::create_dir_all(parent)
+            self.ctx
+                .fs
+                .create_dir_all(parent)
                 .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
         }
-        std::fs::write(&resolved, &params.content)
+        self.ctx
+            .fs
+            .write(&resolved, params.content.as_bytes())
             .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
         let bytes = params.content.len();
         Ok(Value::String(format!(
@@ -87,8 +91,10 @@ impl Tool for WriteTool {
                 } else {
                     self.ctx.codebase_path.join(&params.file_path)
                 };
-                if resolved.exists() {
-                    std::fs::read_to_string(&resolved)
+                if self.ctx.fs.exists(&resolved) {
+                    self.ctx
+                        .fs
+                        .read_to_string(&resolved)
                         .ok()
                         .and_then(|old| crate::tools::preview::diff_preview(&old, &params.content))
                 } else {

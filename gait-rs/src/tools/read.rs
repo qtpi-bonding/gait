@@ -1,5 +1,6 @@
 use crate::hashline::annotate_lines;
 use crate::permissions::path_patterns;
+use crate::tools::fs_backend::FsBackend;
 use crate::tools::ToolCtx;
 use crate::tools::ToolError;
 use crate::types::{ExecutionMode, PermissionRequest, Tool, ToolPermission};
@@ -26,19 +27,15 @@ fn is_binary_by_extension(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
-fn is_binary_by_content(path: &std::path::Path) -> bool {
-    use std::io::Read;
-    let Ok(mut file) = std::fs::File::open(path) else {
+fn is_binary_by_content(path: &std::path::Path, fs: &dyn FsBackend) -> bool {
+    let Ok(prefix) = fs.read_bytes_prefix(path, 4096) else {
         return false;
     };
-    let mut buf = [0u8; 4096];
-    let Ok(n) = file.read(&mut buf) else {
-        return false;
-    };
+    let n = prefix.len();
     if n == 0 {
         return false;
     }
-    let sample = &buf[..n];
+    let sample = &prefix[..n];
     // Null byte = definitely binary
     if sample.contains(&0u8) {
         return true;
@@ -111,7 +108,7 @@ impl Tool for ReadTool {
             self.ctx.codebase_path.join(&params.file_path)
         };
 
-        if !resolved.exists() {
+        if !self.ctx.fs.exists(&resolved) {
             // Suggest nearby files
             let dir = resolved.parent().unwrap_or(&resolved);
             let base = resolved
@@ -146,14 +143,17 @@ impl Tool for ReadTool {
             )));
         }
 
-        if is_binary_by_extension(&resolved) || is_binary_by_content(&resolved) {
+        if is_binary_by_extension(&resolved) || is_binary_by_content(&resolved, &*self.ctx.fs) {
             return Err(crate::tools::ToolError::Execute(format!(
                 "Cannot read binary file: {}",
                 resolved.display()
             )));
         }
 
-        let text = std::fs::read_to_string(&resolved)
+        let text = self
+            .ctx
+            .fs
+            .read_to_string(&resolved)
             .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
         let lines: Vec<&str> = text.split('\n').collect();
 
