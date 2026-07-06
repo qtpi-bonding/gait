@@ -14,7 +14,7 @@ cargo build --release
 cp target/release/gait /usr/local/bin/gait
 ```
 
-Or use `make install` to build and install to a custom path (edit `Makefile` to set `INSTALL_DIR`).
+Or, from inside `gait-rs/`, use `make install` to build and install to a custom path (edit `Makefile` to set `INSTALL_DIR`).
 
 ---
 
@@ -28,19 +28,55 @@ gait init
 # 2. Add an API key
 gait auth add anthropic
 
-# 3. Run a task
-gait run --gait-dir . --codebase /path/to/your/repo --task "add a health check endpoint to src/server.ts"
+# 3. Run one turn (bare positional task)
+gait "add a health check endpoint to src/server.ts" --gait-dir . --codebase /path/to/your/repo
 
 # 4. Set GAIT_DIR to skip the flag
 export GAIT_DIR=$PWD
-gait run --codebase /path/to/your/repo --task "run the test suite and fix any failures"
+gait "run the test suite and fix any failures" --codebase /path/to/your/repo
 
 # 5. Continue the same session
-gait run --session s1a2b3c4
+gait --session s1a2b3c4 "keep going"
 
 # 6. Non-interactive (auto-approve all permissions)
-gait run --task "..." --auto
+gait "..." --auto-approve
+
+# 7. Interactive REPL instead of one-shot turns
+gait -i
+
+# 8. Ephemeral one-off (no session, no git — just an answer or a shell command)
+gait -e "what's the current git branch?"
 ```
+
+---
+
+## Modes
+
+`gait` has three top-level modes, selected by how you invoke it (mutually exclusive):
+
+| Invocation | Mode |
+|---|---|
+| `gait "<task>"` (bare positional) | Runs one turn of a session and exits. |
+| `gait -i` / `gait --interactive` | Interactive REPL — iterate turn-by-turn in one process. |
+| `gait -e "<prompt>"` / `gait --exec "<prompt>"` | Ephemeral one-off: no session, no git commit — prints an answer or a shell command (asks before running it on a TTY). |
+
+Plus subcommands (`gait <subcommand>`) for everything else: session lifecycle, workflows, config, auth, etc. See [Commands](#commands) below.
+
+### Top-level flags (apply to the bare-task and `-i`/`-e` modes)
+
+| Flag | Description |
+|---|---|
+| `-s, --session <id>` | Continue an existing session by id. |
+| `-m, --model <id>` | Model override (`provider/model`). |
+| `-a, --agent <name>` | Agent file to load. |
+| `--auto-approve` | Auto-approve all tool-permission prompts. The sandbox ceiling still applies (kernel-enforced) — this only skips the human approval prompt. |
+| `--allow <pat>` | Pre-approve a tool pattern (repeatable). |
+| `--deny <pat>` | Pre-deny a tool pattern (repeatable). |
+| `--unlock <path>` | Pre-grant sandbox path access (repeatable). |
+| `-n, --max-iter <n>` | Cap the number of agentic tool-use steps. |
+| `-R, --result-schema <file>` | JSON Schema file — force structured output for this turn. |
+
+`--gait-dir`/`--codebase` also exist (hidden flags; default to `$GAIT_DIR`/cwd) — most commands below take them explicitly instead.
 
 ---
 
@@ -48,70 +84,65 @@ gait run --task "..." --auto
 
 ### `gait init [<path>]`
 
-Sets up the current directory (or `<path>`) as a gait-dir:
+Sets up the current directory (or `<path>`) as a gait-dir and makes an initial git commit:
 
-- `gait.jsonc` — config
-- `agents/default/AGENT.md` — the agent's role and instructions (edit to add project conventions)
-- `USER.md` — your personal instructions, gitignored
-- `skills/` — installed skills
-- `sessions/` — per-session logs, gitignored
+- `gait.jsonc` — config (committed)
+- `agents/default/AGENT.md` — the agent's role and instructions (edit to add project conventions; committed)
+- `USER.md` — your personal instructions (gitignored, not shared)
+- `skills/` — installed skills, `skills/<name>/SKILL.md` (committed once you add skills)
+- `.active/` — live, not-yet-persisted session worktrees (gitignored)
+
+Note: `sessions/` is **not** created by `init`. It only comes into existence, as tracked content on `main`, once a session is persisted (see `gait persist`).
 
 Safe to re-run on an existing gait-dir — never clobbers.
 
-### `gait run`
-
-Runs one turn of the agent.
+### `gait <task>` — run one turn
 
 ```
-gait run [--session <id>] [--task "..."] [--gait-dir <path>] [--codebase <path>]
-         [--auto] [--model <provider/model>] [--agent <name>]
-         [--result-schema <file>] [--allow <pat>]... [--deny <pat>]...
-         [--max-iter <n>] [--container]
+gait "<task>" [--session <id>] [--model <id>] [--agent <name>]
+              [--auto-approve] [--allow <pat>]... [--deny <pat>]... [--unlock <path>]...
+              [--max-iter <n>] [--result-schema <file>]
 ```
-
-| Flag | Description |
-|---|---|
-| `--gait-dir <path>` | Gait-dir path. Defaults to `$GAIT_DIR` env var, then cwd. |
-| `--codebase <path>` | Codebase directory. Defaults to cwd. |
-| `--session <id>` | Resume a session. Auto-generated if omitted. |
-| `--task "..."` | User message for this turn. Omit to continue a paused session. |
-| `--model <id>` | Override the model for this turn. |
-| `--agent <name>` | Load system prompt from `agents/<name>/AGENT.md`. |
-| `--auto` | Auto-approve all permission requests (non-interactive). |
-| `--result-schema <file>` | JSON Schema file — force structured output for this turn. |
-| `--allow <pat>` | Additional allow patterns for this turn only. |
-| `--deny <pat>` | Additional deny patterns for this turn only. |
-| `--max-iter <n>` | Cap the number of tool-use iterations. |
-| `--container` | Run the turn inside Docker (pulls the gait image if needed). |
 
 Each completed turn is committed to the session's git branch. Interrupted turns are also committed — state is never lost.
+
+### `gait -e "<prompt>"` — ephemeral one-off
+
+Runs a single throwaway turn with no session and no git commit. The agent must return either a shell command (printed, and — on a TTY — offered to run after a `y/N` prompt) or a plain text answer. Useful for quick one-liners: `gait -e "what changed in the last commit?"`.
 
 ### `gait workflow`
 
 Run multi-step workflows defined as YAML DAGs. See [Workflows](#workflows) below.
 
 ```
-gait workflow run <name> [args...]      # run workflows/<name>.yaml
-gait workflow list                      # show active workflow sessions
-gait workflow continue <workflow-id>    # resume a paused workflow (after a gate)
-gait workflow abort <workflow-id>       # mark a workflow as aborted
-gait workflow log <workflow-id>         # print the full transcript as JSONL
+gait workflow run <name> [args...] --gait-dir <path>    # run workflows/<name>.yaml
+gait workflow list --gait-dir <path>                     # show active workflow sessions
+gait workflow continue <workflow-id> --gait-dir <path>   # resume a paused workflow (after a gate)
+gait workflow abort <workflow-id> --gait-dir <path>      # mark a workflow as aborted
+gait workflow log <workflow-id> --gait-dir <path>        # print the full transcript as JSONL
 ```
 
-### `gait finish <session-id>`
+### `gait persist [<session-id> | --all]`
 
-Merges a session branch into `main` and removes the worktree.
+Merges a session's worktree onto `main` and tears down its `.active/` mount. This is how session state (transcript, checkpoints) becomes durable, git-tracked content under `sessions/<id>/`.
 
 ```bash
-gait finish s1a2b3c4 --gait-dir /path/to/workspace
+gait persist s1a2b3c4 --gait-dir /path/to/workspace
+gait persist --all --gait-dir /path/to/workspace   # persist every idle session
 ```
+
+`--yes`/`-y` skips the confirmation prompt (required non-interactively). `--json` for machine-readable output.
+
+### `gait discard [<session-id> | --all]`
+
+Tears down a session **without** merging it — the inverse of `persist`. Same flags as `persist`.
 
 ### `gait undo <session-id>`
 
 Restores a session to a past turn — code, transcript, or both.
 
-```
-gait undo <session-id> [--turn N | --list] [--code] [--transcript] [--gait-dir <path>]
+```bash
+gait undo <session-id> [--turn N | --list] [--code] [--transcript] [--gait-dir <path>] [--json]
 ```
 
 | Flag | Description |
@@ -123,44 +154,53 @@ gait undo <session-id> [--turn N | --list] [--code] [--transcript] [--gait-dir <
 
 Omitting both `--code` and `--transcript` restores both. The codebase's own git history is never touched — only the shadow checkpoint is used.
 
-### `gait chat`
+### `gait -i` — interactive REPL
 
-Interactive REPL for conversational use. Starts a new session (or resumes one) and lets you iterate turn-by-turn without invoking `gait run` each time.
+Interactive REPL for conversational use. Starts a new session (or resumes one with `--session`) and lets you iterate turn-by-turn in one process.
 
 ```bash
-gait chat [--gait-dir <path>] [--codebase <path>] [--agent <name>] [--session <id>]
+gait -i [--session <id>] [--agent <name>]
 ```
 
-**REPL commands and syntax**
+**REPL slash commands**
 
-| Input | What it does |
+| Command | Aliases | What it does |
+|---|---|---|
+| `/help` | `/?` | Show the command guide. |
+| `/info` | | Show model, session, gait-dir, codebase. |
+| `/model` | | Show or switch model (`provider/id`). |
+| `/sh` | `/e` | One-off: describe a shell command, optionally run it. |
+| `/new` | `/n` | Start a fresh session. |
+| `/workflow` | | Run a workflow. |
+| `/undo` | `/u` | Undo the last turn (code + transcript). |
+| `/uc` | | Undo checkpoint (code only). |
+| `/ut` | | Undo turn (transcript only). |
+| `/sandbox` | | Toggle the sandbox. |
+| `/unlock` | | Unlock a held (`awaiting-unlock`) session. |
+| `/exit` | `/quit`, `/q` | Exit the REPL. |
+
+**Input syntax** (works in any message, not just slash commands):
+
+| Syntax | What it does |
 |---|---|
-| `/n` or `/new` | Start a fresh session. |
-| `/q` or `/exit` | Quit. |
-| `/u [N]` | Undo both code and transcript to turn N (or list turns if N omitted). |
-| `/uc [N]` | Undo code only. |
-| `/ut [N]` | Undo transcript only. |
-| `/skill enable <name>` | Enable a skill for this session. |
-| `/skill disable <name>` | Disable a skill for this session. |
 | `!cmd` | Run a shell command locally; output is captured into shell history. |
 | `$(N)` | Paste shell history entry N into your message. |
 | `$(cmd)` | Run `cmd` and inline its output into your message before sending. |
 | `>(N)` | Quote line N from the last agent response (supports ranges `>(N-M)`). |
+| `@path` | Inline the contents of a file at `path` into your message. |
 
-### `gait status <session-id>`
+### `gait ps` / `gait sessions`
 
-Prints the current state of a session: `running`, `awaiting_permission`, `awaiting_clarify`, `done`, etc.
+`gait sessions --gait-dir <path> [--json]` lists active (unmerged) session ids.
 
-```bash
-gait status s1a2b3c4 [--gait-dir <path>] [--json]
-```
+`gait ps --gait-dir <path> [--json]` lists sessions currently mounted under `.active/` with their live state (`idle`, `awaiting-permission`, `awaiting-clarify`, `awaiting-inform`, `awaiting-unlock`).
 
-### `gait cost <session-id>`
+### `gait stats <session-id>`
 
 Prints token usage and estimated cost for a session.
 
 ```bash
-gait cost s1a2b3c4 [--gait-dir <path>] [--json]
+gait stats s1a2b3c4 --gait-dir <path> [--json]
 ```
 
 ### `gait allow / gait deny`
@@ -168,8 +208,8 @@ gait cost s1a2b3c4 [--gait-dir <path>] [--json]
 Approve or reject a pending permission request from outside the session (useful in headless or scripted pipelines).
 
 ```bash
-gait allow <session-id> [--pattern <pat>] [--scope <global|agent|once>] [--gait-dir <path>] [--agent <name>]
-gait deny  <session-id> [--gait-dir <path>]
+gait allow <session-id> [--pattern <pat>] [--scope <once|agent|global>] [--agent <name>] --gait-dir <path> [--json]
+gait deny  <session-id> --gait-dir <path> [--json]
 ```
 
 `--scope` controls how broadly the approval is saved:
@@ -177,39 +217,57 @@ gait deny  <session-id> [--gait-dir <path>]
 | Scope | Effect |
 |---|---|
 | `once` (default) | Approves this single tool call only. |
-| `agent` | Adds the pattern to the named agent file's `allow` list. |
+| `agent` | Adds the pattern to the named agent file's `allow` list (requires `--agent`). |
 | `global` | Adds the pattern to `gait.jsonc`. |
 
-> `gait approve` / `gait reject` still work as aliases.
+A `session` scope value is also accepted on the wire but not yet wired to a persistence target — it currently behaves like `once`.
+
+### `gait unlock <session-id>`
+
+Grants sandbox path/network access requested by a turn that's paused in `awaiting-unlock` state (kernel-enforced sandbox — see [Sandbox](#sandbox)).
+
+```bash
+gait unlock <session-id> [--scope once|session|global|agent] [--agent <name>] --gait-dir <path> [--json]
+```
+
+`global` writes the grant into `gait.jsonc`; `agent` writes it into the named agent's frontmatter (requires `--agent`); `once`/`session` only record the decision in the session log.
 
 ### `gait register / unregister / enable / disable`
 
-Register and toggle MCP servers and skills in `gait.jsonc`.
+Register and toggle MCP servers, skills, and WASM plugins.
 
 ```bash
-# MCP servers
-gait register mcp <name> --spawn <cmd>       # register a stdio MCP server (added disabled)
-gait register mcp <name> --connect <url>     # register a network MCP server (added disabled)
+# MCP servers (written to <gait-dir>/mcp/<name>.json, added disabled)
+gait register mcp <name> --command <prog> [--args "<args>"]
+gait register mcp <name> --url <url>
+gait register mcp <name> --spawn <cmd>      # legacy compat form of --command/--args
+gait register mcp <name> --connect <url>    # legacy compat form of --url
 
-# Skills (inline prompt fragments)
+# Skills (inline prompt fragments, written to gait.jsonc — legacy; prefer skills/<name>/SKILL.md on disk)
 gait register skill <name> --description <text> --path <file>
 gait register skill <name> --description <text> --content <text>
 
-# Activate / deactivate (toggles the `enabled` flag in gait.jsonc)
-gait enable  <mcp|skill> <name>
-gait disable <mcp|skill> <name>
+# WASM plugins (copied into <gait-dir>/plugins/<name>/, added disabled)
+gait register plugin <name> --wasm <path> [--description <text>]
+
+# Activate / deactivate
+gait enable  <mcp|skill|plugin> <name>
+gait disable <mcp|skill|plugin> <name>
 
 # Remove entirely
-gait unregister <mcp|skill> <name>
+gait unregister <mcp|skill|plugin> <name>
 ```
 
-`gait register` always adds entries with `enabled: false`. Run `gait enable` to activate.
+`gait register` always adds entries disabled; run `gait enable` to activate.
 
-> `gait load` / `gait unload` still work as aliases.
+### `gait daemons`
 
-### `gait sessions`
+List or stop background daemons the agent has spawned and tracked in the gait-dir.
 
-Lists active (unmerged) sessions.
+```bash
+gait daemons [list] --gait-dir <path> [--json]
+gait daemons stop <name> --gait-dir <path>
+```
 
 ### `gait auth`
 
@@ -219,20 +277,20 @@ gait auth add <provider>    # prompt for API key and save
 gait auth remove <provider> # delete stored key
 ```
 
-Keys are stored at `~/.local/share/gait/auth.json`. You can also set them via environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `MINIMAX_API_KEY`, etc.).
+Keys are stored via the OS credential store abstraction in `gait-core::auth`. You can also set them via environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `MINIMAX_API_KEY`, etc.).
 
 ### `gait models`
 
 ```bash
 gait models              # list all available models
-gait models anthropic    # filter by provider
+gait models anthropic    # filter by substring (provider or id)
 ```
 
 ---
 
 ## Config: `gait.jsonc`
 
-JSONC (JSON with `//` and `/* */` comments).
+JSONC (JSON with `//` and `/* */` comments). **Note:** several `gait register`/`enable`/`disable` operations rewrite this file as plain JSON and strip comments in the process.
 
 ```jsonc
 {
@@ -241,11 +299,20 @@ JSONC (JSON with `//` and `/* */` comments).
 
   // Tools the agent can use without a permission prompt.
   // Empty = everything requires approval. Add tools you trust.
-  "allow": ["read", "glob", "grep", "ls"],
+  "allow": ["read", "glob", "grep", "ls", "clarify", "inform"],
 
   // Tool calls matching these patterns are always blocked (never prompted).
   // Patterns are matched against "<tool>:<cmd>" e.g. "shell:rm *", "shell:git push *".
   "deny": ["shell:git push *"],
+
+  // Kernel-enforced write/network sandbox (Seatbelt on macOS, Landlock on Linux).
+  // The codebase root is always readable+writable regardless of this list.
+  "sandbox": {
+    "on": true,
+    "readable": ["$CODEBASE"],
+    "writable": ["$CODEBASE"],
+    "network": false
+  },
 
   // How many times to retry a turn when the model returns invalid structured output.
   // Default: 3.
@@ -261,13 +328,14 @@ JSONC (JSON with `//` and `/* */` comments).
     }
   ],
 
-  // MCP servers. Add entries with `gait register mcp`, toggle with `gait enable/disable`.
+  // MCP servers. Prefer `gait register mcp` (writes to mcp/<name>.json) over
+  // editing this array — `spawn`/`connect` below are the legacy compat form.
   "mcp_servers": [
     { "name": "my-server", "spawn": "npx my-mcp-server", "enabled": true }
   ],
 
   // Inline skill fragments injected into the agent's system prompt.
-  // Add with `gait register skill`, toggle with `gait enable/disable`.
+  // Deprecated in favor of skills/<name>/SKILL.md on disk — kept for compat.
   "skills": [
     {
       "name": "conventions",
@@ -275,9 +343,25 @@ JSONC (JSON with `//` and `/* */` comments).
       "content": "Always use 2-space indentation.",
       "enabled": true
     }
+  ],
+
+  // Lifecycle hooks: shell commands run around turns/steps/tools.
+  // event: pre_turn | pre_step | post_step | pre_tool | post_tool | post_turn
+  "hooks": [
+    { "event": "post_tool", "tool": "shell", "run": "echo ran a shell tool" }
   ]
 }
 ```
+
+Other config fields that exist but have no user-facing example above (all optional, with sane defaults): `compaction_threshold` (float, when to summarize old turns), `wasm_plugins` (populated by `gait register plugin`), `max_iter`, `shell_timeout_secs` / `tool_timeout_secs` (default 300s each), `preview` (`on-ask` | `always` | `off`), `result_schema`, `llm_params` (temperature/max_tokens/top_p plus per-provider extras), `show_thinking`.
+
+---
+
+## Sandbox
+
+gait can kernel-enforce filesystem and network access for the whole turn (Seatbelt on macOS, Landlock on Linux), independent of the tool-permission prompts above — permissions gate what the *agent chooses* to do; the sandbox gates what the *process is physically able* to do. Configured via the `sandbox` block in `gait.jsonc` (`on`/`readable`/`writable`/`network`) or per-invocation with `--unlock <path>`.
+
+When a turn hits a sandbox boundary it wasn't granted, the session pauses in `awaiting-unlock` state; resolve it with `gait unlock <session-id>` (or `/unlock` in the REPL).
 
 ---
 
@@ -287,19 +371,25 @@ JSONC (JSON with `//` and `/* */` comments).
 |---|---|
 | `read` | Read a file |
 | `write` | Write a file (creates or overwrites) |
-| `edit` | Replace a string in a file |
-| `multiedit` | Multiple find-replace edits in one call |
+| `edit_replace` | Replace a string in a file |
+| `edit_append` | Append content to a file |
+| `edit_prepend` | Prepend content to a file |
 | `glob` | Glob file paths |
 | `grep` | Search file contents with a regex |
 | `ls` | List a directory |
 | `codesearch` | Semantic code search |
 | `webfetch` | Fetch a URL |
 | `shell` | Run a shell command |
-| `output` | Signal turn completion with a structured result |
+| `structured_done` | Signal turn completion with a structured result |
 | `spawn_agent` | Delegate a subtask to a new child session |
 | `list_agents` | List active child sessions and their status |
+| `clarify` | Ask the user a clarifying question and pause the turn |
+| `inform` | Tell the user something without expecting a reply |
+| `annotate` | Attach an annotation to the transcript |
+| `prune` | Drop old context from the working transcript |
+| `enable` | Toggle an MCP server/skill/plugin on for the rest of the turn |
 
-All tools go through the permission gate. Tools in `allow` run immediately; others prompt the user (or auto-approve with `--auto`).
+All tools go through the permission gate. Tools in `allow` run immediately; others prompt the user (or auto-approve with `--auto-approve`). The sandbox (above) applies underneath the permission gate regardless of `allow`.
 
 ---
 
@@ -358,10 +448,10 @@ nodes:
 
 | Type | What it does |
 |---|---|
-| `shell` | Runs a shell command. Captures stdout+stderr and exit code. |
+| `shell` | Runs a shell command. Captures stdout+stderr and exit code. Accepts a short string form (`shell: "cargo test"`) or the full `{run, cwd, timeout}` form. |
 | `prompt` | Runs one LLM turn. Can have `output_schema` for structured JSON output. |
 | `branch` | Routes to a node based on a boolean expression or multi-way `cases` map. Inactive paths are skipped. |
-| `gate` | Pauses the workflow, prints a message, and waits for `gait workflow continue`. |
+| `gate` | Pauses the workflow, prints a message, and waits for `gait workflow continue`. Accepts a short string form or `{message}`. |
 
 **Loops** are graph cycles — point a node's `goto` (or `on_error.goto`) back to an earlier node. There is no separate loop node type.
 
@@ -377,10 +467,11 @@ Inside any string field, these variables are substituted at runtime:
 | `$CODEBASE` | Codebase path |
 | `$ARGS` | Arguments passed to `gait workflow run` |
 | `$NODE_ID` | Current node ID |
+| `$NODE_EXIT` | Exit code of the *current* node (shell nodes) |
 | `$FAILED_NODE` | ID of the failed node (error hooks) |
 | `$node.output` | Text output of node `node` |
 | `$node.output.field` | JSON field from node `node`'s structured output |
-| `$node.exit` | Exit code of node `node` (shell nodes) |
+| `$node.exit` | Exit code of a *named* node `node` (shell nodes) |
 
 ### Node options
 
@@ -408,6 +499,7 @@ Every node supports:
   system_prompt: "You are..."
   codebase: /path/to/repo
   files: [src/foo.rs, src/bar.rs]   # seed the agent's context with specific files
+  continue_session: other-node-id   # continue a prior node's session instead of starting fresh
   output_schema:               # force structured JSON output
     type: object
     properties:
@@ -419,7 +511,7 @@ Every node supports:
 Workflow state is fully reconstructed from the event log. If a workflow is interrupted (gate, crash, or `gait workflow abort`), resume with:
 
 ```bash
-gait workflow continue <workflow-id>
+gait workflow continue <workflow-id> --gait-dir <path>
 ```
 
 ---
@@ -467,7 +559,7 @@ You are a code reviewer. Focus on correctness and security.
 | `allow` | Additional tools this agent may use without prompting. |
 | `deny` | Additional patterns this agent can never call. |
 
-Reference an agent with `--agent <name>` in `gait run`, `gait chat`, `gait allow`, or the `agent:` field in workflow nodes.
+Reference an agent with `-a`/`--agent <name>` in the bare-task/`-i` modes, `gait allow`, `gait unlock`, or the `agent:` field in workflow nodes.
 
 ---
 
@@ -475,7 +567,7 @@ Reference an agent with `--agent <name>` in `gait run`, `gait chat`, `gait allow
 
 Tools not in `allow` are blocked and queued as a permission request. gait prints each pending tool call and waits for approval before continuing.
 
-With `--auto`, all permission requests are approved without prompting. Useful in scripted or trusted environments.
+With `--auto-approve`, all permission requests are approved without prompting. Useful in scripted or trusted environments. This does not bypass the [sandbox](#sandbox).
 
 Three tiers apply in order:
 
@@ -483,7 +575,7 @@ Three tiers apply in order:
 |---|---|---|
 | **Deny** | `deny` in `gait.jsonc` or agent frontmatter | Always blocked — never prompted. |
 | **Allow** | `allow` in `gait.jsonc` or agent frontmatter | Runs immediately without prompting. |
-| **Ask** | Everything else | Queued and presented to the user (or auto-approved with `--auto`). |
+| **Ask** | Everything else | Queued and presented to the user (or auto-approved with `--auto-approve`). |
 
 ---
 
@@ -497,8 +589,16 @@ Format: `provider/model-id`
 | `openai` | `openai/gpt-4o` |
 | `minimax` | `minimax/MiniMax-M3` |
 | `openrouter` | `openrouter/anthropic/claude-3-5-sonnet` |
+| `groq` | `groq/llama-3.3-70b-versatile` |
+| `mistral` | `mistral/mistral-large-latest` |
+| `deepinfra` | `deepinfra/...` |
+| `xai` | `xai/grok-...` |
+| `cerebras` | `cerebras/...` |
+| `togetherai` | `togetherai/...` |
+| `fireworks` | `fireworks/...` |
+| `perplexity` | `perplexity/...` |
 
-Any OpenAI-compatible endpoint works via the `openai` provider with a custom base URL.
+Run `gait models` to list what's actually available for your configured credentials.
 
 ---
 
@@ -510,9 +610,9 @@ gait manages three distinct git repositories at runtime:
 
 | Repo | Where | What it is |
 |---|---|---|
-| **Trace repo** | `<gait-dir>/` | The gait-dir git. Session history lives here as branches. Never touches your code. |
+| **Trace repo** | `<gait-dir>/` | The gait-dir git. Session history lives here as branches, and persisted sessions under `sessions/`. Never touches your code. |
 | **Code repo** | `<codebase>/` | Your project. gait reads it (HEAD hash, dirty files) but never commits to it. |
-| **Checkpoint repo** | `<gait-dir>/sessions/<id>/codebase.git/` | A per-session bare shadow repo. Snapshots the codebase after every turn so the agent can rewind. Borrows objects from the code repo via git alternates — no duplication. |
+| **Checkpoint repo** | `<gait-dir>/.active/<id>/codebase.git/` | A per-session bare shadow repo. Snapshots the codebase after every turn so the agent can rewind. Borrows objects from the code repo via git alternates — no duplication. |
 
 The trace repo records *what the agent did* (logs, permissions, turn history). The checkpoint repo records *what the codebase looked like* at each point. The code repo is yours — gait leaves its git history untouched.
 
@@ -520,26 +620,30 @@ The trace repo records *what the agent did* (logs, permissions, turn history). T
 
 The gait-dir (`gait.jsonc`, `sessions/`, `agents/`) is separate from the codebase (the repo the agent edits). This lets you keep session history in one place while pointing the agent at any repo. The gait-dir is itself a git repo.
 
-### Sessions are git branches
+### Sessions are git branches, mounted live under `.active/`
 
-Each session gets its own branch (`session/<id>`) off `main`. Every completed turn, permission prompt, and question is committed to that branch. When you're done, `gait finish` merges it back to `main`.
+Each session gets its own branch (`session/<id>`) off `main`, checked out live under `<gait-dir>/.active/<id>/` while it's in progress. Every completed turn, permission prompt, and question is committed to that branch. When you run `gait persist`, the branch is merged back to `main` and `sessions/<id>/` becomes the durable, tracked home for that session's transcript; `gait discard` tears the branch down instead, without merging.
 
 ### Session log
 
-`sessions/<id>/log.jsonl` is the source of truth — an append-only log of every event in a session:
+`<gait-dir>/.active/<id>/sessions/<id>/log.jsonl` (moving to `<gait-dir>/sessions/<id>/log.jsonl` on persist) is the source of truth — an append-only log of every event in a session. Selected event kinds:
 
 | Event type | When |
 |---|---|
 | `session_start` | First turn |
-| `user_turn` | Each `--task` |
+| `user_text` | Each user message |
 | `assistant_text` | Agent text output |
 | `tool_call` / `tool_result` | Each tool execution |
 | `permissions` / `permissions_reply` | Permission gate |
 | `clarify` / `clarify_reply` | Clarify exchange |
 | `inform` / `inform_reply` | Inform exchange |
-| `compaction` | Context summarized |
+| `unlock` / `unlock_reply` | Sandbox unlock exchange |
+| `agent_update` | Status pushed from a child session (`spawn_agent`) |
+| `summary` | Older turns summarized to reclaim context |
 | `turn_complete` | End of turn (with token usage) |
 | `error` | On failure |
+
+Other event kinds exist for narrower purposes (`sandbox_applied`, `hook_run`, `cwd`, `toggle`, `model_change`, `cancellation_signal`, `inject`, `context_status`, `thinking_block`, `daemon_start`/`daemon_stop`/`daemon_update`, `raw`) — see `proto/log.proto` for the full wire format.
 
 Logs are reconstructed into LLM messages at the start of each turn, so the agent has full history.
 
@@ -587,6 +691,7 @@ text and [NOTICE](NOTICE) for third-party attributions.
 In short: you are free to use, study, modify, and redistribute gait, but
 derivative works must remain under the AGPL. Because it is the *Affero* GPL, if
 you run a modified version as a network service, you must also offer your users
+the opportunity to obtain the source code for that modified version.
 
 ## Acknowledgements
 
