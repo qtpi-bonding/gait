@@ -24,6 +24,7 @@ pub mod models_meta;
 pub mod port;
 pub mod profile;
 pub mod proto;
+pub mod registry;
 
 // Deferred — external callers in gait-cli/gait-repl; seal after public wrappers added
 pub mod agent_frontmatter;

@@ -331,44 +331,61 @@ pub(crate) async fn run_tools(
                         tc.args.get("name").and_then(|v| v.as_str()),
                         tc.args.get("enabled").and_then(|v| v.as_bool()),
                     ) {
-                        if on {
-                            // MCP: push all tools from this server (server-granularity)
-                            for def in env
-                                .mcp_registry
-                                .iter()
-                                .filter(|d| d.server_name == item_name)
-                            {
-                                if let Some(client) = env.mcp_clients.get(&def.server_name) {
-                                    if !state.tools.iter().any(|t| t.name() == def.name) {
-                                        // duplicate guard
-                                        state.tools.push(super::prompt::make_mcp_tool_def(
-                                            def,
-                                            client.clone(),
-                                        ));
+                        // Phase 3 (scoped registry) enforcement: only mutate
+                        // state / persist a Toggle for a name within the
+                        // already-visible-set-gated `state.entries`
+                        // (finish_after_resume's catalog gate). A name
+                        // outside every whitelist is a no-op here — `TurnEnv`
+                        // doesn't carry `agent_whitelist` and shouldn't need
+                        // to; `state.entries` already *is* the resolved
+                        // visible set, so re-deriving it here would just
+                        // duplicate that logic. Note this doesn't stop
+                        // `LoadTool::execute()` (below) from returning content
+                        // for a not-visible name if it happens to still be in
+                        // the full mcp/skill/plugin registries passed to it —
+                        // a known, narrower-than-ideal scope; see the Phase 3
+                        // plan notes.
+                        let visible = state.entries.iter().any(|e| e.name == item_name);
+                        if visible {
+                            if on {
+                                // MCP: push all tools from this server (server-granularity)
+                                for def in env
+                                    .mcp_registry
+                                    .iter()
+                                    .filter(|d| d.server_name == item_name)
+                                {
+                                    if let Some(client) = env.mcp_clients.get(&def.server_name) {
+                                        if !state.tools.iter().any(|t| t.name() == def.name) {
+                                            // duplicate guard
+                                            state.tools.push(super::prompt::make_mcp_tool_def(
+                                                def,
+                                                client.clone(),
+                                            ));
+                                        }
                                     }
                                 }
-                            }
-                            // Skill: no tools push needed — content is returned by LoadTool.execute()
-                        } else {
-                            // Remove all tools from this server
-                            state.tools.retain(|t| {
-                                env.mcp_registry
-                                    .iter()
-                                    .find(|d| d.name == t.name())
-                                    .map(|d| d.server_name != item_name)
-                                    .unwrap_or(true)
-                            });
-                        }
-                        let toggle_kind =
-                            if env.mcp_registry.iter().any(|d| d.server_name == item_name) {
-                                "mcp"
-                            } else if env.plugin_registry.iter().any(|d| d.name == item_name) {
-                                "plugin"
+                                // Skill: no tools push needed — content is returned by LoadTool.execute()
                             } else {
-                                "skill"
-                            };
-                        env.emitter
-                            .record(events::toggle(toggle_kind, item_name, on))?;
+                                // Remove all tools from this server
+                                state.tools.retain(|t| {
+                                    env.mcp_registry
+                                        .iter()
+                                        .find(|d| d.name == t.name())
+                                        .map(|d| d.server_name != item_name)
+                                        .unwrap_or(true)
+                                });
+                            }
+                            let toggle_kind =
+                                if env.mcp_registry.iter().any(|d| d.server_name == item_name) {
+                                    "mcp"
+                                } else if env.plugin_registry.iter().any(|d| d.name == item_name) {
+                                    "plugin"
+                                } else {
+                                    "skill"
+                                };
+                            env.emitter
+                                .record(events::toggle(toggle_kind, item_name, on))?;
+                        }
                     }
                     let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();
                     let mut exec = execute_tool_call(

@@ -51,6 +51,11 @@ pub(super) async fn apply_curate_filter(
         result_schema: None,
         hooks: vec![],
         llm_params: crate::config::LlmParamsConfig::default(),
+        // Synthetic (non-agent-file) profile -- curate only ever uses
+        // AnnotateTool, never touches skills/mcp/plugins, so this value is
+        // behaviorally moot; wildcard for consistency with
+        // build_workflow_node_profile's synthetic-profile default.
+        agent_whitelist: crate::registry::AgentWhitelist::wildcard(),
     };
     // curate is a side turn — transcript only, no live stream consumer.
     let (tx, _rx) =

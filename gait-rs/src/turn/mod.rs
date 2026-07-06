@@ -340,6 +340,7 @@ pub async fn run_turn(
         current_turn,
         daemons,
         initial_git: _initial_git,
+        agent_whitelist,
     } = setup::init(session, emitter, caps, input)?;
     let persist = Persistence::from_relay(&relay, &repos, &gait_dir, &session_id, &codebase_path);
     // Synthetic turn context (built once, prepended to every step's outgoing in
@@ -377,6 +378,7 @@ pub async fn run_turn(
         &codebase_path,
         system_prompt,
         &mut state,
+        &agent_whitelist,
     )?;
     let env = state::TurnEnv {
         session,

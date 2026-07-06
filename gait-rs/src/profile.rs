@@ -22,6 +22,10 @@ pub struct Profile {
     /// Ephemeral one-off: register only `structured_done` (schema), no hands.
     #[serde(default)]
     pub hands_free: bool,
+    /// Phase 3 (scoped registry): this agent's own registration whitelist,
+    /// read from frontmatter. Default-deny -- see `crate::registry`.
+    #[serde(default)]
+    pub agent_whitelist: crate::registry::AgentWhitelist,
 }
 
 /// The live, resolved counterpart of `Profile`: the provider, tools, and
@@ -43,6 +47,9 @@ pub struct ResolvedProfile {
     pub result_schema: Option<serde_json::Value>,
     pub(crate) hooks: Vec<Box<dyn crate::types::Hook>>,
     pub llm_params: crate::config::LlmParamsConfig,
+    /// Phase 3 (scoped registry): threaded through from `Profile`, on into
+    /// `SetupData`'s genesis-seed gate and catalog gate. See `crate::registry`.
+    pub agent_whitelist: crate::registry::AgentWhitelist,
 }
 
 impl ResolvedProfile {
@@ -173,6 +180,13 @@ pub fn build_workflow_node_profile(opts: WorkflowNodeProfileOpts<'_>) -> Profile
     profile.allow = allow;
     profile.config_tools = vec![];
     profile.result_schema = result_schema;
+    // Synthetic (non-agent-file) profile: `from_config_and_agent` above was
+    // called with `agent_path: None`, so `agent_whitelist` defaulted to
+    // all-empty (default-deny) -- a real visibility regression for workflow
+    // nodes, which previously saw the global registry unfiltered. This isn't
+    // the untrusted, narrowly-scoped case default-deny is meant to restrict,
+    // so opt it back into "everything visible" explicitly.
+    profile.agent_whitelist = crate::registry::AgentWhitelist::wildcard();
     profile
 }
 
@@ -263,6 +277,8 @@ impl Profile {
             )
             .collect();
 
+        let agent_whitelist = crate::registry::AgentWhitelist::from_agent_path(agent_path);
+
         Profile {
             model,
             instructions,
@@ -278,6 +294,7 @@ impl Profile {
             wasm_plugins: disk_plugins,
             llm_params,
             hands_free: false,
+            agent_whitelist,
         }
     }
 
@@ -391,6 +408,7 @@ impl Profile {
             result_schema: self.result_schema,
             hooks,
             llm_params: self.llm_params,
+            agent_whitelist: self.agent_whitelist,
         })
     }
 }
@@ -431,6 +449,10 @@ impl ResolvedProfile {
             result_schema,
             hooks: vec![],
             llm_params: crate::config::LlmParamsConfig::default(),
+            // Test helper: no agent-file concept here, and existing tests
+            // assume unfiltered visibility -- default to wildcard rather than
+            // silently breaking every test that exercises loadables.
+            agent_whitelist: crate::registry::AgentWhitelist::wildcard(),
         }
     }
 }
@@ -539,6 +561,7 @@ mod tests {
             wasm_plugins: vec![],
             llm_params: crate::config::LlmParamsConfig::default(),
             hands_free: false,
+            agent_whitelist: crate::registry::AgentWhitelist::wildcard(),
         };
         let resolved = profile
             .resolve(
@@ -777,6 +800,7 @@ mod tests {
             wasm_plugins: vec![],
             llm_params: crate::config::LlmParamsConfig::default(),
             hands_free: false,
+            agent_whitelist: crate::registry::AgentWhitelist::wildcard(),
         };
         let json = serde_json::to_string(&p).expect("serialize");
         let back: Profile = serde_json::from_str(&json).expect("deserialize");
@@ -803,6 +827,7 @@ mod tests {
             wasm_plugins: vec![],
             llm_params: crate::config::LlmParamsConfig::default(),
             hands_free: true,
+            agent_whitelist: crate::registry::AgentWhitelist::wildcard(),
         };
         let resolved = profile
             .resolve(

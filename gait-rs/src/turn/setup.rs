@@ -73,6 +73,10 @@ pub(crate) struct SetupData {
     pub current_turn: u32,
     pub daemons: Vec<(String, i32, bool, String)>,
     pub initial_git: Option<super::GitSnapshot>,
+    /// Phase 3 (scoped registry): survives `init()` -> `finish_after_resume()`
+    /// (unlike `config_enabled`, which stops at `init()`) so the catalog gate
+    /// can resolve the full agent ∪ session visible set. See `crate::registry`.
+    pub agent_whitelist: crate::registry::AgentWhitelist,
 }
 
 /// Runs the pre-resume setup: destructures `caps`, acquires the worktree +
@@ -108,6 +112,7 @@ pub(crate) fn init(
     let hooks = caps.hooks;
     let result_schema = caps.result_schema;
     let llm_params = caps.llm_params.clone();
+    let agent_whitelist = caps.agent_whitelist;
 
     // Build the agent-dimension seed (M3): config-derived genesis for ActiveAgent.
     // Built manually from resolved fields rather than via `AgentState::from_config`
@@ -116,19 +121,37 @@ pub(crate) fn init(
     //      `ResolvedProfile` — and plumbing the config through `run_turn` is a
     //      larger architectural change than this seed warrants.
     //   2. The seed semantics here are deliberately different from `from_config`:
-    //      this path pre-fills `skills` with the FULL skill registry (not just
-    //      enabled ones) so disabled-but-registered skills can be turned on
-    //      later, and unions `config_enabled` (= enabled mcp_servers ∪ enabled
+    //      this path unions `config_enabled` (= enabled mcp_servers ∪ enabled
     //      skills, see profile.rs:114-118) into BOTH `skills` and `mcp` to
     //      reproduce the legacy `ActiveLoadables` flat-seed shape exactly.
     //      `from_config` keeps those two sets separate, so swapping it in would
     //      change the fold result. Track the migration in tech-debt #17.
+    //
+    //   Phase 3 (scoped registry): `skills` used to unconditionally include
+    //   every registered skill name regardless of its own disk `enabled` bit
+    //   -- a pre-existing bug distinct from MCP (which starts empty and only
+    //   gets `config_enabled`-listed servers below, so it never had this
+    //   problem). Fixed here: seed only names that are BOTH in
+    //   `agent_whitelist` (or everything, if it contains `"*"`) AND have
+    //   their own disk `enabled: true`. Session-scope whitelist entries do
+    //   NOT affect this seed -- they can't, structurally (no `agent_state`
+    //   exists yet at this pre-fold point) -- that's fine, a session-scope
+    //   registration extends what's *visible* (the catalog gate, below in
+    //   `finish_after_resume`), not what auto-loads before the session has
+    //   even started.
     let agent_seed = {
         let mut s = AgentState {
             model: model.clone(),
             instructions: system_prompt.clone(),
             tools: Default::default(),
-            skills: skill_registry.iter().map(|sk| sk.name.clone()).collect(),
+            skills: skill_registry
+                .iter()
+                .filter(|sk| {
+                    sk.enabled
+                        && crate::registry::whitelist_allows(&agent_whitelist.skills, &sk.name)
+                })
+                .map(|sk| sk.name.clone())
+                .collect(),
             mcp: Default::default(),
             plugins: Default::default(),
             allow: allow.iter().cloned().collect(),
@@ -264,6 +287,7 @@ pub(crate) fn init(
         current_turn,
         daemons: input.daemons,
         initial_git: input.initial_git,
+        agent_whitelist,
     })
 }
 
@@ -290,6 +314,7 @@ pub(crate) fn finish_after_resume(
     codebase_path: &Path,
     system_prompt: String,
     state: &mut TurnState,
+    agent_whitelist: &crate::registry::AgentWhitelist,
 ) -> anyhow::Result<String> {
     // Derive enabled loadables from the FULL session (mutation-aware, via the
     // ActiveAgent projection). Loadables are a "state" projection and persist
@@ -344,6 +369,38 @@ pub(crate) fn finish_after_resume(
         }
     }
 
+    // Phase 3 (scoped registry) catalog gate: only entries within the
+    // resolved visible set (agent_whitelist ∪ session_whitelist) even appear
+    // in <loadable-index> at all -- distinct from `enabled_names` above,
+    // which only controls the `enabled: bool` flag on an entry that's already
+    // decided to be visible. Computed per kind since each has its own
+    // whitelist axis. `agent_state.session_*()` are the Phase 2 accessors
+    // (only reachable here, post-fold -- not at the genesis seed above).
+    let visible_mcp = crate::registry::resolve_visible_set(
+        &mcp_registry
+            .iter()
+            .map(|d| d.server_name.clone())
+            .collect::<Vec<_>>(),
+        &agent_whitelist.mcp,
+        agent_state.session_mcp(),
+    );
+    let visible_skills = crate::registry::resolve_visible_set(
+        &skill_registry
+            .iter()
+            .map(|s| s.name.clone())
+            .collect::<Vec<_>>(),
+        &agent_whitelist.skills,
+        agent_state.session_skills(),
+    );
+    let visible_plugins = crate::registry::resolve_visible_set(
+        &plugin_registry
+            .iter()
+            .map(|p| p.name.clone())
+            .collect::<Vec<_>>(),
+        &agent_whitelist.plugins,
+        agent_state.session_plugins(),
+    );
+
     // Step 5: Augment system prompt with unified <loadable-index>.
     // Build entries: one per whitelisted MCP server, one per whitelisted skill.
     // Group MCP tool defs by server name so we can show one entry per server.
@@ -355,12 +412,15 @@ pub(crate) fn finish_after_resume(
             .or_default()
             .push(def);
     }
-    // MCP server entries — one per server. Description comes from
-    // McpServerDef.description (config layer); fall back to tool count.
-    // Note: we don't have direct access to McpServerDef in run_turn, so
-    // we build the description from the discovered tool count when
+    // MCP server entries — one per server (visible-set gated). Description
+    // comes from McpServerDef.description (config layer); fall back to tool
+    // count. Note: we don't have direct access to McpServerDef in run_turn,
+    // so we build the description from the discovered tool count when
     // there's no explicit description available. Run-level only.
     for (server_name, defs) in &mcp_tools_by_server {
+        if !visible_mcp.contains(*server_name) {
+            continue;
+        }
         let description = format!(
             "{} tool{}",
             defs.len(),
@@ -373,8 +433,11 @@ pub(crate) fn finish_after_resume(
             enabled: enabled_names.contains(*server_name),
         });
     }
-    // Skill entries — one per skill.
+    // Skill entries — one per skill (visible-set gated).
     for skill in skill_registry {
+        if !visible_skills.contains(&skill.name) {
+            continue;
+        }
         state.entries.push(LoadableEntry {
             name: skill.name.clone(),
             kind: LoadableKind::Skill,
@@ -382,8 +445,11 @@ pub(crate) fn finish_after_resume(
             enabled: enabled_names.contains(&skill.name),
         });
     }
-    // Plugin entries — one per wasm plugin.
+    // Plugin entries — one per wasm plugin (visible-set gated).
     for plugin in plugin_registry {
+        if !visible_plugins.contains(&plugin.name) {
+            continue;
+        }
         let basename = {
             let p = plugin.path.as_str();
             p.rsplit('/').next().unwrap_or(p)

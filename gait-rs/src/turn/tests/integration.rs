@@ -1351,17 +1351,42 @@ async fn load_skill_emits_toggle_event() {
         content: "TDD skill content".into(),
         enabled: false,
     };
-    let load_tool = crate::tools::LoadTool::new(vec![], vec![skill], vec![]);
+    let load_tool = crate::tools::LoadTool::new(vec![], vec![skill.clone()], vec![]);
     let output_tool = StructuredDoneTool::new();
 
-    run_turn_test_call(
-        ws.path().to_path_buf(),
-        ws.path().to_path_buf(),
-        "slogtgl01".into(),
+    // Built via `for_test` for the tool/provider/permission wiring, then
+    // `skill_registry`/`agent_whitelist` overridden directly: Phase 3's
+    // catalog gate (finish_after_resume) only makes a skill visible/
+    // toggle-able if it's actually present in `skill_registry`, same as the
+    // live `Profile::resolve` path — the test's skill must flow through that
+    // field, not just be embedded in the `LoadTool` instance, for the
+    // enable() call to pass the visible-set enforcement in execute.rs.
+    let caps = crate::profile::ResolvedProfile::for_test(
         provider,
         vec![Box::new(load_tool), Box::new(output_tool)],
         vec!["enable".into()],
         vec![],
+    );
+    let caps = crate::profile::ResolvedProfile {
+        skill_registry: vec![skill],
+        agent_whitelist: crate::registry::AgentWhitelist::wildcard(),
+        ..caps
+    };
+
+    let session = crate::session::Session {
+        id: "slogtgl01".into(),
+        gait_dir: ws.path().to_path_buf(),
+        codebase_path: ws.path().to_path_buf(),
+        assigned_by: None,
+        repos: crate::git::Repos::production(),
+    };
+    let (tx, _rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
+    let emitter = Recorder::for_session(&session.gait_dir, &session.id, tx);
+    run_turn(
+        &session,
+        &emitter,
+        caps,
         TurnInput {
             auto: true,
             max_iter: None,
@@ -1373,7 +1398,6 @@ async fn load_skill_emits_toggle_event() {
             initial_git: None,
             daemons: vec![],
         },
-        crate::git::Repos::production(),
     )
     .await
     .unwrap();
@@ -1395,6 +1419,106 @@ async fn load_skill_emits_toggle_event() {
         toggles[0].kind,
         ToggleKind::Skill as i32,
         "skill kind — not in mcp_registry"
+    );
+}
+
+/// Phase 3 (scoped registry) default-deny, exercised end-to-end through a
+/// full `run_turn`: a registered-but-not-whitelisted skill must not appear in
+/// the visible set, so `enable()` on it must be a silent no-op (no `Toggle`
+/// persisted) — mirrors `load_skill_emits_toggle_event` above but with the
+/// default (empty) `AgentWhitelist` instead of the wildcard override.
+#[tokio::test]
+async fn enable_rejects_skill_outside_agent_whitelist() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+
+    let provider = Arc::new(MockProvider {
+        responses: Arc::new(vec![
+            vec![
+                StreamChunk::ToolCallComplete {
+                    tool_call_id: "tc1".into(),
+                    tool_name: "enable".into(),
+                    args: serde_json::json!({ "name": "tdd", "enabled": true }),
+                },
+                StreamChunk::Done,
+            ],
+            vec![
+                StreamChunk::ToolCallComplete {
+                    tool_call_id: "tc2".into(),
+                    tool_name: "structured_done".into(),
+                    args: serde_json::json!({ "message": "done" }),
+                },
+                StreamChunk::Done,
+            ],
+        ]),
+        call_idx: Arc::new(AtomicUsize::new(0)),
+    });
+
+    let skill = crate::config::SkillDef {
+        name: "tdd".into(),
+        description: String::new(),
+        content: "TDD skill content".into(),
+        enabled: false,
+    };
+    let load_tool = crate::tools::LoadTool::new(vec![], vec![skill.clone()], vec![]);
+    let output_tool = StructuredDoneTool::new();
+
+    let caps = crate::profile::ResolvedProfile::for_test(
+        provider,
+        vec![Box::new(load_tool), Box::new(output_tool)],
+        vec!["enable".into()],
+        vec![],
+    );
+    // `agent_whitelist` deliberately left at `for_test`'s wildcard default
+    // overridden down to empty (default-deny) — the one field this test
+    // exercises differently from `load_skill_emits_toggle_event`.
+    let caps = crate::profile::ResolvedProfile {
+        skill_registry: vec![skill],
+        agent_whitelist: crate::registry::AgentWhitelist::default(),
+        ..caps
+    };
+
+    let session = crate::session::Session {
+        id: "sdenyskil1".into(),
+        gait_dir: ws.path().to_path_buf(),
+        codebase_path: ws.path().to_path_buf(),
+        assigned_by: None,
+        repos: crate::git::Repos::production(),
+    };
+    let (tx, _rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
+    let emitter = Recorder::for_session(&session.gait_dir, &session.id, tx);
+    run_turn(
+        &session,
+        &emitter,
+        caps,
+        TurnInput {
+            auto: true,
+            max_iter: None,
+            preview_policy: crate::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: true,
+            sandbox_cfg: crate::config::SandboxConfig::default(),
+            relay: None,
+            initial_git: None,
+            daemons: vec![],
+        },
+    )
+    .await
+    .unwrap();
+
+    let tx_path = crate::session::live::log_path(ws.path(), "sdenyskil1");
+    let events = crate::proto::wire::read_events(&tx_path).unwrap();
+    let toggles: Vec<_> = events
+        .iter()
+        .filter_map(|e| match event_kind(e) {
+            Some(payload::Kind::Toggle(t)) => Some(t),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        toggles.is_empty(),
+        "no Toggle should be persisted for a skill outside the agent's default-deny whitelist"
     );
 }
 
