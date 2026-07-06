@@ -102,6 +102,7 @@ CancellationSignal cancellation_signal = 55;
     DaemonStart        daemon_start        = 61;
     DaemonStop         daemon_stop         = 62;
     DaemonUpdate       daemon_update       = 63;
+    Registry           registry            = 64;
   }
   reserved 20 to 49;  // workflow family (WorkflowHook* / WorkflowNode* / WorkflowStart …) — deferred to the workflow-subsystem redo
 }
@@ -121,6 +122,14 @@ message Toggle {
   ToggleKind kind    = 1;
   string     name    = 2;
   bool       enabled = 3;
+}
+// registration/whitelist delta (layer 2, distinct from Toggle's layer-3 live-load
+// axis) — adds/removes a name from a session's own whitelist. kind is Skill/Mcp/
+// Plugin only; Tool/Unspecified are guarded (ignored) in the ActiveAgent fold.
+message Registry {
+  ToggleKind kind   = 1;
+  string     name   = 2;
+  bool       listed = 3;
 }
 // model-swap delta — LWW-Register; folded by ActiveAgent.
 message ModelChange { string model = 1; }
