@@ -133,12 +133,17 @@ pub(crate) fn init(
     //   gets `config_enabled`-listed servers below, so it never had this
     //   problem). Fixed here: seed only names that are BOTH in
     //   `agent_whitelist` (or everything, if it contains `"*"`) AND have
-    //   their own disk `enabled: true`. Session-scope whitelist entries do
-    //   NOT affect this seed -- they can't, structurally (no `agent_state`
-    //   exists yet at this pre-fold point) -- that's fine, a session-scope
-    //   registration extends what's *visible* (the catalog gate, below in
-    //   `finish_after_resume`), not what auto-loads before the session has
-    //   even started.
+    //   their own disk `enabled: true`. The `config_enabled` union below
+    //   re-derives the same enabled-skill names via a different (legacy,
+    //   kind-blind) path, so it must apply the same whitelist_allows check
+    //   to `s.skills` or it silently re-admits everything the filter above
+    //   just excluded -- MCP's insertion into `s.mcp` stays unconditional,
+    //   since MCP has no whitelist gate at seed time by design. Session-scope
+    //   whitelist entries do NOT affect this seed -- they can't,
+    //   structurally (no `agent_state` exists yet at this pre-fold point) --
+    //   that's fine, a session-scope registration extends what's *visible*
+    //   (the catalog gate, below in `finish_after_resume`), not what
+    //   auto-loads before the session has even started.
     let agent_seed = {
         let mut s = AgentState {
             model: model.clone(),
@@ -162,7 +167,9 @@ pub(crate) fn init(
             session_plugins: Default::default(),
         };
         for n in &config_enabled {
-            s.skills.insert(n.clone());
+            if crate::registry::whitelist_allows(&agent_whitelist.skills, n) {
+                s.skills.insert(n.clone());
+            }
             s.mcp.insert(n.clone());
         }
         s

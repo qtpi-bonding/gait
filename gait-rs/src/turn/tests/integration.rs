@@ -1522,6 +1522,101 @@ async fn enable_rejects_skill_outside_agent_whitelist() {
     );
 }
 
+/// Regression for a seed-gate leak found in review: `setup.rs`'s legacy
+/// `config_enabled` union (reproducing the old flat `ActiveLoadables` seed
+/// shape) re-inserted every disk-`enabled` skill into the genesis seed
+/// unconditionally, bypassing the whitelist filter applied a few lines
+/// above it. A disk-`enabled: true`, non-whitelisted skill must not appear
+/// in the persisted `Agent` checkpoint's `skills` list, even though
+/// `config_enabled` (which mirrors `Profile::resolve`'s real derivation)
+/// contains it.
+#[tokio::test]
+async fn config_enabled_union_does_not_bypass_skill_whitelist_at_seed() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+
+    let provider = Arc::new(MockProvider {
+        responses: Arc::new(vec![vec![
+            StreamChunk::ToolCallComplete {
+                tool_call_id: "tc1".into(),
+                tool_name: "structured_done".into(),
+                args: serde_json::json!({ "message": "done" }),
+            },
+            StreamChunk::Done,
+        ]]),
+        call_idx: Arc::new(AtomicUsize::new(0)),
+    });
+
+    // Disk-enabled skill (mirrors a real `Profile::resolve` where an
+    // `enabled: true` skill on disk feeds both `skill_registry` and
+    // `config_enabled`), but not present in the agent's whitelist.
+    let skill = crate::config::SkillDef {
+        name: "tdd".into(),
+        description: String::new(),
+        content: "TDD skill content".into(),
+        enabled: true,
+    };
+    let output_tool = StructuredDoneTool::new();
+    let caps = crate::profile::ResolvedProfile::for_test(
+        provider,
+        vec![Box::new(output_tool)],
+        vec![],
+        vec![],
+    );
+    let caps = crate::profile::ResolvedProfile {
+        skill_registry: vec![skill],
+        config_enabled: std::collections::HashSet::from(["tdd".to_string()]),
+        agent_whitelist: crate::registry::AgentWhitelist::default(),
+        ..caps
+    };
+
+    let session = crate::session::Session {
+        id: "sseedleak1".into(),
+        gait_dir: ws.path().to_path_buf(),
+        codebase_path: ws.path().to_path_buf(),
+        assigned_by: None,
+        repos: crate::git::Repos::production(),
+    };
+    let (tx, _rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
+    let emitter = Recorder::for_session(&session.gait_dir, &session.id, tx);
+    run_turn(
+        &session,
+        &emitter,
+        caps,
+        TurnInput {
+            auto: true,
+            max_iter: None,
+            preview_policy: crate::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: true,
+            sandbox_cfg: crate::config::SandboxConfig::default(),
+            relay: None,
+            initial_git: None,
+            daemons: vec![],
+        },
+    )
+    .await
+    .unwrap();
+
+    let tx_path = crate::session::live::log_path(ws.path(), "sseedleak1");
+    let events = crate::proto::wire::read_events(&tx_path).unwrap();
+    let agent_checkpoint = events
+        .iter()
+        .rev()
+        .find_map(|e| match event_kind(e) {
+            Some(payload::Kind::Agent(a)) => Some(a.clone()),
+            _ => None,
+        })
+        .expect("an Agent checkpoint must be recorded");
+    assert!(
+        !agent_checkpoint.skills.iter().any(|s| s == "tdd"),
+        "disk-enabled but non-whitelisted skill must not leak into the genesis \
+         seed via the config_enabled union: {:?}",
+        agent_checkpoint.skills
+    );
+}
+
 #[tokio::test]
 async fn always_policy_streams_edit_preview_delta() {
     use crate::config::PreviewPolicy;
