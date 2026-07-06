@@ -65,6 +65,12 @@ pub struct RegisterArgs {
     /// Gait dir (falls back to $GAIT_DIR)
     #[arg(long, env = "GAIT_DIR")]
     pub gait_dir: Option<PathBuf>,
+    /// Scope: global | agent | session (default: global)
+    #[arg(long)]
+    pub scope: Option<String>,
+    /// Path to agent .md file (only meaningful with --scope agent)
+    #[arg(long)]
+    pub agent: Option<PathBuf>,
 }
 
 /// `gait unregister mcp|skill|plugin <name>`
@@ -78,6 +84,12 @@ pub struct UnregisterArgs {
     /// Gait dir (falls back to $GAIT_DIR)
     #[arg(long, env = "GAIT_DIR")]
     pub gait_dir: Option<PathBuf>,
+    /// Scope: global | agent | session (default: global)
+    #[arg(long)]
+    pub scope: Option<String>,
+    /// Path to agent .md file (only meaningful with --scope agent)
+    #[arg(long)]
+    pub agent: Option<PathBuf>,
 }
 
 /// `gait enable mcp|skill|plugin <name>`
@@ -159,6 +171,95 @@ pub fn set_frontmatter_bool(content: &str, key: &str, value: bool) -> anyhow::Re
     let new_fm = serde_yaml::to_string(&yaml)
         .map_err(|e| anyhow::anyhow!("frontmatter serialize error: {e}"))?;
     Ok(format!("---\n{}---\n{}", new_fm, body))
+}
+
+/// Append a value to a YAML list at `key` in frontmatter, creating the key if absent
+/// and creating frontmatter entirely if the file has none. Avoids duplicate entries.
+pub fn append_frontmatter_list(content: &str, key: &str, value: &str) -> anyhow::Result<String> {
+    const FENCE: &str = "---";
+    let (yaml_str, body) = if let Some(rest) = content.strip_prefix(FENCE) {
+        let rest = rest.strip_prefix('\n').unwrap_or(rest);
+        let end = rest
+            .find(&format!("\n{}", FENCE))
+            .ok_or_else(|| anyhow::anyhow!("unclosed frontmatter"))?;
+        let fm_str = &rest[..end];
+        let body_start = end + 1 + FENCE.len();
+        let body = rest[body_start..]
+            .strip_prefix('\n')
+            .unwrap_or(&rest[body_start..]);
+        (fm_str.to_string(), body.to_string())
+    } else {
+        (String::new(), content.to_string())
+    };
+
+    let mut yaml: serde_yaml::Value = if yaml_str.trim().is_empty() {
+        serde_yaml::Value::Mapping(Default::default())
+    } else {
+        serde_yaml::from_str(&yaml_str)
+            .map_err(|e| anyhow::anyhow!("frontmatter parse error: {e}"))?
+    };
+
+    if let serde_yaml::Value::Mapping(ref mut map) = yaml {
+        let entry = map
+            .entry(serde_yaml::Value::String(key.to_string()))
+            .or_insert_with(|| serde_yaml::Value::Sequence(Default::default()));
+        if let serde_yaml::Value::Sequence(ref mut seq) = entry {
+            let already = seq
+                .iter()
+                .any(|v| v.as_str().map(|s| s == value).unwrap_or(false));
+            if !already {
+                seq.push(serde_yaml::Value::String(value.to_string()));
+            }
+        }
+    }
+
+    let new_fm = serde_yaml::to_string(&yaml)
+        .map_err(|e| anyhow::anyhow!("frontmatter serialize error: {e}"))?;
+    if body.is_empty() {
+        Ok(format!("---\n{}---\n", new_fm))
+    } else {
+        Ok(format!("---\n{}---\n{}", new_fm, body))
+    }
+}
+
+/// Remove a value from the YAML list at `key` in frontmatter. No-op if key or value is absent.
+pub fn remove_frontmatter_list(content: &str, key: &str, value: &str) -> anyhow::Result<String> {
+    const FENCE: &str = "---";
+    if !content.starts_with(FENCE) {
+        return Ok(content.to_string());
+    }
+    let rest = &content[FENCE.len()..];
+    let rest = rest.strip_prefix('\n').unwrap_or(rest);
+    let end = rest
+        .find(&format!("\n{}", FENCE))
+        .ok_or_else(|| anyhow::anyhow!("unclosed frontmatter"))?;
+    let fm_str = &rest[..end];
+    let body_start = end + 1 + FENCE.len();
+    let body = rest[body_start..]
+        .strip_prefix('\n')
+        .unwrap_or(&rest[body_start..]);
+
+    let mut yaml: serde_yaml::Value = if fm_str.trim().is_empty() {
+        serde_yaml::Value::Mapping(Default::default())
+    } else {
+        serde_yaml::from_str(fm_str).map_err(|e| anyhow::anyhow!("frontmatter parse error: {e}"))?
+    };
+
+    if let serde_yaml::Value::Mapping(ref mut map) = yaml {
+        if let Some(entry) = map.get_mut(&serde_yaml::Value::String(key.to_string())) {
+            if let serde_yaml::Value::Sequence(ref mut seq) = entry {
+                seq.retain(|v| v.as_str().map(|s| s != value).unwrap_or(true));
+            }
+        }
+    }
+
+    let new_fm = serde_yaml::to_string(&yaml)
+        .map_err(|e| anyhow::anyhow!("frontmatter serialize error: {e}"))?;
+    if body.is_empty() {
+        Ok(format!("---\n{}---\n", new_fm))
+    } else {
+        Ok(format!("---\n{}---\n{}", new_fm, body))
+    }
 }
 
 pub fn cmd_auth(args: AuthArgs) {
@@ -314,6 +415,42 @@ pub fn cmd_register(args: RegisterArgs) -> anyhow::Result<()> {
                 .map(PathBuf::from)
         })
         .ok_or_else(|| anyhow::anyhow!("no gait dir: pass --gait-dir <path> or set $GAIT_DIR"))?;
+
+    // Phase 1: --scope agent only touches the agent file's frontmatter list.
+    // It never falls through to the global content-store branch below.
+    if args.scope.as_deref() == Some("agent") {
+        let agent_path = args
+            .agent
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("--scope agent requires --agent <path>"))?;
+        let list_key = match kind {
+            "skill" => "skills",
+            "mcp" => "mcp",
+            "plugin" => "plugins",
+            other => {
+                return Err(anyhow::anyhow!(
+                    "unknown kind '{}': use mcp, skill, or plugin",
+                    other
+                ))
+            }
+        };
+        let content = std::fs::read_to_string(&agent_path).map_err(|e| {
+            anyhow::anyhow!(
+                "failed to read agent file '{}': {}",
+                agent_path.display(),
+                e
+            )
+        })?;
+        let new_content = append_frontmatter_list(&content, list_key, name)?;
+        std::fs::write(&agent_path, new_content)?;
+        println!(
+            "Added {} '{}' to agent whitelist at {}.",
+            kind,
+            name,
+            agent_path.display()
+        );
+        return Ok(());
+    }
 
     match kind {
         "mcp" => {
@@ -615,6 +752,42 @@ pub fn cmd_unregister(args: UnregisterArgs) -> anyhow::Result<()> {
         })
         .ok_or_else(|| anyhow::anyhow!("no gait dir: pass --gait-dir <path> or set $GAIT_DIR"))?;
 
+    // Phase 1: --scope agent only touches the agent file's frontmatter list.
+    // It never falls through to the global disk-entry branch below.
+    if args.scope.as_deref() == Some("agent") {
+        let agent_path = args
+            .agent
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("--scope agent requires --agent <path>"))?;
+        let list_key = match kind {
+            "skill" => "skills",
+            "mcp" => "mcp",
+            "plugin" => "plugins",
+            other => {
+                return Err(anyhow::anyhow!(
+                    "unknown kind '{}': use mcp, skill, or plugin",
+                    other
+                ))
+            }
+        };
+        let content = std::fs::read_to_string(&agent_path).map_err(|e| {
+            anyhow::anyhow!(
+                "failed to read agent file '{}': {}",
+                agent_path.display(),
+                e
+            )
+        })?;
+        let new_content = remove_frontmatter_list(&content, list_key, name)?;
+        std::fs::write(&agent_path, new_content)?;
+        println!(
+            "Removed {} '{}' from agent whitelist at {}.",
+            kind,
+            name,
+            agent_path.display()
+        );
+        return Ok(());
+    }
+
     // Disk-first for mcp, plugin, and skill
     if kind == "mcp" {
         let disk_path = gait_dir.join("mcp").join(format!("{}.json", name));
@@ -683,6 +856,8 @@ mod tests {
             env: vec![],
             yes: false,
             gait_dir: Some(dir.to_path_buf()),
+            scope: None,
+            agent: None,
         }
     }
     fn reg_flags(kind: &str, name: &str, dir: &std::path::Path, flags: &[&str]) -> RegisterArgs {
@@ -710,6 +885,8 @@ mod tests {
             kind: kind.into(),
             name: name.into(),
             gait_dir: Some(dir.to_path_buf()),
+            scope: None,
+            agent: None,
         }
     }
     use super::*;
@@ -793,6 +970,222 @@ mod tests {
         .unwrap();
         cmd_unregister(unreg("skill", "tdd", dir.path())).unwrap();
         assert!(!skill_dir.exists(), "skills/tdd/ should be deleted");
+    }
+
+    // --- Phase 1: --scope agent tests (frontmatter-list whitelisting) ---
+
+    fn write_agent(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
+        let p = dir.join("agent.md");
+        std::fs::write(&p, body).unwrap();
+        p
+    }
+
+    fn reg_with_scope(
+        kind: &str,
+        name: &str,
+        dir: &std::path::Path,
+        agent: std::path::PathBuf,
+    ) -> RegisterArgs {
+        let mut a = reg(kind, name, dir);
+        a.scope = Some("agent".into());
+        a.agent = Some(agent);
+        a
+    }
+
+    fn unreg_with_scope(
+        kind: &str,
+        name: &str,
+        dir: &std::path::Path,
+        agent: std::path::PathBuf,
+    ) -> UnregisterArgs {
+        let mut a = unreg(kind, name, dir);
+        a.scope = Some("agent".into());
+        a.agent = Some(agent);
+        a
+    }
+
+    #[test]
+    fn cmd_register_scope_agent_appends_to_agent_frontmatter() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_path = write_agent(
+            dir.path(),
+            "---\nname: myagent\nallow:\n  - bash\n---\n# body\n",
+        );
+        cmd_register(reg_with_scope(
+            "skill",
+            "tdd",
+            dir.path(),
+            agent_path.clone(),
+        ))
+        .unwrap();
+        let md = std::fs::read_to_string(&agent_path).unwrap();
+        // Skill name is appended to the frontmatter list
+        assert!(
+            md.contains("- tdd"),
+            "skills list should include tdd, got: {md}"
+        );
+        // Original entries preserved
+        assert!(
+            md.contains("allow:"),
+            "existing allow key preserved, got: {md}"
+        );
+        assert!(
+            md.contains("- bash"),
+            "existing allow entry preserved, got: {md}"
+        );
+        // Body preserved
+        assert!(md.contains("# body"), "body preserved, got: {md}");
+        // The global skills/ dir was NOT created — agent scope never touches it
+        assert!(
+            !dir.path().join("skills").exists(),
+            "agent scope must not write to global skills/"
+        );
+    }
+
+    #[test]
+    fn cmd_unregister_scope_agent_removes_from_agent_frontmatter() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_path = write_agent(
+            dir.path(),
+            "---\nname: myagent\nskills:\n  - tdd\n---\n# body\n",
+        );
+        cmd_unregister(unreg_with_scope(
+            "skill",
+            "tdd",
+            dir.path(),
+            agent_path.clone(),
+        ))
+        .unwrap();
+        let md = std::fs::read_to_string(&agent_path).unwrap();
+        // The skill name is removed from the list
+        assert!(!md.contains("- tdd"), "tdd should be removed, got: {md}");
+        // The key may be empty (sequence) or absent; either way, no - tdd entry
+        // Body preserved
+        assert!(md.contains("# body"), "body preserved, got: {md}");
+        // The global skills/ dir was NOT created
+        assert!(
+            !dir.path().join("skills").exists(),
+            "agent scope must not write to global skills/"
+        );
+    }
+
+    #[test]
+    fn cmd_register_scope_agent_preserves_existing_list_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_path = write_agent(
+            dir.path(),
+            "---\nname: myagent\nskills:\n  - existing-a\n  - existing-b\n---\n# body\n",
+        );
+        cmd_register(reg_with_scope(
+            "skill",
+            "tdd",
+            dir.path(),
+            agent_path.clone(),
+        ))
+        .unwrap();
+        let md = std::fs::read_to_string(&agent_path).unwrap();
+        // New entry appended
+        assert!(md.contains("- tdd"), "tdd appended, got: {md}");
+        // Existing entries preserved
+        assert!(
+            md.contains("- existing-a"),
+            "existing-a preserved, got: {md}"
+        );
+        assert!(
+            md.contains("- existing-b"),
+            "existing-b preserved, got: {md}"
+        );
+    }
+
+    #[test]
+    fn cmd_unregister_scope_agent_preserves_other_list_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_path = write_agent(
+            dir.path(),
+            "---\nname: myagent\nskills:\n  - tdd\n  - keep-me-a\n  - keep-me-b\n---\n# body\n",
+        );
+        cmd_unregister(unreg_with_scope(
+            "skill",
+            "tdd",
+            dir.path(),
+            agent_path.clone(),
+        ))
+        .unwrap();
+        let md = std::fs::read_to_string(&agent_path).unwrap();
+        // Target removed
+        assert!(!md.contains("- tdd"), "tdd removed, got: {md}");
+        // Other entries preserved
+        assert!(md.contains("- keep-me-a"), "keep-me-a preserved, got: {md}");
+        assert!(md.contains("- keep-me-b"), "keep-me-b preserved, got: {md}");
+    }
+
+    #[test]
+    fn cmd_register_scope_agent_requires_agent_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = reg("skill", "tdd", dir.path());
+        a.scope = Some("agent".into());
+        // No --agent
+        let err = cmd_register(a).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("--agent"),
+            "error should mention --agent, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn cmd_unregister_scope_agent_requires_agent_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = unreg("skill", "tdd", dir.path());
+        a.scope = Some("agent".into());
+        // No --agent
+        let err = cmd_unregister(a).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("--agent"),
+            "error should mention --agent, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn append_frontmatter_list_creates_list_when_absent() {
+        let content = "---\nname: foo\n---\n# body\n";
+        let result = append_frontmatter_list(content, "skills", "tdd").unwrap();
+        assert!(
+            result.contains("skills:"),
+            "skills key should exist: {result}"
+        );
+        assert!(result.contains("- tdd"), "tdd entry should exist: {result}");
+        assert!(
+            result.contains("name: foo"),
+            "existing key preserved: {result}"
+        );
+        assert!(result.contains("# body"), "body preserved: {result}");
+    }
+
+    #[test]
+    fn append_frontmatter_list_avoids_duplicates() {
+        let content = "---\nname: foo\nskills:\n  - tdd\n---\n# body\n";
+        let result = append_frontmatter_list(content, "skills", "tdd").unwrap();
+        // Count occurrences of "- tdd"
+        let count = result.matches("- tdd").count();
+        assert_eq!(count, 1, "tdd should appear only once, got: {result}");
+    }
+
+    #[test]
+    fn remove_frontmatter_list_is_noop_when_absent() {
+        let content = "---\nname: foo\n---\n# body\n";
+        let result = remove_frontmatter_list(content, "skills", "tdd").unwrap();
+        assert!(result.contains("name: foo"), "preserved: {result}");
+        assert!(result.contains("# body"), "body preserved: {result}");
+    }
+
+    #[test]
+    fn remove_frontmatter_list_removes_target_only() {
+        let content = "---\nname: foo\nskills:\n  - tdd\n  - other\n---\n# body\n";
+        let result = remove_frontmatter_list(content, "skills", "tdd").unwrap();
+        assert!(!result.contains("- tdd"), "tdd removed: {result}");
+        assert!(result.contains("- other"), "other preserved: {result}");
     }
 
     #[test]

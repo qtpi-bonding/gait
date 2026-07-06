@@ -25,6 +25,44 @@ pub fn read_agent_deny(path: PathBuf) -> anyhow::Result<Vec<String>> {
     Ok(extract_string_list(&yaml, "deny"))
 }
 
+/// Parse the YAML frontmatter from an agent .md file and return the `skills`
+/// whitelist. Returns an empty vec if there is no frontmatter or no `skills`
+/// key (default-deny: an agent with no field sees no global skills).
+pub fn read_agent_skills(path: PathBuf) -> anyhow::Result<Vec<String>> {
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    let (fm, _body) = split_frontmatter(&content);
+    if fm.is_empty() {
+        return Ok(vec![]);
+    }
+    let yaml: serde_yaml::Value = serde_yaml::from_str(fm).unwrap_or(serde_yaml::Value::Null);
+    Ok(extract_string_list(&yaml, "skills"))
+}
+
+/// Parse the YAML frontmatter from an agent .md file and return the `mcp`
+/// whitelist. Returns an empty vec if there is no frontmatter or no `mcp` key.
+pub fn read_agent_mcp(path: PathBuf) -> anyhow::Result<Vec<String>> {
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    let (fm, _body) = split_frontmatter(&content);
+    if fm.is_empty() {
+        return Ok(vec![]);
+    }
+    let yaml: serde_yaml::Value = serde_yaml::from_str(fm).unwrap_or(serde_yaml::Value::Null);
+    Ok(extract_string_list(&yaml, "mcp"))
+}
+
+/// Parse the YAML frontmatter from an agent .md file and return the `plugins`
+/// whitelist. Returns an empty vec if there is no frontmatter or no `plugins`
+/// key.
+pub fn read_agent_plugins(path: PathBuf) -> anyhow::Result<Vec<String>> {
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    let (fm, _body) = split_frontmatter(&content);
+    if fm.is_empty() {
+        return Ok(vec![]);
+    }
+    let yaml: serde_yaml::Value = serde_yaml::from_str(fm).unwrap_or(serde_yaml::Value::Null);
+    Ok(extract_string_list(&yaml, "plugins"))
+}
+
 /// Read the optional `model` field from an agent file's YAML frontmatter.
 pub fn read_agent_model(path: &std::path::Path) -> Option<String> {
     let content = std::fs::read_to_string(path).ok()?;
@@ -201,6 +239,66 @@ mod tests {
         .unwrap();
         let deny = read_agent_deny(dir.path().join("agent.md")).unwrap();
         assert_eq!(deny, vec!["shell:rm *"]);
+    }
+
+    #[test]
+    fn reads_skills_from_frontmatter() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("agent.md"),
+            "---\nskills:\n  - tdd\n  - brainstorming\n---\n# prompt\n",
+        )
+        .unwrap();
+        let skills = read_agent_skills(dir.path().join("agent.md")).unwrap();
+        assert_eq!(skills, vec!["tdd", "brainstorming"]);
+    }
+
+    #[test]
+    fn reads_skills_wildcard_from_frontmatter() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("agent.md"),
+            "---\nskills:\n  - \"*\"\n---\n# prompt\n",
+        )
+        .unwrap();
+        let skills = read_agent_skills(dir.path().join("agent.md")).unwrap();
+        assert_eq!(skills, vec!["*"]);
+    }
+
+    #[test]
+    fn returns_empty_skills_when_field_absent() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("agent.md"),
+            "---\nallow:\n  - read\n---\n# prompt\n",
+        )
+        .unwrap();
+        let skills = read_agent_skills(dir.path().join("agent.md")).unwrap();
+        assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn reads_mcp_from_frontmatter() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("agent.md"),
+            "---\nmcp:\n  - filesystem\n---\n# prompt\n",
+        )
+        .unwrap();
+        let mcp = read_agent_mcp(dir.path().join("agent.md")).unwrap();
+        assert_eq!(mcp, vec!["filesystem"]);
+    }
+
+    #[test]
+    fn reads_plugins_from_frontmatter() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("agent.md"),
+            "---\nplugins:\n  - my-plugin\n---\n# prompt\n",
+        )
+        .unwrap();
+        let plugins = read_agent_plugins(dir.path().join("agent.md")).unwrap();
+        assert_eq!(plugins, vec!["my-plugin"]);
     }
 
     #[test]
