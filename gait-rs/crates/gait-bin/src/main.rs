@@ -126,13 +126,13 @@ async fn main() {
         Commands::Unlock(args) => gait_cli::cli::session::cmd_unlock(args),
         Commands::Reply(args) => gait_cli::cli::session::cmd_reply(args),
         Commands::Register(args) => {
-            if let Err(e) = gait_cli::cli::admin::cmd_register(args) {
+            if let Err(e) = gait_cli::cli::admin::cmd_register(*args) {
                 eprintln!("[gait] error: {}", e);
                 std::process::exit(1);
             }
         }
         Commands::Unregister(args) => {
-            if let Err(e) = gait_cli::cli::admin::cmd_unregister(args) {
+            if let Err(e) = gait_cli::cli::admin::cmd_unregister(*args) {
                 eprintln!("[gait] error: {}", e);
                 std::process::exit(1);
             }

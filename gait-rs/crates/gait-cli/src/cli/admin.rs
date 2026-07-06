@@ -252,10 +252,10 @@ pub fn remove_frontmatter_list(content: &str, key: &str, value: &str) -> anyhow:
     };
 
     if let serde_yaml::Value::Mapping(ref mut map) = yaml {
-        if let Some(entry) = map.get_mut(&serde_yaml::Value::String(key.to_string())) {
-            if let serde_yaml::Value::Sequence(ref mut seq) = entry {
-                seq.retain(|v| v.as_str().map(|s| s != value).unwrap_or(true));
-            }
+        if let Some(serde_yaml::Value::Sequence(ref mut seq)) =
+            map.get_mut(serde_yaml::Value::String(key.to_string()))
+        {
+            seq.retain(|v| v.as_str().map(|s| s != value).unwrap_or(true));
         }
     }
 
