@@ -318,7 +318,26 @@ pub async fn run_brain(
         log_mirror,
         initial_git,
         daemons,
+        cancel: tokio_util::sync::CancellationToken::new(),
     };
+
+    // Teardown SIGTERM guard (mirrors `crate::turn::hand::install_sigterm_guard`,
+    // but cancels the live turn gracefully instead of hard-exiting — the brain
+    // owns an in-flight `run_turn`, not a short-lived tool call). The spine's
+    // `kill_all` sends this SIGTERM before its 300ms→SIGKILL escalation; wiring
+    // it to `driver.cancel` lets `run_turn` observe cancellation at its checked
+    // points and return `TurnResult::Cancelled` instead of being signal-killed.
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        if let Ok(mut term) = signal(SignalKind::terminate()) {
+            let cancel = driver.cancel.clone();
+            tokio::spawn(async move {
+                term.recv().await;
+                cancel.cancel();
+            });
+        }
+    }
 
     let mut sink = BrainSink {
         inner: CliSink::new(std::io::stderr(), std::io::stderr(), false),
@@ -493,6 +512,13 @@ struct BrainDriver {
     log_mirror: std::sync::Arc<std::sync::Mutex<Vec<crate::proto::gait::log::v1::Event>>>,
     initial_git: crate::turn::GitSnapshot,
     daemons: Vec<(String, i32, bool, String)>,
+    /// Live per-turn cancellation token (Task: wire turn cancellation). A
+    /// teardown SIGTERM (sent by the spine's `kill_all` before its 300ms→SIGKILL
+    /// escalation — see `crate::turn::hand::install_sigterm_guard` for the same
+    /// signal on the hand side) cancels this instead of the process dying by
+    /// default disposition, so the in-flight turn gets a chance to finish via
+    /// `TurnResult::Cancelled` instead of being hard-killed.
+    cancel: tokio_util::sync::CancellationToken,
 }
 
 /// BrainDriver is a plain `pub(crate)` struct — NOT a TurnDriver impl.
@@ -519,7 +545,7 @@ impl BrainDriver {
             auto: self.auto,
             max_iter: self.max_iter,
             preview_policy: self.preview_policy,
-            cancel: None,
+            cancel: Some(self.cancel.clone()),
             sandbox_on: self.sandbox_on,
             sandbox_cfg: self.sandbox_cfg.clone(),
             relay: Some(self.nerve_writer.clone()),
@@ -596,5 +622,68 @@ mod tests {
         );
         let meta = crate::session::session_meta_from_events(&[ev], "s1234567");
         assert_eq!(meta.codebase_path.as_deref(), Some("/code"));
+    }
+
+    /// Wire turn cancellation (2026-07-06 plan): `BrainDriver::turn_config()`
+    /// must hand `run_turn` a live, cancel-able token — not the hard-coded
+    /// `None` that made the graceful `TurnResult::Cancelled` path unreachable
+    /// in practice. Cancelling the driver's token and then reading it back off
+    /// a fresh `turn_config()` call proves the same live token round-trips
+    /// through `LoopConfig`, which is what the brain's SIGTERM guard (see
+    /// `run_brain`) relies on to make an external teardown signal observable
+    /// to the in-flight turn.
+    #[tokio::test]
+    async fn brain_driver_turn_config_carries_live_cancel_token() {
+        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (stream_fwd_tx, _stream_fwd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (spawn_tx, _spawn_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (notify_tx, _notify_rx) = tokio::sync::mpsc::unbounded_channel();
+        // `start_nerve` just needs *some* AsyncRead/AsyncWrite pair to build a
+        // `NerveWriter` around — this test never sends/receives real Signals,
+        // so an inert reader/sink is enough.
+        let (nerve_writer, _nerve_reader_handle) =
+            crate::turn::nerve::start_nerve(tokio::io::empty(), tokio::io::sink());
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut driver = super::BrainDriver {
+            profile: None,
+            codebase: std::path::PathBuf::from("/tmp/cb"),
+            session_id: "s0000000".to_string(),
+            gait_dir: std::path::PathBuf::from("/tmp/gd"),
+            repos: crate::git::Repos::production(),
+            api_key: None,
+            auto: false,
+            max_iter: None,
+            preview_policy: crate::config::PreviewPolicy::default(),
+            sandbox_on: false,
+            sandbox_cfg: crate::config::SandboxConfig::default(),
+            nerve_writer,
+            event_tx,
+            stream_fwd_tx,
+            spawn_tx,
+            notify_tx,
+            log_mirror: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            initial_git: crate::turn::GitSnapshot::default(),
+            daemons: Vec::new(),
+            cancel: cancel.clone(),
+        };
+
+        let cfg_before = driver.turn_config();
+        assert!(
+            !cfg_before.cancel.as_ref().unwrap().is_cancelled(),
+            "fresh token must not report cancelled"
+        );
+
+        // Cancel via the *external* handle the SIGTERM guard would hold — not
+        // through the LoopConfig clone — proving it's the same live token,
+        // not an inert `CancellationToken::new()` stand-in.
+        cancel.cancel();
+
+        let cfg_after = driver.turn_config();
+        assert!(
+            cfg_after.cancel.as_ref().unwrap().is_cancelled(),
+            "turn_config() must hand out a clone of the driver's live token, \
+             so external cancellation is observable to a subsequent turn build"
+        );
     }
 }

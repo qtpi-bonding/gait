@@ -232,7 +232,15 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
     // relay_brain_turn can register the active group.
     let kill_handle = gait_core::embed::CascadeKillHandle::new();
 
-    // Spawn SIGINT/SIGTERM handler: kill current group (if any) then exit.
+    // Spawn SIGINT/SIGTERM handler. First signal: ask the turn to stop
+    // gracefully — `handle.kill()` (`CascadeKillHandle::kill()`) already sends
+    // the group a SIGTERM before its own 300ms→SIGKILL escalation, and the
+    // brain (`turn/brain.rs::run_brain`) now wires that SIGTERM to its live
+    // `CancellationToken`, so the in-flight turn gets a real chance to return
+    // `TurnResult::Cancelled` — relayed back through `single_prompt_run`
+    // below — instead of being signal-killed outright. Give it a bounded
+    // grace window to do that; a second signal (impatient user) or the
+    // window expiring falls through to the previous hard-kill-and-exit path.
     {
         use tokio::signal::unix::{signal, SignalKind};
         let handle = kill_handle.clone();
@@ -244,6 +252,13 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
                 _ = sigterm.recv() => {}
             }
             handle.kill();
+            let grace = tokio::time::sleep(std::time::Duration::from_secs(3));
+            tokio::pin!(grace);
+            tokio::select! {
+                _ = sigint.recv() => {}
+                _ = sigterm.recv() => {}
+                _ = &mut grace => {}
+            }
             std::process::exit(0);
         });
     }

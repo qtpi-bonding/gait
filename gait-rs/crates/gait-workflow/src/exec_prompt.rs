@@ -42,6 +42,15 @@ struct PromptNodeDriver {
     deny: Vec<String>,
     /// Per-turn iteration cap (`--max-iter`) — `None` for workflow nodes.
     max_iter: Option<usize>,
+    /// Live per-turn cancellation token (Task: wire turn cancellation), for
+    /// parity with `turn/brain.rs::BrainDriver`. This driver only ever runs
+    /// via `brain_launch()`'s spawned `gait __brain` subprocess (a real turn
+    /// never executes through `turn_config()`'s `LoopConfig` in-process here),
+    /// so today this token has no external owner to cancel it — the live
+    /// cancellation path is the brain's own token, cancelled by the spine's
+    /// teardown SIGTERM. Kept `Some(..)` (not `None`) so a future in-process
+    /// caller of this driver doesn't silently lose cancellation.
+    cancel: tokio_util::sync::CancellationToken,
 }
 
 #[async_trait::async_trait(?Send)]
@@ -81,7 +90,7 @@ impl TurnDriver for PromptNodeDriver {
             auto: self.auto,
             max_iter: self.max_iter,
             preview_policy: gait_core::config::PreviewPolicy::default(),
-            cancel: None,
+            cancel: Some(self.cancel.clone()),
             sandbox_on: self.sandbox_on,
             sandbox_cfg: self.sandbox_cfg.clone(),
             relay: None,
@@ -310,6 +319,7 @@ pub async fn exec_prompt_node(
         cascade_group_arg: ctx.cascade_group_arg.clone(),
         deny,
         max_iter,
+        cancel: tokio_util::sync::CancellationToken::new(),
     };
 
     if !p.prompt.is_empty() {
@@ -439,6 +449,7 @@ mod tests {
             cascade_group_arg: None,
             deny: vec![],
             max_iter: None,
+            cancel: tokio_util::sync::CancellationToken::new(),
         };
         // Verify the driver holds the paths used to construct BrainLaunch.
         assert_eq!(driver.codebase, PathBuf::from("/tmp/cb"));

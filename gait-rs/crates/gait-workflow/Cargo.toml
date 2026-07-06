@@ -10,6 +10,7 @@ repository.workspace = true
 gait-core  = { path = "../.." }
 gait-proto = { path = "../gait-proto" }
 tokio      = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 anyhow     = "1"
 serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
