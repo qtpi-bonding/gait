@@ -442,6 +442,43 @@ fn write_registry_appends_when_session_quiescent() {
 }
 
 #[test]
+fn write_toggle_appends_when_session_quiescent() {
+    let dir = TempDir::new().unwrap();
+    let tx_path = dir.path().join("log.jsonl");
+    // Quiescent: no lock file at all in the session dir.
+    write_toggle(&tx_path, dir.path(), "skill", "tdd", true).unwrap();
+
+    let events = read_events(&tx_path).unwrap();
+    assert_eq!(events.len(), 1);
+    match crate::proto::event_kind(&events[0]) {
+        Some(payload::Kind::Toggle(t)) => {
+            assert_eq!(t.name, "tdd");
+            assert!(t.enabled);
+        }
+        other => panic!("expected Toggle event, got {other:?}"),
+    }
+}
+
+#[test]
+fn write_toggle_rejected_when_session_live() {
+    let dir = TempDir::new().unwrap();
+    let tx_path = dir.path().join("log.jsonl");
+    // Fabricate a "live" lock: current process PID (guaranteed alive during the test).
+    std::fs::write(dir.path().join("lock"), std::process::id().to_string()).unwrap();
+
+    let result = write_toggle(&tx_path, dir.path(), "skill", "tdd", true);
+    assert!(
+        matches!(result, Err(SessionError::SessionRunning)),
+        "expected SessionRunning error, got {result:?}"
+    );
+    // Nothing should have been appended.
+    assert!(
+        !tx_path.exists() || read_events(&tx_path).unwrap().is_empty(),
+        "no event should be appended when session is live"
+    );
+}
+
+#[test]
 fn write_registry_rejected_when_session_live() {
     let dir = TempDir::new().unwrap();
     let tx_path = dir.path().join("log.jsonl");

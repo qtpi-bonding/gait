@@ -137,6 +137,8 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::Load(args) => gait_cli::cli::session::cmd_load(args),
+        Commands::Unload(args) => gait_cli::cli::session::cmd_unload(args),
         Commands::Enable(args) => gait_cli::cli::admin::cmd_enable(args),
         Commands::Disable(args) => gait_cli::cli::admin::cmd_disable(args),
         Commands::Auth(args) => gait_cli::cli::admin::cmd_auth(args),

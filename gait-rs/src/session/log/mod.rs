@@ -200,6 +200,36 @@ pub fn write_registry(
     writeln!(file, "{}", json)?;
     Ok(())
 }
+/// Append a `Toggle` event to a session's log, outside a running turn.
+///
+/// `kind` is "skill"|"mcp"|"plugin"|"tool" (same convention as `crate::proto::events::toggle`).
+/// `enabled: true` loads `name` into the session's live context; `false` unloads it.
+///
+/// CRITICAL: same concurrency guarantee as `write_registry` above — refuses to append
+/// at all when the session is running; callers must retry once the session goes
+/// quiescent. See the concurrency note on `write_registry` for the full rationale.
+pub fn write_toggle(
+    tx_path: &std::path::Path,
+    session_dir: &std::path::Path,
+    kind: &str,
+    name: &str,
+    enabled: bool,
+) -> Result<(), SessionError> {
+    if crate::turn::SessionLock::is_running(session_dir) {
+        return Err(SessionError::SessionRunning);
+    }
+    let body = crate::proto::events::toggle(kind, name, enabled);
+    let prev = last_event(tx_path)?;
+    let ev = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(tx_path)?;
+    let json = serde_json::to_string(&ev)?;
+    use std::io::Write;
+    writeln!(file, "{}", json)?;
+    Ok(())
+}
 
 /// Append an `UnlockReply` event to the transcript.
 ///

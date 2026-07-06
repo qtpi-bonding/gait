@@ -430,6 +430,89 @@ impl TurnSource for ReplSource {
                 continue;
             }
 
+            // /skill [load|unload <name>] — Phase 4 (scoped registry): list the
+            // effective visible set (no args), or delegate to `gait load`/`gait
+            // unload` for the current session (mirrors /unlock's subprocess
+            // pattern, since those mutate a live session's log).
+            if let Some(rest) = line.strip_prefix("/skill") {
+                let rest = rest.trim();
+                if rest.is_empty() {
+                    let loaded = repl_skill_currently_loaded(&self.gait_dir, &self.session_id);
+                    let mut out = String::new();
+                    for (kind, names) in [
+                        ("skill", repl_skill_scan_skills(&self.gait_dir)),
+                        ("mcp", repl_skill_scan_mcp(&self.gait_dir)),
+                        ("plugin", repl_skill_scan_plugins(&self.gait_dir)),
+                    ] {
+                        for name in names {
+                            let status = if loaded.contains(&name) {
+                                "loaded"
+                            } else {
+                                "available"
+                            };
+                            out.push_str(&format!("  {} {} ({})\r\n", kind, name, status));
+                        }
+                    }
+                    if out.is_empty() {
+                        out.push_str("  (none registered)\r\n");
+                    }
+                    self.shared.borrow_mut().builder.write_raw(&out);
+                    continue;
+                }
+                let mut parts = rest.splitn(2, char::is_whitespace);
+                let verb = parts.next().unwrap_or("");
+                let name = parts.next().unwrap_or("").trim();
+                match verb {
+                    "load" | "unload" if !name.is_empty() => {
+                        let kind = if repl_skill_scan_skills(&self.gait_dir)
+                            .contains(&name.to_string())
+                        {
+                            Some("skill")
+                        } else if repl_skill_scan_mcp(&self.gait_dir).contains(&name.to_string()) {
+                            Some("mcp")
+                        } else if repl_skill_scan_plugins(&self.gait_dir)
+                            .contains(&name.to_string())
+                        {
+                            Some("plugin")
+                        } else {
+                            None
+                        };
+                        let Some(kind) = kind else {
+                            self.shared.borrow_mut().builder.write_raw(&format!(
+                                "[gait] /skill {}: '{}' not found in any registry\r\n",
+                                verb, name
+                            ));
+                            continue;
+                        };
+                        let ok = Command::new(&self.gait_bin)
+                            .args([
+                                verb,
+                                kind,
+                                name,
+                                &self.session_id,
+                                "--gait-dir",
+                                self.gait_dir.to_str().unwrap_or("."),
+                            ])
+                            .status()
+                            .map(|s| s.success())
+                            .unwrap_or(false);
+                        if !ok {
+                            self.shared
+                                .borrow_mut()
+                                .builder
+                                .write_raw(&format!("[gait] /skill {} {} failed\r\n", verb, name));
+                        }
+                    }
+                    _ => {
+                        self.shared
+                            .borrow_mut()
+                            .builder
+                            .write_raw("[gait] usage: /skill [load|unload <name>]\r\n");
+                    }
+                }
+                continue;
+            }
+
             // /skillname [off] — emit a Toggle event; do NOT forward to the model.
             if let Some((skill_name, enabled)) = parse_skill_toggle(&line) {
                 let available = gait_core::skills::scan_skills(&self.gait_dir);
@@ -611,6 +694,78 @@ fn parse_skill_toggle(line: &str) -> Option<(String, bool)> {
     };
 
     Some((name.to_string(), enabled))
+}
+
+/// `/skill`'s registry scans. `scan_skills` is `gait_core`'s public API;
+/// mcp/plugin have no public scan helper (their scanners are `pub(crate)` in
+/// gait-core), so these read the canonical disk layout directly — the same
+/// shape `crates/gait-cli/src/cli/admin.rs`'s own disk-first branches use.
+fn repl_skill_scan_skills(gait_dir: &std::path::Path) -> Vec<String> {
+    gait_core::skills::scan_skills(gait_dir)
+        .into_iter()
+        .map(|s| s.name)
+        .collect()
+}
+
+fn repl_skill_scan_mcp(gait_dir: &std::path::Path) -> Vec<String> {
+    let mut names = vec![];
+    if let Ok(rd) = std::fs::read_dir(gait_dir.join("mcp")) {
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    names.push(stem.to_string());
+                }
+            }
+        }
+    }
+    names
+}
+
+fn repl_skill_scan_plugins(gait_dir: &std::path::Path) -> Vec<String> {
+    let mut names = vec![];
+    if let Ok(rd) = std::fs::read_dir(gait_dir.join("plugins")) {
+        for entry in rd.flatten() {
+            if entry.path().is_dir() {
+                if let Some(name) = entry.file_name().to_str() {
+                    names.push(name.to_string());
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Currently-loaded names for `/skill`'s listing: folds `Toggle` events
+/// straight off the session's log. A simplification vs. the real
+/// `ActiveAgent`/`AgentState` projection (`pub(crate)` in gait-core, not
+/// reachable from this crate) — good enough for a REPL listing, not used for
+/// any enforcement decision.
+fn repl_skill_currently_loaded(
+    gait_dir: &std::path::Path,
+    session_id: &str,
+) -> std::collections::HashSet<String> {
+    use gait_core::proto::gait::log::v1::{event, payload, ToggleKind};
+    let tx_path = gait_core::session::live::log_path(gait_dir, session_id);
+    let events = gait_core::session::log::read_events(&tx_path).unwrap_or_default();
+    let mut loaded = std::collections::HashSet::new();
+    for e in &events {
+        if let Some(event::Body::Payload(p)) = &e.body {
+            if let Some(payload::Kind::Toggle(t)) = &p.kind {
+                if matches!(
+                    ToggleKind::try_from(t.kind).unwrap_or(ToggleKind::Unspecified),
+                    ToggleKind::Skill | ToggleKind::Mcp | ToggleKind::Plugin
+                ) {
+                    if t.enabled {
+                        loaded.insert(t.name.clone());
+                    } else {
+                        loaded.remove(&t.name);
+                    }
+                }
+            }
+        }
+    }
+    loaded
 }
 
 /// Drive the `/sh <desc>` one-off: resolve model + key from the loaded config,

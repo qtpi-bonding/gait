@@ -7,8 +7,8 @@ use gait_cli::cli::admin::{
 use gait_cli::cli::daemons::DaemonsArgs;
 use gait_cli::cli::init::InitArgs;
 use gait_cli::cli::session::{
-    AllowArgs, DenyArgs, DiscardArgs, PersistArgs, PsArgs, ReplyArgs, SessionsArgs, StatsArgs,
-    StopArgs, UndoArgs, UnlockArgs,
+    AllowArgs, DenyArgs, DiscardArgs, LoadArgs, PersistArgs, PsArgs, ReplyArgs, SessionsArgs,
+    StatsArgs, StopArgs, UndoArgs, UnloadArgs, UnlockArgs,
 };
 use gait_cli::cli::workflow::WorkflowArgs;
 
@@ -82,6 +82,8 @@ pub enum Commands {
     Reply(ReplyArgs),
     Register(RegisterArgs),
     Unregister(UnregisterArgs),
+    Load(LoadArgs),
+    Unload(UnloadArgs),
     Enable(EnableArgs),
     Disable(DisableArgs),
     Auth(AuthArgs),

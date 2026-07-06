@@ -76,6 +76,12 @@ pub const COMMANDS: &[ReplCommand] = &[
         group: "session",
     },
     ReplCommand {
+        slug: "/skill",
+        aliases: &[],
+        desc: "List, load, or unload skills/mcp/plugins",
+        group: "session",
+    },
+    ReplCommand {
         slug: "/exit",
         aliases: &["/quit", "/q"],
         desc: "Exit the REPL",
