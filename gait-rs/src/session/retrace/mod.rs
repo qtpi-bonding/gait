@@ -167,6 +167,13 @@ pub struct AgentState {
     pub allow: std::collections::HashSet<String>,
     pub deny: std::collections::HashSet<String>,
     pub llm_params: Option<crate::proto::gait::log::v1::LlmParams>,
+    /// Session-scope registration whitelist (layer 2, distinct from the
+    /// `skills`/`mcp`/`plugins` layer-3 live-load sets above). Folded from
+    /// `Registry` events only — never seeded from config or an `Agent`
+    /// checkpoint. See docs/plans/2026-07-06-scoped-registry-revamp.md Phase 2.
+    pub session_skills: std::collections::HashSet<String>,
+    pub session_mcp: std::collections::HashSet<String>,
+    pub session_plugins: std::collections::HashSet<String>,
 }
 
 impl AgentState {
@@ -179,6 +186,19 @@ impl AgentState {
             .chain(self.plugins.iter())
             .cloned()
             .collect()
+    }
+
+    /// Read accessor for the session-scope skills whitelist (Phase 2).
+    pub fn session_skills(&self) -> &std::collections::HashSet<String> {
+        &self.session_skills
+    }
+    /// Read accessor for the session-scope mcp whitelist (Phase 2).
+    pub fn session_mcp(&self) -> &std::collections::HashSet<String> {
+        &self.session_mcp
+    }
+    /// Read accessor for the session-scope plugins whitelist (Phase 2).
+    pub fn session_plugins(&self) -> &std::collections::HashSet<String> {
+        &self.session_plugins
     }
 
     /// The genesis seed (M3): enabled-set derived from config exactly like
@@ -215,6 +235,9 @@ impl AgentState {
             allow: allow.into_iter().collect(),
             deny: deny.into_iter().collect(),
             llm_params: None,
+            session_skills: Default::default(),
+            session_mcp: Default::default(),
+            session_plugins: Default::default(),
         }
     }
 }
@@ -243,6 +266,9 @@ impl From<&pb::Agent> for AgentState {
             allow,
             deny,
             llm_params: a.llm_params.clone(),
+            session_skills: Default::default(),
+            session_mcp: Default::default(),
+            session_plugins: Default::default(),
         }
     }
 }
@@ -282,6 +308,22 @@ impl Projection for ActiveAgent {
                     set.insert(t.name.clone());
                 } else {
                     set.remove(&t.name);
+                }
+            }
+            // Registry is the layer-2 registration/whitelist axis (distinct from
+            // Toggle's layer-3 live-load axis above) — Tool has no meaning here
+            // (mirror the Unspecified guard, but for both variants).
+            payload::Kind::Registry(r) => {
+                let set = match ToggleKind::try_from(r.kind).unwrap_or(ToggleKind::Unspecified) {
+                    ToggleKind::Skill => &mut st.session_skills,
+                    ToggleKind::Mcp => &mut st.session_mcp,
+                    ToggleKind::Plugin => &mut st.session_plugins,
+                    ToggleKind::Tool | ToggleKind::Unspecified => return,
+                };
+                if r.listed {
+                    set.insert(r.name.clone());
+                } else {
+                    set.remove(&r.name);
                 }
             }
             payload::Kind::ModelChange(m) => st.model = m.model.clone(),

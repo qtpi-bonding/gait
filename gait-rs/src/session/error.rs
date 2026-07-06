@@ -8,4 +8,6 @@ pub enum SessionError {
     Parse(#[from] serde_json::Error),
     #[error("proto error: {0}")]
     Proto(#[from] ProtoError),
+    #[error("session is live; cannot append a registry event while a turn is running")]
+    SessionRunning,
 }

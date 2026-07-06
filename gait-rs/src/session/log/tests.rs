@@ -424,6 +424,43 @@ fn write_unlock_reply_appends_and_state_becomes_idle() {
 }
 
 #[test]
+fn write_registry_appends_when_session_quiescent() {
+    let dir = TempDir::new().unwrap();
+    let tx_path = dir.path().join("log.jsonl");
+    // Quiescent: no lock file at all in the session dir.
+    write_registry(&tx_path, dir.path(), "skill", "tdd", true).unwrap();
+
+    let events = read_events(&tx_path).unwrap();
+    assert_eq!(events.len(), 1);
+    match crate::proto::event_kind(&events[0]) {
+        Some(payload::Kind::Registry(r)) => {
+            assert_eq!(r.name, "tdd");
+            assert!(r.listed);
+        }
+        other => panic!("expected Registry event, got {other:?}"),
+    }
+}
+
+#[test]
+fn write_registry_rejected_when_session_live() {
+    let dir = TempDir::new().unwrap();
+    let tx_path = dir.path().join("log.jsonl");
+    // Fabricate a "live" lock: current process PID (guaranteed alive during the test).
+    std::fs::write(dir.path().join("lock"), std::process::id().to_string()).unwrap();
+
+    let result = write_registry(&tx_path, dir.path(), "skill", "tdd", true);
+    assert!(
+        matches!(result, Err(SessionError::SessionRunning)),
+        "expected SessionRunning error, got {result:?}"
+    );
+    // Nothing should have been appended.
+    assert!(
+        !tx_path.exists() || read_events(&tx_path).unwrap().is_empty(),
+        "no event should be appended when session is live"
+    );
+}
+
+#[test]
 fn init_session_writes_codebase_path_into_session_start() {
     use crate::proto::gait::log::v1::{event, payload};
     let dir = TempDir::new().unwrap();

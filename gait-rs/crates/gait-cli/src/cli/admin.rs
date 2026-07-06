@@ -71,6 +71,9 @@ pub struct RegisterArgs {
     /// Path to agent .md file (only meaningful with --scope agent)
     #[arg(long)]
     pub agent: Option<PathBuf>,
+    /// Session id (only meaningful with --scope session)
+    #[arg(long)]
+    pub session: Option<String>,
 }
 
 /// `gait unregister mcp|skill|plugin <name>`
@@ -90,6 +93,9 @@ pub struct UnregisterArgs {
     /// Path to agent .md file (only meaningful with --scope agent)
     #[arg(long)]
     pub agent: Option<PathBuf>,
+    /// Session id (only meaningful with --scope session)
+    #[arg(long)]
+    pub session: Option<String>,
 }
 
 /// `gait enable mcp|skill|plugin <name>`
@@ -452,6 +458,23 @@ pub fn cmd_register(args: RegisterArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Phase 2: --scope session appends a Registry event to one session's own
+    // log. Never falls through to the global content-store branch below.
+    if args.scope.as_deref() == Some("session") {
+        let session_id = args
+            .session
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("--scope session requires --session <id>"))?;
+        let tx_path = gait_core::session::live::log_path(&gait_dir, &session_id);
+        let session_dir = gait_core::session::live::worktree_dir(&gait_dir, &session_id);
+        gait_core::session::log::write_registry(&tx_path, &session_dir, kind, name, true)?;
+        println!(
+            "Added {} '{}' to session '{}' whitelist.",
+            kind, name, session_id
+        );
+        return Ok(());
+    }
+
     match kind {
         "mcp" => {
             let mcp_dir = gait_dir.join("mcp");
@@ -788,6 +811,26 @@ pub fn cmd_unregister(args: UnregisterArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Phase 2: --scope session appends a Registry(listed=false) event to one
+    // session's own log. Never falls through to the global disk-entry branch
+    // below. Note (session-scope is additive/union-only, per the plan): if the
+    // agent's own whitelist also grants this name, it remains visible via that
+    // grant -- this only removes the session's own extra reference.
+    if args.scope.as_deref() == Some("session") {
+        let session_id = args
+            .session
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("--scope session requires --session <id>"))?;
+        let tx_path = gait_core::session::live::log_path(&gait_dir, &session_id);
+        let session_dir = gait_core::session::live::worktree_dir(&gait_dir, &session_id);
+        gait_core::session::log::write_registry(&tx_path, &session_dir, kind, name, false)?;
+        println!(
+            "Removed {} '{}' from session '{}' whitelist (still visible if the agent's own whitelist also grants it).",
+            kind, name, session_id
+        );
+        return Ok(());
+    }
+
     // Disk-first for mcp, plugin, and skill
     if kind == "mcp" {
         let disk_path = gait_dir.join("mcp").join(format!("{}.json", name));
@@ -858,6 +901,7 @@ mod tests {
             gait_dir: Some(dir.to_path_buf()),
             scope: None,
             agent: None,
+            session: None,
         }
     }
     fn reg_flags(kind: &str, name: &str, dir: &std::path::Path, flags: &[&str]) -> RegisterArgs {
@@ -887,6 +931,7 @@ mod tests {
             gait_dir: Some(dir.to_path_buf()),
             scope: None,
             agent: None,
+            session: None,
         }
     }
     use super::*;
@@ -1002,6 +1047,37 @@ mod tests {
         a.scope = Some("agent".into());
         a.agent = Some(agent);
         a
+    }
+
+    fn reg_with_session_scope(
+        kind: &str,
+        name: &str,
+        dir: &std::path::Path,
+        session_id: &str,
+    ) -> RegisterArgs {
+        let mut a = reg(kind, name, dir);
+        a.scope = Some("session".into());
+        a.session = Some(session_id.into());
+        a
+    }
+
+    fn unreg_with_session_scope(
+        kind: &str,
+        name: &str,
+        dir: &std::path::Path,
+        session_id: &str,
+    ) -> UnregisterArgs {
+        let mut a = unreg(kind, name, dir);
+        a.scope = Some("session".into());
+        a.session = Some(session_id.into());
+        a
+    }
+
+    /// Create a quiescent (no lock file) live session's log directory, empty
+    /// transcript, under `gait_dir` -- the minimal shape `write_registry` needs.
+    fn make_quiescent_session(gait_dir: &std::path::Path, session_id: &str) {
+        let tx_path = gait_core::session::live::log_path(gait_dir, session_id);
+        std::fs::create_dir_all(tx_path.parent().unwrap()).unwrap();
     }
 
     #[test]
@@ -1144,6 +1220,87 @@ mod tests {
         assert!(
             msg.contains("--agent"),
             "error should mention --agent, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn cmd_register_scope_session_appends_registry_event() {
+        use gait_core::proto::gait::log::v1::{event, payload};
+        let dir = tempfile::tempdir().unwrap();
+        let session_id = "sabc123";
+        make_quiescent_session(dir.path(), session_id);
+
+        cmd_register(reg_with_session_scope(
+            "skill",
+            "tdd",
+            dir.path(),
+            session_id,
+        ))
+        .unwrap();
+
+        let tx_path = gait_core::session::live::log_path(dir.path(), session_id);
+        let events = gait_core::session::log::read_events(&tx_path).unwrap();
+        assert_eq!(events.len(), 1, "exactly one Registry event appended");
+        let kind = match &events[0].body {
+            Some(event::Body::Payload(p)) => p.kind.as_ref(),
+            _ => None,
+        };
+        match kind {
+            Some(payload::Kind::Registry(r)) => {
+                assert_eq!(r.name, "tdd");
+                assert!(r.listed, "register listed=true");
+            }
+            other => panic!("expected Registry event, got {other:?}"),
+        }
+        // Session scope never touches the global content store.
+        assert!(
+            !dir.path().join("skills").exists(),
+            "session scope must not write to global skills/"
+        );
+    }
+
+    #[test]
+    fn cmd_unregister_scope_session_appends_unlisted_registry_event() {
+        use gait_core::proto::gait::log::v1::{event, payload};
+        let dir = tempfile::tempdir().unwrap();
+        let session_id = "sabc123";
+        make_quiescent_session(dir.path(), session_id);
+
+        cmd_unregister(unreg_with_session_scope(
+            "skill",
+            "tdd",
+            dir.path(),
+            session_id,
+        ))
+        .unwrap();
+
+        let tx_path = gait_core::session::live::log_path(dir.path(), session_id);
+        let events = gait_core::session::log::read_events(&tx_path).unwrap();
+        assert_eq!(events.len(), 1, "exactly one Registry event appended");
+        let kind = match &events[0].body {
+            Some(event::Body::Payload(p)) => p.kind.as_ref(),
+            _ => None,
+        };
+        match kind {
+            Some(payload::Kind::Registry(r)) => {
+                assert_eq!(r.name, "tdd");
+                assert!(!r.listed, "unregister listed=false");
+            }
+            other => panic!("expected Registry event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cmd_register_scope_session_requires_session_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = reg("skill", "tdd", dir.path());
+        a.scope = Some("session".into());
+        // No --session
+        let err = cmd_register(a).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("--session"),
+            "error should mention --session, got: {msg}"
         );
     }
 

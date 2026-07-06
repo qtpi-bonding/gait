@@ -86,6 +86,23 @@ pub fn toggle(kind: &str, name: &str, enabled: bool) -> pb::event::Body {
     }))
 }
 
+/// `Registry` — registration/whitelist delta (skill | mcp | plugin), folded by
+/// `ActiveAgent` into `session_skills`/`session_mcp`/`session_plugins`. Distinct
+/// from `toggle`'s live-load axis above; `kind: &str` uses the same convention.
+pub fn registry(kind: &str, name: &str, listed: bool) -> pb::event::Body {
+    let k = match kind {
+        "skill" => pb::ToggleKind::Skill,
+        "mcp" => pb::ToggleKind::Mcp,
+        "plugin" => pb::ToggleKind::Plugin,
+        _ => pb::ToggleKind::Unspecified,
+    };
+    wire::body(pb::payload::Kind::Registry(pb::Registry {
+        kind: k as i32,
+        name: name.to_string(),
+        listed,
+    }))
+}
+
 /// `ModelChange` — model-swap delta, LWW-folded by ActiveAgent.
 pub fn model_change(model: &str) -> pb::event::Body {
     wire::body(pb::payload::Kind::ModelChange(pb::ModelChange {

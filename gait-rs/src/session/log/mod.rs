@@ -167,6 +167,40 @@ pub fn write_permissions_reply(
     Ok(())
 }
 
+/// Append a `Registry` event to a session's log, outside a running turn.
+///
+/// `kind` is "skill"|"mcp"|"plugin" (same convention as `crate::proto::events::toggle`).
+/// `listed: true` adds `name` to this session's own whitelist; `false` removes it.
+///
+/// CRITICAL: unlike an in-turn append (which the live process serializes via its
+/// own lock), this primitive runs entirely outside a turn — from a CLI process
+/// with no lock of its own. If a turn is genuinely live on this session, both the
+/// live process and this call could read the same `last_event` and both append,
+/// forking the log's hash chain. So this refuses to append at all when the
+/// session is running; callers must retry once the session goes quiescent.
+pub fn write_registry(
+    tx_path: &std::path::Path,
+    session_dir: &std::path::Path,
+    kind: &str,
+    name: &str,
+    listed: bool,
+) -> Result<(), SessionError> {
+    if crate::turn::SessionLock::is_running(session_dir) {
+        return Err(SessionError::SessionRunning);
+    }
+    let body = crate::proto::events::registry(kind, name, listed);
+    let prev = last_event(tx_path)?;
+    let ev = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(tx_path)?;
+    let json = serde_json::to_string(&ev)?;
+    use std::io::Write;
+    writeln!(file, "{}", json)?;
+    Ok(())
+}
+
 /// Append an `UnlockReply` event to the transcript.
 ///
 /// `from` identifies the source of the decision (e.g. "user").

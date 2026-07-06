@@ -134,6 +134,9 @@ pub(crate) fn init(
             allow: allow.iter().cloned().collect(),
             deny: deny.iter().cloned().collect(),
             llm_params: None,
+            session_skills: Default::default(),
+            session_mcp: Default::default(),
+            session_plugins: Default::default(),
         };
         for n in &config_enabled {
             s.skills.insert(n.clone());

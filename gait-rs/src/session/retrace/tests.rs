@@ -1114,6 +1114,86 @@ fn active_agent_folds_toggle_per_kind_and_model_change() {
 }
 
 #[test]
+fn active_agent_folds_registry_per_kind() {
+    use crate::proto::gait::log::v1::ToggleKind;
+    use std::collections::HashMap;
+    let seed = AgentState::default();
+    let evs = mint_events(vec![
+        wire::body(payload::Kind::Registry(pb::Registry {
+            kind: ToggleKind::Skill as i32,
+            name: "tdd".into(),
+            listed: true,
+        })),
+        wire::body(payload::Kind::Registry(pb::Registry {
+            kind: ToggleKind::Mcp as i32,
+            name: "slack".into(),
+            listed: true,
+        })),
+        wire::body(payload::Kind::Registry(pb::Registry {
+            kind: ToggleKind::Plugin as i32,
+            name: "wasmy".into(),
+            listed: true,
+        })),
+    ]);
+    let st = run_projection(&ActiveAgent { seed }, &evs, &HashMap::new());
+    assert!(st.session_skills().contains("tdd"), "skill listed");
+    assert!(st.session_mcp().contains("slack"), "mcp listed");
+    assert!(st.session_plugins().contains("wasmy"), "plugin listed");
+    // Registry never touches the layer-3 live-load sets.
+    assert!(st.skills.is_empty());
+    assert!(st.mcp.is_empty());
+    assert!(st.plugins.is_empty());
+}
+
+#[test]
+fn active_agent_folds_registry_unlisted_removes() {
+    use crate::proto::gait::log::v1::ToggleKind;
+    use std::collections::HashMap;
+    let seed = AgentState::default();
+    let evs = mint_events(vec![
+        wire::body(payload::Kind::Registry(pb::Registry {
+            kind: ToggleKind::Skill as i32,
+            name: "tdd".into(),
+            listed: true,
+        })),
+        wire::body(payload::Kind::Registry(pb::Registry {
+            kind: ToggleKind::Skill as i32,
+            name: "tdd".into(),
+            listed: false,
+        })),
+    ]);
+    let st = run_projection(&ActiveAgent { seed }, &evs, &HashMap::new());
+    assert!(
+        !st.session_skills().contains("tdd"),
+        "unlisted removes from session whitelist"
+    );
+}
+
+#[test]
+fn active_agent_registry_guards_tool_and_unspecified() {
+    use crate::proto::gait::log::v1::ToggleKind;
+    use std::collections::HashMap;
+    let seed = AgentState::default();
+    let evs = mint_events(vec![
+        wire::body(payload::Kind::Registry(pb::Registry {
+            kind: ToggleKind::Tool as i32,
+            name: "bogus-tool".into(),
+            listed: true,
+        })),
+        wire::body(payload::Kind::Registry(pb::Registry {
+            kind: ToggleKind::Unspecified as i32,
+            name: "bogus-unspecified".into(),
+            listed: true,
+        })),
+    ]);
+    // Must not panic, and must not mutate any set.
+    let st = run_projection(&ActiveAgent { seed }, &evs, &HashMap::new());
+    assert!(st.session_skills().is_empty());
+    assert!(st.session_mcp().is_empty());
+    assert!(st.session_plugins().is_empty());
+}
+
+#[test]
 fn rebaseline_agent_overlays_skills_and_mcp_from_state() {
     use std::collections::HashSet;
     let live = pb::Agent {
@@ -1140,6 +1220,9 @@ fn rebaseline_agent_overlays_skills_and_mcp_from_state() {
         allow: HashSet::new(),
         deny: HashSet::new(),
         llm_params: None,
+        session_skills: HashSet::new(),
+        session_mcp: HashSet::new(),
+        session_plugins: HashSet::new(),
     };
     let got = rebaseline_agent(live.clone(), &st);
     assert_eq!(got.model, "m1", "model is static — from live, not state");
