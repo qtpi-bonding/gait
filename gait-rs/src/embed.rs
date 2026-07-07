@@ -226,6 +226,7 @@ pub async fn run_loop(
             cascade.map(|h| &h.0),
             &session.repos,
             &crate::turn::spine::TurnMode::Persistent,
+            None,
         )
         .await;
         // Clear the cascade slot after each turn (parity with spine.rs:248).
@@ -491,6 +492,7 @@ pub async fn run_one_off_turn(
         /* signal_slot */ None,
         &crate::git::Repos::production(),
         &TurnMode::Ephemeral { input },
+        None,
     )
     .await?;
 

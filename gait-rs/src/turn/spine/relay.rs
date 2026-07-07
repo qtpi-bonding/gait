@@ -83,6 +83,7 @@ pub async fn relay_brain_turn(
     signal_slot: Option<&SignalSlot>,
     repos: &crate::git::Repos,
     mode: &TurnMode,
+    fs_delegate: Option<std::sync::Arc<dyn crate::embed::FsDelegate>>,
 ) -> anyhow::Result<bool> {
     // ── Establish (or inherit) the cascade group for this turn ─────────────
     let group = crate::process::establish(cascade_group_arg);
@@ -295,9 +296,10 @@ pub async fn relay_brain_turn(
                     let sid = session_id.to_string();
                     let exe_c = exe.to_path_buf();
                     let grp = Arc::clone(&group);
+                    let del = fs_delegate.clone();
                     state.inflight.spawn(async move {
                         let feedback = run_tool_as_spine(
-                            impulse, &cfg, &gd, &cb, &sid, sandbox_on, &exe_c, grp,
+                            impulse, &cfg, &gd, &cb, &sid, sandbox_on, &exe_c, grp, del,
                         )
                         .await;
                         handlers::reply_feedback(stdin_writer, corr_id, feedback).await;

@@ -22,6 +22,7 @@ pub async fn run_tool_as_spine(
     sandbox_on: bool,
     exe: &Path,
     group: std::sync::Arc<dyn crate::process::Containment>,
+    fs_delegate: Option<std::sync::Arc<dyn crate::embed::FsDelegate>>,
 ) -> Feedback {
     use tokio::io::AsyncWriteExt;
 
@@ -67,6 +68,47 @@ pub async fn run_tool_as_spine(
     };
     let requested = scope_to_proto(&scope);
 
+    // ── fs-delegation: scope-check the path, then pre-read the editor buffer ──
+    // Delegation removes the kernel seal from this path, so the SPINE re-enforces the
+    // same ceiling here (design §"Sandbox: the spine is the fs-scope authority").
+    let delegated_path = fs_delegate
+        .as_ref()
+        .and_then(|_| delegated_target(&impulse.tool, &impulse.args, codebase));
+    let prefetch = if let (Some(del), Some(path)) = (fs_delegate.as_ref(), delegated_path.as_ref())
+    {
+        // Enforce scope only when the sandbox is on (parity with the hand's seal,
+        // skipped when seal=false). `path` is already normalized by delegated_target.
+        // Mirrors check_own_tool_scope (src/turn/mod.rs:709-731).
+        if sandbox_on {
+            let is_write = impulse.tool != "read";
+            let ok = if is_write {
+                scope.writable.iter().any(|w| path.starts_with(w))
+            } else {
+                scope.read_all || scope.readable.iter().any(|r| path.starts_with(r))
+            };
+            if !ok {
+                let _ = std::fs::remove_dir_all(&jail);
+                return error_feedback(&format!(
+                    "delegated {} out of scope: {}",
+                    if is_write { "write" } else { "read" },
+                    path.display()
+                ));
+            }
+        }
+        match del.read_text_file(path).await {
+            Ok(content) => Some(gait_proto::gait::sandbox::v1::Prefetch {
+                path: path.to_string_lossy().into_owned(),
+                content, // Some(buffer) | None(new file)
+            }),
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&jail); // FAIL-READ must not leak the jail
+                return error_feedback(&format!("fs delegate read failed: {e}"));
+            }
+        }
+    } else {
+        None
+    };
+
     // Resolve cwd: if the brain sent a cwd in the Impulse, use it; otherwise
     // read active_cwd from the session log (same as SubprocessSynapse did).
     // RelaySynapse sends empty cwd because the brain doesn't read the session
@@ -87,7 +129,7 @@ pub async fn run_tool_as_spine(
         args: impulse.args,
         cwd,
         requested: Some(requested),
-        prefetch: None,
+        prefetch,
     };
     let bytes = impulse_with_scope.encode_to_vec();
 
@@ -172,7 +214,7 @@ pub async fn run_tool_as_spine(
     // exit code; only fall back to exit-code/stderr if stdout is missing/garbled
     // (a true crash — the hand never got to write).
     use gait_proto::gait::sandbox::v1::{hand_response, HandResponse};
-    let feedback = match HandResponse::decode(out.stdout.as_slice()) {
+    let mut feedback = match HandResponse::decode(out.stdout.as_slice()) {
         Ok(HandResponse {
             outcome: Some(hand_response::Outcome::Feedback(f)),
         }) => f,
@@ -206,6 +248,20 @@ pub async fn run_tool_as_spine(
         let _ = crate::session::daemons::append_start(gait_dir, &dr);
     }
 
+    // Strip final_content FIRST, unconditionally, on its own line: it must never
+    // travel up the Nerve to the brain. (A "guard-then-take" refactor would leak
+    // editor content into the brain's log — keep this separate and explicit.)
+    let final_content = feedback.final_content.take();
+    if let (Some(del), Some(path)) = (fs_delegate.as_ref(), delegated_path.as_ref()) {
+        if let Some(fc) = final_content {
+            if let Err(e) = del.write_text_file(path, &fc).await {
+                let _ = std::fs::remove_dir_all(&jail);
+                return error_feedback(&format!("fs delegate write failed: {e}"));
+                // fail-write: provisional success withheld
+            }
+        }
+    }
+
     feedback
 }
 
@@ -237,5 +293,154 @@ pub fn scope_to_proto(s: &SandboxScope) -> Scope {
                 hosts: h.clone(),
             },
         }),
+    }
+}
+
+/// If `tool` is one of the five delegating fs tools and its args carry a
+/// `file_path`, return the path resolved as the tools resolve it (absolute as-is,
+/// else `codebase.join(file_path)`) and then **lexically normalized**. Otherwise
+/// `None`. The normalized path is authoritative for delegated ops: it is what the
+/// spine scope-checks, ships in `Prefetch.path`, and hands to the delegate.
+pub fn delegated_target(
+    tool: &str,
+    args: &Option<pbjson_types::Struct>,
+    codebase: &Path,
+) -> Option<std::path::PathBuf> {
+    matches!(
+        tool,
+        "read" | "write" | "edit_replace" | "edit_append" | "edit_prepend"
+    )
+    .then_some(())?;
+    let fp = args
+        .as_ref()?
+        .fields
+        .get("file_path")
+        .and_then(|v| match &v.kind {
+            Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.clone()),
+            _ => None,
+        })?;
+    let p = std::path::Path::new(&fp);
+    let resolved = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        codebase.join(&fp)
+    };
+    // normalize_lexical resolves `.`/`..` textually (no disk touch), mirroring
+    // check_own_tool_scope (src/turn/mod.rs:715) so `..` can't escape yet starts_with.
+    Some(crate::sandbox::normalize_lexical(&resolved))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn delegated_target_resolves_only_fs_tools() {
+        let mut s = pbjson_types::Struct::default();
+        s.fields.insert(
+            "file_path".into(),
+            pbjson_types::Value {
+                kind: Some(pbjson_types::value::Kind::StringValue("src/a.rs".into())),
+            },
+        );
+        let cb = Path::new("/ws");
+        assert_eq!(
+            delegated_target("read", &Some(s.clone()), cb),
+            Some(Path::new("/ws/src/a.rs").to_path_buf())
+        );
+        assert_eq!(
+            delegated_target("edit_replace", &Some(s.clone()), cb),
+            Some(Path::new("/ws/src/a.rs").to_path_buf())
+        );
+        assert_eq!(delegated_target("shell", &Some(s.clone()), cb), None); // not a delegating tool
+
+        let mut abs = pbjson_types::Struct::default();
+        abs.fields.insert(
+            "file_path".into(),
+            pbjson_types::Value {
+                kind: Some(pbjson_types::value::Kind::StringValue("/etc/x".into())),
+            },
+        );
+        assert_eq!(
+            delegated_target("write", &Some(abs), cb),
+            Some(Path::new("/etc/x").to_path_buf())
+        );
+
+        // `..` is lexically normalized so a later scope check can't be fooled by a path
+        // that literally starts_with the codebase but escapes it.
+        let mut esc = pbjson_types::Struct::default();
+        esc.fields.insert(
+            "file_path".into(),
+            pbjson_types::Value {
+                kind: Some(pbjson_types::value::Kind::StringValue(
+                    "../../etc/passwd".into(),
+                )),
+            },
+        );
+        assert_eq!(
+            delegated_target("write", &Some(esc), cb),
+            Some(Path::new("/etc/passwd").to_path_buf())
+        );
+    }
+
+    #[tokio::test]
+    async fn delegated_write_out_of_scope_is_rejected() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let called = Arc::new(AtomicBool::new(false));
+        struct Fake(Arc<AtomicBool>);
+        #[async_trait::async_trait]
+        impl crate::embed::FsDelegate for Fake {
+            async fn read_text_file(&self, _p: &Path) -> anyhow::Result<Option<String>> {
+                Ok(None)
+            }
+            async fn write_text_file(&self, _p: &Path, _c: &str) -> anyhow::Result<()> {
+                self.0.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let ws = tempfile::TempDir::new().unwrap();
+        let mut s = pbjson_types::Struct::default();
+        s.fields.insert(
+            "file_path".into(),
+            pbjson_types::Value {
+                kind: Some(pbjson_types::value::Kind::StringValue(
+                    "/etc/gait-escape-probe".into(),
+                )),
+            },
+        );
+        let impulse = gait_proto::gait::sandbox::v1::Impulse {
+            tool: "write".into(),
+            args: Some(s),
+            cwd: String::new(),
+            requested: None,
+            prefetch: None,
+        };
+        let group = crate::process::establish(None);
+        let feedback = run_tool_as_spine(
+            impulse,
+            &crate::config::SandboxConfig::default(),
+            ws.path(),
+            ws.path(),
+            "sess-escape-01",
+            true,                          // sandbox ON → spine enforces scope
+            Path::new("/nonexistent-exe"), // never reached: scope check returns first
+            group,
+            Some(Arc::new(Fake(called.clone())) as Arc<dyn crate::embed::FsDelegate>),
+        )
+        .await;
+
+        let rendered = serde_json::to_string(&feedback.result).unwrap();
+        assert!(
+            rendered.to_lowercase().contains("out of scope"),
+            "expected scope rejection: {rendered}"
+        );
+        assert!(
+            !called.load(Ordering::SeqCst),
+            "delegate write must NOT run for an out-of-scope path"
+        );
     }
 }
