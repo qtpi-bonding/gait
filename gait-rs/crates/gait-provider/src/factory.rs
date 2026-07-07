@@ -12,6 +12,13 @@ pub enum FactoryError {
     MissingApiKey(String, String),
 }
 
+/// Per-provider base URL override, e.g. `OLLAMA_BASE_URL=http://192.168.1.50:11500/v1`
+/// for a local runtime that isn't listening on its default host/port.
+fn base_url_override(provider_id: &str) -> Option<String> {
+    let env_var = format!("{}_BASE_URL", provider_id.to_uppercase().replace('-', "_"));
+    std::env::var(&env_var).ok().filter(|v| !v.is_empty())
+}
+
 pub fn load_provider(
     model_str: &str,
     api_key: Option<String>,
@@ -21,10 +28,18 @@ pub fn load_provider(
         .ok_or_else(|| FactoryError::UnknownProvider(provider_id.clone()))?;
     let key = match api_key.filter(|k| !k.is_empty()) {
         Some(k) => k,
-        None => std::env::var(spec.env_var)
-            .map_err(|_| FactoryError::MissingApiKey(spec.id.into(), spec.env_var.into()))?,
+        None => match std::env::var(spec.env_var) {
+            Ok(k) if !k.is_empty() => k,
+            _ if !spec.requires_auth => "not-needed".to_string(),
+            _ => {
+                return Err(FactoryError::MissingApiKey(
+                    spec.id.into(),
+                    spec.env_var.into(),
+                ));
+            }
+        },
     };
-    let base = spec.base_url.map(String::from);
+    let base = base_url_override(&provider_id).or_else(|| spec.base_url.map(String::from));
     let transport = crate::transport::TransportConfig::default();
     Ok(match spec.wire {
         crate::providers::Wire::Anthropic => {
@@ -103,5 +118,33 @@ mod tests {
     fn load_xai_uses_openai_wire() {
         let p = load_provider("xai/grok-beta", Some("key".into())).unwrap();
         assert_eq!(p.model_id(), "grok-beta");
+    }
+
+    #[test]
+    fn load_ollama_without_key_or_env_var_succeeds() {
+        std::env::remove_var("OLLAMA_API_KEY");
+        let p = load_provider("ollama/llama3", None).expect("ollama needs no auth");
+        assert_eq!(p.model_id(), "llama3");
+    }
+
+    #[test]
+    fn load_lmstudio_without_key_or_env_var_succeeds() {
+        std::env::remove_var("LMSTUDIO_API_KEY");
+        let p = load_provider("lmstudio/qwen2.5-coder", None).expect("lmstudio needs no auth");
+        assert_eq!(p.model_id(), "qwen2.5-coder");
+    }
+
+    #[test]
+    fn base_url_env_override_takes_precedence_over_default() {
+        std::env::set_var("OLLAMA_BASE_URL", "http://192.168.1.50:11500/v1");
+        let got = base_url_override("ollama");
+        std::env::remove_var("OLLAMA_BASE_URL");
+        assert_eq!(got, Some("http://192.168.1.50:11500/v1".to_string()));
+    }
+
+    #[test]
+    fn base_url_env_override_absent_returns_none() {
+        std::env::remove_var("NOTAPROVIDER_BASE_URL");
+        assert_eq!(base_url_override("notaprovider"), None);
     }
 }

@@ -44,18 +44,31 @@ pub fn resolve_api_key(provider: &str) -> Option<String> {
         .join("gait")
         .join("auth.json");
     if !auth_path.exists() {
-        return None;
+        return no_auth_placeholder(provider);
     }
     let Ok(text) = std::fs::read_to_string(&auth_path) else {
-        return None;
+        return no_auth_placeholder(provider);
     };
     let Ok(map) = serde_json::from_str::<HashMap<String, AuthEntry>>(&text) else {
-        return None;
+        return no_auth_placeholder(provider);
     };
-    match map.get(provider)? {
-        AuthEntry::Api { key } => Some(key.clone()),
-        AuthEntry::Wellknown { key, .. } => Some(key.clone()),
-        _ => None,
+    match map.get(provider) {
+        Some(AuthEntry::Api { key }) => Some(key.clone()),
+        Some(AuthEntry::Wellknown { key, .. }) => Some(key.clone()),
+        _ => no_auth_placeholder(provider),
+    }
+}
+
+/// Local runtimes (Ollama, LM Studio) don't check the `Authorization` header —
+/// resolve to a placeholder instead of forcing the user through `gait auth add`.
+fn no_auth_placeholder(provider: &str) -> Option<String> {
+    let requires_auth = gait_provider::providers::lookup(provider)
+        .map(|spec| spec.requires_auth)
+        .unwrap_or(true);
+    if requires_auth {
+        None
+    } else {
+        Some("not-needed".to_string())
     }
 }
 
@@ -147,6 +160,16 @@ pub fn list_credentials() -> HashMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_auth_provider_resolves_without_key_or_env_var() {
+        std::env::remove_var("OLLAMA_API_KEY");
+        let result = resolve_api_key("ollama");
+        assert!(
+            result.is_some(),
+            "ollama requires no auth; should resolve to a placeholder"
+        );
+    }
 
     #[test]
     fn returns_none_for_unknown_provider() {
