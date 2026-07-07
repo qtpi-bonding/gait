@@ -13,9 +13,8 @@ pub struct ToolCtx {
     /// `None` means no app-level host restriction (kernel seal still applies).
     /// Set by the hand from `Impulse.requested.network` when mode is `Hosts`.
     pub network_allowlist: Option<Vec<String>>,
-    /// Swappable filesystem backend. Defaults to [`LocalFs`] (a direct
-    /// pass-through to `std::fs`); a future `AcpFs` implementation can be
-    /// swapped in via [`ToolCtx::with_fs`] without touching any tool body.
+    /// Filesystem backend: [`LocalFs`] (disk, default) or [`BufferedFs`]
+    /// (spine-supplied buffer, set by the hand for delegated ops).
     pub fs: Arc<dyn FsBackend>,
 }
 
@@ -46,13 +45,6 @@ impl ToolCtx {
 
     pub fn with_network_allowlist(mut self, hosts: Vec<String>) -> Self {
         self.network_allowlist = Some(hosts);
-        self
-    }
-
-    /// Replace the filesystem backend. Used by tests that need a fake
-    /// backend and, later, by the spine when wiring up an ACP client.
-    pub fn with_fs(mut self, fs: Arc<dyn FsBackend>) -> Self {
-        self.fs = fs;
         self
     }
 }

@@ -1,21 +1,23 @@
 //! Swappable filesystem backend for the read/write/edit tools.
 //!
-//! Today every tool talks to `std::fs` directly. That keeps the code simple,
-//! but it means a future delegation target (e.g. an ACP client exposing the
-//! editor's unsaved-buffer state via `fs/read_text_file`/`fs/write_text_file`)
-//! would have to rewrite five tool bodies to plug in.
-//!
-//! `FsBackend` is the seam. The default [`LocalFs`] is a 1:1 pass-through to
-//! `std::fs`, so every existing caller behaves byte-for-byte identically
-//! until something swaps the `Arc` in [`crate::tools::ToolCtx`].
+//! `FsBackend` is the seam behind the read/write/edit tools. Two impls:
+//! [`LocalFs`] (direct `std::fs`, the default) and [`BufferedFs`] (an in-memory
+//! buffer the spine supplies for delegated ops — reads serve it, writes are
+//! captured into `final_content` instead of touching disk).
 //!
 //! Method set is intentionally minimal and driven by what the five tool files
 //! (`read.rs`, `write.rs`, `edit/replace.rs`, `edit/append.rs`,
 //! `edit/prepend.rs`) actually call today. No speculative methods (no
 //! `read_dir`, no `metadata`).
+//!
+//! Today every tool talks to `std::fs` directly. That keeps the code simple,
+//! but it means a future delegation target (e.g. an ACP client exposing the
+//! editor's unsaved-buffer state via `fs/read_text_file`/`fs/write_text_file`)
+//! would have to rewrite five tool bodies to plug in.
 
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 /// The set of filesystem operations the read/write/edit tools need.
 ///
@@ -47,6 +49,12 @@ pub trait FsBackend: Send + Sync {
     /// Whether `path` currently exists on the filesystem. Mirrors
     /// [`std::path::Path::exists`].
     fn exists(&self, path: &Path) -> bool;
+
+    /// Delegated writes only: the bytes the tool wrote, drained on read.
+    /// `LocalFs` (real disk) never captures — this defaults to `None`.
+    fn captured_write(&self) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 /// Default `FsBackend` — a direct pass-through to `std::fs::*`. Byte-for-byte
@@ -85,6 +93,62 @@ impl FsBackend for LocalFs {
 
     fn exists(&self, path: &Path) -> bool {
         path.exists()
+    }
+}
+
+/// In-memory backend for a delegated fs op. Serves the spine-supplied buffer for
+/// reads and captures the tool's write instead of hitting disk. Exactly one file
+/// is in play per hand call, so it ignores the path argument and serves its one blob.
+pub struct BufferedFs {
+    #[allow(dead_code)] // kept for debugging/trace; content is the source of truth
+    path: PathBuf,
+    content: Option<Vec<u8>>,
+    captured: Mutex<Option<Vec<u8>>>,
+}
+
+impl BufferedFs {
+    pub fn new(path: PathBuf, content: Option<Vec<u8>>) -> Self {
+        Self {
+            path,
+            content,
+            captured: Mutex::new(None),
+        }
+    }
+}
+
+impl FsBackend for BufferedFs {
+    fn read_to_string(&self, _path: &Path) -> std::io::Result<String> {
+        match &self.content {
+            Some(b) => String::from_utf8(b.clone()).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "non-utf8 buffer")
+            }),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no prefetched buffer",
+            )),
+        }
+    }
+    fn read_bytes_prefix(&self, _path: &Path, len: usize) -> std::io::Result<Vec<u8>> {
+        match &self.content {
+            Some(b) => Ok(b.iter().take(len).copied().collect()),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no prefetched buffer",
+            )),
+        }
+    }
+    fn write(&self, _path: &Path, contents: &[u8]) -> std::io::Result<()> {
+        *self.captured.lock().unwrap() = Some(contents.to_vec());
+        Ok(())
+    }
+    fn create_dir_all(&self, _path: &Path) -> std::io::Result<()> {
+        Ok(()) // no-op: the editor creates the file on write_text_file
+    }
+    fn exists(&self, _path: &Path) -> bool {
+        self.content.is_some()
+    }
+    fn captured_write(&self) -> Option<Vec<u8>> {
+        self.captured.lock().unwrap().take()
     }
 }
 
@@ -139,5 +203,35 @@ mod tests {
         let fs = LocalFs;
         let err = fs.read_to_string(&dir.path().join("nope.txt")).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn buffered_fs_serves_prefetch_and_captures_writes() {
+        use std::path::Path;
+        let fs = BufferedFs::new(Path::new("/ws/a.rs").to_path_buf(), Some(b"hello".to_vec()));
+        assert_eq!(fs.read_to_string(Path::new("/ws/a.rs")).unwrap(), "hello");
+        assert_eq!(
+            fs.read_bytes_prefix(Path::new("/ws/a.rs"), 3).unwrap(),
+            b"hel"
+        );
+        assert!(fs.exists(Path::new("/ws/a.rs")));
+        assert!(fs.captured_write().is_none());
+
+        fs.write(Path::new("/ws/a.rs"), b"NEW").unwrap();
+        assert_eq!(fs.captured_write().as_deref(), Some(&b"NEW"[..]));
+        assert!(fs.captured_write().is_none(), "captured_write drains once");
+    }
+
+    #[test]
+    fn buffered_fs_new_file_reports_absent() {
+        use std::path::Path;
+        let fs = BufferedFs::new(Path::new("/ws/new.rs").to_path_buf(), None);
+        assert!(!fs.exists(Path::new("/ws/new.rs")));
+        assert!(fs.read_to_string(Path::new("/ws/new.rs")).is_err());
+    }
+
+    #[test]
+    fn local_fs_captured_write_is_none() {
+        assert!(LocalFs.captured_write().is_none());
     }
 }
