@@ -18,6 +18,7 @@ use crate::git::Repos;
 use crate::proto::gait::log::v1::UnlockItem;
 use crate::proto::Recorder;
 use crate::sandbox::{NetworkPolicy, SandboxScope};
+use crate::tools::fs_backend::{BufferedFs, FsBackend, LocalFs};
 use crate::tools::{builtin_tools, ToolCtx};
 use gait_proto::gait::sandbox::v1::{
     hand_response, network_scope::Mode, DaemonRecordProto, Feedback, HandError, HandResponse,
@@ -147,9 +148,10 @@ pub async fn run_hand(config: HandConfig) {
             config.gait_dir.clone(),
             config.session.clone(),
         );
-        // Extract the network allowlist from the Impulse scope so webfetch
-        // can enforce host-level filtering (the kernel SBPL allows all outbound
-        // when Hosts mode is set — the app-level check closes the gap).
+        ctx.fs = select_fs(&impulse); // BufferedFs (delegated) or LocalFs (disk)
+                                      // Extract the network allowlist from the Impulse scope so webfetch
+                                      // can enforce host-level filtering (the kernel SBPL allows all outbound
+                                      // when Hosts mode is set — the app-level check closes the gap).
         if let Some(s) = impulse.requested.as_ref() {
             if let Some(n) = s.network.as_ref() {
                 if let Ok(gait_proto::gait::sandbox::v1::network_scope::Mode::Hosts) =
@@ -161,6 +163,7 @@ pub async fn run_hand(config: HandConfig) {
         }
         ctx
     };
+    let fs_handle = std::sync::Arc::clone(&ctx.fs);
     let tools = builtin_tools(ctx, vec![], vec![], vec![], Repos::production());
     let tool = match tools.iter().find(|t| t.name() == config.tool) {
         Some(t) => t,
@@ -298,12 +301,16 @@ pub async fn run_hand(config: HandConfig) {
             pbjson_types::Value { kind: None }
         });
 
+    let final_content = fs_handle
+        .captured_write()
+        .map(|b| String::from_utf8_lossy(&b).into_owned());
+
     let feedback = Feedback {
         result: Some(result_proto),
         events: rec.take_buffer(),
         denied,
         daemon: daemon_record,
-        final_content: None,
+        final_content,
     };
     respond(hand_response::Outcome::Feedback(feedback));
 }
@@ -339,5 +346,52 @@ pub fn build_scope_from_impulse(impulse: &Impulse) -> SandboxScope {
         writable: s.writable.iter().map(PathBuf::from).collect(),
         read_all,
         network,
+    }
+}
+
+/// Pick the fs backend for this hand call: `BufferedFs` when the spine supplied a
+/// prefetch (delegated mode), else `LocalFs` (disk — unchanged behavior).
+fn select_fs(impulse: &Impulse) -> std::sync::Arc<dyn FsBackend> {
+    match &impulse.prefetch {
+        Some(pf) => std::sync::Arc::new(BufferedFs::new(
+            std::path::PathBuf::from(&pf.path),
+            pf.content.clone().map(|s| s.into_bytes()),
+        )),
+        None => std::sync::Arc::new(LocalFs),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn select_fs_uses_buffered_when_prefetch_present() {
+        use gait_proto::gait::sandbox::v1::{Impulse, Prefetch};
+        let with = Impulse {
+            tool: "read".into(),
+            args: None,
+            cwd: String::new(),
+            requested: None,
+            prefetch: Some(Prefetch {
+                path: "/ws/a.rs".into(),
+                content: Some("buf".into()),
+            }),
+        };
+        assert_eq!(
+            select_fs(&with)
+                .read_to_string(std::path::Path::new("/ws/a.rs"))
+                .unwrap(),
+            "buf"
+        );
+
+        let without = Impulse {
+            prefetch: None,
+            ..with.clone()
+        };
+        // LocalFs on a path that doesn't exist errors — proves it is NOT BufferedFs.
+        assert!(select_fs(&without)
+            .read_to_string(std::path::Path::new("/ws/a.rs"))
+            .is_err());
     }
 }
