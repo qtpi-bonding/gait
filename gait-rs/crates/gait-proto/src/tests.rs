@@ -198,6 +198,7 @@ fn impulse_round_trips_via_binary_prost() {
         cwd: "/repo".into(),
         args: None,
         requested: None,
+        prefetch: None,
     };
 
     let bytes = prost::Message::encode_to_vec(&impulse);
@@ -234,6 +235,7 @@ fn feedback_carries_value_and_events() {
         events: vec![event],
         denied: None,
         daemon: None,
+        final_content: None,
     };
 
     let bytes = prost::Message::encode_to_vec(&feedback);
@@ -349,4 +351,33 @@ fn hand_response_round_trips_both_arms() {
         Some(hand_response::Outcome::Error(e)) => assert_eq!(e.message, "boom"),
         other => panic!("expected Error, got {other:?}"),
     }
+}
+
+#[test]
+fn impulse_prefetch_and_feedback_final_content_roundtrip() {
+    use crate::gait::sandbox::v1::{Feedback, Impulse, Prefetch};
+    use prost::Message;
+
+    let imp = Impulse {
+        tool: "read".into(),
+        args: None,
+        cwd: String::new(),
+        requested: None,
+        prefetch: Some(Prefetch {
+            path: "/ws/a.rs".into(),
+            content: Some("buf".into()),
+        }),
+    };
+    let round = Impulse::decode(imp.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(round.prefetch.unwrap().content.as_deref(), Some("buf"));
+
+    let fb = Feedback {
+        result: None,
+        events: vec![],
+        denied: None,
+        daemon: None,
+        final_content: Some("new".into()),
+    };
+    let round = Feedback::decode(fb.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(round.final_content.as_deref(), Some("new"));
 }

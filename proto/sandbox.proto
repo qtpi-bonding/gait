@@ -6,11 +6,17 @@ import "google/protobuf/struct.proto";
 import "log.proto";
 
 // Sent brain→hand: one tool invocation request.
+// Spine-supplied editor buffer for a delegated fs op. Present ⇒ delegated mode.
+message Prefetch {
+  string path = 1;
+  optional string content = 2;  // absent = new file (delegate returned Ok(None))
+}
 message Impulse {
   string tool = 1;
   google.protobuf.Struct args = 2;
   string cwd = 3;
   Scope requested = 4;
+  optional Prefetch prefetch = 5;
 }
 
 // Sent hand→brain: one tool invocation response.
@@ -19,6 +25,7 @@ message Feedback {
   repeated gait.log.v1.Event events = 2;
   optional gait.log.v1.UnlockItem denied = 3;  // set when the hand signals a seal denial (Phase 2c)
   optional DaemonRecordProto daemon = 5;        // set when the hand spawned a background daemon
+  optional string final_content = 6;  // delegated write/edit: tool's final file content
 }
 
 // Metadata for a daemon spawned by the shell tool (detached=true).

@@ -303,6 +303,7 @@ pub async fn run_hand(config: HandConfig) {
         events: rec.take_buffer(),
         denied,
         daemon: daemon_record,
+        final_content: None,
     };
     respond(hand_response::Outcome::Feedback(feedback));
 }

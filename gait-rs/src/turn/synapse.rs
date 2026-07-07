@@ -114,6 +114,7 @@ impl Synapse for RelaySynapse {
                     args: Some(args_struct),
                     cwd: String::new(), // spine reads cwd from session for hands
                     requested: None,    // spine re-derives scope via bound_request
+                    prefetch: None,     // no delegation from this code path
                 },
             )),
         };
@@ -234,6 +235,7 @@ mod tests {
                     events: vec![],
                     denied: None,
                     daemon: None,
+                    final_content: None,
                 })),
             };
             nerve::write_signal(&mut w, &canned).await.unwrap();

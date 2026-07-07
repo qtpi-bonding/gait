@@ -87,6 +87,7 @@ pub async fn run_tool_as_spine(
         args: impulse.args,
         cwd,
         requested: Some(requested),
+        prefetch: None,
     };
     let bytes = impulse_with_scope.encode_to_vec();
 

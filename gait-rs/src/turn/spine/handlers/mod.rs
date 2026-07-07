@@ -44,6 +44,7 @@ pub(super) fn feedback_result(value: serde_json::Value) -> Feedback {
         events: vec![],
         denied: None,
         daemon: None,
+        final_content: None,
     }
 }
 
@@ -56,6 +57,7 @@ pub fn error_feedback(msg: &str) -> Feedback {
         events: vec![],
         denied: None,
         daemon: None,
+        final_content: None,
     }
 }
 
