@@ -12,7 +12,7 @@ The name is a backronym: **g**AI**t**. Also just a word for the way something mo
 - **macOS (Apple Silicon or Intel) or Linux.** The sandbox is kernel-enforced per platform — Seatbelt on macOS, Landlock on Linux — and works out of the box on Apple Silicon. Windows is untested and not currently supported.
 
   Note: the `git` CLI is **not** required at runtime — gait talks to git exclusively through `git2`/libgit2. Building from source shells out to `git rev-parse HEAD` to stamp the binary with a build hash, but degrades gracefully to `"unknown"` if `git` isn't on `PATH`.
-- An **API key** for at least one model provider (Anthropic, OpenAI, MiniMax, etc. — see [Providers](#providers)). Add it after install with `gait auth add <provider>`.
+- An **API key** for at least one model provider (Anthropic, OpenAI, MiniMax, etc. — see [Providers](#providers)). Add it after install with `gait auth add <provider>`. No key is needed if you're running a local model via Ollama or LM Studio — see [Local models](#local-models-ollama--lm-studio).
 
 ---
 
@@ -672,8 +672,41 @@ Format: `provider/model-id`
 | `togetherai` | `togetherai/...` |
 | `fireworks` | `fireworks/...` |
 | `perplexity` | `perplexity/...` |
+| `ollama` | `ollama/llama3` |
+| `lmstudio` | `lmstudio/qwen2.5-coder` |
 
 Run `gait models` to list what's actually available for your configured credentials.
+
+### Local models (Ollama / LM Studio)
+
+`ollama` and `lmstudio` talk to a local OpenAI-compatible server — no API key or
+`gait auth add` required.
+
+```bash
+# 1. Start your local server (Ollama example)
+ollama serve
+ollama pull llama3
+
+# 2. Point gait at it
+gait --model ollama/llama3 "explain this repo"
+# or set it as the default:
+#   "model": "ollama/llama3"   in gait.jsonc
+```
+
+Defaults assume the standard local ports:
+
+| Provider | Default base URL |
+|---|---|
+| `ollama` | `http://localhost:11434/v1` |
+| `lmstudio` | `http://localhost:1234/v1` |
+
+Running on a different host or port (remote box, Docker, custom config)? Override
+with an env var, `{PROVIDER}_BASE_URL`:
+
+```bash
+export OLLAMA_BASE_URL=http://192.168.1.50:11500/v1
+export LMSTUDIO_BASE_URL=http://my-gpu-box:1234/v1
+```
 
 ---
 
