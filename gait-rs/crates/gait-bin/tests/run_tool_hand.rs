@@ -42,6 +42,7 @@ fn run_tool_executes_read_in_subprocess() {
                 hosts: vec![],
             }),
         }),
+        prefetch: None,
     };
     let impulse_bytes = impulse.encode_to_vec();
 

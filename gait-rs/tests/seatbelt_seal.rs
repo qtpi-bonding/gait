@@ -156,6 +156,7 @@ mod confined_read_tests {
                     hosts: vec![],
                 }),
             }),
+            prefetch: None,
         }
     }
 
@@ -223,6 +224,7 @@ mod confined_read_tests {
                     hosts: vec![],
                 }),
             }),
+            prefetch: None,
         };
         let fb = run_hand(&cb, "read", impulse);
         let result = feedback_string(&fb);
