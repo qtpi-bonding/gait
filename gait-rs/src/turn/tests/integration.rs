@@ -2408,3 +2408,78 @@ async fn run_turn_primitive_drives_one_turn_with_mock_provider() {
         result
     );
 }
+
+/// Delegated read must serve the editor buffer, NOT disk. Seed disk with
+/// different bytes to prove the buffer wins. Requires the built binary.
+#[tokio::test]
+#[ignore = "requires `gait` binary; build with `cargo build -p gait-bin`"]
+async fn delegated_read_serves_buffer_not_disk() {
+    use std::path::Path;
+    use std::sync::Arc;
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+    std::fs::write(ws.path().join("a.rs"), b"DISK CONTENT").unwrap();
+
+    struct Fake;
+    #[async_trait::async_trait]
+    impl crate::embed::FsDelegate for Fake {
+        async fn read_text_file(&self, _p: &Path) -> anyhow::Result<Option<String>> {
+            Ok(Some("BUFFER CONTENT".into()))
+        }
+        async fn write_text_file(&self, _p: &Path, _c: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    let exe = std::env::var("CARGO_BIN_EXE_gait")
+        .expect("CARGO_BIN_EXE_gait must be set (build gait-bin first: `cargo build -p gait-bin`)");
+    let mut s = pbjson_types::Struct::default();
+    s.fields.insert(
+        "file_path".into(),
+        pbjson_types::Value {
+            kind: Some(pbjson_types::value::Kind::StringValue("a.rs".into())),
+        },
+    );
+    let impulse = gait_proto::gait::sandbox::v1::Impulse {
+        tool: "read".into(),
+        args: Some(s),
+        cwd: String::new(),
+        requested: None,
+        prefetch: None,
+    };
+    let group = crate::process::establish(None);
+    // This test calls run_tool_as_spine directly (no real brain process), but hand
+    // enrollment requires a real leader process to already be registered (the
+    // hand joins the leader's OS process group via setpgid). Stand in with a
+    // short-lived dummy "brain" so the group has a genuine, joinable leader.
+    let mut leader_cmd = std::process::Command::new("sleep");
+    leader_cmd.arg("30");
+    let mut dummy_leader = group
+        .spawn_enrolled(leader_cmd)
+        .expect("spawn dummy leader");
+    let feedback = crate::turn::spine::run_tool_as_spine(
+        impulse,
+        &crate::config::SandboxConfig::default(),
+        ws.path(),
+        ws.path(),
+        "sess-deleg-01",
+        false, // sandbox off keeps the test portable
+        Path::new(&exe),
+        group,
+        Some(Arc::new(Fake) as Arc<dyn crate::embed::FsDelegate>),
+    )
+    .await;
+
+    let _ = dummy_leader.kill();
+    let _ = dummy_leader.wait();
+
+    let rendered = serde_json::to_string(&feedback.result).unwrap();
+    assert!(
+        rendered.contains("BUFFER CONTENT"),
+        "delegated read must serve buffer: {rendered}"
+    );
+    assert!(
+        !rendered.contains("DISK CONTENT"),
+        "delegated read must NOT serve disk: {rendered}"
+    );
+}
