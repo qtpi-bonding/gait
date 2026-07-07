@@ -42,6 +42,21 @@ pub struct LoopConfig {
     pub initial_git: Option<crate::turn::GitSnapshot>,
     pub daemons: Vec<(String, i32, bool, String)>,
 }
+/// Embedder-supplied bridge to an editor's live buffers (ACP `fs/read_text_file`
+/// / `fs/write_text_file`). Injected via [`BrainLaunch::fs_delegate`]; `None`
+/// (CLI/REPL default) means "no delegation — tools use real disk".
+///
+/// Defined here (the embed surface), NOT in `turn::spine`, so embedders never
+/// name the sealed mechanism (`no_spine_in_repl` boundary).
+#[async_trait::async_trait]
+pub trait FsDelegate: Send + Sync {
+    /// Live buffer for `path`. `Ok(None)` = no buffer/file (a new file) — benign,
+    /// never fails the tool. `Err` = transport/editor failure — fails the tool.
+    async fn read_text_file(&self, path: &std::path::Path) -> anyhow::Result<Option<String>>;
+    /// Apply `content` to `path`'s buffer (create if absent) and persist. Returns
+    /// only after the editor saved to disk (keeps gait's checkpoint correct).
+    async fn write_text_file(&self, path: &std::path::Path, content: &str) -> anyhow::Result<()>;
+}
 
 /// All driver-supplied args that `relay_brain_turn` needs for one brain spawn.
 /// Returned by `TurnDriver::brain_launch()`; consumed by `run_loop`.
@@ -68,8 +83,9 @@ pub struct BrainLaunch {
     pub profile_inputs: crate::turn::spine::ProfileInputs,
     /// Optional cascade group handle string (pgid or cgroup path) from a parent spine.
     pub cascade_group_arg: Option<String>,
+    /// Editor fs bridge for delegated read/write/edit. `None` = disk (CLI/REPL).
+    pub fs_delegate: Option<std::sync::Arc<dyn FsDelegate>>,
 }
-
 impl BrainLaunch {
     /// Construct a `BrainLaunch` without naming `ProfileInputs` in the call site.
     /// `gait-repl` uses this so it doesn't import the sealed `turn::spine` type.
@@ -98,6 +114,7 @@ impl BrainLaunch {
             auto,
             max_iter,
             cascade_group_arg,
+            fs_delegate: None,
             profile_inputs: crate::turn::spine::ProfileInputs {
                 agent_name,
                 model_override,
@@ -480,4 +497,35 @@ pub async fn run_one_off_turn(
     sink.results
         .pop()
         .ok_or_else(|| anyhow::anyhow!("model returned no structured result"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::sync::Arc;
+
+    /// Compile-time + behavior test: the trait is `dyn`-usable (object-safe via
+    /// `async_trait::async_trait`) and `read_text_file` returns `Ok(None)` /
+    /// `Ok(Some(_))` correctly. Required by the fs-delegation seam: every embedder
+    /// that injects an `FsDelegate` stores it as `Arc<dyn FsDelegate>`.
+    #[tokio::test]
+    async fn fs_delegate_is_dyn_object_safe() {
+        use async_trait::async_trait;
+
+        struct Fake;
+        #[async_trait]
+        impl super::FsDelegate for Fake {
+            async fn read_text_file(&self, _p: &Path) -> anyhow::Result<Option<String>> {
+                Ok(Some("x".into()))
+            }
+            async fn write_text_file(&self, _p: &Path, _c: &str) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+        let d: Arc<dyn super::FsDelegate> = Arc::new(Fake);
+        assert_eq!(
+            d.read_text_file(Path::new("/a")).await.unwrap().as_deref(),
+            Some("x")
+        );
+    }
 }
