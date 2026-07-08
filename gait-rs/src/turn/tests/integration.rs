@@ -2409,10 +2409,32 @@ async fn run_turn_primitive_drives_one_turn_with_mock_provider() {
     );
 }
 
+/// Resolve the built `gait` binary for tests that spawn a real hand.
+/// Prefers the cargo-injected `CARGO_BIN_EXE_gait` (only set when the test's
+/// own crate owns the bin — which gait-core does NOT), else derives it from
+/// this test executable's location (`target/<profile>/deps/<test>` → the
+/// sibling `gait` two levels up). Returns None when no binary is present so
+/// callers can skip instead of panicking.
+fn gait_bin_path() -> Option<std::path::PathBuf> {
+    if let Ok(p) = std::env::var("CARGO_BIN_EXE_gait") {
+        let pb = std::path::PathBuf::from(p);
+        if pb.exists() {
+            return Some(pb);
+        }
+    }
+    let exe = std::env::current_exe().ok()?;
+    let bin = exe.parent()?.parent()?.join("gait");
+    bin.exists().then_some(bin)
+}
+
 /// Delegated read must serve the editor buffer, NOT disk. Seed disk with
-/// different bytes to prove the buffer wins. Requires the built binary.
+/// different bytes to prove the buffer wins. Runs whenever the `gait` binary
+/// has been built (any prior `cargo build`/`cargo test` of the workspace);
+/// self-skips otherwise so a lone `cargo test -p gait-core` never fails.
+// Skip diagnostic goes to stderr so the reason surfaces under `--nocapture`;
+// the crate otherwise denies print_stderr per the I/O-boundary invariant.
+#[allow(clippy::print_stderr)]
 #[tokio::test]
-#[ignore = "requires `gait` binary; build with `cargo build -p gait-bin`"]
 async fn delegated_read_serves_buffer_not_disk() {
     use std::path::Path;
     use std::sync::Arc;
@@ -2431,8 +2453,13 @@ async fn delegated_read_serves_buffer_not_disk() {
         }
     }
 
-    let exe = std::env::var("CARGO_BIN_EXE_gait")
-        .expect("CARGO_BIN_EXE_gait must be set (build gait-bin first: `cargo build -p gait-bin`)");
+    let Some(exe) = gait_bin_path() else {
+        eprintln!(
+            "skipping delegated_read_serves_buffer_not_disk: `gait` binary not built \
+             (run `cargo build -p gait-bin`)"
+        );
+        return;
+    };
     let mut s = pbjson_types::Struct::default();
     s.fields.insert(
         "file_path".into(),
@@ -2464,7 +2491,7 @@ async fn delegated_read_serves_buffer_not_disk() {
         ws.path(),
         "sess-deleg-01",
         false, // sandbox off keeps the test portable
-        Path::new(&exe),
+        &exe,
         group,
         Some(Arc::new(Fake) as Arc<dyn crate::embed::FsDelegate>),
     )
