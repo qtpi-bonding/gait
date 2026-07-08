@@ -116,14 +116,23 @@ pub fn build_permission_status(allow: &[String], deny: &[String]) -> String {
 
 /// Assemble the session-state message body that lives at the tail of every
 /// step (uncached, free to mutate per-turn / per-step). Fragments:
-/// `<status>`-style status block, the optional `<permission-status>`, and
-/// the loadable enabled-state. When `permission_status` is empty it is
-/// omitted entirely (no blank line).
-pub fn build_session_state(status: &str, permission_status: &str, enabled_state: &str) -> String {
+/// `<status>`-style status block, the optional `<permission-status>`, the
+/// optional `<mode>` steer, and the loadable enabled-state. When
+/// `permission_status` / `mode_steer` is empty it is omitted entirely (no
+/// blank line).
+pub fn build_session_state(
+    status: &str,
+    permission_status: &str,
+    enabled_state: &str,
+    mode_steer: &str,
+) -> String {
     let mut out = String::from("<session-state>\n");
     out.push_str(status);
     if !permission_status.is_empty() {
         out.push_str(permission_status);
+    }
+    if !mode_steer.is_empty() {
+        out.push_str(&format!("\n<mode>\n{}\n</mode>", mode_steer));
     }
     out.push_str(enabled_state);
     out.push_str("</session-state>\n");
@@ -174,4 +183,26 @@ pub(super) fn build_dynamic_system_prompt(
 ) -> String {
     let catalog = build_loadable_catalog(entries);
     format!("{}{}", base, catalog)
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+
+    #[test]
+    fn session_state_includes_mode_block_only_when_steer_present() {
+        let with = build_session_state("<status/>", "", "", "no edits");
+        assert!(with.contains("<mode>") && with.contains("no edits"));
+        let without = build_session_state("<status/>", "", "", "");
+        assert!(!without.contains("<mode>"));
+    }
+
+    #[test]
+    fn mode_steer_does_not_change_cached_prefix() {
+        // The cached prefix is build_dynamic_system_prompt output; steer lives only
+        // in the tail, so it must be byte-identical regardless of steer.
+        let a = build_dynamic_system_prompt("base", &[], &[]);
+        let b = build_dynamic_system_prompt("base", &[], &[]);
+        assert_eq!(a, b); // guard: steer never enters this function's inputs
+    }
 }

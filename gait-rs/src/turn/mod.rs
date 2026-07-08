@@ -10,7 +10,7 @@ use crate::types::{
 use crate::proto::events;
 use crate::proto::Recorder;
 use crate::session::retrace::{
-    active_mutations, active_unlock_state, apply_cascade, coalesce, run_projection,
+    active_mode, active_mutations, active_unlock_state, apply_cascade, coalesce, run_projection,
     ActiveRawMessages,
 };
 
@@ -533,10 +533,19 @@ pub async fn run_turn(
         // never invalidates the cached [tools + system + history] prefix.
         let permission_status = prompt::build_permission_status(&effective_allow, &deny);
         let enabled_state = prompt::build_loadable_enabled_state(&state.entries);
+        let mode_steer = {
+            let evs = ingestor.events()?;
+            let mut muts = active_mutations(&evs);
+            apply_cascade(&mut muts, &evs);
+            active_mode(&evs, &muts)
+                .map(|m| m.steer)
+                .unwrap_or_default()
+        };
         let session_state_body = prompt::build_session_state(
             state.turn_ctx.as_deref().unwrap_or(""),
             &permission_status,
             &enabled_state,
+            &mode_steer,
         );
         // `outgoing` is the per-step message list sent to the LLM (rebuilt from
         // the log every step under the log-first design).
