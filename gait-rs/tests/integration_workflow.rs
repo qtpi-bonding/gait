@@ -284,6 +284,7 @@ async fn prompt_subturn_publishes_to_workflow_channel() {
             cascade_group_arg: None,
             cascade: None,
             profile: None,
+            fs_delegate: None,
             vars: VarContext {
                 workflow_id: "wf1".into(),
                 session_id: session_id.into(),
