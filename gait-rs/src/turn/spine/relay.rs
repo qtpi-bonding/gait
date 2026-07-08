@@ -215,7 +215,17 @@ pub async fn relay_brain_turn(
         let events = log.events();
         let head_hash = repos.codebase.head_hash(codebase).unwrap_or_default();
         let dirty_files = repos.codebase.dirty_files(codebase);
-        let profile = lifecycle::build_turn_profile(gait_dir, codebase, profile_inputs);
+        let mut profile = lifecycle::build_turn_profile(gait_dir, codebase, profile_inputs);
+        {
+            // Mode model overlay: applied here (before serializing to the brain)
+            // rather than inside build_turn_profile, so the live-log fold stays
+            // in the spine and the pure profile-build fn stays log-free.
+            use crate::session::retrace::{active_mode, active_mutations, apply_cascade};
+            let mut muts = active_mutations(&events);
+            apply_cascade(&mut muts, &events);
+            let mode_model = active_mode(&events, &muts).and_then(|m| m.model);
+            profile.model = crate::profile::apply_mode_model(profile.model, mode_model);
+        }
         let profile_json = serde_json::to_string(&profile).unwrap_or_else(|_| "null".to_string());
         let daemons = {
             use crate::session::daemons::{active, is_alive};

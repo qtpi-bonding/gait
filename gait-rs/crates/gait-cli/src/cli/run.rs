@@ -19,6 +19,8 @@ pub struct RunArgs {
     pub model_override: Option<String>,
     #[arg(long = "agent")]
     pub agent_name: Option<String>,
+    #[arg(long = "mode")]
+    pub mode: Option<String>,
     #[arg(long = "result-schema")]
     pub result_schema_path: Option<String>,
     #[arg(long, action = clap::ArgAction::Append)]
@@ -157,6 +159,16 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
         config.sandbox.on = false;
     } else if args.sandbox {
         config.sandbox.on = true;
+    }
+
+    // `--mode <name>` activates a mode overlay for this run by appending a
+    // `Mode` event to the session log before the turn starts.
+    if let Some(name) = &args.mode {
+        let log_path = gait_core::session::live::log_path(&gait_dir, &session_id);
+        if let Err(e) = gait_core::modes::activate_mode(&log_path, &gait_dir, name) {
+            eprintln!("[gait] --mode {name}: {e}");
+            std::process::exit(1);
+        }
     }
 
     // Build profile to extract provider name for API key resolution.

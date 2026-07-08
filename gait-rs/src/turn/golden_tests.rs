@@ -261,7 +261,8 @@ fn body_kind(b: &event::Body) -> BodyKind {
         | payload::Kind::TurnComplete(_)
         | payload::Kind::ClarifyReply(_)
         | payload::Kind::InformReply(_)
-        | payload::Kind::UnlockReply(_) => BodyKind::Unknown,
+        | payload::Kind::UnlockReply(_)
+        | payload::Kind::Mode(_) => BodyKind::Unknown,
     }
 }
 

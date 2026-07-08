@@ -78,6 +78,12 @@ pub(crate) fn merge_deny(config_deny: &[String], agent_deny: &[String]) -> Vec<S
     out
 }
 
+/// Overlay a mode's optional model onto the base model string. Pure; the caller
+/// applies it to `Profile.model` before `resolve()` binds the provider.
+pub fn apply_mode_model(base: String, mode_model: Option<String>) -> String {
+    mode_model.unwrap_or(base)
+}
+
 /// Inputs for `build_workflow_node_profile` — the slim set of per-node knobs
 /// a workflow runner passes when constructing an LLM-facing `Profile` for one
 /// prompt node. Keeps the runner free of profile-layer assumptions.
@@ -593,6 +599,17 @@ mod tests {
         );
         // config denies survive; agent denies are added; no duplicates
         assert_eq!(d, vec!["shell:rm *", "shell:curl *", "edit:secrets/*"]);
+    }
+
+    #[test]
+    fn mode_model_overlays_profile_before_resolve() {
+        // Given an ActiveMode carrying model="anthropic/x", the built Profile.model
+        // is "anthropic/x"; with mode model=None or cleared, it is the base model.
+        let base = "anthropic/base".to_string();
+        let overlaid = apply_mode_model(base.clone(), Some("anthropic/x".into()));
+        assert_eq!(overlaid, "anthropic/x");
+        let kept = apply_mode_model(base.clone(), None);
+        assert_eq!(kept, base);
     }
 
     #[test]

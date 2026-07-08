@@ -21,6 +21,7 @@ pub mod daemon_exit;
 pub mod embed;
 pub mod launch;
 pub mod models_meta;
+pub mod modes;
 pub mod port;
 pub mod profile;
 pub mod proto;

@@ -28,6 +28,12 @@ pub const COMMANDS: &[ReplCommand] = &[
         group: "general",
     },
     ReplCommand {
+        slug: "/mode",
+        aliases: &[],
+        desc: "Show/switch operating mode",
+        group: "general",
+    },
+    ReplCommand {
         slug: "/sh",
         aliases: &["/e"],
         desc: "One-off: describe a command, optionally run it",

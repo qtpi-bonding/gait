@@ -240,12 +240,18 @@ pub(crate) fn init(
     // session/once grants, folded mutation-aware from the full session via the
     // ActivePermissions projection. Replaces the once-approval temp file entirely:
     // once/session approvals now live in the Log as PermissionsReply events.
-    let effective_allow: Vec<String> = {
+    let (effective_allow, deny): (Vec<String>, Vec<String>) = {
         let evs = ingestor.events()?;
         let mut muts = retrace::active_mutations(&evs);
         retrace::apply_cascade(&mut muts, &evs);
         let seed: std::collections::HashSet<String> = allow.iter().cloned().collect();
-        crate::permissions::grants::effective_allow(seed, &evs, &muts)
+        let ea = crate::permissions::grants::effective_allow(seed, &evs, &muts);
+        let mode = retrace::active_mode(&evs, &muts);
+        crate::permissions::grants::overlay_mode_permissions(
+            ea,
+            deny,
+            mode.as_ref().and_then(|m| m.permissions.as_ref()),
+        )
     };
 
     // Detect resume after permission approval: last two transcript events are

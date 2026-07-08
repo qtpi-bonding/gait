@@ -110,6 +110,23 @@ pub fn model_change(model: &str) -> pb::event::Body {
     }))
 }
 
+/// Active-mode overlay event (replay-complete, LWW-folded by `ActiveMode`).
+/// `name == ""` is the clear sentinel (back to default/no overlay).
+pub fn mode(
+    name: &str,
+    allow: Vec<String>,
+    deny: Vec<String>,
+    model: Option<String>,
+    steer: &str,
+) -> pb::event::Body {
+    wire::body(pb::payload::Kind::Mode(pb::Mode {
+        name: name.to_string(),
+        permissions: Some(pb::PermissionPolicy { allow, deny }),
+        model,
+        steer: steer.to_string(),
+    }))
+}
+
 /// `ToolCall` — id → call_id, `Value` input → `Struct`.
 pub fn tool_call(call_id: String, name: String, input: &serde_json::Value) -> pb::event::Body {
     wire::body(pb::payload::Kind::ToolCall(pb::ToolCall {
@@ -945,6 +962,32 @@ mod tests {
                 assert_eq!(item.scope, pb::Scope::Once as i32);
             }
             other => panic!("expected UnlockReply payload, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mode_event_roundtrips_and_empty_name_is_clear_sentinel() {
+        let body = super::mode("plan", vec![], vec!["write".into()], None, "no edits");
+        match body {
+            crate::proto::gait::log::v1::event::Body::Payload(p) => match p.kind {
+                Some(pb::payload::Kind::Mode(m)) => {
+                    assert_eq!(m.name, "plan");
+                    assert_eq!(m.permissions.unwrap().deny, vec!["write".to_string()]);
+                    assert!(m.model.is_none());
+                    assert_eq!(m.steer, "no edits");
+                }
+                other => panic!("expected Mode, got {other:?}"),
+            },
+            other => panic!("expected Payload body, got {other:?}"),
+        }
+
+        let clear = super::mode("", vec![], vec![], None, "");
+        match clear {
+            crate::proto::gait::log::v1::event::Body::Payload(p) => match p.kind {
+                Some(pb::payload::Kind::Mode(m)) => assert_eq!(m.name, ""),
+                other => panic!("expected Mode, got {other:?}"),
+            },
+            other => panic!("expected Payload body, got {other:?}"),
         }
     }
 
