@@ -25,6 +25,9 @@ pub struct NodeContext<'a> {
     pub cascade_group_arg: Option<String>,
     pub cascade: Option<&'a gait_core::embed::CascadeKillHandle>,
     pub profile: Option<&'a crate::single_prompt::ProfileOverride>,
+    /// Optional editor-buffer delegate injected by a workflow-level consumer
+    /// (e.g. a future ACP adapter). `None` for every real workflow node.
+    pub fs_delegate: Option<std::sync::Arc<dyn gait_core::embed::FsDelegate>>,
 }
 
 pub async fn exec_shell_node(
@@ -135,6 +138,7 @@ mod tests {
             cascade_group_arg: None,
             cascade: None,
             profile: None,
+            fs_delegate: None,
             vars: crate::vars::VarContext {
                 workflow_id: "wf1".into(),
                 session_id: "s1".into(),

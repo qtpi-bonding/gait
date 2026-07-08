@@ -47,6 +47,9 @@ pub struct WorkflowRunOpts {
     pub cascade_group_arg: Option<String>,
     pub cascade: Option<gait_core::embed::CascadeKillHandle>,
     pub profile: Option<crate::single_prompt::ProfileOverride>,
+    /// Optional editor-buffer delegate injected by a workflow-level consumer
+    /// (e.g. a future ACP adapter). `None` for REPL/CLI/workflow nodes.
+    pub fs_delegate: Option<std::sync::Arc<dyn gait_core::embed::FsDelegate>>,
 }
 
 type NodeFuture =
@@ -96,6 +99,7 @@ struct RunOverrides {
     cascade_group_arg: Option<String>,
     cascade: Option<gait_core::embed::CascadeKillHandle>,
     profile: Option<crate::single_prompt::ProfileOverride>,
+    fs_delegate: Option<std::sync::Arc<dyn gait_core::embed::FsDelegate>>,
 }
 
 /// Derive the node type name from its proto body oneof.
@@ -277,6 +281,7 @@ async fn run_single_node(params: NodeRunParams) -> anyhow::Result<(String, NodeT
             cascade_group_arg: params.overrides.cascade_group_arg.clone(),
             cascade: params.overrides.cascade.as_ref(),
             profile: params.overrides.profile.as_ref(),
+            fs_delegate: params.overrides.fs_delegate.clone(),
         };
 
         // Interactive/absent-prompt nodes are run outside FuturesUnordered with
@@ -479,6 +484,7 @@ async fn handle_open_node(
             cascade_group_arg: overrides.cascade_group_arg.clone(),
             cascade: overrides.cascade.as_ref(),
             profile: overrides.profile.as_ref(),
+            fs_delegate: overrides.fs_delegate.clone(),
         };
         let p = match node.body.as_ref() {
             Some(node::Body::Prompt(p)) => p,
@@ -507,6 +513,7 @@ pub async fn run_workflow(
         cascade_group_arg,
         cascade,
         profile,
+        fs_delegate,
     } = opts;
     // The run id doubles as the SESSION_ID env value nodes see and as the default
     // workflow_id; it is NOT a git session — the run owns its own branch/worktree
@@ -526,6 +533,7 @@ pub async fn run_workflow(
         cascade_group_arg,
         cascade,
         profile,
+        fs_delegate,
     };
 
     let repos = gait_core::git::Repos::production();

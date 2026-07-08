@@ -301,6 +301,7 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
             cascade_group_arg: args.cascade_group.clone(),
             cascade: Some(kill_handle.clone()),
             profile: Some(profile_override),
+            fs_delegate: None,
         },
         &mut sink,
         &mut gait_workflow::observer::NullObserver,

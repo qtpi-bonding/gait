@@ -51,6 +51,9 @@ struct PromptNodeDriver {
     /// teardown SIGTERM. Kept `Some(..)` (not `None`) so a future in-process
     /// caller of this driver doesn't silently lose cancellation.
     cancel: tokio_util::sync::CancellationToken,
+    /// Optional editor-buffer delegate injected by a workflow-level consumer
+    /// (e.g. a future ACP adapter). `None` for REPL/CLI/workflow nodes.
+    fs_delegate: Option<std::sync::Arc<dyn gait_core::embed::FsDelegate>>,
 }
 
 #[async_trait::async_trait(?Send)]
@@ -68,7 +71,7 @@ impl TurnDriver for PromptNodeDriver {
         let gait_bin = std::env::var_os("GAIT_BRAIN_EXE")
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gait")));
-        BrainLaunch::new(
+        let mut bl = BrainLaunch::new(
             self.codebase.clone(),
             api_key,
             gait_bin,
@@ -82,7 +85,9 @@ impl TurnDriver for PromptNodeDriver {
             self.allow.clone(),
             self.deny.clone(),
             self.result_schema.clone(),
-        )
+        );
+        bl.fs_delegate = self.fs_delegate.clone();
+        bl
     }
 
     fn turn_config(&mut self) -> LoopConfig {
@@ -320,6 +325,7 @@ pub async fn exec_prompt_node(
         deny,
         max_iter,
         cancel: tokio_util::sync::CancellationToken::new(),
+        fs_delegate: ctx.fs_delegate.clone(),
     };
 
     if !p.prompt.is_empty() {
@@ -450,9 +456,48 @@ mod tests {
             deny: vec![],
             max_iter: None,
             cancel: tokio_util::sync::CancellationToken::new(),
+            fs_delegate: None,
         };
         // Verify the driver holds the paths used to construct BrainLaunch.
         assert_eq!(driver.codebase, PathBuf::from("/tmp/cb"));
+    }
+
+    #[tokio::test]
+    async fn brain_launch_carries_injected_fs_delegate() {
+        use std::path::Path;
+        use std::sync::Arc;
+
+        struct Fake;
+        #[async_trait::async_trait]
+        impl gait_core::embed::FsDelegate for Fake {
+            async fn read_text_file(&self, _p: &Path) -> anyhow::Result<Option<String>> {
+                Ok(Some("BUFFER".into()))
+            }
+            async fn write_text_file(&self, _p: &Path, _c: &str) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+
+        let driver = PromptNodeDriver {
+            codebase: std::path::PathBuf::from("/tmp/x"),
+            model: "anthropic/claude".into(),
+            allow: vec![],
+            agent_name: None,
+            result_schema: None,
+            auto: false,
+            sandbox_cfg: gait_core::config::SandboxConfig::default(),
+            sandbox_on: true,
+            cascade_group_arg: None,
+            deny: vec![],
+            max_iter: None,
+            cancel: tokio_util::sync::CancellationToken::new(),
+            fs_delegate: Some(Arc::new(Fake) as Arc<dyn gait_core::embed::FsDelegate>),
+        };
+        let bl = driver.brain_launch("sess-x");
+        assert!(
+            bl.fs_delegate.is_some(),
+            "brain_launch must carry the injected delegate"
+        );
     }
 
     #[test]

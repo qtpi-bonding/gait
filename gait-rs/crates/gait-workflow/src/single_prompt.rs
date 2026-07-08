@@ -47,6 +47,9 @@ pub struct SinglePromptOpts {
     pub cascade: Option<gait_core::embed::CascadeKillHandle>,
     /// The CLI's resolved profile (model/allow/deny/agent/max_iter/schema).
     pub profile: Option<ProfileOverride>,
+    /// Optional editor-buffer delegate injected by a workflow-level consumer
+    /// (e.g. a future ACP adapter). `None` for REPL/CLI/workflow nodes.
+    pub fs_delegate: Option<std::sync::Arc<dyn gait_core::embed::FsDelegate>>,
 }
 
 impl Default for SinglePromptOpts {
@@ -62,6 +65,7 @@ impl Default for SinglePromptOpts {
             cascade_group_arg: None,
             cascade: None,
             profile: None,
+            fs_delegate: None,
         }
     }
 }
@@ -84,6 +88,7 @@ pub async fn single_prompt_run(
         cascade_group_arg,
         cascade,
         profile,
+        fs_delegate,
     } = opts;
     let node = Node {
         id: "chat".into(),
@@ -111,6 +116,7 @@ pub async fn single_prompt_run(
             cascade_group_arg,
             cascade,
             profile,
+            fs_delegate,
         },
         sink,
         observer,
