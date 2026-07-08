@@ -336,6 +336,56 @@ impl TurnSource for ReplSource {
                 continue;
             }
 
+            // /mode [name] — show available modes + active one (no arg), or
+            // activate/clear a mode by appending a `Mode` event to the log.
+            // `/mode` / `/mode default` clears back to the no-op baseline.
+            if let Some(rest) = line.strip_prefix("/mode") {
+                let arg = rest.trim();
+                if arg.is_empty() {
+                    let modes = gait_core::modes::list_modes(&self.gait_dir);
+                    let active = gait_core::session::Ingestor::from_session(
+                        &self.gait_dir,
+                        &self.session_id,
+                    )
+                    .events()
+                    .ok()
+                    .map(|evs| {
+                        let muts = gait_core::session::retrace::active_mutations(&evs);
+                        gait_core::session::retrace::active_mode(&evs, &muts)
+                    })
+                    .unwrap_or(None);
+                    self.shared.borrow_mut().builder.write_raw(&format!(
+                        "active mode: {}\r\n",
+                        active
+                            .map(|m| m.name)
+                            .filter(|n| !n.is_empty())
+                            .unwrap_or_else(|| "default".to_string()),
+                    ));
+                    for m in &modes {
+                        self.shared
+                            .borrow_mut()
+                            .builder
+                            .write_raw(&format!("  {m}\r\n"));
+                    }
+                    continue;
+                }
+                match gait_core::modes::activate_mode(&self.log_path(), &self.gait_dir, arg) {
+                    Ok(()) => {
+                        self.shared
+                            .borrow_mut()
+                            .builder
+                            .write_raw(&format!("mode set to {arg}\r\n"));
+                    }
+                    Err(e) => {
+                        self.shared
+                            .borrow_mut()
+                            .builder
+                            .write_raw(&format!("[gait] /mode: {e}\r\n"));
+                    }
+                }
+                continue;
+            }
+
             // /sh <desc> (alias /e) — one-off: ask the model for {cmd|output}, render it,
             // append to shell history so $(N) recall works. Calls gait_core's
             // run_one_off_turn directly (gait-repl may not depend on gait-cli).

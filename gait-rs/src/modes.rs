@@ -63,6 +63,11 @@ pub fn activate_mode(log_path: &Path, gait_dir: &Path, name: &str) -> anyhow::Re
         let p = m.permissions.unwrap_or_default();
         crate::proto::events::mode(&m.name, p.allow, p.deny, m.model, &m.steer)
     };
+    // Callers may activate a mode before the session's worktree/log directory
+    // has otherwise been created (e.g. `--mode` on a brand-new CLI session).
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     crate::proto::wire::append(log_path, body)?;
     Ok(())
 }
