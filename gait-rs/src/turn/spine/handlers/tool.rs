@@ -255,9 +255,10 @@ pub async fn run_tool_as_spine(
     if let (Some(del), Some(path)) = (fs_delegate.as_ref(), delegated_path.as_ref()) {
         if let Some(fc) = final_content {
             if let Err(e) = del.write_text_file(path, &fc).await {
-                let _ = std::fs::remove_dir_all(&jail);
+                // jail was already removed after wait_with_output above; the write
+                // happens post-hand, so there is nothing left to clean here.
+                // fail-write: provisional success withheld.
                 return error_feedback(&format!("fs delegate write failed: {e}"));
-                // fail-write: provisional success withheld
             }
         }
     }
