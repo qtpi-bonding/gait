@@ -350,6 +350,31 @@ impl Projection for ActiveCwd {
     }
 }
 
+/// Active-mode overlay — LWW over `Mode` events across the full session.
+/// Standalone (like `ActiveCwd`): NO checkpoint override, so an `Agent`
+/// re-baseline never clears it (finding #1). `None` = default / no overlay.
+pub(crate) struct ActiveMode;
+impl Projection for ActiveMode {
+    type State = Option<pb::Mode>;
+    fn seed(&self) -> Self::State {
+        None
+    }
+    fn apply(&self, state: &mut Self::State, _ev: &Event, kind: &payload::Kind) {
+        if let payload::Kind::Mode(m) = kind {
+            *state = if m.name.is_empty() {
+                None
+            } else {
+                Some(m.clone())
+            };
+        }
+    }
+}
+
+/// Fold the active mode overlay from the mutation-applied full-session stream.
+pub fn active_mode(events: &[Event], muts: &HashMap<String, MutationState>) -> Option<pb::Mode> {
+    run_projection(&ActiveMode, events, muts)
+}
+
 /// Coalescing phase for the `ActiveMessages` fold: tracks whether the previous
 /// folded event was part of a consecutive tool-call run or tool-result run, so
 /// consecutive `ToolCall`s collapse into one assistant message and consecutive
