@@ -36,11 +36,6 @@ pub fn resolve_codebase(args: &[String]) -> std::path::PathBuf {
 // cmd_brain deleted (Task 5): dispatch now via gait_core::__dispatch_role.
 // `gait run` routes through cmd_run → single_prompt_run → run_workflow (spec-06 §3).
 
-/// Dispatch a hidden role subcommand (`__brain` or `__run-tool`) via `gait_core::__dispatch_role`.
-pub async fn cmd_dispatch_role(argv: &[String]) {
-    gait_core::__dispatch_role(argv).await;
-}
-
 pub async fn cmd_run(argv: &[String]) {
     let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
         eprintln!("[gait] {e}");

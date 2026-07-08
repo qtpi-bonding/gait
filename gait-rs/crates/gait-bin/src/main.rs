@@ -13,7 +13,10 @@ async fn main() {
     // a crate DAG inversion (gait-core can't import from gait-bin).
     let raw: Vec<String> = std::env::args().collect();
     if raw.len() >= 2 && gait_core::is_role_argv(&raw[1..]) {
-        gait_cli::cli::args::cmd_dispatch_role(&raw[1..]).await;
+        // Sealed re-entry is fully owned by core: __dispatch_role parses its
+        // own argv and runs run_brain/run_hand/cmd_daemon_exit. main() is a
+        // pure OS entry stub here — no gait-cli hop (de-cycled 2026-07-08).
+        gait_core::__dispatch_role(&raw[1..]).await;
         return;
     }
 
