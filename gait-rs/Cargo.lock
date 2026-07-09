@@ -1108,6 +1108,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "gait-ops"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gait-core",
+ "gait-proto",
+ "git2",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "gait-proto"
 version = "0.1.0"
 dependencies = [
