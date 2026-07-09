@@ -54,6 +54,12 @@ struct PromptNodeDriver {
     /// Optional editor-buffer delegate injected by a workflow-level consumer
     /// (e.g. a future ACP adapter). `None` for REPL/CLI/workflow nodes.
     fs_delegate: Option<std::sync::Arc<dyn gait_core::embed::FsDelegate>>,
+    /// The real error from the most recent `run_loop` turn failure, captured by
+    /// `on_turn_error` (which used to discard it). `run_prompt_node`'s literal-
+    /// prompt branch prefers this over the generic "no TurnResult" fallback when
+    /// present, so the actual failure reaches the caller instead of a
+    /// contentless placeholder.
+    last_error: Option<anyhow::Error>,
 }
 
 #[async_trait::async_trait(?Send)]
@@ -105,13 +111,20 @@ impl TurnDriver for PromptNodeDriver {
     }
 
     /// A prompt-node turn error surfaces as a node error, not as a loop break —
-    /// return `Continue` so the loop propagates the error via `run_loop`'s
-    /// `anyhow::Result`.
+    /// `Continue` lets `run_loop`'s one-shot source exhaust normally so the loop
+    /// returns `Ok(())`. That means the error does NOT reach the caller via
+    /// `run_loop`'s `anyhow::Result` (there's nowhere left for `?` to propagate
+    /// it through once the loop itself returns `Ok`) — it used to just vanish
+    /// here. We stash it on `self` and surface it on the sink as a diagnostic so
+    /// it's visible in the stream immediately, and `run_prompt_node` prefers it
+    /// over the generic "no TurnResult" fallback once `run_loop` returns.
     fn on_turn_error(
         &mut self,
-        _sink: &mut dyn TurnSink,
-        _e: anyhow::Error,
+        sink: &mut dyn TurnSink,
+        e: anyhow::Error,
     ) -> std::ops::ControlFlow<()> {
+        sink.diagnostic(Diag::Error, &format!("turn failed: {e}"));
+        self.last_error = Some(e);
         std::ops::ControlFlow::Continue(())
     }
 }
@@ -326,6 +339,7 @@ pub async fn exec_prompt_node(
         max_iter,
         cancel: tokio_util::sync::CancellationToken::new(),
         fs_delegate: ctx.fs_delegate.clone(),
+        last_error: None,
     };
 
     if !p.prompt.is_empty() {
@@ -349,10 +363,17 @@ pub async fn exec_prompt_node(
         )
         .await?;
 
-        // Map sink.result -> NodeOutput
-        let turn_result = sink
-            .result
-            .ok_or_else(|| anyhow::anyhow!("run_loop returned without a TurnResult"))?;
+        // Map sink.result -> NodeOutput. `driver.last_error` is set by
+        // `on_turn_error` whenever `run_loop` swallowed a real turn failure to
+        // let its one-shot source exhaust normally (see that fn's doc comment)
+        // — prefer it over the generic fallback so the actual cause reaches the
+        // caller instead of a contentless "no TurnResult" message.
+        let turn_result = sink.result.ok_or_else(|| {
+            driver
+                .last_error
+                .take()
+                .unwrap_or_else(|| anyhow::anyhow!("run_loop returned without a TurnResult"))
+        })?;
         Ok(map_turn_result(turn_result, &session_id))
     } else {
         // Absent prompt: interactive node. `input: None` means no live source
@@ -441,6 +462,67 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    // Regression for the swallowed-error bug: `on_turn_error` used to discard
+    // its `anyhow::Error` entirely (an unused `_e` param), so a real
+    // `relay_brain_turn` failure surfaced only as the generic, contentless
+    // "run_loop returned without a TurnResult" fallback in `run_prompt_node`.
+    // It must now (a) stash the error on the driver so that fallback can
+    // recover the real cause, and (b) push it to the sink as a diagnostic so
+    // it's visible in the stream immediately, not just after the fact.
+    #[test]
+    fn on_turn_error_captures_the_real_error_and_diagnoses_it() {
+        struct CapturingDiagSink {
+            diagnostics: Vec<(Diag, String)>,
+        }
+        impl TurnSink for CapturingDiagSink {
+            fn item(&mut self, _item: &StreamItem) {}
+            fn result(&mut self, _r: &TurnResult) {}
+            fn session_id(&mut self, _id: &str) {}
+            fn diagnostic(&mut self, level: Diag, msg: &str) {
+                self.diagnostics.push((level, msg.to_string()));
+            }
+        }
+
+        let mut driver = PromptNodeDriver {
+            codebase: PathBuf::from("/tmp/cb"),
+            model: "test/model".into(),
+            allow: vec![],
+            agent_name: None,
+            result_schema: None,
+            auto: false,
+            sandbox_cfg: gait_core::config::SandboxConfig::default(),
+            sandbox_on: true,
+            cascade_group_arg: None,
+            deny: vec![],
+            max_iter: None,
+            cancel: tokio_util::sync::CancellationToken::new(),
+            fs_delegate: None,
+            last_error: None,
+        };
+        let mut sink = CapturingDiagSink {
+            diagnostics: vec![],
+        };
+
+        let flow = driver.on_turn_error(&mut sink, anyhow::anyhow!("boom: the real cause"));
+
+        assert_eq!(
+            flow,
+            std::ops::ControlFlow::Continue(()),
+            "must still let the one-shot source exhaust normally"
+        );
+        let captured = driver
+            .last_error
+            .expect("on_turn_error must stash the real error on the driver");
+        assert!(captured.to_string().contains("boom: the real cause"));
+        assert!(
+            sink.diagnostics
+                .iter()
+                .any(|(lvl, msg)| *lvl == Diag::Error && msg.contains("boom: the real cause")),
+            "the real error must reach the sink as a diagnostic, not vanish silently: {:?}",
+            sink.diagnostics
+        );
+    }
+
     #[test]
     fn prompt_node_driver_holds_paths() {
         let driver = PromptNodeDriver {
@@ -457,6 +539,7 @@ mod tests {
             max_iter: None,
             cancel: tokio_util::sync::CancellationToken::new(),
             fs_delegate: None,
+            last_error: None,
         };
         // Verify the driver holds the paths used to construct BrainLaunch.
         assert_eq!(driver.codebase, PathBuf::from("/tmp/cb"));
@@ -492,6 +575,7 @@ mod tests {
             max_iter: None,
             cancel: tokio_util::sync::CancellationToken::new(),
             fs_delegate: Some(Arc::new(Fake) as Arc<dyn gait_core::embed::FsDelegate>),
+            last_error: None,
         };
         let bl = driver.brain_launch("sess-x");
         assert!(
