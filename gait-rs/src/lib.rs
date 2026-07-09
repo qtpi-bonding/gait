@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod gait_dir;
 pub mod git;
 pub mod harness;
 pub mod models;
