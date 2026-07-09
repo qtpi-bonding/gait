@@ -55,12 +55,22 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn round_trips_through_core_resolver() {
+        // `resolve(None, ...)` honors $GAIT_DIR before walk-up (by design), so a
+        // dev shell with $GAIT_DIR exported would otherwise short-circuit this
+        // test before it ever reaches the .gaitref walk-up being verified here.
+        let saved = std::env::var("GAIT_DIR").ok();
+        std::env::remove_var("GAIT_DIR");
         let t = tempfile::TempDir::new().unwrap();
         let repo = t.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         let gait_dir = t.path().join("home");
         std::fs::write(repo.join(".gaitref"), pointer_body(&gait_dir)).unwrap();
-        assert_eq!(gait_core::gait_dir::resolve(None, &repo).unwrap(), gait_dir);
+        let result = gait_core::gait_dir::resolve(None, &repo);
+        if let Some(v) = saved {
+            std::env::set_var("GAIT_DIR", v);
+        }
+        assert_eq!(result.unwrap(), gait_dir);
     }
 }
