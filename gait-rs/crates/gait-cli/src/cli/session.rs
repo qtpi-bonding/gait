@@ -482,15 +482,13 @@ pub struct AllowArgs {
 }
 
 pub fn cmd_allow(args: AllowArgs) {
-    use gait_core::agent_frontmatter::{resolve_markdown_context_path, MarkdownKind};
-    use gait_core::permissions::{compute_allow_decisions, AllowParams, AllowScope};
-    use gait_core::session::log::{session_state, write_permissions_reply, SessionState};
+    use gait_ops::permission::{allow as op_allow, AllowParams, AllowScope};
 
     let scope = match args.scope.as_deref() {
         Some("global") => AllowScope::Global,
         Some("agent") => AllowScope::Agent,
-        // "session" scope not yet in AllowScope; treat as Once until gait-core adds it
-        Some("session") | Some("once") | None => AllowScope::Once,
+        Some("session") => AllowScope::Session,
+        Some("once") | None => AllowScope::Once,
         Some(other) => {
             eprintln!(
                 "[gait] error: unknown --scope '{}' (expected global|agent|session|once)",
@@ -500,56 +498,24 @@ pub fn cmd_allow(args: AllowArgs) {
         }
     };
 
-    let agent_path = args
-        .agent
-        .as_deref()
-        .map(|n| resolve_markdown_context_path(&args.gait_dir, MarkdownKind::Agent, n));
-
     let params = AllowParams {
         scope,
         pattern: args.pattern,
+        agent: args.agent,
     };
 
-    let tx_path = gait_core::session::live::log_path(&args.gait_dir, &args.session_id);
-    let state = match session_state(&tx_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[gait] error: {}", e);
-            std::process::exit(1);
-        }
-    };
-    let items = match state {
-        SessionState::AwaitingPermission { items } => items,
-        _ => {
+    match op_allow(&args.gait_dir, &args.session_id, params) {
+        Ok(out) => {
             eprintln!(
-                "[gait] no pending permissions for session {}",
-                args.session_id
+                "[gait] approved {} (scope: {:?})",
+                args.session_id, out.scope
             );
-            std::process::exit(1);
         }
-    };
-    let reply_items = match compute_allow_decisions(
-        &items,
-        &params,
-        &args.gait_dir,
-        &args.session_id,
-        agent_path.as_deref(),
-    ) {
-        Ok(r) => r,
         Err(e) => {
             eprintln!("[gait] error: {}", e);
             std::process::exit(1);
         }
-    };
-
-    if let Err(e) = write_permissions_reply(&tx_path, "user", reply_items) {
-        eprintln!("[gait] error: {}", e);
-        std::process::exit(1);
     }
-    eprintln!(
-        "[gait] approved {} (scope: {:?})",
-        args.session_id, params.scope
-    );
 }
 
 #[derive(Parser, Debug)]
@@ -563,55 +529,34 @@ pub struct DenyArgs {
 }
 
 pub fn cmd_deny(args: DenyArgs) {
-    use gait_core::proto::gait::log::v1 as pb;
-    use gait_core::session::log::{session_state, write_permissions_reply, SessionState};
+    use gait_ops::permission::deny as op_deny;
 
-    let tx_path = gait_core::session::live::log_path(&args.gait_dir, &args.session_id);
-    let state = match session_state(&tx_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[gait] error: {}", e);
-            std::process::exit(1);
+    match op_deny(&args.gait_dir, &args.session_id) {
+        Ok(out) if out.reply_items.is_empty() => {
+            eprintln!(
+                "[gait] no pending permissions for session {}",
+                args.session_id
+            );
         }
-    };
-    let items = match state {
-        SessionState::AwaitingPermission { items } => items,
-        _ => {
+        Ok(out) => {
+            eprintln!(
+                "[gait] denied {} pending permission(s) for session {}",
+                out.reply_items.len(),
+                args.session_id
+            );
+        }
+        Err(gait_ops::OpError::NotFound(_)) => {
             eprintln!(
                 "[gait] no pending permissions for session {}",
                 args.session_id
             );
             std::process::exit(1);
         }
-    };
-
-    if items.is_empty() {
-        eprintln!(
-            "[gait] no pending permissions for session {}",
-            args.session_id
-        );
-        return;
+        Err(e) => {
+            eprintln!("[gait] error: {}", e);
+            std::process::exit(1);
+        }
     }
-
-    let reply: Vec<pb::PermissionsReplyItem> = items
-        .iter()
-        .map(|it| pb::PermissionsReplyItem {
-            id: it.id.clone(),
-            decision: pb::Decision::Deny as i32,
-            text: None,
-            scope: pb::Scope::Unspecified as i32,
-        })
-        .collect();
-
-    if let Err(e) = write_permissions_reply(&tx_path, "user", reply) {
-        eprintln!("[gait] error: {}", e);
-        std::process::exit(1);
-    }
-    eprintln!(
-        "[gait] denied {} pending permission(s) for session {}",
-        items.len(),
-        args.session_id
-    );
 }
 
 #[derive(Parser, Debug)]
@@ -630,106 +575,51 @@ pub struct UnlockArgs {
     pub json: bool,
 }
 
-/// Route a list of `UnlockItem`s through `SandboxGrant`. Replaces the two
-/// previously-duplicated `match item.dimension` blocks in the `Global` and
-/// `Agent` arms of `cmd_unlock` — both now share these warning semantics.
-fn persist_grant_items(
-    items: &[gait_core::proto::gait::log::v1::UnlockItem],
-    target_dir: &std::path::Path,
-) {
-    use gait_core::sandbox_grant::SandboxGrant;
-    for item in items {
-        match SandboxGrant::from_dimension(&item.dimension) {
-            Some(g) => {
-                if let Err(e) = g.apply(target_dir, &item.resource) {
-                    eprintln!("[gait] warning: could not persist grant to config: {e}");
-                }
-            }
-            None => eprintln!(
-                "[gait] warning: unknown dimension {:?}, skipping config write",
-                item.dimension
-            ),
-        }
-    }
-}
-
 pub fn cmd_unlock(args: UnlockArgs) {
-    use gait_core::proto::gait::log::v1 as pb;
-    use gait_core::session::log::{session_state, write_unlock_reply, SessionState};
+    use gait_ops::permission::{unlock as op_unlock, UnlockParams, UnlockScope};
 
     let scope = match args.scope.as_str() {
-        "global" => pb::Scope::Global,
-        "agent" => pb::Scope::Agent,
-        "session" => pb::Scope::Session,
-        _ => pb::Scope::Once,
+        "global" => UnlockScope::Global,
+        "agent" => UnlockScope::Agent,
+        "session" => UnlockScope::Session,
+        _ => UnlockScope::Once,
     };
 
-    let tx_path = gait_core::session::live::log_path(&args.gait_dir, &args.session_id);
+    let params = UnlockParams {
+        gait_dir: args.gait_dir.clone(),
+        session_id: args.session_id.clone(),
+        scope,
+        agent: args.agent.clone(),
+    };
 
-    let state = match session_state(&tx_path) {
-        Ok(s) => s,
+    match op_unlock(params) {
+        Ok(out) => {
+            for w in &out.warnings {
+                eprintln!("[gait] warning: {w}");
+            }
+            if out.reply_items.is_empty() {
+                eprintln!(
+                    "[gait] no pending unlock items for session {}",
+                    args.session_id
+                );
+                return;
+            }
+            eprintln!(
+                "[gait] unlocked {} item(s) for session {} (scope: {})",
+                out.reply_items.len(),
+                args.session_id,
+                args.scope,
+            );
+        }
+        Err(gait_ops::OpError::NotFound(_)) => {
+            eprintln!("[gait] no pending unlock for session {}", args.session_id);
+            std::process::exit(1);
+        }
         Err(e) => {
             eprintln!("[gait] error: {}", e);
             std::process::exit(1);
         }
-    };
-
-    let items = match state {
-        SessionState::AwaitingUnlock { items } => items,
-        _ => {
-            eprintln!("[gait] no pending unlock for session {}", args.session_id);
-            std::process::exit(1);
-        }
-    };
-
-    if items.is_empty() {
-        eprintln!(
-            "[gait] no pending unlock items for session {}",
-            args.session_id
-        );
-        return;
     }
-
-    // For global grants, persist to config first
-    if matches!(scope, pb::Scope::Global) {
-        persist_grant_items(&items, &args.gait_dir);
-    } else if matches!(scope, pb::Scope::Agent) {
-        // Agent-scoped: write to agent gait_dir sandbox block
-        if let Some(agent_name) = &args.agent {
-            use gait_core::agent_frontmatter::{resolve_markdown_context_path, MarkdownKind};
-            let agent_path =
-                resolve_markdown_context_path(&args.gait_dir, MarkdownKind::Agent, agent_name);
-            if let Some(parent) = agent_path.parent() {
-                persist_grant_items(&items, parent);
-            }
-        } else {
-            eprintln!(
-                "[gait] warning: --agent required for agent-scope grants; writing to log only"
-            );
-        }
-    }
-
-    // Always write the UnlockReply to the log
-    let reply_items: Vec<pb::UnlockReplyItem> = items
-        .iter()
-        .map(|it| pb::UnlockReplyItem {
-            id: it.id.clone(),
-            decision: pb::Decision::Allow as i32,
-            scope: scope as i32,
-        })
-        .collect();
-
-    if let Err(e) = write_unlock_reply(&tx_path, "user", reply_items) {
-        eprintln!("[gait] error: {}", e);
-        std::process::exit(1);
-    }
-
-    eprintln!(
-        "[gait] unlocked {} item(s) for session {} (scope: {})",
-        items.len(),
-        args.session_id,
-        args.scope,
-    );
 }
 
 #[derive(Parser, Debug)]

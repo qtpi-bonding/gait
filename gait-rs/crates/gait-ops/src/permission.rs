@@ -1,1 +1,758 @@
-//! Permission verbs: `allow`, `deny`, `unlock` — filled in by later tasks.
+//! Permission verbs: `allow`, `deny`, `unlock`.
+//!
+//! Sources: `crates/gait-cli/src/cli/session.rs` (`cmd_allow`, `cmd_deny`,
+//! `cmd_unlock`). The core decision logic already lives in gait-core; these
+//! ops wrap it and own the log/config writes. `unlock` has a distinct
+//! per-scope branch (once/session write only the reply; global/agent also
+//! persist a `SandboxGrant` via `persist_grant_items(parent)`; agent first
+//! resolves the target via
+//! `agent_frontmatter::resolve_markdown_context_path(MarkdownKind::Agent, name)`)
+//! — do not flatten it.
+use crate::OpError;
+use std::path::{Path, PathBuf};
+
+// -----------------------------------------------------------------------------
+// allow
+// -----------------------------------------------------------------------------
+
+/// The scope of an approval grant. Mirrors `gait_core::permissions::AllowScope`,
+/// extended here with `Session` so callers can express the once/session branch
+/// the CLI's `--scope session` already exposes. `Once` is the default — matches
+/// the CLI's default `--scope once`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AllowScope {
+    /// Save pattern to `gait.jsonc` (`allow[]`).
+    Global,
+    /// Save pattern to the agent's frontmatter (`allow[]`).
+    Agent,
+    /// Log-only, lifetime = session. No file write.
+    Session,
+    /// Log-only, lifetime = one turn. No file write.
+    #[default]
+    Once,
+}
+
+/// Parameters for [`allow`]. Mirrors the `AllowArgs` clap glue fields the CLI
+/// uses; the op itself is clap-free. `scope` defaults to `AllowScope::Once`
+/// to match the CLI's `--scope once` default.
+#[derive(Debug, Clone, Default)]
+pub struct AllowParams {
+    pub scope: AllowScope,
+    pub pattern: Option<String>,
+    /// Required when `scope == AllowScope::Agent`. Resolved against
+    /// `<gait_dir>/agents/<name>/AGENT.md`.
+    pub agent: Option<String>,
+}
+
+/// Outcome returned by [`allow`]. Carries the reply items the op wrote (so the
+/// adapter can render them under `--json`) and the scope it stamped on each.
+#[derive(Debug)]
+pub struct AllowOutcome {
+    pub reply_items: Vec<gait_core::proto::gait::log::v1::PermissionsReplyItem>,
+    pub scope: AllowScope,
+}
+
+/// Approve all pending permission requests for `session_id`. Wraps
+/// `gait_core::permissions::compute_allow_decisions` + `write_permissions_reply`.
+pub fn allow(
+    gait_dir: &Path,
+    session_id: &str,
+    params: AllowParams,
+) -> Result<AllowOutcome, OpError> {
+    use gait_core::agent_frontmatter::{resolve_markdown_context_path, MarkdownKind};
+    use gait_core::permissions::{
+        compute_allow_decisions, AllowParams as CoreAllowParams, AllowScope as CoreAllowScope,
+    };
+    use gait_core::session::log::{session_state, write_permissions_reply, SessionState};
+
+    let core_scope = match params.scope {
+        AllowScope::Global => CoreAllowScope::Global,
+        AllowScope::Agent => CoreAllowScope::Agent,
+        // "session" is a CLI-only concept today (AllowScope has no Session arm);
+        // persist as Once on the core side and label the log event Session.
+        AllowScope::Session | AllowScope::Once => CoreAllowScope::Once,
+    };
+
+    let agent_path = params
+        .agent
+        .as_deref()
+        .map(|n| resolve_markdown_context_path(gait_dir, MarkdownKind::Agent, n));
+
+    let core_params = CoreAllowParams {
+        scope: core_scope,
+        pattern: params.pattern.clone(),
+    };
+
+    let tx_path = gait_core::session::live::log_path(gait_dir, session_id);
+    let state = session_state(&tx_path).map_err(anyhow::Error::from)?;
+    let items = match state {
+        SessionState::AwaitingPermission { items } => items,
+        _ => {
+            return Err(OpError::NotFound(format!(
+                "no pending permissions for session {session_id}"
+            )));
+        }
+    };
+
+    let mut reply_items = compute_allow_decisions(
+        &items,
+        &core_params,
+        gait_dir,
+        session_id,
+        agent_path.as_deref(),
+    )?;
+
+    // `compute_allow_decisions` stamps the persisted scope into each reply
+    // item. For our CLI-side `Session` scope, rewrite the scope tag so the log
+    // event reads as a session-scoped grant (the only divergence from the
+    // core Once stamp).
+    if params.scope == AllowScope::Session {
+        let target = gait_core::proto::gait::log::v1::Scope::Session as i32;
+        for item in &mut reply_items {
+            item.scope = target;
+        }
+    }
+
+    write_permissions_reply(&tx_path, "user", reply_items.clone()).map_err(anyhow::Error::from)?;
+
+    Ok(AllowOutcome {
+        reply_items,
+        scope: params.scope,
+    })
+}
+
+// -----------------------------------------------------------------------------
+// deny
+// -----------------------------------------------------------------------------
+
+/// Outcome returned by [`deny`].
+#[derive(Debug)]
+pub struct DenyOutcome {
+    pub reply_items: Vec<gait_core::proto::gait::log::v1::PermissionsReplyItem>,
+}
+
+/// Deny all pending permission requests for `session_id`. Builds deny reply
+/// items and writes the `PermissionsReply` event to the session log.
+pub fn deny(gait_dir: &Path, session_id: &str) -> Result<DenyOutcome, OpError> {
+    use gait_core::proto::gait::log::v1 as pb;
+    use gait_core::session::log::{session_state, write_permissions_reply, SessionState};
+
+    let tx_path = gait_core::session::live::log_path(gait_dir, session_id);
+    let state = session_state(&tx_path).map_err(anyhow::Error::from)?;
+    let items = match state {
+        SessionState::AwaitingPermission { items } => items,
+        _ => {
+            return Err(OpError::NotFound(format!(
+                "no pending permissions for session {session_id}"
+            )));
+        }
+    };
+
+    let reply: Vec<pb::PermissionsReplyItem> = items
+        .iter()
+        .map(|it| pb::PermissionsReplyItem {
+            id: it.id.clone(),
+            decision: pb::Decision::Deny as i32,
+            text: None,
+            scope: pb::Scope::Unspecified as i32,
+        })
+        .collect();
+
+    if reply.is_empty() {
+        return Ok(DenyOutcome { reply_items: reply });
+    }
+
+    write_permissions_reply(&tx_path, "user", reply.clone()).map_err(anyhow::Error::from)?;
+    Ok(DenyOutcome { reply_items: reply })
+}
+
+// -----------------------------------------------------------------------------
+// unlock
+// -----------------------------------------------------------------------------
+
+/// Scope of an unlock grant. `Once` is the default — matches the CLI's
+/// default `--scope once`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UnlockScope {
+    /// Log-only, lifetime = one turn. No file write.
+    #[default]
+    Once,
+    /// Log-only, lifetime = session. No file write.
+    Session,
+    /// Persist to `<gait_dir>/gait.jsonc` `sandbox.*` lists.
+    Global,
+    /// Persist to the agent's frontmatter (resolved under `gait_dir`).
+    Agent,
+}
+
+/// Parameters for [`unlock`].
+#[derive(Debug, Clone, Default)]
+pub struct UnlockParams {
+    pub gait_dir: PathBuf,
+    pub session_id: String,
+    pub scope: UnlockScope,
+    /// Required when `scope == UnlockScope::Agent`. Resolves against
+    /// `<gait_dir>/agents/<name>/AGENT.md`.
+    pub agent: Option<String>,
+}
+
+/// Outcome returned by [`unlock`]. Carries the reply items, the count of
+/// grants persisted to config/frontmatter (0 for once/session), and any
+/// non-fatal warnings the persistence step emitted.
+#[derive(Debug)]
+pub struct UnlockOutcome {
+    pub reply_items: Vec<gait_core::proto::gait::log::v1::UnlockReplyItem>,
+    pub persisted_grants: usize,
+    pub warnings: Vec<String>,
+}
+
+/// Approve all pending unlock requests for `session_id`. The branch fan-out
+/// from the original `cmd_unlock` is preserved:
+///
+/// * `Once` / `Session` — write only the `UnlockReply` to the log.
+/// * `Global` — persist every item as a `SandboxGrant` to `gait.jsonc`,
+///   then write the reply.
+/// * `Agent` — first resolve `<gait_dir>/agents/<name>/AGENT.md` via
+///   `resolve_markdown_context_path`, then persist every item as a
+///   `SandboxGrant` against the agent file's parent dir, then write the
+///   reply. Without `--agent`, the grant is silently log-only (matching
+///   the original CLI warning behavior).
+pub fn unlock(params: UnlockParams) -> Result<UnlockOutcome, OpError> {
+    use gait_core::proto::gait::log::v1 as pb;
+    use gait_core::session::log::{session_state, write_unlock_reply, SessionState};
+
+    let scope_pb = match params.scope {
+        UnlockScope::Once => pb::Scope::Once,
+        UnlockScope::Session => pb::Scope::Session,
+        UnlockScope::Global => pb::Scope::Global,
+        UnlockScope::Agent => pb::Scope::Agent,
+    };
+
+    let tx_path = gait_core::session::live::log_path(&params.gait_dir, &params.session_id);
+    let state = session_state(&tx_path).map_err(anyhow::Error::from)?;
+    let items = match state {
+        SessionState::AwaitingUnlock { items } => items,
+        _ => {
+            return Err(OpError::NotFound(format!(
+                "no pending unlock for session {}",
+                params.session_id
+            )));
+        }
+    };
+
+    if items.is_empty() {
+        return Ok(UnlockOutcome {
+            reply_items: Vec::new(),
+            persisted_grants: 0,
+            warnings: Vec::new(),
+        });
+    }
+
+    let mut warnings: Vec<String> = Vec::new();
+    let mut persisted_grants: usize = 0;
+
+    // Per-scope persistence side-effects (file writes happen here, never as a
+    // print — Wall 1). The op captures warnings instead of printing.
+    match params.scope {
+        UnlockScope::Once | UnlockScope::Session => {
+            // log-only; nothing to persist.
+        }
+        UnlockScope::Global => {
+            persisted_grants = persist_grant_items(&items, &params.gait_dir, &mut warnings);
+        }
+        UnlockScope::Agent => {
+            if let Some(agent_name) = params.agent.as_deref() {
+                use gait_core::agent_frontmatter::{resolve_markdown_context_path, MarkdownKind};
+                let agent_path = resolve_markdown_context_path(
+                    &params.gait_dir,
+                    MarkdownKind::Agent,
+                    agent_name,
+                );
+                if let Some(parent) = agent_path.parent() {
+                    persisted_grants = persist_grant_items(&items, parent, &mut warnings);
+                }
+            } else {
+                warnings.push(
+                    "--agent required for agent-scope grants; writing to log only".to_string(),
+                );
+            }
+        }
+    }
+
+    // Always write the UnlockReply to the log.
+    let reply_items: Vec<pb::UnlockReplyItem> = items
+        .iter()
+        .map(|it| pb::UnlockReplyItem {
+            id: it.id.clone(),
+            decision: pb::Decision::Allow as i32,
+            scope: scope_pb as i32,
+        })
+        .collect();
+
+    write_unlock_reply(&tx_path, "user", reply_items.clone()).map_err(anyhow::Error::from)?;
+
+    Ok(UnlockOutcome {
+        reply_items,
+        persisted_grants,
+        warnings,
+    })
+}
+
+/// Route a list of `UnlockItem`s through `SandboxGrant`. Each item's
+/// `dimension` is mapped to a `SandboxGrant` arm and persisted via
+/// `SandboxGrant::apply(target_dir, resource)`. Failures and unknown
+/// dimensions are captured as warnings on the supplied buffer instead of
+/// printed (Wall 1). Returns the number of grants successfully persisted.
+fn persist_grant_items(
+    items: &[gait_core::proto::gait::log::v1::UnlockItem],
+    target_dir: &Path,
+    warnings: &mut Vec<String>,
+) -> usize {
+    use gait_core::sandbox_grant::SandboxGrant;
+
+    let mut ok = 0;
+    for item in items {
+        match SandboxGrant::from_dimension(&item.dimension) {
+            Some(g) => {
+                if let Err(e) = g.apply(target_dir, &item.resource) {
+                    warnings.push(format!("could not persist grant to config: {e}"));
+                } else {
+                    ok += 1;
+                }
+            }
+            None => warnings.push(format!(
+                "unknown dimension {:?}, skipping config write",
+                item.dimension
+            )),
+        }
+    }
+    ok
+}
+
+// -----------------------------------------------------------------------------
+// tests
+// -----------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gait_core::proto::gait::log::v1::{event, payload};
+    use gait_core::proto::wire;
+    use gait_core::session::log::read_events;
+    use tempfile::TempDir;
+
+    /// Build a minimal gait-dir with `gait.jsonc` so `SandboxGrant::apply`
+    /// has something to read/write, plus a session log path ready to be
+    /// seeded with an Unlock event.
+    fn ws() -> TempDir {
+        let ws = TempDir::new().unwrap();
+        // Minimal config so config::append_* has a starting block.
+        std::fs::write(
+            ws.path().join("gait.jsonc"),
+            r#"{
+  "allow": ["read"],
+  "sandbox": { "on": true, "readable": [], "writable": [], "network": false }
+}
+"#,
+        )
+        .unwrap();
+        ws
+    }
+
+    /// Seed `tx_path` with a single Permissions event carrying one item.
+    fn seed_permission(tx_path: &Path, item: gait_core::proto::gait::log::v1::PermissionItem) {
+        let body = gait_core::proto::events::permissions(&[item]);
+        wire::append(tx_path, body).unwrap();
+    }
+
+    /// Seed `tx_path` with a single Unlock event carrying one item.
+    fn seed_unlock(tx_path: &Path, item: gait_core::proto::gait::log::v1::UnlockItem) {
+        let body = gait_core::proto::events::unlock(&[item]);
+        wire::append(tx_path, body).unwrap();
+    }
+
+    fn make_session(ws: &Path, id: &str) -> std::path::PathBuf {
+        let tx_path = gait_core::session::live::log_path(ws, id);
+        std::fs::create_dir_all(tx_path.parent().unwrap()).unwrap();
+        tx_path
+    }
+
+    fn read_kind(tx_path: &Path, idx: usize) -> payload::Kind {
+        let events = read_events(tx_path).unwrap();
+        let e = events.get(idx).expect("event present");
+        match &e.body {
+            Some(event::Body::Payload(p)) => p.kind.clone().expect("kind set"),
+            other => panic!("expected payload body, got {other:?}"),
+        }
+    }
+
+    fn reload_config(ws: &Path) -> gait_core::config::GaitConfig {
+        gait_core::config::load_config(ws)
+    }
+
+    // -- allow --
+
+    #[test]
+    fn allow_writes_permissions_reply_for_pending_items() {
+        let ws = ws();
+        let tx = make_session(ws.path(), "sallow01");
+        seed_permission(
+            &tx,
+            gait_core::proto::gait::log::v1::PermissionItem {
+                id: "p1".into(),
+                tool_name: "shell".into(),
+                cmd: "cargo test".into(),
+                patterns: vec!["cargo *".into()],
+                reason: String::new(),
+                preview: None,
+                tool_args: None,
+            },
+        );
+
+        let outcome = allow(
+            ws.path(),
+            "sallow01",
+            AllowParams {
+                scope: AllowScope::Once,
+                pattern: None,
+                agent: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome.reply_items.len(), 1);
+        assert_eq!(
+            outcome.reply_items[0].decision,
+            gait_core::proto::gait::log::v1::Decision::Allow as i32,
+        );
+        assert_eq!(outcome.scope, AllowScope::Once);
+
+        // A PermissionsReply event now trails the Permissions request.
+        let kind = read_kind(&tx, 1);
+        assert!(matches!(kind, payload::Kind::PermissionsReply(_)));
+    }
+
+    #[test]
+    fn allow_session_scope_stamps_session_in_reply_item() {
+        let ws = ws();
+        let tx = make_session(ws.path(), "sallow02");
+        seed_permission(
+            &tx,
+            gait_core::proto::gait::log::v1::PermissionItem {
+                id: "p1".into(),
+                tool_name: "shell".into(),
+                cmd: "ls".into(),
+                patterns: vec!["ls".into()],
+                reason: String::new(),
+                preview: None,
+                tool_args: None,
+            },
+        );
+
+        let outcome = allow(
+            ws.path(),
+            "sallow02",
+            AllowParams {
+                scope: AllowScope::Session,
+                pattern: None,
+                agent: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            outcome.reply_items[0].scope,
+            gait_core::proto::gait::log::v1::Scope::Session as i32,
+        );
+    }
+
+    #[test]
+    fn allow_returns_not_found_when_no_pending_permissions() {
+        let ws = ws();
+        let _tx = make_session(ws.path(), "sallow03");
+        let err = allow(
+            ws.path(),
+            "sallow03",
+            AllowParams {
+                scope: AllowScope::Once,
+                pattern: None,
+                agent: None,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, OpError::NotFound(_)));
+    }
+
+    // -- deny --
+
+    #[test]
+    fn deny_writes_deny_reply_for_pending_items() {
+        let ws = ws();
+        let tx = make_session(ws.path(), "sdeny01");
+        seed_permission(
+            &tx,
+            gait_core::proto::gait::log::v1::PermissionItem {
+                id: "p1".into(),
+                tool_name: "shell".into(),
+                cmd: "rm -rf /".into(),
+                patterns: vec!["rm -rf /".into()],
+                reason: String::new(),
+                preview: None,
+                tool_args: None,
+            },
+        );
+
+        let outcome = deny(ws.path(), "sdeny01").unwrap();
+        assert_eq!(outcome.reply_items.len(), 1);
+        assert_eq!(
+            outcome.reply_items[0].decision,
+            gait_core::proto::gait::log::v1::Decision::Deny as i32,
+        );
+
+        let kind = read_kind(&tx, 1);
+        assert!(matches!(kind, payload::Kind::PermissionsReply(_)));
+    }
+
+    #[test]
+    fn deny_returns_not_found_when_no_pending_permissions() {
+        let ws = ws();
+        let _tx = make_session(ws.path(), "sdeny02");
+        let err = deny(ws.path(), "sdeny02").unwrap_err();
+        assert!(matches!(err, OpError::NotFound(_)));
+    }
+
+    // -- unlock (3 plan tests + a few extras) --
+
+    fn make_unlock_item(
+        id: &str,
+        dimension: &str,
+        resource: &str,
+    ) -> gait_core::proto::gait::log::v1::UnlockItem {
+        gait_core::proto::gait::log::v1::UnlockItem {
+            id: id.into(),
+            tool_name: "write".into(),
+            resource: resource.into(),
+            dimension: dimension.into(),
+            preview: None,
+        }
+    }
+
+    /// Test (a): once scope appends only the UnlockReply — no config change.
+    #[test]
+    fn unlock_once_appends_only_unlock_reply_no_config_change() {
+        let ws = ws();
+        let tx = make_session(ws.path(), "sunc01");
+        seed_unlock(&tx, make_unlock_item("u1", "write", "/tmp/a.txt"));
+        let config_before = std::fs::read_to_string(ws.path().join("gait.jsonc")).unwrap();
+
+        let out = unlock(UnlockParams {
+            gait_dir: ws.path().to_path_buf(),
+            session_id: "sunc01".to_string(),
+            scope: UnlockScope::Once,
+            agent: None,
+        })
+        .unwrap();
+        assert_eq!(out.reply_items.len(), 1);
+        assert_eq!(out.persisted_grants, 0);
+        assert!(out.warnings.is_empty());
+
+        // Log gained one UnlockReply event.
+        let kind = read_kind(&tx, 1);
+        assert!(matches!(kind, payload::Kind::UnlockReply(_)));
+        // gait.jsonc untouched.
+        let config_after = std::fs::read_to_string(ws.path().join("gait.jsonc")).unwrap();
+        assert_eq!(config_before, config_after);
+    }
+
+    /// Test (b): global scope also writes the sandbox grant to gait.jsonc.
+    #[test]
+    fn unlock_global_writes_config_grant() {
+        let ws = ws();
+        let tx = make_session(ws.path(), "sunc02");
+        seed_unlock(&tx, make_unlock_item("u1", "write", "/tmp/a.txt"));
+
+        let out = unlock(UnlockParams {
+            gait_dir: ws.path().to_path_buf(),
+            session_id: "sunc02".to_string(),
+            scope: UnlockScope::Global,
+            agent: None,
+        })
+        .unwrap();
+        assert_eq!(out.reply_items.len(), 1);
+        assert_eq!(out.persisted_grants, 1, "one write grant must persist");
+        assert!(
+            out.warnings.is_empty(),
+            "no warnings expected: {:?}",
+            out.warnings
+        );
+
+        // gait.jsonc now has /tmp/a.txt in sandbox.writable.
+        let sb = reload_config(ws.path()).sandbox;
+        assert!(
+            sb.writable.iter().any(|p| p == "/tmp/a.txt"),
+            "global write grant must land in sandbox.writable, got {:?}",
+            sb.writable
+        );
+
+        // Log gained UnlockReply too.
+        let kind = read_kind(&tx, 1);
+        assert!(matches!(kind, payload::Kind::UnlockReply(_)));
+    }
+
+    /// Test (c): agent scope with a name resolves the agent frontmatter path
+    /// and persists the grant into a `gait.jsonc` alongside it (parent dir =
+    /// agents/<name>/) — same `SandboxGrant::apply` sink as the global case,
+    /// just scoped to the agent's own directory rather than the gait-dir root.
+    #[test]
+    fn unlock_agent_with_name_resolves_frontmatter_and_writes_grant() {
+        let ws = ws();
+        let tx = make_session(ws.path(), "sunc03");
+        let agent_path = gait_core::agent_frontmatter::resolve_markdown_context_path(
+            ws.path(),
+            gait_core::agent_frontmatter::MarkdownKind::Agent,
+            "coder",
+        );
+        std::fs::create_dir_all(agent_path.parent().unwrap()).unwrap();
+        std::fs::write(&agent_path, "---\nallow:\n  - read\n---\n# prompt body\n").unwrap();
+
+        seed_unlock(&tx, make_unlock_item("u1", "read", "/etc/hosts"));
+
+        let out = unlock(UnlockParams {
+            gait_dir: ws.path().to_path_buf(),
+            session_id: "sunc03".to_string(),
+            scope: UnlockScope::Agent,
+            agent: Some("coder".to_string()),
+        })
+        .unwrap();
+        assert_eq!(out.persisted_grants, 1, "one read grant must persist");
+        assert!(
+            out.warnings.is_empty(),
+            "no warnings expected: {:?}",
+            out.warnings
+        );
+
+        // The grant lands in a gait.jsonc next to the agent file (the same
+        // SandboxGrant::apply sink as global, just rooted at the agent's dir).
+        let sb = reload_config(agent_path.parent().unwrap()).sandbox;
+        assert!(
+            sb.readable.iter().any(|p| p == "/etc/hosts"),
+            "agent-scope grant must land in the agent dir's sandbox.readable; got {:?}",
+            sb.readable
+        );
+
+        // Log gained UnlockReply.
+        let kind = read_kind(&tx, 1);
+        assert!(matches!(kind, payload::Kind::UnlockReply(_)));
+    }
+
+    /// Agent scope without a name captures a warning and writes the reply
+    /// log-only — matches the original CLI behavior.
+    #[test]
+    fn unlock_agent_without_name_emits_warning_no_persist() {
+        let ws = ws();
+        let tx = make_session(ws.path(), "sunc04");
+        seed_unlock(&tx, make_unlock_item("u1", "read", "/etc/hosts"));
+        let config_before = std::fs::read_to_string(ws.path().join("gait.jsonc")).unwrap();
+
+        let out = unlock(UnlockParams {
+            gait_dir: ws.path().to_path_buf(),
+            session_id: "sunc04".to_string(),
+            scope: UnlockScope::Agent,
+            agent: None,
+        })
+        .unwrap();
+        assert_eq!(out.persisted_grants, 0);
+        assert!(
+            out.warnings.iter().any(|w| w.contains("--agent required")),
+            "expected --agent warning, got {:?}",
+            out.warnings
+        );
+        let kind = read_kind(&tx, 1);
+        assert!(matches!(kind, payload::Kind::UnlockReply(_)));
+        let config_after = std::fs::read_to_string(ws.path().join("gait.jsonc")).unwrap();
+        assert_eq!(config_before, config_after);
+    }
+
+    #[test]
+    fn unlock_unknown_dimension_emits_warning_but_still_writes_reply() {
+        let ws = ws();
+        let tx = make_session(ws.path(), "sunc05");
+        seed_unlock(&tx, make_unlock_item("u1", "mystery", "/some/path"));
+
+        let out = unlock(UnlockParams {
+            gait_dir: ws.path().to_path_buf(),
+            session_id: "sunc05".to_string(),
+            scope: UnlockScope::Global,
+            agent: None,
+        })
+        .unwrap();
+        assert_eq!(out.persisted_grants, 0);
+        assert!(
+            out.warnings.iter().any(|w| w.contains("unknown dimension")),
+            "expected unknown-dimension warning, got {:?}",
+            out.warnings
+        );
+        let kind = read_kind(&tx, 1);
+        assert!(matches!(kind, payload::Kind::UnlockReply(_)));
+    }
+
+    #[test]
+    fn unlock_session_scope_writes_reply_no_config_change() {
+        let ws = ws();
+        let tx = make_session(ws.path(), "sunc06");
+        seed_unlock(&tx, make_unlock_item("u1", "write", "/tmp/x.txt"));
+        let config_before = std::fs::read_to_string(ws.path().join("gait.jsonc")).unwrap();
+
+        let out = unlock(UnlockParams {
+            gait_dir: ws.path().to_path_buf(),
+            session_id: "sunc06".to_string(),
+            scope: UnlockScope::Session,
+            agent: None,
+        })
+        .unwrap();
+        assert_eq!(out.reply_items.len(), 1);
+        assert_eq!(out.persisted_grants, 0);
+        assert_eq!(
+            out.reply_items[0].scope,
+            gait_core::proto::gait::log::v1::Scope::Session as i32,
+        );
+        let config_after = std::fs::read_to_string(ws.path().join("gait.jsonc")).unwrap();
+        assert_eq!(config_before, config_after);
+    }
+
+    #[test]
+    fn unlock_returns_not_found_when_no_pending_unlock() {
+        let ws = ws();
+        let _tx = make_session(ws.path(), "sunc07");
+        let err = unlock(UnlockParams {
+            gait_dir: ws.path().to_path_buf(),
+            session_id: "sunc07".to_string(),
+            scope: UnlockScope::Once,
+            agent: None,
+        })
+        .unwrap_err();
+        assert!(matches!(err, OpError::NotFound(_)));
+    }
+
+    #[test]
+    fn unlock_empty_pending_items_writes_no_reply_no_grants() {
+        // An empty unlock event list (no items) returns Ok with empty
+        // reply_items — matches the original CLI's "no pending unlock
+        // items" branch.
+        let ws = ws();
+        let tx = make_session(ws.path(), "sunc08");
+        let body = gait_core::proto::events::unlock(&[]);
+        wire::append(&tx, body).unwrap();
+
+        let out = unlock(UnlockParams {
+            gait_dir: ws.path().to_path_buf(),
+            session_id: "sunc08".to_string(),
+            scope: UnlockScope::Global,
+            agent: None,
+        })
+        .unwrap();
+        assert!(out.reply_items.is_empty());
+        assert_eq!(out.persisted_grants, 0);
+        // Still no events beyond the seeded empty Unlock.
+        let events = read_events(&tx).unwrap();
+        assert_eq!(events.len(), 1);
+    }
+}
