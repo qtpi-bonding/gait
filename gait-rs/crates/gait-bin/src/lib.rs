@@ -6,6 +6,7 @@ use gait_cli::cli::admin::{
 };
 use gait_cli::cli::daemons::DaemonsArgs;
 use gait_cli::cli::init::InitArgs;
+use gait_cli::cli::link::LinkArgs;
 use gait_cli::cli::session::{
     AllowArgs, DenyArgs, DiscardArgs, LoadArgs, PersistArgs, PsArgs, ReplyArgs, SessionsArgs,
     StatsArgs, StopArgs, UndoArgs, UnloadArgs, UnlockArgs,
@@ -69,6 +70,7 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     Init(InitArgs),
+    Link(LinkArgs),
     Sessions(SessionsArgs),
     Ps(PsArgs),
     Stop(StopArgs),

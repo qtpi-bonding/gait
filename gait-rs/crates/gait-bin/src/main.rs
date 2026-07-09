@@ -113,6 +113,7 @@ async fn main() {
 
     match command {
         Commands::Init(args) => gait_cli::cli::init::cmd_init(args),
+        Commands::Link(args) => gait_cli::cli::link::cmd_link(args),
         Commands::Sessions(args) => gait_cli::cli::session::cmd_sessions(args),
         Commands::Ps(args) => gait_cli::cli::session::cmd_ps(args),
         Commands::Stop(args) => gait_cli::cli::session::cmd_stop(args),
