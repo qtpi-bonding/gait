@@ -54,6 +54,10 @@ struct PromptNodeDriver {
     /// Optional editor-buffer delegate injected by a workflow-level consumer
     /// (e.g. a future ACP adapter). `None` for REPL/CLI/workflow nodes.
     fs_delegate: Option<std::sync::Arc<dyn gait_core::embed::FsDelegate>>,
+    /// Launcher-set override for the in-tree safety guard (design §7), sourced
+    /// from `--allow-intree`. `false` for REPL/ACP; the degenerate CLI node
+    /// forwards the real flag value.
+    allow_intree: bool,
     /// The real error from the most recent `run_loop` turn failure, captured by
     /// `on_turn_error` (which used to discard it). `run_prompt_node`'s literal-
     /// prompt branch prefers this over the generic "no TurnResult" fallback when
@@ -93,6 +97,7 @@ impl TurnDriver for PromptNodeDriver {
             self.result_schema.clone(),
         );
         bl.fs_delegate = self.fs_delegate.clone();
+        bl.allow_intree = self.allow_intree;
         bl
     }
 
@@ -339,6 +344,7 @@ pub async fn exec_prompt_node(
         max_iter,
         cancel: tokio_util::sync::CancellationToken::new(),
         fs_delegate: ctx.fs_delegate.clone(),
+        allow_intree: ctx.allow_intree,
         last_error: None,
     };
 
@@ -497,6 +503,7 @@ mod tests {
             max_iter: None,
             cancel: tokio_util::sync::CancellationToken::new(),
             fs_delegate: None,
+            allow_intree: false,
             last_error: None,
         };
         let mut sink = CapturingDiagSink {
@@ -539,6 +546,7 @@ mod tests {
             max_iter: None,
             cancel: tokio_util::sync::CancellationToken::new(),
             fs_delegate: None,
+            allow_intree: false,
             last_error: None,
         };
         // Verify the driver holds the paths used to construct BrainLaunch.
@@ -575,6 +583,7 @@ mod tests {
             max_iter: None,
             cancel: tokio_util::sync::CancellationToken::new(),
             fs_delegate: Some(Arc::new(Fake) as Arc<dyn gait_core::embed::FsDelegate>),
+            allow_intree: false,
             last_error: None,
         };
         let bl = driver.brain_launch("sess-x");

@@ -91,6 +91,7 @@ async fn main() {
                 .map(|rs| rs.to_string_lossy().to_string()),
             gait_dir: Some(gait_dir.clone()),
             codebase: Some(codebase.clone()),
+            allow_intree: cli.allow_intree,
             ..Default::default()
         }
         .to_argv();

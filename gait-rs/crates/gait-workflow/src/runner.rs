@@ -50,6 +50,9 @@ pub struct WorkflowRunOpts {
     /// Optional editor-buffer delegate injected by a workflow-level consumer
     /// (e.g. a future ACP adapter). `None` for REPL/CLI/workflow nodes.
     pub fs_delegate: Option<std::sync::Arc<dyn gait_core::embed::FsDelegate>>,
+    /// Launcher-set override for the in-tree safety guard (design §7), sourced
+    /// from the CLI's `--allow-intree` flag. `false` for REPL/ACP/workflow nodes.
+    pub allow_intree: bool,
 }
 
 type NodeFuture =
@@ -100,6 +103,7 @@ struct RunOverrides {
     cascade: Option<gait_core::embed::CascadeKillHandle>,
     profile: Option<crate::single_prompt::ProfileOverride>,
     fs_delegate: Option<std::sync::Arc<dyn gait_core::embed::FsDelegate>>,
+    allow_intree: bool,
 }
 
 /// Derive the node type name from its proto body oneof.
@@ -282,6 +286,7 @@ async fn run_single_node(params: NodeRunParams) -> anyhow::Result<(String, NodeT
             cascade: params.overrides.cascade.as_ref(),
             profile: params.overrides.profile.as_ref(),
             fs_delegate: params.overrides.fs_delegate.clone(),
+            allow_intree: params.overrides.allow_intree,
         };
 
         // Interactive/absent-prompt nodes are run outside FuturesUnordered with
@@ -485,6 +490,7 @@ async fn handle_open_node(
             cascade: overrides.cascade.as_ref(),
             profile: overrides.profile.as_ref(),
             fs_delegate: overrides.fs_delegate.clone(),
+            allow_intree: overrides.allow_intree,
         };
         let p = match node.body.as_ref() {
             Some(node::Body::Prompt(p)) => p,
@@ -514,6 +520,7 @@ pub async fn run_workflow(
         cascade,
         profile,
         fs_delegate,
+        allow_intree,
     } = opts;
     // The run id doubles as the SESSION_ID env value nodes see and as the default
     // workflow_id; it is NOT a git session — the run owns its own branch/worktree
@@ -534,6 +541,7 @@ pub async fn run_workflow(
         cascade,
         profile,
         fs_delegate,
+        allow_intree,
     };
 
     let repos = gait_core::git::Repos::production();

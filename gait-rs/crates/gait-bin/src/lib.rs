@@ -62,6 +62,12 @@ pub struct Cli {
     pub gait_dir: Option<PathBuf>,
     #[arg(long, short = 'c', hide = true)]
     pub codebase: Option<PathBuf>,
+    /// Override the in-tree safety guard (design §7): run even though the
+    /// gait-dir is inside the codebase. The agent could then write to its own
+    /// config/permissions/audit log — prefer `gait init ~/gait-home && gait
+    /// link ~/gait-home` instead.
+    #[arg(long)]
+    pub allow_intree: bool,
 
     #[command(subcommand)]
     pub command: Option<Commands>,

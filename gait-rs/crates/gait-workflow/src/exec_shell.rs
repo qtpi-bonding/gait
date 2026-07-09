@@ -28,6 +28,9 @@ pub struct NodeContext<'a> {
     /// Optional editor-buffer delegate injected by a workflow-level consumer
     /// (e.g. a future ACP adapter). `None` for every real workflow node.
     pub fs_delegate: Option<std::sync::Arc<dyn gait_core::embed::FsDelegate>>,
+    /// Launcher-set override for the in-tree safety guard (design §7), sourced
+    /// from the CLI's `--allow-intree` flag. `false` for every real workflow node.
+    pub allow_intree: bool,
 }
 
 pub async fn exec_shell_node(
@@ -139,6 +142,7 @@ mod tests {
             cascade: None,
             profile: None,
             fs_delegate: None,
+            allow_intree: false,
             vars: crate::vars::VarContext {
                 workflow_id: "wf1".into(),
                 session_id: "s1".into(),

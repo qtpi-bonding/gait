@@ -50,6 +50,9 @@ pub struct SinglePromptOpts {
     /// Optional editor-buffer delegate injected by a workflow-level consumer
     /// (e.g. a future ACP adapter). `None` for REPL/CLI/workflow nodes.
     pub fs_delegate: Option<std::sync::Arc<dyn gait_core::embed::FsDelegate>>,
+    /// Launcher-set override for the in-tree safety guard (design §7), sourced
+    /// from the CLI's `--allow-intree` flag. `false` for REPL/ACP.
+    pub allow_intree: bool,
 }
 
 impl Default for SinglePromptOpts {
@@ -66,6 +69,7 @@ impl Default for SinglePromptOpts {
             cascade: None,
             profile: None,
             fs_delegate: None,
+            allow_intree: false,
         }
     }
 }
@@ -89,6 +93,7 @@ pub async fn single_prompt_run(
         cascade,
         profile,
         fs_delegate,
+        allow_intree,
     } = opts;
     let node = Node {
         id: "chat".into(),
@@ -117,6 +122,7 @@ pub async fn single_prompt_run(
             cascade,
             profile,
             fs_delegate,
+            allow_intree,
         },
         sink,
         observer,

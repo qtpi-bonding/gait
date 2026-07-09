@@ -45,6 +45,12 @@ pub struct RunArgs {
     /// `None` for the top-level turn; a parent's pgid string for subagents (Plan 4).
     #[arg(long = "cascade-group", hide = true)]
     pub cascade_group: Option<String>,
+    /// Override the in-tree safety guard (design §7 / Task 5): run even though
+    /// the gait-dir is inside the codebase. Running such a workspace lets the
+    /// agent write to its own config/permissions/audit log — prefer moving the
+    /// workspace out of tree (`gait init ~/gait-home && gait link ~/gait-home`).
+    #[arg(long = "allow-intree")]
+    pub allow_intree: bool,
     // Consumed by caller (args.rs); included to prevent "unexpected argument" errors.
     #[arg(long, hide = true)]
     gait_dir: Option<PathBuf>,
@@ -314,6 +320,7 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
             cascade: Some(kill_handle.clone()),
             profile: Some(profile_override),
             fs_delegate: None,
+            allow_intree: args.allow_intree,
         },
         &mut sink,
         &mut gait_workflow::observer::NullObserver,
@@ -424,6 +431,7 @@ mod tests {
             cascade_group: Some("pg123".to_string()),
             gait_dir: Some(PathBuf::from("/g")),
             codebase: Some(PathBuf::from("/c")),
+            allow_intree: true,
         };
         let argv = launch.to_argv();
         // Flags-only: no leading role/subcommand token (`RunArgs` is
@@ -445,6 +453,7 @@ mod tests {
         assert_eq!(parsed.no_sandbox, launch.no_sandbox);
         assert_eq!(parsed.sandbox_locked, launch.sandbox_locked);
         assert_eq!(parsed.cascade_group, launch.cascade_group);
+        assert_eq!(parsed.allow_intree, launch.allow_intree);
         // `gait_dir`/`codebase` are private fields on `RunArgs` (consumed by
         // the caller in args.rs to prevent "unexpected argument" errors) —
         // parsing without error is the only thing observable from here, so

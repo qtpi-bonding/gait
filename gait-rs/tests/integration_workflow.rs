@@ -285,6 +285,10 @@ async fn prompt_subturn_publishes_to_workflow_channel() {
             cascade: None,
             profile: None,
             fs_delegate: None,
+            // This fixture's gait_dir and codebase are the same tempdir (test
+            // convenience) and it drives a real `run_loop`, so the in-tree
+            // safety guard (design §7 / Task 5) would otherwise refuse it.
+            allow_intree: true,
             vars: VarContext {
                 workflow_id: "wf1".into(),
                 session_id: session_id.into(),

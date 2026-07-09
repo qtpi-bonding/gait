@@ -54,6 +54,9 @@ pub struct RunLaunch {
     pub cascade_group: Option<String>,
     pub gait_dir: Option<PathBuf>,
     pub codebase: Option<PathBuf>,
+    /// Override for the in-tree safety guard (design §7 / Task 5), sourced from
+    /// `--allow-intree`. Never sourced from config — see `embed::BrainLaunch::allow_intree`.
+    pub allow_intree: bool,
 }
 
 impl RunLaunch {
@@ -109,6 +112,9 @@ impl RunLaunch {
         }
         if let Some(c) = &self.codebase {
             a.extend(["--codebase".to_string(), c.to_string_lossy().into_owned()]);
+        }
+        if self.allow_intree {
+            a.push("--allow-intree".to_string());
         }
         a
     }

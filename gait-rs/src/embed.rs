@@ -85,6 +85,11 @@ pub struct BrainLaunch {
     pub cascade_group_arg: Option<String>,
     /// Editor fs bridge for delegated read/write/edit. `None` = disk (CLI/REPL).
     pub fs_delegate: Option<std::sync::Arc<dyn FsDelegate>>,
+    /// Launcher-set override for the in-tree safety guard (design §7). Sourced
+    /// ONLY from the `--allow-intree` CLI flag — never from config/`gait.jsonc`,
+    /// since that file lives in the (potentially in-tree, model-writable)
+    /// gait-dir. Default `false` everywhere (REPL, ACP adapter, CLI without the flag).
+    pub allow_intree: bool,
 }
 impl BrainLaunch {
     /// Construct a `BrainLaunch` without naming `ProfileInputs` in the call site.
@@ -115,6 +120,7 @@ impl BrainLaunch {
             max_iter,
             cascade_group_arg,
             fs_delegate: None,
+            allow_intree: false,
             profile_inputs: crate::turn::spine::ProfileInputs {
                 agent_name,
                 model_override,
@@ -171,6 +177,55 @@ pub fn user_turn_events(
     ]
 }
 
+/// True if `gait_dir` resolves to a location inside (or equal to) `codebase`.
+/// Canonicalizes both (resolving symlinks/`..`) so a moved-in or symlinked
+/// workspace is caught; falls back to the raw path if canonicalize fails. At the
+/// `run_loop` guard site the session's gait_dir always exists, so the fallback is
+/// not a bypass in practice. `starts_with` on canonical `PathBuf`s is
+/// component-wise, so `/repo-foo` does not match `/repo`.
+fn gait_dir_inside_codebase(gait_dir: &Path, codebase: &Path) -> bool {
+    let gd = gait_dir
+        .canonicalize()
+        .unwrap_or_else(|_| gait_dir.to_path_buf());
+    let cb = codebase
+        .canonicalize()
+        .unwrap_or_else(|_| codebase.to_path_buf());
+    gd.starts_with(&cb)
+}
+
+#[cfg(test)]
+mod intree_guard_tests {
+    use super::gait_dir_inside_codebase;
+
+    #[test]
+    fn detects_gait_dir_inside_codebase() {
+        let t = tempfile::TempDir::new().unwrap();
+        let codebase = t.path().join("repo");
+        let inside = codebase.join(".gait");
+        std::fs::create_dir_all(&inside).unwrap();
+        assert!(gait_dir_inside_codebase(&inside, &codebase));
+    }
+
+    #[test]
+    fn equal_paths_count_as_inside() {
+        let t = tempfile::TempDir::new().unwrap();
+        assert!(gait_dir_inside_codebase(t.path(), t.path()));
+    }
+
+    #[test]
+    fn out_of_tree_and_sibling_prefix_are_not_inside() {
+        let t = tempfile::TempDir::new().unwrap();
+        let codebase = t.path().join("repo");
+        let home = t.path().join("gait-home");
+        let sibling = t.path().join("repo-foo"); // must NOT match /repo (component-wise)
+        for p in [&codebase, &home, &sibling] {
+            std::fs::create_dir_all(p).unwrap();
+        }
+        assert!(!gait_dir_inside_codebase(&home, &codebase));
+        assert!(!gait_dir_inside_codebase(&sibling, &codebase));
+    }
+}
+
 /// Run turns until the source is exhausted — one sealed `gait __brain` per `TurnStart`.
 ///
 /// `run_loop` is the **spine loop**: per `TurnSource::next()` it calls
@@ -210,6 +265,23 @@ pub async fn run_loop(
             }
         }
         let launch = driver.brain_launch(session_id);
+        // Safety invariant (design §7): the gait-dir holds the agent's own config,
+        // permissions, and audit log. If it is inside the codebase it is inside the
+        // writable sandbox scope, so the model could rewrite its permissions /
+        // disable its sandbox / edit its audit trail. Refuse here — spine-side,
+        // before the sealed brain spawns, so `allow_intree` never crosses the seal.
+        if launch.sandbox_on
+            && !launch.allow_intree
+            && gait_dir_inside_codebase(gait_dir, &launch.codebase)
+        {
+            anyhow::bail!(
+                "gait-dir {} is inside the codebase {} — the agent could write to its \
+                 own config. Move it out of tree (`gait init ~/gait-home && \
+                 gait link ~/gait-home`), or pass --allow-intree.",
+                gait_dir.display(),
+                launch.codebase.display()
+            );
+        }
         let failed = crate::turn::spine::relay_brain_turn(
             gait_dir,
             &launch.codebase,
