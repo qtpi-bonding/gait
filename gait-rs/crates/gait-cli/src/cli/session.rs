@@ -1,9 +1,11 @@
 //! Session lifecycle + inspection commands.
 //!
-//! Public clap structs: `PersistArgs`, `DiscardArgs`, `StopArgs`, `SessionsArgs`,
-//! `PsArgs`, `StatsArgs`, `AllowArgs`, `DenyArgs`, `UnlockArgs`, `UndoArgs`,
-//! `ReplyArgs`.
-
+//! All logic lives in `gait_ops::session`. The functions here are thin
+//! adapters: map clap `Args` → op params → call op → render outcome/error
+//! → `exit(1)` on error. The CLI keeps the 3-state consent flow
+//! (`confirm_action -> Confirmed::{Yes, No, RequiresYes}`) for the bulk
+//! persist/discard prompts; the op itself takes a `confirmed: bool` and
+//! refuses (`OpError::ConfirmationRequired`) on `false`.
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -75,11 +77,79 @@ fn confirm_action(prompt: &str, yes: bool) -> Confirmed {
     }
 }
 
-/// Discard a single session: lock it, confirm, tear it down (no merge).
-fn discard_one(gait_dir: &std::path::Path, id: &str, yes: bool, json: bool) -> anyhow::Result<()> {
-    let session_dir = gait_core::session::live::worktree_dir(gait_dir, id);
-    let _lock = gait_core::turn::SessionLock::acquire(&session_dir)
-        .map_err(|e| anyhow::anyhow!("cannot discard: {} (is a turn in progress?)", e))?;
+// -----------------------------------------------------------------------------
+// Single-session persist / discard (plan Step 5: route through a one-element plan)
+// -----------------------------------------------------------------------------
+
+pub fn cmd_persist(args: PersistArgs) {
+    let yes = args.yes || args.json;
+    if args.all {
+        run_bulk(
+            gait_ops::session::BulkVerb::Persist,
+            &args.gait_dir,
+            yes,
+            args.json,
+        );
+        return;
+    }
+    let Some(id) = args.session_id.as_deref() else {
+        eprintln!("[gait] error: specify a session id or --all");
+        std::process::exit(1);
+    };
+    // One-element plan: render it, then call act(plan, confirmed).
+    let plan = match gait_ops::session::classify_bulk(
+        &args.gait_dir,
+        gait_ops::session::BulkVerb::Persist,
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[gait] error: {}", e);
+            std::process::exit(1);
+        }
+    };
+    if !plan.eligible.iter().any(|s| s == id) {
+        eprintln!("[gait] error: session {} is not eligible to persist", id);
+        std::process::exit(1);
+    }
+    let one: Vec<String> = vec![id.to_string()];
+    let plan = gait_ops::session::BulkPlan {
+        verb: gait_ops::session::BulkVerb::Persist,
+        eligible: one,
+        skipped: plan.skipped,
+    };
+    match gait_ops::session::bulk_act(&args.gait_dir, &plan, true) {
+        Ok(outcome) => {
+            if !args.json {
+                eprintln!("[gait] session {} merged into main", id);
+            }
+            for (wid, w) in &outcome.warnings {
+                eprintln!("[gait] warning: session {}: {}", wid, w);
+            }
+        }
+        Err(e) => {
+            eprintln!("[gait] error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+pub fn cmd_discard(args: DiscardArgs) {
+    let yes = args.yes || args.json;
+    if args.all {
+        run_bulk(
+            gait_ops::session::BulkVerb::Discard,
+            &args.gait_dir,
+            yes,
+            args.json,
+        );
+        return;
+    }
+    let Some(id) = args.session_id.as_deref() else {
+        eprintln!("[gait] error: specify a session id or --all");
+        std::process::exit(1);
+    };
+    // Per-session discard: route through the op's confirmation gate so the
+    // 3-state UX (Yes / No / RequiresYes) still applies.
     match confirm_action(
         &format!("discard session {id} permanently (no merge, unrecoverable)"),
         yes,
@@ -87,154 +157,35 @@ fn discard_one(gait_dir: &std::path::Path, id: &str, yes: bool, json: bool) -> a
         Confirmed::Yes => {}
         Confirmed::No => {
             eprintln!("[gait] aborted");
-            return Ok(());
+            return;
         }
         Confirmed::RequiresYes => {
-            anyhow::bail!("refusing to discard non-interactively without --yes")
+            eprintln!("[gait] error: refusing to discard non-interactively without --yes");
+            std::process::exit(1);
         }
     }
-    gait_core::git::Repos::production()
-        .traces
-        .discard_session(gait_dir, id)?;
-    if json {
+    let plan = gait_ops::session::BulkPlan {
+        verb: gait_ops::session::BulkVerb::Discard,
+        eligible: vec![id.to_string()],
+        skipped: Vec::new(),
+    };
+    if let Err(e) = gait_ops::session::bulk_act(&args.gait_dir, &plan, true) {
+        eprintln!("[gait] error: {}", e);
+        std::process::exit(1);
+    }
+    if args.json {
         println!(
             "{}",
             serde_json::json!({"session_id": id, "action": "discarded"})
         );
     } else {
-        eprintln!("[gait] session {id} discarded");
-    }
-    Ok(())
-}
-
-pub fn cmd_persist(args: PersistArgs) {
-    let yes = args.yes || args.json;
-    if args.all {
-        run_bulk(Verb::Persist, &args.gait_dir, yes, args.json);
-        return;
-    }
-    let Some(id) = args.session_id.as_deref() else {
-        eprintln!("[gait] error: specify a session id or --all");
-        std::process::exit(1);
-    };
-    let repos = gait_core::git::Repos::production();
-    if let Err(e) = repos.traces.finish_session(&args.gait_dir, id) {
-        eprintln!("[gait] error: {}", e);
-        std::process::exit(1);
-    }
-    if let Err(e) = repos.checkpoints.remove(&args.gait_dir, id) {
-        eprintln!("warning: failed to remove checkpoint db for {}: {}", id, e);
-    }
-    eprintln!("[gait] session {} merged into main", id);
-}
-
-pub fn cmd_discard(args: DiscardArgs) {
-    let yes = args.yes || args.json;
-    if args.all {
-        run_bulk(Verb::Discard, &args.gait_dir, yes, args.json);
-        return;
-    }
-    let Some(id) = args.session_id.as_deref() else {
-        eprintln!("[gait] error: specify a session id or --all");
-        std::process::exit(1);
-    };
-    if let Err(e) = discard_one(&args.gait_dir, id, yes, args.json) {
-        eprintln!("[gait] error: {}", e);
-        std::process::exit(1);
+        eprintln!("[gait] session {} discarded", id);
     }
 }
 
-#[derive(Clone, Copy)]
-enum Verb {
-    Persist,
-    Discard,
-}
-
-impl Verb {
-    fn label(&self) -> &'static str {
-        match self {
-            Verb::Persist => "persist",
-            Verb::Discard => "discard",
-        }
-    }
-    fn past(&self) -> &'static str {
-        match self {
-            Verb::Persist => "persisted",
-            Verb::Discard => "discarded",
-        }
-    }
-    fn act(&self, gait_dir: &std::path::Path, id: &str) -> anyhow::Result<()> {
-        let repos = gait_core::git::Repos::production();
-        match self {
-            Verb::Persist => {
-                repos.traces.finish_session(gait_dir, id)?;
-                if let Err(e) = repos.checkpoints.remove(gait_dir, id) {
-                    eprintln!("warning: failed to remove checkpoint db for {}: {}", id, e);
-                }
-                Ok(())
-            }
-            Verb::Discard => repos.traces.discard_session(gait_dir, id),
-        }
-    }
-}
-
-/// `(eligible session ids, skipped (id, reason) pairs)`.
-type BulkTargets = (Vec<String>, Vec<(String, String)>);
-
-/// Walk `sessions/*`; classify each dir as eligible (idle + not running) or
-/// skipped-with-reason. Dirs whose log.jsonl won't parse are silently omitted
-/// (non-session dirs), matching `cmd_ps`. Results are sorted by id.
-fn classify_bulk_targets(gait_dir: &std::path::Path) -> anyhow::Result<BulkTargets> {
-    use gait_core::session::log::{session_state, SessionState};
-
-    let sessions_dir = gait_dir.join(".active");
-    let mut eligible: Vec<String> = Vec::new();
-    let mut skipped: Vec<(String, String)> = Vec::new();
-
-    let entries = match std::fs::read_dir(&sessions_dir) {
-        Ok(e) => e,
-        Err(_) => return Ok((eligible, skipped)), // no .active dir => nothing
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let Some(id) = path.file_name().and_then(|n| n.to_str()).map(String::from) else {
-            continue;
-        };
-        let tx_path = gait_core::session::live::log_path(gait_dir, &id);
-        // A session with no log.jsonl is not a started session. `read_events` treats a
-        // MISSING file as empty => `session_state` returns Idle, which would wrongly
-        // mark such a dir eligible — so skip it explicitly here. (A malformed log
-        // still falls through to the `Err(_) => continue` arm below.)
-        if !tx_path.exists() {
-            continue;
-        }
-        let reason: Option<String> = match session_state(&tx_path) {
-            Ok(SessionState::Idle) => {
-                if gait_core::turn::SessionLock::is_running(&path) {
-                    Some("running".to_string())
-                } else {
-                    None
-                }
-            }
-            Ok(SessionState::AwaitingPermission { .. }) => Some("awaiting-permission".to_string()),
-            Ok(SessionState::AwaitingClarify { .. }) => Some("awaiting-clarify".to_string()),
-            Ok(SessionState::AwaitingInform { .. }) => Some("awaiting-inform".to_string()),
-            Ok(SessionState::AwaitingUnlock { .. }) => Some("awaiting-unlock".to_string()),
-            Err(_) => continue, // unparseable => not a session dir
-        };
-        match reason {
-            None => eligible.push(id),
-            Some(r) => skipped.push((id, r)),
-        }
-    }
-    eligible.sort();
-    skipped.sort();
-    Ok((eligible, skipped))
-}
+// -----------------------------------------------------------------------------
+// Bulk persist/discard with the 3-state consent flow
+// -----------------------------------------------------------------------------
 
 fn print_bulk_json(
     eligible: &[String],
@@ -256,9 +207,9 @@ fn print_bulk_json(
 }
 
 /// Bulk persist/discard over every idle, not-running session.
-fn run_bulk(verb: Verb, gait_dir: &std::path::Path, yes: bool, json: bool) {
-    let (eligible, skipped) = match classify_bulk_targets(gait_dir) {
-        Ok(v) => v,
+fn run_bulk(verb: gait_ops::session::BulkVerb, gait_dir: &std::path::Path, yes: bool, json: bool) {
+    let plan = match gait_ops::session::classify_bulk(gait_dir, verb) {
+        Ok(p) => p,
         Err(e) => {
             eprintln!("[gait] error: {}", e);
             std::process::exit(1);
@@ -266,29 +217,39 @@ fn run_bulk(verb: Verb, gait_dir: &std::path::Path, yes: bool, json: bool) {
     };
 
     if !json {
-        println!("eligible ({}):", eligible.len());
-        for id in &eligible {
+        println!("eligible ({}):", plan.eligible.len());
+        for id in &plan.eligible {
             println!("  {}\tidle", id);
         }
-        if !skipped.is_empty() {
-            println!("skipped ({}):", skipped.len());
-            for (id, reason) in &skipped {
+        if !plan.skipped.is_empty() {
+            println!("skipped ({}):", plan.skipped.len());
+            for (id, reason) in &plan.skipped {
                 println!("  {}\t{}", id, reason);
             }
         }
     }
 
-    if eligible.is_empty() {
+    if plan.eligible.is_empty() {
         if json {
-            print_bulk_json(&eligible, &skipped, &[], &[]);
+            print_bulk_json(&plan.eligible, &plan.skipped, &[], &[]);
         } else {
-            println!("nothing to {}.", verb.label());
+            let label = match verb {
+                gait_ops::session::BulkVerb::Persist => "persist",
+                gait_ops::session::BulkVerb::Discard => "discard",
+            };
+            println!("nothing to {}.", label);
         }
         return;
     }
 
+    // 3-state consent: Yes / No / RequiresYes. `No` aborts quietly (exit 0),
+    // `RequiresYes` (non-interactive without --yes) errors and exits 1.
+    let label = match verb {
+        gait_ops::session::BulkVerb::Persist => "persist",
+        gait_ops::session::BulkVerb::Discard => "discard",
+    };
     match confirm_action(
-        &format!("{} {} session(s)?", verb.label(), eligible.len()),
+        &format!("{} {} session(s)?", label, plan.eligible.len()),
         yes,
     ) {
         Confirmed::Yes => {}
@@ -299,40 +260,47 @@ fn run_bulk(verb: Verb, gait_dir: &std::path::Path, yes: bool, json: bool) {
         Confirmed::RequiresYes => {
             eprintln!(
                 "[gait] error: refusing to {} --all non-interactively without --yes",
-                verb.label()
+                label
             );
             std::process::exit(1);
         }
     }
 
-    let mut acted: Vec<String> = Vec::new();
-    let mut failed: Vec<(String, String)> = Vec::new();
-    for id in &eligible {
-        let session_dir = gait_core::session::live::worktree_dir(gait_dir, id);
-        // Re-check the lock at action time; a run may have started since classify.
-        let _lock = match gait_core::turn::SessionLock::acquire(&session_dir) {
-            Ok(l) => l,
-            Err(_) => {
-                failed.push((id.clone(), "started running".to_string()));
-                continue;
-            }
-        };
-        match verb.act(gait_dir, id) {
-            Ok(()) => acted.push(id.clone()),
-            Err(e) => failed.push((id.clone(), e.to_string())),
+    let outcome = match gait_ops::session::bulk_act(gait_dir, &plan, true) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("[gait] error: {}", e);
+            std::process::exit(1);
         }
-    }
+    };
 
     if json {
-        print_bulk_json(&eligible, &skipped, &acted, &failed);
+        print_bulk_json(
+            &outcome.eligible,
+            &outcome.skipped,
+            &outcome.acted,
+            &outcome.failed,
+        );
     } else {
-        print!("{} {}, skipped {}", verb.past(), acted.len(), skipped.len());
-        if !failed.is_empty() {
-            print!(", failed {}", failed.len());
+        let past = match verb {
+            gait_ops::session::BulkVerb::Persist => "persisted",
+            gait_ops::session::BulkVerb::Discard => "discarded",
+        };
+        print!(
+            "{} {}, skipped {}",
+            past,
+            outcome.acted.len(),
+            outcome.skipped.len()
+        );
+        if !outcome.failed.is_empty() {
+            print!(", failed {}", outcome.failed.len());
         }
         println!();
-        for (id, e) in &failed {
+        for (id, e) in &outcome.failed {
             eprintln!("  failed {}: {}", id, e);
+        }
+        for (id, w) in &outcome.warnings {
+            eprintln!("[gait] warning: session {}: {}", id, w);
         }
     }
 }
@@ -361,133 +329,39 @@ pub struct UndoArgs {
 }
 
 pub fn cmd_undo(args: UndoArgs) {
-    if let Err(e) = undo_command(
-        &args.session_id,
-        args.turn,
-        args.code,
-        args.transcript,
-        args.list,
-        args.gait_dir,
-    ) {
-        eprintln!("[gait] error: {}", e);
-        std::process::exit(1);
+    use gait_ops::session::{undo as op_undo, UndoParams};
+    let params = UndoParams {
+        gait_dir: args.gait_dir,
+        session_id: args.session_id,
+        turn: args.turn,
+        code: args.code,
+        transcript: args.transcript,
+        list: args.list,
+    };
+    let outcome = match op_undo(params) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("[gait] error: {}", e);
+            std::process::exit(1);
+        }
+    };
+    if args.list {
+        for t in &outcome.turns {
+            let mark = t.checkpoint_short.as_deref().unwrap_or("--------");
+            println!("turn {}\t[{}]\t{}", t.turn, mark, t.summary);
+        }
+        return;
     }
-}
-
-fn undo_command(
-    session_id: &str,
-    turn: Option<u32>,
-    code: bool,
-    transcript: bool,
-    list: bool,
-    gait_dir: PathBuf,
-) -> anyhow::Result<()> {
-    use gait_core::proto::gait::log::v1::{event, payload};
-    use gait_core::session::log::read_events;
-
-    if list && turn.is_some() {
-        anyhow::bail!("--list and --turn are mutually exclusive");
-    }
-
-    let session_dir = gait_core::session::live::worktree_dir(&gait_dir, session_id);
-    let tx_path = gait_core::session::live::log_path(&gait_dir, session_id);
-    let events = read_events(&tx_path)?;
-
-    // Collect (turn_index, summary, checkpoint) from TurnComplete events.
-    let mut turns: Vec<(u32, String, Option<String>)> = Vec::new();
-    for e in &events {
-        if let Some(event::Body::Payload(p)) = &e.body {
-            if let Some(payload::Kind::TurnComplete(tc)) = &p.kind {
-                let idx = turns.len() as u32 + 1;
-                let message = tc
-                    .output
-                    .as_ref()
-                    .map(|o| o.message.clone())
-                    .unwrap_or_default();
-                turns.push((idx, message, tc.checkpoint.clone()));
-            }
+    if let Some(sha) = &outcome.checkpoint_short {
+        if outcome.code_undone {
+            println!("code restored to turn ({})", &sha[..sha.len().min(8)]);
+        } else {
+            println!("turn has no code checkpoint (non-git codebase); code not undone");
         }
     }
-
-    if list {
-        for (idx, summary, cp) in &turns {
-            let mark = cp
-                .as_deref()
-                .map(|s| &s[..s.len().min(8)])
-                .unwrap_or("--------");
-            println!("turn {idx}  [{mark}]  {summary}");
-        }
-        return Ok(());
+    if outcome.transcript_undone {
+        println!("transcript undone to turn");
     }
-
-    let turn = turn.ok_or_else(|| anyhow::anyhow!("--turn <n> is required (or use --list)"))?;
-    let (_, _, checkpoint) = turns
-        .iter()
-        .find(|(idx, _, _)| *idx == turn)
-        .ok_or_else(|| anyhow::anyhow!("no turn {} in session {}", turn, session_id))?
-        .clone();
-
-    // Default (neither flag) = both axes.
-    let do_code = code || !transcript;
-    let do_transcript = transcript || !code;
-
-    let _lock = gait_core::turn::SessionLock::acquire(&session_dir)
-        .map_err(|e| anyhow::anyhow!("cannot undo: {} (is a turn in progress?)", e))?;
-
-    if do_code {
-        let codebase = gait_core::session::read_session_meta(&gait_dir, session_id)?
-            .codebase_path
-            .map(std::path::PathBuf::from)
-            .ok_or_else(|| anyhow::anyhow!("session has no codebase_path; cannot undo code"))?;
-        let repos = gait_core::git::Repos::production();
-        match checkpoint.as_deref() {
-            Some(sha) => {
-                repos
-                    .checkpoints
-                    .restore_to(&gait_dir, session_id, &codebase, sha)?;
-                println!(
-                    "code restored to turn {turn} ({})",
-                    &sha[..sha.len().min(8)]
-                );
-            }
-            None => {
-                println!("turn {turn} has no code checkpoint (non-git codebase); code not undone")
-            }
-        }
-    }
-
-    if do_transcript {
-        undo_transcript_to_turn(&gait_dir, session_id, turn)?;
-        println!("transcript undone to turn {turn}");
-    }
-    Ok(())
-}
-
-fn undo_transcript_to_turn(
-    gait_dir: &std::path::Path,
-    session_id: &str,
-    turn: u32,
-) -> anyhow::Result<()> {
-    let session_dir = gait_core::session::live::worktree_dir(gait_dir, session_id);
-    let repo = git2::Repository::open(&session_dir)?;
-    let needle = format!("session({}): turn {}", session_id, turn);
-    let mut walk = repo.revwalk()?;
-    walk.push_head()?;
-    let mut target: Option<git2::Oid> = None;
-    for oid in walk {
-        let oid = oid?;
-        let commit = repo.find_commit(oid)?;
-        if commit.summary() == Some(needle.as_str()) {
-            target = Some(oid);
-            break;
-        }
-    }
-    let oid = target.ok_or_else(|| anyhow::anyhow!(
-        "no commit for turn {} in session {} (transcript undo applies to interactive turn sessions, not workflows)",
-        turn, session_id))?;
-    let obj = repo.find_object(oid, None)?;
-    repo.reset(&obj, git2::ResetType::Hard, None)?;
-    Ok(())
 }
 
 #[derive(Parser, Debug)]
@@ -500,13 +374,10 @@ pub struct SessionsArgs {
 }
 
 pub fn cmd_sessions(args: SessionsArgs) {
-    match gait_core::git::Repos::production()
-        .traces
-        .list_active_sessions(&args.gait_dir)
-    {
-        Ok(sessions) if sessions.is_empty() => println!("No active sessions."),
-        Ok(sessions) => {
-            for id in sessions {
+    match gait_ops::session::list(&args.gait_dir) {
+        Ok(out) if out.active.is_empty() => println!("No active sessions."),
+        Ok(out) => {
+            for id in out.active {
                 println!("{}", id);
             }
         }
@@ -527,58 +398,72 @@ pub struct PsArgs {
 }
 
 pub fn cmd_ps(args: PsArgs) {
-    use gait_core::session::log::{session_state, SessionState};
-
-    let sessions_dir = args.gait_dir.join(".active");
-    let entries = match std::fs::read_dir(&sessions_dir) {
-        Ok(e) => e,
+    match gait_ops::session::ps(&args.gait_dir) {
+        Ok(out) => {
+            if args.json {
+                let arr: Vec<serde_json::Value> = out
+                    .rows
+                    .iter()
+                    .map(|r| serde_json::json!({"session_id": r.session_id, "state": r.state}))
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&arr).unwrap_or_else(|e| {
+                        eprintln!("[gait] error serializing ps: {}", e);
+                        std::process::exit(1);
+                    })
+                );
+            } else {
+                for r in &out.rows {
+                    println!("{}\t{}", r.session_id, r.state);
+                }
+            }
+        }
         Err(e) => {
             eprintln!("[gait] error: {}", e);
             std::process::exit(1);
         }
-    };
-
-    let mut rows: Vec<(String, String)> = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let id = match path.file_name().and_then(|n| n.to_str()) {
-            Some(s) => s.to_string(),
-            None => continue,
-        };
-        let tx_path = gait_core::session::live::log_path(&args.gait_dir, &id);
-        let state_str = match session_state(&tx_path) {
-            Ok(SessionState::Idle) => "idle".to_string(),
-            Ok(SessionState::AwaitingPermission { .. }) => "awaiting-permission".to_string(),
-            Ok(SessionState::AwaitingClarify { .. }) => "awaiting-clarify".to_string(),
-            Ok(SessionState::AwaitingInform { .. }) => "awaiting-inform".to_string(),
-            Ok(SessionState::AwaitingUnlock { .. }) => "awaiting-unlock".to_string(),
-            Err(_) => continue, // skip unparseable / non-session dirs
-        };
-        rows.push((id, state_str));
-    }
-
-    if args.json {
-        let arr: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|(id, st)| serde_json::json!({"session_id": id, "state": st}))
-            .collect();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&arr).unwrap_or_else(|e| {
-                eprintln!("[gait] error serializing ps: {}", e);
-                std::process::exit(1);
-            })
-        );
-        return;
-    }
-
-    for (id, st) in &rows {
-        println!("{}\t{}", id, st);
     }
 }
+
+#[derive(Parser, Debug)]
+#[command(no_binary_name = true)]
+pub struct StatsArgs {
+    pub session_id: String,
+    #[arg(long)]
+    pub json: bool,
+    #[arg(long, env = "GAIT_DIR")]
+    pub gait_dir: PathBuf,
+}
+
+pub fn cmd_stats(args: StatsArgs) {
+    match gait_ops::session::stats(&args.gait_dir, &args.session_id) {
+        Ok(u) => {
+            if args.json {
+                println!(
+                    "{{\"input\":{},\"output\":{},\"cache_read\":{},\"cache_write\":{}}}",
+                    u.input, u.output, u.cache_read, u.cache_write
+                );
+            } else {
+                println!("session {}", args.session_id);
+                println!("  input        {}", u.input);
+                println!("  output       {}", u.output);
+                println!("  cache read   {}", u.cache_read);
+                println!("  cache write  {}", u.cache_write);
+                println!("  total tokens {}", u.total);
+            }
+        }
+        Err(e) => {
+            eprintln!("[gait] error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// allow / deny / unlock / load / unload / reply — NOT part of Task 3 (permission/
+// extension domains, Tasks 4-5). Restored verbatim; adapters land in later tasks.
+// -----------------------------------------------------------------------------
 
 #[derive(Parser, Debug)]
 #[command(no_binary_name = true)]
@@ -849,45 +734,6 @@ pub fn cmd_unlock(args: UnlockArgs) {
 
 #[derive(Parser, Debug)]
 #[command(no_binary_name = true)]
-pub struct StatsArgs {
-    pub session_id: String,
-    #[arg(long)]
-    pub json: bool,
-    #[arg(long, env = "GAIT_DIR")]
-    pub gait_dir: PathBuf,
-}
-
-pub fn cmd_stats(args: StatsArgs) {
-    use gait_core::proto::wire::read_events;
-    use gait_core::session::retrace::total_usage;
-
-    let tx_path = gait_core::session::live::log_path(&args.gait_dir, &args.session_id);
-    let events = read_events(&tx_path).unwrap_or_else(|e| {
-        eprintln!("[gait] cannot read session {}: {e}", args.session_id);
-        std::process::exit(1);
-    });
-    let u = total_usage(&events);
-
-    if args.json {
-        println!(
-            "{{\"input\":{},\"output\":{},\"cache_read\":{},\"cache_write\":{}}}",
-            u.input, u.output, u.cache_read, u.cache_write
-        );
-    } else {
-        println!("session {}", args.session_id);
-        println!("  input        {}", u.input);
-        println!("  output       {}", u.output);
-        println!("  cache read   {}", u.cache_read);
-        println!("  cache write  {}", u.cache_write);
-        println!(
-            "  total tokens {}",
-            u.input + u.output + u.cache_read + u.cache_write
-        );
-    }
-}
-
-#[derive(Parser, Debug)]
-#[command(no_binary_name = true)]
 pub struct ReplyArgs {
     pub session_id: String,
     pub message: String,
@@ -1021,121 +867,6 @@ pub fn cmd_unload(args: UnloadArgs) {
 pub fn cmd_reply(_args: ReplyArgs) {
     eprintln!("[gait] error: reply not yet implemented");
     std::process::exit(1);
-}
-
-#[cfg(test)]
-mod bulk_tests {
-    use super::*;
-    // NB: no `TraceRepo` import — trait-object method calls (`traces.finish_session`
-    // etc.) don't need the trait in scope, and `gait_core::git::TraceRepo` is not a
-    // public path (the trait lives at `gait_core::git::trace::TraceRepo`).
-    use gait_core::git::Repos;
-    use tempfile::TempDir;
-
-    // Build a gait-dir with one committed session worktree; returns (tempdir, id).
-    fn ws_with_session(id: &str) -> TempDir {
-        let ws = TempDir::new().unwrap();
-        let repo = git2::Repository::init(ws.path()).unwrap();
-        let mut cfg = repo.config().unwrap();
-        cfg.set_str("user.name", "t").unwrap();
-        cfg.set_str("user.email", "t@t.com").unwrap();
-        let sig = git2::Signature::now("t", "t@t.com").unwrap();
-        let tree_id = repo.index().unwrap().write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
-            .unwrap();
-        drop(tree);
-        repo.find_branch("master", git2::BranchType::Local)
-            .or_else(|_| repo.find_branch("main", git2::BranchType::Local))
-            .and_then(|mut b| {
-                b.rename("main", false)?;
-                Ok(())
-            })
-            .ok();
-        let traces = Repos::production().traces;
-        traces.create_session_worktree(ws.path(), id).unwrap();
-        ws
-    }
-
-    #[test]
-    fn confirm_action_requires_yes_when_non_tty_and_no_flag() {
-        // Test harness has no TTY on stdin.
-        assert!(matches!(
-            confirm_action("go?", false),
-            Confirmed::RequiresYes
-        ));
-    }
-
-    #[test]
-    fn confirm_action_yes_flag_short_circuits() {
-        assert!(matches!(confirm_action("go?", true), Confirmed::Yes));
-    }
-
-    #[test]
-    fn discard_one_with_yes_removes_session() {
-        let ws = ws_with_session("scli001");
-        discard_one(ws.path(), "scli001", true, false).unwrap();
-        assert!(!gait_core::session::live::worktree_dir(ws.path(), "scli001").exists());
-        let repo = git2::Repository::open(ws.path()).unwrap();
-        assert!(repo
-            .find_branch("session/scli001", git2::BranchType::Local)
-            .is_err());
-    }
-
-    #[test]
-    fn discard_one_refuses_non_tty_without_yes() {
-        let ws = ws_with_session("scli002");
-        let err = discard_one(ws.path(), "scli002", false, false).unwrap_err();
-        assert!(err.to_string().contains("--yes"));
-        // Session must be untouched.
-        assert!(gait_core::session::live::worktree_dir(ws.path(), "scli002").exists());
-    }
-
-    #[test]
-    fn classify_puts_idle_unlocked_in_eligible() {
-        let ws = ws_with_session("selig01");
-        // create_session_worktree wrote no log.jsonl; write an empty one => Idle.
-        let log_path = gait_core::session::live::log_path(ws.path(), "selig01");
-        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
-        std::fs::write(log_path, "").unwrap();
-        let (eligible, skipped) = classify_bulk_targets(ws.path()).unwrap();
-        assert_eq!(eligible, vec!["selig01".to_string()]);
-        assert!(skipped.is_empty());
-    }
-
-    #[test]
-    fn classify_skips_running_session() {
-        let ws = ws_with_session("srun01");
-        let log_path = gait_core::session::live::log_path(ws.path(), "srun01");
-        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
-        std::fs::write(log_path, "").unwrap();
-        // Our own live PID in the lock => running.
-        std::fs::write(
-            gait_core::session::live::worktree_dir(ws.path(), "srun01").join("lock"),
-            std::process::id().to_string(),
-        )
-        .unwrap();
-        let (eligible, skipped) = classify_bulk_targets(ws.path()).unwrap();
-        assert!(eligible.is_empty());
-        assert_eq!(skipped, vec![("srun01".to_string(), "running".to_string())]);
-    }
-
-    #[test]
-    fn classify_omits_dir_without_log() {
-        let ws = ws_with_session("snolog");
-        // No log.jsonl written => the explicit "missing log" guard in classify skips
-        // it => omitted from both lists. (Missing file does NOT make session_state err.)
-        let (eligible, skipped) = classify_bulk_targets(ws.path()).unwrap();
-        assert!(!eligible.contains(&"snolog".to_string()));
-        assert!(skipped.iter().all(|(id, _)| id != "snolog"));
-    }
-
-    #[test]
-    fn classify_missing_sessions_dir_is_empty() {
-        let ws = TempDir::new().unwrap(); // no sessions/ at all
-        let (eligible, skipped) = classify_bulk_targets(ws.path()).unwrap();
-        assert!(eligible.is_empty() && skipped.is_empty());
-    }
 }
 
 // --- Phase 4: load/unload tests ---
