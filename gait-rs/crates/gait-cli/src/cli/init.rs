@@ -1,11 +1,17 @@
 //! `gait init` — scaffold a gait-dir and make an initial commit.
 
 use clap::Parser;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser, Debug)]
 #[command(no_binary_name = true)]
 pub struct InitArgs {
+    /// Create the workspace even if it would live inside a codebase git repo.
+    /// (In-tree is discouraged: running such a workspace also needs
+    /// `--allow-intree`, since the agent could otherwise write to its own config.
+    /// Prefer out-of-tree: `gait init ~/gait-home && gait link ~/gait-home`.)
+    #[arg(long)]
+    pub force: bool,
     /// Target gait-dir (default: current directory).
     pub path: Option<PathBuf>,
 }
@@ -136,10 +142,75 @@ pub fn scaffold_gait_dir(gait_dir: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Nearest ancestor of `start` (inclusive) that contains a `.git`.
+fn enclosing_git_repo(start: &Path) -> Option<PathBuf> {
+    let mut cur = Some(start);
+    while let Some(dir) = cur {
+        if dir.join(".git").exists() {
+            return Some(dir.to_path_buf());
+        }
+        cur = dir.parent();
+    }
+    None
+}
+
+/// The `.gitignore` line (`<relpath>/`) for `gait_dir` within `repo_root`, or
+/// `None` if `gait_dir` is not under `repo_root`.
+fn gitignore_line_for(repo_root: &Path, gait_dir: &Path) -> Option<String> {
+    let rel = gait_dir.strip_prefix(repo_root).ok()?;
+    Some(format!("{}/", rel.display()))
+}
+
+/// True if `path` looks like an initialized gait workspace. Keyed off `.active/`
+/// — a directory `scaffold_gait_dir` always creates. (Do NOT use `.gait-ws.lock`:
+/// it is only a `.gitignore` line, never a real file, so it would be absent on
+/// every real workspace and make the clobber guard refuse idempotent re-init.)
+fn is_gait_workspace(path: &Path) -> bool {
+    path.join(".active").exists()
+}
+
+/// The init decision for `target`. `Ok(codebase_repo_if_any)` → proceed (the
+/// repo, if `Some`, is only present under `--force` in-tree and is used for the
+/// later auto-gitignore). `Err(enclosing_repo)` → refuse. Pure — no writes, no
+/// exit, no message: `cmd_init` renders the full guidance from the returned repo,
+/// so the actionable text (out-of-tree flow, --force, --allow-intree) is not lost.
+fn init_decision(target: &Path, force: bool) -> Result<Option<PathBuf>, PathBuf> {
+    let codebase_repo = if is_gait_workspace(target) {
+        None
+    } else {
+        enclosing_git_repo(target)
+    };
+    match codebase_repo {
+        Some(repo) if !force => Err(repo),
+        other => Ok(other),
+    }
+}
+
 pub fn cmd_init(args: InitArgs) {
-    let gait_dir = match args.path {
-        Some(p) => p,
-        None => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let raw = args.path.clone().unwrap_or_else(|| cwd.clone());
+    let gait_dir = if raw.is_absolute() {
+        raw
+    } else {
+        cwd.join(raw)
+    };
+
+    // Decide (pre-creation) whether to proceed and, if so, capture the enclosing
+    // codebase repo for later auto-gitignore. An existing gait workspace re-init
+    // is exempt from the steer-away guard (idempotency preserved).
+    let codebase_repo: Option<PathBuf> = match init_decision(&gait_dir, args.force) {
+        Ok(repo) => repo,
+        Err(repo) => {
+            eprintln!(
+                "[gait] {} would live inside git repo {} — an agent could then write \
+                 to its own config there.\n       Prefer out-of-tree: `gait init \
+                 ~/gait-home && gait link ~/gait-home`.\n       Or pass --force to \
+                 create it here anyway (running it will also require --allow-intree).",
+                gait_dir.display(),
+                repo.display()
+            );
+            std::process::exit(1);
+        }
     };
 
     if let Err(e) = std::fs::create_dir_all(&gait_dir) {
@@ -206,6 +277,31 @@ pub fn cmd_init(args: InitArgs) {
     )
     .unwrap();
 
+    // Auto-gitignore: only reachable when --force created a workspace inside a
+    // codebase repo. Merge the `<relpath>/` line into the codebase .gitignore
+    // (create if absent, no duplicates), and print the in-tree scope warning.
+    if let Some(repo_root) = &codebase_repo {
+        if let Some(line) = gitignore_line_for(repo_root, &gait_dir) {
+            let gi_path = repo_root.join(".gitignore");
+            let existing = std::fs::read_to_string(&gi_path).unwrap_or_default();
+            if !existing.lines().any(|l| l.trim() == line.trim()) {
+                let mut out = existing;
+                if !out.is_empty() && !out.ends_with('\n') {
+                    out.push('\n');
+                }
+                out.push_str(&line);
+                out.push('\n');
+                if std::fs::write(&gi_path, out).is_ok() {
+                    println!("[gait] added {} to {}", line.trim(), gi_path.display());
+                }
+            }
+        }
+        eprintln!(
+            "[gait] warning: this workspace is inside your code tree; running it will \
+             require --allow-intree, and an agent could then write to its own config."
+        );
+    }
+
     print_init_summary(&gait_dir);
 }
 
@@ -238,7 +334,7 @@ mod tests {
         assert!(gait_dir.join(".active").exists(), ".active/ must exist");
         assert!(
             !gait_dir.join("sessions").exists(),
-            "sessions/ must not be pre-created — it comes into existence via git \\
+            "sessions/ must not be pre-created — it comes into existence via git \
              checkout once a session is persisted"
         );
         let gi = std::fs::read_to_string(gait_dir.join(".gitignore")).unwrap();
@@ -346,5 +442,73 @@ mod tests {
             assert_eq!(gi.matches("USER.md").count(), 1, "USER.md appears once");
             assert_eq!(gi.matches(".active/").count(), 1, ".active/ appears once");
         }
+    }
+}
+
+#[cfg(test)]
+mod discovery_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn gitignore_line_is_relative_with_trailing_slash() {
+        let repo = PathBuf::from("/home/me/proj");
+        let gait_dir = PathBuf::from("/home/me/proj/.gait");
+        assert_eq!(gitignore_line_for(&repo, &gait_dir).unwrap(), ".gait/");
+    }
+
+    #[test]
+    fn gitignore_line_none_when_outside_repo() {
+        let repo = PathBuf::from("/home/me/proj");
+        let gait_dir = PathBuf::from("/home/me/gait-home");
+        assert_eq!(gitignore_line_for(&repo, &gait_dir), None);
+    }
+
+    #[test]
+    fn enclosing_repo_found_from_subdir() {
+        let t = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(t.path().join(".git")).unwrap();
+        let sub = t.path().join("a/b");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(enclosing_git_repo(&sub), Some(t.path().to_path_buf()));
+    }
+
+    #[test]
+    fn is_gait_workspace_detects_active_dir_marker() {
+        let t = tempfile::TempDir::new().unwrap();
+        assert!(!is_gait_workspace(t.path()));
+        std::fs::create_dir(t.path().join(".active")).unwrap();
+        assert!(is_gait_workspace(t.path()));
+    }
+}
+
+#[cfg(test)]
+mod decision_tests {
+    use super::*;
+
+    #[test]
+    fn existing_workspace_reinit_is_allowed_even_inside_a_repo() {
+        let t = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(t.path().join(".git")).unwrap(); // codebase repo
+        let ws = t.path().join(".gait");
+        std::fs::create_dir_all(ws.join(".active")).unwrap(); // already a gait ws
+        assert!(
+            init_decision(&ws, false).is_ok(),
+            "re-init must stay idempotent"
+        );
+    }
+
+    #[test]
+    fn fresh_target_inside_repo_is_refused_without_force() {
+        let t = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(t.path().join(".git")).unwrap();
+        assert!(init_decision(&t.path().join(".gait"), false).is_err());
+        assert!(init_decision(&t.path().join(".gait"), true).is_ok()); // --force proceeds
+    }
+
+    #[test]
+    fn out_of_tree_target_is_allowed() {
+        let t = tempfile::TempDir::new().unwrap(); // no .git above
+        assert_eq!(init_decision(&t.path().join("home"), false).unwrap(), None);
     }
 }
