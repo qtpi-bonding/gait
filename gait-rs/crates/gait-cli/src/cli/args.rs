@@ -7,23 +7,12 @@ pub fn extract_path_arg(args: &[String], flag: &str) -> Option<std::path::PathBu
         .map(|w| std::path::PathBuf::from(&w[1]))
 }
 
-/// The single source of truth for gait-dir precedence: `--gait-dir` arg >
-/// `$GAIT_DIR` env var > `None`. Callers pick the no-value policy (error vs.
-/// fall back to pwd) — see `resolve_gait_dir` and `cmd_chat`.
-pub fn gait_dir_or_env(args: &[String]) -> Option<std::path::PathBuf> {
-    if let Some(p) = extract_path_arg(args, "--gait-dir") {
-        return Some(p);
-    }
-    std::env::var("GAIT_DIR")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .map(std::path::PathBuf::from)
-}
-
-/// Resolve gait dir: --gait-dir arg > $GAIT_DIR env var > error.
+/// Resolve gait dir: `--gait-dir`/`$GAIT_DIR` > walk up for `.gait/` or `.gaitref`
+/// > error. See `gait_core::gait_dir`.
 pub fn resolve_gait_dir(args: &[String]) -> anyhow::Result<std::path::PathBuf> {
-    gait_dir_or_env(args)
-        .ok_or_else(|| anyhow::anyhow!("no gait dir: pass --gait-dir <path> or set $GAIT_DIR"))
+    let explicit = extract_path_arg(args, "--gait-dir");
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    gait_core::gait_dir::resolve(explicit, &cwd)
 }
 
 /// Resolve codebase: --codebase arg > current working directory.
@@ -93,17 +82,6 @@ mod tests {
             let result = resolve_gait_dir(&args);
             std::env::remove_var("GAIT_DIR");
             assert_eq!(result.unwrap(), std::path::PathBuf::from("/tmp/arg-gait"));
-        }
-
-        #[test]
-        #[serial]
-        fn resolve_gait_dir_errors_when_nothing_set() {
-            std::env::remove_var("GAIT_DIR");
-            let result = resolve_gait_dir(&[]);
-            assert!(
-                result.is_err(),
-                "should error when no --gait-dir and no $GAIT_DIR"
-            );
         }
 
         #[test]

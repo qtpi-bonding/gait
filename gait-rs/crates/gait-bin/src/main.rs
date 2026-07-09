@@ -38,16 +38,12 @@ async fn main() {
 
     let cli = Cli::parse();
 
+    let cwd = cwd_or_dot();
     let resolve_gait_dir = || -> PathBuf {
-        cli.gait_dir
-            .clone()
-            .or_else(|| {
-                std::env::var("GAIT_DIR")
-                    .ok()
-                    .filter(|v| !v.is_empty())
-                    .map(PathBuf::from)
-            })
-            .unwrap_or_else(cwd_or_dot)
+        gait_core::gait_dir::resolve(cli.gait_dir.clone(), &cwd).unwrap_or_else(|e| {
+            eprintln!("[gait] {e}");
+            std::process::exit(1);
+        })
     };
 
     // Mode dispatch: -e (exec), -i (interactive), bare positional (task)
