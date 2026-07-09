@@ -663,175 +663,72 @@ pub struct UnloadArgs {
     pub gait_dir: PathBuf,
 }
 
-/// Resolve `tx_path`/`session_dir` for a session id and validate that the target
-/// name is present in the global registry for the given kind. The full
-/// agent_whitelist enforcement (Phase 3's `resolve_visible_set`) is *not*
-/// reachable from this CLI context — the agent_whitelist is normally threaded
-/// through Profile/ResolvedProfile at turn-setup time, not persisted anywhere
-/// reloadable from just gait_dir+session_id. That's a known, narrower-than-ideal
-/// scope here; the in-turn `enable` enforcement at `turn/execute.rs:370` and
-/// the `--scope session` register/unregister writes are the required Phase 3
-/// enforcement points per the plan. This is the minimum: a name not present in
-/// any registry must error clearly.
-fn resolve_load_targets(
-    kind: &str,
-    name: &str,
-    gait_dir: &std::path::Path,
-    session_id: &str,
-) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+fn parse_ext_kind(kind: &str) -> Result<gait_ops::extension::ExtKind, String> {
     match kind {
-        "mcp" | "skill" | "plugin" => {}
-        other => {
-            return Err(format!(
-                "unknown kind '{}': use mcp, skill, or plugin",
-                other
-            ));
-        }
+        "mcp" => Ok(gait_ops::extension::ExtKind::Mcp),
+        "skill" => Ok(gait_ops::extension::ExtKind::Skill),
+        "plugin" => Ok(gait_ops::extension::ExtKind::Plugin),
+        other => Err(format!(
+            "unknown kind '{}': use mcp, skill, or plugin",
+            other
+        )),
     }
-
-    // `gait_core::mcp`/`gait_core::wasm_plugins` are `pub(crate)` (not
-    // reachable from this crate), so mcp/plugin existence is checked the same
-    // way admin.rs's own disk-first branches do: by the canonical disk path,
-    // not a scan helper. `skills::scan_skills` is public and used directly.
-    let in_global_registry: bool = match kind {
-        "skill" => gait_core::skills::scan_skills(gait_dir)
-            .iter()
-            .any(|s| s.name == name),
-        "mcp" => gait_dir.join("mcp").join(format!("{}.json", name)).exists(),
-        "plugin" => gait_dir.join("plugins").join(name).exists(),
-        _ => unreachable!(),
-    };
-    if !in_global_registry {
-        return Err(format!(
-            "{} '{}' is not registered; run `gait register {} {}` first",
-            kind, name, kind, name
-        ));
-    }
-
-    let tx_path = gait_core::session::live::log_path(gait_dir, session_id);
-    let session_dir = gait_core::session::live::worktree_dir(gait_dir, session_id);
-    Ok((tx_path, session_dir))
 }
 
 pub fn cmd_load(args: LoadArgs) {
-    let (tx_path, session_dir) =
-        match resolve_load_targets(&args.kind, &args.name, &args.gait_dir, &args.session_id) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("[gait] error: {}", e);
-                std::process::exit(1);
-            }
-        };
-    if let Err(e) =
-        gait_core::session::log::write_toggle(&tx_path, &session_dir, &args.kind, &args.name, true)
-    {
-        eprintln!("[gait] error: {}", e);
-        std::process::exit(1);
+    use gait_ops::extension::{load as op_load, LoadParams};
+
+    let kind = match parse_ext_kind(&args.kind) {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("[gait] error: {}", e);
+            std::process::exit(1);
+        }
+    };
+    match op_load(LoadParams {
+        gait_dir: args.gait_dir,
+        session_id: args.session_id.clone(),
+        kind,
+        name: args.name.clone(),
+    }) {
+        Ok(_) => println!(
+            "Loaded {} '{}' into session '{}'.",
+            args.kind, args.name, args.session_id
+        ),
+        Err(e) => {
+            eprintln!("[gait] error: {}", e);
+            std::process::exit(1);
+        }
     }
-    println!(
-        "Loaded {} '{}' into session '{}'.",
-        args.kind, args.name, args.session_id
-    );
 }
 
 pub fn cmd_unload(args: UnloadArgs) {
-    let (tx_path, session_dir) =
-        match resolve_load_targets(&args.kind, &args.name, &args.gait_dir, &args.session_id) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("[gait] error: {}", e);
-                std::process::exit(1);
-            }
-        };
-    if let Err(e) =
-        gait_core::session::log::write_toggle(&tx_path, &session_dir, &args.kind, &args.name, false)
-    {
-        eprintln!("[gait] error: {}", e);
-        std::process::exit(1);
+    use gait_ops::extension::{unload as op_unload, LoadParams};
+
+    let kind = match parse_ext_kind(&args.kind) {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("[gait] error: {}", e);
+            std::process::exit(1);
+        }
+    };
+    match op_unload(LoadParams {
+        gait_dir: args.gait_dir,
+        session_id: args.session_id.clone(),
+        kind,
+        name: args.name.clone(),
+    }) {
+        Ok(_) => println!(
+            "Unloaded {} '{}' from session '{}'.",
+            args.kind, args.name, args.session_id
+        ),
+        Err(e) => {
+            eprintln!("[gait] error: {}", e);
+            std::process::exit(1);
+        }
     }
-    println!(
-        "Unloaded {} '{}' from session '{}'.",
-        args.kind, args.name, args.session_id
-    );
 }
 pub fn cmd_reply(_args: ReplyArgs) {
     eprintln!("[gait] error: reply not yet implemented");
     std::process::exit(1);
-}
-
-// --- Phase 4: load/unload tests ---
-#[cfg(test)]
-mod load_unload_tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    /// Build a minimal gait-dir with a single registered skill at
-    /// `skills/tdd/SKILL.md` and a quiescent session's log directory. No git
-    /// worktree needed — `write_toggle` only needs `tx_path`'s parent dir to
-    /// exist and `session_dir` to have no live lock file.
-    fn ws_with_skill_and_session() -> (TempDir, String) {
-        let ws = TempDir::new().unwrap();
-        let session_id = "load0001".to_string();
-        std::fs::create_dir_all(ws.path().join("skills/tdd")).unwrap();
-        std::fs::write(
-            ws.path().join("skills/tdd/SKILL.md"),
-            "---\nname: tdd\ndescription: x\nenabled: false\n---\n# body\n",
-        )
-        .unwrap();
-        let tx_path = gait_core::session::live::log_path(ws.path(), &session_id);
-        std::fs::create_dir_all(tx_path.parent().unwrap()).unwrap();
-        (ws, session_id)
-    }
-
-    fn read_toggle(tx_path: &std::path::Path) -> gait_core::proto::gait::log::v1::Toggle {
-        use gait_core::proto::gait::log::v1::{event, payload};
-        let events = gait_core::session::log::read_events(tx_path).unwrap();
-        match &events[0].body {
-            Some(event::Body::Payload(p)) => match &p.kind {
-                Some(payload::Kind::Toggle(t)) => t.clone(),
-                other => panic!("expected Toggle payload, got {other:?}"),
-            },
-            other => panic!("expected payload body, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn cmd_load_appends_toggle_enabled_true_to_quiescent_log() {
-        let (ws, sid) = ws_with_skill_and_session();
-        let tx_path = gait_core::session::live::log_path(ws.path(), &sid);
-        cmd_load(LoadArgs {
-            kind: "skill".into(),
-            name: "tdd".into(),
-            session_id: sid.clone(),
-            gait_dir: ws.path().to_path_buf(),
-        });
-        let toggle = read_toggle(&tx_path);
-        assert_eq!(toggle.name, "tdd");
-        assert!(toggle.enabled, "load must set enabled=true");
-    }
-
-    #[test]
-    fn cmd_unload_appends_toggle_enabled_false_to_quiescent_log() {
-        let (ws, sid) = ws_with_skill_and_session();
-        let tx_path = gait_core::session::live::log_path(ws.path(), &sid);
-        cmd_unload(UnloadArgs {
-            kind: "skill".into(),
-            name: "tdd".into(),
-            session_id: sid.clone(),
-            gait_dir: ws.path().to_path_buf(),
-        });
-        let toggle = read_toggle(&tx_path);
-        assert_eq!(toggle.name, "tdd");
-        assert!(!toggle.enabled, "unload must set enabled=false");
-    }
-
-    #[test]
-    fn resolve_load_targets_rejects_unknown_name() {
-        let ws = TempDir::new().unwrap();
-        let err = resolve_load_targets("skill", "no-such-skill", ws.path(), "anyid").unwrap_err();
-        assert!(
-            err.contains("not registered"),
-            "expected 'not registered' error, got: {err}"
-        );
-    }
 }
