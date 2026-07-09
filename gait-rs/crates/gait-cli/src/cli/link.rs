@@ -1,5 +1,7 @@
 //! `gait link <gait-dir>` — write a `.gaitref` pointer in cwd naming an existing
 //! gait workspace, so `gait_core::gait_dir::resolve` finds it by walk-up.
+#![allow(clippy::print_stdout, clippy::print_stderr, clippy::exit)]
+
 use std::path::{Path, PathBuf};
 
 pub fn pointer_body(gait_dir: &Path) -> String {
@@ -22,23 +24,17 @@ pub fn cmd_link(args: LinkArgs) {
     } else {
         cwd.join(&args.gait_dir)
     };
-    if !target.join(".git").exists() {
-        eprintln!(
-            "[gait] {} is not a gait workspace (no .git) — run `gait init {}` first",
-            target.display(),
-            target.display()
-        );
-        std::process::exit(1);
+    match gait_ops::workspace::link(&cwd, &target) {
+        Ok(out) => println!(
+            "[gait] linked {} -> {}",
+            out.gaitref.display(),
+            out.target.display()
+        ),
+        Err(e) => {
+            eprintln!("[gait] {e}");
+            std::process::exit(1);
+        }
     }
-    if let Err(e) = std::fs::write(cwd.join(".gaitref"), pointer_body(&target)) {
-        eprintln!("[gait] cannot write .gaitref: {e}");
-        std::process::exit(1);
-    }
-    println!(
-        "[gait] linked {} -> {}",
-        cwd.join(".gaitref").display(),
-        target.display()
-    );
 }
 
 #[cfg(test)]

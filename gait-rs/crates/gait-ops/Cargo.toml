@@ -18,3 +18,4 @@ libc = "0.2"      # daemon::stop killpg(SIGTERM)
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt"] }  # models() async test
+serial_test = "3"  # GAIT_DIR-env-var-safe tests (link round-trip)
