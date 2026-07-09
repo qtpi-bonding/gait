@@ -141,8 +141,12 @@ pub fn parse_flags(args: &[String]) -> std::collections::HashMap<String, String>
     map
 }
 
+/// `gait auth <list|add|remove> [<provider>]`. Thin adapter over
+/// `gait_ops::auth`. The `add` branch keeps its own stdin read of the API
+/// key (per design §4: fixed-value prompts → value passed as a param, but
+/// the prompt itself stays in the adapter); it then delegates the actual
+/// store write to the op.
 pub fn cmd_auth(args: AuthArgs) {
-    use gait_core::auth;
     // Normalize: action defaults to "list"; accept "ls" as alias.
     let action = args
         .action
@@ -152,13 +156,11 @@ pub fn cmd_auth(args: AuthArgs) {
     let provider = args.provider.as_deref();
     match action {
         "list" => {
-            let creds = auth::list_credentials();
+            let creds = gait_ops::auth::list();
             if creds.is_empty() {
                 println!("No credentials configured. Run: gait auth add <provider>");
             } else {
-                let mut sorted: Vec<_> = creds.into_iter().collect();
-                sorted.sort_by(|a, b| a.0.cmp(&b.0));
-                for (k, v) in sorted {
+                for (k, v) in &creds {
                     println!("  {}: {}", k, v);
                 }
             }
@@ -180,15 +182,13 @@ pub fn cmd_auth(args: AuthArgs) {
                 .unwrap_or_default()
                 .trim()
                 .to_string();
-            if key.is_empty() {
-                eprintln!("empty key, aborted");
-                std::process::exit(1);
+            match gait_ops::auth::add(provider, key) {
+                Ok(out) => println!("Saved {} credentials ({})", out.provider, out.display),
+                Err(e) => {
+                    eprintln!("[gait] error: {}", e);
+                    std::process::exit(1);
+                }
             }
-            if let Err(e) = auth::write_api_key(provider, &key) {
-                eprintln!("[gait] error: {}", e);
-                std::process::exit(1);
-            }
-            println!("Saved {} credentials", provider);
         }
         "remove" | "rm" => {
             let provider = match provider {
@@ -198,11 +198,13 @@ pub fn cmd_auth(args: AuthArgs) {
                     std::process::exit(1);
                 }
             };
-            if let Err(e) = auth::remove_api_key(provider) {
-                eprintln!("[gait] error: {}", e);
-                std::process::exit(1);
+            match gait_ops::auth::remove(provider) {
+                Ok(out) => println!("Removed {} credentials", out.provider),
+                Err(e) => {
+                    eprintln!("[gait] error: {}", e);
+                    std::process::exit(1);
+                }
             }
-            println!("Removed {} credentials", provider);
         }
         other => {
             eprintln!("unknown auth subcommand: {}", other);
@@ -212,12 +214,13 @@ pub fn cmd_auth(args: AuthArgs) {
     }
 }
 
+/// `gait models [filter]`. Thin adapter over `gait_ops::auth::models`.
+/// The op owns the network read + filter; the adapter only renders.
 pub async fn cmd_models(args: ModelsArgs) {
-    use gait_core::models;
     let filter = args.filter.as_deref();
-    match models::get_models().await {
-        Ok(models) => {
-            let filtered = models::filter_models(&models, filter);
+    match gait_ops::auth::models(filter).await {
+        Ok(out) => {
+            let filtered = out.render_filtered();
             for m in &filtered {
                 println!("  {}/{}", m.provider, m.id);
             }
