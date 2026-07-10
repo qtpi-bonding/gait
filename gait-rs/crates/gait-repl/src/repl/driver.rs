@@ -114,7 +114,6 @@ pub struct ReplSource {
     pub agent_path: Option<PathBuf>,
     pub repos: gait_core::git::Repos,
     pub shell_history_path: PathBuf,
-    pub gait_bin: PathBuf,
     pub last_blocks: Vec<String>,
     pub ran_turn: bool,
 }
@@ -1217,7 +1216,6 @@ mod command_tests {
             agent_path: None,
             repos: gait_core::git::Repos::production(),
             shell_history_path: gait_dir.join("sh.jsonl"),
-            gait_bin: std::path::PathBuf::from("gait"),
             last_blocks: Vec::new(),
             ran_turn: false,
         };

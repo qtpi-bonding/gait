@@ -81,8 +81,6 @@ pub async fn run_chat(
     agent_name: Option<String>,
     session_id: Option<String>,
 ) -> anyhow::Result<()> {
-    let gait_bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gait"));
-
     let agent_path: Option<PathBuf> = match agent_name.as_deref() {
         Some(n) => Some(gait_core::agent_frontmatter::resolve_markdown_context_path(
             &gait_dir,
@@ -219,7 +217,6 @@ pub async fn run_chat(
             agent_path: agent_path.clone(),
             repos: repos.clone(),
             shell_history_path,
-            gait_bin: gait_bin.clone(),
             last_blocks: Vec::new(),
             ran_turn: false,
         };

@@ -101,7 +101,7 @@ pub fn list() -> AuthListOutcome {
 pub async fn models(filter: Option<&str>) -> Result<ModelsOutcome, OpError> {
     let models = gait_core::models::get_models()
         .await
-        .map_err(|e| OpError::Other(e.into()))?;
+        .map_err(OpError::Other)?;
     Ok(ModelsOutcome {
         models,
         filter: filter.map(|s| s.to_string()),
@@ -181,7 +181,7 @@ mod tests {
         let out = list();
         // Insertion-order check is too strict (depends on the host's real
         // auth.json), so just assert the value is a well-formed map.
-        for (_, v) in &out {
+        for v in out.values() {
             assert!(!v.is_empty(), "list value must be non-empty: {v:?}");
         }
     }
