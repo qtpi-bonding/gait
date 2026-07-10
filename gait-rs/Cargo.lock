@@ -1174,6 +1174,7 @@ dependencies = [
  "async-trait",
  "crossterm 0.29.0",
  "gait-core",
+ "gait-ops",
  "gait-workflow",
  "glob",
  "nu-ansi-term",

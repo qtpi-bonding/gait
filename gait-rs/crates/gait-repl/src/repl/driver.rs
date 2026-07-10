@@ -5,7 +5,6 @@
 //! so the non-`Send` `Rc` is fine.
 use std::cell::RefCell;
 use std::path::PathBuf;
-use std::process::Command;
 use std::rc::Rc;
 
 use crate::repl::{bang_command_str, commands as cmd, is_bang_command};
@@ -307,26 +306,15 @@ impl TurnSource for ReplSource {
                     }
                     continue;
                 }
-                // Switch the session model by rewriting <gait-dir>/gait.jsonc.
-                let cfg_path = self.gait_dir.join("gait.jsonc");
-                let raw = std::fs::read_to_string(&cfg_path).unwrap_or_default();
-                let mut v: serde_json::Value =
-                    serde_json::from_str(&raw).unwrap_or(serde_json::json!({}));
-                if let Some(obj) = v.as_object_mut() {
-                    obj.insert(
-                        "model".to_string(),
-                        serde_json::Value::String(arg.to_string()),
-                    );
-                } else {
-                    v = serde_json::json!({ "model": arg });
-                }
-                let serialized =
-                    serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string());
-                if let Err(e) = std::fs::write(&cfg_path, serialized) {
-                    self.shared.borrow_mut().builder.write_raw(&format!(
-                        "[gait] /model: write {}: {e}\r\n",
-                        cfg_path.display()
-                    ));
+                // Switch the session model via the shared op (rewrites
+                // <gait-dir>/gait.jsonc, preserving other keys — see
+                // gait_ops::config::set_model doc comment for the data-loss bug
+                // this replaces).
+                if let Err(e) = gait_ops::config::set_model(&self.gait_dir, arg) {
+                    self.shared
+                        .borrow_mut()
+                        .builder
+                        .write_raw(&format!("[gait] /model: {e}\r\n"));
                     continue;
                 }
                 self.shared
@@ -443,31 +431,42 @@ impl TurnSource for ReplSource {
                 continue;
             }
 
-            // /unlock [scope] — delegate to `gait unlock` for the current session.
-            // Scope defaults to "once". Mirrors /u N → gait undo.
+            // /unlock [scope] — drive gait_ops::permission::unlock in-process for
+            // the current session. Scope defaults to "once". Mirrors /u N →
+            // gait_ops::session::undo.
             if let Some(scope_str) = line.strip_prefix("/unlock") {
                 let scope = scope_str.trim();
                 let scope = if scope.is_empty() { "once" } else { scope };
                 match scope {
                     "once" | "session" | "global" | "agent" => {
-                        let ok = Command::new(&self.gait_bin)
-                            .args([
-                                "unlock",
-                                &self.session_id,
-                                "--scope",
-                                scope,
-                                "--gait-dir",
-                                self.gait_dir.to_str().unwrap_or("."),
-                            ])
-                            .status()
-                            .map(|s| s.success())
-                            .unwrap_or(false);
-                        if !ok {
-                            self.shared.borrow_mut().builder.write_raw(&format!(
-                                "[gait] unlock failed — check: gait status {} --gait-dir {}\r\n",
-                                self.session_id,
-                                self.gait_dir.display()
-                            ));
+                        let op_scope = match scope {
+                            "once" => gait_ops::permission::UnlockScope::Once,
+                            "session" => gait_ops::permission::UnlockScope::Session,
+                            "global" => gait_ops::permission::UnlockScope::Global,
+                            "agent" => gait_ops::permission::UnlockScope::Agent,
+                            _ => unreachable!(),
+                        };
+                        match gait_ops::permission::unlock(gait_ops::permission::UnlockParams {
+                            gait_dir: self.gait_dir.clone(),
+                            session_id: self.session_id.clone(),
+                            scope: op_scope,
+                            agent: None,
+                        }) {
+                            Ok(outcome) => {
+                                for w in &outcome.warnings {
+                                    self.shared
+                                        .borrow_mut()
+                                        .builder
+                                        .write_raw(&format!("[gait] unlock: {w}\r\n"));
+                                }
+                            }
+                            Err(e) => {
+                                self.shared.borrow_mut().builder.write_raw(&format!(
+                                    "[gait] unlock failed: {e} — check: gait status {} --gait-dir {}\r\n",
+                                    self.session_id,
+                                    self.gait_dir.display()
+                                ));
+                            }
                         }
                     }
                     _ => {
@@ -481,9 +480,10 @@ impl TurnSource for ReplSource {
             }
 
             // /skill [load|unload <name>] — Phase 4 (scoped registry): list the
-            // effective visible set (no args), or delegate to `gait load`/`gait
-            // unload` for the current session (mirrors /unlock's subprocess
-            // pattern, since those mutate a live session's log).
+            // effective visible set (no args), or drive
+            // gait_ops::extension::{load,unload} in-process for the current
+            // session (mirrors /unlock's op-call pattern, since those mutate a
+            // live session's log).
             if let Some(rest) = line.strip_prefix("/skill") {
                 let rest = rest.trim();
                 if rest.is_empty() {
@@ -534,23 +534,28 @@ impl TurnSource for ReplSource {
                             ));
                             continue;
                         };
-                        let ok = Command::new(&self.gait_bin)
-                            .args([
-                                verb,
-                                kind,
-                                name,
-                                &self.session_id,
-                                "--gait-dir",
-                                self.gait_dir.to_str().unwrap_or("."),
-                            ])
-                            .status()
-                            .map(|s| s.success())
-                            .unwrap_or(false);
-                        if !ok {
-                            self.shared
-                                .borrow_mut()
-                                .builder
-                                .write_raw(&format!("[gait] /skill {} {} failed\r\n", verb, name));
+                        let ext_kind = match kind {
+                            "skill" => gait_ops::extension::ExtKind::Skill,
+                            "mcp" => gait_ops::extension::ExtKind::Mcp,
+                            "plugin" => gait_ops::extension::ExtKind::Plugin,
+                            _ => unreachable!(),
+                        };
+                        let params = gait_ops::extension::LoadParams {
+                            gait_dir: self.gait_dir.clone(),
+                            session_id: self.session_id.clone(),
+                            kind: ext_kind,
+                            name: name.to_string(),
+                        };
+                        let result = if verb == "load" {
+                            gait_ops::extension::load(params)
+                        } else {
+                            gait_ops::extension::unload(params)
+                        };
+                        if let Err(e) = result {
+                            self.shared.borrow_mut().builder.write_raw(&format!(
+                                "[gait] /skill {} {} failed: {e}\r\n",
+                                verb, name
+                            ));
                         }
                     }
                     _ => {
@@ -623,56 +628,76 @@ impl TurnSource for ReplSource {
             }
 
             // /u [N], /uc [N], /ut [N]: undo both axes / code-only / transcript-only.
-            let line: String = if line.starts_with("/uc")
-                || line.starts_with("/ut")
-                || line.starts_with("/u")
-            {
-                let (flags, label, arg_start) = if line.starts_with("/uc") {
-                    (["--code"].as_slice(), "code", 3usize)
-                } else if line.starts_with("/ut") {
-                    (["--transcript"].as_slice(), "transcript", 3usize)
-                } else {
-                    (["--code", "--transcript"].as_slice(), "both", 2usize)
-                };
-                let arg = line[arg_start..].trim().to_owned();
-                if arg.is_empty() {
-                    let _ = Command::new(&self.gait_bin)
-                        .args([
-                            "undo",
-                            &self.session_id,
-                            "--list",
-                            "--gait-dir",
-                            self.gait_dir.to_str().unwrap_or("."),
-                        ])
-                        .status();
-                    continue;
-                } else if let Ok(n) = arg.parse::<u32>() {
-                    let mut cmd_args = vec!["undo", &self.session_id, "--turn", &arg];
-                    cmd_args.extend_from_slice(flags);
-                    cmd_args
-                        .extend_from_slice(&["--gait-dir", self.gait_dir.to_str().unwrap_or(".")]);
-                    let ok = Command::new(&self.gait_bin)
-                        .args(&cmd_args)
-                        .status()
-                        .map(|s| s.success())
-                        .unwrap_or(false);
-                    if !ok {
+            // Drives gait_ops::session::undo in-process; the mapping from
+            // slash-variant to (code, transcript) mirrors the CLI's
+            // --code/--transcript flag combinations exactly (see
+            // gait_ops::session::undo's do_code/do_transcript derivation).
+            let line: String =
+                if line.starts_with("/uc") || line.starts_with("/ut") || line.starts_with("/u") {
+                    let (code, transcript, label, arg_start) = if line.starts_with("/uc") {
+                        (true, false, "code", 3usize)
+                    } else if line.starts_with("/ut") {
+                        (false, true, "transcript", 3usize)
+                    } else {
+                        (true, true, "both", 2usize)
+                    };
+                    let arg = line[arg_start..].trim().to_owned();
+                    if arg.is_empty() {
+                        match gait_ops::session::undo(gait_ops::session::UndoParams {
+                            gait_dir: self.gait_dir.clone(),
+                            session_id: self.session_id.clone(),
+                            turn: None,
+                            code: false,
+                            transcript: false,
+                            list: true,
+                        }) {
+                            Ok(outcome) => {
+                                let mut out = String::new();
+                                for t in &outcome.turns {
+                                    let mark = t.checkpoint_short.as_deref().unwrap_or("--------");
+                                    out.push_str(&format!(
+                                        "turn {}\t[{}]\t{}\r\n",
+                                        t.turn, mark, t.summary
+                                    ));
+                                }
+                                self.shared.borrow_mut().builder.write_raw(&out);
+                            }
+                            Err(e) => {
+                                self.shared
+                                    .borrow_mut()
+                                    .builder
+                                    .write_raw(&format!("[undo] {e}\r\n"));
+                            }
+                        }
+                        continue;
+                    } else if let Ok(n) = arg.parse::<u32>() {
+                        match gait_ops::session::undo(gait_ops::session::UndoParams {
+                            gait_dir: self.gait_dir.clone(),
+                            session_id: self.session_id.clone(),
+                            turn: Some(n),
+                            code,
+                            transcript,
+                            list: false,
+                        }) {
+                            Ok(_outcome) => {}
+                            Err(_e) => {
+                                self.shared.borrow_mut().builder.write_raw(&format!(
+                                    "[undo] failed — is there a turn {n} for this session?\r\n"
+                                ));
+                                continue;
+                            }
+                        }
+                        format!("[undo] restored {label} to turn {n}")
+                    } else {
                         self.shared.borrow_mut().builder.write_raw(&format!(
-                            "[undo] failed — is there a turn {n} for this session?\r\n"
+                            "{}\r\n",
+                            crate::chat::hints::UNDO_USAGE.replace('\n', "\r\n")
                         ));
                         continue;
                     }
-                    format!("[undo] restored {label} to turn {n}")
                 } else {
-                    self.shared.borrow_mut().builder.write_raw(&format!(
-                        "{}\r\n",
-                        crate::chat::hints::UNDO_USAGE.replace('\n', "\r\n")
-                    ));
-                    continue;
-                }
-            } else {
-                line
-            };
+                    line
+                };
 
             // Reedline records history automatically on Signal::Success; no manual add needed.
             // Unified expansion (identical to the CLI path): $(cmd)/$(N), @path, >(N).
@@ -1271,6 +1296,50 @@ mod command_tests {
     /// Helper to reach the `Shared` out of a `ReplSource` for the weak assertion above.
     fn shared_ref(src: &ReplSource) -> crate::repl::Shared {
         src.shared.clone()
+    }
+
+    /// Task 8 Step 6: `/unlock` must drive `gait_ops::permission::unlock`
+    /// in-process — no `Command::new(&self.gait_bin)` subprocess spawn. Seeds a
+    /// pending `Unlock` event directly on the session log (the same shape
+    /// `gait-ops`'s own unlock tests use), scripts `/unlock` through
+    /// `ReplSource::next()`, then asserts the log gained an `UnlockReply`
+    /// event — proof the op ran and mutated the tempdir session, not a
+    /// subprocess writing through some other path.
+    #[tokio::test]
+    async fn slash_unlock_drives_op_in_process_and_appends_reply() {
+        use gait_core::proto::gait::log::v1::{event, payload};
+
+        let d = temp_gait_dir();
+        let (mut src, _s) = source_with(d.path(), &["/unlock", "/q"]);
+        let tx_path = gait_core::session::live::log_path(d.path(), &src.session_id);
+        std::fs::create_dir_all(tx_path.parent().unwrap()).unwrap();
+        let item = gait_core::proto::gait::log::v1::UnlockItem {
+            id: "u1".into(),
+            tool_name: "write".into(),
+            resource: "/tmp/a.txt".into(),
+            dimension: "write".into(),
+            preview: None,
+        };
+        wire::append(&tx_path, events::unlock(&[item])).unwrap();
+
+        let _ = src.next().await; // processes /unlock, then /q ends
+
+        let events = gait_core::session::log::read_events(&tx_path).unwrap();
+        assert_eq!(
+            events.len(),
+            2,
+            "expected the seeded Unlock + an UnlockReply"
+        );
+        match &events[1].body {
+            Some(event::Body::Payload(p)) => {
+                assert!(
+                    matches!(p.kind, Some(payload::Kind::UnlockReply(_))),
+                    "expected UnlockReply, got {:?}",
+                    p.kind
+                );
+            }
+            other => panic!("expected payload body, got {other:?}"),
+        }
     }
 
     #[tokio::test]
