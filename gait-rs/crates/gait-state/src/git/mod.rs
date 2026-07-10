@@ -8,20 +8,18 @@ use crate::git::trace::{GitTraceRepo, TraceRepo};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub(crate) fn with_gait_trailer(message: &str) -> String {
+pub fn with_gait_trailer(message: &str) -> String {
     format!("{}\n\nCo-Authored-By: gait <gait@localhost>", message)
 }
 
-pub(crate) fn signature_or_default(
-    repo: &git2::Repository,
-) -> anyhow::Result<git2::Signature<'static>> {
+pub fn signature_or_default(repo: &git2::Repository) -> anyhow::Result<git2::Signature<'static>> {
     match repo.signature() {
         Ok(sig) => Ok(sig.to_owned()),
         Err(_) => Ok(git2::Signature::now("gait", "gait@localhost")?),
     }
 }
 
-pub(crate) fn checkpoint_git_dir(gait_dir: &Path, session_id: &str) -> PathBuf {
+pub fn checkpoint_git_dir(gait_dir: &Path, session_id: &str) -> PathBuf {
     crate::session::live::worktree_dir(gait_dir, session_id).join("codebase.git")
 }
 

@@ -139,7 +139,7 @@ mod tests {
             &self,
             _args: serde_json::Value,
             _rec: &dyn crate::types::Rec,
-        ) -> Result<serde_json::Value, crate::tools::ToolError> {
+        ) -> Result<serde_json::Value, crate::types::ToolError> {
             Ok(serde_json::Value::Null)
         }
         fn permission(&self, _args: &serde_json::Value) -> ToolPermission {

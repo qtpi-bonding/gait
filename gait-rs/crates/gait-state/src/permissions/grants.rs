@@ -19,9 +19,9 @@
 //! Behavior is identical to the previous inline computation in
 //! `turn/mod.rs`; this is a pure relocation.
 
-pub(crate) use crate::session::retrace::ActivePermissions;
+pub use crate::session::retrace::ActivePermissions;
 #[allow(unused_imports)]
-pub(crate) use crate::session::retrace::AllowState;
+pub use crate::session::retrace::AllowState;
 
 use crate::proto::gait::log::v1::Event;
 use crate::session::retrace::{run_projection, MutationState};

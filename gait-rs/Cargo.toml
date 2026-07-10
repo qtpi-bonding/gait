@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/gait-bin", "crates/gait-repl", "crates/gait-cli", "crates/gait-proto", "crates/gait-types", "crates/gait-provider", "crates/gait-workflow", "crates/gait-ops", "crates/gait-mangen", "crates/gait-sandbox"]
+members = ["crates/gait-bin", "crates/gait-repl", "crates/gait-cli", "crates/gait-proto", "crates/gait-types", "crates/gait-provider", "crates/gait-workflow", "crates/gait-ops", "crates/gait-mangen", "crates/gait-sandbox", "crates/gait-state"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
@@ -50,6 +50,7 @@ gait-types     = { path = "crates/gait-types" }
 gait-provider   = { path = "crates/gait-provider" }
 gait-sandbox    = { path = "crates/gait-sandbox" }
 gait-proto      = { path = "crates/gait-proto" }
+gait-state      = { path = "crates/gait-state" }
 prost          = "0.13"
 pbjson-types   = "0.7"
 # content_hash pipeline: SHA-256 over JCS(RFC 8785) of the canonical body JSON.
@@ -64,6 +65,9 @@ testing = []
 tempfile = "3"
 serial_test = "3"
 gait-workflow = { path = "crates/gait-workflow" }
+# gait-core's test helpers (e.g. `git::checkpoint::MockCheckpointRepo`) live in
+# gait-state behind `feature = "testing"`; enable it for the test build only.
+gait-state = { path = "crates/gait-state", features = ["testing"] }
 
 [[bin]]
 name = "mock_brain"

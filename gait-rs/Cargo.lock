@@ -1067,6 +1067,7 @@ dependencies = [
  "gait-proto",
  "gait-provider",
  "gait-sandbox",
+ "gait-state",
  "gait-types",
  "gait-workflow",
  "git2",
@@ -1203,6 +1204,35 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+]
+
+[[package]]
+name = "gait-state"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "dirs-next",
+ "fs2",
+ "futures-util",
+ "gait-proto",
+ "gait-provider",
+ "gait-sandbox",
+ "gait-types",
+ "git2",
+ "libc",
+ "pbjson-types",
+ "prost",
+ "regex",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

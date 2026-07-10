@@ -97,7 +97,7 @@ fn effective_kind<'a>(
 /// Iterate `(event, effective_kind)` over the full session, applying mutations:
 /// redacted events are skipped; replaced events yield their replacement kind.
 /// This is the single canonical input every `Projection` folds.
-pub(crate) fn effective_kinds<'a>(
+pub fn effective_kinds<'a>(
     all_events: &'a [Event],
     mutations: &'a HashMap<String, MutationState>,
 ) -> impl Iterator<Item = (&'a Event, &'a payload::Kind)> {
@@ -111,7 +111,7 @@ pub(crate) fn effective_kinds<'a>(
 /// — so two projections can never disagree about what happened. Mutations are the
 /// substrate (applied before folding); compaction is NOT handled here (only the
 /// `ActiveMessages` projection cares about it).
-pub(crate) trait Projection {
+pub trait Projection {
     type State;
     /// Initial state before any events (seeded from config where relevant).
     fn seed(&self) -> Self::State;
@@ -130,7 +130,7 @@ pub(crate) trait Projection {
     }
 }
 /// Drive one projection over the mutation-applied full-session stream.
-pub(crate) fn run_projection<P: Projection>(
+pub fn run_projection<P: Projection>(
     p: &P,
     all_events: &[Event],
     mutations: &HashMap<String, MutationState>,
@@ -278,7 +278,7 @@ impl From<&pb::Agent> for AgentState {
 /// an `Agent` snapshot (recompose-preserving re-baseline, I4). `apply` folds the
 /// deltas: in 3a that's the `load` ToolCall compat path (byte-identical to the old
 /// ActiveLoadables), switched to typed `Toggle`/`ModelChange` in 3b.
-pub(crate) struct ActiveAgent {
+pub struct ActiveAgent {
     pub seed: AgentState,
 }
 impl Projection for ActiveAgent {
@@ -335,7 +335,7 @@ impl Projection for ActiveAgent {
 /// Last-write-wins working directory. Seeds at the codebase root; each `Cwd`
 /// event overwrites. Folded over the full session (survives compaction), so the
 /// sticky cwd persists across turns and `undo` reverts it (the event is truncated).
-pub(crate) struct ActiveCwd {
+pub struct ActiveCwd {
     pub root: std::path::PathBuf,
 }
 impl Projection for ActiveCwd {
@@ -353,7 +353,7 @@ impl Projection for ActiveCwd {
 /// Active-mode overlay — LWW over `Mode` events across the full session.
 /// Standalone (like `ActiveCwd`): NO checkpoint override, so an `Agent`
 /// re-baseline never clears it (finding #1). `None` = default / no overlay.
-pub(crate) struct ActiveMode;
+pub struct ActiveMode;
 impl Projection for ActiveMode {
     type State = Option<pb::Mode>;
     fn seed(&self) -> Self::State {
@@ -398,7 +398,7 @@ pub struct RawMessagesState {
     pub base: Vec<Message>,
 }
 /// Accumulator for the `ActiveMessages` projection.
-pub(crate) struct MessagesState {
+pub struct MessagesState {
     msgs: Vec<Message>,
     phase: MsgPhase,
 }
@@ -613,7 +613,7 @@ impl MessagesState {
 /// calls/results coalesce into single assistant/tool messages. Honors mutations
 /// via the effective-event stream: redacted events never arrive here; replaced
 /// events arrive as their replacement kind.
-pub(crate) struct ActiveMessages;
+pub struct ActiveMessages;
 impl Projection for ActiveMessages {
     type State = MessagesState;
     fn seed(&self) -> Self::State {
@@ -688,7 +688,7 @@ impl Projection for ActiveMessages {
 /// `active_messages_into_log` in task 5), not a fold reset. The downstream
 /// `coalesce()` merges consecutive `ToolCall` assistant messages and consecutive
 /// `ToolResult` messages before they hit the provider.
-pub(crate) struct ActiveRawMessages;
+pub struct ActiveRawMessages;
 impl Projection for ActiveRawMessages {
     type State = RawMessagesState;
 
@@ -1032,7 +1032,7 @@ pub fn coalesce(raw: Vec<Message>) -> Vec<Message> {
 /// lifetime. `session` persists for the whole session; `once` is cleared on every
 /// `TurnComplete` (active only within the turn it was granted).
 #[derive(Default)]
-pub(crate) struct AllowState {
+pub struct AllowState {
     pub session: std::collections::HashSet<String>,
     pub once: std::collections::HashSet<String>,
 }
@@ -1045,7 +1045,7 @@ pub(crate) struct AllowState {
 /// `agent`/`global` scopes are config-file backed and ignored here. Because it
 /// folds the mutation-applied stream, undo/redact of a grant also drops it — but
 /// redact is for mistakes, not normal revocation.
-pub(crate) struct ActivePermissions {
+pub struct ActivePermissions {
     pub seed: std::collections::HashSet<String>,
 }
 impl Projection for ActivePermissions {

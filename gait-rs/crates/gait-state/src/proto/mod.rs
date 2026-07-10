@@ -8,7 +8,7 @@ pub use gait_proto::{envelope, gait, hash, wire, workflow_envelope};
 use crate::proto::gait::log::v1::{event, payload, Event};
 
 /// The substantive payload kind for an event, if it carries one.
-pub(crate) fn event_kind(e: &Event) -> Option<&payload::Kind> {
+pub fn event_kind(e: &Event) -> Option<&payload::Kind> {
     match &e.body {
         Some(event::Body::Payload(p)) => p.kind.as_ref(),
         _ => None,

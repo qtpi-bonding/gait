@@ -11,7 +11,7 @@ use crate::types::HookContext;
 
 /// Execute a shell command via `sh -c` with the given environment.
 /// Returns (exit_code, combined_stdout_stderr). Never panics — returns (-1, "") on spawn error.
-pub(crate) async fn run_hook(cmd: &str, env: &HashMap<String, String>) -> (i32, String) {
+pub async fn run_hook(cmd: &str, env: &HashMap<String, String>) -> (i32, String) {
     match tokio::process::Command::new("sh")
         .arg("-c")
         .arg(cmd)
@@ -37,7 +37,7 @@ pub(crate) async fn run_hook(cmd: &str, env: &HashMap<String, String>) -> (i32, 
 /// Build the full GAIT_* env-var set from a `HookContext`.
 /// Every hook invocation gets every variable — unset fields appear as empty strings or "0".
 /// Tool args are expanded as `GAIT_ARG_<KEY>` (key uppercased, hyphens → underscores).
-pub(crate) fn build_env(ctx: &HookContext) -> HashMap<String, String> {
+pub fn build_env(ctx: &HookContext) -> HashMap<String, String> {
     let mut env: HashMap<String, String> = HashMap::new();
     env.insert("GAIT_EVENT".into(), ctx.event.clone());
     env.insert("GAIT_SESSION_ID".into(), ctx.session_id.clone());

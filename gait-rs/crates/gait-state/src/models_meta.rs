@@ -6,7 +6,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-pub(crate) const SNAPSHOT: &str = include_str!("models_snapshot.json");
+pub const SNAPSHOT: &str = include_str!("models_snapshot.json");
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Cost {

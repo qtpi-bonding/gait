@@ -174,8 +174,8 @@ mod tests {
         }
     }
 
-    fn rec() -> crate::Recorder {
-        crate::Recorder::detached()
+    fn rec() -> crate::proto::Recorder {
+        crate::proto::Recorder::detached()
     }
 
     // ── post_tool ────────────────────────────────────────────────────────────
@@ -259,7 +259,7 @@ mod tests {
         )
         .unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let rec = crate::Recorder::for_session(dir.path(), "h", tx);
+        let rec = crate::proto::Recorder::for_session(dir.path(), "h", tx);
         let hook = ConfigHook::new(hook_def("post_tool", Some("edit"), "exit 0"));
         let ctx = ctx_for("post_tool", "edit", "orig", serde_json::json!({}));
         let _ = hook.post_tool(&ctx, &rec).await;

@@ -544,7 +544,7 @@ pub fn to_struct(v: &serde_json::Value) -> Option<pbjson_types::Struct> {
 }
 
 /// An optional JSON value → proto `Value` (any JSON shape).
-pub(crate) fn to_value_opt(v: &Option<serde_json::Value>) -> Option<pbjson_types::Value> {
+pub fn to_value_opt(v: &Option<serde_json::Value>) -> Option<pbjson_types::Value> {
     v.as_ref()
         .and_then(|x| serde_json::from_value(x.clone()).ok())
 }

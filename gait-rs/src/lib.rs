@@ -1,10 +1,5 @@
-pub mod auth;
-pub mod gait_dir;
-pub mod git;
 pub mod harness;
-pub mod models;
 pub mod scheduler;
-pub mod session;
 pub mod tools;
 // `run_turn` (and everything under it, sealed-brain or in-process) must never
 // touch the terminal directly — see docs/architecture.md's "The Turn I/O
@@ -18,20 +13,19 @@ pub mod turn;
 pub use gait_provider::{anthropic, factory, openai, provider, providers, strict, transport};
 pub use gait_sandbox::{process, sandbox};
 pub use gait_types::{config, diagnostic, sandbox_grant, types};
-pub mod daemon_exit;
 pub mod embed;
 pub mod launch;
-pub mod models_meta;
 pub mod modes;
 pub mod port;
 pub mod profile;
-pub mod proto;
-pub mod registry;
 
-// Deferred — external callers in gait-cli/gait-repl; seal after public wrappers added
-pub mod agent_frontmatter;
-pub mod permissions;
-pub mod skills;
+// State modules extracted into `gait-state`; re-exported here so every internal
+// `crate::<state module>` path and every external `gait_core::<state module>`
+// path keeps resolving unchanged (the strangler shimper task 6).
+pub use gait_state::{
+    agent_frontmatter, auth, config_hook, daemon_exit, gait_dir, git, hook_runner, models,
+    models_meta, permissions, proto, registry, session, skills,
+};
 
 // Shared CLI/REPL input machinery (item 12). The four submodules were
 // moved from `gait-rs/src/{expand,shell_history,pty,text}.rs` into
@@ -44,9 +38,7 @@ pub mod skills;
 mod input;
 
 // anthropic / transport are pub for integration tests (AnthropicProvider, TransportConfig)
-pub(crate) mod config_hook;
 pub(crate) mod hashline;
-pub(crate) mod hook_runner;
 pub(crate) mod mcp;
 #[cfg(test)]
 mod permissions_invariant_tests;
