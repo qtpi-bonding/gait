@@ -78,12 +78,12 @@ fn resolve_load_targets(
     gait_dir: &Path,
     session_id: &str,
 ) -> Result<(PathBuf, PathBuf), OpError> {
-    // `gait_core::mcp` / `gait_core::wasm_plugins` are `pub(crate)` (not
+    // `gait_state::mcp` / `gait_state::wasm_plugins` are `pub(crate)` (not
     // reachable from this crate), so mcp/plugin existence is checked the same
     // way admin.rs's own disk-first branches did: by the canonical disk path,
     // not a scan helper. `skills::scan_skills` is public and used directly.
     let in_global_registry: bool = match kind {
-        ExtKind::Skill => gait_core::skills::scan_skills(gait_dir)
+        ExtKind::Skill => gait_state::skills::scan_skills(gait_dir)
             .iter()
             .any(|s| s.name == name),
         ExtKind::Mcp => gait_dir.join("mcp").join(format!("{}.json", name)).exists(),
@@ -99,13 +99,13 @@ fn resolve_load_targets(
         )));
     }
 
-    let tx_path = gait_core::session::live::log_path(gait_dir, session_id);
-    let session_dir = gait_core::session::live::worktree_dir(gait_dir, session_id);
+    let tx_path = gait_state::session::live::log_path(gait_dir, session_id);
+    let session_dir = gait_state::session::live::worktree_dir(gait_dir, session_id);
     Ok((tx_path, session_dir))
 }
 
 /// Append a `Toggle(enabled=true)` event to `session_id`'s log outside a
-/// running turn. `gait_core::session::log::write_toggle` itself refuses to
+/// running turn. `gait_state::session::log::write_toggle` itself refuses to
 /// append when the session is live (concurrency contract — see
 /// `src/session/log/mod.rs`); that refusal surfaces as `OpError::Conflict`
 /// here.
@@ -116,7 +116,7 @@ pub fn load(params: LoadParams) -> Result<ToggleOutcome, OpError> {
         &params.gait_dir,
         &params.session_id,
     )?;
-    gait_core::session::log::write_toggle(
+    gait_state::session::log::write_toggle(
         &tx_path,
         &session_dir,
         params.kind.as_str(),
@@ -139,7 +139,7 @@ pub fn unload(params: LoadParams) -> Result<ToggleOutcome, OpError> {
         &params.gait_dir,
         &params.session_id,
     )?;
-    gait_core::session::log::write_toggle(
+    gait_state::session::log::write_toggle(
         &tx_path,
         &session_dir,
         params.kind.as_str(),
@@ -277,9 +277,9 @@ pub fn register(params: RegisterParams) -> Result<RegisterOutcome, OpError> {
         let session_id = params.session.clone().ok_or_else(|| {
             OpError::Conflict("--scope session requires --session <id>".to_string())
         })?;
-        let tx_path = gait_core::session::live::log_path(&params.gait_dir, &session_id);
-        let session_dir = gait_core::session::live::worktree_dir(&params.gait_dir, &session_id);
-        gait_core::session::log::write_registry(&tx_path, &session_dir, kind, name, true)
+        let tx_path = gait_state::session::live::log_path(&params.gait_dir, &session_id);
+        let session_dir = gait_state::session::live::worktree_dir(&params.gait_dir, &session_id);
+        gait_state::session::log::write_registry(&tx_path, &session_dir, kind, name, true)
             .map_err(|e| OpError::Conflict(format!("{e}")))?;
         return Ok(RegisterOutcome {
             scope: "session",
@@ -502,9 +502,9 @@ pub fn unregister(params: UnregisterParams) -> Result<UnregisterOutcome, OpError
         let session_id = params.session.clone().ok_or_else(|| {
             OpError::Conflict("--scope session requires --session <id>".to_string())
         })?;
-        let tx_path = gait_core::session::live::log_path(&params.gait_dir, &session_id);
-        let session_dir = gait_core::session::live::worktree_dir(&params.gait_dir, &session_id);
-        gait_core::session::log::write_registry(&tx_path, &session_dir, kind, name, false)
+        let tx_path = gait_state::session::live::log_path(&params.gait_dir, &session_id);
+        let session_dir = gait_state::session::live::worktree_dir(&params.gait_dir, &session_id);
+        gait_state::session::log::write_registry(&tx_path, &session_dir, kind, name, false)
             .map_err(|e| OpError::Conflict(format!("{e}")))?;
         return Ok(UnregisterOutcome {
             scope: "session",
@@ -740,7 +740,7 @@ pub fn disable(params: EnableParams) -> Result<EnableOutcome, OpError> {
 /// jsonc would error and force the caller to drop the file.
 fn read_config_as_value(config_path: &Path) -> anyhow::Result<serde_json::Value> {
     let raw = std::fs::read_to_string(config_path).unwrap_or_else(|_| "{}".into());
-    let stripped = gait_core::config::strip_jsonc_comments(&raw);
+    let stripped = gait_state::config::strip_jsonc_comments(&raw);
     Ok(serde_json::from_str(&stripped).unwrap_or_default())
 }
 
@@ -874,8 +874,8 @@ fn remove_frontmatter_list(content: &str, key: &str, value: &str) -> anyhow::Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gait_core::proto::gait::log::v1::{event, payload};
-    use gait_core::session::log::read_events;
+    use gait_state::proto::gait::log::v1::{event, payload};
+    use gait_state::session::log::read_events;
     use tempfile::TempDir;
 
     // --- helpers ---
@@ -889,12 +889,12 @@ mod tests {
             "---\nname: tdd\ndescription: x\nenabled: false\n---\n# body\n",
         )
         .unwrap();
-        let tx_path = gait_core::session::live::log_path(ws.path(), &session_id);
+        let tx_path = gait_state::session::live::log_path(ws.path(), &session_id);
         std::fs::create_dir_all(tx_path.parent().unwrap()).unwrap();
         (ws, session_id)
     }
 
-    fn read_toggle(tx_path: &Path) -> gait_core::proto::gait::log::v1::Toggle {
+    fn read_toggle(tx_path: &Path) -> gait_state::proto::gait::log::v1::Toggle {
         let events = read_events(tx_path).unwrap();
         match &events[0].body {
             Some(event::Body::Payload(p)) => match &p.kind {
@@ -910,7 +910,7 @@ mod tests {
     #[test]
     fn load_appends_toggle_enabled_true_to_quiescent_log() {
         let (ws, sid) = ws_with_skill_and_session();
-        let tx_path = gait_core::session::live::log_path(ws.path(), &sid);
+        let tx_path = gait_state::session::live::log_path(ws.path(), &sid);
         load(LoadParams {
             gait_dir: ws.path().to_path_buf(),
             session_id: sid.clone(),
@@ -926,7 +926,7 @@ mod tests {
     #[test]
     fn unload_appends_toggle_enabled_false_to_quiescent_log() {
         let (ws, sid) = ws_with_skill_and_session();
-        let tx_path = gait_core::session::live::log_path(ws.path(), &sid);
+        let tx_path = gait_state::session::live::log_path(ws.path(), &sid);
         unload(LoadParams {
             gait_dir: ws.path().to_path_buf(),
             session_id: sid.clone(),
@@ -1156,7 +1156,7 @@ mod tests {
     /// Create a quiescent (no lock file) live session's log directory, empty
     /// transcript, under `gait_dir` — the minimal shape `write_registry` needs.
     fn make_quiescent_session(gait_dir: &Path, session_id: &str) {
-        let tx_path = gait_core::session::live::log_path(gait_dir, session_id);
+        let tx_path = gait_state::session::live::log_path(gait_dir, session_id);
         std::fs::create_dir_all(tx_path.parent().unwrap()).unwrap();
     }
 
@@ -1170,7 +1170,7 @@ mod tests {
         p.session = Some(session_id.into());
         register(p).unwrap();
 
-        let tx_path = gait_core::session::live::log_path(dir.path(), session_id);
+        let tx_path = gait_state::session::live::log_path(dir.path(), session_id);
         let events = read_events(&tx_path).unwrap();
         assert_eq!(events.len(), 1);
         match &events[0].body {
@@ -1196,7 +1196,7 @@ mod tests {
         p.session = Some(session_id.into());
         unregister(p).unwrap();
 
-        let tx_path = gait_core::session::live::log_path(dir.path(), session_id);
+        let tx_path = gait_state::session::live::log_path(dir.path(), session_id);
         let events = read_events(&tx_path).unwrap();
         assert_eq!(events.len(), 1);
         match &events[0].body {

@@ -32,7 +32,7 @@ pub struct DaemonListOutcome {
 /// Query the daemon registry and return all active daemons with their liveness
 /// status. Read-only; no mutations.
 pub fn list(gait_dir: &Path) -> Result<DaemonListOutcome, OpError> {
-    use gait_core::session::daemons::{active, is_alive};
+    use gait_state::session::daemons::{active, is_alive};
 
     let recs = active(gait_dir).map_err(|e| OpError::Other(anyhow::Error::from(e)))?;
     let rows = recs
@@ -90,7 +90,7 @@ fn signal_pgid(pgid: i32) -> io::Result<()> {
 /// If the daemon is not found in the registry, returns `OpError::NotFound`.
 /// If the daemon is already dead, skips the signal and records the stop cleanly.
 pub fn stop(gait_dir: &Path, name: &str) -> Result<StopOutcome, OpError> {
-    use gait_core::session::daemons::{active, append_stop, is_alive};
+    use gait_state::session::daemons::{active, append_stop, is_alive};
 
     let recs = active(gait_dir).map_err(|e| OpError::Other(anyhow::Error::from(e)))?;
     let rec = recs
@@ -126,8 +126,8 @@ pub fn stop(gait_dir: &Path, name: &str) -> Result<StopOutcome, OpError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gait_core::proto::gait::log::v1 as pb;
-    use gait_core::session::daemons::append_start;
+    use gait_state::proto::gait::log::v1 as pb;
+    use gait_state::session::daemons::append_start;
 
     fn make_rec(name: &str, pid: i32) -> pb::DaemonStart {
         pb::DaemonStart {
@@ -198,7 +198,7 @@ mod tests {
         assert!(!outcome.signalled); // Should not have sent a signal
 
         // Verify the stop was recorded in the registry.
-        let recs = gait_core::session::daemons::active(dir.path()).unwrap();
+        let recs = gait_state::session::daemons::active(dir.path()).unwrap();
         assert!(
             recs.iter().all(|r| r.name != "dead-daemon"),
             "stopped daemon should not appear in active()"

@@ -18,7 +18,7 @@
 //!
 //! 1. Read `<gait_dir>/gait.jsonc` (missing file → start from `{}`).
 //! 2. Strip `//` and `/* */` comments via
-//!    `gait_core::config::strip_jsonc_comments` — the same private helper
+//!    `gait_state::config::strip_jsonc_comments` — the same private helper
 //!    `extension.rs` already uses. This is the bug fix: a config that
 //!    contains comments must not be wiped.
 //! 3. Parse the stripped text as a `serde_json::Value::Object`. If the
@@ -58,7 +58,7 @@ pub fn set_model(gait_dir: &Path, model: &str) -> Result<(), OpError> {
 /// parse error and silently produced an empty object.
 fn read_config_object(path: &Path) -> Result<serde_json::Map<String, serde_json::Value>, OpError> {
     let raw = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
-    let stripped = gait_core::config::strip_jsonc_comments(&raw);
+    let stripped = gait_state::config::strip_jsonc_comments(&raw);
     let val: serde_json::Value = serde_json::from_str(&stripped).map_err(|e| {
         OpError::Conflict(format!("gait.jsonc parse error in {}: {e}", path.display()))
     })?;
@@ -117,7 +117,7 @@ mod tests {
     }
 
     fn parse(raw: &str) -> serde_json::Value {
-        serde_json::from_str(&gait_core::config::strip_jsonc_comments(raw)).unwrap()
+        serde_json::from_str(&gait_state::config::strip_jsonc_comments(raw)).unwrap()
     }
 
     #[test]

@@ -1114,8 +1114,8 @@ name = "gait-ops"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "gait-core",
  "gait-proto",
+ "gait-state",
  "git2",
  "libc",
  "serde",

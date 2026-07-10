@@ -87,13 +87,13 @@ pub fn scaffold_gait_dir(gait_dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(gait_dir.join(".active"))?;
 
     // gait.jsonc — default config (never clobber).
-    // allow must match gait_core::config::defaults::default_allow().
+    // allow must match gait_state::config::defaults::default_allow().
     // sandbox.on matches default_sandbox().on; readable/writable use $CODEBASE
     // (equivalent at runtime since compute_scope auto-injects the codebase, but
     // explicit so users can see and extend the list).
     let config_path = gait_dir.join("gait.jsonc");
     if !config_path.exists() {
-        let system_reads = gait_core::sandbox::platform_system_reads();
+        let system_reads = gait_state::sandbox::platform_system_reads();
         let system_reads_comment = if system_reads.is_empty() {
             "  //   (none on this platform)".to_string()
         } else {
@@ -223,7 +223,7 @@ pub fn init(params: InitParams) -> Result<InitOutcome, OpError> {
 
     std::fs::create_dir_all(&gait_dir).map_err(anyhow::Error::from)?;
 
-    gait_core::git::Repos::production()
+    gait_state::git::Repos::production()
         .traces
         .init_workspace(&gait_dir)?;
 
@@ -326,7 +326,7 @@ mod tests {
         let body = std::fs::read_to_string(cwd.join(".gaitref")).unwrap();
         assert_eq!(body, format!("gaitdir: {}\n", target.display()));
         // Round-trips through the core resolver.
-        let result = gait_core::gait_dir::resolve(None, &cwd);
+        let result = gait_state::gait_dir::resolve(None, &cwd);
         if let Some(v) = saved {
             std::env::set_var("GAIT_DIR", v);
         }
@@ -348,15 +348,15 @@ mod tests {
     fn scaffold_allow_matches_no_config_default() {
         let dir = tempfile::tempdir().unwrap();
         run_init(dir.path()).unwrap();
-        let cfg = gait_core::config::load_config(dir.path());
+        let cfg = gait_state::config::load_config(dir.path());
         assert_eq!(
             cfg.allow,
-            gait_core::config::defaults::default_allow(),
+            gait_state::config::defaults::default_allow(),
             "scaffold allow must match default_allow()"
         );
         assert_eq!(
             cfg.sandbox.on,
-            gait_core::config::defaults::default_sandbox().on,
+            gait_state::config::defaults::default_sandbox().on,
             "scaffold sandbox.on must match default_sandbox().on"
         );
     }

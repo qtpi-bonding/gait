@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-gait-core  = { path = "../.." }
+gait-state = { path = "../gait-state" }
 gait-proto = { path = "../gait-proto" }
 anyhow = "1"
 thiserror = "1"

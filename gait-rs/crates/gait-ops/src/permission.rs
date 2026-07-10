@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 // allow
 // -----------------------------------------------------------------------------
 
-/// The scope of an approval grant. Mirrors `gait_core::permissions::AllowScope`,
+/// The scope of an approval grant. Mirrors `gait_state::permissions::AllowScope`,
 /// extended here with `Session` so callers can express the once/session branch
 /// the CLI's `--scope session` already exposes. `Once` is the default — matches
 /// the CLI's default `--scope once`.
@@ -48,22 +48,22 @@ pub struct AllowParams {
 /// adapter can render them under `--json`) and the scope it stamped on each.
 #[derive(Debug)]
 pub struct AllowOutcome {
-    pub reply_items: Vec<gait_core::proto::gait::log::v1::PermissionsReplyItem>,
+    pub reply_items: Vec<gait_state::proto::gait::log::v1::PermissionsReplyItem>,
     pub scope: AllowScope,
 }
 
 /// Approve all pending permission requests for `session_id`. Wraps
-/// `gait_core::permissions::compute_allow_decisions` + `write_permissions_reply`.
+/// `gait_state::permissions::compute_allow_decisions` + `write_permissions_reply`.
 pub fn allow(
     gait_dir: &Path,
     session_id: &str,
     params: AllowParams,
 ) -> Result<AllowOutcome, OpError> {
-    use gait_core::agent_frontmatter::{resolve_markdown_context_path, MarkdownKind};
-    use gait_core::permissions::{
+    use gait_state::agent_frontmatter::{resolve_markdown_context_path, MarkdownKind};
+    use gait_state::permissions::{
         compute_allow_decisions, AllowParams as CoreAllowParams, AllowScope as CoreAllowScope,
     };
-    use gait_core::session::log::{session_state, write_permissions_reply, SessionState};
+    use gait_state::session::log::{session_state, write_permissions_reply, SessionState};
 
     let core_scope = match params.scope {
         AllowScope::Global => CoreAllowScope::Global,
@@ -83,7 +83,7 @@ pub fn allow(
         pattern: params.pattern.clone(),
     };
 
-    let tx_path = gait_core::session::live::log_path(gait_dir, session_id);
+    let tx_path = gait_state::session::live::log_path(gait_dir, session_id);
     let state = session_state(&tx_path).map_err(anyhow::Error::from)?;
     let items = match state {
         SessionState::AwaitingPermission { items } => items,
@@ -107,7 +107,7 @@ pub fn allow(
     // event reads as a session-scoped grant (the only divergence from the
     // core Once stamp).
     if params.scope == AllowScope::Session {
-        let target = gait_core::proto::gait::log::v1::Scope::Session as i32;
+        let target = gait_state::proto::gait::log::v1::Scope::Session as i32;
         for item in &mut reply_items {
             item.scope = target;
         }
@@ -128,16 +128,16 @@ pub fn allow(
 /// Outcome returned by [`deny`].
 #[derive(Debug)]
 pub struct DenyOutcome {
-    pub reply_items: Vec<gait_core::proto::gait::log::v1::PermissionsReplyItem>,
+    pub reply_items: Vec<gait_state::proto::gait::log::v1::PermissionsReplyItem>,
 }
 
 /// Deny all pending permission requests for `session_id`. Builds deny reply
 /// items and writes the `PermissionsReply` event to the session log.
 pub fn deny(gait_dir: &Path, session_id: &str) -> Result<DenyOutcome, OpError> {
-    use gait_core::proto::gait::log::v1 as pb;
-    use gait_core::session::log::{session_state, write_permissions_reply, SessionState};
+    use gait_state::proto::gait::log::v1 as pb;
+    use gait_state::session::log::{session_state, write_permissions_reply, SessionState};
 
-    let tx_path = gait_core::session::live::log_path(gait_dir, session_id);
+    let tx_path = gait_state::session::live::log_path(gait_dir, session_id);
     let state = session_state(&tx_path).map_err(anyhow::Error::from)?;
     let items = match state {
         SessionState::AwaitingPermission { items } => items,
@@ -201,7 +201,7 @@ pub struct UnlockParams {
 /// non-fatal warnings the persistence step emitted.
 #[derive(Debug)]
 pub struct UnlockOutcome {
-    pub reply_items: Vec<gait_core::proto::gait::log::v1::UnlockReplyItem>,
+    pub reply_items: Vec<gait_state::proto::gait::log::v1::UnlockReplyItem>,
     pub persisted_grants: usize,
     pub warnings: Vec<String>,
 }
@@ -218,8 +218,8 @@ pub struct UnlockOutcome {
 ///   reply. Without `--agent`, the grant is silently log-only (matching
 ///   the original CLI warning behavior).
 pub fn unlock(params: UnlockParams) -> Result<UnlockOutcome, OpError> {
-    use gait_core::proto::gait::log::v1 as pb;
-    use gait_core::session::log::{session_state, write_unlock_reply, SessionState};
+    use gait_state::proto::gait::log::v1 as pb;
+    use gait_state::session::log::{session_state, write_unlock_reply, SessionState};
 
     let scope_pb = match params.scope {
         UnlockScope::Once => pb::Scope::Once,
@@ -228,7 +228,7 @@ pub fn unlock(params: UnlockParams) -> Result<UnlockOutcome, OpError> {
         UnlockScope::Agent => pb::Scope::Agent,
     };
 
-    let tx_path = gait_core::session::live::log_path(&params.gait_dir, &params.session_id);
+    let tx_path = gait_state::session::live::log_path(&params.gait_dir, &params.session_id);
     let state = session_state(&tx_path).map_err(anyhow::Error::from)?;
     let items = match state {
         SessionState::AwaitingUnlock { items } => items,
@@ -262,7 +262,7 @@ pub fn unlock(params: UnlockParams) -> Result<UnlockOutcome, OpError> {
         }
         UnlockScope::Agent => {
             if let Some(agent_name) = params.agent.as_deref() {
-                use gait_core::agent_frontmatter::{resolve_markdown_context_path, MarkdownKind};
+                use gait_state::agent_frontmatter::{resolve_markdown_context_path, MarkdownKind};
                 let agent_path = resolve_markdown_context_path(
                     &params.gait_dir,
                     MarkdownKind::Agent,
@@ -304,11 +304,11 @@ pub fn unlock(params: UnlockParams) -> Result<UnlockOutcome, OpError> {
 /// dimensions are captured as warnings on the supplied buffer instead of
 /// printed (Wall 1). Returns the number of grants successfully persisted.
 fn persist_grant_items(
-    items: &[gait_core::proto::gait::log::v1::UnlockItem],
+    items: &[gait_state::proto::gait::log::v1::UnlockItem],
     target_dir: &Path,
     warnings: &mut Vec<String>,
 ) -> usize {
-    use gait_core::sandbox_grant::SandboxGrant;
+    use gait_state::sandbox_grant::SandboxGrant;
 
     let mut ok = 0;
     for item in items {
@@ -336,9 +336,9 @@ fn persist_grant_items(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gait_core::proto::gait::log::v1::{event, payload};
-    use gait_core::proto::wire;
-    use gait_core::session::log::read_events;
+    use gait_state::proto::gait::log::v1::{event, payload};
+    use gait_state::proto::wire;
+    use gait_state::session::log::read_events;
     use tempfile::TempDir;
 
     /// Build a minimal gait-dir with `gait.jsonc` so `SandboxGrant::apply`
@@ -360,19 +360,19 @@ mod tests {
     }
 
     /// Seed `tx_path` with a single Permissions event carrying one item.
-    fn seed_permission(tx_path: &Path, item: gait_core::proto::gait::log::v1::PermissionItem) {
-        let body = gait_core::proto::events::permissions(&[item]);
+    fn seed_permission(tx_path: &Path, item: gait_state::proto::gait::log::v1::PermissionItem) {
+        let body = gait_state::proto::events::permissions(&[item]);
         wire::append(tx_path, body).unwrap();
     }
 
     /// Seed `tx_path` with a single Unlock event carrying one item.
-    fn seed_unlock(tx_path: &Path, item: gait_core::proto::gait::log::v1::UnlockItem) {
-        let body = gait_core::proto::events::unlock(&[item]);
+    fn seed_unlock(tx_path: &Path, item: gait_state::proto::gait::log::v1::UnlockItem) {
+        let body = gait_state::proto::events::unlock(&[item]);
         wire::append(tx_path, body).unwrap();
     }
 
     fn make_session(ws: &Path, id: &str) -> std::path::PathBuf {
-        let tx_path = gait_core::session::live::log_path(ws, id);
+        let tx_path = gait_state::session::live::log_path(ws, id);
         std::fs::create_dir_all(tx_path.parent().unwrap()).unwrap();
         tx_path
     }
@@ -386,8 +386,8 @@ mod tests {
         }
     }
 
-    fn reload_config(ws: &Path) -> gait_core::config::GaitConfig {
-        gait_core::config::load_config(ws)
+    fn reload_config(ws: &Path) -> gait_state::config::GaitConfig {
+        gait_state::config::load_config(ws)
     }
 
     // -- allow --
@@ -398,7 +398,7 @@ mod tests {
         let tx = make_session(ws.path(), "sallow01");
         seed_permission(
             &tx,
-            gait_core::proto::gait::log::v1::PermissionItem {
+            gait_state::proto::gait::log::v1::PermissionItem {
                 id: "p1".into(),
                 tool_name: "shell".into(),
                 cmd: "cargo test".into(),
@@ -422,7 +422,7 @@ mod tests {
         assert_eq!(outcome.reply_items.len(), 1);
         assert_eq!(
             outcome.reply_items[0].decision,
-            gait_core::proto::gait::log::v1::Decision::Allow as i32,
+            gait_state::proto::gait::log::v1::Decision::Allow as i32,
         );
         assert_eq!(outcome.scope, AllowScope::Once);
 
@@ -437,7 +437,7 @@ mod tests {
         let tx = make_session(ws.path(), "sallow02");
         seed_permission(
             &tx,
-            gait_core::proto::gait::log::v1::PermissionItem {
+            gait_state::proto::gait::log::v1::PermissionItem {
                 id: "p1".into(),
                 tool_name: "shell".into(),
                 cmd: "ls".into(),
@@ -460,7 +460,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             outcome.reply_items[0].scope,
-            gait_core::proto::gait::log::v1::Scope::Session as i32,
+            gait_state::proto::gait::log::v1::Scope::Session as i32,
         );
     }
 
@@ -489,7 +489,7 @@ mod tests {
         let tx = make_session(ws.path(), "sdeny01");
         seed_permission(
             &tx,
-            gait_core::proto::gait::log::v1::PermissionItem {
+            gait_state::proto::gait::log::v1::PermissionItem {
                 id: "p1".into(),
                 tool_name: "shell".into(),
                 cmd: "rm -rf /".into(),
@@ -504,7 +504,7 @@ mod tests {
         assert_eq!(outcome.reply_items.len(), 1);
         assert_eq!(
             outcome.reply_items[0].decision,
-            gait_core::proto::gait::log::v1::Decision::Deny as i32,
+            gait_state::proto::gait::log::v1::Decision::Deny as i32,
         );
 
         let kind = read_kind(&tx, 1);
@@ -525,8 +525,8 @@ mod tests {
         id: &str,
         dimension: &str,
         resource: &str,
-    ) -> gait_core::proto::gait::log::v1::UnlockItem {
-        gait_core::proto::gait::log::v1::UnlockItem {
+    ) -> gait_state::proto::gait::log::v1::UnlockItem {
+        gait_state::proto::gait::log::v1::UnlockItem {
             id: id.into(),
             tool_name: "write".into(),
             resource: resource.into(),
@@ -605,9 +605,9 @@ mod tests {
     fn unlock_agent_with_name_resolves_frontmatter_and_writes_grant() {
         let ws = ws();
         let tx = make_session(ws.path(), "sunc03");
-        let agent_path = gait_core::agent_frontmatter::resolve_markdown_context_path(
+        let agent_path = gait_state::agent_frontmatter::resolve_markdown_context_path(
             ws.path(),
-            gait_core::agent_frontmatter::MarkdownKind::Agent,
+            gait_state::agent_frontmatter::MarkdownKind::Agent,
             "coder",
         );
         std::fs::create_dir_all(agent_path.parent().unwrap()).unwrap();
@@ -712,7 +712,7 @@ mod tests {
         assert_eq!(out.persisted_grants, 0);
         assert_eq!(
             out.reply_items[0].scope,
-            gait_core::proto::gait::log::v1::Scope::Session as i32,
+            gait_state::proto::gait::log::v1::Scope::Session as i32,
         );
         let config_after = std::fs::read_to_string(ws.path().join("gait.jsonc")).unwrap();
         assert_eq!(config_before, config_after);
@@ -739,7 +739,7 @@ mod tests {
         // items" branch.
         let ws = ws();
         let tx = make_session(ws.path(), "sunc08");
-        let body = gait_core::proto::events::unlock(&[]);
+        let body = gait_state::proto::events::unlock(&[]);
         wire::append(&tx, body).unwrap();
 
         let out = unlock(UnlockParams {

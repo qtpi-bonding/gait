@@ -1,8 +1,8 @@
 //! Session-admin verbs: `list`, `ps`, `stats`, `undo`, `classify_bulk`, `bulk_act`.
 //!
 //! Sources: `crates/gait-cli/src/cli/session.rs`. Read-only ops wrap
-//! `gait_core::git::Repos`, `gait_core::session::log`, and
-//! `gait_core::session::retrace`. Mutating ops take a `SessionLock`; bulk
+//! `gait_state::git::Repos`, `gait_state::session::log`, and
+//! `gait_state::session::retrace`. Mutating ops take a `SessionLock`; bulk
 //! persist/discard uses the preview→act pattern (design §4).
 use crate::OpError;
 use std::path::{Path, PathBuf};
@@ -20,7 +20,7 @@ pub struct ListOutcome {
 /// Walk `gait_dir`'s `session/*` branches and return the ones main is not a
 /// descendant of. Read-only; no log/branch writes.
 pub fn list(gait_dir: &Path) -> Result<ListOutcome, OpError> {
-    let active = gait_core::git::Repos::production()
+    let active = gait_state::git::Repos::production()
         .traces
         .list_active_sessions(gait_dir)?;
     Ok(ListOutcome { active })
@@ -67,7 +67,7 @@ impl PsOutcome {
 
 /// Walk `.active/<id>/...`, classify each as idle / awaiting-*. Read-only.
 pub fn ps(gait_dir: &Path) -> Result<PsOutcome, OpError> {
-    use gait_core::session::log::{session_state, SessionState};
+    use gait_state::session::log::{session_state, SessionState};
     let sessions_dir = gait_dir.join(".active");
     let entries = match std::fs::read_dir(&sessions_dir) {
         Ok(e) => e,
@@ -82,14 +82,14 @@ pub fn ps(gait_dir: &Path) -> Result<PsOutcome, OpError> {
         let Some(id) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        let tx_path = gait_core::session::live::log_path(gait_dir, id);
+        let tx_path = gait_state::session::live::log_path(gait_dir, id);
         let state_str = match session_state(&tx_path) {
             // Idle in the log ≠ idle in reality: a session between turns still
             // holds its `.active/<id>/lock` while its process runs. Consult the
             // live lock so a running turn reports "running", not "idle" — the
             // same check `classify_bulk` applies to the Idle case.
             Ok(SessionState::Idle) => {
-                if gait_core::session::SessionLock::is_running(&path) {
+                if gait_state::session::SessionLock::is_running(&path) {
                     "running".to_string()
                 } else {
                     "idle".to_string()
@@ -136,9 +136,9 @@ impl StatsOutcome {
 
 /// Cumulative token usage for a session, folded from the log.
 pub fn stats(gait_dir: &Path, session_id: &str) -> Result<StatsOutcome, OpError> {
-    use gait_core::session::log::read_events;
-    use gait_core::session::retrace::total_usage;
-    let tx_path = gait_core::session::live::log_path(gait_dir, session_id);
+    use gait_state::session::log::read_events;
+    use gait_state::session::retrace::total_usage;
+    let tx_path = gait_state::session::live::log_path(gait_dir, session_id);
     let events = read_events(&tx_path).map_err(anyhow::Error::from)?;
     let u = total_usage(&events);
     let total = u.input + u.output + u.cache_read + u.cache_write;
@@ -189,8 +189,8 @@ pub struct UndoOutcome {
 /// mutation). Otherwise `turn` is required; default scope (no `code`/`transcript`
 /// flag) acts on both axes. The op takes the `SessionLock` itself.
 pub fn undo(params: UndoParams) -> Result<UndoOutcome, OpError> {
-    use gait_core::proto::gait::log::v1::{event, payload};
-    use gait_core::session::log::read_events;
+    use gait_state::proto::gait::log::v1::{event, payload};
+    use gait_state::session::log::read_events;
 
     if params.list && params.turn.is_some() {
         return Err(OpError::Conflict(
@@ -198,7 +198,7 @@ pub fn undo(params: UndoParams) -> Result<UndoOutcome, OpError> {
         ));
     }
 
-    let tx_path = gait_core::session::live::log_path(&params.gait_dir, &params.session_id);
+    let tx_path = gait_state::session::live::log_path(&params.gait_dir, &params.session_id);
     let events = read_events(&tx_path).map_err(anyhow::Error::from)?;
 
     // Collect (turn_index, summary, checkpoint) from TurnComplete events.
@@ -253,8 +253,8 @@ pub fn undo(params: UndoParams) -> Result<UndoOutcome, OpError> {
     let do_transcript = params.transcript || !params.code;
 
     // Acquire the lock; refuse if a turn is in progress.
-    let session_dir = gait_core::session::live::worktree_dir(&params.gait_dir, &params.session_id);
-    let _lock = gait_core::session::SessionLock::acquire(&session_dir).map_err(|e| {
+    let session_dir = gait_state::session::live::worktree_dir(&params.gait_dir, &params.session_id);
+    let _lock = gait_state::session::SessionLock::acquire(&session_dir).map_err(|e| {
         OpError::SessionBusy(format!("cannot undo: {} (is a turn in progress?)", e))
     })?;
 
@@ -264,7 +264,7 @@ pub fn undo(params: UndoParams) -> Result<UndoOutcome, OpError> {
     if do_code {
         if let Some(sha) = full_sha.as_deref() {
             let codebase =
-                gait_core::session::read_session_meta(&params.gait_dir, &params.session_id)?
+                gait_state::session::read_session_meta(&params.gait_dir, &params.session_id)?
                     .codebase_path
                     .map(std::path::PathBuf::from)
                     .ok_or_else(|| {
@@ -272,7 +272,7 @@ pub fn undo(params: UndoParams) -> Result<UndoOutcome, OpError> {
                             "session has no codebase_path; cannot undo code".to_string(),
                         )
                     })?;
-            let repos = gait_core::git::Repos::production();
+            let repos = gait_state::git::Repos::production();
             repos
                 .checkpoints
                 .restore_to(&params.gait_dir, &params.session_id, &codebase, sha)?;
@@ -294,7 +294,7 @@ pub fn undo(params: UndoParams) -> Result<UndoOutcome, OpError> {
 }
 
 fn undo_transcript_to_turn(gait_dir: &Path, session_id: &str, turn: u32) -> Result<(), OpError> {
-    let session_dir = gait_core::session::live::worktree_dir(gait_dir, session_id);
+    let session_dir = gait_state::session::live::worktree_dir(gait_dir, session_id);
     let repo = git2::Repository::open(&session_dir).map_err(anyhow::Error::from)?;
     let needle = format!("session({}): turn {}", session_id, turn);
     let mut walk = repo.revwalk().map_err(anyhow::Error::from)?;
@@ -429,8 +429,8 @@ pub fn bulk_act(gait_dir: &Path, plan: &BulkPlan, confirmed: bool) -> Result<Bul
     let mut failed: Vec<(String, String)> = Vec::new();
     let mut warnings: Vec<(String, String)> = Vec::new();
     for id in &plan.eligible {
-        let session_dir = gait_core::session::live::worktree_dir(gait_dir, id);
-        let _lock = match gait_core::session::SessionLock::acquire(&session_dir) {
+        let session_dir = gait_state::session::live::worktree_dir(gait_dir, id);
+        let _lock = match gait_state::session::SessionLock::acquire(&session_dir) {
             Ok(l) => l,
             Err(_) => {
                 failed.push((id.clone(), "started running".to_string()));
@@ -466,7 +466,7 @@ pub fn bulk_act(gait_dir: &Path, plan: &BulkPlan, confirmed: bool) -> Result<Bul
 /// checkpoint db could not be removed — a non-fatal warning for the caller to
 /// render, not a print here (Wall 1).
 fn persist_one(gait_dir: &Path, id: &str) -> Result<Option<String>, OpError> {
-    let repos = gait_core::git::Repos::production();
+    let repos = gait_state::git::Repos::production();
     repos.traces.finish_session(gait_dir, id)?;
     if let Err(e) = repos.checkpoints.remove(gait_dir, id) {
         return Ok(Some(format!(
@@ -478,7 +478,7 @@ fn persist_one(gait_dir: &Path, id: &str) -> Result<Option<String>, OpError> {
 }
 
 fn discard_one(gait_dir: &Path, id: &str) -> Result<Option<String>, OpError> {
-    gait_core::git::Repos::production()
+    gait_state::git::Repos::production()
         .traces
         .discard_session(gait_dir, id)?;
     Ok(None)
@@ -490,7 +490,7 @@ fn discard_one(gait_dir: &Path, id: &str) -> Result<Option<String>, OpError> {
 type BulkTargets = (Vec<String>, Vec<(String, String)>);
 
 fn classify_bulk_targets(gait_dir: &Path) -> Result<BulkTargets, OpError> {
-    use gait_core::session::log::{session_state, SessionState};
+    use gait_state::session::log::{session_state, SessionState};
 
     let sessions_dir = gait_dir.join(".active");
     let mut eligible: Vec<String> = Vec::new();
@@ -509,7 +509,7 @@ fn classify_bulk_targets(gait_dir: &Path) -> Result<BulkTargets, OpError> {
         let Some(id) = path.file_name().and_then(|n| n.to_str()).map(String::from) else {
             continue;
         };
-        let tx_path = gait_core::session::live::log_path(gait_dir, &id);
+        let tx_path = gait_state::session::live::log_path(gait_dir, &id);
         // A session with no log.jsonl is not a started session. `read_events` treats a
         // MISSING file as empty => `session_state` returns Idle, which would wrongly
         // mark such a dir eligible — so skip it explicitly here.
@@ -518,7 +518,7 @@ fn classify_bulk_targets(gait_dir: &Path) -> Result<BulkTargets, OpError> {
         }
         let reason: Option<String> = match session_state(&tx_path) {
             Ok(SessionState::Idle) => {
-                if gait_core::session::SessionLock::is_running(&path) {
+                if gait_state::session::SessionLock::is_running(&path) {
                     Some("running".to_string())
                 } else {
                     None
@@ -547,7 +547,7 @@ fn classify_bulk_targets(gait_dir: &Path) -> Result<BulkTargets, OpError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gait_core::git::Repos;
+    use gait_state::git::Repos;
     use tempfile::TempDir;
 
     /// Build a gait-dir with one committed session worktree; returns the tempdir.
@@ -596,7 +596,7 @@ mod tests {
 
     /// Empty log => Idle, classify-eligible.
     fn write_empty_log(ws: &Path, id: &str) {
-        let log_path = gait_core::session::live::log_path(ws, id);
+        let log_path = gait_state::session::live::log_path(ws, id);
         std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
         std::fs::write(log_path, "").unwrap();
     }
@@ -640,7 +640,7 @@ mod tests {
         let ws = ws_with_session("sps0002");
         write_empty_log(ws.path(), "sps0002");
         // Lock held by *this* (live) process => is_running() is true.
-        let lock = gait_core::session::live::worktree_dir(ws.path(), "sps0002").join("lock");
+        let lock = gait_state::session::live::worktree_dir(ws.path(), "sps0002").join("lock");
         std::fs::write(&lock, std::process::id().to_string()).unwrap();
 
         let out = ps(ws.path()).unwrap();
@@ -680,9 +680,9 @@ mod tests {
     fn classify_bulk_does_not_mutate() {
         let ws = ws_with_session("sbulk01");
         write_empty_log(ws.path(), "sbulk01");
-        let before_log_exists = gait_core::session::live::log_path(ws.path(), "sbulk01").exists();
+        let before_log_exists = gait_state::session::live::log_path(ws.path(), "sbulk01").exists();
         let before_dir_exists =
-            gait_core::session::live::worktree_dir(ws.path(), "sbulk01").exists();
+            gait_state::session::live::worktree_dir(ws.path(), "sbulk01").exists();
         let plan = classify_bulk(ws.path(), BulkVerb::Persist).unwrap();
         assert_eq!(plan.eligible, vec!["sbulk01".to_string()]);
         assert!(plan.skipped.is_empty());
@@ -700,7 +700,7 @@ mod tests {
         let err = bulk_act(ws.path(), &plan, false).unwrap_err();
         assert!(matches!(err, OpError::ConfirmationRequired(_)));
         // Still present: the act loop never ran.
-        assert!(gait_core::session::live::worktree_dir(ws.path(), "sbulk02").exists());
+        assert!(gait_state::session::live::worktree_dir(ws.path(), "sbulk02").exists());
     }
 
     /// Test 3: bulk_act with confirmed=true performs the act.
@@ -713,7 +713,7 @@ mod tests {
         assert_eq!(outcome.acted, vec!["sbulk03".to_string()]);
         assert!(outcome.failed.is_empty());
         // The session's branch is now merged into main — the worktree dir is gone.
-        assert!(!gait_core::session::live::worktree_dir(ws.path(), "sbulk03").exists());
+        assert!(!gait_state::session::live::worktree_dir(ws.path(), "sbulk03").exists());
     }
 
     #[test]
@@ -725,7 +725,7 @@ mod tests {
         assert_eq!(outcome.acted, vec!["sbulk04".to_string()]);
         assert!(outcome.failed.is_empty());
         // discard_session removes the worktree dir without merging into main.
-        assert!(!gait_core::session::live::worktree_dir(ws.path(), "sbulk04").exists());
+        assert!(!gait_state::session::live::worktree_dir(ws.path(), "sbulk04").exists());
     }
 
     // -- additional classify_bulk tests (parity with cli/session.rs) --
@@ -736,7 +736,7 @@ mod tests {
         write_empty_log(ws.path(), "srun01");
         // Our own live PID in the lock => running.
         std::fs::write(
-            gait_core::session::live::worktree_dir(ws.path(), "srun01").join("lock"),
+            gait_state::session::live::worktree_dir(ws.path(), "srun01").join("lock"),
             std::process::id().to_string(),
         )
         .unwrap();
