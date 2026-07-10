@@ -17,7 +17,10 @@ pub fn resolve(explicit: Option<PathBuf>, start: &Path) -> anyhow::Result<PathBu
     discover(start)
 }
 
-fn discover(start: &Path) -> anyhow::Result<PathBuf> {
+/// Walk up from `start` for a `.gait/` directory or a `.gaitref` pointer file.
+/// This is `resolve` **without** the `$GAIT_DIR` step — the ACP adapter is a
+/// multi-cwd process and must resolve each session purely from its own cwd.
+pub fn discover(start: &Path) -> anyhow::Result<PathBuf> {
     let mut cur = Some(start);
     while let Some(dir) = cur {
         let d = dir.join(".gait");
