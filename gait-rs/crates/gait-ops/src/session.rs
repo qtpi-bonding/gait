@@ -41,6 +41,30 @@ pub struct PsOutcome {
     pub rows: Vec<PsRow>,
 }
 
+impl PsOutcome {
+    /// `(session_id, state)` rows, in the order returned by `ps` — the single
+    /// source of truth for the tab-separated table both the CLI and (future)
+    /// REPL print. No I/O; returns data only (Wall 1).
+    pub fn to_rows(&self) -> Vec<(String, String)> {
+        self.rows
+            .iter()
+            .map(|r| (r.session_id.clone(), r.state.clone()))
+            .collect()
+    }
+
+    /// The `--json` shape: `[{"session_id": .., "state": ..}, ...]`, pretty
+    /// printed. This is the API contract — CLI and any future frontend render
+    /// this exact string rather than re-deriving the shape.
+    pub fn to_json(&self) -> String {
+        let arr: Vec<serde_json::Value> = self
+            .rows
+            .iter()
+            .map(|r| serde_json::json!({"session_id": r.session_id, "state": r.state}))
+            .collect();
+        serde_json::to_string_pretty(&arr).unwrap_or_default()
+    }
+}
+
 /// Walk `.active/<id>/...`, classify each as idle / awaiting-*. Read-only.
 pub fn ps(gait_dir: &Path) -> Result<PsOutcome, OpError> {
     use gait_core::session::log::{session_state, SessionState};
@@ -86,6 +110,18 @@ pub struct StatsOutcome {
     pub cache_read: u64,
     pub cache_write: u64,
     pub total: u64,
+}
+
+impl StatsOutcome {
+    /// The `--json` shape: a single compact object (no `total` field, matching
+    /// the pre-existing CLI output byte-for-byte). Single source of truth for
+    /// the `stats --json` contract.
+    pub fn to_json(&self) -> String {
+        format!(
+            "{{\"input\":{},\"output\":{},\"cache_read\":{},\"cache_write\":{}}}",
+            self.input, self.output, self.cache_read, self.cache_write
+        )
+    }
 }
 
 /// Cumulative token usage for a session, folded from the log.
@@ -317,6 +353,44 @@ pub struct BulkOutcome {
     /// session whose checkpoint db could not be removed). The adapter renders
     /// these; the op itself never prints.
     pub warnings: Vec<(String, String)>,
+}
+
+/// The shared `--json` shape for both a bulk *preview* (`BulkPlan`, before any
+/// action ran — `acted`/`failed` are empty) and a bulk *outcome* (`BulkOutcome`,
+/// after `bulk_act`). One source of truth so the CLI and any future frontend
+/// (REPL, ACP) never re-derive this shape independently (design §5.2/§10).
+fn render_bulk_json(
+    eligible: &[String],
+    skipped: &[(String, String)],
+    acted: &[String],
+    failed: &[(String, String)],
+) -> String {
+    let v = serde_json::json!({
+        "eligible": eligible,
+        "skipped": skipped.iter()
+            .map(|(id, s)| serde_json::json!({"session_id": id, "state": s}))
+            .collect::<Vec<_>>(),
+        "acted": acted,
+        "failed": failed.iter()
+            .map(|(id, e)| serde_json::json!({"session_id": id, "error": e}))
+            .collect::<Vec<_>>(),
+    });
+    serde_json::to_string_pretty(&v).unwrap_or_default()
+}
+
+impl BulkPlan {
+    /// `--json` shape for the preview (before `bulk_act` runs): `acted`/`failed`
+    /// are empty arrays.
+    pub fn to_json(&self) -> String {
+        render_bulk_json(&self.eligible, &self.skipped, &[], &[])
+    }
+}
+
+impl BulkOutcome {
+    /// `--json` shape for the completed action.
+    pub fn to_json(&self) -> String {
+        render_bulk_json(&self.eligible, &self.skipped, &self.acted, &self.failed)
+    }
 }
 
 /// PURE preview. Classifies targets, performs NO effect. The frontend renders
@@ -708,6 +782,79 @@ mod tests {
         })
         .unwrap_err();
         assert!(matches!(err, OpError::Conflict(_)));
+    }
+
+    // -- shared renderer (golden tests) --
+
+    #[test]
+    fn ps_outcome_to_rows_and_json_golden() {
+        let out = PsOutcome {
+            rows: vec![
+                PsRow {
+                    session_id: "s1".to_string(),
+                    state: "idle".to_string(),
+                },
+                PsRow {
+                    session_id: "s2".to_string(),
+                    state: "awaiting-permission".to_string(),
+                },
+            ],
+        };
+        assert_eq!(
+            out.to_rows(),
+            vec![
+                ("s1".to_string(), "idle".to_string()),
+                ("s2".to_string(), "awaiting-permission".to_string()),
+            ]
+        );
+        assert_eq!(
+            out.to_json(),
+            "[\n  {\n    \"session_id\": \"s1\",\n    \"state\": \"idle\"\n  },\n  {\n    \"session_id\": \"s2\",\n    \"state\": \"awaiting-permission\"\n  }\n]"
+        );
+    }
+
+    #[test]
+    fn stats_outcome_to_json_golden() {
+        let out = StatsOutcome {
+            input: 10,
+            output: 20,
+            cache_read: 3,
+            cache_write: 4,
+            total: 37,
+        };
+        assert_eq!(
+            out.to_json(),
+            "{\"input\":10,\"output\":20,\"cache_read\":3,\"cache_write\":4}"
+        );
+    }
+
+    #[test]
+    fn bulk_plan_to_json_golden() {
+        let plan = BulkPlan {
+            verb: BulkVerb::Persist,
+            eligible: vec!["s1".to_string()],
+            skipped: vec![("s2".to_string(), "running".to_string())],
+        };
+        assert_eq!(
+            plan.to_json(),
+            "{\n  \"eligible\": [\n    \"s1\"\n  ],\n  \"skipped\": [\n    {\n      \"session_id\": \"s2\",\n      \"state\": \"running\"\n    }\n  ],\n  \"acted\": [],\n  \"failed\": []\n}"
+        );
+    }
+
+    #[test]
+    fn bulk_outcome_to_json_golden() {
+        let outcome = BulkOutcome {
+            verb: BulkVerb::Discard,
+            eligible: vec!["s1".to_string()],
+            skipped: Vec::new(),
+            acted: vec!["s1".to_string()],
+            failed: Vec::new(),
+            warnings: Vec::new(),
+        };
+        assert_eq!(
+            outcome.to_json(),
+            "{\n  \"eligible\": [\n    \"s1\"\n  ],\n  \"skipped\": [],\n  \"acted\": [\n    \"s1\"\n  ],\n  \"failed\": []\n}"
+        );
     }
 
     #[test]

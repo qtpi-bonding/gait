@@ -187,25 +187,6 @@ pub fn cmd_discard(args: DiscardArgs) {
 // Bulk persist/discard with the 3-state consent flow
 // -----------------------------------------------------------------------------
 
-fn print_bulk_json(
-    eligible: &[String],
-    skipped: &[(String, String)],
-    acted: &[String],
-    failed: &[(String, String)],
-) {
-    let v = serde_json::json!({
-        "eligible": eligible,
-        "skipped": skipped.iter()
-            .map(|(id, s)| serde_json::json!({"session_id": id, "state": s}))
-            .collect::<Vec<_>>(),
-        "acted": acted,
-        "failed": failed.iter()
-            .map(|(id, e)| serde_json::json!({"session_id": id, "error": e}))
-            .collect::<Vec<_>>(),
-    });
-    println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
-}
-
 /// Bulk persist/discard over every idle, not-running session.
 fn run_bulk(verb: gait_ops::session::BulkVerb, gait_dir: &std::path::Path, yes: bool, json: bool) {
     let plan = match gait_ops::session::classify_bulk(gait_dir, verb) {
@@ -231,7 +212,7 @@ fn run_bulk(verb: gait_ops::session::BulkVerb, gait_dir: &std::path::Path, yes: 
 
     if plan.eligible.is_empty() {
         if json {
-            print_bulk_json(&plan.eligible, &plan.skipped, &[], &[]);
+            println!("{}", plan.to_json());
         } else {
             let label = match verb {
                 gait_ops::session::BulkVerb::Persist => "persist",
@@ -275,12 +256,7 @@ fn run_bulk(verb: gait_ops::session::BulkVerb, gait_dir: &std::path::Path, yes: 
     };
 
     if json {
-        print_bulk_json(
-            &outcome.eligible,
-            &outcome.skipped,
-            &outcome.acted,
-            &outcome.failed,
-        );
+        println!("{}", outcome.to_json());
     } else {
         let past = match verb {
             gait_ops::session::BulkVerb::Persist => "persisted",
@@ -401,21 +377,10 @@ pub fn cmd_ps(args: PsArgs) {
     match gait_ops::session::ps(&args.gait_dir) {
         Ok(out) => {
             if args.json {
-                let arr: Vec<serde_json::Value> = out
-                    .rows
-                    .iter()
-                    .map(|r| serde_json::json!({"session_id": r.session_id, "state": r.state}))
-                    .collect();
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&arr).unwrap_or_else(|e| {
-                        eprintln!("[gait] error serializing ps: {}", e);
-                        std::process::exit(1);
-                    })
-                );
+                println!("{}", out.to_json());
             } else {
-                for r in &out.rows {
-                    println!("{}\t{}", r.session_id, r.state);
+                for (id, state) in out.to_rows() {
+                    println!("{}\t{}", id, state);
                 }
             }
         }
@@ -440,10 +405,7 @@ pub fn cmd_stats(args: StatsArgs) {
     match gait_ops::session::stats(&args.gait_dir, &args.session_id) {
         Ok(u) => {
             if args.json {
-                println!(
-                    "{{\"input\":{},\"output\":{},\"cache_read\":{},\"cache_write\":{}}}",
-                    u.input, u.output, u.cache_read, u.cache_write
-                );
+                println!("{}", u.to_json());
             } else {
                 println!("session {}", args.session_id);
                 println!("  input        {}", u.input);

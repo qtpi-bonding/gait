@@ -216,6 +216,89 @@ workflow's live channel.
 
 ---
 
+## The Ops Boundary (`gait-ops`)
+
+Turns aren't the only thing shared across frontends — the deterministic command verbs (`link`,
+`init`, session admin, permissions, extensions, auth, daemons: ~21 verbs) are too. Before the
+`gait-ops` crate existed, every such verb lived as a `cmd_*` function in `gait-cli`, fusing logic +
+terminal I/O + `process::exit` into one CLI-only blob — a REPL or ACP adapter couldn't call it
+without spawning a subprocess (which is exactly what the REPL did for `undo`/`unlock`/`load`/
+`unload` before this sweep). `gait-ops` (`crates/gait-ops`) gives these verbs a shared home, the
+same way the Turn I/O Boundary above gives the turn engine one. Full design rationale, the audit
+that motivated it, and the walls' construction are in
+`docs/plans/2026-07-09-core-ops-layer-design.md` (implementation plan:
+`docs/plans/2026-07-09-core-ops-layer-plan.md`).
+
+### The governing rule
+
+> If a verb runs a turn in any form — a one-off model call, a streaming turn, a workflow — it is
+> NOT an op.
+
+Ops carry no model turn; their effects are limited to filesystem, git, session-log, config,
+registry, and daemon-registry mutations/queries, plus idempotent network reads (e.g. fetching the
+model list). "Runs a turn → not an op" is the one-line test for every new verb. Turn-drivers
+(`run`, `exec`, `workflow run/continue`) stay on the Turn I/O Boundary above; workflow-admin verbs
+(`workflow list/log/abort`) are deferred (coupled to `WorkflowRunLog`, not yet in `gait-core`).
+
+### Two mechanical walls
+
+Unlike `mod turn` (which tolerates tracked `#[allow]`ed debt), the ops boundary is enforced with
+**no exceptions**:
+
+- **Wall 1 — no terminal, no exit.** `crates/gait-ops/src/lib.rs` carries a crate-level hard deny:
+  `#![deny(clippy::print_stdout, clippy::print_stderr, clippy::exit)]`. An op that needs to tell
+  the caller something returns it in an `Outcome`; an op that fails returns `Err(OpError)`. The
+  build breaks the moment anyone writes `println!`/`eprintln!`/`process::exit` inside `gait-ops`.
+- **Wall 2 — no turn engine.** `gait-ops` is its own workspace crate (a *sibling* of `gait-workflow`,
+  not a module inside `gait-core`) and depends on `gait-core` + `gait-proto` **only** — never
+  `gait-workflow`. That dependency shape alone makes `run_workflow`/`single_prompt_run`
+  unreachable, no matter what wrapper code exists. `gait-core` still exposes its turn engine
+  publicly, though, so a per-crate `crates/gait-ops/clippy.toml` bans the reachable entrypoints via
+  `disallowed-methods` (`gait_core::embed::run_loop`, `run_one_off_turn`, `turn::run_turn`,
+  `turn::brain::run_brain`, `turn::hand::run_hand`). `crates/gait-ops/tests/ban_list_complete.rs`
+  recursively scans `gait-core`'s `src/embed.rs` + `src/turn/**` for `pub async fn run_*` and fails
+  the build unless every match is either in that ban list or in an explicit, reasoned allowlist —
+  so a new turn entrypoint can't silently land unbanned. (Honest limitation: `disallowed-methods`
+  only catches named leaves, not a hypothetical new wrapper around a banned call — dependency
+  unreachability, not the clippy ban, is the load-bearing guarantee.)
+
+### The op contract
+
+Every op in `gait_ops::{workspace, session, permission, extension, auth, daemon, config}` has the
+same shape:
+
+- **Typed params in — never a clap `Args`.** clap types stay in `gait-cli`; an op takes plain
+  owned/borrowed values or a small params struct defined in `ops`.
+- **`Result<Outcome, OpError>` out**, never `()`. `Outcome` carries exactly the data a frontend
+  needs to render — no formatting, no exit code.
+- **`OpError`** (`thiserror`) is a typed enum — `NotFound`, `Conflict`, `SessionBusy`,
+  `ConfirmationRequired`, plus `Other(#[from] anyhow::Error)` — so a structured frontend (ACP/
+  JSON-RPC) can match variants instead of string-matching an `anyhow::Error`.
+- **No I/O to the user: no stdin reads, no prompts, no `process::exit`.** Fixed-value confirmations
+  (e.g. an API key) are passed in as a param — the frontend owns the prompt. Count-dependent
+  confirmations (e.g. "discard N sessions?") use a preview→act pair instead of a bare
+  `confirmed: bool` — see `session::classify_bulk` (pure preview, no effect) /
+  `session::bulk_act(plan, confirmed)` (acts, refusing with `OpError::ConfirmationRequired` if
+  `confirmed` is false).
+- **May be `async fn`** only for idempotent network reads (`auth::models`). Never blocks on stdin.
+
+Read-only/`--json` outcomes that both a CLI table and a `--json` payload need to render from (bulk
+outcomes, `ps`, `stats`) carry `to_rows()`/`to_json()` helpers on the `Outcome` type itself, in
+`gait-ops` — returning `Vec<(…)>`/`String` data only (Wall-1-clean), never printing. This keeps the
+`--json` shape as one source of truth instead of letting the CLI and any future frontend re-derive
+it independently and drift apart.
+
+### Frontend adapter pattern
+
+Each `cmd_*` in `gait-cli` is a thin adapter: parse clap `Args` → build op params → call
+`gait_ops::…` → on `Ok(outcome)` render + `exit(0)`, on `Err(e)` render + `exit(1)`. `gait-cli`'s
+`#[allow(clippy::print_stdout, ...)]` is fine there — the deny lives only on `gait-ops`. The REPL
+(`gait-repl`) calls the same ops in-process (no more `Command::new(gait_bin)` shell-outs for
+`undo`/`unlock`/`load`/`unload`); a future ACP adapter would do the same, mapping a request to op
+params and an op result to a JSON-RPC response.
+
+---
+
 ## Sealed execution: brain / spine / hands
 
 The *same* `run_loop`/`run_turn` runs in one of two modes, decided by whether the turn has a
