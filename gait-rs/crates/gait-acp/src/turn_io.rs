@@ -2,11 +2,17 @@
 //! TurnSink/TurnSource port impls that drive one ACP-initiated turn.
 //! See docs/plans/2026-07-10-acp-adapter-phase2-design.md.
 
+use std::path::PathBuf;
+
 use agent_client_protocol::schema::v1::{
-    ContentBlock, ContentChunk, SessionUpdate, StopReason, TextContent, ToolCall as AcpToolCall,
-    ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+    ContentBlock, ContentChunk, SessionId, SessionNotification, SessionUpdate, StopReason,
+    TextContent, ToolCall as AcpToolCall, ToolCallId, ToolCallStatus, ToolCallUpdate,
+    ToolCallUpdateFields,
 };
-use gait_core::proto::gait::log::v1::{Event, event, payload};
+use agent_client_protocol::{Client, ConnectionTo};
+use gait_core::embed::{Diag, TurnSink, TurnSource, TurnStart, user_turn_events};
+use gait_core::git::Repos;
+use gait_core::proto::gait::log::v1::{Event, StreamItem, event, payload, stream_item};
 use gait_core::turn::TurnResult;
 
 /// Wrap ACP text into an `AgentMessageChunk` / `AgentThoughtChunk` body.
@@ -78,6 +84,75 @@ pub fn turn_result_to_stop_reason(r: &TurnResult) -> Result<StopReason, String> 
         | TurnResult::Inform { .. }
         | TurnResult::Unlock { .. } => Err("interactive turn not supported yet (Phase 3)".into()),
     }
+}
+
+/// Feeds one ACP prompt into the turn: first `next()` yields the user input,
+/// then `None`. The Phase-3 permission loop (`AwaitingPermission -> reply ->
+/// Resume`, mirroring `crates/gait-repl/src/repl/driver.rs`) slots in at the
+/// marked seam below.
+pub struct AcpTurnSource {
+    first: Option<Vec<gait_core::proto::gait::log::v1::event::Body>>,
+}
+
+impl AcpTurnSource {
+    pub fn new(text: String, repos: Repos, codebase: PathBuf) -> Self {
+        Self {
+            first: Some(user_turn_events(&repos, &codebase, text)),
+        }
+    }
+}
+
+#[async_trait::async_trait(?Send)]
+impl TurnSource for AcpTurnSource {
+    async fn next(&mut self) -> Option<TurnStart> {
+        // PHASE-3 SEAM: on the second call, instead of `None`, read
+        // SessionState::AwaitingPermission from the log, emit a
+        // session/request_permission, append the reply, and return
+        // TurnStart::Resume. Phase 2 handles the no-approval happy path only.
+        self.first.take().map(TurnStart::Input)
+    }
+}
+
+/// Streams settled turn events out as ACP `session/update` notifications and
+/// captures the final `TurnResult`. `cx.send_notification` is synchronous, so
+/// `item()` sends inline — no bridge task, and FIFO ordering is preserved.
+pub struct AcpTurnSink {
+    cx: ConnectionTo<Client>,
+    session_id: SessionId,
+    result: Option<TurnResult>,
+}
+
+impl AcpTurnSink {
+    pub fn new(cx: ConnectionTo<Client>, session_id: SessionId) -> Self {
+        Self {
+            cx,
+            session_id,
+            result: None,
+        }
+    }
+    pub fn take_result(&mut self) -> Option<TurnResult> {
+        self.result.take()
+    }
+}
+
+impl TurnSink for AcpTurnSink {
+    fn item(&mut self, item: &StreamItem) {
+        // Live text deltas are a no-op stub this phase (the settled AssistantText
+        // event carries the full text — see design §6).
+        let Some(stream_item::Item::Event(ev)) = &item.item else {
+            return;
+        };
+        if let Some(update) = event_to_session_update(ev) {
+            let _ = self
+                .cx
+                .send_notification(SessionNotification::new(self.session_id.clone(), update));
+        }
+    }
+    fn result(&mut self, r: &TurnResult) {
+        self.result = Some(r.clone());
+    }
+    fn session_id(&mut self, _id: &str) {}
+    fn diagnostic(&mut self, _level: Diag, _msg: &str) {}
 }
 
 #[cfg(test)]
@@ -201,5 +276,17 @@ mod tests {
         assert!(turn_result_to_stop_reason(&TurnResult::Clarify { items: vec![] }).is_err());
         assert!(turn_result_to_stop_reason(&TurnResult::Inform { items: vec![] }).is_err());
         assert!(turn_result_to_stop_reason(&TurnResult::Unlock { items: vec![] }).is_err());
+    }
+
+    #[tokio::test]
+    async fn source_yields_input_once_then_none() {
+        use gait_core::embed::{TurnSource, TurnStart};
+        let repos = gait_core::git::Repos::production();
+        let mut src = AcpTurnSource::new("say hi".into(), repos, std::env::temp_dir());
+        assert!(matches!(src.next().await, Some(TurnStart::Input(_))));
+        assert!(
+            src.next().await.is_none(),
+            "second next() ends the turn (Phase-3 seam)"
+        );
     }
 }
