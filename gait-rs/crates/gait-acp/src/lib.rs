@@ -13,10 +13,14 @@ pub use session_map::SessionMap;
 /// Serve the gait-acp agent over real stdio. This is the binary's entry point.
 pub async fn run() -> anyhow::Result<()> {
     use agent_client_protocol::ConnectTo;
-    build_agent(SessionMap::new())
+    let map = SessionMap::new();
+    let result = build_agent(map.clone())
         .connect_to(agent_client_protocol::Stdio::new())
-        .await
-        .map_err(|e| anyhow::anyhow!("gait-acp connection error: {e}"))
+        .await;
+    // Connection closed (editor disconnected): reap every in-flight turn so no
+    // thread or sealed brain outlives the connection (design §4a).
+    map.drain();
+    result.map_err(|e| anyhow::anyhow!("gait-acp connection error: {e}"))
 }
 
 /// Test-only JSON-RPC request/response pair used by
