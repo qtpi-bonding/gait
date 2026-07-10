@@ -755,6 +755,48 @@ Other event kinds exist for narrower purposes (`sandbox_applied`, `hook_run`, `c
 
 Logs are reconstructed into LLM messages at the start of each turn, so the agent has full history.
 
+### Daemonless: state on disk, not in a resident process
+
+Everything above — sessions as branches, the append-only log as source of truth —
+serves one invariant: **one turn is one sealed process that exits.** gait runs no
+resident brain. Each turn spawns a fresh, sandboxed `gait __brain` subprocess that
+reads the log from disk, runs a single turn, writes its events back, and dies. The
+durable truth is 100% on disk; nothing authoritative lives in RAM between turns.
+
+This is a deliberate departure from how most agentic harnesses are built. The
+common shape is a **daemon**: the editor (or CLI) launches one long-lived agent
+process that holds every session as an in-memory object and multiplexes turns as
+tasks inside its own address space. That process *is* the source of truth — which
+is why such systems need a separate "load/restore" step to survive a restart, and
+why the process running your model's tool calls is the same process holding your
+editor connection.
+
+Why is the daemon the default? Mostly inertia, not performance. A stdio connection
+implies one persistent process, and once you have that, keeping session state in
+its RAM is the path of least resistance. But an agent's real bottleneck is the
+**network** — the LLM API round-trip dwarfs everything. Against that, re-reading a
+log from disk to reconstruct a turn is free; it disappears under the latency you're
+already paying. And "many turns interleaved as in-process tasks" and "many sealed
+processes each awaiting their own API call" are the *same concurrency* for a
+network-bound workload — gait just puts the boundary at the OS process instead of
+the async task.
+
+What the daemonless model buys, for the near-zero cost of a per-turn spawn:
+
+| Property | How the one-shot model delivers it |
+|---|---|
+| **Hard isolation** | Each turn's model + tool execution runs in its own kernel-sealed process, not the process holding your terminal/editor connection. |
+| **Crash safety** | Nothing resident to corrupt or leak. Kill anything mid-turn; the next invocation rebuilds from the log. No "lost session." |
+| **One source of truth** | CLI, REPL, and any future editor bridge read the *same* on-disk sessions with zero coordination — because none of them own session state. |
+| **Composability** | N concurrent sessions is just N sealed process-trees, the same mechanism subagents/cascades already use. |
+
+A long-lived *frontend* (the REPL, or an editor bridge speaking a protocol like
+[ACP](https://agentclientprotocol.com)) is still allowed — it has to be, to hold an
+interactive connection open. But it is a **stateless driver**: it routes input to
+per-turn brains and streams their events back, holding nothing the disk doesn't
+already hold. The daemonless invariant is about *turns*, not the frontend. Crash
+the frontend, respawn it, lose nothing.
+
 ---
 
 ## Development
