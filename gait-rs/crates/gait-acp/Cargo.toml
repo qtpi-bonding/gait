@@ -14,5 +14,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
 
+[[bin]]
+name = "mock_brain_acp"
+path = "../../src/bin/mock_brain.rs"
+
 [dev-dependencies]
 tempfile = "3"
+gait-proto = { path = "../gait-proto" }
+prost = "0.13"
