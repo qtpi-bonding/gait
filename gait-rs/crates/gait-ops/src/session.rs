@@ -84,7 +84,17 @@ pub fn ps(gait_dir: &Path) -> Result<PsOutcome, OpError> {
         };
         let tx_path = gait_core::session::live::log_path(gait_dir, id);
         let state_str = match session_state(&tx_path) {
-            Ok(SessionState::Idle) => "idle".to_string(),
+            // Idle in the log ≠ idle in reality: a session between turns still
+            // holds its `.active/<id>/lock` while its process runs. Consult the
+            // live lock so a running turn reports "running", not "idle" — the
+            // same check `classify_bulk` applies to the Idle case.
+            Ok(SessionState::Idle) => {
+                if gait_core::turn::SessionLock::is_running(&path) {
+                    "running".to_string()
+                } else {
+                    "idle".to_string()
+                }
+            }
             Ok(SessionState::AwaitingPermission { .. }) => "awaiting-permission".to_string(),
             Ok(SessionState::AwaitingClarify { .. }) => "awaiting-clarify".to_string(),
             Ok(SessionState::AwaitingInform { .. }) => "awaiting-inform".to_string(),
@@ -620,6 +630,26 @@ mod tests {
             .find(|r| r.session_id == "sps0001")
             .expect("row present");
         assert_eq!(row.state, "idle");
+    }
+
+    /// A session whose log folds to `Idle` but whose `.active/<id>/lock` names a
+    /// live PID must report `running`, not `idle` — the live turn is still
+    /// holding the lock between log-visible states.
+    #[test]
+    fn ps_reports_running_when_lock_is_live() {
+        let ws = ws_with_session("sps0002");
+        write_empty_log(ws.path(), "sps0002");
+        // Lock held by *this* (live) process => is_running() is true.
+        let lock = gait_core::session::live::worktree_dir(ws.path(), "sps0002").join("lock");
+        std::fs::write(&lock, std::process::id().to_string()).unwrap();
+
+        let out = ps(ws.path()).unwrap();
+        let row = out
+            .rows
+            .iter()
+            .find(|r| r.session_id == "sps0002")
+            .expect("row present");
+        assert_eq!(row.state, "running", "idle-in-log but live lock => running");
     }
 
     #[test]
