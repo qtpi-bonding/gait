@@ -39,7 +39,7 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                     Err(e) => return responder.respond_with_internal_error(e.to_string()),
                 };
                 let session_id = gait_core::session::new_session_id();
-                map.insert(gait_dir, session_id.clone());
+                map.insert(gait_dir, session_id.clone(), req.cwd.clone());
                 responder.respond(NewSessionResponse::new(session_id))
             },
             agent_client_protocol::on_receive_request!(),
