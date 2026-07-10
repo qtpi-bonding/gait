@@ -66,18 +66,6 @@ impl ResolvedProfile {
     }
 }
 
-/// Deny is monotonic: every layer's deny is final. Union config-deny with the
-/// agent's deny (dedup, config order first). Only `allow` is innermost-wins.
-pub(crate) fn merge_deny(config_deny: &[String], agent_deny: &[String]) -> Vec<String> {
-    let mut out = config_deny.to_vec();
-    for d in agent_deny {
-        if !out.contains(d) {
-            out.push(d.clone());
-        }
-    }
-    out
-}
-
 /// Overlay a mode's optional model onto the base model string. Pure; the caller
 /// applies it to `Profile.model` before `resolve()` binds the provider.
 pub fn apply_mode_model(base: String, mode_model: Option<String>) -> String {
@@ -243,7 +231,7 @@ impl Profile {
         let agent_deny = agent_path
             .and_then(|p| crate::agent_frontmatter::read_agent_deny(p.to_path_buf()).ok())
             .unwrap_or_default();
-        let deny = merge_deny(&config.deny, &agent_deny);
+        let deny = crate::permissions::merge_deny(&config.deny, &agent_deny);
 
         // Phase 5: skills come from disk first; fall back to config.skills for
         // backward compat with gait.jsonc inline bodies. The merge logic is
@@ -591,16 +579,6 @@ mod tests {
             "expected empty plugin registry"
         );
     }
-    #[test]
-    fn merge_deny_unions_and_dedups() {
-        let d = merge_deny(
-            &["shell:rm *".into(), "shell:curl *".into()],
-            &["shell:curl *".into(), "edit:secrets/*".into()],
-        );
-        // config denies survive; agent denies are added; no duplicates
-        assert_eq!(d, vec!["shell:rm *", "shell:curl *", "edit:secrets/*"]);
-    }
-
     #[test]
     fn mode_model_overlays_profile_before_resolve() {
         // Given an ActiveMode carrying model="anthropic/x", the built Profile.model

@@ -71,3 +71,18 @@ pub use matching::{
     AllowScope, PermissionChoice,
 };
 pub use persist::{compute_allow_decisions, save_choice};
+
+/// Deny is monotonic: every layer's deny is final. Union config-deny with the
+/// agent's deny (dedup, config order first). Only `allow` is innermost-wins.
+///
+/// Owning this in `permissions/` keeps the deny-vs-allow direction state-side;
+/// the engine's `profile.rs` reaches down to it.
+pub fn merge_deny(config_deny: &[String], agent_deny: &[String]) -> Vec<String> {
+    let mut out = config_deny.to_vec();
+    for d in agent_deny {
+        if !out.contains(d) {
+            out.push(d.clone());
+        }
+    }
+    out
+}

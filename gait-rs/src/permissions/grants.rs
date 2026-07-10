@@ -56,7 +56,7 @@ pub fn overlay_mode_permissions(
         Some(p) => {
             let mut ea = effective_allow;
             ea.extend(p.allow.iter().cloned());
-            let deny = crate::profile::merge_deny(&deny, &p.deny);
+            let deny = crate::permissions::merge_deny(&deny, &p.deny);
             (ea, deny)
         }
         None => (effective_allow, deny),
@@ -81,5 +81,15 @@ mod overlay_tests {
                                                       // None overlay is identity:
         let (ea3, deny3) = overlay_mode_permissions(vec!["x".into()], vec!["y".into()], None);
         assert_eq!((ea3, deny3), (vec!["x".to_string()], vec!["y".to_string()]));
+    }
+
+    #[test]
+    fn merge_deny_unions_and_dedups() {
+        let d = super::super::merge_deny(
+            &["shell:rm *".into(), "shell:curl *".into()],
+            &["shell:curl *".into(), "edit:secrets/*".into()],
+        );
+        // config denies survive; agent denies are added; no duplicates
+        assert_eq!(d, vec!["shell:rm *", "shell:curl *", "edit:secrets/*"]);
     }
 }
