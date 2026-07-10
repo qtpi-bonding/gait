@@ -217,9 +217,13 @@ pub async fn __dispatch_role(argv: &[String]) {
         Some("__daemon-exit") => {
             use crate::daemon_exit::{cmd_daemon_exit, DaemonExitArgs};
             let a = DaemonExitArgs::parse_from(&argv[1..]);
-            if let Err(e) = cmd_daemon_exit(a) {
-                eprintln!("[gait] __daemon-exit: {e:#}");
-                std::process::exit(1);
+            match cmd_daemon_exit(a) {
+                Ok(Some(req)) => crate::launch::spawn_wake(&req),
+                Ok(None) => {}
+                Err(e) => {
+                    eprintln!("[gait] __daemon-exit: {e:#}");
+                    std::process::exit(1);
+                }
             }
         }
         _ => {

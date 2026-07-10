@@ -224,7 +224,10 @@ pub(crate) async fn finalize(
                         "session({}): final-drain completions",
                         env.session_id
                     ));
-                    crate::session::completion::spawn_wake(env.gait_dir, env.session_id);
+                    crate::launch::spawn_wake(&crate::session::completion::WakeRequest {
+                        gait_dir: std::path::PathBuf::from(env.gait_dir),
+                        parent_session: env.session_id.to_string(),
+                    });
                 }
             }
             Ok(TurnResult::Failed {

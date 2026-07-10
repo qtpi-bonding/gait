@@ -14,9 +14,20 @@
 //! directly (NOT `SessionLog::open`, which would re-acquire and deadlock).
 //! This mirrors the "already hold the lock" pattern in `harness.rs:118-128`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::proto::gait::log::v1::event::Body;
+
+/// Pure-data wake intent returned by [`notify_parent`] on the `Woke` path.
+/// The state layer builds this; the *engine* caller turns it into a
+/// `WakeLaunch` + process spawn. Carrying intent rather than spawning here
+/// keeps `session/` free of the engine `launch` module — the
+/// state→engine dependency inversion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WakeRequest {
+    pub gait_dir: PathBuf,
+    pub parent_session: String,
+}
 
 /// A completion event to surface to a parent session.
 #[derive(Debug, Clone)]
@@ -38,10 +49,12 @@ pub enum Completion {
 
 /// The outcome of `notify_parent`. Tells the caller what actually happened
 /// so it can decide whether to log a warning (e.g. busy parent) or proceed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotifyOutcome {
-    /// Idle parent → event written + commit done + wake spawned.
-    Woke,
+    /// Idle parent → event written + commit done; the caller should spawn the
+    /// wake using the carried [`WakeRequest`] (the engine builds the
+    /// `WakeLaunch` from it).
+    Woke(WakeRequest),
     /// A turn holds the session lock; do nothing (Part 2's poll will surface).
     ParentBusy,
     /// The parent session directory does not exist (unrecoverable: skip).
@@ -149,42 +162,11 @@ pub fn notify_parent(
     ) {
         eprintln!("[gait] notify_parent: commit_session failed: {e}");
     }
-    drop(lock); // release before spawning the wake (the wake re-acquires)
-    spawn_wake(gait_dir, parent_session);
-    NotifyOutcome::Woke
-}
-
-/// Spawn a fresh `gait run --auto` for `session`. Best-effort:
-/// a spawn failure is logged as a diagnostic warn — a missed wake must
-/// never silently disappear.
-///
-/// `pub` so the final-drain in `turn::run_turn` can call it directly
-/// (the drain runs while holding the session lock, so it writes its own
-/// ledger entries and then hands off to a successor turn via this call).
-pub fn spawn_wake(gait_dir: &Path, parent_session: &str) {
-    let argv = crate::launch::WakeLaunch {
+    drop(lock); // release before the wake re-acquires (the caller spawns it)
+    NotifyOutcome::Woke(WakeRequest {
         gait_dir: gait_dir.to_path_buf(),
         parent_session: parent_session.to_string(),
-    }
-    .to_process_argv();
-    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("gait"));
-    let mut cmd = std::process::Command::new(&exe);
-    cmd.args(&argv)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    if let Err(e) = cmd.spawn() {
-        // Diagnostic warn: a failed wake is invisible to the parent, so we
-        // surface it via the diagnostic module + stderr. The next daemon
-        // exit will retry, and the daemons.jsonl registry is the durable
-        // fallback until then.
-        let rec = crate::diagnostic::DiagRecord::terminal(
-            parent_session,
-            crate::diagnostic::Phase::Unknown,
-            &format!("notify_parent wake spawn failed: {e}"),
-        );
-        eprintln!("[gait] {}", rec.to_json_line());
-    }
+    })
 }
 
 #[cfg(test)]
@@ -210,7 +192,7 @@ mod tests {
         };
         let outcome = notify_parent(gd.path(), &repos, "sparent", &c);
         assert!(
-            matches!(outcome, NotifyOutcome::Woke),
+            matches!(outcome, NotifyOutcome::Woke(_)),
             "expected Woke, got {outcome:?}"
         );
         let log =
@@ -274,7 +256,7 @@ mod tests {
             log_path: "/tmp/build.log".into(),
         };
         let first = notify_parent(gd.path(), &repos, "sdup", &c);
-        assert!(matches!(first, NotifyOutcome::Woke), "got {first:?}");
+        assert!(matches!(first, NotifyOutcome::Woke(_)), "got {first:?}");
         // Second call for the same completion must dedup, not double-write/wake.
         let second = notify_parent(gd.path(), &repos, "sdup", &c);
         assert!(

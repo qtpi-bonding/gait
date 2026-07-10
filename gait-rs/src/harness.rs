@@ -100,7 +100,9 @@ impl HarnessBackend for NativeHarnessBackend {
                         target_session,
                         &c,
                     ) {
-                        crate::session::completion::NotifyOutcome::Woke => {}
+                        crate::session::completion::NotifyOutcome::Woke(req) => {
+                            crate::launch::spawn_wake(&req);
+                        }
                         crate::session::completion::NotifyOutcome::ParentBusy => {}
                         crate::session::completion::NotifyOutcome::AlreadySurfaced => {}
                         crate::session::completion::NotifyOutcome::NoParent => {

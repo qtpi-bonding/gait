@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use crate::session::completion::{notify_parent, Completion};
+use crate::session::completion::{notify_parent, Completion, WakeRequest};
 use crate::session::daemons;
 
 /// Args parsed from `argv[1..]` (with `no_binary_name`) when `argv[0]` is `__daemon-exit`.
@@ -37,7 +37,12 @@ pub struct DaemonExitArgs {
 /// already finished the user command and the only effect of failure is that
 /// the parent will not be woken now (it will pick the completion up on the
 /// next turn via `<status>`).
-pub fn cmd_daemon_exit(args: DaemonExitArgs) -> anyhow::Result<()> {
+/// Returns the [`WakeRequest`] when `notify_parent` decided a wake should
+/// fire. The *engine* dispatcher (this `__daemon-exit` role handler runs under
+/// the engine entry in `lib.rs`) performs the actual spawn via
+/// `crate::launch::spawn_wake`, so this state-side handler never names the
+/// engine `launch` module.
+pub fn cmd_daemon_exit(args: DaemonExitArgs) -> anyhow::Result<Option<WakeRequest>> {
     // 1. Record the stop always (truthful registry status).
     let _ = daemons::append_stop(&args.gait_dir, &args.name, args.exit);
 
@@ -58,7 +63,10 @@ pub fn cmd_daemon_exit(args: DaemonExitArgs) -> anyhow::Result<()> {
         log_path: log_path.to_string_lossy().into_owned(),
     };
     let repos = crate::git::Repos::production();
-    let _ = notify_parent(&args.gait_dir, &repos, &args.session, &c);
+    let wake = match notify_parent(&args.gait_dir, &repos, &args.session, &c) {
+        crate::session::completion::NotifyOutcome::Woke(req) => Some(req),
+        _ => None,
+    };
 
-    Ok(())
+    Ok(wake)
 }

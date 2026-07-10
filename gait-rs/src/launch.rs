@@ -158,6 +158,40 @@ impl WakeLaunch {
     }
 }
 
+/// Spawn a fresh `gait run --auto` for `req.parent_session`. Best-effort:
+/// a spawn failure is logged as a diagnostic warn — a missed wake must never
+/// silently disappear.
+///
+/// This is the engine side of the `spawn_wake` split: `session::completion`
+/// returns a pure-data [`WakeRequest`][crate::session::completion::WakeRequest]
+/// (state), and the engine builds the [`WakeLaunch`] + spawns here, so
+/// `session/` never names the engine `launch` module.
+pub fn spawn_wake(req: &crate::session::completion::WakeRequest) {
+    let argv = WakeLaunch {
+        gait_dir: req.gait_dir.clone(),
+        parent_session: req.parent_session.clone(),
+    }
+    .to_process_argv();
+    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("gait"));
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.args(&argv)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if let Err(e) = cmd.spawn() {
+        // Diagnostic warn: a failed wake is invisible to the parent, so we
+        // surface it via the diagnostic module + stderr. The next daemon
+        // exit will retry, and the daemons.jsonl registry is the durable
+        // fallback until then.
+        let rec = crate::diagnostic::DiagRecord::terminal(
+            &req.parent_session,
+            crate::diagnostic::Phase::Unknown,
+            &format!("notify_parent wake spawn failed: {e}"),
+        );
+        eprintln!("[gait] {}", rec.to_json_line());
+    }
+}
+
 // ── BrainLaunch (sites 2, 3 — the local `BrainArgs` clap struct below) ──────
 
 /// Build the argv passed to `gait __brain` — the single source of truth for
