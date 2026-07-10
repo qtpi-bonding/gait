@@ -49,6 +49,7 @@ struct InformArg {
     context: Option<String>,
 }
 
+pub(crate) mod agent_event;
 pub(crate) mod brain;
 mod completion_poll;
 mod curate;

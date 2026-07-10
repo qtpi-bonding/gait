@@ -94,7 +94,7 @@ pub(crate) fn init(
     // Build the live Agent config from the whole profile BEFORE `caps` is
     // destructured, so `events::agent_msg` stays the single source of truth.
     // Emitted later, under the drift guard.
-    let agent = events::agent_msg(&caps);
+    let agent = super::agent_event::agent_msg(&caps);
     let mut state = TurnState::new(&caps);
     let provider = caps.provider.clone();
     let (tools, allow, deny) = caps.permissioned.into_parts();
