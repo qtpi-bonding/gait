@@ -10,15 +10,17 @@
 use agent_client_protocol::schema::v1::{
     InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse,
 };
-use agent_client_protocol::{Agent, Client, ConnectTo, Responder};
+use agent_client_protocol::{Agent, Builder, Client, HandleDispatchFrom, NullRun, Responder};
 
 use crate::session_map::{SessionMap, discover_gait_dir_for_cwd};
 
 /// Build the gait-acp agent: registers `initialize` and `session/new` against
-/// the given `SessionMap`. Returns an opaque `ConnectTo<Client>` so callers can
-/// either `.connect_to(transport)` (real stdio) or `.into_channel_and_future()`
-/// (in-process, for tests).
-pub fn build_agent(map: SessionMap) -> impl ConnectTo<Client> {
+/// the given `SessionMap`. Returns the concrete `Builder` (not just an opaque
+/// `ConnectTo<Client>`) so `build_agent_with_slow_handler` (Task 5) can chain
+/// one more `.on_receive_request` onto it; the builder itself still
+/// implements `ConnectTo<Client>` for `.connect_to(transport)` /
+/// `.into_channel_and_future()`.
+pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Client>, NullRun> {
     Agent
         .builder()
         .name("gait-acp")

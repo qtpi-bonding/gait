@@ -111,3 +111,39 @@ async fn session_new_without_gait_dir_errors_not_panics() {
     );
     assert!(init_resp.auth_methods.is_empty());
 }
+
+/// Task 5: a handler that spawns work and returns immediately must not block
+/// the read loop from serving other requests. Fires a slow request (does NOT
+/// await its response yet), then fires `initialize` and asserts THAT resolves
+/// promptly — proving the slow handler didn't block the read loop. Only then
+/// releases the oneshot the slow handler is waiting on and awaits its
+/// response.
+#[tokio::test]
+async fn read_loop_stays_free_while_a_handler_is_in_flight() {
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let map = SessionMap::new();
+    let (channel, server_future) =
+        gait_acp::build_agent_with_slow_handler(map, release_rx).into_channel_and_future();
+    tokio::spawn(server_future);
+
+    let (init_resp, _slow_resp) = Client
+        .connect_with(channel, async |cx| {
+            // Fire the slow request; do NOT await its response yet.
+            let slow = cx.send_request(gait_acp::SlowRequest {});
+
+            // This must resolve promptly even though the slow handler above
+            // is still parked on the (unreleased) oneshot.
+            let init_resp = cx
+                .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                .block_task()
+                .await?;
+
+            release_tx.send(()).ok();
+            let slow_resp = slow.block_task().await?;
+            Ok((init_resp, slow_resp))
+        })
+        .await
+        .expect("connection should stay alive");
+
+    assert!(init_resp.auth_methods.is_empty());
+}

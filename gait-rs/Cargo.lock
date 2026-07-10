@@ -1119,6 +1119,7 @@ dependencies = [
  "agent-client-protocol",
  "anyhow",
  "gait-core",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
