@@ -43,18 +43,16 @@ pub fn cmd_daemons(args: DaemonsArgs) {
 }
 
 fn cmd_daemons_list(gait_dir: &std::path::Path) {
-    use gait_core::session::daemons::{active, is_alive};
-    match active(gait_dir) {
-        Ok(recs) => {
-            if recs.is_empty() {
+    match gait_ops::daemon::list(gait_dir) {
+        Ok(outcome) => {
+            if outcome.rows.is_empty() {
                 println!("No daemons.");
                 return;
             }
-            for r in &recs {
-                let status = if is_alive(r) { "running" } else { "stopped" };
+            for row in &outcome.rows {
                 println!(
                     "{} (pid {}) — {} — log: {}",
-                    r.name, r.pid, status, r.log_path
+                    row.name, row.pid, row.status, row.log_path
                 );
             }
         }
@@ -63,29 +61,17 @@ fn cmd_daemons_list(gait_dir: &std::path::Path) {
 }
 
 fn cmd_daemons_stop(gait_dir: &std::path::Path, name: &str) {
-    use gait_core::session::daemons::{active, append_stop, is_alive};
-    let recs = match active(gait_dir) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("[gait daemons] error: {}", e);
-            return;
-        }
-    };
-    match recs.iter().find(|r| r.name == name) {
-        None => eprintln!("[gait daemons] no daemon named '{}'", name),
-        Some(rec) => {
-            if is_alive(rec) {
-                // SAFETY: is_alive performed the identity check (proc_start_time comparison).
-                // killpg sends SIGTERM to the daemon's process group.
-                unsafe { libc::killpg(rec.pgid, libc::SIGTERM) };
-                println!("[gait daemons] stopped {} (pid {})", name, rec.pid);
+    match gait_ops::daemon::stop(gait_dir, name) {
+        Ok(outcome) => {
+            if outcome.was_alive {
+                println!(
+                    "[gait daemons] stopped {} (pid {})",
+                    outcome.id, outcome.pid
+                );
             } else {
-                println!("[gait daemons] {} is not running", name);
+                println!("[gait daemons] {} is not running", outcome.id);
             }
-            // CLI stop is SIGTERM (graceful). We don't observe an exit code;
-            // record 0 to mean "cleanly stopped" until the daemon-exit hook
-            // writes the real one (see __daemon-exit in `cmd_daemon_exit`).
-            let _ = append_stop(gait_dir, name, 0);
         }
+        Err(e) => eprintln!("[gait daemons] error: {}", e),
     }
 }
