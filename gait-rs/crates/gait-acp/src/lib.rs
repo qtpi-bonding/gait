@@ -5,6 +5,7 @@
 //! See docs/plans/2026-07-09-acp-adapter-design.md.
 pub mod handlers;
 pub mod session_map;
+pub mod turn_io;
 
 pub use handlers::build_agent;
 pub use session_map::SessionMap;
