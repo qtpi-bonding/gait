@@ -12,7 +12,6 @@ pub use session_map::SessionMap;
 
 /// Serve the gait-acp agent over real stdio. This is the binary's entry point.
 pub async fn run() -> anyhow::Result<()> {
-    use agent_client_protocol::ConnectTo;
     let map = SessionMap::new();
     let result = build_agent(map.clone())
         .connect_to(agent_client_protocol::Stdio::new())
