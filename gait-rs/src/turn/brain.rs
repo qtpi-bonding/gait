@@ -197,6 +197,10 @@ pub async fn run_brain(
 
     // Install the process-global phase cell and spawn the always-on ping task.
     let _phase_cell = crate::diagnostic::install_brain_phase_cell();
+    // Identity cell (turn + model) — seeded here, updated by `setup::init` once
+    // the turn number and model are resolved, so the ping below carries the same
+    // turn/model that `log.jsonl` stamps instead of `0`/`""`.
+    crate::diagnostic::install_brain_identity();
     let ping_writer = nerve_writer.clone();
     let ping_session = session_id.clone();
     tokio::spawn(async move {
@@ -207,8 +211,9 @@ pub async fn run_brain(
             let Some((phase, elapsed_ms, label)) = crate::diagnostic::current_phase_full() else {
                 continue;
             };
+            let (turn, model) = crate::diagnostic::current_identity().unwrap_or((0, String::new()));
             let mut rec =
-                crate::diagnostic::DiagRecord::ping(&ping_session, 0, "", phase, elapsed_ms);
+                crate::diagnostic::DiagRecord::ping(&ping_session, turn, &model, phase, elapsed_ms);
             rec.detail = label;
             let sig = Signal {
                 corr_id: 0,

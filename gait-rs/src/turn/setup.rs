@@ -263,6 +263,11 @@ pub(crate) fn init(
     // turns in the log; the step starts at 0 and advances inside the loop.
     let current_turn = count_turn_complete(&pre_events) as u32;
     emitter.set_position(current_turn, 0);
+    // Thread the same turn number + model that `log.jsonl` stamps into the
+    // brain's always-on diagnostic ping (no-op outside the brain process, where
+    // the identity cell is never installed). Without this the per-phase
+    // heartbeat frames carry `turn:0` / `model:""`.
+    crate::diagnostic::set_brain_identity(current_turn, &model);
 
     Ok(SetupData {
         state,

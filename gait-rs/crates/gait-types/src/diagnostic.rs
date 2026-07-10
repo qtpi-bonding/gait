@@ -144,6 +144,39 @@ pub fn install_brain_phase_cell() -> PhaseCell {
     BRAIN_PHASE.get_or_init(PhaseCell::new).clone()
 }
 
+// ── Brain identity (turn + model) ─────────────────────────────────────────────
+//
+// The always-on ping task is spawned at brain startup, BEFORE the turn's
+// `setup::init` computes the current turn number and resolves the model. Those
+// two values are the SAME ones stamped into `log.jsonl` (see `setup::init`:
+// `current_turn` from `count_turn_complete`, `model` from `caps.model`). This
+// process-global cell threads them to the ping so heartbeat frames carry the
+// real turn/model instead of `0`/`""`. Mirrors the `BRAIN_PHASE` install/set/read
+// discipline: a no-op in the spine process and tests (cell never installed).
+static BRAIN_IDENTITY: OnceLock<Mutex<(u32, String)>> = OnceLock::new();
+
+/// Install the brain-process identity cell (call ONCE at brain startup).
+/// Seeds with `(0, "")` — the turn loop updates it via [`set_brain_identity`].
+pub fn install_brain_identity() {
+    BRAIN_IDENTITY.get_or_init(|| Mutex::new((0, String::new())));
+}
+
+/// Set the current turn number and model. No-op if not installed (spine / tests).
+pub fn set_brain_identity(turn: u32, model: &str) {
+    if let Some(cell) = BRAIN_IDENTITY.get() {
+        let mut g = cell.lock().unwrap_or_else(|e| e.into_inner());
+        *g = (turn, model.to_string());
+    }
+}
+
+/// Snapshot of `(turn, model)`, or `None` if not installed.
+pub fn current_identity() -> Option<(u32, String)> {
+    BRAIN_IDENTITY.get().map(|cell| {
+        let g = cell.lock().unwrap_or_else(|e| e.into_inner());
+        (g.0, g.1.clone())
+    })
+}
+
 /// Set the current phase. No-op if not installed (spine process / tests).
 pub fn set_phase(p: Phase) {
     if let Some(c) = BRAIN_PHASE.get() {
@@ -268,6 +301,30 @@ mod tests {
         assert!(matches!(Phase::Reasoning.cap(), Cap::AbsoluteBackstop));
         assert!(matches!(Phase::Streaming.cap(), Cap::AbsoluteBackstop));
         assert!(matches!(Phase::AwaitFeedback.cap(), Cap::ToolAware));
+    }
+
+    /// The identity cell threads the real turn number and model into a ping
+    /// frame. Pins the bug fix: heartbeats used to carry `turn:0` / `model:""`
+    /// because the ping site hardcoded them; now they come from
+    /// `set_brain_identity` (fed by `setup::init`, the same source as
+    /// `log.jsonl`).
+    #[test]
+    fn identity_threads_real_turn_and_model_into_ping() {
+        install_brain_identity();
+        set_brain_identity(7, "minimax/MiniMax-M3");
+        let (turn, model) = current_identity().expect("identity installed");
+        assert_eq!(turn, 7);
+        assert_eq!(model, "minimax/MiniMax-M3");
+
+        // The ping frame built from the snapshot must carry both — not 0/"".
+        let rec = DiagRecord::ping("sb4a1be49", turn, &model, Phase::TurnBegin, 1);
+        let line = rec.to_json_line();
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["turn"], 7, "heartbeat carries the real turn: {line}");
+        assert_eq!(
+            v["model"], "minimax/MiniMax-M3",
+            "heartbeat carries the real model: {line}"
+        );
     }
 
     #[test]
