@@ -1,6 +1,6 @@
 //! Task 4: Session lock lifetime + contention characterization.
 //!
-//! PINS the contract of `gait_core::turn::SessionLock` as observed through the
+//! PINS the contract of `gait_core::session::SessionLock` as observed through the
 //! real spine: a PID-file RAII lock in the session dir, acquired for the
 //! duration of a turn, released on turn completion.
 //!
@@ -24,7 +24,7 @@ async fn lock_released_after_turn() {
     // held during turn, released after. A refactor that leaks the lock (e.g. moves it into
     // a long-lived cache) will fail this test.
     let dir = gait_core::session::live::worktree_dir(tmp.path(), "l1");
-    let lock = gait_core::turn::SessionLock::acquire(&dir);
+    let lock = gait_core::session::SessionLock::acquire(&dir);
     assert!(
         lock.is_ok(),
         "lock should be free after turn completes, got: {:?}",
@@ -59,7 +59,8 @@ async fn concurrent_turn_blocked_while_held() {
     std::fs::create_dir_all(&session_dir).unwrap();
 
     // Hold the lock from this process (current PID, which the spine's `kill(pid, 0)` sees as alive).
-    let _held = gait_core::turn::SessionLock::acquire(&session_dir).expect("test holds the lock");
+    let _held =
+        gait_core::session::SessionLock::acquire(&session_dir).expect("test holds the lock");
 
     // Set up a valid mock_frames.bin so the spine, if it ever reached the brain spawn, would
     // terminate cleanly. The point is it must NOT reach there.

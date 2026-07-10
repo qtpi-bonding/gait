@@ -34,7 +34,8 @@ use gait_provider::provider::Provider;
 
 use super::persist::Persistence;
 use super::state::TurnState;
-use super::{event_kind, SessionLock, TurnInput};
+use super::{event_kind, TurnInput};
+use crate::session::SessionLock;
 
 /// Everything `run_turn`'s pre-resume setup produces, owned by the caller.
 pub(crate) struct SetupData {

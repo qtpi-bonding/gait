@@ -565,7 +565,7 @@ pub async fn run_workflow(
     let run_worktree = run_dir.join("worktree");
     let _run_lock = if needs_run_workspace(&wf) {
         std::fs::create_dir_all(&run_dir)?;
-        let lock = gait_core::turn::SessionLock::acquire(&run_dir)?;
+        let lock = gait_core::session::SessionLock::acquire(&run_dir)?;
         if !run_worktree.join(".git").exists() {
             repos.traces.create_branch_worktree(
                 &gait_dir,

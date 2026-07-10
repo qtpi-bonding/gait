@@ -5,7 +5,7 @@
 //! (b) The positive path: after a headless `run_workflow` call, the run dir
 //!     holds a `worktree/` on branch `run/<run_id>`.
 
-use gait_core::turn::SessionLock;
+use gait_core::session::SessionLock;
 
 use gait_workflow::convert::to_proto;
 use gait_workflow::observer::CliObserver;

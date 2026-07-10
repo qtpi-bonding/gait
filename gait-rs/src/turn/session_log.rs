@@ -17,7 +17,7 @@ use std::sync::Mutex;
 
 use crate::proto::gait::log::v1::{event, Event};
 use crate::proto::wire;
-use crate::turn::SessionLock;
+use crate::session::SessionLock;
 
 pub(crate) enum SessionLog {
     /// Production: a real `log.jsonl` plus the session lock (released on drop).

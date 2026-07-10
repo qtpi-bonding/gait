@@ -185,7 +185,7 @@ pub fn write_registry(
     name: &str,
     listed: bool,
 ) -> Result<(), SessionError> {
-    if crate::turn::SessionLock::is_running(session_dir) {
+    if crate::session::SessionLock::is_running(session_dir) {
         return Err(SessionError::SessionRunning);
     }
     let body = crate::proto::events::registry(kind, name, listed);
@@ -215,7 +215,7 @@ pub fn write_toggle(
     name: &str,
     enabled: bool,
 ) -> Result<(), SessionError> {
-    if crate::turn::SessionLock::is_running(session_dir) {
+    if crate::session::SessionLock::is_running(session_dir) {
         return Err(SessionError::SessionRunning);
     }
     let body = crate::proto::events::toggle(kind, name, enabled);

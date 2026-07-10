@@ -89,7 +89,7 @@ pub fn ps(gait_dir: &Path) -> Result<PsOutcome, OpError> {
             // live lock so a running turn reports "running", not "idle" — the
             // same check `classify_bulk` applies to the Idle case.
             Ok(SessionState::Idle) => {
-                if gait_core::turn::SessionLock::is_running(&path) {
+                if gait_core::session::SessionLock::is_running(&path) {
                     "running".to_string()
                 } else {
                     "idle".to_string()
@@ -254,7 +254,7 @@ pub fn undo(params: UndoParams) -> Result<UndoOutcome, OpError> {
 
     // Acquire the lock; refuse if a turn is in progress.
     let session_dir = gait_core::session::live::worktree_dir(&params.gait_dir, &params.session_id);
-    let _lock = gait_core::turn::SessionLock::acquire(&session_dir).map_err(|e| {
+    let _lock = gait_core::session::SessionLock::acquire(&session_dir).map_err(|e| {
         OpError::SessionBusy(format!("cannot undo: {} (is a turn in progress?)", e))
     })?;
 
@@ -430,7 +430,7 @@ pub fn bulk_act(gait_dir: &Path, plan: &BulkPlan, confirmed: bool) -> Result<Bul
     let mut warnings: Vec<(String, String)> = Vec::new();
     for id in &plan.eligible {
         let session_dir = gait_core::session::live::worktree_dir(gait_dir, id);
-        let _lock = match gait_core::turn::SessionLock::acquire(&session_dir) {
+        let _lock = match gait_core::session::SessionLock::acquire(&session_dir) {
             Ok(l) => l,
             Err(_) => {
                 failed.push((id.clone(), "started running".to_string()));
@@ -518,7 +518,7 @@ fn classify_bulk_targets(gait_dir: &Path) -> Result<BulkTargets, OpError> {
         }
         let reason: Option<String> = match session_state(&tx_path) {
             Ok(SessionState::Idle) => {
-                if gait_core::turn::SessionLock::is_running(&path) {
+                if gait_core::session::SessionLock::is_running(&path) {
                     Some("running".to_string())
                 } else {
                     None

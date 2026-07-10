@@ -110,7 +110,7 @@ pub fn notify_parent(
         return NotifyOutcome::NoParent;
     }
     // One-shot lock acquire — the lock IS the "is a turn running?" check.
-    let lock = match crate::turn::SessionLock::acquire(&target_dir) {
+    let lock = match crate::session::SessionLock::acquire(&target_dir) {
         Ok(l) => l,
         Err(e) if e.to_string().contains("already running") => return NotifyOutcome::ParentBusy,
         Err(_) => return NotifyOutcome::NoParent, // unexpected I/O — leave registry as fallback
@@ -226,7 +226,7 @@ mod tests {
         let gd = TempDir::new().unwrap();
         init_parent(gd.path(), "sbusy");
         // Hold the lock to simulate a live turn.
-        let _held = crate::turn::SessionLock::acquire(&crate::session::live::worktree_dir(
+        let _held = crate::session::SessionLock::acquire(&crate::session::live::worktree_dir(
             gd.path(),
             "sbusy",
         ))
