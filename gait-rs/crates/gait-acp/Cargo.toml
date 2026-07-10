@@ -1,0 +1,15 @@
+[package]
+name = "gait-acp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+
+[dependencies]
+gait-core = { path = "../.." }
+agent-client-protocol = "1.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sync"] }
+anyhow = "1"
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
