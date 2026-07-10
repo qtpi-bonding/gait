@@ -3,10 +3,11 @@
 //! See docs/plans/2026-07-10-acp-adapter-phase2-design.md.
 
 use agent_client_protocol::schema::v1::{
-    ContentBlock, ContentChunk, SessionUpdate, TextContent, ToolCall as AcpToolCall, ToolCallId,
-    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+    ContentBlock, ContentChunk, SessionUpdate, StopReason, TextContent, ToolCall as AcpToolCall,
+    ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
 };
 use gait_core::proto::gait::log::v1::{Event, event, payload};
+use gait_core::turn::TurnResult;
 
 /// Wrap ACP text into an `AgentMessageChunk` / `AgentThoughtChunk` body.
 fn text_chunk(text: impl Into<String>) -> ContentChunk {
@@ -63,12 +64,29 @@ pub fn content_blocks_to_text(blocks: &[ContentBlock]) -> String {
         .collect()
 }
 
+/// Map a finished turn to an ACP `StopReason`. `Err(msg)` means the prompt must
+/// be resolved as a JSON-RPC error (an internal failure is not a `Refusal`, and
+/// an interaction-required result is unsupported until Phase 3).
+pub fn turn_result_to_stop_reason(r: &TurnResult) -> Result<StopReason, String> {
+    match r {
+        TurnResult::Done { .. } => Ok(StopReason::EndTurn),
+        TurnResult::Cancelled => Ok(StopReason::Cancelled),
+        TurnResult::Failed { ended, .. } if ended == "max_steps" => Ok(StopReason::MaxTurnRequests),
+        TurnResult::Failed { message, .. } => Err(message.clone()),
+        TurnResult::Permissions
+        | TurnResult::Clarify { .. }
+        | TurnResult::Inform { .. }
+        | TurnResult::Unlock { .. } => Err("interactive turn not supported yet (Phase 3)".into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_client_protocol::schema::v1::{ContentBlock, SessionUpdate, TextContent};
+    use agent_client_protocol::schema::v1::{ContentBlock, SessionUpdate, StopReason, TextContent};
     use gait_core::proto::events;
     use gait_core::proto::gait::log::v1::Event;
+    use gait_core::turn::TurnResult;
 
     fn event(body: gait_core::proto::gait::log::v1::event::Body) -> Event {
         Event {
@@ -133,5 +151,55 @@ mod tests {
             ContentBlock::Text(TextContent::new("hi")),
         ];
         assert_eq!(content_blocks_to_text(&blocks), "say hi");
+    }
+
+    #[test]
+    fn done_maps_to_end_turn() {
+        let r = TurnResult::Done {
+            message: "ok".into(),
+            result: None,
+            changes: None,
+            implicit: true,
+        };
+        assert_eq!(turn_result_to_stop_reason(&r), Ok(StopReason::EndTurn));
+    }
+
+    #[test]
+    fn cancelled_maps_to_cancelled() {
+        assert_eq!(
+            turn_result_to_stop_reason(&TurnResult::Cancelled),
+            Ok(StopReason::Cancelled)
+        );
+    }
+
+    #[test]
+    fn max_steps_maps_to_max_turn_requests() {
+        let r = TurnResult::Failed {
+            ended: "max_steps".into(),
+            message: "hit cap".into(),
+        };
+        assert_eq!(
+            turn_result_to_stop_reason(&r),
+            Ok(StopReason::MaxTurnRequests)
+        );
+    }
+
+    #[test]
+    fn error_maps_to_jsonrpc_error() {
+        let r = TurnResult::Failed {
+            ended: "error".into(),
+            message: "boom".into(),
+        };
+        assert_eq!(turn_result_to_stop_reason(&r), Err("boom".into()));
+    }
+
+    #[test]
+    fn interaction_required_maps_to_jsonrpc_error() {
+        // Permissions/Clarify/Inform/Unlock are the Phase-3 seam: no interactive
+        // support yet, so surface a loud error rather than a fake completion.
+        assert!(turn_result_to_stop_reason(&TurnResult::Permissions).is_err());
+        assert!(turn_result_to_stop_reason(&TurnResult::Clarify { items: vec![] }).is_err());
+        assert!(turn_result_to_stop_reason(&TurnResult::Inform { items: vec![] }).is_err());
+        assert!(turn_result_to_stop_reason(&TurnResult::Unlock { items: vec![] }).is_err());
     }
 }
