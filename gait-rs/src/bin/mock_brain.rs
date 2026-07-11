@@ -34,8 +34,25 @@ fn main() {
         }
     }
 
+    // Step-aware frame selection: invocation N (0-based) replays
+    // `mock_frames.<N>.bin` if present, else falls back to `mock_frames.bin`.
+    // The step index lives in `mock_step`, which this brain reads then increments.
+    // Single-invocation tests never create numbered files, so every step falls
+    // back to `mock_frames.bin` — behavior is unchanged for them.
+    let step: u32 = std::fs::read_to_string(dir.join("mock_step"))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    let _ = std::fs::write(dir.join("mock_step"), (step + 1).to_string());
+    let numbered = dir.join(format!("mock_frames.{step}.bin"));
+    let frames_path = if numbered.exists() {
+        numbered
+    } else {
+        dir.join("mock_frames.bin")
+    };
+
     let mut stdout = std::io::stdout();
-    if let Ok(bytes) = std::fs::read(dir.join("mock_frames.bin")) {
+    if let Ok(bytes) = std::fs::read(&frames_path) {
         let _ = stdout.write_all(&bytes);
         let _ = stdout.flush();
     }
