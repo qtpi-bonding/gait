@@ -273,20 +273,23 @@ async fn permission_cancelled_finalizes_without_reply() {
     // mock_frames.bin (absent) and emit nothing -> the test would hang/err. The
     // Cancelled outcome must instead finalize immediately.
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let (result, _sid) = run_prompt_with_client(repo, seen.clone(), |_opts| {
+    let (result, sid) = run_prompt_with_client(repo, seen.clone(), |_opts| {
         RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled)
     })
     .await;
-    // A Cancelled outcome writes no reply, so next() returns None and the run
-    // loop finalizes with the turn still `Permissions` -> turn_result_to_stop_reason
-    // maps that to a JSON-RPC error (design §5 / plan Task-2 note), not a clean
-    // StopReason. Assert the prompt surfaces that error, and that no second
-    // brain ran (exactly one request_permission, no resume).
-    assert!(
-        result.is_err(),
-        "an unanswered (cancelled) Permissions turn surfaces as a JSON-RPC error, got {result:?}"
-    );
+
+    // Phase 4: a Cancelled outcome trips the shared token; the completion path
+    // resolves StopReason::Cancelled (was: a JSON-RPC error). No reply is written
+    // and no second brain runs (no step-1 frames were baked). The log's oneof field
+    // for a reply is the pbjson name "permissionsReply".
+    assert_eq!(result, Ok(StopReason::Cancelled));
     assert_eq!(seen.lock().unwrap().len(), 1, "one request, then finalize");
+    let log = std::fs::read_to_string(gait_core::session::live::log_path(&gait_dir, &sid))
+        .unwrap_or_default();
+    assert!(
+        !log.contains("permissionsReply"),
+        "cancelled turn writes no reply; got: {log:?}"
+    );
 }
 
 #[tokio::test]
