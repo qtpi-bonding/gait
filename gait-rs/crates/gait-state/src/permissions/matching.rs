@@ -23,6 +23,7 @@ pub enum PermissionChoice {
 pub enum AllowScope {
     Global,
     Agent,
+    Session,
     Once,
 }
 

@@ -101,16 +101,21 @@ pub fn compute_allow_decisions(
             let choice = match &params.scope {
                 AllowScope::Global => PermissionChoice::Global(effective_pattern.clone()),
                 AllowScope::Agent => PermissionChoice::Agent(effective_pattern.clone()),
+                AllowScope::Session => PermissionChoice::Session(effective_pattern.clone()),
                 AllowScope::Once => PermissionChoice::Once(effective_pattern.clone()),
             };
             save_choice(&choice, gait_dir, session_id, agent_path)?;
             reply_items.push(pb::PermissionsReplyItem {
                 id: item.id.clone(),
                 decision: pb::Decision::Allow as i32,
-                text: None,
+                // Carry the pattern so the retrace session/once fold buckets it
+                // (mod.rs:1064 skips items whose `text` is None). Inert for
+                // Global/Agent (the fold only matches Session/Once).
+                text: Some(effective_pattern.clone()),
                 scope: match &params.scope {
                     AllowScope::Global => pb::Scope::Global as i32,
                     AllowScope::Agent => pb::Scope::Agent as i32,
+                    AllowScope::Session => pb::Scope::Session as i32,
                     AllowScope::Once => pb::Scope::Once as i32,
                 },
             });
@@ -188,5 +193,75 @@ mod tests {
         assert_eq!(reply.len(), 1);
         assert_eq!(reply[0].decision, pb::Decision::Deny as i32);
         assert_eq!(reply[0].scope, pb::Scope::Unspecified as i32);
+    }
+
+    #[test]
+    fn compute_allow_decisions_session_scope_stamps_session_and_text() {
+        let items = vec![pb::PermissionItem {
+            id: "1".to_string(),
+            tool_name: "shell".to_string(),
+            cmd: "cargo test".to_string(),
+            patterns: vec!["cargo *".to_string()],
+            reason: String::new(),
+            preview: None,
+            tool_args: None,
+        }];
+        let params = AllowParams {
+            scope: AllowScope::Session,
+            pattern: None,
+        };
+        let reply = compute_allow_decisions(&items, &params, Path::new("/tmp"), "s", None)
+            .expect("compute should succeed");
+        assert_eq!(reply.len(), 1);
+        assert_eq!(reply[0].decision, pb::Decision::Allow as i32);
+        assert_eq!(reply[0].scope, pb::Scope::Session as i32);
+        // The root-cause fix: the granted pattern rides in `text` so the retrace
+        // fold can bucket it (a `None` here is silently dropped — mod.rs:1064).
+        assert_eq!(reply[0].text.as_deref(), Some("cargo *"));
+    }
+
+    #[test]
+    fn session_grant_from_compute_survives_the_retrace_fold() {
+        use crate::permissions::grants::effective_allow;
+        use std::collections::{HashMap, HashSet};
+
+        let items = vec![pb::PermissionItem {
+            id: "1".to_string(),
+            tool_name: "shell".to_string(),
+            cmd: "cargo test".to_string(),
+            patterns: vec!["shell:cargo *".to_string()],
+            reason: String::new(),
+            preview: None,
+            tool_args: None,
+        }];
+        let params = AllowParams {
+            scope: AllowScope::Session,
+            pattern: None,
+        };
+        let reply = compute_allow_decisions(&items, &params, Path::new("/tmp"), "s", None).unwrap();
+
+        // Fold the produced reply through the same projection a turn uses, with a
+        // TurnComplete after it — a Session grant must persist past the turn boundary.
+        let evs = vec![
+            crate::proto::envelope::mint(
+                crate::proto::events::permissions_reply("user".into(), &reply),
+                None,
+                0,
+                0,
+            ),
+            crate::proto::envelope::mint(
+                crate::proto::events::turn_complete(
+                    crate::proto::events::TurnCompleteParams::default(),
+                ),
+                None,
+                0,
+                0,
+            ),
+        ];
+        let ea = effective_allow(HashSet::new(), &evs, &HashMap::new());
+        assert!(
+            ea.contains(&"shell:cargo *".to_string()),
+            "session grant must survive TurnComplete; got {ea:?}"
+        );
     }
 }
