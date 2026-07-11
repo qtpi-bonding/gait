@@ -155,6 +155,140 @@ pub fn deny(gait_dir: &Path, session_id: &str) -> Result<DenyOutcome, OpError> {
 }
 
 // -----------------------------------------------------------------------------
+// reply — explicit per-item answers (one decision per pending item)
+// -----------------------------------------------------------------------------
+
+use gait_state::proto::gait::log::v1 as pb;
+
+/// One consumer's decision about a single pending permission item. Unlike
+/// `allow`/`deny` (which apply one pattern-match to the whole batch), each
+/// `ItemChoice` targets one pending item by `id`, so a caller can allow some and
+/// deny others — and carry the exact sub-command pattern it chose.
+#[derive(Debug, Clone)]
+pub struct ItemChoice {
+    /// Must match a `PermissionItem.id` in the pending `AwaitingPermission` batch.
+    pub id: String,
+    pub decision: pb::Decision,
+    /// Scope for an Allow. Ignored for Deny.
+    pub scope: AllowScope,
+    /// The chosen pattern (a rung of the item's ladder). Required for Allow.
+    pub pattern: Option<String>,
+    /// Required only when `scope == AllowScope::Agent`.
+    pub agent: Option<String>,
+}
+
+/// Outcome of [`reply`]: the reply items written.
+#[derive(Debug)]
+pub struct ReplyOutcome {
+    pub reply_items: Vec<pb::PermissionsReplyItem>,
+}
+
+/// Write one `PermissionsReply` covering explicit per-item `choices`. Persists any
+/// Global/Agent grant via `save_choice`; Once/Session are log-derived.
+///
+/// Errors if there is no pending `AwaitingPermission` state, if a choice's `id`
+/// matches no pending item, if an Allow choice has no `pattern`, or if the
+/// choices do not cover **every** unique pending id — an omitted id would be
+/// silently denied at resume and can never be answered (`session_state` returns
+/// `Idle` after the first reply, session/log/mod.rs:112). Multiple choices with
+/// the same id (compound-command segments) are permitted; the engine collapses
+/// them per-id at resume.
+pub fn reply(
+    gait_dir: &Path,
+    session_id: &str,
+    choices: Vec<ItemChoice>,
+) -> Result<ReplyOutcome, OpError> {
+    use gait_state::agent_frontmatter::{resolve_markdown_context_path, MarkdownKind};
+    use gait_state::permissions::{save_choice, PermissionChoice};
+    use gait_state::session::log::{session_state, write_permissions_reply, SessionState};
+
+    let tx_path = gait_state::session::live::log_path(gait_dir, session_id);
+    let state = session_state(&tx_path).map_err(anyhow::Error::from)?;
+    let items = match state {
+        SessionState::AwaitingPermission { items } => items,
+        _ => {
+            return Err(OpError::NotFound(format!(
+                "no pending permissions for session {session_id}"
+            )));
+        }
+    };
+    let pending: std::collections::HashSet<&str> = items.iter().map(|it| it.id.as_str()).collect();
+    let answered: std::collections::HashSet<&str> = choices.iter().map(|c| c.id.as_str()).collect();
+
+    // Reject unknown ids first: a choice naming no pending item is always a
+    // caller error, and must be diagnosed *before* the completeness check —
+    // otherwise a single mistargeted choice would be misreported as "incomplete"
+    // (it leaves the real pending item unanswered too).
+    for c in &choices {
+        if !pending.contains(c.id.as_str()) {
+            return Err(OpError::NotFound(format!(
+                "no pending permission item '{}' for session {session_id}",
+                c.id
+            )));
+        }
+    }
+
+    // Completeness: every unique pending id must be answered. An omitted id is
+    // permanently unanswerable (session_state flips to Idle after this reply) and
+    // silently denied at resume — reject rather than half-answer.
+    for it in &items {
+        if !answered.contains(it.id.as_str()) {
+            return Err(OpError::from(anyhow::anyhow!(
+                "incomplete reply: pending item '{}' for session {session_id} was not answered",
+                it.id
+            )));
+        }
+    }
+
+    let mut reply_items: Vec<pb::PermissionsReplyItem> = Vec::with_capacity(choices.len());
+    for c in &choices {
+        let item = if c.decision == pb::Decision::Allow {
+            let Some(pattern) = c.pattern.clone() else {
+                return Err(OpError::from(anyhow::anyhow!(
+                    "allow choice for item '{}' is missing a pattern",
+                    c.id
+                )));
+            };
+            let agent_path = c
+                .agent
+                .as_deref()
+                .map(|n| resolve_markdown_context_path(gait_dir, MarkdownKind::Agent, n));
+            let (choice, scope_tag) = match c.scope {
+                AllowScope::Global => {
+                    (PermissionChoice::Global(pattern.clone()), pb::Scope::Global)
+                }
+                AllowScope::Agent => (PermissionChoice::Agent(pattern.clone()), pb::Scope::Agent),
+                AllowScope::Session => (
+                    PermissionChoice::Session(pattern.clone()),
+                    pb::Scope::Session,
+                ),
+                AllowScope::Once => (PermissionChoice::Once(pattern.clone()), pb::Scope::Once),
+            };
+            save_choice(&choice, gait_dir, session_id, agent_path.as_deref())?;
+            pb::PermissionsReplyItem {
+                id: c.id.clone(),
+                decision: pb::Decision::Allow as i32,
+                text: Some(pattern),
+                scope: scope_tag as i32,
+            }
+        } else {
+            pb::PermissionsReplyItem {
+                id: c.id.clone(),
+                decision: pb::Decision::Deny as i32,
+                text: None,
+                scope: pb::Scope::Unspecified as i32,
+            }
+        };
+        reply_items.push(item);
+    }
+
+    if reply_items.is_empty() {
+        return Ok(ReplyOutcome { reply_items });
+    }
+    write_permissions_reply(&tx_path, "user", reply_items.clone()).map_err(anyhow::Error::from)?;
+    Ok(ReplyOutcome { reply_items })
+}
+// -----------------------------------------------------------------------------
 // unlock
 // -----------------------------------------------------------------------------
 
@@ -745,5 +879,174 @@ mod tests {
         // Still no events beyond the seeded empty Unlock.
         let events = read_events(&tx).unwrap();
         assert_eq!(events.len(), 1);
+    }
+
+    // -- reply --
+
+    #[test]
+    fn reply_writes_per_item_distinct_tool_calls() {
+        use gait_state::proto::gait::log::v1 as pb;
+        let ws = ws();
+        let tx = make_session(ws.path(), "srep01");
+        let body = gait_state::proto::events::permissions(&[
+            pb::PermissionItem {
+                id: "p1".into(),
+                tool_name: "shell".into(),
+                cmd: "cargo build".into(),
+                patterns: vec!["shell:cargo *".into()],
+                reason: String::new(),
+                preview: None,
+                tool_args: None,
+            },
+            pb::PermissionItem {
+                id: "p2".into(),
+                tool_name: "shell".into(),
+                cmd: "git push".into(),
+                patterns: vec!["shell:git push".into()],
+                reason: String::new(),
+                preview: None,
+                tool_args: None,
+            },
+        ]);
+        gait_state::proto::wire::append(&tx, body).unwrap();
+
+        let outcome = reply(
+            ws.path(),
+            "srep01",
+            vec![
+                ItemChoice {
+                    id: "p1".into(),
+                    decision: pb::Decision::Allow,
+                    scope: AllowScope::Session,
+                    pattern: Some("shell:cargo *".into()),
+                    agent: None,
+                },
+                ItemChoice {
+                    id: "p2".into(),
+                    decision: pb::Decision::Deny,
+                    scope: AllowScope::Once,
+                    pattern: None,
+                    agent: None,
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(outcome.reply_items.len(), 2);
+        // p1: allow / session / pattern carried in text
+        assert_eq!(outcome.reply_items[0].id, "p1");
+        assert_eq!(outcome.reply_items[0].decision, pb::Decision::Allow as i32);
+        assert_eq!(outcome.reply_items[0].scope, pb::Scope::Session as i32);
+        assert_eq!(
+            outcome.reply_items[0].text.as_deref(),
+            Some("shell:cargo *")
+        );
+        // p2: deny / no pattern
+        assert_eq!(outcome.reply_items[1].decision, pb::Decision::Deny as i32);
+        assert_eq!(outcome.reply_items[1].text, None);
+        assert_eq!(outcome.reply_items[1].scope, pb::Scope::Unspecified as i32);
+        // one PermissionsReply event trails the Permissions request
+        assert!(matches!(
+            read_kind(&tx, 1),
+            payload::Kind::PermissionsReply(_)
+        ));
+    }
+
+    #[test]
+    fn reply_errors_on_unknown_item_id() {
+        use gait_state::proto::gait::log::v1 as pb;
+        let ws = ws();
+        let tx = make_session(ws.path(), "srep02");
+        seed_permission(
+            &tx,
+            pb::PermissionItem {
+                id: "p1".into(),
+                tool_name: "shell".into(),
+                cmd: "ls".into(),
+                patterns: vec!["ls".into()],
+                reason: String::new(),
+                preview: None,
+                tool_args: None,
+            },
+        );
+        let err = reply(
+            ws.path(),
+            "srep02",
+            vec![ItemChoice {
+                id: "nope".into(),
+                decision: pb::Decision::Deny,
+                scope: AllowScope::Once,
+                pattern: None,
+                agent: None,
+            }],
+        )
+        .unwrap_err();
+        assert!(matches!(err, OpError::NotFound(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn reply_errors_when_no_pending_permissions() {
+        use gait_state::proto::gait::log::v1 as pb;
+        let ws = ws();
+        make_session(ws.path(), "srep03"); // session dir exists, no Permissions event
+        let err = reply(
+            ws.path(),
+            "srep03",
+            vec![ItemChoice {
+                id: "p1".into(),
+                decision: pb::Decision::Deny,
+                scope: AllowScope::Once,
+                pattern: None,
+                agent: None,
+            }],
+        )
+        .unwrap_err();
+        assert!(matches!(err, OpError::NotFound(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn reply_errors_on_incomplete_coverage() {
+        // Two pending items; answer only one. The omitted item would be silently
+        // denied at resume and can never be answered, so reply must reject.
+        use gait_state::proto::gait::log::v1 as pb;
+        let ws = ws();
+        let tx = make_session(ws.path(), "srep04");
+        let body = gait_state::proto::events::permissions(&[
+            pb::PermissionItem {
+                id: "p1".into(),
+                tool_name: "read".into(),
+                cmd: "read a".into(),
+                patterns: vec!["read:a".into()],
+                reason: String::new(),
+                preview: None,
+                tool_args: None,
+            },
+            pb::PermissionItem {
+                id: "p2".into(),
+                tool_name: "shell".into(),
+                cmd: "ls".into(),
+                patterns: vec!["shell:ls".into()],
+                reason: String::new(),
+                preview: None,
+                tool_args: None,
+            },
+        ]);
+        gait_state::proto::wire::append(&tx, body).unwrap();
+
+        let err = reply(
+            ws.path(),
+            "srep04",
+            vec![ItemChoice {
+                id: "p1".into(),
+                decision: pb::Decision::Allow,
+                scope: AllowScope::Once,
+                pattern: Some("read:a".into()),
+                agent: None,
+            }],
+        )
+        .unwrap_err();
+        assert!(matches!(err, OpError::Other(_)), "got {err:?}");
+        // No PermissionsReply was written — the session is still AwaitingPermission.
+        assert_eq!(read_events(&tx).map(|e| e.len()).unwrap_or(0), 1);
     }
 }
