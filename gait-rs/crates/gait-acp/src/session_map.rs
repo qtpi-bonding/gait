@@ -19,6 +19,10 @@ pub struct SessionEntry {
     pub gait_dir: PathBuf,
     pub codebase: PathBuf,
     pub cascade: Option<gait_core::embed::CascadeKillHandle>,
+    /// Per-turn cancel signal, replaced by `set_cancel` each prompt. A
+    /// `CancellationToken` cannot be un-cancelled, so it MUST be per-turn, not
+    /// per-session, or a cancelled turn would poison later prompts.
+    pub cancel: tokio_util::sync::CancellationToken,
     pub join: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -40,6 +44,7 @@ impl SessionMap {
                 gait_dir,
                 codebase,
                 cascade: None,
+                cancel: tokio_util::sync::CancellationToken::new(),
                 join: None,
             },
         );
@@ -66,6 +71,38 @@ impl SessionMap {
             .unwrap()
             .get_mut(session_id)
             .and_then(|e| e.cascade.take())
+    }
+
+    /// Mint-and-store the per-turn cancel token (mirrors `set_cascade`). Called
+    /// at the start of each prompt so a prior turn's tripped token is discarded.
+    pub fn set_cancel(&self, session_id: &str, token: tokio_util::sync::CancellationToken) {
+        if let Some(e) = self.0.lock().unwrap().get_mut(session_id) {
+            e.cancel = token;
+        }
+    }
+
+    /// Fire both cancel signals for an in-flight turn: trip the token (unblocks a
+    /// pending permission await) and `kill()` the cascade (SIGTERM a running
+    /// brain). Peeks — does NOT take the cascade, which the turn thread's own
+    /// completion path still calls `take_cascade` on. No-op on unknown session.
+    pub fn cancel(&self, session_id: &str) {
+        let guard = self.0.lock().unwrap();
+        if let Some(entry) = guard.get(session_id) {
+            entry.cancel.cancel();
+            if let Some(c) = &entry.cascade {
+                c.kill();
+            }
+        }
+    }
+
+    /// Did the current turn get cancelled? Read by the completion path to force
+    /// `StopReason::Cancelled` regardless of what the sink captured.
+    pub fn was_cancelled(&self, session_id: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .is_some_and(|e| e.cancel.is_cancelled())
     }
 
     /// Store the turn's joinable thread so `drain` can reap it on teardown.
@@ -164,6 +201,50 @@ mod tests {
     fn take_cascade_unknown_session_is_none() {
         let m = SessionMap::new();
         assert!(m.take_cascade("nope").is_none());
+    }
+
+    #[test]
+    fn cancel_unknown_session_is_noop() {
+        let m = SessionMap::new();
+        m.cancel("nope"); // must not panic
+        assert!(!m.was_cancelled("nope"));
+    }
+
+    #[test]
+    fn cancel_trips_the_token() {
+        let m = SessionMap::new();
+        m.insert(PathBuf::from("/g/.gait"), "s".into(), PathBuf::from("/c"));
+        m.set_cancel("s", tokio_util::sync::CancellationToken::new());
+        assert!(!m.was_cancelled("s"), "fresh token is not cancelled");
+        m.cancel("s");
+        assert!(m.was_cancelled("s"), "cancel() trips the entry token");
+    }
+
+    #[test]
+    fn cancel_peeks_and_leaves_the_cascade_takeable() {
+        let m = SessionMap::new();
+        m.insert(PathBuf::from("/g/.gait"), "s".into(), PathBuf::from("/c"));
+        m.set_cascade("s", gait_core::embed::CascadeKillHandle::new());
+        m.cancel("s");
+        assert!(
+            m.take_cascade("s").is_some(),
+            "cancel() must not consume the cascade the turn thread still takes"
+        );
+    }
+
+    #[test]
+    fn set_cancel_resets_a_tripped_token() {
+        let m = SessionMap::new();
+        m.insert(PathBuf::from("/g/.gait"), "s".into(), PathBuf::from("/c"));
+        m.set_cancel("s", tokio_util::sync::CancellationToken::new());
+        m.cancel("s");
+        assert!(m.was_cancelled("s"));
+        // Next prompt mints a fresh token -> the session is no longer cancelled.
+        m.set_cancel("s", tokio_util::sync::CancellationToken::new());
+        assert!(
+            !m.was_cancelled("s"),
+            "a fresh per-prompt token clears cancellation"
+        );
     }
 
     #[test]
