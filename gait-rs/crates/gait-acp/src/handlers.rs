@@ -8,8 +8,8 @@
 //! is the pattern Phase 2's `session/prompt` must follow so long-running brain
 //! turns don't stall `initialize`/`session/new` on other connections.
 use agent_client_protocol::schema::v1::{
-    InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse, PromptRequest,
-    PromptResponse,
+    CancelNotification, InitializeRequest, InitializeResponse, NewSessionRequest,
+    NewSessionResponse, PromptRequest, PromptResponse, StopReason,
 };
 use agent_client_protocol::{Agent, Builder, Client, HandleDispatchFrom, NullRun, Responder};
 
@@ -72,6 +72,8 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
 
                         let handle = gait_core::embed::CascadeKillHandle::new();
                         map.set_cascade(&sid, handle.clone());
+                        let cancel = tokio_util::sync::CancellationToken::new();
+                        map.set_cancel(&sid, cancel.clone());
 
                         let map_thread = map.clone();
                         let sid_thread = sid.clone();
@@ -95,6 +97,7 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                                 cx,
                                 session_id,
                                 gait_dir.clone(),
+                                cancel,
                             );
                             let opts = gait_workflow::SinglePromptOpts {
                                 run_id: format!("acp-{sid_thread}"),
@@ -117,12 +120,19 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                                 ),
                             );
                             map_thread.take_cascade(&sid_thread);
-                            let stop = match outcome {
-                                Err(e) => Err(e.to_string()),
-                                Ok(_) => match sink.take_result() {
-                                    Some(tr) => turn_result_to_stop_reason(&tr),
-                                    None => Err("turn produced no result".into()),
-                                },
+                            let stop = if map_thread.was_cancelled(&sid_thread) {
+                                // Cancel wins over whatever the sink captured (or didn't):
+                                // spec requires Cancelled "even if cancellation causes
+                                // exceptions in underlying operations".
+                                Ok(StopReason::Cancelled)
+                            } else {
+                                match outcome {
+                                    Err(e) => Err(e.to_string()),
+                                    Ok(_) => match sink.take_result() {
+                                        Some(tr) => turn_result_to_stop_reason(&tr),
+                                        None => Err("turn produced no result".into()),
+                                    },
+                                }
                             };
                             // Resolve the deferred prompt; a failed send just means the
                             // connection already closed (drain will reap this thread).
@@ -140,5 +150,20 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                 }
             },
             agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_notification(
+            {
+                let map = map.clone();
+                move |n: CancelNotification, _cx| {
+                    let map = map.clone();
+                    async move {
+                        // Fire both signals; each no-ops if its state isn't the live
+                        // one. Return immediately — this runs inside the dispatch loop.
+                        map.cancel(&n.session_id.0.to_string());
+                        Ok(())
+                    }
+                }
+            },
+            agent_client_protocol::on_receive_notification!(),
         )
 }

@@ -1,7 +1,6 @@
 //! Pure translation between gait proto events and ACP schema types, plus the
 //! TurnSink/TurnSource port impls that drive one ACP-initiated turn.
 //! See docs/plans/2026-07-10-acp-adapter-phase2-design.md.
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -88,7 +87,12 @@ pub fn turn_result_to_stop_reason(r: &TurnResult) -> Result<StopReason, String> 
         TurnResult::Permissions
         | TurnResult::Clarify { .. }
         | TurnResult::Inform { .. }
-        | TurnResult::Unlock { .. } => Err("interactive turn not supported yet (Phase 3)".into()),
+        | TurnResult::Unlock { .. } => {
+            // A turn that ends genuinely awaiting interaction with no cancellation is
+            // still unsupported. The cancel path never reaches here: the completion
+            // block short-circuits on was_cancelled() before mapping.
+            Err("turn ended awaiting interaction, which is unsupported here".into())
+        }
     }
 }
 
@@ -207,6 +211,9 @@ pub struct AcpTurnSource {
     session_id: SessionId,
     sid: String,
     gait_dir: PathBuf,
+    /// Shared per-turn cancel signal (a clone of the SessionEntry token). Tripped
+    /// by the cancel handler and, on the compliant Cancelled outcome, by us.
+    cancel: tokio_util::sync::CancellationToken,
 }
 
 impl AcpTurnSource {
@@ -217,6 +224,7 @@ impl AcpTurnSource {
         cx: ConnectionTo<Client>,
         session_id: SessionId,
         gait_dir: PathBuf,
+        cancel: tokio_util::sync::CancellationToken,
     ) -> Self {
         let sid = session_id.0.to_string();
         Self {
@@ -225,6 +233,7 @@ impl AcpTurnSource {
             session_id,
             sid,
             gait_dir,
+            cancel,
         }
     }
 }
@@ -258,10 +267,16 @@ impl TurnSource for AcpTurnSource {
             let (options, map) = build_permission_options(&segs);
             let tool_call = tool_call_update(&segs[0]);
             let req = RequestPermissionRequest::new(self.session_id.clone(), tool_call, options);
-            let resp = match self.cx.send_request(req).block_task().await {
-                Ok(r) => r,
-                // Transport/connection error: abandon the turn (drain reaps it).
-                Err(_) => return None,
+            let resp = tokio::select! {
+                biased;
+                // Our own session/cancel tripped the token: abandon. The completion
+                // path sees was_cancelled() and resolves StopReason::Cancelled.
+                _ = self.cancel.cancelled() => return None,
+                r = self.cx.send_request(req).block_task() => match r {
+                    Ok(r) => r,
+                    // Transport/connection error: abandon the turn (drain reaps it).
+                    Err(_) => return None,
+                },
             };
             match resp.outcome {
                 RequestPermissionOutcome::Selected(SelectedPermissionOutcome {
@@ -270,13 +285,20 @@ impl TurnSource for AcpTurnSource {
                     Some(cs) => choices.extend(cs.iter().cloned()),
                     // Client echoed an option we never offered -> protocol violation.
                     // Bail; the run loop finalizes and the prompt resolves as an error
-                    // (no reply written).
+                    // (no reply written). NOT a cancellation — leave the token alone.
                     None => return None,
                 },
-                // The client cancelled while we awaited: write no reply, finalize.
-                RequestPermissionOutcome::Cancelled => return None,
-                // Future-proof: any new outcome is treated like cancelled (no reply).
-                _ => return None,
+                // The client cancelled while we awaited: trip the shared token so the
+                // completion path reports StopReason::Cancelled, then finalize (no reply).
+                RequestPermissionOutcome::Cancelled => {
+                    self.cancel.cancel();
+                    return None;
+                }
+                // Future-proof: any new outcome is treated like cancelled.
+                _ => {
+                    self.cancel.cancel();
+                    return None;
+                }
             }
         }
 
