@@ -22,6 +22,7 @@ pub async fn run() -> anyhow::Result<()> {
     map.drain();
     result.map_err(|e| anyhow::anyhow!("gait-acp connection error: {e}"))
 }
+use gait_core::embed::FsDelegate as _;
 
 /// Test-only JSON-RPC request/response pair used by
 /// `build_agent_with_slow_handler` to prove that a handler which spawns work
@@ -110,6 +111,124 @@ pub fn build_agent_with_slow_handler(
                 cx.spawn(async move {
                     let _ = release.await;
                     responder.respond(SlowResponse {})
+                })?;
+                Ok(())
+            }
+        },
+        agent_client_protocol::on_receive_request!(),
+    )
+}
+
+/// Test-only probe: drives `AcpFsDelegate` from inside a real agent→client
+/// connection. `write: None` performs a delegated read; `write: Some(body)`
+/// performs a delegated write. Mirrors `SlowRequest` (see above): `#[doc(hidden)]
+/// pub` so `tests/fs_delegate.rs` (a separate crate) can construct it.
+#[doc(hidden)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FsProbeRequest {
+    pub session_id: agent_client_protocol::schema::v1::SessionId,
+    pub path: String,
+    pub write: Option<String>,
+}
+
+#[doc(hidden)]
+impl agent_client_protocol::JsonRpcMessage for FsProbeRequest {
+    fn matches_method(method: &str) -> bool {
+        method == "_gait_acp_test/fs_probe"
+    }
+    fn method(&self) -> &'static str {
+        "_gait_acp_test/fs_probe"
+    }
+    fn to_untyped_message(
+        &self,
+    ) -> Result<agent_client_protocol::UntypedMessage, agent_client_protocol::Error> {
+        agent_client_protocol::UntypedMessage::new(self.method(), self)
+    }
+    fn parse_message(
+        method: &str,
+        params: &impl serde::Serialize,
+    ) -> Result<Self, agent_client_protocol::Error> {
+        if !Self::matches_method(method) {
+            return Err(agent_client_protocol::Error::method_not_found());
+        }
+        agent_client_protocol::util::json_cast_params(params)
+    }
+}
+
+#[doc(hidden)]
+impl agent_client_protocol::JsonRpcRequest for FsProbeRequest {
+    type Response = FsProbeResponse;
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FsProbeResponse {
+    pub content: Option<String>,
+    pub wrote: bool,
+    pub error: Option<String>,
+}
+
+#[doc(hidden)]
+impl agent_client_protocol::JsonRpcResponse for FsProbeResponse {
+    fn into_json(self, _method: &str) -> Result<serde_json::Value, agent_client_protocol::Error> {
+        serde_json::to_value(self).map_err(agent_client_protocol::Error::into_internal_error)
+    }
+    fn from_value(
+        _method: &str,
+        value: serde_json::Value,
+    ) -> Result<Self, agent_client_protocol::Error> {
+        agent_client_protocol::util::json_cast(&value)
+    }
+}
+
+/// Same as `build_agent`, plus a `_gait_acp_test/fs_probe` handler that builds an
+/// `AcpFsDelegate` from the live `cx` and runs one read or write. It spawns (via
+/// `ConnectionTo::spawn`) and responds from the spawned task — a handler that
+/// awaited the client inline would deadlock the dispatch loop (see the finding
+/// documented atop `handlers.rs`). Used only by `tests/fs_delegate.rs`.
+#[doc(hidden)]
+pub fn build_agent_with_fs_probe(
+    map: SessionMap,
+) -> impl agent_client_protocol::ConnectTo<agent_client_protocol::Client> {
+    handlers::build_agent(map).on_receive_request(
+        move |req: FsProbeRequest,
+              responder: agent_client_protocol::Responder<FsProbeResponse>,
+              cx: agent_client_protocol::ConnectionTo<agent_client_protocol::Client>| {
+            async move {
+                let del_cx = cx.clone();
+                cx.spawn(async move {
+                    let del = crate::fs_delegate::AcpFsDelegate {
+                        cx: del_cx,
+                        session_id: req.session_id,
+                    };
+                    let path = std::path::PathBuf::from(req.path);
+                    let resp = match req.write {
+                        None => match del.read_text_file(&path).await {
+                            Ok(content) => FsProbeResponse {
+                                content,
+                                wrote: false,
+                                error: None,
+                            },
+                            Err(e) => FsProbeResponse {
+                                content: None,
+                                wrote: false,
+                                error: Some(e.to_string()),
+                            },
+                        },
+                        Some(body) => match del.write_text_file(&path, &body).await {
+                            Ok(()) => FsProbeResponse {
+                                content: None,
+                                wrote: true,
+                                error: None,
+                            },
+                            Err(e) => FsProbeResponse {
+                                content: None,
+                                wrote: false,
+                                error: Some(e.to_string()),
+                            },
+                        },
+                    };
+                    responder.respond(resp)
                 })?;
                 Ok(())
             }

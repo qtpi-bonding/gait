@@ -32,6 +32,52 @@ impl ClientFsCaps {
     }
 }
 
+use agent_client_protocol::{
+    Client, ConnectionTo,
+    schema::v1::{ReadTextFileRequest, SessionId, WriteTextFileRequest},
+};
+use std::path::Path;
+
+/// A `FsDelegate` that proxies buffer reads/writes to the connected ACP client.
+/// Holds a clone of the connection handle (`Send + Sync + Clone`) and the
+/// session id; every call is one agent→client JSON-RPC round-trip — the same
+/// shape the permission loop uses (turn_io.rs). Does NO scope checking (the
+/// spine already authorized the path).
+pub struct AcpFsDelegate {
+    pub cx: ConnectionTo<Client>,
+    pub session_id: SessionId,
+}
+
+#[async_trait::async_trait]
+impl gait_core::embed::FsDelegate for AcpFsDelegate {
+    async fn read_text_file(&self, path: &Path) -> anyhow::Result<Option<String>> {
+        let req = ReadTextFileRequest::new(self.session_id.clone(), path.to_path_buf());
+        match self.cx.send_request(req).block_task().await {
+            Ok(resp) => Ok(Some(resp.content)),
+            // Error -> empty/new-file (proceed). The editor errors when reading a
+            // not-yet-created file; treating that as "no buffer" is what lets gait
+            // create new files. A genuine transport failure still surfaces
+            // downstream (failed edit-anchor match, or the write-back below).
+            Err(_) => Ok(None),
+        }
+    }
+
+    async fn write_text_file(&self, path: &Path, content: &str) -> anyhow::Result<()> {
+        let req = WriteTextFileRequest::new(
+            self.session_id.clone(),
+            path.to_path_buf(),
+            content.to_string(),
+        );
+        self.cx
+            .send_request(req)
+            .block_task()
+            .await
+            .map(|_resp| ())
+            // Write error -> hard Err. A failed persist must not report success;
+            // the spine withholds the tool's provisional success on Err.
+            .map_err(|e| anyhow::anyhow!("fs/write_text_file failed: {e}"))
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
