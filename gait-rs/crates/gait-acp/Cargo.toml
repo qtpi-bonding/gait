@@ -7,6 +7,7 @@ rust-version = "1.88"
 [dependencies]
 gait-core = { path = "../.." }
 gait-workflow = { path = "../gait-workflow" }
+gait-ops = { path = "../gait-ops" }
 agent-client-protocol = "1.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sync"] }
 anyhow = "1"

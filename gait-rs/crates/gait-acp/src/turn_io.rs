@@ -2,18 +2,22 @@
 //! TurnSink/TurnSource port impls that drive one ACP-initiated turn.
 //! See docs/plans/2026-07-10-acp-adapter-phase2-design.md.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use agent_client_protocol::schema::v1::{
-    ContentBlock, ContentChunk, SessionId, SessionNotification, SessionUpdate, StopReason,
-    TextContent, ToolCall as AcpToolCall, ToolCallId, ToolCallStatus, ToolCallUpdate,
-    ToolCallUpdateFields,
+    ContentBlock, ContentChunk, PermissionOption, PermissionOptionId, PermissionOptionKind,
+    SessionId, SessionNotification, SessionUpdate, StopReason, TextContent,
+    ToolCall as AcpToolCall, ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
 };
 use agent_client_protocol::{Client, ConnectionTo};
 use gait_core::embed::{Diag, TurnSink, TurnSource, TurnStart, user_turn_events};
 use gait_core::git::Repos;
-use gait_core::proto::gait::log::v1::{Event, StreamItem, event, payload, stream_item};
+use gait_core::proto::gait::log::v1::{
+    Decision, Event, PermissionItem, StreamItem, event, payload, stream_item,
+};
 use gait_core::turn::TurnResult;
+use gait_ops::permission::{AllowScope, ItemChoice};
 
 /// Wrap ACP text into an `AgentMessageChunk` / `AgentThoughtChunk` body.
 fn text_chunk(text: impl Into<String>) -> ContentChunk {
@@ -84,6 +88,114 @@ pub fn turn_result_to_stop_reason(r: &TurnResult) -> Result<StopReason, String> 
         | TurnResult::Inform { .. }
         | TurnResult::Unlock { .. } => Err("interactive turn not supported yet (Phase 3)".into()),
     }
+}
+
+/// Build the singular `tool_call` field an ACP `session/request_permission`
+/// carries. Title is the item's display command; id is the gait tool_call_id.
+pub fn tool_call_update(item: &PermissionItem) -> ToolCallUpdate {
+    ToolCallUpdate::new(
+        ToolCallId::new(item.id.clone()),
+        ToolCallUpdateFields::new().title(item.cmd.clone()),
+    )
+}
+
+/// Bridge one tool call's segments to a flat ACP option list plus an in-scope
+/// decode map (design §4.2/§4.3). `segs` all share one `tool_call_id`.
+///
+/// Options (per design):
+///   - Allow once      -> each seg { Allow, Once, patterns[0] }        (kind AllowOnce)
+///   - Allow session   -> each seg { Allow, Session, patterns.last() } (kind AllowAlways)
+///   - Reject          -> each seg { Deny }                            (kind RejectOnce)
+///   - (single-segment only) one Allow-session per *middle* rung        (kind AllowAlways)
+///
+/// The `option_id` is an opaque ordinal; the map records exactly which
+/// `ItemChoice`s selecting it yields. No semantics are encoded in the string.
+pub fn build_permission_options(
+    segs: &[PermissionItem],
+) -> (
+    Vec<PermissionOption>,
+    HashMap<PermissionOptionId, Vec<ItemChoice>>,
+) {
+    let mut options = Vec::new();
+    let mut map: HashMap<PermissionOptionId, Vec<ItemChoice>> = HashMap::new();
+    let mut next = 0u32;
+
+    let mut push = |options: &mut Vec<PermissionOption>,
+                    map: &mut HashMap<PermissionOptionId, Vec<ItemChoice>>,
+                    name: String,
+                    kind: PermissionOptionKind,
+                    choices: Vec<ItemChoice>| {
+        let id = PermissionOptionId::new(next.to_string());
+        next += 1;
+        options.push(PermissionOption::new(id.clone(), name, kind));
+        map.insert(id, choices);
+    };
+
+    let allow = |id: &str, scope: AllowScope, pat: &str| ItemChoice {
+        id: id.to_string(),
+        decision: Decision::Allow,
+        scope,
+        pattern: Some(pat.to_string()),
+        agent: None,
+    };
+    let deny = |id: &str| ItemChoice {
+        id: id.to_string(),
+        decision: Decision::Deny,
+        scope: AllowScope::Once, // ignored for Deny
+        pattern: None,
+        agent: None,
+    };
+
+    // A segment always has at least one rung; guard defensively.
+    let narrow = |s: &PermissionItem| s.patterns.first().cloned().unwrap_or_else(|| s.cmd.clone());
+    let broad = |s: &PermissionItem| s.patterns.last().cloned().unwrap_or_else(|| s.cmd.clone());
+
+    // Canonical: allow once (narrowest per seg).
+    push(
+        &mut options,
+        &mut map,
+        "Allow once".to_string(),
+        PermissionOptionKind::AllowOnce,
+        segs.iter()
+            .map(|s| allow(&s.id, AllowScope::Once, &narrow(s)))
+            .collect(),
+    );
+    // Canonical: allow this session (broadest per seg).
+    push(
+        &mut options,
+        &mut map,
+        "Allow this session".to_string(),
+        PermissionOptionKind::AllowAlways,
+        segs.iter()
+            .map(|s| allow(&s.id, AllowScope::Session, &broad(s)))
+            .collect(),
+    );
+    // Canonical: reject.
+    push(
+        &mut options,
+        &mut map,
+        "Reject".to_string(),
+        PermissionOptionKind::RejectOnce,
+        segs.iter().map(|s| deny(&s.id)).collect(),
+    );
+
+    // Session-granular: single-segment only (per-rung is ambiguous for compounds).
+    if let [seg] = segs {
+        let n = seg.patterns.len();
+        // Middle rungs: indices 1..n-1 (narrowest is the Once option, broadest the
+        // Session option already offered above).
+        for rung in seg.patterns.iter().take(n.saturating_sub(1)).skip(1) {
+            push(
+                &mut options,
+                &mut map,
+                format!("Allow `{rung}` this session"),
+                PermissionOptionKind::AllowAlways,
+                vec![allow(&seg.id, AllowScope::Session, rung)],
+            );
+        }
+    }
+
+    (options, map)
 }
 
 /// Feeds one ACP prompt into the turn: first `next()` yields the user input,
@@ -158,10 +270,13 @@ impl TurnSink for AcpTurnSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_client_protocol::schema::v1::{ContentBlock, SessionUpdate, StopReason, TextContent};
+    use agent_client_protocol::schema::v1::{
+        ContentBlock, PermissionOptionKind, SessionUpdate, StopReason, TextContent, ToolCallId,
+    };
     use gait_core::proto::events;
     use gait_core::proto::gait::log::v1::Event;
     use gait_core::turn::TurnResult;
+    use gait_ops::permission::AllowScope;
 
     fn event(body: gait_core::proto::gait::log::v1::event::Body) -> Event {
         Event {
@@ -276,6 +391,132 @@ mod tests {
         assert!(turn_result_to_stop_reason(&TurnResult::Clarify { items: vec![] }).is_err());
         assert!(turn_result_to_stop_reason(&TurnResult::Inform { items: vec![] }).is_err());
         assert!(turn_result_to_stop_reason(&TurnResult::Unlock { items: vec![] }).is_err());
+    }
+
+    fn item(id: &str, cmd: &str, patterns: &[&str]) -> PermissionItem {
+        PermissionItem {
+            id: id.to_string(),
+            cmd: cmd.to_string(),
+            reason: String::new(),
+            patterns: patterns.iter().map(|s| s.to_string()).collect(),
+            tool_name: "shell".to_string(),
+            tool_args: None,
+            preview: None,
+        }
+    }
+
+    #[test]
+    fn single_segment_request_offers_canonical_plus_ladder() {
+        // A 3-rung ladder: narrowest "cargo build", mid "cargo *", broadest "*".
+        let segs = vec![item("tc1", "cargo build", &["cargo build", "cargo *", "*"])];
+        let (options, map) = build_permission_options(&segs);
+
+        // Canonical three + one middle-rung session option = 4.
+        assert_eq!(options.len(), 4, "3 canonical + 1 middle rung");
+
+        // Every option decodes.
+        for opt in &options {
+            assert!(
+                map.contains_key(&opt.option_id),
+                "option {:?} must decode",
+                opt.option_id
+            );
+        }
+
+        // Allow-once (kind AllowOnce) -> Once scope, narrowest pattern.
+        let once = options
+            .iter()
+            .find(|o| o.kind == PermissionOptionKind::AllowOnce)
+            .unwrap();
+        let once_choices = &map[&once.option_id];
+        assert_eq!(once_choices.len(), 1);
+        assert_eq!(once_choices[0].decision, Decision::Allow);
+        assert_eq!(once_choices[0].scope, AllowScope::Once);
+        assert_eq!(once_choices[0].pattern.as_deref(), Some("cargo build"));
+
+        // Reject (kind RejectOnce) -> Deny.
+        let reject = options
+            .iter()
+            .find(|o| o.kind == PermissionOptionKind::RejectOnce)
+            .unwrap();
+        assert_eq!(map[&reject.option_id][0].decision, Decision::Deny);
+
+        // The Session options (kind AllowAlways) carry Session scope; the broadest
+        // one grants "*", and the ladder as a whole covers the mid rung "cargo *".
+        let session_patterns: std::collections::HashSet<String> = options
+            .iter()
+            .filter(|o| o.kind == PermissionOptionKind::AllowAlways)
+            .flat_map(|o| map[&o.option_id].iter())
+            .inspect(|c| assert_eq!(c.scope, AllowScope::Session))
+            .filter_map(|c| c.pattern.clone())
+            .collect();
+        assert!(
+            session_patterns.contains("*"),
+            "broadest session grant present"
+        );
+        assert!(
+            session_patterns.contains("cargo *"),
+            "mid-rung session grant present"
+        );
+    }
+
+    #[test]
+    fn compound_segments_offer_canonical_only() {
+        // Two segments sharing one tool_call_id -> compound command, all-or-nothing.
+        let segs = vec![
+            item("tc9", "cargo build", &["cargo build", "cargo *"]),
+            item("tc9", "git push", &["git push", "git *"]),
+        ];
+        let (options, map) = build_permission_options(&segs);
+
+        // Exactly the canonical three — no per-rung explosion for multi-segment.
+        assert_eq!(options.len(), 3, "compound requests get canonical-only");
+
+        // "Allow this session" expands to ONE choice per segment (both broadest),
+        // proving all-or-nothing coverage of the shared id.
+        let session = options
+            .iter()
+            .find(|o| o.kind == PermissionOptionKind::AllowAlways)
+            .unwrap();
+        let choices = &map[&session.option_id];
+        assert_eq!(choices.len(), 2, "one choice per segment");
+        assert!(
+            choices
+                .iter()
+                .all(|c| c.id == "tc9" && c.scope == AllowScope::Session)
+        );
+        let pats: std::collections::HashSet<&str> = choices
+            .iter()
+            .filter_map(|c| c.pattern.as_deref())
+            .collect();
+        assert!(
+            pats.contains("cargo *") && pats.contains("git *"),
+            "each seg broadest"
+        );
+    }
+
+    #[test]
+    fn reject_decodes_to_deny_for_all_segments() {
+        let segs = vec![
+            item("tc9", "cargo build", &["cargo build"]),
+            item("tc9", "git push", &["git push"]),
+        ];
+        let (options, map) = build_permission_options(&segs);
+        let reject = options
+            .iter()
+            .find(|o| o.kind == PermissionOptionKind::RejectOnce)
+            .unwrap();
+        let choices = &map[&reject.option_id];
+        assert_eq!(choices.len(), 2);
+        assert!(choices.iter().all(|c| c.decision == Decision::Deny));
+    }
+
+    #[test]
+    fn tool_call_update_carries_id_and_title() {
+        let it = item("tc1", "cargo build", &["cargo build"]);
+        let upd = tool_call_update(&it);
+        assert_eq!(upd.tool_call_id, ToolCallId::new("tc1"));
+        assert_eq!(upd.fields.title.as_deref(), Some("cargo build"));
     }
 
     #[tokio::test]
