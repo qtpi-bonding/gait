@@ -159,7 +159,7 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                     async move {
                         // Fire both signals; each no-ops if its state isn't the live
                         // one. Return immediately — this runs inside the dispatch loop.
-                        map.cancel(&n.session_id.0.to_string());
+                        map.cancel(n.session_id.0.as_ref());
                         Ok(())
                     }
                 }
