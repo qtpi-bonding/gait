@@ -86,12 +86,15 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                                 .build()
                                 .expect("current-thread runtime");
                             let local = tokio::task::LocalSet::new();
-                            let mut sink = AcpTurnSink::new(cx, session_id);
+                            let mut sink = AcpTurnSink::new(cx.clone(), session_id.clone());
                             let mut obs = gait_workflow::observer::NullObserver;
                             let source = AcpTurnSource::new(
                                 text,
                                 gait_core::git::Repos::production(),
                                 codebase.clone(),
+                                cx,
+                                session_id,
+                                gait_dir.clone(),
                             );
                             let opts = gait_workflow::SinglePromptOpts {
                                 run_id: format!("acp-{sid_thread}"),

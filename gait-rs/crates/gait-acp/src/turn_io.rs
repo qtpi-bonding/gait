@@ -7,8 +7,9 @@ use std::path::PathBuf;
 
 use agent_client_protocol::schema::v1::{
     ContentBlock, ContentChunk, PermissionOption, PermissionOptionId, PermissionOptionKind,
-    SessionId, SessionNotification, SessionUpdate, StopReason, TextContent,
-    ToolCall as AcpToolCall, ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+    RequestPermissionOutcome, RequestPermissionRequest, SelectedPermissionOutcome, SessionId,
+    SessionNotification, SessionUpdate, StopReason, TextContent, ToolCall as AcpToolCall,
+    ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
 };
 use agent_client_protocol::{Client, ConnectionTo};
 use gait_core::embed::{Diag, TurnSink, TurnSource, TurnStart, user_turn_events};
@@ -16,6 +17,7 @@ use gait_core::git::Repos;
 use gait_core::proto::gait::log::v1::{
     Decision, Event, PermissionItem, StreamItem, event, payload, stream_item,
 };
+use gait_core::session::log::{SessionState, session_state};
 use gait_core::turn::TurnResult;
 use gait_ops::permission::{AllowScope, ItemChoice};
 
@@ -198,18 +200,31 @@ pub fn build_permission_options(
     (options, map)
 }
 
-/// Feeds one ACP prompt into the turn: first `next()` yields the user input,
-/// then `None`. The Phase-3 permission loop (`AwaitingPermission -> reply ->
-/// Resume`, mirroring `crates/gait-repl/src/repl/driver.rs`) slots in at the
-/// marked seam below.
+/// Drives one ACP-initiated turn, including the Phase-3 permission loop.
 pub struct AcpTurnSource {
     first: Option<Vec<gait_core::proto::gait::log::v1::event::Body>>,
+    cx: ConnectionTo<Client>,
+    session_id: SessionId,
+    sid: String,
+    gait_dir: PathBuf,
 }
 
 impl AcpTurnSource {
-    pub fn new(text: String, repos: Repos, codebase: PathBuf) -> Self {
+    pub fn new(
+        text: String,
+        repos: Repos,
+        codebase: PathBuf,
+        cx: ConnectionTo<Client>,
+        session_id: SessionId,
+        gait_dir: PathBuf,
+    ) -> Self {
+        let sid = session_id.0.to_string();
         Self {
             first: Some(user_turn_events(&repos, &codebase, text)),
+            cx,
+            session_id,
+            sid,
+            gait_dir,
         }
     }
 }
@@ -217,11 +232,61 @@ impl AcpTurnSource {
 #[async_trait::async_trait(?Send)]
 impl TurnSource for AcpTurnSource {
     async fn next(&mut self) -> Option<TurnStart> {
-        // PHASE-3 SEAM: on the second call, instead of `None`, read
-        // SessionState::AwaitingPermission from the log, emit a
-        // session/request_permission, append the reply, and return
-        // TurnStart::Resume. Phase 2 handles the no-approval happy path only.
-        self.first.take().map(TurnStart::Input)
+        // First call: feed the user input.
+        if let Some(bodies) = self.first.take() {
+            return Some(TurnStart::Input(bodies));
+        }
+
+        // Post-turn: is the turn waiting for permission?
+        let log_path = gait_core::session::live::log_path(&self.gait_dir, &self.sid);
+        let items = match session_state(&log_path) {
+            Ok(SessionState::AwaitingPermission { items }) => items,
+            _ => return None, // terminal / idle -> the run loop finalizes.
+        };
+
+        // Ask round: one request per distinct tool_call_id; accumulate choices.
+        let mut choices: Vec<ItemChoice> = Vec::new();
+        // Preserve first-seen order of ids (grouping is by shared tool_call_id).
+        let mut seen: Vec<String> = Vec::new();
+        for it in &items {
+            if !seen.iter().any(|s| s == &it.id) {
+                seen.push(it.id.clone());
+            }
+        }
+        for id in &seen {
+            let segs: Vec<_> = items.iter().filter(|it| &it.id == id).cloned().collect();
+            let (options, map) = build_permission_options(&segs);
+            let tool_call = tool_call_update(&segs[0]);
+            let req = RequestPermissionRequest::new(self.session_id.clone(), tool_call, options);
+            let resp = match self.cx.send_request(req).block_task().await {
+                Ok(r) => r,
+                // Transport/connection error: abandon the turn (drain reaps it).
+                Err(_) => return None,
+            };
+            match resp.outcome {
+                RequestPermissionOutcome::Selected(SelectedPermissionOutcome {
+                    option_id, ..
+                }) => match map.get(&option_id) {
+                    Some(cs) => choices.extend(cs.iter().cloned()),
+                    // Client echoed an option we never offered -> protocol violation.
+                    // Bail; the run loop finalizes and the prompt resolves as an error
+                    // (no reply written).
+                    None => return None,
+                },
+                // The client cancelled while we awaited: write no reply, finalize.
+                RequestPermissionOutcome::Cancelled => return None,
+                // Future-proof: any new outcome is treated like cancelled (no reply).
+                _ => return None,
+            }
+        }
+
+        // Write the reply (a log append — never a turn) and resume. Completeness is
+        // guaranteed by construction (choices cover every pending id). A reply error
+        // is an internal bug; abandon rather than half-answer.
+        match gait_ops::permission::reply(&self.gait_dir, &self.sid, choices) {
+            Ok(_) => Some(TurnStart::Resume),
+            Err(_) => None,
+        }
     }
 }
 
@@ -517,17 +582,5 @@ mod tests {
         let upd = tool_call_update(&it);
         assert_eq!(upd.tool_call_id, ToolCallId::new("tc1"));
         assert_eq!(upd.fields.title.as_deref(), Some("cargo build"));
-    }
-
-    #[tokio::test]
-    async fn source_yields_input_once_then_none() {
-        use gait_core::embed::{TurnSource, TurnStart};
-        let repos = gait_core::git::Repos::production();
-        let mut src = AcpTurnSource::new("say hi".into(), repos, std::env::temp_dir());
-        assert!(matches!(src.next().await, Some(TurnStart::Input(_))));
-        assert!(
-            src.next().await.is_none(),
-            "second next() ends the turn (Phase-3 seam)"
-        );
     }
 }
