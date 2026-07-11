@@ -68,9 +68,8 @@ pub fn allow(
     let core_scope = match params.scope {
         AllowScope::Global => CoreAllowScope::Global,
         AllowScope::Agent => CoreAllowScope::Agent,
-        // "session" is a CLI-only concept today (AllowScope has no Session arm);
-        // persist as Once on the core side and label the log event Session.
-        AllowScope::Session | AllowScope::Once => CoreAllowScope::Once,
+        AllowScope::Session => CoreAllowScope::Session,
+        AllowScope::Once => CoreAllowScope::Once,
     };
 
     let agent_path = params
@@ -94,24 +93,13 @@ pub fn allow(
         }
     };
 
-    let mut reply_items = compute_allow_decisions(
+    let reply_items = compute_allow_decisions(
         &items,
         &core_params,
         gait_dir,
         session_id,
         agent_path.as_deref(),
     )?;
-
-    // `compute_allow_decisions` stamps the persisted scope into each reply
-    // item. For our CLI-side `Session` scope, rewrite the scope tag so the log
-    // event reads as a session-scoped grant (the only divergence from the
-    // core Once stamp).
-    if params.scope == AllowScope::Session {
-        let target = gait_state::proto::gait::log::v1::Scope::Session as i32;
-        for item in &mut reply_items {
-            item.scope = target;
-        }
-    }
 
     write_permissions_reply(&tx_path, "user", reply_items.clone()).map_err(anyhow::Error::from)?;
 
@@ -432,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn allow_session_scope_stamps_session_in_reply_item() {
+    fn allow_session_scope_grants_real_session_with_pattern() {
         let ws = ws();
         let tx = make_session(ws.path(), "sallow02");
         seed_permission(
@@ -462,6 +450,9 @@ mod tests {
             outcome.reply_items[0].scope,
             gait_state::proto::gait::log::v1::Scope::Session as i32,
         );
+        // The hack produced Scope::Session but text:None (dropped by the fold).
+        // A genuine session grant carries the pattern.
+        assert_eq!(outcome.reply_items[0].text.as_deref(), Some("ls"));
     }
 
     #[test]
