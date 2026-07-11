@@ -1,7 +1,12 @@
 #!/bin/sh
 # gait pre-push hook: enforce clippy (zero warnings) before code leaves the machine.
-# This is the heavier check (it compiles the workspace), so it runs on push
-# rather than on every commit. Formatting is checked in .githooks/pre-commit.
+# Scoped to the crates actually affected by what's being pushed — the changed
+# crates plus every workspace crate that transitively depends on them (computed
+# via `cargo metadata`, so a signature change in a low-level crate still forces
+# a check of everything downstream). Falls back to a full `--workspace` check
+# whenever scoping can't be computed safely (new branch/ref, workspace
+# Cargo.toml/Cargo.lock changed, or `cargo metadata`/`jq` unavailable) —
+# correctness over speed.
 #
 # Read-only: clippy only reports — it never modifies your code. On a warning the
 # push is rejected and nothing is sent to the remote.
@@ -17,12 +22,120 @@ set -e
 root="$(git rev-parse --show-toplevel)"
 cd "$root/gait-rs"
 
-echo "pre-push: cargo clippy (-D warnings)"
-if ! cargo clippy --workspace --all-targets -- -D warnings; then
+zero="0000000000000000000000000000000000000000"
+changed_files=""
+full_fallback=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ -z "$local_ref" ] && continue
+    if [ "$local_sha" = "$zero" ]; then
+        continue # deleting a ref — nothing to check
+    fi
+    if [ "$remote_sha" = "$zero" ]; then
+        full_fallback=1 # new branch/ref — no remote history to diff against safely
+        continue
+    fi
+    files="$(git diff --name-only "$remote_sha" "$local_sha" -- . 2>/dev/null || true)"
+    changed_files="$changed_files
+$files"
+done
+
+if [ "$full_fallback" = "0" ] && printf '%s\n' "$changed_files" | grep -qE '^gait-rs/Cargo\.(toml|lock)$'; then
+    # Workspace manifest/lockfile changes affect dependency resolution for
+    # everyone — don't try to scope those.
+    full_fallback=1
+fi
+
+run_full() {
+    echo "pre-push: cargo clippy --workspace --all-targets (-D warnings)"
+    cargo clippy --workspace --all-targets -- -D warnings
+}
+
+run_scoped() {
+    # shellcheck disable=SC2086
+    set -- $1
+    args=""
+    for c in "$@"; do args="$args -p $c"; done
+    echo "pre-push: cargo clippy scoped to:$args (-D warnings)"
+    # shellcheck disable=SC2086
+    cargo clippy $args --all-targets -- -D warnings
+}
+
+fail() {
     echo
     echo "✗ clippy found issues. Fix them (or run 'cargo clippy --fix'), commit, and push again." >&2
     echo "  To push anyway: git push --no-verify" >&2
     exit 1
+}
+
+if [ "$full_fallback" = "1" ]; then
+    run_full || fail
+    echo "pre-push: ok"
+    exit 0
 fi
 
-echo "pre-push: ok"
+# Map changed files under gait-rs/ to primary crate names.
+primary=""
+rust_relevant=0
+for f in $(printf '%s\n' "$changed_files" | sort -u); do
+    case "$f" in
+    gait-rs/crates/*/*)
+        crate="$(printf '%s\n' "$f" | sed -E 's#^gait-rs/crates/([^/]+)/.*#\1#')"
+        case " $primary " in *" $crate "*) ;; *) primary="$primary $crate" ;; esac
+        rust_relevant=1
+        ;;
+    gait-rs/src/*|gait-rs/tests/*|gait-rs/build.rs|gait-rs/*.rs)
+        case " $primary " in *" gait-core "*) ;; *) primary="$primary gait-core" ;; esac
+        rust_relevant=1
+        ;;
+    esac
+done
+
+if [ "$rust_relevant" = "0" ]; then
+    echo "pre-push: no Rust source changed under gait-rs/ — skipping clippy."
+    exit 0
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+    echo "pre-push: jq unavailable — cannot compute crate closure, falling back to full workspace check."
+    run_full || fail
+    echo "pre-push: ok"
+    exit 0
+fi
+
+meta="$(cargo metadata --format-version=1 --no-deps 2>/dev/null || true)"
+if [ -z "$meta" ]; then
+    echo "pre-push: 'cargo metadata' failed — falling back to full workspace check."
+    run_full || fail
+    echo "pre-push: ok"
+    exit 0
+fi
+
+# One "<dependency> <dependent>" line per direct workspace edge. External deps
+# are harmless noise here — they never match a workspace crate name below.
+edges="$(printf '%s' "$meta" | jq -r '
+  .packages[] | select(.source == null) |
+  .name as $n | .dependencies[].name as $d | "\($d) \($n)"
+')"
+
+closure="$primary"
+changed=1
+while [ "$changed" = "1" ]; do
+    changed=0
+    for line in $(printf '%s\n' "$edges" | tr ' ' ':'); do
+        dep="${line%%:*}"
+        dependent="${line#*:}"
+        case " $closure " in
+        *" $dep "*)
+            case " $closure " in
+            *" $dependent "*) ;;
+            *) closure="$closure $dependent"; changed=1 ;;
+            esac
+            ;;
+        esac
+    done
+done
+
+closure="$(printf '%s\n' $closure | sort -u | tr '\n' ' ')"
+run_scoped "$closure" || fail
+echo "pre-push: ok (scoped to: $closure)"
