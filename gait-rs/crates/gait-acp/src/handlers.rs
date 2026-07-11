@@ -25,14 +25,27 @@ use crate::turn_io::{
 /// implements `ConnectTo<Client>` for `.connect_to(transport)` /
 /// `.into_channel_and_future()`.
 pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Client>, NullRun> {
+    // Connection-level: written by the `initialize` handler below, read by each
+    // `session/prompt` before it installs the fs delegate (design §1).
+    let caps = std::sync::Arc::new(crate::fs_delegate::ClientFsCaps::default());
     Agent
         .builder()
         .name("gait-acp")
         .on_receive_request(
-            async |req: InitializeRequest, responder: Responder<InitializeResponse>, _cx| {
-                // Static/minimal capabilities; zero auth methods so `authenticate`
-                // never arrives (design §5). load_session stays false (default).
-                responder.respond(InitializeResponse::new(req.protocol_version))
+            {
+                let caps = caps.clone();
+                move |req: InitializeRequest, responder: Responder<InitializeResponse>, _cx| {
+                    let caps = caps.clone();
+                    async move {
+                        // Static/minimal capabilities; zero auth methods so `authenticate`
+                        // never arrives (design §5). load_session stays false (default).
+                        // Record the client's fs capabilities for the whole
+                        // connection. All-or-nothing gating happens at prompt time.
+                        let fs = req.client_capabilities.fs;
+                        caps.set(fs.read_text_file, fs.write_text_file);
+                        responder.respond(InitializeResponse::new(req.protocol_version))
+                    }
+                }
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -57,10 +70,12 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
         .on_receive_request(
             {
                 let map = map.clone();
+                let caps = caps.clone();
                 move |req: PromptRequest,
                       responder: Responder<PromptResponse>,
                       cx: agent_client_protocol::ConnectionTo<Client>| {
                     let map = map.clone();
+                    let caps = caps.clone();
                     async move {
                         let session_id = req.session_id.clone();
                         let sid = session_id.0.to_string();
@@ -77,6 +92,7 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
 
                         let map_thread = map.clone();
                         let sid_thread = sid.clone();
+                        let caps_thread = caps.clone();
                         let join = std::thread::spawn(move || {
                             // The TurnSource is created AND driven entirely on this
                             // thread's current-thread runtime — nothing !Send ever
@@ -90,6 +106,20 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                             let local = tokio::task::LocalSet::new();
                             let mut sink = AcpTurnSink::new(cx.clone(), session_id.clone());
                             let mut obs = gait_workflow::observer::NullObserver;
+                            // Install the fs delegate iff the client advertised BOTH
+                            // fs methods; otherwise None -> disk I/O under the sandbox
+                            // (today's behavior). The spine still authorizes every
+                            // path before the delegate is called (tool.rs:74-97).
+                            let fs_delegate: Option<
+                                std::sync::Arc<dyn gait_core::embed::FsDelegate>,
+                            > = if caps_thread.delegable() {
+                                Some(std::sync::Arc::new(crate::fs_delegate::AcpFsDelegate {
+                                    cx: cx.clone(),
+                                    session_id: session_id.clone(),
+                                }))
+                            } else {
+                                None
+                            };
                             let source = AcpTurnSource::new(
                                 text,
                                 gait_core::git::Repos::production(),
@@ -106,7 +136,7 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                                 codebase,
                                 sandbox_on: None,
                                 cascade: Some(handle),
-                                fs_delegate: None,
+                                fs_delegate,
                                 allow_intree: false,
                                 ..Default::default()
                             };
