@@ -97,3 +97,18 @@ Bare positional task conflicts with subcommand names are resolved with `--`: `ga
 | `--no-sandbox` | disable sandbox | ✓ | — | — | — | remove — use `--unlock` |
 | `--gait-dir` | path to gait directory (global) | ✓ hidden | ✓ hidden | — | `-d` | |
 | `--codebase` | path to codebase root (global) | ✓ hidden | ✓ hidden | — | `-c` | |
+
+---
+
+## REPL/CLI parity (closed 2026-07-12)
+
+| REPL capability | CLI equivalent | status |
+|---|---|---|
+| Interactive clarify/inform response (typed answer to a live prompt) | `gait reply <session-id> <message>` | closed — was a stub, now calls `gait_ops::interaction::reply` |
+| `/model provider/id` (mid-session model switch — actually gait-dir-wide, not session-scoped) | `gait config --gait-dir <path> set model <model>` (generalized: any top-level `gait.jsonc` key, not just `model`) | closed — `/model` calls `gait_ops::config::set_model`, now a thin wrapper over the same `gait_ops::config::set` this uses |
+| `/skill load\|unload` (immediately usable next turn) | `gait load`/`gait unload <kind> <name> <session-id>` (already existed) | already equivalent — both write the same `Toggle` event REPL and CLI's turn-start fold both read; proven by `gait-ops::extension::load_is_visible_to_the_next_turns_agent_state_projection` |
+| `/sh` (one-off shell-command description, skips a full turn) | none — **deliberately out of scope** | `/sh` is interactive UI sugar around the same single-LLM-call idea `gait -e` (ephemeral mode) already covers non-interactively; a third redundant entry point wasn't worth adding |
+
+`--json`/`--result-schema` (CLI-exclusive) and bulk ops / `gait allow`/`deny`/`unlock <id>` (CLI-exclusive, external reply to a *permission* request specifically) remain CLI-only by design — output-format and administrative-bulk operations, not agent capabilities the REPL user would ever reach for.
+
+**Pre-existing bug found during this plan, not fixed here (out of scope):** `gait workflow run <name> [args...] --gait-dir <path>` — the exact usage `README.md` and this file's own "Workflows" section document — silently ignores an explicit `--gait-dir` placed after the action/rest args and falls back to `$GAIT_DIR` instead, because `WorkflowArgs.rest` is a `trailing_var_arg` field that swallows every token after it starts, including a later `--gait-dir`. Verified directly against the built binary (`gait workflow run somename --gait-dir /tmp/x` used `$GAIT_DIR`, not `/tmp/x`; `gait workflow --gait-dir /tmp/x run somename` — flag right after the subcommand name — worked correctly). Worth a follow-up plan to either fix the docs (document the working order) or fix `WorkflowArgs` (drop `trailing_var_arg` in favor of a proper nested subcommand, or reorder to parse `--gait-dir` before the trailing catch-all) — not folded into this plan since it's an existing-command bugfix, unrelated to closing REPL/CLI gaps.

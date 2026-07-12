@@ -33,3 +33,4 @@ serial_test = "3"
 prost        = "0.13"
 gait-proto   = { path = "../gait-proto" }
 gait-state   = { path = "../gait-state" }
+pbjson-types = "0.7"
