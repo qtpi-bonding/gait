@@ -8,6 +8,14 @@
 # Cargo.toml/Cargo.lock changed, or `cargo metadata`/`jq` unavailable) —
 # correctness over speed.
 #
+# Lib + bin targets only (no --all-targets): this hook intentionally does NOT
+# compile test/bench/example binaries. Those are a second, separate build
+# graph (dev profile compiled a second time under `cfg(test)`) that roughly
+# doubles wall-clock cost for no signal a push-gate needs — `cargo test`
+# already type-checks that code on its own schedule, and CI/the developer
+# still catches real breakage there. This hook exists to keep obviously-bad
+# lib/bin code off the remote quickly, not to be a second test-suite gate.
+#
 # Read-only: clippy only reports — it never modifies your code. On a warning the
 # push is rejected and nothing is sent to the remote.
 #
@@ -47,8 +55,8 @@ if [ "$full_fallback" = "0" ] && printf '%s\n' "$changed_files" | grep -qE '^gai
 fi
 
 run_full() {
-    echo "pre-push: cargo clippy --workspace --all-targets (-D warnings)"
-    cargo clippy --workspace --all-targets -- -D warnings
+    echo "pre-push: cargo clippy --workspace (-D warnings)"
+    cargo clippy --workspace -- -D warnings
 }
 
 run_scoped() {
@@ -58,7 +66,7 @@ run_scoped() {
     for c in "$@"; do args="$args -p $c"; done
     echo "pre-push: cargo clippy scoped to:$args (-D warnings)"
     # shellcheck disable=SC2086
-    cargo clippy $args --all-targets -- -D warnings
+    cargo clippy $args -- -D warnings
 }
 
 fail() {
