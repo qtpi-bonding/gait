@@ -1309,4 +1309,42 @@ mod tests {
         .unwrap();
         assert!(enable(en("mcp", "slack", dir.path())).is_err());
     }
+
+    #[test]
+    fn load_is_visible_to_the_next_turns_agent_state_projection() {
+        // This is the exact fold turn-start uses to compute the active
+        // skill/mcp/plugin set for the system prompt (gait_state::session::
+        // retrace::ActiveAgent, driven by run_projection). Proving `load`'s
+        // Toggle event round-trips through THIS fold — the same fold every
+        // turn (REPL or CLI) runs at start — proves `gait load ext --session
+        // <id>` followed by a NEW `gait "task" --session <id>` invocation sees
+        // the loaded extension exactly like the REPL's `/skill load` does
+        // inline. Two commands instead of one REPL line, same eventual state.
+        use gait_state::session::retrace::{ActiveAgent, AgentState};
+        use std::collections::HashMap;
+
+        let (ws, sid) = ws_with_skill_and_session();
+        let tx_path = gait_state::session::live::log_path(ws.path(), &sid);
+
+        load(LoadParams {
+            gait_dir: ws.path().to_path_buf(),
+            session_id: sid.clone(),
+            kind: ExtKind::Skill,
+            name: "tdd".to_string(),
+        })
+        .unwrap();
+
+        let events = read_events(&tx_path).unwrap();
+        let agent = gait_state::session::retrace::run_projection(
+            &ActiveAgent {
+                seed: AgentState::default(),
+            },
+            &events,
+            &HashMap::new(),
+        );
+        assert!(
+            agent.skills.contains("tdd"),
+            "load's Toggle event must be visible to the same AgentState projection every turn folds"
+        );
+    }
 }
