@@ -16,6 +16,7 @@ pub mod config;
 pub mod daemon;
 pub mod extension;
 pub mod interaction;
+pub mod permission;
 
 pub mod session;
 pub mod workspace;
