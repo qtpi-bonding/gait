@@ -166,8 +166,44 @@ pub fn write_permissions_reply(
     writeln!(file, "{}", json)?;
     Ok(())
 }
+/// Append a `ClarifyReply` event to the transcript. Each `ClarifyReplyItem.id`
+/// corresponds to a `ClarifyItem.id` in the preceding `Clarify` request.
+pub fn write_clarify_reply(
+    tx_path: &std::path::Path,
+    items: Vec<pb::ClarifyReplyItem>,
+) -> Result<(), SessionError> {
+    let body = crate::proto::events::clarify_reply(&items);
+    let prev = last_event(tx_path)?;
+    let ev = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(tx_path)?;
+    let json = serde_json::to_string(&ev)?;
+    use std::io::Write;
+    writeln!(file, "{}", json)?;
+    Ok(())
+}
 
-/// Append a `Registry` event to a session's log, outside a running turn.
+/// Append an `InformReply` event to the transcript. Each `InformReplyItem.id`
+/// corresponds to an `InformItem.id` in the preceding `Inform` request.
+pub fn write_inform_reply(
+    tx_path: &std::path::Path,
+    items: Vec<pb::InformReplyItem>,
+) -> Result<(), SessionError> {
+    let body = crate::proto::events::inform_reply(&items);
+    let prev = last_event(tx_path)?;
+    let ev = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(tx_path)?;
+    let json = serde_json::to_string(&ev)?;
+    use std::io::Write;
+    writeln!(file, "{}", json)?;
+    Ok(())
+}
+
 ///
 /// `kind` is "skill"|"mcp"|"plugin" (same convention as `crate::proto::events::toggle`).
 /// `listed: true` adds `name` to this session's own whitelist; `false` removes it.

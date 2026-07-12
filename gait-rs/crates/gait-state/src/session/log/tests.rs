@@ -525,3 +525,54 @@ fn init_session_writes_codebase_path_into_session_start() {
     assert_eq!(s.codebase_path.as_deref(), Some("/code"));
     assert_eq!(s.assigned_by.as_deref(), Some("sparent0"));
 }
+
+#[test]
+fn write_clarify_reply_appends_clarify_reply_event() {
+    use crate::proto::gait::log::v1::{event, payload, ClarifyReplyItem};
+    let t = tempfile::TempDir::new().unwrap();
+    let tx_path = t.path().join("log.jsonl");
+    let items = vec![ClarifyReplyItem {
+        id: "c1".into(),
+        content: "yes, use postgres".into(),
+        reasoning: None,
+    }];
+    write_clarify_reply(&tx_path, items.clone()).unwrap();
+    let events = read_events(&tx_path).unwrap();
+    let last = events.last().expect("event appended");
+    match &last.body {
+        Some(event::Body::Payload(p)) => match p.kind.as_ref().expect("kind set") {
+            payload::Kind::ClarifyReply(r) => {
+                assert_eq!(r.items.len(), 1);
+                assert_eq!(r.items[0].id, "c1");
+                assert_eq!(r.items[0].content, "yes, use postgres");
+            }
+            other => panic!("expected ClarifyReply, got {other:?}"),
+        },
+        other => panic!("expected payload body, got {other:?}"),
+    }
+}
+
+#[test]
+fn write_inform_reply_appends_inform_reply_event() {
+    use crate::proto::gait::log::v1::{event, payload, InformReplyItem};
+    let t = tempfile::TempDir::new().unwrap();
+    let tx_path = t.path().join("log.jsonl");
+    let items = vec![InformReplyItem {
+        id: "i1".into(),
+        content: "understood".into(),
+    }];
+    write_inform_reply(&tx_path, items.clone()).unwrap();
+    let events = read_events(&tx_path).unwrap();
+    let last = events.last().expect("event appended");
+    match &last.body {
+        Some(event::Body::Payload(p)) => match p.kind.as_ref().expect("kind set") {
+            payload::Kind::InformReply(r) => {
+                assert_eq!(r.items.len(), 1);
+                assert_eq!(r.items[0].id, "i1");
+                assert_eq!(r.items[0].content, "understood");
+            }
+            other => panic!("expected InformReply, got {other:?}"),
+        },
+        other => panic!("expected payload body, got {other:?}"),
+    }
+}
