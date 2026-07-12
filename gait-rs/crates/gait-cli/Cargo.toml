@@ -29,4 +29,5 @@ libc = "0.2"
 
 [dev-dependencies]
 serial_test = "3"
-tempfile = "3"
+tempfile    = "3"
+gait-state    = { path = "../gait-state" }

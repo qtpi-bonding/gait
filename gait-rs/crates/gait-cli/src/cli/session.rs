@@ -690,7 +690,21 @@ pub fn cmd_unload(args: UnloadArgs) {
         }
     }
 }
-pub fn cmd_reply(_args: ReplyArgs) {
-    eprintln!("[gait] error: reply not yet implemented");
-    std::process::exit(1);
+pub fn cmd_reply(args: ReplyArgs) {
+    match gait_ops::interaction::reply(&args.gait_dir, &args.session_id, args.message) {
+        Ok(out) => {
+            let kind = match out.kind {
+                gait_ops::interaction::ReplyKind::Clarify => "clarify",
+                gait_ops::interaction::ReplyKind::Inform => "inform",
+            };
+            eprintln!(
+                "[gait] answered pending {} '{}' for session {}",
+                kind, out.id, args.session_id
+            );
+        }
+        Err(e) => {
+            eprintln!("[gait] error: {}", e);
+            std::process::exit(1);
+        }
+    }
 }

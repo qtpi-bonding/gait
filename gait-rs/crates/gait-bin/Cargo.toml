@@ -32,4 +32,4 @@ tempfile = "3"
 serial_test = "3"
 prost        = "0.13"
 gait-proto   = { path = "../gait-proto" }
-pbjson-types = "0.7"
+gait-state   = { path = "../gait-state" }
