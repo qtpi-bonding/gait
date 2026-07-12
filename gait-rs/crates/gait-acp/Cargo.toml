@@ -8,6 +8,7 @@ rust-version = "1.88"
 gait-core = { path = "../.." }
 gait-workflow = { path = "../gait-workflow" }
 gait-ops = { path = "../gait-ops" }
+gait-state = { path = "../gait-state" }
 agent-client-protocol = "1.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sync"] }
 tokio-util = "0.7"
@@ -34,3 +35,4 @@ collapsible_if = "allow"
 tempfile = "3"
 gait-proto = { path = "../gait-proto" }
 prost = "0.13"
+git2 = "0.19"

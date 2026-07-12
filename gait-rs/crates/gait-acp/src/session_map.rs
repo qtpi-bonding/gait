@@ -134,6 +134,34 @@ impl SessionMap {
         }
     }
 
+    /// The distinct gait-dirs this connection has touched (one per workspace the
+    /// client opened a session in). Used by `session/list` when the request omits
+    /// a cwd filter, and by close/delete to locate a session's gait-dir.
+    pub fn known_gait_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = self
+            .0
+            .lock()
+            .unwrap()
+            .values()
+            .map(|e| e.gait_dir.clone())
+            .collect();
+        dirs.sort();
+        dirs.dedup();
+        dirs
+    }
+
+    /// Cancel any in-flight turn, join its thread, and drop the entry. Idempotent:
+    /// a session not in the map (already closed, or persisted by a prior
+    /// connection) is a no-op. Returns the entry's gait_dir if it was present.
+    pub fn remove(&self, session_id: &str) -> Option<PathBuf> {
+        let entry = self.0.lock().unwrap().remove(session_id)?;
+        entry.cancel.cancel();
+        if let Some(join) = entry.join {
+            let _ = join.join();
+        }
+        Some(entry.gait_dir)
+    }
+
     pub fn contains(&self, gait_dir: &Path, session_id: &str) -> bool {
         self.0
             .lock()
@@ -282,5 +310,53 @@ mod tests {
     fn map_is_send_sync_clone() {
         fn assert_bounds<T: Send + Sync + Clone>() {}
         assert_bounds::<SessionMap>();
+    }
+
+    #[test]
+    fn known_gait_dirs_dedups_and_sorts() {
+        let m = SessionMap::new();
+        m.insert(PathBuf::from("/b/.gait"), "s1".into(), PathBuf::from("/b"));
+        m.insert(PathBuf::from("/a/.gait"), "s2".into(), PathBuf::from("/a"));
+        m.insert(PathBuf::from("/a/.gait"), "s3".into(), PathBuf::from("/a"));
+        assert_eq!(
+            m.known_gait_dirs(),
+            vec![PathBuf::from("/a/.gait"), PathBuf::from("/b/.gait")]
+        );
+    }
+
+    #[test]
+    fn known_gait_dirs_empty_map_is_empty() {
+        let m = SessionMap::new();
+        assert!(m.known_gait_dirs().is_empty());
+    }
+
+    #[test]
+    fn remove_returns_gait_dir_and_drops_entry() {
+        let m = SessionMap::new();
+        m.insert(PathBuf::from("/g/.gait"), "s".into(), PathBuf::from("/c"));
+        assert_eq!(m.remove("s"), Some(PathBuf::from("/g/.gait")));
+        assert!(!m.contains(Path::new("/g/.gait"), "s"));
+        assert_eq!(m.known_gait_dirs(), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn remove_unknown_session_is_noop() {
+        let m = SessionMap::new();
+        assert_eq!(m.remove("nope"), None);
+    }
+
+    #[test]
+    fn remove_cancels_and_joins_live_turn() {
+        let m = SessionMap::new();
+        m.insert(PathBuf::from("/g/.gait"), "s".into(), PathBuf::from("/c"));
+        m.set_cancel("s", tokio_util::sync::CancellationToken::new());
+        m.set_turn_thread("s", std::thread::spawn(|| {}));
+        // Must not panic (join succeeds) and must return the gait_dir; the
+        // thread's completion is implicit in remove() returning at all.
+        assert_eq!(m.remove("s"), Some(PathBuf::from("/g/.gait")));
+        assert!(
+            !m.contains(Path::new("/g/.gait"), "s"),
+            "entry dropped after remove"
+        );
     }
 }

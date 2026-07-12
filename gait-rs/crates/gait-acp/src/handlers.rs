@@ -8,14 +8,18 @@
 //! is the pattern Phase 2's `session/prompt` must follow so long-running brain
 //! turns don't stall `initialize`/`session/new` on other connections.
 use agent_client_protocol::schema::v1::{
-    CancelNotification, CurrentModeUpdate, InitializeRequest, InitializeResponse,
-    NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, SessionMode,
+    AgentCapabilities, CancelNotification, CloseSessionRequest, CloseSessionResponse,
+    CurrentModeUpdate, DeleteSessionRequest, DeleteSessionResponse, InitializeRequest,
+    InitializeResponse, ListSessionsRequest, ListSessionsResponse, NewSessionRequest,
+    NewSessionResponse, PromptRequest, PromptResponse, SessionCapabilities,
+    SessionCloseCapabilities, SessionDeleteCapabilities, SessionListCapabilities, SessionMode,
     SessionModeState, SessionNotification, SessionUpdate, SetSessionModeRequest,
     SetSessionModeResponse, StopReason,
 };
 use agent_client_protocol::{Agent, Builder, Client, HandleDispatchFrom, NullRun, Responder};
 use std::path::Path;
 
+use crate::lifecycle;
 use crate::session_map::{SessionMap, discover_gait_dir_for_cwd};
 use crate::turn_io::{
     AcpTurnSink, AcpTurnSource, content_blocks_to_text, turn_result_to_stop_reason,
@@ -66,7 +70,18 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                         // connection. All-or-nothing gating happens at prompt time.
                         let fs = req.client_capabilities.fs;
                         caps.set(fs.read_text_file, fs.write_text_file);
-                        responder.respond(InitializeResponse::new(req.protocol_version))
+                        // Phase 7: advertise session/list, session/close, session/delete
+                        // so a spec-conformant client actually sends them.
+                        let session_caps = SessionCapabilities::default()
+                            .list(SessionListCapabilities::default())
+                            .close(SessionCloseCapabilities::default())
+                            .delete(SessionDeleteCapabilities::default());
+                        let agent_caps =
+                            AgentCapabilities::default().session_capabilities(session_caps);
+                        responder.respond(
+                            InitializeResponse::new(req.protocol_version)
+                                .agent_capabilities(agent_caps),
+                        )
                     }
                 }
             },
@@ -242,6 +257,38 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                             Err(e) => responder.respond_with_internal_error(e.to_string()),
                         }
                     }
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let map = map.clone();
+                move |req: ListSessionsRequest, responder: Responder<ListSessionsResponse>, _cx| {
+                    let map = map.clone();
+                    async move { lifecycle::list_sessions(&map, req, responder) }
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let map = map.clone();
+                move |req: CloseSessionRequest, responder: Responder<CloseSessionResponse>, _cx| {
+                    let map = map.clone();
+                    async move { lifecycle::close_session(&map, req, responder) }
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let map = map.clone();
+                move |req: DeleteSessionRequest,
+                      responder: Responder<DeleteSessionResponse>,
+                      _cx| {
+                    let map = map.clone();
+                    async move { lifecycle::delete_session(&map, req, responder) }
                 }
             },
             agent_client_protocol::on_receive_request!(),
