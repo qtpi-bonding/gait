@@ -205,6 +205,47 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
             },
             agent_client_protocol::on_receive_request!(),
         )
+        .on_receive_request(
+            {
+                let map = map.clone();
+                move |req: SetSessionModeRequest,
+                      responder: Responder<SetSessionModeResponse>,
+                      cx: agent_client_protocol::ConnectionTo<Client>| {
+                    let map = map.clone();
+                    async move {
+                        let session_id = req.session_id.clone();
+                        let sid = session_id.0.to_string();
+                        let Some((gait_dir, _codebase)) = map.resolve(&sid) else {
+                            return responder
+                                .respond_with_internal_error(format!("unknown session: {sid}"));
+                        };
+                        let mode_id = req.mode_id.clone();
+                        let log_path = gait_core::session::live::log_path(&gait_dir, &sid);
+                        match gait_core::modes::activate_mode(
+                            &log_path,
+                            &gait_dir,
+                            mode_id.0.as_ref(),
+                        ) {
+                            Ok(()) => {
+                                // Confirm the active mode to the client (ACP contract).
+                                // send_notification returns a #[must_use] Result; bind it
+                                // like turn_io.rs:345 — a failed send just means the
+                                // connection closed, which the caller will observe anyway.
+                                let _ = cx.send_notification(SessionNotification::new(
+                                    session_id,
+                                    SessionUpdate::CurrentModeUpdate(CurrentModeUpdate::new(
+                                        mode_id,
+                                    )),
+                                ));
+                                responder.respond(SetSessionModeResponse::new())
+                            }
+                            Err(e) => responder.respond_with_internal_error(e.to_string()),
+                        }
+                    }
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
         .on_receive_notification(
             {
                 let map = map.clone();
