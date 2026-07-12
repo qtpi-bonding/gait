@@ -58,7 +58,7 @@ fn workspace() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
 
 #[tokio::test]
 async fn set_mode_advertises_activates_and_confirms() {
-    let (_t, gait_dir, repo) = workspace();
+    let (_t, _gait_dir, repo) = workspace();
     let map = SessionMap::new();
     let (channel, server) = gait_acp::build_agent(map).into_channel_and_future();
     tokio::spawn(server);
