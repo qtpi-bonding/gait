@@ -118,12 +118,14 @@ pub fn mode(
     deny: Vec<String>,
     model: Option<String>,
     steer: &str,
+    description: &str,
 ) -> pb::event::Body {
     wire::body(pb::payload::Kind::Mode(pb::Mode {
         name: name.to_string(),
         permissions: Some(pb::PermissionPolicy { allow, deny }),
         model,
         steer: steer.to_string(),
+        description: description.to_string(),
     }))
 }
 
@@ -898,7 +900,7 @@ mod tests {
 
     #[test]
     fn mode_event_roundtrips_and_empty_name_is_clear_sentinel() {
-        let body = super::mode("plan", vec![], vec!["write".into()], None, "no edits");
+        let body = super::mode("plan", vec![], vec!["write".into()], None, "no edits", "d");
         match body {
             crate::proto::gait::log::v1::event::Body::Payload(p) => match p.kind {
                 Some(pb::payload::Kind::Mode(m)) => {
@@ -906,13 +908,14 @@ mod tests {
                     assert_eq!(m.permissions.unwrap().deny, vec!["write".to_string()]);
                     assert!(m.model.is_none());
                     assert_eq!(m.steer, "no edits");
+                    assert_eq!(m.description, "d");
                 }
                 other => panic!("expected Mode, got {other:?}"),
             },
             other => panic!("expected Payload body, got {other:?}"),
         }
 
-        let clear = super::mode("", vec![], vec![], None, "");
+        let clear = super::mode("", vec![], vec![], None, "", "");
         match clear {
             crate::proto::gait::log::v1::event::Body::Payload(p) => match p.kind {
                 Some(pb::payload::Kind::Mode(m)) => assert_eq!(m.name, ""),

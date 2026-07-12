@@ -17,6 +17,8 @@ struct ModeFile {
     model: Option<String>,
     #[serde(default)]
     steer: String,
+    #[serde(default)]
+    description: String,
 }
 
 /// Resolve `modes/<name>/MODE.yaml` into a replay-complete `pb::Mode`.
@@ -34,6 +36,7 @@ pub fn load_mode(gait_dir: &Path, name: &str) -> anyhow::Result<pb::Mode> {
         }),
         model: f.model,
         steer: f.steer,
+        description: f.description,
     })
 }
 
@@ -57,11 +60,11 @@ pub fn list_modes(gait_dir: &Path) -> Vec<String> {
 /// empty clear sentinel (back to baseline); any other name is resolved from disk.
 pub fn activate_mode(log_path: &Path, gait_dir: &Path, name: &str) -> anyhow::Result<()> {
     let body = if name.is_empty() || name == "default" {
-        crate::proto::events::mode("", vec![], vec![], None, "")
+        crate::proto::events::mode("", vec![], vec![], None, "", "")
     } else {
         let m = load_mode(gait_dir, name)?;
         let p = m.permissions.unwrap_or_default();
-        crate::proto::events::mode(&m.name, p.allow, p.deny, m.model, &m.steer)
+        crate::proto::events::mode(&m.name, p.allow, p.deny, m.model, &m.steer, &m.description)
     };
     // Callers may activate a mode before the session's worktree/log directory
     // has otherwise been created (e.g. `--mode` on a brand-new CLI session).
@@ -113,5 +116,24 @@ mod tests {
         let log = t.path().join("s.log");
         std::fs::write(&log, b"").unwrap();
         activate_mode(&log, t.path(), "default").unwrap();
+    }
+
+    #[test]
+    fn loads_description() {
+        let t = TempDir::new().unwrap();
+        write_mode(
+            t.path(),
+            "plan",
+            "deny: [write]\ndescription: Plan only — no edits\nsteer: no edits\n",
+        );
+        let m = load_mode(t.path(), "plan").unwrap();
+        assert_eq!(m.description, "Plan only — no edits");
+    }
+
+    #[test]
+    fn description_defaults_empty_when_absent() {
+        let t = TempDir::new().unwrap();
+        write_mode(t.path(), "bare", "deny: [write]\n");
+        assert_eq!(load_mode(t.path(), "bare").unwrap().description, "");
     }
 }

@@ -139,6 +139,7 @@ message Mode {                          // active mode from this seq forward; ""
   PermissionPolicy permissions = 2;
   optional string model        = 3;
   string steer                 = 4;
+  string description           = 5;     // human-readable label for UIs (ACP mode picker); behaviorally inert
 }
 // User-initiated turn cancellation (Esc key). ActiveMessages folds this into
 // [turn interrupted by user] in the next turn's transcript.

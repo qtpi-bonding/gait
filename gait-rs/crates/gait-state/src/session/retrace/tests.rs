@@ -344,14 +344,14 @@ fn active_cwd_last_write_wins() {
 #[test]
 fn active_mode_folds_lww_and_empty_clears() {
     let evs = mint_events(vec![
-        events::mode("plan", vec![], vec!["write".into()], None, "s"),
-        events::mode("code", vec![], vec![], None, ""),
+        events::mode("plan", vec![], vec!["write".into()], None, "s", ""),
+        events::mode("code", vec![], vec![], None, "", ""),
     ]);
     assert_eq!(active_mode(&evs, &HashMap::new()).unwrap().name, "code");
 
     let cleared = mint_events(vec![
-        events::mode("plan", vec![], vec![], None, ""),
-        events::mode("", vec![], vec![], None, ""),
+        events::mode("plan", vec![], vec![], None, "", ""),
+        events::mode("", vec![], vec![], None, "", ""),
     ]);
     assert!(active_mode(&cleared, &HashMap::new()).is_none());
 }
@@ -361,7 +361,7 @@ fn active_mode_survives_agent_rebaseline() {
     // finding #1 regression: an Agent checkpoint between Mode events must NOT
     // clear the active mode (it would if `mode` were a field on AgentState).
     let evs = mint_events(vec![
-        events::mode("plan", vec![], vec!["write".into()], None, "s"),
+        events::mode("plan", vec![], vec!["write".into()], None, "s", ""),
         wire::body(payload::Kind::Agent(pb::Agent {
             ..Default::default()
         })), // drift re-emit
