@@ -8,10 +8,13 @@
 //! is the pattern Phase 2's `session/prompt` must follow so long-running brain
 //! turns don't stall `initialize`/`session/new` on other connections.
 use agent_client_protocol::schema::v1::{
-    CancelNotification, InitializeRequest, InitializeResponse, NewSessionRequest,
-    NewSessionResponse, PromptRequest, PromptResponse, StopReason,
+    CancelNotification, CurrentModeUpdate, InitializeRequest, InitializeResponse,
+    NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, SessionMode,
+    SessionModeState, SessionNotification, SessionUpdate, SetSessionModeRequest,
+    SetSessionModeResponse, StopReason,
 };
 use agent_client_protocol::{Agent, Builder, Client, HandleDispatchFrom, NullRun, Responder};
+use std::path::Path;
 
 use crate::session_map::{SessionMap, discover_gait_dir_for_cwd};
 use crate::turn_io::{
@@ -24,6 +27,26 @@ use crate::turn_io::{
 /// one more `.on_receive_request` onto it; the builder itself still
 /// implements `ConnectTo<Client>` for `.connect_to(transport)` /
 /// `.into_channel_and_future()`.
+/// Advertise the reserved `default` baseline plus every authored mode.
+/// `current_mode_id` is always "default" for a freshly minted session
+/// (gait-acp mints a new session per `session/new`; no mode is restored).
+/// A mode whose `MODE.yaml` fails to parse is still listed (by name) with no
+/// description — advertisement must never fail `session/new`.
+pub fn advertise_modes(gait_dir: &Path) -> SessionModeState {
+    let mut modes = vec![
+        SessionMode::new("default", "default")
+            .description(Some("gait's baseline — no overlay".to_string())),
+    ];
+    for name in gait_core::modes::list_modes(gait_dir) {
+        let desc: Option<String> = gait_core::modes::load_mode(gait_dir, &name)
+            .ok()
+            .map(|m| m.description)
+            .filter(|d| !d.is_empty());
+        modes.push(SessionMode::new(name.clone(), name).description(desc));
+    }
+    SessionModeState::new("default", modes)
+}
+
 pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Client>, NullRun> {
     // Connection-level: written by the `initialize` handler below, read by each
     // `session/prompt` before it installs the fs delegate (design §1).
@@ -60,8 +83,9 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                             Err(e) => return responder.respond_with_internal_error(e.to_string()),
                         };
                         let session_id = gait_core::session::new_session_id();
+                        let modes = advertise_modes(&gait_dir);
                         map.insert(gait_dir, session_id.clone(), req.cwd.clone());
-                        responder.respond(NewSessionResponse::new(session_id))
+                        responder.respond(NewSessionResponse::new(session_id).modes(Some(modes)))
                     }
                 }
             },
@@ -196,4 +220,57 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
             },
             agent_client_protocol::on_receive_notification!(),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn advertise_lists_default_first_then_authored_with_descriptions() {
+        let t = tempfile::TempDir::new().unwrap();
+        let gd = t.path();
+        let write = |name: &str, body: &str| {
+            let d = gd.join("modes").join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("MODE.yaml"), body).unwrap();
+        };
+        write("plan", "deny: [write]\ndescription: Plan only\n");
+        write("code", "steer: go\n"); // no description
+        write("broken", "deny: [unclosed\n"); // malformed YAML
+
+        let state = advertise_modes(gd);
+        assert_eq!(state.current_mode_id.0.as_ref(), "default");
+        let ids: Vec<String> = state
+            .available_modes
+            .iter()
+            .map(|m| m.id.0.to_string())
+            .collect();
+        assert_eq!(ids[0], "default", "baseline advertised first");
+        assert!(ids.contains(&"plan".to_string()));
+        assert!(ids.contains(&"code".to_string()));
+        assert!(
+            ids.contains(&"broken".to_string()),
+            "malformed still listed"
+        );
+
+        let plan = state
+            .available_modes
+            .iter()
+            .find(|m| m.id.0.as_ref() == "plan")
+            .unwrap();
+        assert_eq!(plan.description.as_deref(), Some("Plan only"));
+        let code = state
+            .available_modes
+            .iter()
+            .find(|m| m.id.0.as_ref() == "code")
+            .unwrap();
+        assert_eq!(code.description, None, "empty description -> None");
+        let broken = state
+            .available_modes
+            .iter()
+            .find(|m| m.id.0.as_ref() == "broken")
+            .unwrap();
+        assert_eq!(broken.description, None, "malformed -> None, never a panic");
+    }
 }
