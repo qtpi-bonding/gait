@@ -23,8 +23,44 @@ pub struct WorkflowArgs {
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub rest: Vec<String>,
 }
+/// Pull a `--gait-dir <path>` or `--gait-dir=<path>` pair out of `rest`,
+/// returning the extracted path (if any) and the remaining tokens.
+///
+/// Why this exists: `WorkflowArgs.rest` is a `#[arg(trailing_var_arg = true)]`
+/// catch-all. Once clap starts consuming positionals into it, it swallows
+/// every later token verbatim — including a `--gait-dir <path>` typed after
+/// the action/name, e.g. `gait workflow run somename --gait-dir /path`
+/// (the exact usage README.md and docs/cli-audit.md document). That flag
+/// then never reaches `WorkflowArgs.gait_dir`, and `cmd_workflow` silently
+/// falls back to `$GAIT_DIR`. This scans `rest` for that swallowed flag and
+/// recovers it, so `--gait-dir` works regardless of where it's typed —
+/// right after `workflow` (already worked) or trailing after the
+/// action/rest (previously broken).
+fn extract_gait_dir_from_rest(rest: &[String]) -> (Option<PathBuf>, Vec<String>) {
+    let mut found: Option<PathBuf> = None;
+    let mut remaining = Vec::with_capacity(rest.len());
+    let mut i = 0;
+    while i < rest.len() {
+        if rest[i] == "--gait-dir" {
+            if let Some(value) = rest.get(i + 1) {
+                found = Some(PathBuf::from(value));
+                i += 2;
+                continue;
+            }
+        } else if let Some(value) = rest[i].strip_prefix("--gait-dir=") {
+            found = Some(PathBuf::from(value));
+            i += 1;
+            continue;
+        }
+        remaining.push(rest[i].clone());
+        i += 1;
+    }
+    (found, remaining)
+}
+
 pub async fn cmd_workflow(args: WorkflowArgs) {
-    let gait_dir: PathBuf = match args.gait_dir.clone().or_else(|| {
+    let (gait_dir_from_rest, rest) = extract_gait_dir_from_rest(&args.rest);
+    let gait_dir: PathBuf = match args.gait_dir.clone().or(gait_dir_from_rest).or_else(|| {
         std::env::var("GAIT_DIR")
             .ok()
             .filter(|v| !v.is_empty())
@@ -37,7 +73,6 @@ pub async fn cmd_workflow(args: WorkflowArgs) {
         }
     };
     let sub = args.action.as_deref().unwrap_or("");
-    let rest: Vec<String> = args.rest.clone();
     match sub {
         "run" => cmd_workflow_run(&rest, gait_dir).await,
         "list" => cmd_workflow_list(&rest, gait_dir),
@@ -316,6 +351,40 @@ pub fn cmd_workflow_log(argv: &[String], gait_dir: PathBuf) {
         .unwrap_or_default();
     for event in &events {
         println!("{}", serde_json::to_string(event).unwrap_or_default());
+    }
+}
+
+#[cfg(test)]
+mod gait_dir_extraction_tests {
+    use super::extract_gait_dir_from_rest;
+    use std::path::PathBuf;
+
+    #[test]
+    fn finds_and_strips_a_space_separated_gait_dir() {
+        let rest = vec![
+            "somename".to_string(),
+            "--gait-dir".to_string(),
+            "/tmp/x".to_string(),
+        ];
+        let (found, remaining) = extract_gait_dir_from_rest(&rest);
+        assert_eq!(found, Some(PathBuf::from("/tmp/x")));
+        assert_eq!(remaining, vec!["somename".to_string()]);
+    }
+
+    #[test]
+    fn finds_and_strips_an_equals_form_gait_dir() {
+        let rest = vec!["somename".to_string(), "--gait-dir=/tmp/x".to_string()];
+        let (found, remaining) = extract_gait_dir_from_rest(&rest);
+        assert_eq!(found, Some(PathBuf::from("/tmp/x")));
+        assert_eq!(remaining, vec!["somename".to_string()]);
+    }
+
+    #[test]
+    fn leaves_rest_untouched_when_no_gait_dir_present() {
+        let rest = vec!["somename".to_string(), "extra-arg".to_string()];
+        let (found, remaining) = extract_gait_dir_from_rest(&rest);
+        assert_eq!(found, None);
+        assert_eq!(remaining, rest);
     }
 }
 
