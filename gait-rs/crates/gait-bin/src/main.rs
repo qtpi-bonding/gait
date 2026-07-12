@@ -126,6 +126,8 @@ async fn main() {
         Commands::Deny(args) => gait_cli::cli::session::cmd_deny(args),
         Commands::Unlock(args) => gait_cli::cli::session::cmd_unlock(args),
         Commands::Reply(args) => gait_cli::cli::session::cmd_reply(args),
+        Commands::Config(args) => gait_cli::cli::admin::cmd_config(args),
+
         Commands::Register(args) => {
             if let Err(e) = gait_cli::cli::admin::cmd_register(*args) {
                 eprintln!("[gait] error: {}", e);

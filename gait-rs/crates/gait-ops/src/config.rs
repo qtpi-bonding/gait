@@ -29,18 +29,33 @@
 use crate::OpError;
 use std::path::Path;
 
-/// Set the `model` field of `<gait_dir>/gait.jsonc` to `model`, preserving
-/// every other key. The config may use jsonc comments (`//` line and
-/// `/* */` block); comments are stripped before parsing so a comment-laden
-/// config no longer triggers a silent wipe to `{}`.
-pub fn set_model(gait_dir: &Path, model: &str) -> Result<(), OpError> {
+/// Set `<gait_dir>/gait.jsonc`'s `key` field to `value`, preserving every
+/// other key. The general primitive `set_model` is now built on: any
+/// top-level key, not just `model`. Comment-safe (see module doc comment).
+pub fn set(gait_dir: &Path, key: &str, value: serde_json::Value) -> Result<(), OpError> {
     let path = gait_dir.join("gait.jsonc");
     let mut val = read_config_object(&path)?;
-    val.insert(
-        "model".to_string(),
-        serde_json::Value::String(model.to_string()),
-    );
+    val.insert(key.to_string(), value);
     write_config_object(&path, val)
+}
+
+/// Read `<gait_dir>/gait.jsonc`'s `key` field, or `None` if the key (or the
+/// whole file) is absent. Comment-safe.
+pub fn get(gait_dir: &Path, key: &str) -> Result<Option<serde_json::Value>, OpError> {
+    let path = gait_dir.join("gait.jsonc");
+    let val = read_config_object(&path)?;
+    Ok(val.get(key).cloned())
+}
+
+/// Set the `model` field of `<gait_dir>/gait.jsonc` to `model`. Typed
+/// convenience wrapper over [`set`] — kept because the REPL's `/model`
+/// command calls this exact function today; do not remove.
+pub fn set_model(gait_dir: &Path, model: &str) -> Result<(), OpError> {
+    set(
+        gait_dir,
+        "model",
+        serde_json::Value::String(model.to_string()),
+    )
 }
 
 // -----------------------------------------------------------------------------
@@ -285,5 +300,39 @@ mod tests {
             after, original,
             "set_model must not clobber on non-object root"
         );
+    }
+
+    #[test]
+    fn set_writes_an_arbitrary_top_level_key() {
+        let dir = ws();
+        std::fs::write(dir.path().join("gait.jsonc"), "{}\n").unwrap();
+        set(dir.path(), "max_iter", serde_json::json!(50)).unwrap();
+        let raw = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
+        let v = parse(&raw);
+        assert_eq!(v["max_iter"], 50);
+    }
+
+    #[test]
+    fn set_model_is_now_a_wrapper_over_set() {
+        let dir = ws();
+        std::fs::write(dir.path().join("gait.jsonc"), "{}\n").unwrap();
+        set_model(dir.path(), "anthropic/claude-opus-4").unwrap();
+        assert_eq!(
+            get(dir.path(), "model").unwrap(),
+            Some(serde_json::Value::String("anthropic/claude-opus-4".into()))
+        );
+    }
+
+    #[test]
+    fn get_returns_none_for_a_missing_key() {
+        let dir = ws();
+        std::fs::write(dir.path().join("gait.jsonc"), "{}\n").unwrap();
+        assert_eq!(get(dir.path(), "nope").unwrap(), None);
+    }
+
+    #[test]
+    fn get_returns_none_when_config_is_missing_entirely() {
+        let dir = ws();
+        assert_eq!(get(dir.path(), "model").unwrap(), None);
     }
 }

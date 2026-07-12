@@ -386,3 +386,69 @@ pub fn cmd_unregister(args: UnregisterArgs) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// Parse a `gait config set` value: try JSON first (numbers, bools, arrays,
+/// objects), fall back to a raw string (so `anthropic/claude-opus-4` doesn't
+/// need quoting) — matches `set_model`'s existing ergonomics.
+fn parse_config_value(raw: &str) -> serde_json::Value {
+    serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.to_string()))
+}
+
+/// `gait config <set|get> ...` — the general external-CLI equivalent of any
+/// REPL slash command that mutates `gait.jsonc` (`/model` included: it calls
+/// `gait_ops::config::set_model`, itself now a wrapper over the same
+/// `gait_ops::config::set` this calls). gait-dir-wide, not session-scoped.
+/// Mirrors `WorkflowArgs`/`cmd_workflow`'s action+rest shape exactly.
+#[derive(Parser, Debug)]
+#[command(no_binary_name = true)]
+pub struct ConfigArgs {
+    #[arg(long, env = "GAIT_DIR")]
+    pub gait_dir: PathBuf,
+    /// Action: set | get
+    pub action: Option<String>,
+    /// Remaining args: `<key> <value>` for `set`, `<key>` for `get`
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub rest: Vec<String>,
+}
+
+pub fn cmd_config(args: ConfigArgs) {
+    let sub = args.action.as_deref().unwrap_or("");
+    match sub {
+        "set" => {
+            let key = args.rest.first().cloned().unwrap_or_else(|| {
+                eprintln!("[gait] usage: gait config set <key> <value>");
+                std::process::exit(1);
+            });
+            let value_raw = args.rest.get(1).cloned().unwrap_or_else(|| {
+                eprintln!("[gait] usage: gait config set <key> <value>");
+                std::process::exit(1);
+            });
+            let value = parse_config_value(&value_raw);
+            match gait_ops::config::set(&args.gait_dir, &key, value) {
+                Ok(()) => eprintln!("[gait] {} set to {}", key, value_raw),
+                Err(e) => {
+                    eprintln!("[gait] error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        "get" => {
+            let key = args.rest.first().cloned().unwrap_or_else(|| {
+                eprintln!("[gait] usage: gait config get <key>");
+                std::process::exit(1);
+            });
+            match gait_ops::config::get(&args.gait_dir, &key) {
+                Ok(Some(v)) => println!("{}", v),
+                Ok(None) => println!("(unset)"),
+                Err(e) => {
+                    eprintln!("[gait] error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        _ => {
+            eprintln!("[gait] usage: gait config <set|get> ...");
+            std::process::exit(1);
+        }
+    }
+}

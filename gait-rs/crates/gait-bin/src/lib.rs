@@ -2,7 +2,7 @@ use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use std::path::PathBuf;
 
 use gait_cli::cli::admin::{
-    AuthArgs, DisableArgs, EnableArgs, ModelsArgs, RegisterArgs, UnregisterArgs,
+    AuthArgs, ConfigArgs, DisableArgs, EnableArgs, ModelsArgs, RegisterArgs, UnregisterArgs,
 };
 use gait_cli::cli::daemons::DaemonsArgs;
 use gait_cli::cli::init::InitArgs;
@@ -88,6 +88,8 @@ pub enum Commands {
     Deny(DenyArgs),
     Unlock(UnlockArgs),
     Reply(ReplyArgs),
+    Config(ConfigArgs),
+
     Register(Box<RegisterArgs>),
     Unregister(Box<UnregisterArgs>),
     Load(LoadArgs),
