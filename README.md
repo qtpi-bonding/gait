@@ -26,6 +26,8 @@ cp target/release/gait /usr/local/bin/gait
 
 Or, from inside `gait-rs/`, use `make install` to build and install to a custom path (edit `Makefile` to set `INSTALL_DIR`).
 
+Note: the installed binary itself is small (tens of MB), but the `target/` directory left behind by the build is not — gait's dependency tree (tokio, reqwest+TLS, git2, rmcp, schemars, reedline, prost, etc.) compiles to several GB of intermediate artifacts in `target/release/deps`. That's normal Cargo build-cache bloat, not the size of gait. Once you've copied the binary out, it's safe to `cargo clean` (or just delete `gait-rs/target`) to reclaim the space.
+
 ---
 
 ## Quickstart
