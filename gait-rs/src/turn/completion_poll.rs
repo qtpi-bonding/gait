@@ -62,14 +62,10 @@ pub fn pending_daemon_completions(
         if already.contains(&name) {
             continue;
         }
-        // 124 is the timeout exit code from cmd_daemons_stop; negative codes
-        // are signal-terminated. Treat both as "killed" for the surfaced text;
-        // exit_code on the event still lets the agent reason precisely.
-        let status = if exit_code == 124 || exit_code < 0 {
-            "killed"
-        } else {
-            "done"
-        };
+        // exit_code on the event still lets the agent reason precisely; the
+        // status text is the shared done/killed classification (see
+        // `daemons::classify_exit`).
+        let status = crate::session::daemons::classify_exit(exit_code);
         let log_path = gait_dir
             .join("daemons")
             .join(format!("{name}.log"))
@@ -96,7 +92,7 @@ pub fn pending_daemon_completions(
                 out.push(Completion::Daemon {
                     name: rec.name.clone(),
                     exit_code: -9,
-                    status: "killed".into(),
+                    status: crate::session::daemons::classify_exit(-9).into(),
                     log_path: rec.log_path.clone(),
                 });
             }

@@ -14,6 +14,10 @@ pub struct DaemonsArgs {
     pub name: Option<String>,
     #[arg(long)]
     pub json: bool,
+    /// `list` only: also show daemons that have finished (done/killed),
+    /// not just ones currently running.
+    #[arg(long)]
+    pub all: bool,
 }
 
 pub fn cmd_daemons(args: DaemonsArgs) {
@@ -37,13 +41,13 @@ pub fn cmd_daemons(args: DaemonsArgs) {
             };
             cmd_daemons_stop(&gait_dir, &name);
         }
-        Some("list") | None => cmd_daemons_list(&gait_dir),
+        Some("list") | None => cmd_daemons_list(&gait_dir, args.all),
         Some(other) => eprintln!("[gait daemons] unknown subcommand: {}", other),
     }
 }
 
-fn cmd_daemons_list(gait_dir: &std::path::Path) {
-    match gait_ops::daemon::list(gait_dir) {
+fn cmd_daemons_list(gait_dir: &std::path::Path, all: bool) {
+    match gait_ops::daemon::list(gait_dir, all) {
         Ok(outcome) => {
             if outcome.rows.is_empty() {
                 println!("No daemons.");

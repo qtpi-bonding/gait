@@ -116,6 +116,71 @@ pub fn active(gait_dir: &Path) -> io::Result<Vec<pb::DaemonStart>> {
     Ok(records)
 }
 
+/// Read `<gait_dir>/daemons.jsonl` and return the most recent `Start` for
+/// every daemon name that has ever appeared, paired with the exit code of
+/// the `Stop` that followed it (`None` if it hasn't been stopped — either
+/// still running, or dead without ever having a `Stop` recorded).
+///
+/// Unlike `active()`, this never drops a name once it's been stopped — it's
+/// the source for a full/history view (`gait daemons list --all`) rather
+/// than "what's live right now".
+pub fn history(gait_dir: &Path) -> io::Result<Vec<(pb::DaemonStart, Option<i32>)>> {
+    let path = gait_dir.join("daemons.jsonl");
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    let f = OpenOptions::new().read(true).open(&path)?;
+    f.lock_shared()?;
+    let reader = BufReader::new(&f);
+    let mut records: Vec<(pb::DaemonStart, Option<i32>)> = Vec::new();
+    for line in reader.lines() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<Line>(trimmed) {
+            Ok(Line::Start(rec)) => {
+                if let Some(existing) = records.iter_mut().find(|r| r.0.name == rec.name) {
+                    *existing = (rec, None);
+                } else {
+                    records.push((rec, None));
+                }
+            }
+            Ok(Line::Stop(s)) => {
+                if let Some(existing) = records.iter_mut().find(|r| r.0.name == s.name) {
+                    existing.1 = Some(s.exit_code);
+                }
+            }
+            Err(_) => {
+                // Tolerate malformed lines — skip silently.
+            }
+        }
+    }
+    f.unlock()?;
+    Ok(records)
+}
+
+/// Classify a daemon's exit code into a human status.
+///
+/// A clean exit (code `0`, including the sentinel `0` recorded by a manual
+/// `gait daemons stop`) is `"done"`. A timeout-kill (`124`, from `run` timeout
+/// handling) or a signal-terminated / unclean exit (negative — including the
+/// `-9` sentinel appended when `list`/the completion poll merely *observes* a
+/// daemon dead with no `Stop` ever recorded, e.g. SIGKILL, OOM, or the owning
+/// session being torn down mid-flight) is `"killed"`.
+///
+/// Centralized so every caller — the live-turn completion poll
+/// (`turn::completion_poll`) and `gait daemons list --all` — agrees on one
+/// meaning instead of each re-deriving the same 124/negative rule.
+pub fn classify_exit(exit_code: i32) -> &'static str {
+    if exit_code == 124 || exit_code < 0 {
+        "killed"
+    } else {
+        "done"
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Liveness + identity check
 // ---------------------------------------------------------------------------
