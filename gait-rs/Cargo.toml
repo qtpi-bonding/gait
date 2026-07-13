@@ -7,6 +7,19 @@ edition = "2021"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/qtpi-bonding/gait"
 
+# Full debug info + macOS's split-debuginfo=unpacked means every one of this
+# workspace's ~57 test binaries pays a real dSYM-generation cost at link time.
+# Debug info isn't needed for `cargo test`'s pass/fail output, so drop it here
+# (use `-C debuginfo` overrides locally if you need a debugger against a
+# specific test binary). Modest win on its own — the bigger levers for a slow
+# `cargo test --workspace` are (a) paying the dependency-compile cost once
+# and (b) NOT alternating between `--workspace`, `-p <crate>`, and `--test
+# <name>` invocations across commands, which forces spurious relinks of
+# gait-core/gait-workflow (measured ~36s each time) even with no source
+# changes, because Cargo's per-invocation unit-graph fingerprint differs.
+[profile.test]
+debug = 0
+
 [package]
 name = "gait-core"
 description = "Core turn engine, tools, and providers for gait — a turn-based, git-native AI coding agent."

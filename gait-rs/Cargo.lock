@@ -1146,6 +1146,7 @@ dependencies = [
  "gait-repl",
  "gait-state",
  "git2",
+ "pbjson-types",
  "prost",
  "serde_json",
  "serde_yaml",
