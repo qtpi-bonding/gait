@@ -50,6 +50,44 @@ impl SessionMap {
         );
     }
 
+    /// Attach a persisted session after its caller has validated the durable
+    /// identity. Returns whether a new entry was inserted. Re-attaching the
+    /// same idle/completed session is harmless; a conflicting or still-running
+    /// entry is rejected instead of dropping its turn coordination state.
+    pub fn attach_existing(
+        &self,
+        gait_dir: PathBuf,
+        session_id: String,
+        codebase: PathBuf,
+    ) -> Result<bool, String> {
+        let mut sessions = self.0.lock().unwrap();
+        let Some(entry) = sessions.get(&session_id) else {
+            sessions.insert(
+                session_id,
+                SessionEntry {
+                    gait_dir,
+                    codebase,
+                    cascade: None,
+                    cancel: tokio_util::sync::CancellationToken::new(),
+                    join: None,
+                },
+            );
+            return Ok(true);
+        };
+
+        if entry.gait_dir != gait_dir || entry.codebase != codebase {
+            return Err(format!(
+                "session is already attached to another workspace: {session_id}"
+            ));
+        }
+        if entry.join.as_ref().is_some_and(|join| !join.is_finished()) {
+            return Err(format!(
+                "session already has an in-flight turn: {session_id}"
+            ));
+        }
+        Ok(false)
+    }
+
     /// `(gait_dir, codebase)` for a known session, else `None`.
     pub fn resolve(&self, session_id: &str) -> Option<(PathBuf, PathBuf)> {
         self.0
@@ -211,6 +249,40 @@ mod tests {
             Some((PathBuf::from("/g/.gait"), PathBuf::from("/code")))
         );
         assert_eq!(m.resolve("missing"), None);
+    }
+
+    #[test]
+    fn attach_existing_inserts_then_is_idempotent() {
+        let m = SessionMap::new();
+        let gait_dir = PathBuf::from("/g/.gait");
+        let codebase = PathBuf::from("/code");
+        assert!(
+            m.attach_existing(gait_dir.clone(), "sess-1".into(), codebase.clone())
+                .unwrap()
+        );
+        assert!(
+            !m.attach_existing(gait_dir.clone(), "sess-1".into(), codebase.clone())
+                .unwrap()
+        );
+        assert_eq!(m.resolve("sess-1"), Some((gait_dir, codebase)));
+    }
+
+    #[test]
+    fn attach_existing_rejects_conflicting_workspace() {
+        let m = SessionMap::new();
+        m.insert(
+            PathBuf::from("/g/.gait"),
+            "sess-1".into(),
+            PathBuf::from("/code"),
+        );
+        assert!(
+            m.attach_existing(
+                PathBuf::from("/other/.gait"),
+                "sess-1".into(),
+                PathBuf::from("/other"),
+            )
+            .is_err()
+        );
     }
 
     #[test]

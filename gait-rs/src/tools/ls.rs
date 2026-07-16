@@ -95,7 +95,10 @@ async fn collect_files_rg(
         .copied()
         .chain(extra_ignore.iter().map(|s| s.as_str()))
     {
-        cmd.arg(format!("--glob=!{}/**", name));
+        // `rg --files <absolute-dir>` reports absolute paths, so a root-only
+        // `!node_modules/**` glob misses the directory under a temp/workspace
+        // prefix. Match the name at every depth instead.
+        cmd.arg(format!("--glob=!**/{name}/**"));
     }
     cmd.arg(dir);
     cmd.current_dir(dir);

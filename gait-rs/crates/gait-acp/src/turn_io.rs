@@ -25,15 +25,15 @@ fn text_chunk(text: impl Into<String>) -> ContentChunk {
     ContentChunk::new(ContentBlock::Text(TextContent::new(text)))
 }
 
-/// Translate one *settled* gait event to an ACP `session/update`. Live text
-/// deltas (`StreamItem::Delta`) are handled in the sink, not here. Returns
-/// `None` for events with no client-facing rendering (control, session_start,
-/// context, errors surfaced via the request result, …).
-pub fn event_to_session_update(ev: &Event) -> Option<SessionUpdate> {
-    let Some(event::Body::Payload(p)) = &ev.body else {
-        return None;
-    };
-    match p.kind.as_ref()? {
+/// Translate a client-renderable payload to an ACP `session/update`.
+///
+/// Shared by live settled-event delivery and durable-history replay. Returns
+/// `None` for control/session metadata and errors surfaced through requests.
+pub fn kind_to_session_update(kind: &payload::Kind) -> Option<SessionUpdate> {
+    match kind {
+        payload::Kind::UserText(t) => Some(SessionUpdate::UserMessageChunk(text_chunk(
+            t.content.clone(),
+        ))),
         payload::Kind::AssistantText(t) => Some(SessionUpdate::AgentMessageChunk(text_chunk(
             t.content.clone(),
         ))),
@@ -61,6 +61,28 @@ pub fn event_to_session_update(ev: &Event) -> Option<SessionUpdate> {
         }
         _ => None,
     }
+}
+
+/// Translate one *settled* gait event to an ACP `session/update`. Live text
+/// deltas (`StreamItem::Delta`) are handled in the sink, not here.
+pub fn event_to_session_update(ev: &Event) -> Option<SessionUpdate> {
+    let Some(event::Body::Payload(p)) = &ev.body else {
+        return None;
+    };
+    kind_to_session_update(p.kind.as_ref()?)
+}
+
+/// Render the mutation-applied durable history in source order.
+///
+/// `apply_cascade` is load-bearing: a redaction of either side of a tool
+/// call/result pair hides its partner as well, matching the core transcript
+/// fold. Replay intentionally does not run a brain or mutate the log.
+pub fn replay_updates(events: &[Event]) -> Vec<SessionUpdate> {
+    let mut mutations = gait_state::session::retrace::active_mutations(events);
+    gait_state::session::retrace::apply_cascade(&mut mutations, events);
+    gait_state::session::retrace::effective_kinds(events, &mutations)
+        .filter_map(|(_, kind)| kind_to_session_update(kind))
+        .collect()
 }
 
 /// Extract the prompt text from ACP content blocks (Phase 2 handles `Text`
@@ -381,6 +403,33 @@ mod tests {
             }
             other => panic!("expected AgentMessageChunk, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn user_text_maps_to_user_message_chunk() {
+        let ev = event(events::user_text("hello".into(), None));
+        match event_to_session_update(&ev) {
+            Some(SessionUpdate::UserMessageChunk(chunk)) => {
+                assert!(matches!(&chunk.content, ContentBlock::Text(t) if t.text == "hello"));
+            }
+            other => panic!("expected UserMessageChunk, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn replay_updates_preserve_renderable_event_order() {
+        let events = vec![
+            event(events::user_text("question".into(), None)),
+            event(events::assistant_text("answer".into())),
+        ];
+        let updates = replay_updates(&events);
+        assert!(matches!(
+            &updates[..],
+            [
+                SessionUpdate::UserMessageChunk(_),
+                SessionUpdate::AgentMessageChunk(_)
+            ]
+        ));
     }
 
     #[test]

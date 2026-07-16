@@ -96,7 +96,12 @@ async fn initialize_advertises_session_lifecycle_capabilities() {
     .expect("initialize should succeed");
 
     let caps = resp.agent_capabilities.session_capabilities;
+    assert!(
+        resp.agent_capabilities.load_session,
+        "load capability advertised"
+    );
     assert!(caps.list.is_some(), "list capability advertised");
+    assert!(caps.resume.is_some(), "resume capability advertised");
     assert!(caps.close.is_some(), "close capability advertised");
     assert!(caps.delete.is_some(), "delete capability advertised");
 }

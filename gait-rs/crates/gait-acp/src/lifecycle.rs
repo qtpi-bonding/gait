@@ -11,14 +11,140 @@
 //! `SessionMap`, which is live per-turn coordination only.
 use std::path::{Path, PathBuf};
 
-use agent_client_protocol::Responder;
 use agent_client_protocol::schema::v1::{
     CloseSessionRequest, CloseSessionResponse, DeleteSessionRequest, DeleteSessionResponse,
-    ListSessionsRequest, ListSessionsResponse, SessionInfo,
+    ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse,
+    ResumeSessionRequest, ResumeSessionResponse, SessionInfo, SessionModeId, SessionNotification,
 };
+use agent_client_protocol::{Client, ConnectionTo, Responder};
 use gait_ops::session::BulkVerb;
 
 use crate::session_map::{SessionMap, discover_gait_dir_for_cwd};
+use crate::turn_io::replay_updates;
+
+/// Resolve a persisted session against the request's claimed workspace.
+///
+/// Unlike lifecycle operations carrying only an id, load/resume must prove the
+/// session belongs to the supplied cwd before it is attached to this
+/// connection's live coordination map.
+fn persisted_session_for_cwd(id: &str, cwd: &Path) -> Result<PathBuf, String> {
+    if !cwd.is_absolute() {
+        return Err("session cwd must be absolute".to_string());
+    }
+    let gait_dir = discover_gait_dir_for_cwd(cwd).map_err(|e| e.to_string())?;
+    let ps = gait_ops::session::ps(&gait_dir).map_err(|e| e.to_string())?;
+    if !ps.rows.iter().any(|row| row.session_id == id) {
+        return Err(format!("unknown active session: {id}"));
+    }
+    let meta = gait_state::session::read_session_meta(&gait_dir, id).map_err(|e| e.to_string())?;
+    let Some(recorded_cwd) = meta.codebase_path else {
+        return Err(format!("session has no recorded cwd: {id}"));
+    };
+    if Path::new(&recorded_cwd) != cwd {
+        return Err(format!("session cwd does not match request: {id}"));
+    }
+    Ok(gait_dir)
+}
+
+fn validate_load_options(
+    mcp_servers_empty: bool,
+    additional_directories_empty: bool,
+) -> Result<(), String> {
+    if !mcp_servers_empty {
+        return Err("ACP MCP servers are not supported for session load/resume".to_string());
+    }
+    if !additional_directories_empty {
+        return Err(
+            "ACP additional directories are not supported for session load/resume".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn restored_modes(
+    gait_dir: &Path,
+    events: &[gait_core::proto::gait::log::v1::Event],
+) -> agent_client_protocol::schema::v1::SessionModeState {
+    let mut modes = crate::handlers::advertise_modes(gait_dir);
+    let mut mutations = gait_state::session::retrace::active_mutations(events);
+    gait_state::session::retrace::apply_cascade(&mut mutations, events);
+    if let Some(mode) = gait_state::session::retrace::active_mode(events, &mutations) {
+        modes.current_mode_id = SessionModeId::new(mode.name);
+    }
+    modes
+}
+
+/// `session/load`: attach a persisted session and replay its renderable
+/// mutation-applied history before responding.
+pub fn load_session(
+    map: &SessionMap,
+    req: LoadSessionRequest,
+    responder: Responder<LoadSessionResponse>,
+    cx: ConnectionTo<Client>,
+) -> Result<(), agent_client_protocol::Error> {
+    let sid = req.session_id.0.to_string();
+    if let Err(e) = validate_load_options(
+        req.mcp_servers.is_empty(),
+        req.additional_directories.is_empty(),
+    ) {
+        return responder.respond_with_internal_error(e);
+    }
+    let gait_dir = match persisted_session_for_cwd(&sid, &req.cwd) {
+        Ok(dir) => dir,
+        Err(e) => return responder.respond_with_internal_error(e),
+    };
+    let events = match gait_state::session::log::read_events(&gait_state::session::live::log_path(
+        &gait_dir, &sid,
+    )) {
+        Ok(events) => events,
+        Err(e) => return responder.respond_with_internal_error(e.to_string()),
+    };
+    let updates = replay_updates(&events);
+    let inserted = match map.attach_existing(gait_dir.clone(), sid.clone(), req.cwd.clone()) {
+        Ok(inserted) => inserted,
+        Err(e) => return responder.respond_with_internal_error(e),
+    };
+    for update in updates {
+        if let Err(e) =
+            cx.send_notification(SessionNotification::new(req.session_id.clone(), update))
+        {
+            if inserted {
+                map.remove(&sid);
+            }
+            return responder.respond_with_internal_error(format!("failed to replay session: {e}"));
+        }
+    }
+    responder.respond(LoadSessionResponse::new().modes(Some(restored_modes(&gait_dir, &events))))
+}
+
+/// `session/resume`: attach a persisted session without replaying history.
+pub fn resume_session(
+    map: &SessionMap,
+    req: ResumeSessionRequest,
+    responder: Responder<ResumeSessionResponse>,
+) -> Result<(), agent_client_protocol::Error> {
+    let sid = req.session_id.0.to_string();
+    if let Err(e) = validate_load_options(
+        req.mcp_servers.is_empty(),
+        req.additional_directories.is_empty(),
+    ) {
+        return responder.respond_with_internal_error(e);
+    }
+    let gait_dir = match persisted_session_for_cwd(&sid, &req.cwd) {
+        Ok(dir) => dir,
+        Err(e) => return responder.respond_with_internal_error(e),
+    };
+    let events = match gait_state::session::log::read_events(&gait_state::session::live::log_path(
+        &gait_dir, &sid,
+    )) {
+        Ok(events) => events,
+        Err(e) => return responder.respond_with_internal_error(e.to_string()),
+    };
+    if let Err(e) = map.attach_existing(gait_dir.clone(), sid, req.cwd) {
+        return responder.respond_with_internal_error(e);
+    }
+    responder.respond(ResumeSessionResponse::new().modes(Some(restored_modes(&gait_dir, &events))))
+}
 
 /// Locate the gait-dir a bare session id belongs to (design §4):
 /// 1. `map.resolve(id)` — minted this connection.

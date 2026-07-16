@@ -10,10 +10,11 @@
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, CancelNotification, CloseSessionRequest, CloseSessionResponse,
     CurrentModeUpdate, DeleteSessionRequest, DeleteSessionResponse, InitializeRequest,
-    InitializeResponse, ListSessionsRequest, ListSessionsResponse, NewSessionRequest,
-    NewSessionResponse, PromptRequest, PromptResponse, SessionCapabilities,
-    SessionCloseCapabilities, SessionDeleteCapabilities, SessionListCapabilities, SessionMode,
-    SessionModeState, SessionNotification, SessionUpdate, SetSessionModeRequest,
+    InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest,
+    LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
+    ResumeSessionRequest, ResumeSessionResponse, SessionCapabilities, SessionCloseCapabilities,
+    SessionDeleteCapabilities, SessionListCapabilities, SessionMode, SessionModeState,
+    SessionNotification, SessionResumeCapabilities, SessionUpdate, SetSessionModeRequest,
     SetSessionModeResponse, StopReason,
 };
 use agent_client_protocol::{Agent, Builder, Client, HandleDispatchFrom, NullRun, Responder};
@@ -65,7 +66,7 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                     let caps = caps.clone();
                     async move {
                         // Static/minimal capabilities; zero auth methods so `authenticate`
-                        // never arrives (design §5). load_session stays false (default).
+                        // never arrives (design §5).
                         // Record the client's fs capabilities for the whole
                         // connection. All-or-nothing gating happens at prompt time.
                         let fs = req.client_capabilities.fs;
@@ -75,14 +76,40 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                         let session_caps = SessionCapabilities::default()
                             .list(SessionListCapabilities::default())
                             .close(SessionCloseCapabilities::default())
-                            .delete(SessionDeleteCapabilities::default());
-                        let agent_caps =
-                            AgentCapabilities::default().session_capabilities(session_caps);
+                            .delete(SessionDeleteCapabilities::default())
+                            .resume(SessionResumeCapabilities::default());
+                        let agent_caps = AgentCapabilities::default()
+                            .load_session(true)
+                            .session_capabilities(session_caps);
                         responder.respond(
                             InitializeResponse::new(req.protocol_version)
                                 .agent_capabilities(agent_caps),
                         )
                     }
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let map = map.clone();
+                move |req: LoadSessionRequest,
+                      responder: Responder<LoadSessionResponse>,
+                      cx: agent_client_protocol::ConnectionTo<Client>| {
+                    let map = map.clone();
+                    async move { lifecycle::load_session(&map, req, responder, cx) }
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let map = map.clone();
+                move |req: ResumeSessionRequest,
+                      responder: Responder<ResumeSessionResponse>,
+                      _cx| {
+                    let map = map.clone();
+                    async move { lifecycle::resume_session(&map, req, responder) }
                 }
             },
             agent_client_protocol::on_receive_request!(),
