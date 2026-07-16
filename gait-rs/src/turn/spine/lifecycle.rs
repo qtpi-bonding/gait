@@ -13,6 +13,9 @@ use std::sync::Arc;
 pub struct ProfileInputs {
     pub agent_name: Option<String>,
     pub model_override: Option<String>,
+    /// True only when `model_override` originated as an explicit caller choice
+    /// (`--model` or `spawn_agent.model`), rather than a resolved disk value.
+    pub explicit_model_override: bool,
     pub allow: Vec<String>,
     pub deny: Vec<String>,
     pub result_schema: Option<serde_json::Value>,
@@ -441,6 +444,7 @@ mod tests {
         let inputs = ProfileInputs {
             agent_name: None,
             model_override: None,
+            explicit_model_override: false,
             allow: vec![],
             deny: vec![],
             result_schema: Some(schema.clone()),
@@ -458,6 +462,7 @@ mod tests {
         let inputs = ProfileInputs {
             agent_name: None,
             model_override: None,
+            explicit_model_override: false,
             allow: vec!["read".into()],
             deny: vec![],
             result_schema: None,
@@ -476,6 +481,7 @@ mod tests {
         let inputs = ProfileInputs {
             agent_name: None,
             model_override: None,
+            explicit_model_override: false,
             allow: vec![],
             deny: vec![],
             result_schema: None,

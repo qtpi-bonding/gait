@@ -7,7 +7,7 @@ use crate::ui::ReplBuilder;
 pub(crate) mod hints {
     pub const WORDMARK: &str = include_str!("assets/wordmark.txt");
     pub const STARTUP: &str =
-        "ctrl+d or /q to exit  \u{2022}  /n new session  \u{2022}  /u [N] undo  \u{2022}  /skill enable  \u{2022}  !cmd shell";
+        "ctrl+d or /q to exit  \u{2022}  shift-tab mode cycle  \u{2022}  /n new session  \u{2022}  /u [N] undo  \u{2022}  /skill enable  \u{2022}  !cmd shell";
     pub const UNDO_USAGE: &str = "/u [N]   undo code+transcript  (list turns if no N)\n\
          /uc [N]  undo code only\n\
          /ut [N]  undo transcript only";
@@ -33,6 +33,11 @@ fn build_line_editor(
         KeyModifiers::ALT,
         KeyCode::Enter,
         ReedlineEvent::Edit(vec![EditCommand::InsertNewline]),
+    );
+    kb.add_binding(
+        KeyModifiers::SHIFT,
+        KeyCode::BackTab,
+        ReedlineEvent::ExecuteHostCommand("gait:cycle-mode".into()),
     );
     kb.add_binding(
         KeyModifiers::NONE,
@@ -80,6 +85,7 @@ pub async fn run_chat(
     codebase: PathBuf,
     agent_name: Option<String>,
     session_id: Option<String>,
+    model_override: Option<String>,
 ) -> anyhow::Result<()> {
     let agent_path: Option<PathBuf> = match agent_name.as_deref() {
         Some(n) => Some(gait_core::agent_frontmatter::resolve_markdown_context_path(
@@ -217,6 +223,7 @@ pub async fn run_chat(
             agent_path: agent_path.clone(),
             repos: repos.clone(),
             shell_history_path,
+            model_override: model_override.clone(),
             last_blocks: Vec::new(),
             ran_turn: false,
         };
@@ -238,6 +245,13 @@ pub async fn run_chat(
                 gait_dir: gait_dir.clone(),
                 codebase: codebase.clone(),
                 args: vec![],
+                profile: model_override
+                    .clone()
+                    .map(|model| gait_workflow::ProfileOverride {
+                        model: Some(model),
+                        explicit_model_override: true,
+                        ..Default::default()
+                    }),
                 ..Default::default()
             },
             &mut sink,

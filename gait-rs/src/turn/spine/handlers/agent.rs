@@ -30,6 +30,7 @@ pub(crate) fn parse_spawn_args(impulse: &Impulse) -> SpawnAgentArgs {
         .filter(|v| !v.is_null());
     SpawnAgentArgs {
         task: get_str("task").unwrap_or_default(),
+        model: get_str("model"),
         schema,
         context_files: None,
         detached: get_bool("detached"),
@@ -44,6 +45,7 @@ pub(crate) fn launch_child(
     ctx: &TurnCtx,
     session_id: &str,
     detached: bool,
+    model_override: Option<String>,
 ) -> Option<std::process::Child> {
     let cascade_group = if detached { None } else { ctx.group.handle() };
     if !detached && cascade_group.is_none() {
@@ -57,6 +59,7 @@ pub(crate) fn launch_child(
         session: Some(session_id.to_string()),
         gait_dir: Some(ctx.gait_dir.clone()),
         auto: true,
+        model_override,
         sandbox_locked: ctx.sandbox_on,
         cascade_group,
         ..Default::default()
@@ -118,6 +121,7 @@ pub(crate) async fn handle_spawn_agent(args: SpawnAgentArgs, ctx: TurnCtx) -> Fe
         parent_session_id: &ctx.session_id,
         task: args.task,
         notify_done: args.detached,
+        model_override: args.model.clone(),
         repos: &ctx.repos,
     })
     .is_err()
@@ -151,14 +155,14 @@ pub(crate) async fn handle_spawn_agent(args: SpawnAgentArgs, ctx: TurnCtx) -> Fe
 
     if args.detached {
         // Fire-and-forget peer: break out of the cascade group, don't wait.
-        let _ = launch_child(&ctx, &new_id, true);
+        let _ = launch_child(&ctx, &new_id, true, args.model);
         return feedback_result(serde_json::json!({ "session_id": new_id }));
     }
 
     // Blocking subagent: wait for the child process to exit, then read its result.
     let tx_path = crate::session::live::log_path(&ctx.gait_dir, &new_id);
 
-    let Some(mut child) = launch_child(&ctx, &new_id, false) else {
+    let Some(mut child) = launch_child(&ctx, &new_id, false, args.model) else {
         return error_feedback("spawn_agent: failed to launch subagent");
     };
 
@@ -237,6 +241,7 @@ mod tests {
         let fb = handle_spawn_agent(
             SpawnAgentArgs {
                 task: "do X".into(),
+                model: None,
                 schema: None,
                 context_files: None,
                 detached: true,
@@ -288,6 +293,7 @@ mod tests {
         let fb = handle_spawn_agent(
             SpawnAgentArgs {
                 task: "answer the question".into(),
+                model: None,
                 schema: Some(schema.clone()),
                 context_files: None,
                 detached: true, // fire-and-forget so we don't need a real binary

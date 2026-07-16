@@ -300,6 +300,7 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
     // (Task 3.2's C1 fix) so they still reach the spawned brain.
     let profile_override = gait_workflow::ProfileOverride {
         model: args.model_override.clone(),
+        explicit_model_override: args.model_override.is_some(),
         allow: args.allow.clone(),
         deny: args.deny.clone(),
         agent: args.agent_name.clone(),

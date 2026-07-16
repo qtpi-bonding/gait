@@ -106,6 +106,7 @@ impl BrainLaunch {
         cascade_group_arg: Option<String>,
         agent_name: Option<String>,
         model_override: Option<String>,
+        explicit_model_override: bool,
         allow: Vec<String>,
         deny: Vec<String>,
         result_schema: Option<serde_json::Value>,
@@ -124,6 +125,7 @@ impl BrainLaunch {
             profile_inputs: crate::turn::spine::ProfileInputs {
                 agent_name,
                 model_override,
+                explicit_model_override,
                 allow,
                 deny,
                 result_schema,
@@ -541,6 +543,7 @@ pub async fn run_one_off_turn(
     let profile_inputs = crate::turn::spine::ProfileInputs {
         agent_name: None,
         model_override: Some(model.to_string()),
+        explicit_model_override: true,
         allow: vec![],
         deny: vec![],
         result_schema: Some(schema),

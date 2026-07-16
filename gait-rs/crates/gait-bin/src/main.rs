@@ -59,7 +59,8 @@ async fn main() {
     if cli.interactive {
         let gait_dir = resolve_gait_dir();
         let codebase = cli.codebase.unwrap_or_else(cwd_or_dot);
-        if let Err(e) = gait_repl::chat::run_chat(gait_dir, codebase, cli.agent, cli.session).await
+        if let Err(e) =
+            gait_repl::chat::run_chat(gait_dir, codebase, cli.agent, cli.session, cli.model).await
         {
             eprintln!("[gait] error: {}", e);
             std::process::exit(1);

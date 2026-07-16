@@ -17,6 +17,9 @@ use std::path::PathBuf;
 #[derive(Default, Clone)]
 pub struct ProfileOverride {
     pub model: Option<String>,
+    /// Whether `model` is an explicit caller override rather than a resolved
+    /// workflow/config model passed across the driver boundary.
+    pub explicit_model_override: bool,
     pub allow: Vec<String>,
     pub deny: Vec<String>,
     pub agent: Option<String>,

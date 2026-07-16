@@ -68,7 +68,7 @@ pub async fn relay_brain_turn(
     gait_dir: &Path,
     codebase: &Path,
     session_id: &str,
-    api_key: &str,
+    _api_key: &str,
     exe: &Path,
     sandbox_cfg: &SandboxConfig,
     sandbox_on: bool,
@@ -165,6 +165,28 @@ pub async fn relay_brain_turn(
         }
         TurnMode::Ephemeral { input } => crate::turn::SessionLog::ephemeral(input.clone()),
     };
+    // Fold the live mode before spawning. An explicit caller model is the
+    // terminal override; a mode only overlays a config/agent-resolved model.
+    let events = log.events();
+    let mut profile = lifecycle::build_turn_profile(gait_dir, codebase, profile_inputs);
+    {
+        use crate::session::retrace::{active_mode, active_mutations, apply_cascade};
+        let mut muts = active_mutations(&events);
+        apply_cascade(&mut muts, &events);
+        let mode_model = active_mode(&events, &muts).and_then(|m| m.model);
+        if !profile_inputs.explicit_model_override {
+            profile.model = crate::profile::apply_mode_model(profile.model, mode_model);
+        }
+    }
+    let effective_api_key = crate::auth::resolve_api_key(
+        profile
+            .model
+            .split_once('/')
+            .map(|(provider, _)| provider)
+            .unwrap_or(""),
+    )
+    .unwrap_or_default();
+
     // ── Spawn brain (enrolled as cascade group leader) ──────────────────────
     let mut child = {
         use tokio::process::Command as TokioCommand;
@@ -184,7 +206,7 @@ pub async fn relay_brain_turn(
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit())
-            .env("GAIT_BRAIN_API_KEY", api_key);
+            .env("GAIT_BRAIN_API_KEY", effective_api_key);
         // Set up cascade group enrollment hooks (setsid for brain = first call).
         group
             .configure_enrolled(&mut std_cmd)
@@ -212,20 +234,8 @@ pub async fn relay_brain_turn(
         use tokio::io::AsyncWriteExt;
         let cfg = crate::config::load_config(gait_dir);
         let config_json = serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string());
-        let events = log.events();
         let head_hash = repos.codebase.head_hash(codebase).unwrap_or_default();
         let dirty_files = repos.codebase.dirty_files(codebase);
-        let mut profile = lifecycle::build_turn_profile(gait_dir, codebase, profile_inputs);
-        {
-            // Mode model overlay: applied here (before serializing to the brain)
-            // rather than inside build_turn_profile, so the live-log fold stays
-            // in the spine and the pure profile-build fn stays log-free.
-            use crate::session::retrace::{active_mode, active_mutations, apply_cascade};
-            let mut muts = active_mutations(&events);
-            apply_cascade(&mut muts, &events);
-            let mode_model = active_mode(&events, &muts).and_then(|m| m.model);
-            profile.model = crate::profile::apply_mode_model(profile.model, mode_model);
-        }
         let profile_json = serde_json::to_string(&profile).unwrap_or_else(|_| "null".to_string());
         let daemons = {
             use crate::session::daemons::{active, is_alive};

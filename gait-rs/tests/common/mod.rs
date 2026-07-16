@@ -191,6 +191,7 @@ impl TurnDriver for MockDriver {
             /*cascade_group_arg*/ None,
             /*agent*/ None,
             /*model*/ Some("mock-model".into()),
+            /*explicit_model_override*/ false,
             /*allow*/ vec![],
             /*deny*/ vec![],
             /*result_schema*/ None,

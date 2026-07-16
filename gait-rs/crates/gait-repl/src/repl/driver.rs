@@ -114,6 +114,9 @@ pub struct ReplSource {
     pub agent_path: Option<PathBuf>,
     pub repos: gait_core::git::Repos,
     pub shell_history_path: PathBuf,
+    /// Explicit interactive `--model`, which must remain authoritative over a
+    /// session mode overlay and is also reflected in the prompt label.
+    pub model_override: Option<String>,
     pub last_blocks: Vec<String>,
     pub ran_turn: bool,
 }
@@ -134,12 +137,103 @@ impl ReplSource {
     /// Short model name: the part after the first `/` in the resolved model string,
     /// e.g. `"anthropic/claude-haiku-..."` → `"claude-haiku-..."`, `"minimax/m3"` → `"m3"`.
     fn model_short(&self) -> String {
+        if let Some(model) = &self.model_override {
+            return short_model(model);
+        }
         let cfg = gait_core::config::load_config(&self.gait_dir);
-        cfg.model
+        let base = cfg.model.unwrap_or_default();
+        let active = active_mode_name(&self.gait_dir, &self.session_id);
+        let effective = active
             .as_deref()
-            .and_then(|m| m.split_once('/').map(|(_, s)| s))
-            .unwrap_or("?")
-            .to_string()
+            .and_then(|name| gait_core::modes::load_mode(&self.gait_dir, name).ok())
+            .and_then(|mode| mode.model)
+            .unwrap_or(base);
+        short_model(&effective)
+    }
+
+    fn cycle_mode(&mut self) {
+        let modes = gait_core::modes::list_modes(&self.gait_dir);
+        let next = next_mode(
+            &modes,
+            active_mode_name(&self.gait_dir, &self.session_id).as_deref(),
+        );
+        match next {
+            Some(name) => {
+                match gait_core::modes::activate_mode(&self.log_path(), &self.gait_dir, &name) {
+                    Ok(()) => self
+                        .shared
+                        .borrow_mut()
+                        .builder
+                        .write_raw(&format!("mode set to {name}\r\n")),
+                    Err(e) => self
+                        .shared
+                        .borrow_mut()
+                        .builder
+                        .write_raw(&format!("[gait] /mode: {e}\r\n")),
+                }
+            }
+            None => self
+                .shared
+                .borrow_mut()
+                .builder
+                .write_raw("no authored modes to cycle\r\n"),
+        }
+    }
+}
+
+fn short_model(model: &str) -> String {
+    model
+        .split_once('/')
+        .map(|(_, s)| s)
+        .unwrap_or("?")
+        .to_string()
+}
+
+fn active_mode_name(gait_dir: &std::path::Path, session_id: &str) -> Option<String> {
+    gait_core::session::Ingestor::from_session(gait_dir, session_id)
+        .events()
+        .ok()
+        .and_then(|evs| {
+            let muts = gait_core::session::retrace::active_mutations(&evs);
+            gait_core::session::retrace::active_mode(&evs, &muts)
+        })
+        .map(|m| m.name)
+        .filter(|name| !name.is_empty())
+}
+
+/// Cycle default -> authored modes in disk order -> default. A stale mode name
+/// behaves like default and starts again at the first available authored mode.
+fn next_mode(modes: &[String], active: Option<&str>) -> Option<String> {
+    if modes.is_empty() {
+        return None;
+    }
+    match active.and_then(|name| modes.iter().position(|m| m == name)) {
+        Some(i) if i + 1 < modes.len() => Some(modes[i + 1].clone()),
+        Some(_) => Some("default".to_string()),
+        None => Some(modes[0].clone()),
+    }
+}
+
+#[cfg(test)]
+mod mode_cycle_tests {
+    use super::next_mode;
+
+    #[test]
+    fn cycles_authored_modes_then_default() {
+        let modes = vec!["plan".into(), "review".into()];
+        assert_eq!(next_mode(&modes, None).as_deref(), Some("plan"));
+        assert_eq!(next_mode(&modes, Some("plan")).as_deref(), Some("review"));
+        assert_eq!(
+            next_mode(&modes, Some("review")).as_deref(),
+            Some("default")
+        );
+    }
+
+    #[test]
+    fn empty_or_stale_mode_starts_safely() {
+        assert_eq!(next_mode(&[], None), None);
+        let modes = vec!["plan".into()];
+        assert_eq!(next_mode(&modes, Some("deleted")).as_deref(), Some("plan"));
     }
 }
 
@@ -218,6 +312,10 @@ impl TurnSource for ReplSource {
                 }
                 Ok(reedline::Signal::CtrlC) => {
                     self.shared.borrow_mut().builder.write_raw(RESET);
+                    continue;
+                }
+                Ok(reedline::Signal::HostCommand(command)) if command == "gait:cycle-mode" => {
+                    self.cycle_mode();
                     continue;
                 }
                 Ok(_) => {
@@ -1216,6 +1314,7 @@ mod command_tests {
             agent_path: None,
             repos: gait_core::git::Repos::production(),
             shell_history_path: gait_dir.join("sh.jsonl"),
+            model_override: None,
             last_blocks: Vec::new(),
             ran_turn: false,
         };

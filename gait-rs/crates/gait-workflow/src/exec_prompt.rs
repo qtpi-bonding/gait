@@ -18,6 +18,7 @@ struct PromptNodeDriver {
     codebase: PathBuf,
     /// Resolved model string ("provider/model-id").
     model: String,
+    explicit_model_override: bool,
     /// Allow list (replaces config.allow).
     allow: Vec<String>,
     /// Optional named agent.
@@ -69,10 +70,6 @@ struct PromptNodeDriver {
 #[async_trait::async_trait(?Send)]
 impl TurnDriver for PromptNodeDriver {
     fn brain_launch(&self, _session_id: &str) -> BrainLaunch {
-        let api_key = gait_core::auth::resolve_api_key(
-            self.model.split_once('/').map(|(p, _)| p).unwrap_or(""),
-        )
-        .unwrap_or_default();
         // `GAIT_BRAIN_EXE` overrides the brain binary — the seam that lets an
         // integration test point the spine at `mock_brain` instead of a real
         // `gait __brain` (the same trick `tests/common` uses for `run_loop`,
@@ -83,7 +80,7 @@ impl TurnDriver for PromptNodeDriver {
             .unwrap_or_else(|| std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gait")));
         let mut bl = BrainLaunch::new(
             self.codebase.clone(),
-            api_key,
+            String::new(),
             gait_bin,
             self.sandbox_cfg.clone(),
             self.sandbox_on,
@@ -92,6 +89,7 @@ impl TurnDriver for PromptNodeDriver {
             self.cascade_group_arg.clone(),
             self.agent_name.clone(),
             Some(self.model.clone()),
+            self.explicit_model_override,
             self.allow.clone(),
             self.deny.clone(),
             self.result_schema.clone(),
@@ -317,6 +315,7 @@ pub async fn exec_prompt_node(
     // has `ctx.profile == None` and is unaffected.
     let ov = ctx.profile;
     let model = ov.and_then(|p| p.model.clone()).unwrap_or(model);
+    let explicit_model_override = ov.map(|p| p.explicit_model_override).unwrap_or(false);
     let allow = ov
         .filter(|p| !p.allow.is_empty())
         .map(|p| p.allow.clone())
@@ -333,6 +332,7 @@ pub async fn exec_prompt_node(
     let mut driver = PromptNodeDriver {
         codebase: codebase.clone(),
         model: model.clone(),
+        explicit_model_override,
         allow: allow.clone(),
         agent_name,
         result_schema,
@@ -492,6 +492,7 @@ mod tests {
         let mut driver = PromptNodeDriver {
             codebase: PathBuf::from("/tmp/cb"),
             model: "test/model".into(),
+            explicit_model_override: false,
             allow: vec![],
             agent_name: None,
             result_schema: None,
@@ -535,6 +536,7 @@ mod tests {
         let driver = PromptNodeDriver {
             codebase: PathBuf::from("/tmp/cb"),
             model: "test/model".into(),
+            explicit_model_override: false,
             allow: vec!["run_workflow".into()],
             agent_name: None,
             result_schema: None,
@@ -572,6 +574,7 @@ mod tests {
         let driver = PromptNodeDriver {
             codebase: std::path::PathBuf::from("/tmp/x"),
             model: "anthropic/claude".into(),
+            explicit_model_override: false,
             allow: vec![],
             agent_name: None,
             result_schema: None,
@@ -597,6 +600,7 @@ mod tests {
     fn cli_auto_override_wins_over_node_default() {
         use crate::single_prompt::ProfileOverride;
         let on = ProfileOverride {
+            explicit_model_override: false,
             auto: Some(true),
             ..Default::default()
         };

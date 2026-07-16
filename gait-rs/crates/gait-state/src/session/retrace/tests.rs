@@ -1714,3 +1714,95 @@ fn daemon_update_raw_messages_includes_user_message() {
         other => panic!("expected User message, got {other:?}"),
     }
 }
+
+#[test]
+fn full_tool_history_survives_a_resumed_turn() {
+    // Regression guard for a real incident: a session ran a 73-step turn
+    // (many tool_call/tool_result pairs), paused via structured_done, and was
+    // resumed with a fresh `gait run --session <id> --task <reply>` process —
+    // a brand-new process attaching to the existing log, not a continuation of
+    // any in-memory state. The agent reported "I lost the tool history you
+    // sent me" after resuming. Investigation found no windowing/truncation
+    // anywhere in the fold path — `transcript()` always folds the ENTIRE
+    // on-disk log — so this pins that: a large first turn's tool calls/results
+    // must all still be present in the transcript built for the resumed turn,
+    // across the TurnComplete + new UserText boundary a fresh CLI dispatch
+    // produces.
+    use crate::proto::events::TurnCompleteParams;
+    const STEPS: usize = 73;
+    let dir = TempDir::new().unwrap();
+    let mut bodies = vec![events::user_text("Implement Task 2 ONLY: ...".into(), None)];
+    for i in 0..STEPS {
+        bodies.push(events::tool_call(
+            format!("call{i}"),
+            "shell".into(),
+            &serde_json::json!({"cmd": format!("step {i}")}),
+        ));
+        bodies.push(events::tool_result(
+            format!("call{i}"),
+            format!("output {i}"),
+            None,
+            None,
+        ));
+    }
+    bodies.push(events::turn_complete(TurnCompleteParams {
+        usage: pb::TurnTokenUsage {
+            input: 790_939,
+            output: 11_067,
+            cache_read: 7_463_100,
+            cache_write: 0,
+        },
+        codebase_hash: "abc123".into(),
+        codebase_dirty: true,
+        checkpoint: None,
+        blocks: vec![],
+        message: "paused mid-task".into(),
+        result: None,
+        changes: None,
+    }));
+    // The resumed dispatch: a brand-new process attaches to the same session
+    // and appends the user's reply as plain UserText (this is the
+    // `--task <reply>` "literal one-shot node" path, not a PermissionsReply
+    // resume — see `turn::resume::apply_if_pending`'s `did_resume = false`
+    // branch, which is what actually runs here).
+    bodies.push(events::user_text(
+        "Answer to your question: proceed with Option 1/C ...".into(),
+        None,
+    ));
+
+    let path = write_events(dir.path(), bodies);
+    let msgs = messages_from_path(&path).unwrap();
+
+    let tool_result_count = msgs
+        .iter()
+        .filter(|m| matches!(m, Message::ToolResult { .. }))
+        .count();
+    assert_eq!(
+        tool_result_count, STEPS,
+        "all {STEPS} tool results from the first (pre-resume) turn must survive into \
+         the transcript folded for the resumed turn; got {tool_result_count}"
+    );
+
+    // Spot-check the very first and very last tool calls from turn 0 are
+    // still addressable (not just present in aggregate).
+    let has_call = |id: &str| {
+        msgs.iter().any(|m| {
+            matches!(m, Message::Assistant { content: AssistantContent::Parts(parts), .. }
+                if parts.iter().any(|p| matches!(p, AssistantPart::ToolCall(tc) if tc.tool_call_id == id)))
+        })
+    };
+    assert!(
+        has_call("call0"),
+        "first turn-0 tool call must survive resume"
+    );
+    assert!(
+        has_call(&format!("call{}", STEPS - 1)),
+        "last turn-0 tool call must survive resume"
+    );
+
+    // The resumed turn's reply must appear too — this is not just "turn 0
+    // untouched", the fold must include everything.
+    assert!(msgs.iter().any(|m| matches!(m, Message::User {
+        content: MessageContent::Text(t), ..
+    } if t.starts_with("Answer to your question"))));
+}
