@@ -350,7 +350,7 @@ impl Tool for ApplyPatchTool {
             },
         )
         .ok()?;
-        crate::tools::preview::diff_preview(&old, &new).or_else(|| Some(new))
+        crate::tools::preview::diff_preview(&old, &new).or(Some(new))
     }
     fn access(&self) -> crate::types::ToolAccess {
         crate::types::ToolAccess {
