@@ -41,7 +41,7 @@ pub struct RunLaunch {
     pub session: Option<String>,
     pub task: Option<String>,
     pub auto: bool,
-    pub model_override: Option<String>,
+    pub inference: Option<String>,
     pub agent_name: Option<String>,
     pub result_schema_path: Option<String>,
     pub allow: Vec<String>,
@@ -74,8 +74,8 @@ impl RunLaunch {
         if self.auto {
             a.push("--auto".to_string());
         }
-        if let Some(m) = &self.model_override {
-            a.extend(["--model".to_string(), m.clone()]);
+        if let Some(inference) = &self.inference {
+            a.extend(["--inference".to_string(), inference.clone()]);
         }
         if let Some(ag) = &self.agent_name {
             a.extend(["--agent".to_string(), ag.clone()]);

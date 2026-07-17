@@ -35,24 +35,24 @@ fn sandbox_network_config_parses_string_host_as_hosts() {
 fn loads_default_when_no_file() {
     let dir = TempDir::new().unwrap();
     let cfg = load_config(dir.path());
-    assert_eq!(cfg.model, None);
+    assert_eq!(cfg.inference, None);
 }
 
 #[test]
-fn parses_model_and_allow() {
+fn parses_inference_and_allow() {
     let dir = TempDir::new().unwrap();
     std::fs::write(
         dir.path().join("gait.jsonc"),
         r#"
 {
-  "model": "minimax/MiniMax-M3",
+  "inference": "fast",
   "allow": ["read", "write", "shell"]
 }
 "#,
     )
     .unwrap();
     let cfg = load_config(dir.path());
-    assert_eq!(cfg.model.as_deref(), Some("minimax/MiniMax-M3"));
+    assert_eq!(cfg.inference.as_deref(), Some("fast"));
     assert_eq!(cfg.allow, vec!["read", "write", "shell"]);
 }
 
@@ -63,15 +63,15 @@ fn strips_line_comments() {
         dir.path().join("gait.jsonc"),
         r#"
 {
-  // this is the model
-  "model": "anthropic/claude-sonnet-4-6",
+  // this is the inference
+  "inference": "deep",
   "allow": ["read"] // read is safe
 }
 "#,
     )
     .unwrap();
     let cfg = load_config(dir.path());
-    assert_eq!(cfg.model.as_deref(), Some("anthropic/claude-sonnet-4-6"));
+    assert_eq!(cfg.inference.as_deref(), Some("deep"));
 }
 
 #[test]
@@ -122,10 +122,7 @@ fn append_allow_pattern_preserves_model_field() {
     )
     .unwrap();
     append_allow_pattern(dir.path(), "shell:git *").unwrap();
-    assert_eq!(
-        load_config(dir.path()).model.as_deref(),
-        Some("minimax/MiniMax-M3")
-    );
+    assert_eq!(load_config(dir.path()).inference.as_deref(), None);
 }
 
 #[test]
@@ -438,14 +435,14 @@ fn llm_params_merged_with_agent_wins() {
 }
 
 #[test]
-fn gait_config_default_has_empty_llm_params() {
+fn gait_config_default_has_no_inference() {
     use crate::config::GaitConfig;
     let c = GaitConfig::default();
-    assert!(c.llm_params.max_tokens.is_none());
+    assert!(c.inference.is_none());
 }
 
 #[test]
-fn gait_config_deserializes_llm_params() {
+fn gait_config_rejects_inline_llm_params_as_unmodeled() {
     use crate::config::{strip_jsonc_comments, GaitConfig};
     let jsonc = r#"{
         "model": "anthropic/claude-opus-4-8",
@@ -455,8 +452,7 @@ fn gait_config_deserializes_llm_params() {
         }
     }"#;
     let config: GaitConfig = serde_json::from_str(&strip_jsonc_comments(jsonc)).expect("deser");
-    assert_eq!(config.llm_params.max_tokens, Some(4096));
-    assert_eq!(config.llm_params.temperature, Some(0.7));
+    assert!(config.inference.is_none());
 }
 
 #[test]
@@ -587,7 +583,7 @@ fn lenient_still_defaults_on_malformed_gait_jsonc() {
     std::fs::write(dir.path().join("gait.jsonc"), "{ invalid json").unwrap();
     let cfg = load_config_with(dir.path(), ConfigLoadPolicy::Lenient)
         .expect("Lenient must NOT error on malformed gait.jsonc");
-    assert_eq!(cfg.model, GaitConfig::default().model);
+    assert_eq!(cfg.inference, GaitConfig::default().inference);
 }
 
 #[test]
@@ -598,7 +594,7 @@ fn load_config_infallible_still_defaults_on_malformed_gait_jsonc() {
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("gait.jsonc"), "{ invalid json").unwrap();
     let cfg = load_config(dir.path());
-    assert_eq!(cfg.model, GaitConfig::default().model);
+    assert_eq!(cfg.inference, GaitConfig::default().inference);
 }
 
 #[test]
@@ -606,7 +602,7 @@ fn strict_missing_file_returns_default() {
     let dir = TempDir::new().unwrap();
     let cfg = load_config_with(dir.path(), ConfigLoadPolicy::Strict)
         .expect("missing file is not an error in Strict");
-    assert_eq!(cfg.model, GaitConfig::default().model);
+    assert_eq!(cfg.inference, GaitConfig::default().inference);
 }
 
 #[test]
@@ -614,5 +610,5 @@ fn lenient_missing_file_returns_default() {
     let dir = TempDir::new().unwrap();
     let cfg = load_config_with(dir.path(), ConfigLoadPolicy::Lenient)
         .expect("missing file is not an error in Lenient");
-    assert_eq!(cfg.model, GaitConfig::default().model);
+    assert_eq!(cfg.inference, GaitConfig::default().inference);
 }

@@ -7,7 +7,7 @@ fn all_consumers_share_one_default_source() {
     let dir = tempfile::tempdir().unwrap(); // no gait.jsonc
     let base = load_config(dir.path());
     assert_eq!(base.allow, defaults::default_allow());
-    assert_eq!(base.model, None);
+    assert_eq!(base.inference, None);
 
     // consumer with no overrides must still equal the source-of-truth allow-set
     let effective = ConfigResolver::new(base).with(Overrides::empty()).resolve();

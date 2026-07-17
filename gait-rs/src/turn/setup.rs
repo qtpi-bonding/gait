@@ -162,7 +162,7 @@ pub(crate) fn init(
             plugins: Default::default(),
             allow: allow.iter().cloned().collect(),
             deny: deny.iter().cloned().collect(),
-            llm_params: None,
+            inference: None,
             session_skills: Default::default(),
             session_mcp: Default::default(),
             session_plugins: Default::default(),
@@ -251,7 +251,7 @@ pub(crate) fn init(
         crate::permissions::grants::overlay_mode_permissions(
             ea,
             deny,
-            mode.as_ref().and_then(|m| m.permissions.as_ref()),
+            mode.as_ref().map(|m| &m.deny),
         )
     };
 

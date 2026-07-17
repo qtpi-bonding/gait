@@ -159,21 +159,27 @@ fn thinking_block_round_trips_via_json() {
 }
 
 #[test]
-fn agent_carries_llm_params_field() {
-    use crate::gait::log::v1::{Agent, LlmParams};
+fn agent_carries_inference_field() {
+    use crate::gait::log::v1::{Agent, Inference, LlmParams};
 
     let agent = Agent {
-        model: "anthropic/claude-opus-4-8".into(),
-        llm_params: Some(LlmParams {
-            max_tokens: Some(512),
-            ..Default::default()
+        inference: Some(Inference {
+            name: "deep".into(),
+            model: "anthropic/claude-opus-4-8".into(),
+            llm_params: Some(LlmParams {
+                max_tokens: Some(512),
+                ..Default::default()
+            }),
         }),
         ..Default::default()
     };
     let json = serde_json::to_string(&agent).expect("serialize");
     let back: Agent = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(
-        back.llm_params.as_ref().and_then(|p| p.max_tokens),
+        back.inference
+            .as_ref()
+            .and_then(|i| i.llm_params.as_ref())
+            .and_then(|p| p.max_tokens),
         Some(512)
     );
 }

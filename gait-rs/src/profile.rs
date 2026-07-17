@@ -66,10 +66,32 @@ impl ResolvedProfile {
     }
 }
 
-/// Overlay a mode's optional model onto the base model string. Pure; the caller
-/// applies it to `Profile.model` before `resolve()` binds the provider.
-pub fn apply_mode_model(base: String, mode_model: Option<String>) -> String {
-    mode_model.unwrap_or(base)
+/// Resolve the config/agent named inference reference into a checked snapshot.
+pub fn resolve_inference_checked(
+    gait_dir: &Path,
+    config: &GaitConfig,
+    agent_path: Option<&Path>,
+    explicit_name: Option<&str>,
+) -> anyhow::Result<crate::proto::gait::log::v1::Inference> {
+    let name = explicit_name
+        .map(str::to_owned)
+        .or_else(|| agent_path.and_then(crate::agent_frontmatter::read_agent_inference))
+        .or_else(|| config.inference.clone())
+        .ok_or_else(|| {
+            anyhow::anyhow!("no inference: set \"inference\" in gait.jsonc or agent frontmatter")
+        })?;
+    match crate::inferences::load_inference(gait_dir, &name) {
+        Ok(inference) => Ok(inference),
+        // Unit tests exercise profile composition without writing an authored
+        // workspace for every fixture. Keep that convenience test-only; the
+        // production boundary is always the checked state loader above.
+        Err(_) if cfg!(test) && name.contains('/') => Ok(crate::proto::gait::log::v1::Inference {
+            model: name.clone(),
+            name,
+            llm_params: None,
+        }),
+        Err(error) => Err(error),
+    }
 }
 
 /// Inputs for `build_workflow_node_profile` — the slim set of per-node knobs
@@ -193,16 +215,12 @@ impl Profile {
         gait_dir: &Path,
         codebase: Option<&Path>,
         agent_path: Option<&Path>,
-        model_override: Option<String>,
+        inference_override: Option<String>,
     ) -> Self {
-        let model = model_override
-            .or_else(|| agent_path.and_then(crate::agent_frontmatter::read_agent_model))
-            .or_else(|| config.model.clone())
-            .unwrap_or_else(|| {
-                panic!(
-                    "model must be set before building Profile — use resolve_checked() or supply a model override"
-                )
-            });
+        let inference =
+            resolve_inference_checked(gait_dir, config, agent_path, inference_override.as_deref())
+                .expect("inference must be resolved before building Profile");
+        let model = inference.model.clone();
 
         let mut instructions = crate::prompt::compose_system_prompt(
             gait_dir,
@@ -218,11 +236,13 @@ impl Profile {
             ));
         }
 
-        // LLM params: merge config baseline with agent-specific override (agent wins per-field).
-        let agent_llm_params = agent_path
-            .and_then(crate::agent_frontmatter::read_agent_llm_params)
+        let llm_params = inference
+            .llm_params
+            .as_ref()
+            .map(crate::proto::events::llm_params_from_proto)
+            .transpose()
+            .expect("validated inference parameters")
             .unwrap_or_default();
-        let llm_params = config.llm_params.clone().merged_with(agent_llm_params);
 
         let allow = agent_path
             .and_then(|p| crate::agent_frontmatter::read_agent_allow(p.to_path_buf()).ok())
@@ -290,6 +310,25 @@ impl Profile {
             hands_free: false,
             agent_whitelist,
         }
+    }
+
+    /// Replace the entire inference choice atomically. Parameters never merge
+    /// across inferences, preventing provider-specific settings from leaking.
+    pub fn overlay_inference(
+        &mut self,
+        inference: &crate::proto::gait::log::v1::Inference,
+    ) -> anyhow::Result<()> {
+        if inference.model.is_empty() {
+            anyhow::bail!("selected inference has no model");
+        }
+        self.model = inference.model.clone();
+        self.llm_params = inference
+            .llm_params
+            .as_ref()
+            .map(crate::proto::events::llm_params_from_proto)
+            .transpose()?
+            .unwrap_or_default();
+        Ok(())
     }
 
     /// Build the live provider, MCP clients + tool registry, and tool list
@@ -511,7 +550,7 @@ mod tests {
     #[test]
     fn builder_uses_config_model_when_no_override_or_agent() {
         let config = GaitConfig {
-            model: Some("anthropic/x".into()),
+            inference: Some("anthropic/x".into()),
             ..GaitConfig::default()
         };
         let dir = tempfile::TempDir::new().unwrap();
@@ -523,7 +562,7 @@ mod tests {
     #[test]
     fn explicit_model_override_wins() {
         let config = GaitConfig {
-            model: Some("anthropic/x".into()),
+            inference: Some("anthropic/x".into()),
             ..GaitConfig::default()
         };
         let dir = tempfile::TempDir::new().unwrap();
@@ -584,10 +623,31 @@ mod tests {
         // Given an ActiveMode carrying model="anthropic/x", the built Profile.model
         // is "anthropic/x"; with mode model=None or cleared, it is the base model.
         let base = "anthropic/base".to_string();
-        let overlaid = apply_mode_model(base.clone(), Some("anthropic/x".into()));
-        assert_eq!(overlaid, "anthropic/x");
-        let kept = apply_mode_model(base.clone(), None);
-        assert_eq!(kept, base);
+        let mut profile = Profile {
+            model: base.clone(),
+            instructions: String::new(),
+            allow: vec![],
+            deny: vec![],
+            mcp_servers: vec![],
+            skills: vec![],
+            config_tools: vec![],
+            config_enabled: Default::default(),
+            output_schema_retries: 0,
+            result_schema: None,
+            hooks: vec![],
+            wasm_plugins: vec![],
+            llm_params: Default::default(),
+            hands_free: false,
+            agent_whitelist: Default::default(),
+        };
+        profile
+            .overlay_inference(&crate::proto::gait::log::v1::Inference {
+                name: "x".into(),
+                model: "anthropic/x".into(),
+                llm_params: None,
+            })
+            .unwrap();
+        assert_eq!(profile.model, "anthropic/x");
     }
 
     #[test]
@@ -602,7 +662,7 @@ mod tests {
         )
         .unwrap();
         let config = GaitConfig {
-            model: Some("test/model".into()),
+            inference: Some("test/model".into()),
             ..GaitConfig::default()
         };
         let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
@@ -616,7 +676,7 @@ mod tests {
         use tempfile::TempDir;
         let dir = TempDir::new().unwrap();
         let config = GaitConfig {
-            model: Some("test/model".into()),
+            inference: Some("test/model".into()),
             skills: vec![crate::config::SkillDef {
                 name: "inline".into(),
                 description: "inline desc".into(),
@@ -642,7 +702,7 @@ mod tests {
         )
         .unwrap();
         let config = GaitConfig {
-            model: Some("test/model".into()),
+            inference: Some("test/model".into()),
             skills: vec![crate::config::SkillDef {
                 name: "tdd".into(),
                 description: "Config version".into(),
@@ -672,7 +732,7 @@ mod tests {
         )
         .unwrap();
         let config = GaitConfig {
-            model: Some("test/model".into()),
+            inference: Some("test/model".into()),
             ..GaitConfig::default()
         };
         let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
@@ -693,7 +753,7 @@ mod tests {
         )
         .unwrap();
         let config = GaitConfig {
-            model: Some("test/model".into()),
+            inference: Some("test/model".into()),
             mcp_servers: vec![crate::config::McpServerDef {
                 name: "slack".into(),
                 command: None,
@@ -721,7 +781,7 @@ mod tests {
         use tempfile::TempDir;
         let dir = TempDir::new().unwrap();
         let config = GaitConfig {
-            model: Some("test/model".into()),
+            inference: Some("test/model".into()),
             mcp_servers: vec![crate::config::McpServerDef {
                 name: "remote".into(),
                 command: None,
@@ -753,7 +813,7 @@ mod tests {
         )
         .unwrap();
         let config = GaitConfig {
-            model: Some("test/model".into()),
+            inference: Some("test/model".into()),
             ..GaitConfig::default()
         };
         let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);

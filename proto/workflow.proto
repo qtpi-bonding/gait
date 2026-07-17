@@ -51,7 +51,7 @@ message Workflow {
   uint32          version       = 1;  // format generation (mirrors WorkflowEvent.version)
   string          name          = 2;
   string          version_label = 3;  // human yaml `version:` string
-  optional string model         = 4;
+  optional string inference     = 4;
   repeated string allow         = 5;
   bool            auto          = 6;
   repeated Node   nodes         = 7;
@@ -60,7 +60,7 @@ message Workflow {
 message Node {
   string          id                 = 1;
   repeated string depends_on         = 2;
-  optional string model              = 3;
+  optional string inference          = 3;
   optional bool   auto               = 4;
   repeated string allow              = 5;
   optional string agent              = 6;

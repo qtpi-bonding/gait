@@ -12,10 +12,9 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct ProfileInputs {
     pub agent_name: Option<String>,
-    pub model_override: Option<String>,
-    /// True only when `model_override` originated as an explicit caller choice
-    /// (`--model` or `spawn_agent.model`), rather than a resolved disk value.
-    pub explicit_model_override: bool,
+    pub inference_override: Option<String>,
+    /// True only when the named inference came from an explicit caller choice.
+    pub explicit_inference_override: bool,
     pub allow: Vec<String>,
     pub deny: Vec<String>,
     pub result_schema: Option<serde_json::Value>,
@@ -98,7 +97,7 @@ pub fn build_turn_profile(
         gait_dir,
         Some(codebase),
         agent_path.as_deref(),
-        inputs.model_override.clone(),
+        inputs.inference_override.clone(),
     );
     profile.hands_free = inputs.hands_free;
     profile
@@ -439,12 +438,18 @@ mod tests {
     #[test]
     fn build_turn_profile_threads_result_schema() {
         let ws = tempfile::TempDir::new().unwrap();
-        std::fs::write(ws.path().join("gait.jsonc"), r#"{"model":"m"}"#).unwrap();
+        std::fs::create_dir_all(ws.path().join("inferences/mock")).unwrap();
+        std::fs::write(
+            ws.path().join("inferences/mock/INFERENCE.yaml"),
+            "model: mock/model\n",
+        )
+        .unwrap();
+        std::fs::write(ws.path().join("gait.jsonc"), r#"{"inference":"mock"}"#).unwrap();
         let schema = serde_json::json!({"type":"object","required":["answer"]});
         let inputs = ProfileInputs {
             agent_name: None,
-            model_override: None,
-            explicit_model_override: false,
+            inference_override: None,
+            explicit_inference_override: false,
             allow: vec![],
             deny: vec![],
             result_schema: Some(schema.clone()),
@@ -458,11 +463,17 @@ mod tests {
     fn build_turn_profile_folds_cli_allow() {
         let dir = tempfile::TempDir::new().unwrap();
         // Write a minimal gait.jsonc so load_config picks up a known model.
-        std::fs::write(dir.path().join("gait.jsonc"), r#"{"model":"anthropic/x"}"#).unwrap();
+        std::fs::create_dir_all(dir.path().join("inferences/mock")).unwrap();
+        std::fs::write(
+            dir.path().join("inferences/mock/INFERENCE.yaml"),
+            "model: anthropic/x\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("gait.jsonc"), r#"{"inference":"mock"}"#).unwrap();
         let inputs = ProfileInputs {
             agent_name: None,
-            model_override: None,
-            explicit_model_override: false,
+            inference_override: None,
+            explicit_inference_override: false,
             allow: vec!["read".into()],
             deny: vec![],
             result_schema: None,
@@ -474,14 +485,14 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "model must be set before building Profile")]
+    #[should_panic(expected = "no inference")]
     fn build_turn_profile_panics_without_config_or_override() {
         let dir = tempfile::TempDir::new().unwrap();
         // No gait.jsonc — load_config falls back to GaitConfig::default() which has model: None.
         let inputs = ProfileInputs {
             agent_name: None,
-            model_override: None,
-            explicit_model_override: false,
+            inference_override: None,
+            explicit_inference_override: false,
             allow: vec![],
             deny: vec![],
             result_schema: None,

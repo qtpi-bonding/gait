@@ -200,7 +200,13 @@ async fn prompt_streams_agent_message_and_ends_turn() {
     )
     .unwrap();
     // Resolve a model so ConfigResolver::resolve_checked passes; mock brain ignores it.
-    std::fs::write(gait_dir.join("gait.jsonc"), r#"{ "model": "mock/model" }"#).unwrap();
+    std::fs::create_dir_all(gait_dir.join("inferences/mock")).unwrap();
+    std::fs::write(
+        gait_dir.join("inferences/mock/INFERENCE.yaml"),
+        "model: mock/model\n",
+    )
+    .unwrap();
+    std::fs::write(gait_dir.join("gait.jsonc"), r#"{ "inference": "mock" }"#).unwrap();
     bake_say_hi(&gait_dir);
 
     let map = SessionMap::new();
@@ -282,7 +288,13 @@ fn make_workspace(root: &Path, name: &str) -> (std::path::PathBuf, std::path::Pa
         format!("gaitdir: {}\n", gait_dir.display()),
     )
     .unwrap();
-    std::fs::write(gait_dir.join("gait.jsonc"), r#"{ "model": "mock/model" }"#).unwrap();
+    std::fs::create_dir_all(gait_dir.join("inferences/mock")).unwrap();
+    std::fs::write(
+        gait_dir.join("inferences/mock/INFERENCE.yaml"),
+        "model: mock/model\n",
+    )
+    .unwrap();
+    std::fs::write(gait_dir.join("gait.jsonc"), r#"{ "inference": "mock" }"#).unwrap();
     (gait_dir, repo)
 }
 

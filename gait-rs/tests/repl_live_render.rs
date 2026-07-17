@@ -133,7 +133,13 @@ async fn interactive_reply_renders_live_not_after_session_ends() {
 
     // A model must resolve (ConfigResolver::resolve_checked); the mock brain
     // ignores it. Sandbox stays off (mock_brain doesn't self-seal).
-    std::fs::write(gait_dir.join("gait.jsonc"), r#"{ "model": "mock/model" }"#).unwrap();
+    std::fs::create_dir_all(gait_dir.join("inferences/mock")).unwrap();
+    std::fs::write(
+        gait_dir.join("inferences/mock/INFERENCE.yaml"),
+        "model: mock/model\n",
+    )
+    .unwrap();
+    std::fs::write(gait_dir.join("gait.jsonc"), r#"{ "inference": "mock" }"#).unwrap();
 
     // Prebake the brain's single turn: stream one delta, then finish.
     common::write_frames(

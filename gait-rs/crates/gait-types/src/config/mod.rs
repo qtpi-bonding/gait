@@ -315,7 +315,7 @@ pub enum PreviewPolicy {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GaitConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
+    pub inference: Option<String>,
     #[serde(default)]
     pub allow: Vec<String>,
     #[serde(default)]
@@ -365,11 +365,6 @@ pub struct GaitConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_schema: Option<serde_json::Value>,
 
-    /// LLM parameter overrides: temperature, max_tokens, thinking, effort, etc.
-    /// Merged with agent frontmatter (agent wins per-field).
-    #[serde(default)]
-    pub llm_params: LlmParamsConfig,
-
     /// Whether to render thinking/reasoning blocks in the terminal output.
     /// This is a pure UI preference — ThinkingBlock events are ALWAYS written
     /// to the session log regardless of this flag. Default: false.
@@ -402,7 +397,7 @@ fn default_tool_timeout_secs() -> u64 {
 impl Default for GaitConfig {
     fn default() -> Self {
         Self {
-            model: defaults::default_model(),
+            inference: None,
             allow: defaults::default_allow(),
             deny: defaults::default_deny(),
             tools: vec![],
@@ -417,7 +412,6 @@ impl Default for GaitConfig {
             tool_timeout_secs: 300,
             preview: defaults::default_preview(),
             result_schema: None,
-            llm_params: LlmParamsConfig::default(),
             show_thinking: defaults::default_show_thinking(),
             sandbox: defaults::default_sandbox(),
         }

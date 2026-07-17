@@ -103,27 +103,17 @@ pub fn registry(kind: &str, name: &str, listed: bool) -> pb::event::Body {
     }))
 }
 
-/// `ModelChange` — model-swap delta, LWW-folded by ActiveAgent.
-pub fn model_change(model: &str) -> pb::event::Body {
-    wire::body(pb::payload::Kind::ModelChange(pb::ModelChange {
-        model: model.to_string(),
-    }))
+/// Complete, immutable inference snapshot. `name == ""` clears the selection.
+pub fn inference(inference: pb::Inference) -> pb::event::Body {
+    wire::body(pb::payload::Kind::Inference(inference))
 }
 
 /// Active-mode overlay event (replay-complete, LWW-folded by `ActiveMode`).
 /// `name == ""` is the clear sentinel (back to default/no overlay).
-pub fn mode(
-    name: &str,
-    allow: Vec<String>,
-    deny: Vec<String>,
-    model: Option<String>,
-    steer: &str,
-    description: &str,
-) -> pb::event::Body {
+pub fn mode(name: &str, deny: Vec<String>, steer: &str, description: &str) -> pb::event::Body {
     wire::body(pb::payload::Kind::Mode(pb::Mode {
         name: name.to_string(),
-        permissions: Some(pb::PermissionPolicy { allow, deny }),
-        model,
+        deny,
         steer: steer.to_string(),
         description: description.to_string(),
     }))
@@ -466,6 +456,89 @@ pub fn llm_params_to_proto(p: &crate::config::LlmParamsConfig) -> pb::LlmParams 
         // show_thinking is NOT stored in LlmParams proto — it is a GaitConfig render toggle.
         provider_params,
     }
+}
+
+/// Convert the replay value back into the config-layer provider parameters.
+/// The proto union is validated instead of silently choosing a provider.
+pub fn llm_params_from_proto(p: &pb::LlmParams) -> anyhow::Result<crate::config::LlmParamsConfig> {
+    use crate::config as cfg;
+    use pb::llm_params::ProviderParams;
+    let mut out = cfg::LlmParamsConfig {
+        max_tokens: p.max_tokens,
+        temperature: p.temperature,
+        top_p: p.top_p,
+        ..Default::default()
+    };
+    match &p.provider_params {
+        None => {}
+        Some(ProviderParams::Anthropic(a)) => {
+            out.anthropic = Some(cfg::AnthropicLlmParamsConfig {
+                top_k: a.top_k,
+                effort: a.effort.clone(),
+                thinking: a.thinking.as_ref().map(|t| cfg::AnthropicThinkingConfig {
+                    kind: match pb::AnthropicThinkingType::try_from(t.r#type)
+                        .unwrap_or(pb::AnthropicThinkingType::Unspecified)
+                    {
+                        pb::AnthropicThinkingType::Adaptive => Some("adaptive".into()),
+                        pb::AnthropicThinkingType::Disabled => Some("disabled".into()),
+                        pb::AnthropicThinkingType::Enabled => Some("enabled".into()),
+                        _ => None,
+                    },
+                    budget_tokens: t.budget_tokens,
+                    display: match pb::AnthropicThinkingDisplay::try_from(t.display)
+                        .unwrap_or(pb::AnthropicThinkingDisplay::Unspecified)
+                    {
+                        pb::AnthropicThinkingDisplay::Summarized => Some("summarized".into()),
+                        pb::AnthropicThinkingDisplay::Omitted => Some("omitted".into()),
+                        _ => None,
+                    },
+                }),
+                strict_tools: None,
+            });
+        }
+        Some(ProviderParams::Openai(o)) => {
+            out.openai = Some(cfg::OpenAILlmParamsConfig {
+                reasoning_effort: o.reasoning_effort.clone(),
+                frequency_penalty: o.frequency_penalty,
+                presence_penalty: o.presence_penalty,
+                seed: o.seed,
+                stop: o.stop.clone(),
+                strict_tools: None,
+            });
+        }
+        Some(ProviderParams::Gemini(g)) => {
+            out.gemini = Some(cfg::GeminiLlmParamsConfig {
+                top_k: g.top_k,
+                candidate_count: g.candidate_count,
+                stop_sequences: g.stop_sequences.clone(),
+                seed: g.seed,
+                frequency_penalty: g.frequency_penalty,
+                presence_penalty: g.presence_penalty,
+                thinking: g.thinking.as_ref().map(|t| cfg::GeminiThinkingConfig {
+                    include_thoughts: t.include_thoughts,
+                    budget: match &t.depth {
+                        Some(pb::gemini_thinking::Depth::Budget(n)) => Some(*n),
+                        _ => None,
+                    },
+                    level: match &t.depth {
+                        Some(pb::gemini_thinking::Depth::Level(n)) => {
+                            match pb::GeminiThinkingLevel::try_from(*n)
+                                .unwrap_or(pb::GeminiThinkingLevel::Unspecified)
+                            {
+                                pb::GeminiThinkingLevel::Minimal => Some("minimal".into()),
+                                pb::GeminiThinkingLevel::Low => Some("low".into()),
+                                pb::GeminiThinkingLevel::Medium => Some("medium".into()),
+                                pb::GeminiThinkingLevel::High => Some("high".into()),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    },
+                }),
+            });
+        }
+    }
+    Ok(out)
 }
 
 fn anthropic_llm_params_to_proto(
@@ -900,13 +973,12 @@ mod tests {
 
     #[test]
     fn mode_event_roundtrips_and_empty_name_is_clear_sentinel() {
-        let body = super::mode("plan", vec![], vec!["write".into()], None, "no edits", "d");
+        let body = super::mode("plan", vec!["write".into()], "no edits", "d");
         match body {
             crate::proto::gait::log::v1::event::Body::Payload(p) => match p.kind {
                 Some(pb::payload::Kind::Mode(m)) => {
                     assert_eq!(m.name, "plan");
-                    assert_eq!(m.permissions.unwrap().deny, vec!["write".to_string()]);
-                    assert!(m.model.is_none());
+                    assert_eq!(m.deny, vec!["write".to_string()]);
                     assert_eq!(m.steer, "no edits");
                     assert_eq!(m.description, "d");
                 }
@@ -915,7 +987,7 @@ mod tests {
             other => panic!("expected Payload body, got {other:?}"),
         }
 
-        let clear = super::mode("", vec![], vec![], None, "", "");
+        let clear = super::mode("", vec![], "", "");
         match clear {
             crate::proto::gait::log::v1::event::Body::Payload(p) => match p.kind {
                 Some(pb::payload::Kind::Mode(m)) => assert_eq!(m.name, ""),

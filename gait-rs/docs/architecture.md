@@ -138,7 +138,7 @@ with for a given `version`. **Not** a Merkle chain — there is no prev-hash lin
 `SessionStart, Agent, UserTurn, AssistantText, ToolCall, ToolResult, Clarify, ClarifyReply,
 ClarifyConvergence, Inform, InformReply, InformConvergence, Permissions, PermissionsReply,
 AgentUpdate, TurnComplete, Summary, Error, RawEvent, SandboxApplied, HookRun, Cwd, Toggle,
-ModelChange`. Constructors live in `proto/events.rs` (e.g. `toggle()`, `tool_call()`, `summary()`).
+Inference`. Constructors live in `proto/events.rs` (e.g. `toggle()`, `tool_call()`, `summary()`).
 
 ### The Recorder (`proto/emitter.rs`)
 Owns the log path + an unbounded channel sender (`StreamItem`). Two methods:
@@ -349,7 +349,8 @@ to that baseline **positionally** (where the event sits in the stream — `throu
 | Projection | State | Folds | Semantics |
 |---|---|---|---|
 | **ActiveMessages** | `Vec<Message>` (the transcript) | UserTurn, AssistantText, ToolCall, ToolResult, Clarify/Inform, Error | Consecutive ToolCalls coalesce into one assistant msg; Permissions excluded (audit only) |
-| **ActiveAgent** | model, instructions, tools/skills/mcp/plugins sets, allow/deny | Toggle (OR-Set), ModelChange (LWW) | Seeded from config; `Agent` event is its checkpoint |
+| **ActiveAgent** | instructions, tools/skills/mcp/plugins sets, deny | Toggle (OR-Set) | Seeded from config; `Agent` event is its checkpoint |
+| **ActiveInference** | named inference selection | Inference (LWW) | Seeded from config; independent of agent checkpoints |
 | **ActivePermissions** | `{ session: Set, once: Set }` | PermissionsReply (allow inserts, deny removes), TurnComplete (clears `once`) | Effective allow = session ∪ once |
 | **ActiveCwd** | `PathBuf` | Cwd (LWW) | Seeded to codebase root |
 | **LwwAgent** | `Option<Agent>` | Agent (LWW) | Internal drift-guard for run_turn |

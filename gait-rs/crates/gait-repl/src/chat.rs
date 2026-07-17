@@ -248,8 +248,8 @@ pub async fn run_chat(
                 profile: model_override
                     .clone()
                     .map(|model| gait_workflow::ProfileOverride {
-                        model: Some(model),
-                        explicit_model_override: true,
+                        inference: Some(model),
+                        explicit_inference_override: true,
                         ..Default::default()
                     }),
                 ..Default::default()

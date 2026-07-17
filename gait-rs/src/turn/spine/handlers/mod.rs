@@ -8,8 +8,8 @@ use crate::proto::gait::sandbox::v1::Feedback;
 /// Arguments for `spawn_agent`, deserialized from the Impulse Struct.
 pub(super) struct SpawnAgentArgs {
     pub task: String,
-    /// Explicit model override for the child process.
-    pub model: Option<String>,
+    /// Explicit named inference for the child process.
+    pub inference: Option<String>,
     /// Per-spawn result schema written to `sessions/<id>/result_schema.json`
     /// so the child CLI can enforce it via `ProfileInputs.result_schema`.
     pub schema: Option<serde_json::Value>,

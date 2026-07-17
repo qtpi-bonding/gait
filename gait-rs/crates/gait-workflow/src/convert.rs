@@ -13,7 +13,7 @@ pub fn to_proto(def: &WorkflowDef) -> Workflow {
         version: 1,
         name: def.name.clone(),
         version_label: def.version.clone(),
-        model: def.model.clone(),
+        inference: def.inference.clone(),
         allow: def.allow.clone(),
         auto: def.auto,
         nodes: def.nodes.iter().map(node_to_proto).collect(),
@@ -137,7 +137,7 @@ fn node_to_proto(n: &NodeDef) -> Node {
     Node {
         id: n.id.clone(),
         depends_on: n.depends_on.clone(),
-        model: n.model.clone(),
+        inference: n.inference.clone(),
         auto: n.auto,
         allow: n.allow.clone().unwrap_or_default(),
         agent: n.agent.clone(),

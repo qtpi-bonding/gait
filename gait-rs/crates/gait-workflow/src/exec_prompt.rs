@@ -16,9 +16,9 @@ use crate::vars::{substitute, NodeOutput};
 /// for each prompt node. Workflow nodes are now fully sealed (Task 2).
 struct PromptNodeDriver {
     codebase: PathBuf,
-    /// Resolved model string ("provider/model-id").
-    model: String,
-    explicit_model_override: bool,
+    /// Named inference selected for this prompt node.
+    inference: String,
+    explicit_inference_override: bool,
     /// Allow list (replaces config.allow).
     allow: Vec<String>,
     /// Optional named agent.
@@ -88,8 +88,8 @@ impl TurnDriver for PromptNodeDriver {
             self.max_iter,
             self.cascade_group_arg.clone(),
             self.agent_name.clone(),
-            Some(self.model.clone()),
-            self.explicit_model_override,
+            Some(self.inference.clone()),
+            self.explicit_inference_override,
             self.allow.clone(),
             self.deny.clone(),
             self.result_schema.clone(),
@@ -251,13 +251,13 @@ pub async fn exec_prompt_node(
     let loaded = gait_core::config::load_config(ctx.gait_dir);
     // consumer layer: Workflow fields
     let consumer = Overrides {
-        model: wf.model.clone(),
+        inference: wf.inference.clone(),
         allow: Some(wf.allow.clone()),
         ..Overrides::empty()
     };
     // per-call layer: Node fields (higher priority)
     let per_call = Overrides {
-        model: node.model.clone(),
+        inference: node.inference.clone(),
         allow: if node.allow.is_empty() {
             None
         } else {
@@ -270,10 +270,10 @@ pub async fn exec_prompt_node(
         .with(consumer)
         .with(per_call)
         .resolve_checked()?;
-    let model = resolved_cfg
-        .model
+    let inference = resolved_cfg
+        .inference
         .clone()
-        .expect("resolve_checked guarantees model is Some");
+        .expect("resolve_checked guarantees inference is Some");
     let allow = resolved_cfg.allow.clone();
     let auto = node.auto.unwrap_or(wf.auto);
 
@@ -314,8 +314,8 @@ pub async fn exec_prompt_node(
     // instead of building its own driver directly. Every real workflow node
     // has `ctx.profile == None` and is unaffected.
     let ov = ctx.profile;
-    let model = ov.and_then(|p| p.model.clone()).unwrap_or(model);
-    let explicit_model_override = ov.map(|p| p.explicit_model_override).unwrap_or(false);
+    let inference = ov.and_then(|p| p.inference.clone()).unwrap_or(inference);
+    let explicit_inference_override = ov.map(|p| p.explicit_inference_override).unwrap_or(false);
     let allow = ov
         .filter(|p| !p.allow.is_empty())
         .map(|p| p.allow.clone())
@@ -331,8 +331,8 @@ pub async fn exec_prompt_node(
 
     let mut driver = PromptNodeDriver {
         codebase: codebase.clone(),
-        model: model.clone(),
-        explicit_model_override,
+        inference: inference.clone(),
+        explicit_inference_override,
         allow: allow.clone(),
         agent_name,
         result_schema,
@@ -491,8 +491,8 @@ mod tests {
 
         let mut driver = PromptNodeDriver {
             codebase: PathBuf::from("/tmp/cb"),
-            model: "test/model".into(),
-            explicit_model_override: false,
+            inference: "test".into(),
+            explicit_inference_override: false,
             allow: vec![],
             agent_name: None,
             result_schema: None,
@@ -535,8 +535,8 @@ mod tests {
     fn prompt_node_driver_holds_paths() {
         let driver = PromptNodeDriver {
             codebase: PathBuf::from("/tmp/cb"),
-            model: "test/model".into(),
-            explicit_model_override: false,
+            inference: "test".into(),
+            explicit_inference_override: false,
             allow: vec!["run_workflow".into()],
             agent_name: None,
             result_schema: None,
@@ -573,8 +573,8 @@ mod tests {
 
         let driver = PromptNodeDriver {
             codebase: std::path::PathBuf::from("/tmp/x"),
-            model: "anthropic/claude".into(),
-            explicit_model_override: false,
+            inference: "test".into(),
+            explicit_inference_override: false,
             allow: vec![],
             agent_name: None,
             result_schema: None,
@@ -600,7 +600,7 @@ mod tests {
     fn cli_auto_override_wins_over_node_default() {
         use crate::single_prompt::ProfileOverride;
         let on = ProfileOverride {
-            explicit_model_override: false,
+            explicit_inference_override: false,
             auto: Some(true),
             ..Default::default()
         };

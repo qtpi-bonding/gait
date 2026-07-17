@@ -49,7 +49,7 @@ async fn main() {
     // Mode dispatch: -e (exec), -i (interactive), bare positional (task)
     if let Some(exec_prompt) = cli.exec {
         let args = gait_cli::cli::exec::ExecArgs {
-            model: cli.model,
+            model: cli.inference,
             prompt: vec![exec_prompt],
         };
         gait_cli::cli::exec::cmd_exec(args).await;
@@ -60,7 +60,8 @@ async fn main() {
         let gait_dir = resolve_gait_dir();
         let codebase = cli.codebase.unwrap_or_else(cwd_or_dot);
         if let Err(e) =
-            gait_repl::chat::run_chat(gait_dir, codebase, cli.agent, cli.session, cli.model).await
+            gait_repl::chat::run_chat(gait_dir, codebase, cli.agent, cli.session, cli.inference)
+                .await
         {
             eprintln!("[gait] error: {}", e);
             std::process::exit(1);
@@ -80,7 +81,7 @@ async fn main() {
             task: cli.task.clone(),
             session: cli.session.clone(),
             auto: cli.auto_approve,
-            model_override: cli.model.clone(),
+            inference: cli.inference.clone(),
             agent_name: cli.agent.clone(),
             allow: cli.allow.clone(),
             deny: cli.deny.clone(),
@@ -147,6 +148,7 @@ async fn main() {
         Commands::Disable(args) => gait_cli::cli::admin::cmd_disable(args),
         Commands::Auth(args) => gait_cli::cli::admin::cmd_auth(args).await,
         Commands::Models(args) => gait_cli::cli::admin::cmd_models(args).await,
+        Commands::Inference(args) => gait_cli::cli::admin::cmd_inference(args),
         Commands::Workflow(args) => gait_cli::cli::workflow::cmd_workflow(args).await,
         Commands::Daemons(args) => gait_cli::cli::daemons::cmd_daemons(args),
     }

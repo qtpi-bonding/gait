@@ -5,7 +5,7 @@ use super::GaitConfig;
 /// `max_iter` uses `Option<Option<u32>>`: outer `Some` means "this layer sets it",
 /// inner `None` means "set it to unlimited".
 pub struct Overrides {
-    pub model: Option<String>,
+    pub inference: Option<String>,
     pub allow: Option<Vec<String>>,
     pub deny: Option<Vec<String>>,
     pub max_iter: Option<Option<u32>>,
@@ -16,7 +16,7 @@ impl Overrides {
     /// Returns an `Overrides` with all fields set to `None` (no overrides).
     pub fn empty() -> Self {
         Self {
-            model: None,
+            inference: None,
             allow: None,
             deny: None,
             max_iter: None,
@@ -49,8 +49,8 @@ impl ConfigResolver {
     /// `layer` overwrite the base; `None` fields are left unchanged.
     /// Call in order from lower-priority to higher-priority; last `with` wins.
     pub fn with(mut self, layer: Overrides) -> Self {
-        if let Some(model) = layer.model {
-            self.base.model = Some(model);
+        if let Some(inference) = layer.inference {
+            self.base.inference = Some(inference);
         }
         if let Some(allow) = layer.allow {
             self.base.allow = allow;
@@ -73,12 +73,12 @@ impl ConfigResolver {
         self.base
     }
 
-    /// Like `resolve()` but errors if no layer supplied a model.
+    /// Like `resolve()` but errors if no layer supplied an inference.
     pub fn resolve_checked(self) -> anyhow::Result<GaitConfig> {
         let cfg = self.base;
-        if cfg.model.is_none() {
+        if cfg.inference.is_none() {
             anyhow::bail!(
-                "no model: set \"model\" in gait.jsonc or pass --model <id> (see `gait models`)"
+                "no inference: set \"inference\" in gait.jsonc or select one with --inference <name>"
             );
         }
         Ok(cfg)
@@ -94,8 +94,8 @@ mod tests {
     fn unset_model_errors_with_pointer() {
         let base = GaitConfig::default(); // model is None after this task
         let err = ConfigResolver::new(base).resolve_checked().unwrap_err();
-        assert!(err.to_string().contains("no model"));
-        assert!(err.to_string().contains("--model"));
+        assert!(err.to_string().contains("no inference"));
+        assert!(err.to_string().contains("--inference"));
     }
 
     #[test]
@@ -103,31 +103,31 @@ mod tests {
         let base = GaitConfig::default();
         let cfg = ConfigResolver::new(base)
             .with(Overrides {
-                model: Some("minimax/MiniMax-M3".into()),
+                inference: Some("fast".into()),
                 ..Overrides::empty()
             })
             .resolve_checked()
             .unwrap();
-        assert_eq!(cfg.model.as_deref(), Some("minimax/MiniMax-M3"));
+        assert_eq!(cfg.inference.as_deref(), Some("fast"));
     }
 
     #[test]
     fn per_call_beats_consumer_beats_file() {
         let base = GaitConfig {
-            model: Some("file-model".into()), // stands in for the gait.jsonc layer
+            inference: Some("file-inference".into()), // stands in for the gait.jsonc layer
             ..GaitConfig::default()
         };
         let effective = ConfigResolver::new(base)
             .with(Overrides {
-                model: Some("consumer-model".into()),
+                inference: Some("consumer-inference".into()),
                 ..Overrides::empty()
             })
             .with(Overrides {
-                model: Some("percall-model".into()),
+                inference: Some("percall-inference".into()),
                 ..Overrides::empty()
             })
             .resolve();
-        assert_eq!(effective.model.as_deref(), Some("percall-model"));
+        assert_eq!(effective.inference.as_deref(), Some("percall-inference"));
     }
 
     #[test]

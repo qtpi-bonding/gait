@@ -63,34 +63,17 @@ pub fn read_agent_plugins(path: PathBuf) -> anyhow::Result<Vec<String>> {
     Ok(extract_string_list(&yaml, "plugins"))
 }
 
-/// Read the optional `model` field from an agent file's YAML frontmatter.
-pub fn read_agent_model(path: &std::path::Path) -> Option<String> {
+/// Read the optional named inference reference from an agent's frontmatter.
+pub fn read_agent_inference(path: &std::path::Path) -> Option<String> {
     let content = std::fs::read_to_string(path).ok()?;
     let (fm, _) = split_frontmatter(&content);
     if fm.is_empty() {
         return None;
     }
     let yaml: serde_yaml::Value = serde_yaml::from_str(fm).ok()?;
-    yaml.get("model")
+    yaml.get("inference")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
-}
-
-/// Read the optional `llm_params` field from an agent file's YAML frontmatter.
-/// Returns `None` if the file has no frontmatter, the key is absent, or the
-/// value fails to deserialize as `LlmParamsConfig`.
-///
-/// The YAML key uses the same snake_case names as the JSON config. serde_yaml
-/// deserializes the nested struct natively from YAML mapping syntax.
-pub fn read_agent_llm_params(path: &std::path::Path) -> Option<crate::config::LlmParamsConfig> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let (fm, _) = split_frontmatter(&content);
-    if fm.is_empty() {
-        return None;
-    }
-    let yaml: serde_yaml::Value = serde_yaml::from_str(fm).ok()?;
-    let params_value = yaml.get("llm_params")?;
-    serde_yaml::from_value(params_value.clone()).ok()
 }
 
 /// Return the markdown body of an agent file (everything after the frontmatter).
@@ -302,15 +285,15 @@ mod tests {
     }
 
     #[test]
-    fn reads_model_from_frontmatter() {
+    fn reads_inference_from_frontmatter() {
         let dir = TempDir::new().unwrap();
         std::fs::write(
             dir.path().join("agent.md"),
-            "---\nmodel: anthropic/claude-opus-4-8\nallow:\n  - read\n---\n# prompt\n",
+            "---\ninference: deep\nallow:\n  - read\n---\n# prompt\n",
         )
         .unwrap();
-        let model = read_agent_model(&dir.path().join("agent.md"));
-        assert_eq!(model, Some("anthropic/claude-opus-4-8".to_string()));
+        let inference = read_agent_inference(&dir.path().join("agent.md"));
+        assert_eq!(inference, Some("deep".to_string()));
     }
 
     #[test]
@@ -429,52 +412,39 @@ mod tests {
     }
 
     #[test]
-    fn reads_llm_params_from_frontmatter() {
+    fn reads_inference_without_inline_params() {
         let dir = TempDir::new().unwrap();
         std::fs::write(
             dir.path().join("agent.md"),
             "\
 ---
-model: anthropic/claude-opus-4-8
-llm_params:
-  max_tokens: 2048
-  temperature: 0.3
-  anthropic:
-    effort: high
-    top_k: 5
+inference: deep
 ---
 # My agent
 ",
         )
         .unwrap();
-        // Note: show_thinking is NOT in llm_params — it belongs to GaitConfig.
-        // Agent frontmatter has no show_thinking field in llm_params.
-        let params =
-            read_agent_llm_params(&dir.path().join("agent.md")).expect("should parse llm_params");
-        assert_eq!(params.max_tokens, Some(2048));
-        assert_eq!(params.temperature, Some(0.3));
-        let a = params.anthropic.as_ref().expect("anthropic");
-        assert_eq!(a.effort, Some("high".into()));
-        assert_eq!(a.top_k, Some(5));
+        assert_eq!(
+            read_agent_inference(&dir.path().join("agent.md")).as_deref(),
+            Some("deep")
+        );
     }
 
     #[test]
-    fn reads_llm_params_returns_none_when_absent() {
+    fn inference_returns_none_when_absent() {
         let dir = TempDir::new().unwrap();
         std::fs::write(
             dir.path().join("agent.md"),
             "---\nallow:\n  - read\n---\n# prompt\n",
         )
         .unwrap();
-        let params = read_agent_llm_params(&dir.path().join("agent.md"));
-        assert!(params.is_none());
+        assert!(read_agent_inference(&dir.path().join("agent.md")).is_none());
     }
 
     #[test]
-    fn reads_llm_params_returns_none_when_no_frontmatter() {
+    fn inference_returns_none_when_no_frontmatter() {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("agent.md"), "# just a prompt\n").unwrap();
-        let params = read_agent_llm_params(&dir.path().join("agent.md"));
-        assert!(params.is_none());
+        assert!(read_agent_inference(&dir.path().join("agent.md")).is_none());
     }
 }

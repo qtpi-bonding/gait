@@ -20,6 +20,68 @@ pub struct ModelsArgs {
     pub filter: Option<String>,
 }
 
+/// `gait inference list|show|select|clear [name] --session <id>`.
+#[derive(Parser, Debug)]
+pub struct InferenceArgs {
+    #[arg(long, env = "GAIT_DIR")]
+    pub gait_dir: PathBuf,
+    pub action: Option<String>,
+    pub name: Option<String>,
+    #[arg(long)]
+    pub session: Option<String>,
+}
+
+pub fn cmd_inference(args: InferenceArgs) {
+    match args.action.as_deref().unwrap_or("list") {
+        "list" => {
+            for name in gait_ops::inference::list(&args.gait_dir) {
+                println!("{name}");
+            }
+        }
+        "show" => {
+            let name = args.name.as_deref().unwrap_or_else(|| {
+                eprintln!("[gait] usage: gait inference show <name>");
+                std::process::exit(2)
+            });
+            match gait_ops::inference::show(&args.gait_dir, name) {
+                Ok(i) => println!("{}\t{}", i.name, i.model),
+                Err(e) => {
+                    eprintln!("[gait] {e}");
+                    std::process::exit(1)
+                }
+            }
+        }
+        "select" => {
+            let name = args.name.as_deref().unwrap_or_else(|| {
+                eprintln!("[gait] usage: gait inference select <name> --session <id>");
+                std::process::exit(2)
+            });
+            let session = args.session.as_deref().unwrap_or_else(|| {
+                eprintln!("[gait] --session is required");
+                std::process::exit(2)
+            });
+            if let Err(e) = gait_ops::inference::select(&args.gait_dir, session, name) {
+                eprintln!("[gait] {e}");
+                std::process::exit(1);
+            }
+        }
+        "clear" => {
+            let session = args.session.as_deref().unwrap_or_else(|| {
+                eprintln!("[gait] --session is required");
+                std::process::exit(2)
+            });
+            if let Err(e) = gait_ops::inference::clear(&args.gait_dir, session) {
+                eprintln!("[gait] {e}");
+                std::process::exit(1);
+            }
+        }
+        _ => {
+            eprintln!("[gait] inference action must be list, show, select, or clear");
+            std::process::exit(2)
+        }
+    }
+}
+
 /// `gait register mcp|skill|plugin <name> [flags]`
 #[derive(Parser, Debug)]
 #[command(no_binary_name = true)]

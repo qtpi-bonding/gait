@@ -156,6 +156,15 @@ pub fn terminated_fail(msg: &str) -> Signal {
 }
 
 pub fn write_frames(gait_dir: &Path, signals: &[Signal]) {
+    // Every mock-driven turn selects the named `mock` inference.  Keep this
+    // fixture setup alongside its input frames so lower-level loop tests that
+    // do not use `run_one` are valid as well.
+    std::fs::create_dir_all(gait_dir.join("inferences/mock")).unwrap();
+    std::fs::write(
+        gait_dir.join("inferences/mock/INFERENCE.yaml"),
+        "model: mock/model\n",
+    )
+    .unwrap();
     let mut blob = Vec::new();
     for s in signals {
         blob.extend_from_slice(&frame(s));
@@ -190,8 +199,8 @@ impl TurnDriver for MockDriver {
             /*max_iter*/ None,
             /*cascade_group_arg*/ None,
             /*agent*/ None,
-            /*model*/ Some("mock-model".into()),
-            /*explicit_model_override*/ false,
+            /*inference*/ Some("mock".into()),
+            /*explicit_inference_override*/ false,
             /*allow*/ vec![],
             /*deny*/ vec![],
             /*result_schema*/ None,

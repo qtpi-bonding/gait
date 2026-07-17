@@ -159,6 +159,7 @@ pub fn run_projection<P: Projection>(
 #[derive(Debug, Clone, Default)]
 pub struct AgentState {
     pub model: String,
+    pub inference: Option<pb::Inference>,
     pub instructions: String,
     pub tools: std::collections::HashSet<String>,
     pub skills: std::collections::HashSet<String>,
@@ -166,7 +167,6 @@ pub struct AgentState {
     pub plugins: std::collections::HashSet<String>,
     pub allow: std::collections::HashSet<String>,
     pub deny: std::collections::HashSet<String>,
-    pub llm_params: Option<crate::proto::gait::log::v1::LlmParams>,
     /// Session-scope registration whitelist (layer 2, distinct from the
     /// `skills`/`mcp`/`plugins` layer-3 live-load sets above). Folded from
     /// `Registry` events only — never seeded from config or an `Agent`
@@ -234,7 +234,7 @@ impl AgentState {
             plugins: Default::default(),
             allow: allow.into_iter().collect(),
             deny: deny.into_iter().collect(),
-            llm_params: None,
+            inference: None,
             session_skills: Default::default(),
             session_mcp: Default::default(),
             session_plugins: Default::default(),
@@ -257,7 +257,12 @@ impl From<&pb::Agent> for AgentState {
             })
             .unwrap_or_default();
         AgentState {
-            model: a.model.clone(),
+            model: a
+                .inference
+                .as_ref()
+                .map(|i| i.model.clone())
+                .unwrap_or_default(),
+            inference: a.inference.clone(),
             instructions: a.instructions.clone(),
             tools: a.tools.iter().cloned().collect(),
             skills: a.skills.iter().cloned().collect(),
@@ -265,7 +270,6 @@ impl From<&pb::Agent> for AgentState {
             plugins: a.plugins.iter().cloned().collect(),
             allow,
             deny,
-            llm_params: a.llm_params.clone(),
             session_skills: Default::default(),
             session_mcp: Default::default(),
             session_plugins: Default::default(),
@@ -277,7 +281,8 @@ impl From<&pb::Agent> for AgentState {
 /// `seed` is the config-derived genesis (M3). `checkpoint` resets the baseline to
 /// an `Agent` snapshot (recompose-preserving re-baseline, I4). `apply` folds the
 /// deltas: in 3a that's the `load` ToolCall compat path (byte-identical to the old
-/// ActiveLoadables), switched to typed `Toggle`/`ModelChange` in 3b.
+/// ActiveLoadables), switched to typed `Toggle` events in 3b. Inference is
+/// folded independently so an agent checkpoint cannot overwrite it.
 pub struct ActiveAgent {
     pub seed: AgentState,
 }
@@ -326,7 +331,6 @@ impl Projection for ActiveAgent {
                     set.remove(&r.name);
                 }
             }
-            payload::Kind::ModelChange(m) => st.model = m.model.clone(),
             _ => {}
         }
     }
@@ -373,6 +377,28 @@ impl Projection for ActiveMode {
 /// Fold the active mode overlay from the mutation-applied full-session stream.
 pub fn active_mode(events: &[Event], muts: &HashMap<String, MutationState>) -> Option<pb::Mode> {
     run_projection(&ActiveMode, events, muts)
+}
+
+/// LWW selected inference.  This is deliberately separate from `ActiveAgent`:
+/// an Agent checkpoint is an audit baseline and must not clear a session choice.
+pub struct ActiveInference;
+impl Projection for ActiveInference {
+    type State = Option<pb::Inference>;
+    fn seed(&self) -> Self::State {
+        None
+    }
+    fn apply(&self, state: &mut Self::State, _ev: &Event, kind: &payload::Kind) {
+        if let payload::Kind::Inference(inference) = kind {
+            *state = (!inference.name.is_empty()).then(|| inference.clone());
+        }
+    }
+}
+
+pub fn active_inference(
+    events: &[Event],
+    muts: &HashMap<String, MutationState>,
+) -> Option<pb::Inference> {
+    run_projection(&ActiveInference, events, muts)
 }
 
 /// Coalescing phase for the `ActiveMessages` fold: tracks whether the previous

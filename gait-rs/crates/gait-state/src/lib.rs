@@ -21,6 +21,7 @@ pub mod daemon_exit;
 pub mod gait_dir;
 pub mod git;
 pub mod hook_runner; // reclassified to state (only config_hook uses it; no turn dep)
+pub mod inferences;
 pub mod models;
 pub mod models_meta;
 pub mod permissions;

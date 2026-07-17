@@ -42,22 +42,17 @@ pub fn effective_allow(
     st.session.union(&st.once).cloned().collect()
 }
 
-use crate::proto::gait::log::v1 as pb;
-/// Overlay an active mode's permission policy onto the resolved turn policy:
-/// union its `allow` into the effective allow-list; fold its `deny` into the deny
-/// list via `merge_deny` (monotonic — mode-deny clamps any session-granted allow).
+/// Overlay an active mode's deny-only policy onto the resolved turn policy.
 /// `None` is the identity (default / no mode). Pure; no I/O.
 pub fn overlay_mode_permissions(
     effective_allow: Vec<String>,
     deny: Vec<String>,
-    mode: Option<&pb::PermissionPolicy>,
+    mode_deny: Option<&Vec<String>>,
 ) -> (Vec<String>, Vec<String>) {
-    match mode {
-        Some(p) => {
-            let mut ea = effective_allow;
-            ea.extend(p.allow.iter().cloned());
-            let deny = crate::permissions::merge_deny(&deny, &p.deny);
-            (ea, deny)
+    match mode_deny {
+        Some(mode_deny) => {
+            let deny = crate::permissions::merge_deny(&deny, mode_deny);
+            (effective_allow, deny)
         }
         None => (effective_allow, deny),
     }
@@ -68,15 +63,12 @@ mod overlay_tests {
     use super::*;
 
     #[test]
-    fn overlay_unions_allow_and_monotonically_denies() {
+    fn overlay_only_monotonically_denies() {
         let ea = vec!["read:*".to_string()];
         let deny = vec![];
-        let mode = pb::PermissionPolicy {
-            allow: vec!["shell:ls".into()],
-            deny: vec!["write".into()],
-        };
+        let mode = vec!["write".into()];
         let (ea2, deny2) = overlay_mode_permissions(ea, deny, Some(&mode));
-        assert!(ea2.contains(&"read:*".to_string()) && ea2.contains(&"shell:ls".to_string()));
+        assert_eq!(ea2, vec!["read:*".to_string()]);
         assert_eq!(deny2, vec!["write".to_string()]); // mode deny lands in the monotonic deny set
                                                       // None overlay is identity:
         let (ea3, deny3) = overlay_mode_permissions(vec!["x".into()], vec!["y".into()], None);

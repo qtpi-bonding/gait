@@ -113,13 +113,16 @@ pub async fn run_one_off(
                 codebase,
                 gait_core::config::ConfigLoadPolicy::Strict,
             ) {
-                Ok(c) => c.model.ok_or_else(|| {
-                    anyhow::anyhow!("no model set; pass --model provider/id or set config.model")
+                Ok(c) => c.inference.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no inference set; pass --inference <name> or set config.inference"
+                    )
                 })?,
                 Err(e) => return Err(e),
             }
         }
     };
+    let model = gait_core::inferences::load_inference(codebase, &model)?.model;
     let provider = model
         .split_once('/')
         .map(|(p, _)| p)

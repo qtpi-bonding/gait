@@ -141,12 +141,9 @@ impl ReplSource {
             return short_model(model);
         }
         let cfg = gait_core::config::load_config(&self.gait_dir);
-        let base = cfg.model.unwrap_or_default();
-        let active = active_mode_name(&self.gait_dir, &self.session_id);
-        let effective = active
-            .as_deref()
-            .and_then(|name| gait_core::modes::load_mode(&self.gait_dir, name).ok())
-            .and_then(|mode| mode.model)
+        let base = cfg.inference.unwrap_or_default();
+        let effective = gait_core::inferences::load_inference(&self.gait_dir, &base)
+            .map(|i| i.model)
             .unwrap_or(base);
         short_model(&effective)
     }
@@ -365,9 +362,9 @@ impl TurnSource for ReplSource {
             // /info — print current model, session id, gait-dir, codebase.
             if line.trim() == "/info" {
                 let cfg = gait_core::config::load_config(&self.gait_dir);
-                let model = cfg.model.as_deref().unwrap_or("(none)");
+                let model = cfg.inference.as_deref().unwrap_or("(none)");
                 self.shared.borrow_mut().builder.write_raw(&format!(
-                    "model: {}\rsession: {}\rgait-dir: {}\rcodebase: {}\r\n",
+                    "inference: {}\rsession: {}\rgait-dir: {}\rcodebase: {}\r\n",
                     model,
                     self.session_id,
                     self.gait_dir.display(),
@@ -376,48 +373,35 @@ impl TurnSource for ReplSource {
                 continue;
             }
 
-            // /model [provider/id] — list (no arg) or switch the model for subsequent turns.
-            if let Some(rest) = line.strip_prefix("/model") {
+            // /inference [name|default] — durable session selection using the
+            // exact same operation as `gait run --inference`.
+            if let Some(rest) = line.strip_prefix("/inference") {
                 let arg = rest.trim();
                 if arg.is_empty() {
-                    match gait_core::models::get_models().await {
-                        Ok(models) => {
-                            let filtered = gait_core::models::filter_models(&models, None);
-                            for m in &filtered {
-                                self.shared
-                                    .borrow_mut()
-                                    .builder
-                                    .write_raw(&format!("  {}/{}\r\n", m.provider, m.id));
-                            }
-                            self.shared
-                                .borrow_mut()
-                                .builder
-                                .write_raw(&format!("\r\n{} models\r\n", filtered.len()));
-                        }
-                        Err(e) => {
-                            self.shared
-                                .borrow_mut()
-                                .builder
-                                .write_raw(&format!("[gait] /model: {e}\r\n"));
-                        }
+                    for name in gait_ops::inference::list(&self.gait_dir) {
+                        self.shared
+                            .borrow_mut()
+                            .builder
+                            .write_raw(&format!("  {name}\r\n"));
                     }
                     continue;
                 }
-                // Switch the session model via the shared op (rewrites
-                // <gait-dir>/gait.jsonc, preserving other keys — see
-                // gait_ops::config::set_model doc comment for the data-loss bug
-                // this replaces).
-                if let Err(e) = gait_ops::config::set_model(&self.gait_dir, arg) {
+                let result = if arg == "default" {
+                    gait_ops::inference::clear(&self.gait_dir, &self.session_id).map(|_| None)
+                } else {
+                    gait_ops::inference::select(&self.gait_dir, &self.session_id, arg).map(Some)
+                };
+                if let Err(e) = result {
                     self.shared
                         .borrow_mut()
                         .builder
-                        .write_raw(&format!("[gait] /model: {e}\r\n"));
+                        .write_raw(&format!("[gait] /inference: {e}\r\n"));
                     continue;
                 }
                 self.shared
                     .borrow_mut()
                     .builder
-                    .write_raw(&format!("model set to {arg}\r\n"));
+                    .write_raw(&format!("inference set to {arg}\r\n"));
                 continue;
             }
 
@@ -970,9 +954,9 @@ async fn run_sh_one_off(
     };
     let model = match model_override {
         Some(m) => m,
-        None => cfg.model.ok_or_else(|| {
-            anyhow::anyhow!("no model set; pass --model provider/id or set config.model")
-        })?,
+        None => cfg
+            .inference
+            .ok_or_else(|| anyhow::anyhow!("no inference set; select an inference"))?,
     };
     let provider = model
         .split_once('/')
@@ -1356,12 +1340,23 @@ mod command_tests {
     }
 
     #[tokio::test]
-    async fn slash_model_writes_gait_jsonc() {
+    async fn slash_inference_appends_session_selection() {
         let d = temp_gait_dir();
-        let (mut src, _s) = source_with(d.path(), &["/model prov/mdl", "/q"]);
+        std::fs::create_dir_all(d.path().join("inferences/deep")).unwrap();
+        std::fs::write(
+            d.path().join("inferences/deep/INFERENCE.yaml"),
+            "model: prov/mdl\n",
+        )
+        .unwrap();
+        let (mut src, _s) = source_with(d.path(), &["/inference deep", "/q"]);
         let _ = src.next().await;
-        let cfg = std::fs::read_to_string(d.path().join("gait.jsonc")).unwrap();
-        assert!(cfg.contains("prov/mdl"), "/model must persist model: {cfg}");
+        let logs: Vec<_> = std::fs::read_dir(d.path().join(".active"))
+            .unwrap()
+            .collect();
+        assert!(
+            !logs.is_empty(),
+            "/inference must append a durable session selection"
+        );
     }
 
     #[tokio::test]

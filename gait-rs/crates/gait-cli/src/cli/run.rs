@@ -15,8 +15,8 @@ pub struct RunArgs {
     pub task: Option<String>,
     #[arg(long)]
     pub auto: bool,
-    #[arg(long = "model")]
-    pub model_override: Option<String>,
+    #[arg(long = "inference")]
+    pub inference: Option<String>,
     #[arg(long = "agent")]
     pub agent_name: Option<String>,
     #[arg(long = "mode")]
@@ -176,6 +176,12 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
             std::process::exit(1);
         }
     }
+    if let Some(name) = &args.inference {
+        if let Err(e) = gait_ops::inference::select(&gait_dir, &session_id, name) {
+            eprintln!("[gait] --inference {name}: {e}");
+            std::process::exit(1);
+        }
+    }
 
     // Build profile to extract provider name for API key resolution.
     let agent_path: Option<PathBuf> = if let Some(ref name) = args.agent_name {
@@ -201,7 +207,7 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
         &gait_dir,
         Some(codebase_path.as_path()),
         agent_path.as_deref(),
-        args.model_override.clone(),
+        args.inference.clone(),
     );
     let model = profile.model.clone();
     // Validation only — `PromptNodeDriver::brain_launch` re-derives the
@@ -299,8 +305,8 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
     // uses. The CLI's resolved profile/sandbox/cascade travel as overrides
     // (Task 3.2's C1 fix) so they still reach the spawned brain.
     let profile_override = gait_workflow::ProfileOverride {
-        model: args.model_override.clone(),
-        explicit_model_override: args.model_override.is_some(),
+        inference: args.inference.clone(),
+        explicit_inference_override: args.inference.is_some(),
         allow: args.allow.clone(),
         deny: args.deny.clone(),
         agent: args.agent_name.clone(),
@@ -380,8 +386,8 @@ mod tests {
             "--task",
             "hi",
             "--auto",
-            "--model",
-            "x/y",
+            "--inference",
+            "fast",
             "--max-iter",
             "7",
         ]
@@ -391,7 +397,7 @@ mod tests {
         let a = RunArgs::parse_from(&argv);
         assert_eq!(a.task.as_deref(), Some("hi"));
         assert!(a.auto);
-        assert_eq!(a.model_override.as_deref(), Some("x/y"));
+        assert_eq!(a.inference.as_deref(), Some("fast"));
         assert_eq!(a.max_iter, Some(7));
     }
     #[test]
@@ -419,7 +425,7 @@ mod tests {
             session: Some("s1".to_string()),
             task: Some("do the thing".to_string()),
             auto: true,
-            model_override: Some("anthropic/x".to_string()),
+            inference: Some("deep".to_string()),
             agent_name: Some("default".to_string()),
             result_schema_path: Some("/schema.json".to_string()),
             allow: vec!["Bash".to_string()],
@@ -443,7 +449,7 @@ mod tests {
         assert_eq!(parsed.session_id, launch.session);
         assert_eq!(parsed.task, launch.task);
         assert_eq!(parsed.auto, launch.auto);
-        assert_eq!(parsed.model_override, launch.model_override);
+        assert_eq!(parsed.inference, launch.inference);
         assert_eq!(parsed.agent_name, launch.agent_name);
         assert_eq!(parsed.result_schema_path, launch.result_schema_path);
         assert_eq!(parsed.allow, launch.allow);

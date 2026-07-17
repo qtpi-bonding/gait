@@ -15,7 +15,7 @@ pub struct WorkflowDef {
     #[serde(default = "default_version")]
     pub version: String,
     #[serde(default)]
-    pub model: Option<String>,
+    pub inference: Option<String>,
     #[serde(default)]
     pub allow: Vec<String>,
     #[serde(default)]
@@ -97,7 +97,7 @@ pub struct NodeDef {
     #[serde(default)]
     pub hooks: Option<HooksConfig>,
     #[serde(default)]
-    pub model: Option<String>,
+    pub inference: Option<String>,
     #[serde(default)]
     pub auto: Option<bool>,
     #[serde(default)]

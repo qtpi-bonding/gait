@@ -30,7 +30,7 @@ pub(crate) fn parse_spawn_args(impulse: &Impulse) -> SpawnAgentArgs {
         .filter(|v| !v.is_null());
     SpawnAgentArgs {
         task: get_str("task").unwrap_or_default(),
-        model: get_str("model"),
+        inference: get_str("inference"),
         schema,
         context_files: None,
         detached: get_bool("detached"),
@@ -45,7 +45,7 @@ pub(crate) fn launch_child(
     ctx: &TurnCtx,
     session_id: &str,
     detached: bool,
-    model_override: Option<String>,
+    inference: Option<String>,
 ) -> Option<std::process::Child> {
     let cascade_group = if detached { None } else { ctx.group.handle() };
     if !detached && cascade_group.is_none() {
@@ -59,7 +59,7 @@ pub(crate) fn launch_child(
         session: Some(session_id.to_string()),
         gait_dir: Some(ctx.gait_dir.clone()),
         auto: true,
-        model_override,
+        inference,
         sandbox_locked: ctx.sandbox_on,
         cascade_group,
         ..Default::default()
@@ -121,7 +121,7 @@ pub(crate) async fn handle_spawn_agent(args: SpawnAgentArgs, ctx: TurnCtx) -> Fe
         parent_session_id: &ctx.session_id,
         task: args.task,
         notify_done: args.detached,
-        model_override: args.model.clone(),
+        inference: args.inference.clone(),
         repos: &ctx.repos,
     })
     .is_err()
@@ -155,14 +155,14 @@ pub(crate) async fn handle_spawn_agent(args: SpawnAgentArgs, ctx: TurnCtx) -> Fe
 
     if args.detached {
         // Fire-and-forget peer: break out of the cascade group, don't wait.
-        let _ = launch_child(&ctx, &new_id, true, args.model);
+        let _ = launch_child(&ctx, &new_id, true, args.inference);
         return feedback_result(serde_json::json!({ "session_id": new_id }));
     }
 
     // Blocking subagent: wait for the child process to exit, then read its result.
     let tx_path = crate::session::live::log_path(&ctx.gait_dir, &new_id);
 
-    let Some(mut child) = launch_child(&ctx, &new_id, false, args.model) else {
+    let Some(mut child) = launch_child(&ctx, &new_id, false, args.inference) else {
         return error_feedback("spawn_agent: failed to launch subagent");
     };
 
@@ -233,15 +233,21 @@ mod tests {
     async fn handle_spawn_agent_creates_session_and_returns_id() {
         let ws = tempfile::TempDir::new().unwrap();
         crate::test_utils::init_git_repo(ws.path());
+        std::fs::create_dir_all(ws.path().join("inferences/mock")).unwrap();
+        std::fs::write(
+            ws.path().join("inferences/mock/INFERENCE.yaml"),
+            "model: minimax/MiniMax-M3\n",
+        )
+        .unwrap();
         std::fs::write(
             ws.path().join("gait.jsonc"),
-            r#"{"model":"minimax/MiniMax-M3","allow":[],"tools":[]}"#,
+            r#"{"inference":"mock","allow":[],"tools":[]}"#,
         )
         .unwrap();
         let fb = handle_spawn_agent(
             SpawnAgentArgs {
                 task: "do X".into(),
-                model: None,
+                inference: None,
                 schema: None,
                 context_files: None,
                 detached: true,
@@ -284,16 +290,22 @@ mod tests {
     async fn handle_spawn_agent_with_schema_writes_result_schema_json() {
         let ws = tempfile::TempDir::new().unwrap();
         crate::test_utils::init_git_repo(ws.path());
+        std::fs::create_dir_all(ws.path().join("inferences/mock")).unwrap();
+        std::fs::write(
+            ws.path().join("inferences/mock/INFERENCE.yaml"),
+            "model: minimax/MiniMax-M3\n",
+        )
+        .unwrap();
         std::fs::write(
             ws.path().join("gait.jsonc"),
-            r#"{"model":"minimax/MiniMax-M3","allow":[],"tools":[]}"#,
+            r#"{"inference":"mock","allow":[],"tools":[]}"#,
         )
         .unwrap();
         let schema = serde_json::json!({"type": "object", "required": ["answer"]});
         let fb = handle_spawn_agent(
             SpawnAgentArgs {
                 task: "answer the question".into(),
-                model: None,
+                inference: None,
                 schema: Some(schema.clone()),
                 context_files: None,
                 detached: true, // fire-and-forget so we don't need a real binary

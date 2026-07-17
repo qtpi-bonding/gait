@@ -1,5 +1,5 @@
 //! User-defined **mode** overlays: `<gait_dir>/modes/<name>/MODE.yaml` (parallel
-//! to `skills/<name>/SKILL.md`). A mode is a `{allow, deny, model?, steer}` lens
+//! to `skills/<name>/SKILL.md`). A mode is a `{deny, steer}` safety lens
 //! folded from the log as a replay-complete `Mode` event. `default` is reserved
 //! (the no-op baseline; never read from disk). See
 //! docs/plans/2026-07-08-mode-overlay-design.md.
@@ -10,11 +10,7 @@ use std::path::Path;
 #[derive(serde::Deserialize, Default)]
 struct ModeFile {
     #[serde(default)]
-    allow: Vec<String>,
-    #[serde(default)]
     deny: Vec<String>,
-    #[serde(default)]
-    model: Option<String>,
     #[serde(default)]
     steer: String,
     #[serde(default)]
@@ -30,11 +26,7 @@ pub fn load_mode(gait_dir: &Path, name: &str) -> anyhow::Result<pb::Mode> {
         .map_err(|e| anyhow::anyhow!("mode '{name}' is malformed: {e}"))?;
     Ok(pb::Mode {
         name: name.to_string(),
-        permissions: Some(pb::PermissionPolicy {
-            allow: f.allow,
-            deny: f.deny,
-        }),
-        model: f.model,
+        deny: f.deny,
         steer: f.steer,
         description: f.description,
     })
@@ -60,11 +52,10 @@ pub fn list_modes(gait_dir: &Path) -> Vec<String> {
 /// empty clear sentinel (back to baseline); any other name is resolved from disk.
 pub fn activate_mode(log_path: &Path, gait_dir: &Path, name: &str) -> anyhow::Result<()> {
     let body = if name.is_empty() || name == "default" {
-        crate::proto::events::mode("", vec![], vec![], None, "", "")
+        crate::proto::events::mode("", vec![], "", "")
     } else {
         let m = load_mode(gait_dir, name)?;
-        let p = m.permissions.unwrap_or_default();
-        crate::proto::events::mode(&m.name, p.allow, p.deny, m.model, &m.steer, &m.description)
+        crate::proto::events::mode(&m.name, m.deny, &m.steer, &m.description)
     };
     // Callers may activate a mode before the session's worktree/log directory
     // has otherwise been created (e.g. `--mode` on a brand-new CLI session).
@@ -89,15 +80,10 @@ mod tests {
     #[test]
     fn loads_full_mode() {
         let t = TempDir::new().unwrap();
-        write_mode(
-            t.path(),
-            "plan",
-            "deny: [write, edit]\nmodel: anthropic/x\nsteer: no edits\n",
-        );
+        write_mode(t.path(), "plan", "deny: [write, edit]\nsteer: no edits\n");
         let m = load_mode(t.path(), "plan").unwrap();
         assert_eq!(m.name, "plan");
-        assert_eq!(m.permissions.unwrap().deny, vec!["write", "edit"]);
-        assert_eq!(m.model.as_deref(), Some("anthropic/x"));
+        assert_eq!(m.deny, vec!["write", "edit"]);
         assert_eq!(m.steer, "no edits");
     }
 

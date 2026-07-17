@@ -80,9 +80,15 @@ impl Provider for ScriptedProvider {
 async fn spawn_agent_via_run_turn_creates_child_session() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
+    std::fs::create_dir_all(ws.path().join("inferences/mock")).unwrap();
+    std::fs::write(
+        ws.path().join("inferences/mock/INFERENCE.yaml"),
+        "model: minimax/MiniMax-M3\n",
+    )
+    .unwrap();
     std::fs::write(
         ws.path().join("gait.jsonc"),
-        r#"{"model":"minimax/MiniMax-M3","allow":["spawn_agent"],"tools":[]}"#,
+        r#"{"inference":"mock","allow":["spawn_agent"],"tools":[]}"#,
     )
     .unwrap();
 

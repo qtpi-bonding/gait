@@ -278,7 +278,11 @@ fn active_agent_checkpoint_returns_last_agent() {
     wire::append(
         &path,
         wire::body(pb::payload::Kind::Agent(pb::Agent {
-            model: "model-a".into(),
+            inference: Some(pb::Inference {
+                name: "a".into(),
+                model: "model-a".into(),
+                llm_params: None,
+            }),
             tools: vec![],
             mcp_servers: vec![],
             skills: vec![],
@@ -289,14 +293,17 @@ fn active_agent_checkpoint_returns_last_agent() {
             }),
             instructions: String::new(),
             through_seq: 0,
-            llm_params: None,
         })),
     )
     .unwrap();
     wire::append(
         &path,
         wire::body(pb::payload::Kind::Agent(pb::Agent {
-            model: "model-b".into(),
+            inference: Some(pb::Inference {
+                name: "b".into(),
+                model: "model-b".into(),
+                llm_params: None,
+            }),
             tools: vec![],
             mcp_servers: vec![],
             skills: vec![],
@@ -307,14 +314,13 @@ fn active_agent_checkpoint_returns_last_agent() {
             }),
             instructions: String::new(),
             through_seq: 0,
-            llm_params: None,
         })),
     )
     .unwrap();
 
     let all_events = read_events(&path).unwrap();
     let r = active_agent_checkpoint(&all_events).expect("an agent");
-    assert_eq!(r.model, "model-b");
+    assert_eq!(r.inference.unwrap().model, "model-b");
 }
 
 #[test]
@@ -344,14 +350,14 @@ fn active_cwd_last_write_wins() {
 #[test]
 fn active_mode_folds_lww_and_empty_clears() {
     let evs = mint_events(vec![
-        events::mode("plan", vec![], vec!["write".into()], None, "s", ""),
-        events::mode("code", vec![], vec![], None, "", ""),
+        events::mode("plan", vec!["write".into()], "s", ""),
+        events::mode("code", vec![], "", ""),
     ]);
     assert_eq!(active_mode(&evs, &HashMap::new()).unwrap().name, "code");
 
     let cleared = mint_events(vec![
-        events::mode("plan", vec![], vec![], None, "", ""),
-        events::mode("", vec![], vec![], None, "", ""),
+        events::mode("plan", vec![], "", ""),
+        events::mode("", vec![], "", ""),
     ]);
     assert!(active_mode(&cleared, &HashMap::new()).is_none());
 }
@@ -361,7 +367,7 @@ fn active_mode_survives_agent_rebaseline() {
     // finding #1 regression: an Agent checkpoint between Mode events must NOT
     // clear the active mode (it would if `mode` were a field on AgentState).
     let evs = mint_events(vec![
-        events::mode("plan", vec![], vec!["write".into()], None, "s", ""),
+        events::mode("plan", vec!["write".into()], "s", ""),
         wire::body(payload::Kind::Agent(pb::Agent {
             ..Default::default()
         })), // drift re-emit
@@ -378,7 +384,11 @@ fn active_mode_survives_agent_rebaseline() {
 #[test]
 fn agent_state_from_pb_agent_maps_enabled_sets() {
     let a = pb::Agent {
-        model: "x/y".into(),
+        inference: Some(pb::Inference {
+            name: "x".into(),
+            model: "x/y".into(),
+            llm_params: None,
+        }),
         instructions: "sys".into(),
         tools: vec!["read".into(), "edit".into()],
         mcp_servers: vec!["slack".into()],
@@ -389,7 +399,6 @@ fn agent_state_from_pb_agent_maps_enabled_sets() {
             deny: vec!["shell:rm *".into()],
         }),
         through_seq: 0,
-        llm_params: None,
     };
     let st = AgentState::from(&a);
     assert_eq!(st.model, "x/y");
@@ -405,7 +414,7 @@ fn agent_state_from_pb_agent_maps_enabled_sets() {
 fn agent_state_from_config_seeds_enabled_from_config() {
     use crate::config::{GaitConfig, McpServerDef, SkillDef};
     let cfg = GaitConfig {
-        model: Some("anthropic/x".into()),
+        inference: Some("deep".into()),
         mcp_servers: vec![
             McpServerDef {
                 name: "slack".into(),
@@ -488,7 +497,11 @@ fn active_agent_checkpoint_resets_baseline() {
     let evs = mint_events(vec![
         events::toggle("skill", "old", true),
         wire::body(payload::Kind::Agent(pb::Agent {
-            model: "m2".into(),
+            inference: Some(pb::Inference {
+                name: "m2".into(),
+                model: "m2".into(),
+                llm_params: None,
+            }),
             instructions: "sys2".into(),
             tools: vec![],
             mcp_servers: vec!["slack".into()],
@@ -499,7 +512,6 @@ fn active_agent_checkpoint_resets_baseline() {
                 deny: vec![],
             }),
             through_seq: 0,
-            llm_params: None,
         })),
         events::toggle("skill", "tdd", true),
     ]);
@@ -540,11 +552,19 @@ fn active_agent_projection_checkpoint_is_last_write_wins() {
     let seed = AgentState::default();
     let evs = mint_events(vec![
         wire::body(payload::Kind::Agent(pb::Agent {
-            model: "m1".into(),
+            inference: Some(pb::Inference {
+                name: "m1".into(),
+                model: "m1".into(),
+                llm_params: None,
+            }),
             ..Default::default()
         })),
         wire::body(payload::Kind::Agent(pb::Agent {
-            model: "m2".into(),
+            inference: Some(pb::Inference {
+                name: "m2".into(),
+                model: "m2".into(),
+                llm_params: None,
+            }),
             ..Default::default()
         })),
     ]);
@@ -559,7 +579,11 @@ fn fold_returns_all_three_projections() {
         dir.path(),
         vec![
             wire::body(pb::payload::Kind::Agent(pb::Agent {
-                model: "gpt-fold".into(),
+                inference: Some(pb::Inference {
+                    name: "gpt".into(),
+                    model: "gpt-fold".into(),
+                    llm_params: None,
+                }),
                 tools: vec![],
                 mcp_servers: vec![],
                 skills: vec![],
@@ -570,7 +594,6 @@ fn fold_returns_all_three_projections() {
                 }),
                 instructions: String::new(),
                 through_seq: 0,
-                llm_params: None,
             })),
             events::user_text("hi".into(), None),
             events::toggle("skill", "tdd", true),
@@ -1105,7 +1128,7 @@ fn last_turn_blocks_empty_when_none() {
 }
 
 #[test]
-fn active_agent_folds_toggle_per_kind_and_model_change() {
+fn active_agent_folds_toggle_per_kind() {
     use crate::proto::gait::log::v1::ToggleKind;
     use std::collections::HashMap;
     let seed = AgentState::from_config(
@@ -1131,9 +1154,6 @@ fn active_agent_folds_toggle_per_kind_and_model_change() {
             name: "tdd".into(),
             enabled: false,
         })),
-        wire::body(payload::Kind::ModelChange(pb::ModelChange {
-            model: "m2".into(),
-        })),
     ]);
     let st = run_projection(&ActiveAgent { seed }, &evs, &HashMap::new());
     assert!(!st.skills.contains("tdd"), "skill toggled off");
@@ -1142,7 +1162,7 @@ fn active_agent_folds_toggle_per_kind_and_model_change() {
         !st.skills.contains("slack"),
         "mcp toggle did NOT leak into skills"
     );
-    assert_eq!(st.model, "m2", "ModelChange LWW");
+    assert_eq!(st.model, "m", "inference selection is folded separately");
 }
 
 #[test]
@@ -1229,7 +1249,11 @@ fn active_agent_registry_guards_tool_and_unspecified() {
 fn rebaseline_agent_overlays_skills_and_mcp_from_state() {
     use std::collections::HashSet;
     let live = pb::Agent {
-        model: "m1".into(),
+        inference: Some(pb::Inference {
+            name: "m1".into(),
+            model: "m1".into(),
+            llm_params: None,
+        }),
         instructions: "sys".into(),
         tools: vec!["read".into()],
         mcp_servers: vec!["old-mcp".into()],
@@ -1240,10 +1264,9 @@ fn rebaseline_agent_overlays_skills_and_mcp_from_state() {
             deny: vec![],
         }),
         through_seq: 0,
-        llm_params: None,
     };
     let st = AgentState {
-        model: "m2".into(), // model from state is NOT used — static field from live
+        model: "m2".into(),
         instructions: String::new(),
         tools: HashSet::new(),
         skills: ["new-skill".to_string()].into(),
@@ -1251,13 +1274,17 @@ fn rebaseline_agent_overlays_skills_and_mcp_from_state() {
         plugins: HashSet::new(),
         allow: HashSet::new(),
         deny: HashSet::new(),
-        llm_params: None,
+        inference: None,
         session_skills: HashSet::new(),
         session_mcp: HashSet::new(),
         session_plugins: HashSet::new(),
     };
     let got = rebaseline_agent(live.clone(), &st);
-    assert_eq!(got.model, "m1", "model is static — from live, not state");
+    assert_eq!(
+        got.inference.unwrap().model,
+        "m1",
+        "inference is carried by the checkpoint"
+    );
     assert_eq!(got.instructions, "sys", "instructions are static");
     assert_eq!(got.tools, vec!["read".to_string()], "tools are static");
     assert_eq!(

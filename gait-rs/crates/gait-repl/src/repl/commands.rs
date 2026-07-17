@@ -22,9 +22,9 @@ pub const COMMANDS: &[ReplCommand] = &[
         group: "general",
     },
     ReplCommand {
-        slug: "/model",
+        slug: "/inference",
         aliases: &[],
-        desc: "Show or switch model (provider/id)",
+        desc: "List or select a named inference",
         group: "general",
     },
     ReplCommand {
@@ -142,7 +142,7 @@ mod tests {
         for s in [
             "/help",
             "/info",
-            "/model",
+            "/inference",
             "/sh",
             "/new",
             "/workflow",

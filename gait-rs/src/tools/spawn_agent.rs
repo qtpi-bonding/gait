@@ -16,8 +16,8 @@ pub struct WriteChildSessionOpts<'a> {
     pub parent_session_id: &'a str,
     pub task: String,
     pub notify_done: bool,
-    /// Per-spawn explicit model, if requested by the parent.
-    pub model_override: Option<String>,
+    /// Per-spawn named inference, if requested by the parent.
+    pub inference: Option<String>,
     pub repos: &'a crate::git::Repos,
 }
 
@@ -43,14 +43,13 @@ pub fn write_child_session(opts: WriteChildSessionOpts<'_>) -> anyhow::Result<()
         std::fs::create_dir_all(parent)?;
     }
 
-    let session_model = opts
-        .model_override
-        .or(config.model.clone())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no model: set \"model\" in gait.jsonc or pass --model <id> (see `gait models`)"
-            )
-        })?;
+    let inference = crate::profile::resolve_inference_checked(
+        opts.gait_dir,
+        &config,
+        None,
+        opts.inference.as_deref(),
+    )?;
+    let session_model = inference.model.clone();
     init_session(InitSessionOpts {
         log_path: tx_path.clone(),
         id: opts.new_id.to_string(),
@@ -61,6 +60,7 @@ pub fn write_child_session(opts: WriteChildSessionOpts<'_>) -> anyhow::Result<()
         codebase_path: Some(opts.codebase.to_string_lossy().into_owned()),
         notify_done: opts.notify_done,
     })?;
+    wire::append(&tx_path, events::inference(inference))?;
 
     let from = format!("agent:{}", opts.parent_session_id);
     wire::append(&tx_path, events::user_text(opts.task, Some(from)))?;
@@ -82,8 +82,8 @@ pub fn write_child_session(opts: WriteChildSessionOpts<'_>) -> anyhow::Result<()
 struct SpawnAgentArgs {
     /// Task description — injected as the first user_turn in the new session
     task: String,
-    /// Explicit model override for the child, equivalent to its `--model`.
-    model: Option<String>,
+    /// Explicit named inference for the child.
+    inference: Option<String>,
     /// Optional JSON schema the child's structured_done result must conform to.
     /// Only meaningful when detached=false (blocking subagent).
     schema: Option<serde_json::Value>,
@@ -148,7 +148,10 @@ impl Tool for SpawnAgentTool {
 
         let new_id = crate::session::new_session_id();
         let is_detached = args["detached"].as_bool().unwrap_or(false);
-        let model_override = args.get("model").and_then(Value::as_str).map(str::to_owned);
+        let inference = args
+            .get("inference")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
 
         write_child_session(WriteChildSessionOpts {
             gait_dir: &self.ctx.gait_dir,
@@ -157,7 +160,7 @@ impl Tool for SpawnAgentTool {
             parent_session_id: &self.ctx.session_id,
             task,
             notify_done: is_detached,
-            model_override: model_override.clone(),
+            inference: inference.clone(),
             repos: &self.repos,
         })
         .map_err(crate::tools::ToolError::Internal)?;
@@ -186,7 +189,7 @@ impl Tool for SpawnAgentTool {
             session: Some(new_id.clone()),
             gait_dir: Some(self.ctx.gait_dir.clone()),
             auto: true,
-            model_override,
+            inference,
             ..Default::default()
         }
         .to_process_argv();
@@ -209,9 +212,21 @@ mod tests {
     async fn spawn_agent_creates_session_transcript() {
         let ws = TempDir::new().unwrap();
         init_git_repo(ws.path());
+        std::fs::create_dir_all(ws.path().join("inferences/parent")).unwrap();
+        std::fs::write(
+            ws.path().join("inferences/parent/INFERENCE.yaml"),
+            "model: minimax/MiniMax-M3\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(ws.path().join("inferences/child")).unwrap();
+        std::fs::write(
+            ws.path().join("inferences/child/INFERENCE.yaml"),
+            "model: anthropic/child\n",
+        )
+        .unwrap();
         std::fs::write(
             ws.path().join("gait.jsonc"),
-            r#"{"model":"minimax/MiniMax-M3","allow":[],"tools":[]}"#,
+            r#"{"inference":"parent","allow":[],"tools":[]}"#,
         )
         .unwrap();
 
@@ -223,13 +238,13 @@ mod tests {
             ),
             crate::git::Repos::production(),
         );
-        assert!(tool.parameters()["properties"]["model"].is_object());
+        assert!(tool.parameters()["properties"]["inference"].is_object());
 
         let result = tool
             .execute(
                 serde_json::json!({
                     "task": "implement feature X",
-                    "model": "anthropic/child"
+                    "inference": "child"
                 }),
                 &crate::Recorder::detached(),
             )
@@ -277,9 +292,15 @@ mod tests {
     async fn spawn_agent_returns_session_id() {
         let ws = TempDir::new().unwrap();
         init_git_repo(ws.path());
+        std::fs::create_dir_all(ws.path().join("inferences/parent")).unwrap();
+        std::fs::write(
+            ws.path().join("inferences/parent/INFERENCE.yaml"),
+            "model: minimax/MiniMax-M3\n",
+        )
+        .unwrap();
         std::fs::write(
             ws.path().join("gait.jsonc"),
-            r#"{"model":"minimax/MiniMax-M3","allow":[],"tools":[]}"#,
+            r#"{"inference":"parent","allow":[],"tools":[]}"#,
         )
         .unwrap();
 

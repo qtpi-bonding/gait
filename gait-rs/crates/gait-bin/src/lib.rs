@@ -2,7 +2,8 @@ use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use std::path::PathBuf;
 
 use gait_cli::cli::admin::{
-    AuthArgs, ConfigArgs, DisableArgs, EnableArgs, ModelsArgs, RegisterArgs, UnregisterArgs,
+    AuthArgs, ConfigArgs, DisableArgs, EnableArgs, InferenceArgs, ModelsArgs, RegisterArgs,
+    UnregisterArgs,
 };
 use gait_cli::cli::daemons::DaemonsArgs;
 use gait_cli::cli::init::InitArgs;
@@ -34,9 +35,9 @@ pub struct Cli {
     /// Continue an existing session by id
     #[arg(long, short = 's')]
     pub session: Option<String>,
-    /// Model override (`provider/model`)
-    #[arg(long, short = 'm')]
-    pub model: Option<String>,
+    /// Named inference selection.
+    #[arg(long)]
+    pub inference: Option<String>,
     /// Agent file to load
     #[arg(long, short = 'a')]
     pub agent: Option<String>,
@@ -98,6 +99,7 @@ pub enum Commands {
     Disable(DisableArgs),
     Auth(AuthArgs),
     Models(ModelsArgs),
+    Inference(InferenceArgs),
     Workflow(WorkflowArgs),
     Daemons(DaemonsArgs),
 }

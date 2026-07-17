@@ -196,7 +196,13 @@ fn workspace() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
         format!("gaitdir: {}\n", gait_dir.display()),
     )
     .unwrap();
-    std::fs::write(gait_dir.join("gait.jsonc"), r#"{ "model": "mock/model" }"#).unwrap();
+    std::fs::create_dir_all(gait_dir.join("inferences/mock")).unwrap();
+    std::fs::write(
+        gait_dir.join("inferences/mock/INFERENCE.yaml"),
+        "model: mock/model\n",
+    )
+    .unwrap();
+    std::fs::write(gait_dir.join("gait.jsonc"), r#"{ "inference": "mock" }"#).unwrap();
     (t, gait_dir, repo)
 }
 

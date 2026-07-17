@@ -105,8 +105,8 @@ impl BrainLaunch {
         max_iter: Option<usize>,
         cascade_group_arg: Option<String>,
         agent_name: Option<String>,
-        model_override: Option<String>,
-        explicit_model_override: bool,
+        inference_override: Option<String>,
+        explicit_inference_override: bool,
         allow: Vec<String>,
         deny: Vec<String>,
         result_schema: Option<serde_json::Value>,
@@ -124,8 +124,8 @@ impl BrainLaunch {
             allow_intree: false,
             profile_inputs: crate::turn::spine::ProfileInputs {
                 agent_name,
-                model_override,
-                explicit_model_override,
+                inference_override,
+                explicit_inference_override,
                 allow,
                 deny,
                 result_schema,
@@ -355,7 +355,7 @@ pub async fn resolve_profile(
     codebase: &Path,
     session_id: &str,
     agent_path: Option<&Path>,
-    model_override: Option<String>,
+    inference_override: Option<String>,
     repos: &crate::git::Repos,
     api_key: Option<String>,
 ) -> anyhow::Result<crate::profile::ResolvedProfile> {
@@ -364,7 +364,7 @@ pub async fn resolve_profile(
         gait_dir,
         Some(codebase),
         agent_path,
-        model_override,
+        inference_override,
     );
     profile
         .resolve(
@@ -528,7 +528,7 @@ pub async fn run_one_off_turn(
     exe: &std::path::Path,
     sandbox_cfg: &crate::config::SandboxConfig,
     sandbox_on: bool,
-    model: &str,
+    inference: &str,
     input_text: String,
     schema: serde_json::Value,
 ) -> anyhow::Result<crate::turn::TurnResult> {
@@ -542,8 +542,8 @@ pub async fn run_one_off_turn(
 
     let profile_inputs = crate::turn::spine::ProfileInputs {
         agent_name: None,
-        model_override: Some(model.to_string()),
-        explicit_model_override: true,
+        inference_override: Some(inference.to_string()),
+        explicit_inference_override: true,
         allow: vec![],
         deny: vec![],
         result_schema: Some(schema),

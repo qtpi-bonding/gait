@@ -22,6 +22,7 @@ pub mod profile;
 // State modules extracted into `gait-state`; re-exported here so every internal
 // `crate::<state module>` path and every external `gait_core::<state module>`
 // path keeps resolving unchanged (the strangler shimper task 6).
+pub use gait_state::inferences;
 pub use gait_state::{
     agent_frontmatter, auth, config_hook, daemon_exit, gait_dir, git, hook_runner, models,
     models_meta, permissions, proto, registry, session, skills,

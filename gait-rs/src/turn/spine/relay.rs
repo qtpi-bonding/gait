@@ -179,17 +179,15 @@ pub async fn relay_brain_turn(
         }
         TurnMode::Ephemeral { input } => crate::turn::SessionLog::ephemeral(input.clone()),
     };
-    // Fold the live mode before spawning. An explicit caller model is the
-    // terminal override; a mode only overlays a config/agent-resolved model.
+    // Fold the durable selected inference before provider/credential binding.
     let events = log.events();
     let mut profile = lifecycle::build_turn_profile(gait_dir, codebase, profile_inputs);
     {
-        use crate::session::retrace::{active_mode, active_mutations, apply_cascade};
+        use crate::session::retrace::{active_inference, active_mutations, apply_cascade};
         let mut muts = active_mutations(&events);
         apply_cascade(&mut muts, &events);
-        let mode_model = active_mode(&events, &muts).and_then(|m| m.model);
-        if !profile_inputs.explicit_model_override {
-            profile.model = crate::profile::apply_mode_model(profile.model, mode_model);
+        if let Some(inference) = active_inference(&events, &muts) {
+            profile.overlay_inference(&inference)?;
         }
     }
     let credential = crate::auth::resolve_credential(

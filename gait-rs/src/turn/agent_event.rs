@@ -7,7 +7,6 @@
 //! proto facade stays profile-free; their only caller is `turn::setup`.
 
 use crate::profile::ResolvedProfile;
-use crate::proto::events::llm_params_to_proto;
 use crate::proto::gait::log::v1 as pb;
 use crate::proto::wire;
 
@@ -21,7 +20,6 @@ pub fn agent_msg(resolved: &ResolvedProfile) -> pb::Agent {
     let mut mcp_servers: Vec<String> = resolved.mcp_clients.keys().cloned().collect();
     mcp_servers.sort();
     pb::Agent {
-        model: resolved.model.clone(),
         instructions: resolved.instructions.clone(),
         tools: resolved
             .permissioned
@@ -41,7 +39,13 @@ pub fn agent_msg(resolved: &ResolvedProfile) -> pb::Agent {
             deny: resolved.permissioned.deny.clone(),
         }),
         through_seq: 0,
-        llm_params: Some(llm_params_to_proto(&resolved.llm_params)),
+        inference: Some(pb::Inference {
+            name: String::new(),
+            model: resolved.model.clone(),
+            llm_params: Some(crate::proto::events::llm_params_to_proto(
+                &resolved.llm_params,
+            )),
+        }),
     }
 }
 
@@ -114,7 +118,7 @@ mod tests {
             pb::payload::Kind::Agent(r) => r.clone(),
             other => panic!("expected Agent, got {other:?}"),
         };
-        assert_eq!(r.model, "anthropic/x");
+        assert_eq!(r.inference.unwrap().model, "anthropic/x");
         let perms = r.permissions.as_ref().expect("permissions");
         assert_eq!(perms.allow, vec!["read".to_string()]);
         assert_eq!(perms.deny, vec!["shell:rm *".to_string()]);
