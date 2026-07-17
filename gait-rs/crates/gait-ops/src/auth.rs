@@ -5,6 +5,7 @@
 //! hits `models.dev` (with disk-cache fallback); the pure `filter_models`
 //! helper stays in gait-core and we just delegate here.
 use crate::OpError;
+use gait_auth::AuthMethod;
 use std::collections::HashMap;
 
 /// Provider → masked-display-string map. Each key is a provider name
@@ -83,6 +84,47 @@ pub fn remove(provider: &str) -> Result<AuthRemoveOutcome, OpError> {
     })
 }
 
+/// Run a Codex device-code login. `show_device_code` receives only the
+/// user-facing flow; the transient device state and all tokens remain inside
+/// the operation/auth method.
+pub async fn login_codex<F>(show_device_code: F) -> Result<AuthWriteOutcome, OpError>
+where
+    F: FnOnce(&gait_auth::LoginFlow),
+{
+    let auth = gait_auth::codex::CodexSubscriptionAuth::new();
+    let flow = auth
+        .begin_login(gait_auth::codex::CODEX_PROVIDER_ID)
+        .await
+        .map_err(|error| OpError::Other(error.into()))?;
+    show_device_code(&flow);
+    let credential = auth
+        .complete_login(
+            gait_auth::codex::CODEX_PROVIDER_ID,
+            gait_auth::LoginCompletion::DeviceCodeApproved,
+        )
+        .await
+        .map_err(|error| OpError::Other(error.into()))?;
+    let gait_auth::ResolvedCredential::Subscription(subscription) = credential else {
+        return Err(OpError::Other(anyhow::anyhow!(
+            "Codex login returned an API key credential"
+        )));
+    };
+    let display = subscription
+        .account_label
+        .as_ref()
+        .map(|label| format!("subscription ({label})"))
+        .unwrap_or_else(|| "subscription".to_string());
+    gait_state::auth::write_subscription_credential(
+        gait_auth::codex::CODEX_PROVIDER_ID,
+        &subscription,
+    )
+    .map_err(|error| OpError::Other(error.into()))?;
+    Ok(AuthWriteOutcome {
+        provider: gait_auth::codex::CODEX_PROVIDER_ID.to_string(),
+        display,
+    })
+}
+
 /// List every provider configured in the credential store, sorted by
 /// provider name with masked-display values (`"abcd1234..."` for `api`
 /// entries, literal `"oauth"`/`"wellknown"`/`"unknown"` for the rest).
@@ -91,6 +133,26 @@ pub fn list() -> AuthListOutcome {
     let mut sorted: Vec<(String, String)> = creds.drain().collect();
     sorted.sort_by(|a, b| a.0.cmp(&b.0));
     sorted.into_iter().collect()
+}
+
+/// Non-secret status display for one configured provider.
+pub fn status(provider: &str) -> Option<String> {
+    list().remove(provider)
+}
+
+/// Revoke the Codex refresh token when possible, then remove its local
+/// credential. Local removal still proceeds when the remote revoke endpoint is
+/// unavailable so logout is reliable offline.
+pub async fn logout_codex() -> Result<AuthRemoveOutcome, OpError> {
+    if let Some(credential) =
+        gait_state::auth::resolve_credential(gait_auth::codex::CODEX_PROVIDER_ID)
+    {
+        gait_auth::codex::CodexSubscriptionAuth::new()
+            .logout(&credential)
+            .await
+            .map_err(|error| OpError::Other(error.into()))?;
+    }
+    remove(gait_auth::codex::CODEX_PROVIDER_ID)
 }
 
 /// Fetch the current models.dev catalog (with the same disk-cache /

@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 gait-state = { path = "../gait-state" }
+gait-auth = { path = "../gait-auth" }
 gait-proto = { path = "../gait-proto" }
 anyhow = "1"
 thiserror = "1"

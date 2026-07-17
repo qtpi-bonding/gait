@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 gait-types        = { path = "../gait-types" }
+gait-auth         = { path = "../gait-auth" }
 reqwest           = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 tokio             = { version = "1", features = ["full"] }
 tokio-util        = "0.7"

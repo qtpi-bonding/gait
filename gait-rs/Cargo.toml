@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/gait-bin", "crates/gait-repl", "crates/gait-cli", "crates/gait-proto", "crates/gait-types", "crates/gait-provider", "crates/gait-workflow", "crates/gait-ops", "crates/gait-mangen", "crates/gait-sandbox", "crates/gait-state", "crates/gait-acp"]
+members = ["crates/gait-bin", "crates/gait-repl", "crates/gait-cli", "crates/gait-proto", "crates/gait-types", "crates/gait-auth", "crates/gait-provider", "crates/gait-workflow", "crates/gait-ops", "crates/gait-mangen", "crates/gait-sandbox", "crates/gait-state", "crates/gait-acp"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
@@ -61,6 +61,7 @@ grep-regex = "0.1.14"
 grep-searcher = "0.1.16"
 gait-types     = { path = "crates/gait-types" }
 gait-provider   = { path = "crates/gait-provider" }
+gait-auth       = { path = "crates/gait-auth" }
 gait-sandbox    = { path = "crates/gait-sandbox" }
 gait-proto      = { path = "crates/gait-proto" }
 gait-state      = { path = "crates/gait-state" }

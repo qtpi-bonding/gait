@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 gait-core    = { path = "../.." }
 gait-ops     = { path = "../gait-ops" }
+gait-auth    = { path = "../gait-auth" }
 gait-workflow = { path = "../gait-workflow" }
 gait-proto   = { path = "../gait-proto" }
 prost        = "0.13"

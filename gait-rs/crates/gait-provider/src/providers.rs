@@ -6,6 +6,7 @@
 pub enum Wire {
     Anthropic,
     OpenAI,
+    CodexResponses,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -43,6 +44,16 @@ pub const PROVIDERS: &[ProviderSpec] = &[
         wire: Wire::OpenAI,
         base_url: None,
         env_var: "OPENAI_API_KEY",
+        requires_auth: true,
+    },
+    ProviderSpec {
+        // ChatGPT subscription access uses the Codex Responses backend, not
+        // the public API-key endpoint. It is intentionally a distinct model
+        // namespace so `openai/...` remains API-key-only.
+        id: "openai-codex",
+        wire: Wire::CodexResponses,
+        base_url: Some("https://chatgpt.com/backend-api/codex"),
+        env_var: "OPENAI_CODEX_API_KEY",
         requires_auth: true,
     },
     ProviderSpec {

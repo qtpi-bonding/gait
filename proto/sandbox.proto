@@ -146,6 +146,9 @@ message BrainInit {
   GitStatus git = 3;                       // turn-start codebase git snapshot
   string profile_json = 4;                 // serialized gait_core::profile::Profile (JSON)
   repeated DaemonStatus daemons = 5;       // active daemons in this gait-dir (global registry, shared across sessions)
+  // Private spine→brain bootstrap material. Never written to session events,
+  // diagnostics, or the process environment.
+  string credential_json = 6;
 }
 
 message GitStatus {

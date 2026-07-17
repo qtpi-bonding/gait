@@ -10,6 +10,7 @@ gait-proto    = { path = "../gait-proto" }
 gait-types    = { path = "../gait-types" }
 gait-sandbox  = { path = "../gait-sandbox" }   # session/daemons.rs: process::proc_start_time
 gait-provider = { path = "../gait-provider" }  # auth.rs / models_meta.rs: providers::lookup
+gait-auth     = { path = "../gait-auth" }
 git2 = "0.19"
 libc = "0.2"
 clap = { version = "4", features = ["derive"] }

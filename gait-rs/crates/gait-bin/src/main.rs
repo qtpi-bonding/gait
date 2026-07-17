@@ -145,7 +145,7 @@ async fn main() {
         Commands::Unload(args) => gait_cli::cli::session::cmd_unload(args),
         Commands::Enable(args) => gait_cli::cli::admin::cmd_enable(args),
         Commands::Disable(args) => gait_cli::cli::admin::cmd_disable(args),
-        Commands::Auth(args) => gait_cli::cli::admin::cmd_auth(args),
+        Commands::Auth(args) => gait_cli::cli::admin::cmd_auth(args).await,
         Commands::Models(args) => gait_cli::cli::admin::cmd_models(args).await,
         Commands::Workflow(args) => gait_cli::cli::workflow::cmd_workflow(args).await,
         Commands::Daemons(args) => gait_cli::cli::daemons::cmd_daemons(args),

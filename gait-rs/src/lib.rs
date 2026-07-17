@@ -168,7 +168,6 @@ pub async fn __dispatch_role(argv: &[String]) {
             // `BrainArgs` lives in `launch.rs` (hoisted out of this match arm
             // so `launch::BrainLaunch`'s round-trip test can call it).
             let args = crate::launch::BrainArgs::parse_from(&argv[1..]);
-            let api_key = std::env::var("GAIT_BRAIN_API_KEY").ok();
             let config = BrainConfig {
                 session_id: args.session_id,
                 auto: args.auto,
@@ -179,7 +178,7 @@ pub async fn __dispatch_role(argv: &[String]) {
                 no_sandbox: args.no_sandbox,
                 sandbox: args.sandbox,
             };
-            run_brain(config, gait_dir, codebase, api_key).await;
+            run_brain(config, gait_dir, codebase).await;
         }
         Some("__run-tool") => {
             #[derive(clap::Parser)]

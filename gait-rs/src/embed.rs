@@ -372,7 +372,7 @@ pub async fn resolve_profile(
             session_id.to_string(),
             gait_dir.to_path_buf(),
             repos.clone(),
-            api_key,
+            api_key.map(gait_auth::ResolvedCredential::ApiKey),
         )
         .await
 }

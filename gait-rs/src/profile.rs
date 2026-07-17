@@ -301,11 +301,11 @@ impl Profile {
         session_id: String,
         gait_dir: std::path::PathBuf,
         repos: crate::git::Repos,
-        api_key: Option<String>,
+        credential: Option<gait_auth::ResolvedCredential>,
     ) -> anyhow::Result<ResolvedProfile> {
         // Provider (no network until .stream()).
         let provider: std::sync::Arc<dyn gait_provider::provider::Provider> = std::sync::Arc::from(
-            gait_provider::factory::load_provider(&self.model, api_key)
+            gait_provider::factory::load_provider_with_credential(&self.model, credential)
                 .map_err(|e| anyhow::anyhow!("provider: {e}"))?,
         );
 
@@ -563,7 +563,7 @@ mod tests {
                 "s1".into(),
                 std::path::PathBuf::from("."),
                 crate::git::Repos::production(),
-                Some("test-key".into()),
+                Some(gait_auth::ResolvedCredential::ApiKey("test-key".into())),
             )
             .await
             .unwrap();
@@ -830,7 +830,7 @@ mod tests {
                 "s".into(),
                 std::path::PathBuf::from("/tmp/gd"),
                 crate::git::Repos::production(),
-                Some("test-key".into()),
+                Some(gait_auth::ResolvedCredential::ApiKey("test-key".into())),
             )
             .await
             .unwrap();

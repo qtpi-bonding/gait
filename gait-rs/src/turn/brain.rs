@@ -57,12 +57,7 @@ pub struct BrainConfig {
 /// 4. Load session + profile, create BrainDriver + BrainSink.
 /// 5. Call `embed::run_loop`.
 /// 6. Send Terminated signal to the spine.
-pub async fn run_brain(
-    config: BrainConfig,
-    gait_dir: PathBuf,
-    codebase_path: PathBuf,
-    api_key: Option<String>,
-) {
+pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: PathBuf) {
     // ── Apply brain seal ──────────────────────────────────────────────────────
     let seal_status = crate::sandbox::platform_sandbox()
         .apply(&brain_scope())
@@ -268,6 +263,13 @@ pub async fn run_brain(
             }
             std::process::exit(1);
         });
+    let credential = parse_bootstrap_credential(&init.credential_json).unwrap_or_else(|error| {
+        #[allow(clippy::print_stderr)]
+        {
+            eprintln!("[brain] error: invalid private credential bootstrap: {error}");
+        }
+        std::process::exit(1);
+    });
 
     let repos = crate::git::Repos::production();
 
@@ -309,7 +311,7 @@ pub async fn run_brain(
         session_id: session_id.clone(),
         gait_dir: gait_dir.clone(),
         repos,
-        api_key,
+        credential,
         auto: config.auto,
         max_iter: cfg.max_iter,
         preview_policy: cfg.preview,
@@ -503,7 +505,7 @@ struct BrainDriver {
     session_id: String,
     gait_dir: PathBuf,
     repos: crate::git::Repos,
-    api_key: Option<String>,
+    credential: Option<gait_auth::ResolvedCredential>,
     auto: bool,
     max_iter: Option<usize>,
     preview_policy: crate::config::PreviewPolicy,
@@ -540,7 +542,7 @@ impl BrainDriver {
                 self.session_id.clone(),
                 self.gait_dir.clone(),
                 self.repos.clone(),
-                self.api_key.clone(),
+                self.credential.clone(),
             )
             .await
     }
@@ -603,6 +605,34 @@ impl BrainDriver {
     }
 }
 
+fn parse_bootstrap_credential(
+    value: &str,
+) -> anyhow::Result<Option<gait_auth::ResolvedCredential>> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let value: serde_json::Value = serde_json::from_str(value)?;
+    match value.get("kind").and_then(serde_json::Value::as_str) {
+        Some("api_key") => value
+            .get("secret")
+            .and_then(serde_json::Value::as_str)
+            .filter(|key| !key.is_empty())
+            .map(|key| Ok(gait_auth::ResolvedCredential::ApiKey(key.to_string())))
+            .unwrap_or_else(|| Err(anyhow::anyhow!("empty API key")))
+            .map(Some),
+        Some("subscription") => serde_json::from_value(
+            value
+                .get("credential")
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("missing subscription credential"))?,
+        )
+        .map(gait_auth::ResolvedCredential::Subscription)
+        .map(Some)
+        .map_err(Into::into),
+        _ => Err(anyhow::anyhow!("unknown credential kind")),
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -656,7 +686,7 @@ mod tests {
             session_id: "s0000000".to_string(),
             gait_dir: std::path::PathBuf::from("/tmp/gd"),
             repos: crate::git::Repos::production(),
-            api_key: None,
+            credential: None,
             auto: false,
             max_iter: None,
             preview_policy: crate::config::PreviewPolicy::default(),

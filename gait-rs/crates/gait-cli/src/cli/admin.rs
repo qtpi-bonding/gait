@@ -4,10 +4,10 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-/// `gait auth list|add|remove [provider]`
+/// `gait auth list|add|remove|login|status|logout [provider]`
 #[derive(Parser, Debug)]
 pub struct AuthArgs {
-    /// Action: list (default), add, remove
+    /// Action: list (default), add, remove, login, status, logout
     pub action: Option<String>,
     /// Provider name (used with add/remove)
     pub provider: Option<String>,
@@ -146,7 +146,7 @@ pub fn parse_flags(args: &[String]) -> std::collections::HashMap<String, String>
 /// key (per design §4: fixed-value prompts → value passed as a param, but
 /// the prompt itself stays in the adapter); it then delegates the actual
 /// store write to the op.
-pub fn cmd_auth(args: AuthArgs) {
+pub async fn cmd_auth(args: AuthArgs) {
     // Normalize: action defaults to "list"; accept "ls" as alias.
     let action = args
         .action
@@ -173,6 +173,12 @@ pub fn cmd_auth(args: AuthArgs) {
                     std::process::exit(1);
                 }
             };
+            if provider == "openai-codex" {
+                eprintln!(
+                    "openai-codex uses a ChatGPT subscription; run: gait auth login openai-codex"
+                );
+                std::process::exit(1);
+            }
             eprint!("{} API key: ", provider);
             use std::io::BufRead;
             let key = std::io::BufReader::new(std::io::stdin())
@@ -186,6 +192,59 @@ pub fn cmd_auth(args: AuthArgs) {
                 Ok(out) => println!("Saved {} credentials ({})", out.provider, out.display),
                 Err(e) => {
                     eprintln!("[gait] error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        "login" => {
+            let provider = provider.unwrap_or("openai-codex");
+            if provider != "openai-codex" {
+                eprintln!("subscription login is currently available only for openai-codex");
+                std::process::exit(1);
+            }
+            match gait_ops::auth::login_codex(|flow| match flow {
+                gait_auth::LoginFlow::DeviceCode {
+                    verification_url,
+                    user_code,
+                    ..
+                } => {
+                    println!("Open {verification_url} and enter code: {user_code}");
+                    println!("Waiting for approval...");
+                }
+                _ => unreachable!("Codex subscription login uses a device code"),
+            })
+            .await
+            {
+                Ok(out) => println!("Saved {} credentials ({})", out.provider, out.display),
+                Err(error) => {
+                    eprintln!("[gait] error: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        "status" => {
+            let provider = match provider {
+                Some(provider) => provider,
+                None => {
+                    eprintln!("usage: gait auth status <provider>");
+                    std::process::exit(1);
+                }
+            };
+            match gait_ops::auth::status(provider) {
+                Some(status) => println!("{provider}: {status}"),
+                None => println!("{provider}: not configured"),
+            }
+        }
+        "logout" => {
+            let provider = provider.unwrap_or("openai-codex");
+            if provider != "openai-codex" {
+                eprintln!("subscription logout is currently available only for openai-codex; use `gait auth remove {provider}` for API keys");
+                std::process::exit(1);
+            }
+            match gait_ops::auth::logout_codex().await {
+                Ok(out) => println!("Logged out and removed {} credentials", out.provider),
+                Err(error) => {
+                    eprintln!("[gait] error: {error}");
                     std::process::exit(1);
                 }
             }
@@ -208,7 +267,7 @@ pub fn cmd_auth(args: AuthArgs) {
         }
         other => {
             eprintln!("unknown auth subcommand: {}", other);
-            eprintln!("usage: gait auth <list|add|remove> [<provider>]");
+            eprintln!("usage: gait auth <list|add|remove|login|status|logout> [<provider>]");
             std::process::exit(1);
         }
     }

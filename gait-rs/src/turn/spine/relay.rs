@@ -19,6 +19,20 @@ use super::preview::enrich_permissions_preview;
 use super::util::turn_result_from_json;
 use super::watchdog::{SpinePhase, Watchdog};
 
+/// Encode credential material exclusively for the private first BrainInit
+/// frame. This must never be reused for events, diagnostics, or environment.
+fn credential_to_wire_json(credential: &gait_auth::ResolvedCredential) -> anyhow::Result<String> {
+    let value = match credential {
+        gait_auth::ResolvedCredential::ApiKey(key) => serde_json::json!({
+            "kind": "api_key", "secret": key,
+        }),
+        gait_auth::ResolvedCredential::Subscription(subscription) => serde_json::json!({
+            "kind": "subscription", "credential": subscription,
+        }),
+    };
+    serde_json::to_string(&value).map_err(Into::into)
+}
+
 /// Shared slot holding the active cascade group for the current turn.
 /// The signal handler (SIGINT/SIGTERM) reads this to call `kill_all()`.
 pub type SignalSlot =
@@ -178,14 +192,13 @@ pub async fn relay_brain_turn(
             profile.model = crate::profile::apply_mode_model(profile.model, mode_model);
         }
     }
-    let effective_api_key = crate::auth::resolve_api_key(
+    let credential = crate::auth::resolve_credential(
         profile
             .model
             .split_once('/')
             .map(|(provider, _)| provider)
             .unwrap_or(""),
-    )
-    .unwrap_or_default();
+    );
 
     // ── Spawn brain (enrolled as cascade group leader) ──────────────────────
     let mut child = {
@@ -205,8 +218,7 @@ pub async fn relay_brain_turn(
             .args(&brain_args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
-            .env("GAIT_BRAIN_API_KEY", effective_api_key);
+            .stderr(std::process::Stdio::inherit());
         // Set up cascade group enrollment hooks (setsid for brain = first call).
         group
             .configure_enrolled(&mut std_cmd)
@@ -259,6 +271,11 @@ pub async fn relay_brain_turn(
             }),
             profile_json,
             daemons,
+            credential_json: credential
+                .as_ref()
+                .map(credential_to_wire_json)
+                .transpose()?
+                .unwrap_or_default(),
         };
         let sig = Signal {
             corr_id: 0,

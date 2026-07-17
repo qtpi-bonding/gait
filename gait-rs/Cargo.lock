@@ -1134,6 +1134,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "gait-auth"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "rand 0.8.6",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "gait-bin"
 version = "0.1.0"
 dependencies = [
@@ -1164,6 +1179,7 @@ dependencies = [
  "async-trait",
  "clap",
  "dirs-next",
+ "gait-auth",
  "gait-core",
  "gait-ops",
  "gait-proto",
@@ -1195,6 +1211,7 @@ dependencies = [
  "eventsource-stream",
  "fs2",
  "futures-util",
+ "gait-auth",
  "gait-proto",
  "gait-provider",
  "gait-sandbox",
@@ -1245,6 +1262,7 @@ name = "gait-ops"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "gait-auth",
  "gait-proto",
  "gait-state",
  "git2",
@@ -1288,6 +1306,7 @@ dependencies = [
  "async-trait",
  "eventsource-stream",
  "futures-util",
+ "gait-auth",
  "gait-types",
  "rand 0.8.6",
  "reqwest 0.12.28",
@@ -1347,6 +1366,7 @@ dependencies = [
  "dirs-next",
  "fs2",
  "futures-util",
+ "gait-auth",
  "gait-proto",
  "gait-provider",
  "gait-sandbox",

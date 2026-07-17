@@ -1,6 +1,8 @@
 use crate::anthropic::AnthropicProvider;
+use crate::codex::CodexResponsesProvider;
 use crate::openai::OpenAIProvider;
 use crate::provider::Provider;
+use gait_auth::ResolvedCredential;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FactoryError {
@@ -10,6 +12,8 @@ pub enum FactoryError {
     UnknownProvider(String),
     #[error("missing API key for provider '{0}': set {1} env var")]
     MissingApiKey(String, String),
+    #[error("invalid credential: {0}")]
+    InvalidCredential(String),
 }
 
 /// Per-provider base URL override, e.g. `OLLAMA_BASE_URL=http://192.168.1.50:11500/v1`
@@ -23,10 +27,37 @@ pub fn load_provider(
     model_str: &str,
     api_key: Option<String>,
 ) -> Result<Box<dyn Provider>, FactoryError> {
+    load_provider_with_credential(model_str, api_key.map(ResolvedCredential::ApiKey))
+}
+
+/// Typed factory boundary. API-key providers accept `ApiKey`; the Codex
+/// Responses provider accepts only its versioned subscription credential.
+pub fn load_provider_with_credential(
+    model_str: &str,
+    credential: Option<ResolvedCredential>,
+) -> Result<Box<dyn Provider>, FactoryError> {
     let (provider_id, model_id) = parse_model_string(model_str)?;
     let spec = crate::providers::lookup(&provider_id)
         .ok_or_else(|| FactoryError::UnknownProvider(provider_id.clone()))?;
-    let key = match api_key.filter(|k| !k.is_empty()) {
+    if matches!(spec.wire, crate::providers::Wire::CodexResponses) {
+        let Some(ResolvedCredential::Subscription(subscription)) = credential else {
+            return Err(FactoryError::MissingApiKey(
+                spec.id.into(),
+                "run `gait auth login openai-codex`".into(),
+            ));
+        };
+        return CodexResponsesProvider::new(
+            subscription,
+            model_id,
+            base_url_override(&provider_id).or_else(|| spec.base_url.map(String::from)),
+        )
+        .map(|provider| Box::new(provider) as Box<dyn Provider>)
+        .map_err(FactoryError::InvalidCredential);
+    }
+    let key = match credential.and_then(|credential| match credential {
+        ResolvedCredential::ApiKey(key) if !key.is_empty() => Some(key),
+        _ => None,
+    }) {
         Some(k) => k,
         None => match std::env::var(spec.env_var) {
             Ok(k) if !k.is_empty() => k,
@@ -48,6 +79,7 @@ pub fn load_provider(
         crate::providers::Wire::OpenAI => {
             Box::new(OpenAIProvider::new(key, model_id, base, transport))
         }
+        crate::providers::Wire::CodexResponses => unreachable!("handled above"),
     })
 }
 
