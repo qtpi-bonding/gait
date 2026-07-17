@@ -15,14 +15,12 @@ async fn builtin_tools_returns_expected_tools() {
         vec![],
         gait_core::git::Repos::production(),
     );
-    assert_eq!(tools.len(), 18);
+    assert_eq!(tools.len(), 16);
     let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
     for expected in &[
         "read",
         "write",
-        "edit_replace",
-        "edit_append",
-        "edit_prepend",
+        "apply_patch",
         "glob",
         "grep",
         "ls",
@@ -125,15 +123,7 @@ async fn read_write_roundtrip_via_builtin_tools() {
 
     let text = result.as_str().unwrap();
     assert!(text.contains("hello from gait-rs"), "got: {text}");
-    // hashline format: #XY|content (no `N#` prefix — hash-only refs)
-    assert!(
-        text.contains('#') && text.contains('|'),
-        "should have hashline format: {text}"
-    );
-    assert!(
-        !text.contains("1#"),
-        "should not contain old `1#` format: {text}"
-    );
+    assert!(!text.contains('#'), "read should be plain text: {text}");
 }
 
 #[tokio::test]
@@ -151,7 +141,7 @@ async fn write_then_edit_then_read() {
         gait_core::git::Repos::production(),
     );
     let write = tools.iter().find(|t| t.name() == "write").unwrap();
-    let edit = tools.iter().find(|t| t.name() == "edit_replace").unwrap();
+    let edit = tools.iter().find(|t| t.name() == "apply_patch").unwrap();
     let read = tools.iter().find(|t| t.name() == "read").unwrap();
 
     let src = "fn hello() -> &'static str { \"hello\" }";
@@ -166,32 +156,10 @@ async fn write_then_edit_then_read() {
         .await
         .unwrap();
 
-    // Read to get the hashline anchor for line 1
-    let read_result = read
-        .execute(
-            serde_json::json!({ "file_path": "code.rs" }),
-            &gait_core::Recorder::detached(),
-        )
-        .await
-        .unwrap();
-    let read_text = read_result.as_str().unwrap();
-    // Extract the anchor: strip the leading `#`, then take everything up to `|`.
-    let anchor = read_text
-        .lines()
-        .find(|l| l.contains("|fn hello"))
-        .and_then(|l| l.split('|').next())
-        .unwrap()
-        .trim_start_matches('#')
-        .trim()
-        .to_string();
-
-    // Single-line replace: pos == end == the line-1 anchor.
+    // Single-file Codex-compatible update.
     edit.execute(
         serde_json::json!({
-            "file_path": "code.rs",
-            "pos": anchor,
-            "end": anchor,
-            "lines": ["fn world() -> &'static str { \"world\" }"]
+            "patch": "*** Begin Patch\n*** Update File: code.rs\n@@\n-fn hello() -> &'static str { \"hello\" }\n+fn world() -> &'static str { \"world\" }\n*** End Patch"
         }),
         &gait_core::Recorder::detached(),
     )

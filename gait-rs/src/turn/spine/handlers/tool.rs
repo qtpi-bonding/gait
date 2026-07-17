@@ -307,11 +307,19 @@ pub fn delegated_target(
     args: &Option<pbjson_types::Struct>,
     codebase: &Path,
 ) -> Option<std::path::PathBuf> {
-    matches!(
-        tool,
-        "read" | "write" | "edit_replace" | "edit_append" | "edit_prepend"
-    )
-    .then_some(())?;
+    matches!(tool, "read" | "write" | "apply_patch").then_some(())?;
+    if tool == "apply_patch" {
+        let body = args
+            .as_ref()?
+            .fields
+            .get("patch")
+            .and_then(|v| match &v.kind {
+                Some(pbjson_types::value::Kind::StringValue(s)) => Some(s),
+                _ => None,
+            })?;
+        let patch = crate::tools::apply_patch::parse(body).ok()?;
+        return crate::tools::apply_patch::resolve_target(codebase, &patch).ok();
+    }
     let fp = args
         .as_ref()?
         .fields
@@ -321,14 +329,11 @@ pub fn delegated_target(
             _ => None,
         })?;
     let p = std::path::Path::new(&fp);
-    let resolved = if p.is_absolute() {
-        p.to_path_buf()
+    if p.is_absolute() {
+        Some(p.to_path_buf())
     } else {
-        codebase.join(&fp)
-    };
-    // normalize_lexical resolves `.`/`..` textually (no disk touch), mirroring
-    // check_own_tool_scope (src/turn/mod.rs:715) so `..` can't escape yet starts_with.
-    Some(crate::sandbox::normalize_lexical(&resolved))
+        Some(crate::sandbox::normalize_lexical(&codebase.join(&fp)))
+    }
 }
 
 #[cfg(test)]
@@ -350,10 +355,7 @@ mod tests {
             delegated_target("read", &Some(s.clone()), cb),
             Some(Path::new("/ws/src/a.rs").to_path_buf())
         );
-        assert_eq!(
-            delegated_target("edit_replace", &Some(s.clone()), cb),
-            Some(Path::new("/ws/src/a.rs").to_path_buf())
-        );
+        assert_eq!(delegated_target("edit_replace", &Some(s.clone()), cb), None);
         assert_eq!(delegated_target("shell", &Some(s.clone()), cb), None); // not a delegating tool
 
         let mut abs = pbjson_types::Struct::default();

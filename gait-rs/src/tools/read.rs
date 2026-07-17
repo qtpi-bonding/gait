@@ -1,4 +1,3 @@
-use crate::hashline::annotate_lines;
 use crate::permissions::path_patterns;
 use crate::tools::fs_backend::FsBackend;
 use crate::tools::ToolCtx;
@@ -67,7 +66,7 @@ impl ReadTool {
     pub fn new(ctx: ToolCtx) -> Self {
         let parameters = crate::tools::inject_filter(
             crate::tools::make_schema::<ReadParams>(),
-            crate::types::OutputFilter::Both,
+            crate::types::OutputFilter::None,
         );
         Self { ctx, parameters }
     }
@@ -79,11 +78,7 @@ impl Tool for ReadTool {
         "read"
     }
     fn description(&self) -> &str {
-        "Read a file from the codebase, optionally with line range. Each line is prefixed with \
-         `#<id>|content`. `<id>` is a 4-char content hash (e.g. `#QMZP|`). Lines that repeat \
-         get a longer id: `#QMZPVRWS|` (8-char, context) or `#QMZPVRWS-2|` (ordinal). \
-         Pass the `<id>` exactly as shown to `edit` — use all 8 chars for context ids. \
-         Paths are relative to the codebase root."
+        "Read a file from the codebase as plain text, optionally with a line range. Paths are relative to the codebase root."
     }
     fn parameters(&self) -> &Value {
         &self.parameters
@@ -93,7 +88,7 @@ impl Tool for ReadTool {
     }
 
     fn output_filter(&self) -> crate::types::OutputFilter {
-        crate::types::OutputFilter::Parse
+        crate::types::OutputFilter::None
     }
 
     async fn execute(&self, args: Value, _rec: &dyn crate::types::Rec) -> Result<Value, ToolError> {
@@ -157,34 +152,28 @@ impl Tool for ReadTool {
             .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
         let lines: Vec<&str> = text.split('\n').collect();
 
-        // Two-pass annotation: hashes depend on counts across the WHOLE file so duplicate
-        // instance numbers are correct regardless of the requested offset/limit window.
-        let annotated_all = annotate_lines(&lines);
-
         let mut output_lines: Vec<String> = Vec::new();
         let mut bytes = 0usize;
         let mut truncated_by_bytes = false;
         let end = lines.len().min(offset + limit);
 
-        for annotated in annotated_all.iter().take(end).skip(offset) {
-            // Strip the hashline prefix (`#P4|`, `#P4-C4|`, or `#P4-C4-N|`), truncate if too long,
-            // then re-stamp with the same prefix so the truncated line is still anchorable.
-            let (prefix, content) = match annotated.find('|') {
-                Some(pipe) => (&annotated[..=pipe], &annotated[pipe + 1..]),
-                None => ("#??", annotated.as_str()),
-            };
-            let line = if content.len() > MAX_LINE_LENGTH {
-                format!("{}...", &content[..MAX_LINE_LENGTH])
+        for line in lines.iter().take(end).skip(offset) {
+            let line = if line.len() > MAX_LINE_LENGTH {
+                let cut = line
+                    .char_indices()
+                    .nth(MAX_LINE_LENGTH)
+                    .map(|(i, _)| i)
+                    .unwrap_or(line.len());
+                format!("{}...", &line[..cut])
             } else {
-                content.to_string()
+                line.to_string()
             };
-            let formatted = format!("{}{}", prefix, line);
-            let size = formatted.len() + if output_lines.is_empty() { 0 } else { 1 };
+            let size = line.len() + if output_lines.is_empty() { 0 } else { 1 };
             if bytes + size > MAX_BYTES {
                 truncated_by_bytes = true;
                 break;
             }
-            output_lines.push(formatted);
+            output_lines.push(line);
             bytes += size;
         }
 
@@ -266,7 +255,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reads_file_with_hashline_format() {
+    async fn reads_file_as_plain_text() {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("test.txt"), "line1\nline2\nline3").unwrap();
 
@@ -279,25 +268,11 @@ mod tests {
             .await
             .unwrap();
         let text = result.as_str().unwrap();
-        // Each line has its content after `|`
-        assert!(text.contains("|line1"), "got: {text}");
-        assert!(text.contains("|line2"), "got: {text}");
-        assert!(text.contains("|line3"), "got: {text}");
-        // Hashline format: #XY|content — there must be `#` prefixes
-        assert!(text.contains("#"), "should have hash anchor: {text}");
+        assert!(text.contains("line1"), "got: {text}");
+        assert!(text.contains("line2"), "got: {text}");
+        assert!(text.contains("line3"), "got: {text}");
+        assert!(!text.contains("#"), "read should be plain text: {text}");
         // Old `N#XY` format is gone — no leading digit immediately before `#`
-        assert!(
-            !text.contains("1#"),
-            "should not contain old `1#` format: {text}"
-        );
-        assert!(
-            !text.contains("2#"),
-            "should not contain old `2#` format: {text}"
-        );
-        assert!(
-            !text.contains("3#"),
-            "should not contain old `3#` format: {text}"
-        );
     }
 
     #[tokio::test]
@@ -318,34 +293,13 @@ mod tests {
         let text = result.as_str().unwrap();
         // Both occurrences of "same" get 8-char ids (tier-2, no dash between P4 and C4).
         let lines: Vec<&str> = text.lines().collect();
-        let same_lines: Vec<&&str> = lines.iter().filter(|l| l.ends_with("|same")).collect();
+        let same_lines: Vec<&&str> = lines.iter().filter(|l| **l == "same").collect();
         assert_eq!(
             same_lines.len(),
             2,
             "expected 2 annotated 'same' lines: {text}"
         );
-        for l in &same_lines {
-            let id = l
-                .trim_start_matches('#')
-                .split_once('|')
-                .map(|(id, _)| id)
-                .unwrap_or("");
-            assert!(
-                id.len() >= 8,
-                "dup 'same' should have at least 8-char id: {l}"
-            );
-        }
-        // The two context tags differ (distinct neighbors).
-        assert_ne!(
-            same_lines[0], same_lines[1],
-            "context tags for 'same' should differ: {text}"
-        );
-        // The unique line gets NO instance suffix
-        assert!(text.contains("|other"), "got: {text}");
-        assert!(
-            !text.contains("-1|other"),
-            "unique line should have no suffix: {text}"
-        );
+        assert!(text.contains("other"), "got: {text}");
     }
 
     #[tokio::test]
@@ -378,9 +332,9 @@ mod tests {
             .await
             .unwrap();
         let text = result.as_str().unwrap();
-        assert!(text.contains("|b"), "got: {text}");
-        assert!(text.contains("|c"), "got: {text}");
-        assert!(!text.contains("|a"), "should not contain line 1");
+        assert!(text.contains("b"), "got: {text}");
+        assert!(text.contains("c"), "got: {text}");
+        assert!(!text.contains("\na\n"), "should not contain line 1");
     }
 
     #[tokio::test]
@@ -400,9 +354,9 @@ mod tests {
             .await
             .unwrap();
         let text = result.as_str().unwrap();
-        assert!(text.contains("|b"), "got: {text}");
-        assert!(text.contains("|c"), "got: {text}");
-        assert!(!text.contains("|a"), "should not contain line 1");
+        assert!(text.contains("b"), "got: {text}");
+        assert!(text.contains("c"), "got: {text}");
+        assert!(!text.contains("\na\n"), "should not contain line 1");
     }
 
     #[tokio::test]
@@ -437,18 +391,13 @@ mod tests {
     }
 
     #[test]
-    fn schema_has_parse_array_field() {
+    fn schema_has_no_filter_fields() {
         let tool = ReadTool::new(ToolCtx::new(
             PathBuf::from("/tmp"),
             PathBuf::from("/tmp"),
             "test".into(),
         ));
         let params = tool.parameters();
-        assert_eq!(
-            params["properties"]["parse"]["type"].as_str().unwrap(),
-            "array",
-            "parse should be array type: {}",
-            params
-        );
+        assert!(params["properties"].get("parse").is_none());
     }
 }

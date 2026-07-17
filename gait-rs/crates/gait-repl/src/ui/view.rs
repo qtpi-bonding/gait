@@ -100,7 +100,7 @@ pub(crate) fn clean_repl_item(item: crate::ui::state::ReplItem) -> Vec<ReplViewI
     }
 }
 
-/// Strip hashline anchors, XML wrappers, and footer lines from raw tool output.
+/// Strip XML wrappers and footer lines from raw tool output.
 /// Returns at most 3 lines: first, `…`, last (so the snippet stays compact).
 pub(crate) fn clean_tool_output(raw: &str) -> Vec<String> {
     let lines: Vec<String> = raw
@@ -114,10 +114,7 @@ pub(crate) fn clean_tool_output(raw: &str) -> Vec<String> {
                 && !t.starts_with("(File has more")
                 && !t.starts_with("(Output truncated")
         })
-        .map(|l| match strip_hashline(l) {
-            Some(content) => content.to_string(),
-            None => l.to_string(),
-        })
+        .map(str::to_string)
         .collect();
     match lines.len() {
         0..=2 => lines,
@@ -129,44 +126,19 @@ pub(crate) fn clean_tool_output(raw: &str) -> Vec<String> {
     }
 }
 
-/// Strip `#XY|` or `#XY-N|` prefix from a hashline. Returns the content after `|`,
-/// or `None` for non-hashlines. `XY` must be exactly 2 uppercase ASCII chars;
-/// `-N` (if present) must be a non-empty digit suffix.
-fn strip_hashline(s: &str) -> Option<&str> {
-    let rest = s.strip_prefix('#')?;
-    let (tag, content) = rest.split_once('|')?;
-    if tag.len() < 2 {
-        return None;
-    }
-    let (hash, suffix) = tag.split_at(2);
-    if !hash.chars().all(|c| c.is_ascii_uppercase()) {
-        return None;
-    }
-    if !suffix.is_empty() {
-        let n = suffix.strip_prefix('-')?;
-        if n.is_empty() || !n.chars().all(|c| c.is_ascii_digit()) {
-            return None;
-        }
-    }
-    Some(content)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ui::state::ReplItem;
 
     #[test]
-    fn clean_tool_output_strips_hashline_anchors() {
-        // Unique line: #XY|content
-        assert_eq!(clean_tool_output("#CD|fn foo() {"), vec!["fn foo() {"]);
-        // Duplicate instance: #XY-N|content
-        assert_eq!(clean_tool_output("#AB-2|fn foo() {"), vec!["fn foo() {"]);
+    fn clean_tool_output_preserves_plain_text() {
+        assert_eq!(clean_tool_output("fn foo() {"), vec!["fn foo() {"]);
     }
 
     #[test]
     fn clean_tool_output_drops_xml_and_footers() {
-        let raw = "<file>\n#AB|pub fn foo() {\n#CD|}\n(End of file - total 2 lines)\n</file>";
+        let raw = "<file>\npub fn foo() {\n}\n(End of file - total 2 lines)\n</file>";
         assert_eq!(clean_tool_output(raw), vec!["pub fn foo() {", "}"]);
     }
 
@@ -199,8 +171,7 @@ mod tests {
             ok: true,
             name: "read".to_string(),
             elapsed_ms: Some(42),
-            // Two identical hashlines → 2 unique content lines (≤2, no truncation).
-            output: "<file>\n#AB|hello\n#AB-2|world\n</file>".to_string(),
+            output: "<file>\nhello\nworld\n</file>".to_string(),
         };
         let out = clean_repl_item(item);
         assert!(

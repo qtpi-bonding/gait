@@ -4,6 +4,7 @@ pub mod tiers;
 pub use tiers::{EnabledTools, PermissionedTools, RegisteredTools};
 
 pub mod annotate;
+pub mod apply_patch;
 pub mod clarify;
 pub mod codesearch;
 pub mod edit;
@@ -27,7 +28,10 @@ pub use annotate::AnnotateTool;
 pub use clarify::ClarifyTool;
 pub use codesearch::CodesearchTool;
 pub mod ctx;
+pub use apply_patch::ApplyPatchTool;
 pub use ctx::ToolCtx;
+// Legacy hashline editors remain available to direct unit tests and downstream
+// code, but are deliberately not constructed by `builtin_tools`.
 pub use edit::{EditAppendTool, EditPrependTool, EditReplaceTool};
 pub use glob::GlobTool;
 pub use grep::GrepTool;
@@ -214,9 +218,7 @@ pub fn builtin_tool_names() -> &'static [&'static str] {
     &[
         "read",
         "write",
-        "edit_replace",
-        "edit_append",
-        "edit_prepend",
+        "apply_patch",
         "glob",
         "grep",
         "ls",
@@ -245,9 +247,7 @@ pub fn builtin_tools(
     let tools: Vec<Box<dyn Tool>> = vec![
         ReadTool::new(ctx.clone()).boxed(),
         WriteTool::new(ctx.clone()).boxed(),
-        EditReplaceTool::new(ctx.clone()).boxed(),
-        EditAppendTool::new(ctx.clone()).boxed(),
-        EditPrependTool::new(ctx.clone()).boxed(),
+        ApplyPatchTool::new(ctx.clone()).boxed(),
         GlobTool::new(ctx.clone()).boxed(),
         GrepTool::new(ctx.clone()).boxed(),
         LsTool::new(ctx.clone()).boxed(),
@@ -279,7 +279,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn builtin_tools_returns_eighteen() {
+    fn builtin_tools_returns_sixteen() {
         let tools = builtin_tools(
             ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "stest".into()),
             vec![],
@@ -287,7 +287,7 @@ mod tests {
             vec![],
             crate::git::Repos::production(),
         );
-        assert_eq!(tools.len(), 18);
+        assert_eq!(tools.len(), 16);
     }
 
     #[test]
@@ -456,7 +456,7 @@ mod tests {
             }
         );
         assert_eq!(
-            by("edit_replace"),
+            by("apply_patch"),
             ToolAccess {
                 reads: true,
                 writes: true,
