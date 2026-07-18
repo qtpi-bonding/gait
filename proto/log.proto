@@ -104,6 +104,7 @@ CancellationSignal cancellation_signal = 55;
     DaemonUpdate       daemon_update       = 63;
     Registry           registry            = 64;
     Mode               mode                = 65;
+    SandboxWhitelistMatch sandbox_whitelist_match = 66;
   }
   reserved 20 to 49;  // workflow family (WorkflowHook* / WorkflowNode* / WorkflowStart …) — deferred to the workflow-subsystem redo
 }
@@ -348,6 +349,18 @@ enum SandboxEnforcement {
   SANDBOX_ENFORCEMENT_ACTIVE      = 1;  // Landlock (Linux) or Seatbelt (macOS) applied
   SANDBOX_ENFORCEMENT_UNAVAILABLE = 2;  // kernel enforcement unavailable; tier-0 gate still active
   SANDBOX_ENFORCEMENT_NOOP        = 3;  // no scope declared or explicitly disabled (tests/unscoped)
+}
+
+// Emitted when a shell command matches a `sandbox.whitelist` config pattern and
+// is granted extra ceiling scope without pausing the turn.
+message SandboxWhitelistMatch {
+  repeated SandboxWhitelistMatchItem items = 1;
+}
+message SandboxWhitelistMatchItem {
+  string tool_name = 1;
+  string resource = 2;
+  string dimension = 3;
+  string pattern = 4;
 }
 
 // ── Unlock flow ──────────────────────────────────────────────────────────────
