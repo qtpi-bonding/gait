@@ -24,6 +24,7 @@ pub(crate) fn tool_label(name: &str, args: &serde_json::Value) -> String {
 }
 
 use crate::proto::gait::log::v1::Event;
+use crate::proto::gait::log::v1::SandboxWhitelistMatchItem;
 use crate::proto::gait::log::v1::UnlockItem;
 use crate::proto::Recorder;
 use crate::tools::ToolError;
@@ -37,7 +38,7 @@ pub struct ScopeRequest {
 }
 
 /// The motor pathway from a decided tool call to a hand: run the tool and return
-/// `{result, events, denied}`. Implementations differ by WHERE the tool runs (in-process
+/// `{result, events, denied, whitelist_match_items}`. Implementations differ by WHERE the tool runs (in-process
 /// now; sealed subprocess / spine relay later) but share this contract.
 /// Returns `Vec<Event>` (not `Vec<event::Body>`) — Event is serde-derivable via
 /// pbjson, so Phase 2a can pipe the events over the wire directly.
@@ -54,7 +55,15 @@ pub trait Synapse: Send + Sync {
         tool: &dyn Tool,
         args: serde_json::Value,
         scope: ScopeRequest,
-    ) -> Result<(serde_json::Value, Vec<Event>, Option<UnlockItem>), ToolError>;
+    ) -> Result<
+        (
+            serde_json::Value,
+            Vec<Event>,
+            Option<UnlockItem>,
+            Vec<SandboxWhitelistMatchItem>,
+        ),
+        ToolError,
+    >;
 }
 
 /// Phase 1 impl: run the tool in-process against a buffering recorder so emitted
@@ -70,10 +79,18 @@ impl Synapse for InProcessSynapse {
         tool: &dyn Tool,
         args: serde_json::Value,
         _scope: ScopeRequest,
-    ) -> Result<(serde_json::Value, Vec<Event>, Option<UnlockItem>), ToolError> {
+    ) -> Result<
+        (
+            serde_json::Value,
+            Vec<Event>,
+            Option<UnlockItem>,
+            Vec<SandboxWhitelistMatchItem>,
+        ),
+        ToolError,
+    > {
         let buf = Recorder::buffering();
         let result = tool.execute(args, &buf).await?;
-        Ok((result, buf.take_buffer(), None))
+        Ok((result, buf.take_buffer(), None, vec![]))
     }
 }
 
@@ -96,7 +113,15 @@ impl Synapse for RelaySynapse {
         tool: &dyn Tool,
         args: serde_json::Value,
         _scope: ScopeRequest,
-    ) -> Result<(serde_json::Value, Vec<Event>, Option<UnlockItem>), ToolError> {
+    ) -> Result<
+        (
+            serde_json::Value,
+            Vec<Event>,
+            Option<UnlockItem>,
+            Vec<SandboxWhitelistMatchItem>,
+        ),
+        ToolError,
+    > {
         crate::diagnostic::set_phase_labeled(
             crate::diagnostic::Phase::AwaitFeedback,
             Some(tool_label(tool.name(), &args)),
@@ -144,7 +169,12 @@ impl Synapse for RelaySynapse {
             .and_then(|v| serde_json::to_value(v).ok())
             .unwrap_or(serde_json::Value::Null);
 
-        Ok((result_json, feedback.events, feedback.denied))
+        Ok((
+            result_json,
+            feedback.events,
+            feedback.denied,
+            feedback.whitelist_match_items,
+        ))
     }
 }
 
@@ -185,7 +215,7 @@ mod tests {
     #[tokio::test]
     async fn in_process_synapse_returns_result_and_buffered_events() {
         let syn = InProcessSynapse;
-        let (result, events, denied) = syn
+        let (result, events, denied, whitelist_items) = syn
             .fire(
                 &EchoTool,
                 serde_json::json!({"k":"v"}),
@@ -206,6 +236,10 @@ mod tests {
             "buffered event must carry its body"
         );
         assert!(denied.is_none(), "in-process synapse never signals denial");
+        assert!(
+            whitelist_items.is_empty(),
+            "in-process synapse is unsandboxed — whitelist matching never applies"
+        );
     }
 
     /// RelaySynapse: a fake spine reads the Impulse from the Nerve and echoes back
@@ -236,13 +270,14 @@ mod tests {
                     denied: None,
                     daemon: None,
                     final_content: None,
+                    whitelist_match_items: vec![],
                 })),
             };
             nerve::write_signal(&mut w, &canned).await.unwrap();
         });
 
         let syn = RelaySynapse { writer };
-        let (result, events, denied) = syn
+        let (result, events, denied, whitelist_items) = syn
             .fire(
                 &EchoTool,
                 serde_json::json!({"k": "v"}),
@@ -256,6 +291,7 @@ mod tests {
         assert_eq!(result.as_str().unwrap_or(""), "relay-ok");
         assert!(events.is_empty());
         assert!(denied.is_none());
+        assert!(whitelist_items.is_empty());
     }
 
     #[test]
