@@ -302,6 +302,54 @@ fn session_state_unlock_reply_returns_idle() {
 }
 
 #[test]
+fn session_state_whitelist_match_after_unlock_still_awaiting() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("log.jsonl");
+    wire::append(
+        &path,
+        events::unlock(&[pb::UnlockItem {
+            id: "u1".into(),
+            tool_name: "shell".into(),
+            resource: "/some/path".into(),
+            dimension: "write".into(),
+            preview: None,
+        }]),
+    )
+    .unwrap();
+    wire::append(
+        &path,
+        events::sandbox_whitelist_match(&[pb::SandboxWhitelistMatchItem {
+            tool_name: "shell".into(),
+            resource: "flutter test".into(),
+            dimension: "network".into(),
+            pattern: "flutter test *".into(),
+        }]),
+    )
+    .unwrap();
+    assert!(matches!(
+        session_state(&path).unwrap(),
+        SessionState::AwaitingUnlock { .. }
+    ));
+}
+
+#[test]
+fn session_state_whitelist_match_alone_is_idle() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("log.jsonl");
+    wire::append(
+        &path,
+        events::sandbox_whitelist_match(&[pb::SandboxWhitelistMatchItem {
+            tool_name: "shell".into(),
+            resource: "flutter test".into(),
+            dimension: "network".into(),
+            pattern: "flutter test *".into(),
+        }]),
+    )
+    .unwrap();
+    assert!(matches!(session_state(&path).unwrap(), SessionState::Idle));
+}
+
+#[test]
 fn unlock_once_grant_round_trip_no_config_change() {
     use std::path::PathBuf;
 

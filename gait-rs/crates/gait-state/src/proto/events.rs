@@ -262,6 +262,14 @@ pub fn unlock_reply(from: String, items: &[pb::UnlockReplyItem]) -> pb::event::B
     }))
 }
 
+pub fn sandbox_whitelist_match(items: &[pb::SandboxWhitelistMatchItem]) -> pb::event::Body {
+    wire::body(pb::payload::Kind::SandboxWhitelistMatch(
+        pb::SandboxWhitelistMatch {
+            items: items.to_vec(),
+        },
+    ))
+}
+
 /// Parameters for [`turn_complete`].
 #[derive(Debug, Default)]
 pub struct TurnCompleteParams {
@@ -968,6 +976,26 @@ mod tests {
                 assert_eq!(item.scope, pb::Scope::Once as i32);
             }
             other => panic!("expected UnlockReply payload, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sandbox_whitelist_match_round_trips_items() {
+        let body = sandbox_whitelist_match(&[pb::SandboxWhitelistMatchItem {
+            tool_name: "shell".into(),
+            resource: "flutter test --coverage".into(),
+            dimension: "network".into(),
+            pattern: "flutter test *".into(),
+        }]);
+        match body {
+            pb::event::Body::Payload(p) => match p.kind {
+                Some(pb::payload::Kind::SandboxWhitelistMatch(m)) => {
+                    assert_eq!(m.items[0].pattern, "flutter test *");
+                    assert_eq!(m.items[0].dimension, "network");
+                }
+                other => panic!("expected whitelist match, got {other:?}"),
+            },
+            other => panic!("expected payload, got {other:?}"),
         }
     }
 

@@ -242,6 +242,7 @@ fn feedback_carries_value_and_events() {
         denied: None,
         daemon: None,
         final_content: None,
+        whitelist_match_items: vec![],
     };
 
     let bytes = prost::Message::encode_to_vec(&feedback);
@@ -384,6 +385,7 @@ fn impulse_prefetch_and_feedback_final_content_roundtrip() {
         denied: None,
         daemon: None,
         final_content: Some("new".into()),
+        whitelist_match_items: vec![],
     };
     let round = Feedback::decode(fb.encode_to_vec().as_slice()).unwrap();
     assert_eq!(round.final_content.as_deref(), Some("new"));
