@@ -12,6 +12,47 @@ use crate::sandbox::{NetworkPolicy, SandboxScope};
 
 use super::error_feedback;
 
+fn shell_access_and_whitelist_hit(
+    cmd: &str,
+    sandbox_cfg: &SandboxConfig,
+) -> (
+    crate::types::ToolAccess,
+    Option<Vec<crate::proto::gait::log::v1::SandboxWhitelistMatchItem>>,
+) {
+    use crate::sandbox_grant::SandboxGrant;
+
+    let mut access = crate::sandbox::ceiling::access_for_tool("shell");
+    let Some((entry, grants)) =
+        crate::permissions::matching::whitelist_match(cmd, &sandbox_cfg.whitelist)
+    else {
+        return (access, None);
+    };
+    let mut items = Vec::with_capacity(grants.len());
+    for grant in grants {
+        let dimension = match grant {
+            SandboxGrant::NetworkHost => {
+                access.network = true;
+                "network"
+            }
+            SandboxGrant::Writable => {
+                access.writes = true;
+                "write"
+            }
+            SandboxGrant::Readable => {
+                access.reads = true;
+                "read"
+            }
+        };
+        items.push(crate::proto::gait::log::v1::SandboxWhitelistMatchItem {
+            tool_name: "shell".into(),
+            resource: cmd.into(),
+            dimension: dimension.into(),
+            pattern: entry.pattern.clone(),
+        });
+    }
+    (access, Some(items))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run_tool_as_spine(
     impulse: Impulse,
@@ -40,7 +81,7 @@ pub async fn run_tool_as_spine(
     // per-call tool scope. This lets the daemon process inherit the agent's
     // configured limits (e.g. network, codebase writes) rather than the narrower
     // default shell scope.
-    let scope = if impulse.tool == "shell"
+    let is_detached_shell = impulse.tool == "shell"
         && impulse
             .args
             .as_ref()
@@ -49,8 +90,9 @@ pub async fn run_tool_as_spine(
                 Some(pbjson_types::value::Kind::BoolValue(b)) => Some(*b),
                 _ => None,
             })
-            .unwrap_or(false)
-    {
+            .unwrap_or(false);
+    let mut whitelist_hit = None;
+    let scope = if is_detached_shell {
         use crate::types::ToolAccess;
         crate::sandbox::ceiling::compute_scope(
             ToolAccess {
@@ -63,6 +105,19 @@ pub async fn run_tool_as_spine(
             codebase,
             &jail,
         )
+    } else if impulse.tool == "shell" {
+        let cmd = impulse
+            .args
+            .as_ref()
+            .and_then(|s| s.fields.get("cmd"))
+            .and_then(|v| match &v.kind {
+                Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.as_str()),
+                _ => None,
+            })
+            .unwrap_or("");
+        let (access, hit) = shell_access_and_whitelist_hit(cmd, sandbox_cfg);
+        whitelist_hit = hit;
+        crate::sandbox::ceiling::compute_scope(access, sandbox_cfg, codebase, &jail)
     } else {
         crate::sandbox::ceiling::bound_request(&impulse.tool, sandbox_cfg, codebase, &jail)
     };
@@ -263,6 +318,9 @@ pub async fn run_tool_as_spine(
         }
     }
 
+    if let Some(items) = whitelist_hit {
+        feedback.whitelist_match_items = items;
+    }
     feedback
 }
 
