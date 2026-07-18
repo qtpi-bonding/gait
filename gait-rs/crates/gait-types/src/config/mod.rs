@@ -179,6 +179,16 @@ pub struct SandboxConfig {
     /// Network policy applied to sandboxed processes.
     #[serde(default)]
     pub network: NetworkConfig,
+    /// Shell command patterns pre-authorized for extra sandbox scope.
+    #[serde(default)]
+    pub whitelist: Vec<SandboxWhitelistEntry>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SandboxWhitelistEntry {
+    pub pattern: String,
+    #[serde(default)]
+    pub grants: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -192,6 +202,7 @@ impl Default for SandboxConfig {
             readable: vec![],
             writable: vec![],
             network: NetworkConfig::default(),
+            whitelist: vec![],
         }
     }
 }

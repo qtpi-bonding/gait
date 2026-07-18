@@ -10,6 +10,25 @@ fn sandbox_config_defaults_to_strict_on() {
 }
 
 #[test]
+fn sandbox_config_whitelist_defaults_to_empty() {
+    assert!(SandboxConfig::default().whitelist.is_empty());
+}
+
+#[test]
+fn sandbox_config_whitelist_deserializes_and_round_trips() {
+    let json = r#"{
+        "on": true,
+        "whitelist": [{"pattern":"flutter test *","grants":["network"]}]
+    }"#;
+    let cfg: SandboxConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(cfg.whitelist[0].pattern, "flutter test *");
+    assert_eq!(cfg.whitelist[0].grants, vec!["network"]);
+    let encoded = serde_json::to_string(&cfg).unwrap();
+    let decoded: SandboxConfig = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(decoded.whitelist[0].pattern, "flutter test *");
+}
+
+#[test]
 fn sandbox_config_parses_block() {
     let json = r##"{"model":"x/y","sandbox":{"readable":["~/.cargo"],"network":"*"}}"##;
     let c: GaitConfig = serde_json::from_str(json).unwrap();
