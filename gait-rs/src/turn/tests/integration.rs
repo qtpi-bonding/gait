@@ -2510,3 +2510,153 @@ async fn delegated_read_serves_buffer_not_disk() {
         "delegated read must NOT serve disk: {rendered}"
     );
 }
+
+// ─── Task 8: sandbox.whitelist end-to-end integration tests ────────────────
+//
+// A shell command matching `sandbox.whitelist` gets its `Feedback` back carrying
+// `whitelist_match_items` — proves the wiring through a REAL `run_tool_as_spine`
+// call and a real spawned `gait __run-tool` hand subprocess, not just the pure
+// `shell_access_and_whitelist_hit` unit tests in Task 6 (which never touch the
+// subprocess boundary or the real `Feedback` round-trip).
+#[allow(clippy::print_stderr)]
+#[tokio::test]
+async fn shell_command_matching_whitelist_carries_match_items_in_feedback() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+
+    let Some(exe) = gait_bin_path() else {
+        eprintln!(
+            "skipping shell_command_matching_whitelist_carries_match_items_in_feedback: \
+             `gait` binary not built (run `cargo build -p gait-bin`)"
+        );
+        return;
+    };
+
+    let mut s = pbjson_types::Struct::default();
+    s.fields.insert(
+        "cmd".into(),
+        pbjson_types::Value {
+            kind: Some(pbjson_types::value::Kind::StringValue(
+                "flutter test --coverage".into(),
+            )),
+        },
+    );
+    let impulse = gait_proto::gait::sandbox::v1::Impulse {
+        tool: "shell".into(),
+        args: Some(s),
+        cwd: String::new(),
+        requested: None,
+        prefetch: None,
+    };
+
+    let sandbox_cfg = crate::config::SandboxConfig {
+        whitelist: vec![crate::config::SandboxWhitelistEntry {
+            pattern: "flutter test *".to_string(),
+            grants: vec!["network".to_string()],
+        }],
+        ..Default::default()
+    };
+
+    let group = crate::process::establish(None);
+    let mut leader_cmd = std::process::Command::new("sleep");
+    leader_cmd.arg("30");
+    let mut dummy_leader = group
+        .spawn_enrolled(leader_cmd)
+        .expect("spawn dummy leader");
+
+    let feedback = crate::turn::spine::run_tool_as_spine(
+        impulse,
+        &sandbox_cfg,
+        ws.path(),
+        ws.path(),
+        "sess-whitelist-01",
+        true, // sandbox ON
+        &exe,
+        group,
+        None,
+    )
+    .await;
+
+    let _ = dummy_leader.kill();
+    let _ = dummy_leader.wait();
+
+    assert_eq!(
+        feedback.whitelist_match_items.len(),
+        1,
+        "matched command must carry exactly one whitelist_match_items entry (one granted dimension)"
+    );
+    assert_eq!(feedback.whitelist_match_items[0].dimension, "network");
+    assert_eq!(feedback.whitelist_match_items[0].pattern, "flutter test *");
+    assert_eq!(
+        feedback.whitelist_match_items[0].resource,
+        "flutter test --coverage"
+    );
+}
+
+/// A non-matching shell command gets no whitelist_match_items — the negative case.
+#[allow(clippy::print_stderr)]
+#[tokio::test]
+async fn shell_command_not_matching_whitelist_carries_no_match_items() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+
+    let Some(exe) = gait_bin_path() else {
+        eprintln!(
+            "skipping shell_command_not_matching_whitelist_carries_no_match_items: \
+             `gait` binary not built (run `cargo build -p gait-bin`)"
+        );
+        return;
+    };
+
+    let mut s = pbjson_types::Struct::default();
+    s.fields.insert(
+        "cmd".into(),
+        pbjson_types::Value {
+            kind: Some(pbjson_types::value::Kind::StringValue("echo hi".into())),
+        },
+    );
+    let impulse = gait_proto::gait::sandbox::v1::Impulse {
+        tool: "shell".into(),
+        args: Some(s),
+        cwd: String::new(),
+        requested: None,
+        prefetch: None,
+    };
+
+    let sandbox_cfg = crate::config::SandboxConfig {
+        whitelist: vec![crate::config::SandboxWhitelistEntry {
+            pattern: "flutter test *".to_string(),
+            grants: vec!["network".to_string()],
+        }],
+        ..Default::default()
+    };
+
+    let group = crate::process::establish(None);
+    let mut leader_cmd = std::process::Command::new("sleep");
+    leader_cmd.arg("30");
+    let mut dummy_leader = group
+        .spawn_enrolled(leader_cmd)
+        .expect("spawn dummy leader");
+
+    let feedback = crate::turn::spine::run_tool_as_spine(
+        impulse,
+        &sandbox_cfg,
+        ws.path(),
+        ws.path(),
+        "sess-whitelist-02",
+        true,
+        &exe,
+        group,
+        None,
+    )
+    .await;
+
+    let _ = dummy_leader.kill();
+    let _ = dummy_leader.wait();
+
+    assert!(
+        feedback.whitelist_match_items.is_empty(),
+        "non-matching command must not carry any whitelist_match_items, got: {:?}",
+        feedback.whitelist_match_items
+    );
+}

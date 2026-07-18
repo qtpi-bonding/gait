@@ -112,11 +112,14 @@ pub(super) async fn execute_tool_call(
                         .await
                 };
                 match fired {
-                    Ok((value, events, denied_item)) => {
+                    Ok((value, events, denied_item, whitelist_items)) => {
                         for event in events {
                             if let Some(body) = event.body {
                                 emitter.record(body)?;
                             }
+                        }
+                        if !whitelist_items.is_empty() {
+                            emitter.record(events::sandbox_whitelist_match(&whitelist_items))?;
                         }
                         (Ok(value), denied_item)
                     }
