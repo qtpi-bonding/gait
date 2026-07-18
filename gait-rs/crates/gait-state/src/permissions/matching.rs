@@ -2,6 +2,8 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 use crate::types::{PermissionRequest, ToolPermission};
+use gait_types::config::SandboxWhitelistEntry;
+use gait_types::sandbox_grant::SandboxGrant;
 
 /// The user's decision when prompted about a pending tool call.
 #[derive(Debug, Clone, PartialEq)]
@@ -183,6 +185,26 @@ pub fn wildcard_match(pattern: &str, value: &str) -> bool {
     }
 }
 
+/// Match a non-compound shell command against sandbox whitelist entries.
+pub fn whitelist_match<'a>(
+    cmd: &str,
+    whitelist: &'a [SandboxWhitelistEntry],
+) -> Option<(&'a SandboxWhitelistEntry, Vec<SandboxGrant>)> {
+    if split_commands(cmd).len() != 1 {
+        return None;
+    }
+    whitelist.iter().find_map(|entry| {
+        wildcard_match(&entry.pattern, cmd).then(|| {
+            let grants = entry
+                .grants
+                .iter()
+                .filter_map(|dimension| SandboxGrant::from_dimension(dimension))
+                .collect();
+            (entry, grants)
+        })
+    })
+}
+
 /// Diagnostic-only: given a request `display` (e.g. "rm -rf /") and the allow
 /// list, return a corrected pattern string if some allow entry is a *near-miss*
 /// — it does not match today but would if its trailing `*` were the `" *"`
@@ -214,6 +236,8 @@ pub fn near_miss_suggestion(display: &str, allow: &[String]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gait_types::config::SandboxWhitelistEntry;
+    use gait_types::sandbox_grant::SandboxGrant;
 
     #[test]
     fn split_simple_semicolon() {
@@ -558,5 +582,42 @@ mod tests {
             near_miss_suggestion("rm -rf /", &["shell:rm *".to_string()]),
             None
         );
+    }
+
+    #[test]
+    fn whitelist_match_single_command_and_first_match_wins() {
+        let whitelist = vec![
+            SandboxWhitelistEntry {
+                pattern: "flutter *".into(),
+                grants: vec!["read".into()],
+            },
+            SandboxWhitelistEntry {
+                pattern: "flutter test *".into(),
+                grants: vec!["network".into()],
+            },
+        ];
+        let (entry, grants) = whitelist_match("flutter test --coverage", &whitelist).unwrap();
+        assert_eq!(entry.pattern, "flutter *");
+        assert_eq!(grants, vec![SandboxGrant::Readable]);
+    }
+
+    #[test]
+    fn whitelist_match_rejects_compound_and_unknown_dimensions() {
+        let whitelist = vec![SandboxWhitelistEntry {
+            pattern: "flutter test *".into(),
+            grants: vec!["network".into(), "mystery".into()],
+        }];
+        assert!(whitelist_match("flutter test && curl evil.example.com", &whitelist).is_none());
+        let (_, grants) = whitelist_match("flutter test", &whitelist).unwrap();
+        assert_eq!(grants, vec![SandboxGrant::NetworkHost]);
+    }
+
+    #[test]
+    fn whitelist_match_returns_none_for_non_match() {
+        let whitelist = vec![SandboxWhitelistEntry {
+            pattern: "flutter test *".into(),
+            grants: vec!["network".into()],
+        }];
+        assert!(whitelist_match("npm test", &whitelist).is_none());
     }
 }
