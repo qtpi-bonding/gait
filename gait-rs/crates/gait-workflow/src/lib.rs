@@ -10,6 +10,7 @@ pub mod hooks;
 pub mod runner;
 pub mod schema;
 pub mod state;
+pub mod validate;
 pub mod vars;
 
 pub mod convert;
