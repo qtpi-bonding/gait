@@ -126,6 +126,7 @@ pub async fn single_prompt_run(
             profile,
             fs_delegate,
             allow_intree,
+            force_rerun_nodes: Vec::new(),
         },
         sink,
         observer,

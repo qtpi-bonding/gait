@@ -53,6 +53,11 @@ pub struct WorkflowRunOpts {
     /// Launcher-set override for the in-tree safety guard (design §7), sourced
     /// from the CLI's `--allow-intree` flag. `false` for REPL/ACP/workflow nodes.
     pub allow_intree: bool,
+    /// Node ids the caller explicitly consents to re-running even though they
+    /// were left `Running` by an interrupted prior run (resume-safety guard,
+    /// audit finding #2). Empty for a fresh `gait workflow run` and for every
+    /// caller except `gait workflow continue --force-rerun <id>`.
+    pub force_rerun_nodes: Vec<String>,
 }
 
 type NodeFuture =
@@ -62,6 +67,16 @@ type NodeFuture =
 /// guard already excludes; this makes that unreachable explicit.
 fn unreachable_empty_tasks() -> (String, NodeTaskOutcome) {
     unreachable!("tasks.next() returned None while pool was non-empty")
+}
+
+/// The command string of a shell node, for the resume-guard error message.
+/// None for any node whose body isn't Shell — the guard only calls this on
+/// ids already filtered to Shell nodes, but the signature stays total.
+fn shell_command_of(n: &Node) -> Option<String> {
+    match &n.body {
+        Some(node::Body::Shell(s)) => Some(s.command.clone()),
+        _ => None,
+    }
 }
 
 #[derive(Debug)]
@@ -521,6 +536,7 @@ pub async fn run_workflow(
         profile,
         fs_delegate,
         allow_intree,
+        force_rerun_nodes,
     } = opts;
 
     let validation_errors = crate::validate::validate_graph(&wf_owned);
@@ -592,6 +608,50 @@ pub async fn run_workflow(
 
     let wf_events = run_log.read_events().unwrap_or_default();
     let mut state = reconstruct_state(&wf_events);
+
+    let stuck_shell_nodes: Vec<&str> = wf
+        .nodes
+        .iter()
+        .filter(|n| matches!(n.body, Some(node::Body::Shell(_))))
+        .map(|n| n.id.as_str())
+        .filter(|id| state.node_status(id) == NodeStatus::Running)
+        .collect();
+    if !stuck_shell_nodes.is_empty() {
+        let unresolved: Vec<&str> = stuck_shell_nodes
+            .iter()
+            .filter(|id| !force_rerun_nodes.iter().any(|f| f == *id))
+            .copied()
+            .collect();
+        if !unresolved.is_empty() {
+            let detail = stuck_shell_nodes
+                .iter()
+                .map(|id| {
+                    let cmd = wf
+                        .nodes
+                        .iter()
+                        .find(|n| n.id == *id)
+                        .and_then(shell_command_of)
+                        .unwrap_or_else(|| "<no command available>".to_string());
+                    format!("  - '{id}' (last command: {cmd})")
+                })
+                .collect::<Vec<_>>()
+                .join(
+                    "
+",
+                );
+            anyhow::bail!(
+                "the following shell node(s) were still running when this workflow was                  interrupted and may have partially or fully executed their command:
+{detail}
+                 Re-running them may repeat side effects (e.g. a git commit, a deploy script)                  that already happened. Pass --force-rerun <node-id> once per node above to                  accept this and resume (their prior side effects are NOT undone)."
+            );
+        }
+        for id in &stuck_shell_nodes {
+            state.set_status(id, NodeStatus::Pending);
+            eprintln!(
+                "[gait workflow] --force-rerun: re-running node '{id}'                  (its side effects from the interrupted run, if any, are not undone)"
+            );
+        }
+    }
 
     let workflow_id = if state.workflow_id.is_empty() {
         session_id.clone()
