@@ -230,7 +230,7 @@ pub fn cmd_workflow_list(_argv: &[String], gait_dir: PathBuf) {
     }
 }
 
-/// `gait workflow continue <run-id> [--force]`
+/// `gait workflow continue <run-id> [--force] [--force-rerun <node-id>]...`
 #[derive(clap::Parser, Debug)]
 #[command(no_binary_name = true)]
 struct ContinueArgs {
@@ -240,6 +240,12 @@ struct ContinueArgs {
     /// Without this, an edited YAML is a hard error (never a silent divergence).
     #[arg(long)]
     force: bool,
+    /// Accept the risk of re-running a shell node that was still executing when
+    /// this workflow was interrupted (its prior side effects, if any, are NOT
+    /// undone). Must name the exact node id reported in the resume-guard error.
+    /// Repeatable — pass once per stuck node.
+    #[arg(long)]
+    force_rerun: Vec<String>,
 }
 
 pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) {
@@ -318,6 +324,7 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) {
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.join("codebase"),
             args: resolved.args,
+            force_rerun_nodes: parsed.force_rerun.clone(),
             ..Default::default()
         },
         &mut sink,
@@ -439,6 +446,19 @@ mod continue_arg_tests {
         assert!(a.force);
         let b = ContinueArgs::try_parse_from(["run-1"]).unwrap();
         assert!(!b.force);
+    }
+
+    #[test]
+    fn continue_args_parse_force_rerun_repeatable() {
+        let a = ContinueArgs::try_parse_from(["run-1"]).unwrap();
+        assert!(a.force_rerun.is_empty());
+
+        let b = ContinueArgs::try_parse_from(["run-1", "--force-rerun", "a"]).unwrap();
+        assert_eq!(b.force_rerun, vec!["a".to_string()]);
+
+        let c = ContinueArgs::try_parse_from(["run-1", "--force-rerun", "a", "--force-rerun", "b"])
+            .unwrap();
+        assert_eq!(c.force_rerun, vec!["a".to_string(), "b".to_string()]);
     }
 }
 
