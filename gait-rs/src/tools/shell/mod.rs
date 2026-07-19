@@ -16,6 +16,9 @@ struct ShellParams {
     /// Optional working directory for this command. Relative paths resolve against
     /// the current directory and PERSIST (like `cd`); absolute paths are used as-is.
     /// A nonexistent path errors and leaves the working directory unchanged.
+    // Prefer this over "cd dir && cmd" — sandbox.shell_whitelist only matches
+    // single-segment commands, so a cd-chained command silently misses any
+    // whitelist grant it would otherwise get.
     cwd: Option<String>,
     /// Run as a background daemon that outlives this turn; returns immediately.
     /// The daemon inherits the agent's sandbox ceiling (not the per-call scope).

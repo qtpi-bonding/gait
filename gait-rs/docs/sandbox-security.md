@@ -110,6 +110,47 @@ It's worth doing only if/when (a) supply-chain containment matters (a compromise
 dependency phoning home), or (b) in-brain network code is added later. Until then the
 disk seal + the hand-level webfetch allowlist are the substantive controls.
 
+## The three-layer `sandbox.*` config model
+
+The seals above are enforced by the kernel; what they enforce is configured in
+`gait.jsonc`'s `sandbox` block, and a denial there is now legible rather than an
+opaque tool-native error. A call is denied for exactly one of three reasons —
+the global ceiling is closed, the per-tool floor is `false` for that dimension,
+or (for `shell`) no `shell_whitelist` entry matched — and whichever it is, the
+transcript gets a `SandboxDenied` event naming it, instead of a bare "operation
+not permitted" bubbling up from the tool.
+
+```jsonc
+"sandbox": {
+  "on": true,
+
+  // Layer 1 — global ceiling: the outer bound nothing below can exceed.
+  "readable": ["~/.pub-cache"],
+  "writable": ["/tmp"],
+  "network": "off",              // "off" | "*" (all hosts) | ["host1", "host2"]
+                                  // Only "*" means all-hosts; any other bare
+                                  // string is a config error (not a silent
+                                  // one-host allowlist).
+
+  // Layer 2 — per-tool floor: what each builtin tool gets before any
+  // shell_whitelist grant. Omit a tool to keep its built-in default.
+  "tools": {
+    "shell":    { "reads": true, "writes": true, "network": false },
+    "webfetch": { "network": true }
+  },
+
+  // Layer 3 — shell-only overrides: widen shell's floor for one exact
+  // single-segment command shape. Compound commands (cd &&, |, ;) never
+  // match on purpose — use the shell tool's cwd param instead of cd &&.
+  // A miss here surfaces as a SandboxDenied transcript event naming the
+  // closest-matching pattern, not a silent generic failure.
+  "shell_whitelist": [
+    { "pattern": "flutter test *",    "grants": ["network"] },
+    { "pattern": "flutter pub get *", "grants": ["network"] }
+  ]
+}
+```
+
 ## End state of the seals
 
 ```rust
