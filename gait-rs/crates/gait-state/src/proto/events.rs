@@ -292,6 +292,16 @@ pub fn sandbox_denied(
     }))
 }
 
+/// `PermissionDenied` — a tool call matched a deny[] pattern. Emitted
+/// alongside the ordinary ToolCall/ToolResult, not instead of them.
+pub fn permission_denied(tool_name: &str, resource: &str, pattern: &str) -> pb::event::Body {
+    wire::body(pb::payload::Kind::PermissionDenied(pb::PermissionDenied {
+        tool_name: tool_name.to_string(),
+        resource: resource.to_string(),
+        pattern: pattern.to_string(),
+    }))
+}
+
 /// Parameters for [`turn_complete`].
 #[derive(Debug, Default)]
 pub struct TurnCompleteParams {
@@ -1038,6 +1048,21 @@ mod tests {
                     assert_eq!(sd.hint.as_deref(), Some("try running verbatim"));
                 }
                 other => panic!("expected SandboxDenied, got {other:?}"),
+            },
+            other => panic!("expected Payload body, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn permission_denied_event_shape() {
+        let body = permission_denied("shell", "rm -rf /", "shell:rm -rf *");
+        match body {
+            pb::event::Body::Payload(p) => match p.kind {
+                Some(pb::payload::Kind::PermissionDenied(pd)) => {
+                    assert_eq!(pd.tool_name, "shell");
+                    assert_eq!(pd.pattern, "shell:rm -rf *");
+                }
+                other => panic!("expected PermissionDenied, got {other:?}"),
             },
             other => panic!("expected Payload body, got {other:?}"),
         }

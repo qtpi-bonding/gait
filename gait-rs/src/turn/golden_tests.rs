@@ -264,7 +264,8 @@ fn body_kind(b: &event::Body) -> BodyKind {
         | payload::Kind::SandboxUnlockReply(_)
         | payload::Kind::Mode(_)
         | payload::Kind::SandboxWhitelistMatch(_)
-        | payload::Kind::SandboxDenied(_) => BodyKind::Unknown,
+        | payload::Kind::SandboxDenied(_)
+        | payload::Kind::PermissionDenied(_) => BodyKind::Unknown,
     }
 }
 

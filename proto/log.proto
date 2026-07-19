@@ -106,6 +106,7 @@ CancellationSignal cancellation_signal = 55;
     Mode               mode                = 65;
     SandboxWhitelistMatch sandbox_whitelist_match = 66;
     SandboxDenied      sandbox_denied      = 67;
+    PermissionDenied   permission_denied   = 68;
   }
   reserved 20 to 49;  // workflow family (WorkflowHook* / WorkflowNode* / WorkflowStart …) — deferred to the workflow-subsystem redo
 }
@@ -305,6 +306,7 @@ enum AgentStatus {
   AGENT_STATUS_INFORM      = 3;
 }
 
+// ── Permissions ─────────────────────────────────────────────────────────────
 message PermissionItem {
   string id        = 1;
   string cmd       = 2;
@@ -324,6 +326,18 @@ enum Decision { DECISION_UNSPECIFIED = 0; DECISION_ALLOW = 1; DECISION_DENY = 2;
 enum Scope    { SCOPE_UNSPECIFIED = 0; SCOPE_ONCE = 1; SCOPE_AGENT = 2; SCOPE_GLOBAL = 3; SCOPE_SESSION = 4; }
 message Permissions      { repeated PermissionItem items = 1; }
 message PermissionsReply { string from = 1; repeated PermissionsReplyItem items = 2; }  // from = replier id
+
+// Emitted when a tool call matches a deny[] pattern — the hard-floor
+// permission-gate block, distinct from a Permissions ask (which ask/allow
+// pauses for a human decision; deny never does). Same-step, unconditional
+// record, emitted alongside the ordinary ToolCall/ToolResult pair — this
+// does not replace the ToolResult the model sees, it supplements it with a
+// structured, queryable record of exactly which deny[] entry fired.
+message PermissionDenied {
+  string tool_name = 1;  // the tool whose call was denied
+  string resource  = 2;  // the command/pattern text that was checked
+  string pattern   = 3;  // the deny[] entry that matched, e.g. "shell:rm -rf *"
+}
 message RunResult {
   oneof result {
     StructuredDoneOutput  done        = 1;
