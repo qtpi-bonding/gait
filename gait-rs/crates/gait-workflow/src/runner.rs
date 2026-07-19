@@ -60,12 +60,23 @@ pub struct WorkflowRunOpts {
     pub force_rerun_nodes: Vec<String>,
 }
 
-type NodeFuture =
-    Pin<Box<dyn std::future::Future<Output = anyhow::Result<(String, NodeTaskOutcome)>>>>;
+type NodeFuture = Pin<
+    Box<
+        dyn std::future::Future<
+            Output = anyhow::Result<(String, NodeTaskOutcome, Vec<HookRunResult>)>,
+        >,
+    >,
+>;
+
+struct HookRunResult {
+    phase: &'static str, // "before" | "after" | "error"
+    cmd: String,
+    exit: i32,
+}
 
 /// `tasks.next()` only yields `None` when the pool is empty, which the `loop`
 /// guard already excludes; this makes that unreachable explicit.
-fn unreachable_empty_tasks() -> (String, NodeTaskOutcome) {
+fn unreachable_empty_tasks() -> (String, NodeTaskOutcome, Vec<HookRunResult>) {
     unreachable!("tasks.next() returned None while pool was non-empty")
 }
 
@@ -101,6 +112,7 @@ struct NodeRunParams {
     vars: VarContext,
     workflow_tx: tokio::sync::mpsc::UnboundedSender<SinkFrame>,
     overrides: RunOverrides,
+    env: HashMap<String, String>,
 }
 
 /// CLI-only degenerate-run overrides (spec-06 §3 Task 3.2, the C1 fix), bundled
@@ -273,13 +285,40 @@ fn backoff_delay_ms(attempt: u32, base_ms: u64, backoff: &str) -> u64 {
     }
 }
 
-/// Execute a single node with retries. Returns the node_id and outcome.
-/// Interactive (absent-prompt) nodes pass `None` for input — they always return
-/// `NodeTaskOutcome::Open` which the scheduler handles outside this function.
-async fn run_single_node(params: NodeRunParams) -> anyhow::Result<(String, NodeTaskOutcome)> {
+/// Execute a single node with retries. Returns the node_id, outcome, and
+/// every hook run performed along the way (the scheduler logs these once the
+/// future resolves — moving hook execution in here, instead of the
+/// scheduler's own inline await chain, is finding #7's actual fix: this
+/// future is polled cooperatively inside `tasks: FuturesUnordered`, so a
+/// slow/hanging hook only suspends this one node, never its siblings).
+/// Interactive (absent-prompt) nodes pass `None` for input — they always
+/// return `NodeTaskOutcome::Open` which the scheduler handles outside this
+/// function.
+async fn run_single_node(
+    params: NodeRunParams,
+) -> anyhow::Result<(String, NodeTaskOutcome, Vec<HookRunResult>)> {
     let node_id = params.node.id.clone();
     let on_error = params.node.on_error.clone().unwrap_or_default();
     let max_attempts = on_error.retry_times as usize + 1;
+    let timeout_ms = params
+        .node
+        .hooks
+        .as_ref()
+        .and_then(|h| h.timeout_ms)
+        .unwrap_or(120_000);
+    let mut hook_results = Vec::new();
+
+    // Before-hook: runs exactly once, before any attempt — not re-run on retries.
+    if let Some(hooks) = &params.node.hooks {
+        if let Some(cmd) = &hooks.before {
+            let (exit, _) = run_hook(cmd, &params.env, timeout_ms).await;
+            hook_results.push(HookRunResult {
+                phase: "before",
+                cmd: cmd.clone(),
+                exit,
+            });
+        }
+    }
 
     for attempt in 1..=max_attempts {
         if attempt > 1 {
@@ -309,29 +348,55 @@ async fn run_single_node(params: NodeRunParams) -> anyhow::Result<(String, NodeT
         match execute_node(&params.node, &ctx, &params.wf, None).await {
             Ok(out) => {
                 if out.routed_to.as_deref() == Some(GATE_PAUSED_SENTINEL) {
-                    return Ok((node_id, NodeTaskOutcome::GatePaused(out)));
+                    return Ok((node_id, NodeTaskOutcome::GatePaused(out), hook_results));
                 }
                 if out.routed_to.as_deref() == Some(NODE_OPEN_SENTINEL) {
-                    return Ok((node_id, NodeTaskOutcome::Open));
+                    return Ok((node_id, NodeTaskOutcome::Open, hook_results));
                 }
-                return Ok((node_id, NodeTaskOutcome::Done(out)));
+                // After-hook: only on a successful (Done) outcome.
+                if let Some(hooks) = &params.node.hooks {
+                    if let Some(cmd) = &hooks.after {
+                        let (exit, _) = run_hook(cmd, &params.env, timeout_ms).await;
+                        hook_results.push(HookRunResult {
+                            phase: "after",
+                            cmd: cmd.clone(),
+                            exit,
+                        });
+                    }
+                }
+                return Ok((node_id, NodeTaskOutcome::Done(out), hook_results));
             }
             Err(e) => {
                 if attempt < max_attempts {
                     continue;
                 }
-                // All retries exhausted — route by on_error
+                // Error-hook: runs exactly once, after retries are exhausted,
+                // regardless of which on_error routing applies below.
+                if let Some(hooks) = &params.node.hooks {
+                    if let Some(cmd) = &hooks.error {
+                        let (exit, _) = run_hook(cmd, &params.env, timeout_ms).await;
+                        hook_results.push(HookRunResult {
+                            phase: "error",
+                            cmd: cmd.clone(),
+                            exit,
+                        });
+                    }
+                }
                 if on_error.goto.as_deref() == Some("continue") {
-                    return Ok((node_id, NodeTaskOutcome::ErrorContinue));
+                    return Ok((node_id, NodeTaskOutcome::ErrorContinue, hook_results));
                 }
                 if let Some(goto_id) = on_error
                     .goto
                     .as_deref()
                     .filter(|&g| g != "abort" && g != "continue")
                 {
-                    return Ok((node_id, NodeTaskOutcome::ErrorGoto(goto_id.to_string())));
+                    return Ok((
+                        node_id,
+                        NodeTaskOutcome::ErrorGoto(goto_id.to_string()),
+                        hook_results,
+                    ));
                 }
-                return Ok((node_id, NodeTaskOutcome::Error(e.to_string())));
+                return Ok((node_id, NodeTaskOutcome::Error(e.to_string()), hook_results));
             }
         }
     }
@@ -339,7 +404,8 @@ async fn run_single_node(params: NodeRunParams) -> anyhow::Result<(String, NodeT
 }
 
 /// Prepare and push a node onto the ready queue.
-/// Calls before-hooks, emits node_start, sets Running status, builds VarContext.
+/// Emits node_start, sets Running status, builds VarContext. Hooks (before/
+/// after/error) now run inside `run_single_node` itself — see finding #7.
 #[allow(clippy::too_many_arguments)]
 async fn enqueue_node_task(
     node: Node,
@@ -368,13 +434,6 @@ async fn enqueue_node_task(
         Some(&node_id),
         state,
     );
-
-    if let Some(hooks) = &node.hooks {
-        if let Some(cmd) = &hooks.before {
-            let (exit, _) = run_hook(cmd, &env).await;
-            observer.on_event(&run_log.hook_run(&node_id, "before", cmd, exit)?);
-        }
-    }
 
     let ntype = node_type_name(&node);
     let node_session = resolve_node_session(state, &node);
@@ -406,6 +465,7 @@ async fn enqueue_node_task(
         vars,
         workflow_tx: frame_tx.clone(),
         overrides: overrides.clone(),
+        env,
     })));
 
     Ok(())
@@ -800,7 +860,7 @@ pub async fn run_workflow(
             // Drain stream items into the sink AS they arrive (not just when a
             // node finishes), so fan-out output renders live. `select!` re-polls
             // `tasks.next()` each iteration; FuturesUnordered::next is cancel-safe.
-            let (node_id, outcome) = loop {
+            let (node_id, outcome, hook_results) = loop {
                 tokio::select! {
                     biased;
                     Some(frame) = frame_rx.recv() => { frame.replay(sink); }
@@ -823,6 +883,10 @@ pub async fn run_workflow(
             }
             in_flight.remove(&node_id);
 
+            for h in &hook_results {
+                observer.on_event(&run_log.hook_run(&node_id, h.phase, &h.cmd, h.exit)?);
+            }
+
             let node = wf
                 .nodes
                 .iter()
@@ -831,15 +895,6 @@ pub async fn run_workflow(
                 .ok_or_else(|| {
                     anyhow::anyhow!("completed node '{}' not found in workflow", node_id)
                 })?;
-            let env = make_env_vars(
-                &workflow_id,
-                &session_id,
-                &gait_dir,
-                &codebase,
-                &args_str,
-                Some(&node_id),
-                &state,
-            );
 
             match outcome {
                 NodeTaskOutcome::Open => unreachable!(
@@ -858,14 +913,6 @@ pub async fn run_workflow(
                     state.set_status(&node_id, NodeStatus::Done);
                     state.node_outputs.insert(node_id.clone(), out.clone());
                     completed.insert(node_id.clone());
-
-                    // After hooks
-                    if let Some(hooks) = &node.hooks {
-                        if let Some(cmd) = &hooks.after {
-                            let (exit, _) = run_hook(cmd, &env).await;
-                            observer.on_event(&run_log.hook_run(&node_id, "after", cmd, exit)?);
-                        }
-                    }
 
                     // Branch routing: mark non-taken paths as skipped, enqueue taken path
                     if let Some(node::Body::Branch(_)) = node.body.as_ref() {
@@ -975,11 +1022,6 @@ pub async fn run_workflow(
                 }
 
                 NodeTaskOutcome::Error(ref msg) => {
-                    if let Some(hooks) = &node.hooks {
-                        if let Some(cmd) = &hooks.error {
-                            run_hook(cmd, &env).await;
-                        }
-                    }
                     state.set_status(&node_id, NodeStatus::Error(msg.clone()));
                     state.failed_node = Some(node_id.clone());
                     completed.insert(node_id.clone());
@@ -994,11 +1036,6 @@ pub async fn run_workflow(
                 }
 
                 NodeTaskOutcome::ErrorContinue => {
-                    if let Some(hooks) = &node.hooks {
-                        if let Some(cmd) = &hooks.error {
-                            run_hook(cmd, &env).await;
-                        }
-                    }
                     state.set_status(&node_id, NodeStatus::Skipped);
                     completed.insert(node_id.clone());
 
@@ -1029,11 +1066,6 @@ pub async fn run_workflow(
                 }
 
                 NodeTaskOutcome::ErrorGoto(ref goto_id) => {
-                    if let Some(hooks) = &node.hooks {
-                        if let Some(cmd) = &hooks.error {
-                            run_hook(cmd, &env).await;
-                        }
-                    }
                     state.set_status(
                         &node_id,
                         NodeStatus::Error(format!("routed to {}", goto_id)),
@@ -1287,7 +1319,7 @@ fn topological_sort(nodes: &[Node]) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gait_core::proto::gait::workflow::v1::{node, Node, PromptNode, ShellNode};
+    use gait_core::proto::gait::workflow::v1::{node, Hooks, Node, OnError, PromptNode, ShellNode};
 
     fn node(id: &str, deps: &[&str]) -> Node {
         Node {
@@ -1318,6 +1350,108 @@ mod tests {
             })),
             ..Default::default()
         }
+    }
+
+    fn run_params(node: Node, run_worktree: &std::path::Path) -> NodeRunParams {
+        let (frame_tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        NodeRunParams {
+            node: node.clone(),
+            workflow_id: "wf".into(),
+            session_id: "sess".into(),
+            node_session: String::new(),
+            gait_dir: run_worktree.to_path_buf(),
+            codebase: run_worktree.to_path_buf(),
+            run_worktree: run_worktree.to_path_buf(),
+            wf: Arc::new(Workflow {
+                nodes: vec![node.clone()],
+                ..Default::default()
+            }),
+            vars: VarContext {
+                workflow_id: "wf".into(),
+                session_id: "sess".into(),
+                gait_dir: run_worktree.to_path_buf(),
+                codebase: run_worktree.to_path_buf(),
+                args: String::new(),
+                node_id: node.id.clone(),
+                node_outputs: HashMap::new(),
+                node_exit: None,
+                failed_node: None,
+            },
+            workflow_tx: frame_tx,
+            overrides: RunOverrides::default(),
+            env: HashMap::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn before_and_error_hooks_run_once_not_per_retry_attempt() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let node = Node {
+            id: "n".to_string(),
+            on_error: Some(OnError {
+                retry_times: 2,
+                delay: 0,
+                backoff: String::new(),
+                context: String::new(),
+                goto: None,
+            }),
+            hooks: Some(Hooks {
+                before: Some("true".into()),
+                after: None,
+                error: Some("true".into()),
+                timeout_ms: None,
+            }),
+            body: Some(node::Body::Shell(ShellNode {
+                command: "sleep 5".into(),
+                timeout_ms: Some(10),
+            })),
+            ..Default::default()
+        };
+        let (node_id, outcome, hook_results) =
+            run_single_node(run_params(node, dir.path())).await.unwrap();
+        assert_eq!(node_id, "n");
+        assert!(
+            matches!(outcome, NodeTaskOutcome::Error(_)),
+            "expected Error after retries exhausted, got {outcome:?}"
+        );
+        let before_count = hook_results.iter().filter(|h| h.phase == "before").count();
+        let error_count = hook_results.iter().filter(|h| h.phase == "error").count();
+        assert_eq!(
+            before_count, 1,
+            "before-hook must run exactly once, not once per retry attempt"
+        );
+        assert_eq!(
+            error_count, 1,
+            "error-hook must run exactly once, after retries are exhausted"
+        );
+    }
+
+    #[tokio::test]
+    async fn after_hook_runs_only_on_done_outcome() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let node = Node {
+            id: "n".to_string(),
+            hooks: Some(Hooks {
+                before: None,
+                after: Some("true".into()),
+                error: None,
+                timeout_ms: None,
+            }),
+            body: Some(node::Body::Shell(ShellNode {
+                command: "true".into(),
+                timeout_ms: None,
+            })),
+            ..Default::default()
+        };
+        let (node_id, outcome, hook_results) =
+            run_single_node(run_params(node, dir.path())).await.unwrap();
+        assert_eq!(node_id, "n");
+        assert!(
+            matches!(outcome, NodeTaskOutcome::Done(_)),
+            "expected Done, got {outcome:?}"
+        );
+        assert_eq!(hook_results.len(), 1, "exactly one hook run expected");
+        assert_eq!(hook_results[0].phase, "after");
     }
 
     #[test]
