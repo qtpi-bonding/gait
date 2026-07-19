@@ -79,8 +79,9 @@ pub async fn cmd_workflow(args: WorkflowArgs) {
         "continue" => cmd_workflow_continue(&rest, gait_dir).await,
         "abort" => cmd_workflow_abort(&rest, gait_dir),
         "log" => cmd_workflow_log(&rest, gait_dir),
+        "validate" => cmd_workflow_validate(&rest, gait_dir),
         _ => {
-            eprintln!("[gait] usage: gait workflow <run|list|continue|abort|log>");
+            eprintln!("[gait] usage: gait workflow <run|list|continue|abort|log|validate>");
             std::process::exit(1);
         }
     }
@@ -145,6 +146,45 @@ pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) {
             eprintln!("[gait workflow] error: {}", e);
             std::process::exit(1);
         }
+    }
+}
+
+/// Parse and structurally validate a workflow's graph without running it —
+/// no worktree, no run-log, no gait-dir session state touched. Exits 0 with
+/// "is valid" on success, exits 1 and prints every problem found on failure.
+pub fn cmd_workflow_validate(argv: &[String], gait_dir: PathBuf) {
+    let name = match argv.first() {
+        Some(n) => n.clone(),
+        None => {
+            eprintln!("[gait] usage: gait workflow validate <name>");
+            std::process::exit(1);
+        }
+    };
+    let yaml_path = gait_dir.join("workflows").join(format!("{}.yaml", name));
+    let yaml_content = match std::fs::read_to_string(&yaml_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[gait] cannot read {}: {}", yaml_path.display(), e);
+            std::process::exit(1);
+        }
+    };
+    let wf: WorkflowDef = match serde_yaml::from_str(&yaml_content) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("[gait] invalid workflow YAML: {}", e);
+            std::process::exit(1);
+        }
+    };
+    let proto = gait_workflow::convert::to_proto(&wf);
+    let errors = gait_workflow::validate::validate_graph(&proto);
+    if errors.is_empty() {
+        eprintln!("[gait workflow] {} is valid", name);
+    } else {
+        eprintln!("[gait workflow] {} is invalid:", name);
+        for e in &errors {
+            eprintln!("  - {e}");
+        }
+        std::process::exit(1);
     }
 }
 
@@ -494,5 +534,33 @@ mod list_tests {
         );
         assert_eq!(state.workflow_name, "deploy");
         assert!(WorkflowRunLog::open(&runs, "missing").is_err());
+    }
+}
+
+#[cfg(test)]
+mod validate_tests {
+    use super::*;
+
+    /// Happy-path only: cmd_workflow_validate calls std::process::exit(1) on
+    /// an invalid graph, which would kill the test process if exercised
+    /// in-process — matching how this file's other exit()-calling commands
+    /// (cmd_workflow_run, etc.) are also never tested on their error paths.
+    /// This proves the valid-graph path returns normally without exiting.
+    #[test]
+    fn valid_workflow_yaml_does_not_exit() {
+        let td = tempfile::TempDir::new().unwrap();
+        let gait_dir = td.path().to_path_buf();
+        std::fs::create_dir_all(gait_dir.join("workflows")).unwrap();
+        std::fs::write(
+            gait_dir.join("workflows").join("good.yaml"),
+            "name: good\nnodes:\n  - id: a\n    shell: \"echo hi\"\n",
+        )
+        .unwrap();
+
+        // If this exits the process, the test binary dies and no later test
+        // in this run reports pass/fail — reaching this assertion at all is
+        // the proof cmd_workflow_validate did not call std::process::exit.
+        cmd_workflow_validate(&["good".to_string()], gait_dir);
+        // No panic, no exit — the happy path returned normally.
     }
 }
