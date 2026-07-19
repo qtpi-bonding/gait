@@ -522,6 +522,17 @@ pub async fn run_workflow(
         fs_delegate,
         allow_intree,
     } = opts;
+
+    let validation_errors = crate::validate::validate_graph(&wf_owned);
+    if !validation_errors.is_empty() {
+        let joined = validation_errors
+            .iter()
+            .map(|e| format!("  - {e}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        anyhow::bail!("workflow graph is invalid:\n{joined}");
+    }
+
     // The run id doubles as the SESSION_ID env value nodes see and as the default
     // workflow_id; it is NOT a git session — the run owns its own branch/worktree
     // (`run/<run_id>` + `workflow-runs/<run_id>/worktree/`) below. There is no
