@@ -182,6 +182,12 @@ pub struct SandboxConfig {
     /// `whitelist_match` in gait-state::permissions::matching.
     #[serde(default)]
     pub shell_whitelist: Vec<SandboxWhitelistEntry>,
+    /// Per-tool overrides of the built-in sandbox floor (see
+    /// `gait_sandbox::ceiling::access_for_tool` for the defaults each tool
+    /// gets when not listed here). Unset fields on an entry keep the
+    /// built-in default for that dimension.
+    #[serde(default)]
+    pub tools: std::collections::HashMap<String, ToolAccessOverride>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -189,6 +195,16 @@ pub struct SandboxWhitelistEntry {
     pub pattern: String,
     #[serde(default)]
     pub grants: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolAccessOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reads: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writes: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<bool>,
 }
 
 fn default_true() -> bool {
@@ -203,6 +219,7 @@ impl Default for SandboxConfig {
             writable: vec![],
             network: NetworkConfig::default(),
             shell_whitelist: vec![],
+            tools: std::collections::HashMap::new(),
         }
     }
 }

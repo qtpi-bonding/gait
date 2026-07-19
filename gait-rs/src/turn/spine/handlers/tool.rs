@@ -21,7 +21,7 @@ fn shell_access_and_whitelist_hit(
 ) {
     use crate::sandbox_grant::SandboxGrant;
 
-    let mut access = crate::sandbox::ceiling::access_for_tool("shell");
+    let mut access = crate::sandbox::ceiling::access_for_tool("shell", sandbox_cfg);
     let Some((entry, grants)) =
         crate::permissions::matching::whitelist_match(cmd, &sandbox_cfg.shell_whitelist)
     else {

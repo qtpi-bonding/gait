@@ -629,6 +629,73 @@ mod tests {
     }
 
     #[test]
+    fn access_for_tool_shell_network_default_false() {
+        use gait_types::config::SandboxConfig;
+        let cfg = SandboxConfig::default();
+        let access = super::ceiling::access_for_tool("shell", &cfg);
+        assert!(!access.network);
+    }
+
+    #[test]
+    fn access_for_tool_shell_network_overridden_true() {
+        use gait_types::config::{SandboxConfig, ToolAccessOverride};
+        let mut cfg = SandboxConfig::default();
+        cfg.tools.insert(
+            "shell".to_string(),
+            ToolAccessOverride {
+                reads: None,
+                writes: None,
+                network: Some(true),
+            },
+        );
+        let access = super::ceiling::access_for_tool("shell", &cfg);
+        assert!(access.network);
+        // reads/writes keep their built-in default (true for shell) since the
+        // override left them unset.
+        assert!(access.reads);
+        assert!(access.writes);
+    }
+
+    #[test]
+    fn access_for_tool_unset_override_fields_fall_through_to_default() {
+        use gait_types::config::{SandboxConfig, ToolAccessOverride};
+        let mut cfg = SandboxConfig::default();
+        cfg.tools.insert(
+            "webfetch".to_string(),
+            ToolAccessOverride {
+                reads: Some(true),
+                writes: None,
+                network: None,
+            },
+        );
+        let access = super::ceiling::access_for_tool("webfetch", &cfg);
+        assert!(access.reads); // overridden
+        assert!(access.network); // built-in default for webfetch, unset in override
+    }
+
+    #[test]
+    fn bound_request_applies_per_tool_override() {
+        use gait_types::config::{NetworkConfig, SandboxConfig, ToolAccessOverride};
+        use std::path::Path;
+        let mut cfg = SandboxConfig::default();
+        cfg.network = NetworkConfig::All;
+        cfg.tools.insert(
+            "shell".to_string(),
+            ToolAccessOverride {
+                reads: None,
+                writes: None,
+                network: Some(true),
+            },
+        );
+        let scope =
+            super::ceiling::bound_request("shell", &cfg, Path::new("/tmp"), Path::new("/tmp"));
+        // NetworkPolicy does not derive PartialEq (confirmed: sandbox.rs's existing
+        // tests all use matches!, not assert_eq!, for this exact reason) — use
+        // matches! here too, not assert_eq!.
+        assert!(matches!(scope.network, NetworkPolicy::All));
+    }
+
+    #[test]
     fn codebase_var_expands_in_readable_and_writable() {
         use gait_types::config::SandboxConfig;
         use gait_types::types::ToolAccess;
@@ -1000,8 +1067,8 @@ pub mod ceiling {
     /// Unknown tools get the zero value (no access) — they are brain-side control tools
     /// and must never run in a hand. This is the spine's authoritative source for scope
     /// computation; the brain's claimed scope is ignored.
-    pub fn access_for_tool(tool_name: &str) -> ToolAccess {
-        match tool_name {
+    pub fn access_for_tool(tool_name: &str, cfg: &SandboxConfig) -> ToolAccess {
+        let mut access = match tool_name {
             "read" | "grep" | "glob" | "ls" | "codesearch" => ToolAccess {
                 reads: true,
                 ..Default::default()
@@ -1022,7 +1089,19 @@ pub mod ceiling {
                 ..Default::default()
             },
             _ => ToolAccess::default(),
+        };
+        if let Some(o) = cfg.tools.get(tool_name) {
+            if let Some(reads) = o.reads {
+                access.reads = reads;
+            }
+            if let Some(writes) = o.writes {
+                access.writes = writes;
+            }
+            if let Some(network) = o.network {
+                access.network = network;
+            }
         }
+        access
     }
 
     /// Compute the authoritative per-call scope for `tool_name` without trusting
@@ -1036,7 +1115,7 @@ pub mod ceiling {
         codebase: &Path,
         jail: &Path,
     ) -> SandboxScope {
-        compute_scope(access_for_tool(tool_name), cfg, codebase, jail)
+        compute_scope(access_for_tool(tool_name, cfg), cfg, codebase, jail)
     }
 
     /// Compute the per-call sandbox scope ceiling.

@@ -42,6 +42,7 @@ pub fn default_sandbox() -> SandboxConfig {
         writable: Vec::new(),
         network: NetworkConfig::Off,
         shell_whitelist: Vec::new(),
+        tools: std::collections::HashMap::new(),
     }
 }
 
