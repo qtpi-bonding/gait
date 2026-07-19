@@ -114,13 +114,23 @@ impl WorkflowRunLog {
     /// Rewrite the log file to contain exactly `events`, one JSON line each.
     /// Used by `read_events` to truncate a torn trailing write off disk once
     /// it's been dropped from the in-memory result.
+    ///
+    /// Crash-atomic: writes to a sibling temp file in the same directory,
+    /// then renames it over the real path. Rename is atomic on the same
+    /// filesystem, so a crash mid-rewrite leaves either the old (torn-tail)
+    /// file or the fully-written new (clean) file — never a half-written
+    /// one. Using `std::fs::write` directly on `self.path` would `O_TRUNC`
+    /// the file first, and a crash between truncation and write completing
+    /// would lose the ENTIRE log, not just the already-dropped torn tail.
     fn rewrite_clean(&self, events: &[WorkflowEvent]) -> anyhow::Result<()> {
         let mut buf = String::new();
         for ev in events {
             buf.push_str(&serde_json::to_string(ev)?);
             buf.push('\n');
         }
-        std::fs::write(&self.path, buf)?;
+        let tmp_path = self.path.with_extension("jsonl.tmp");
+        std::fs::write(&tmp_path, buf)?;
+        std::fs::rename(&tmp_path, &self.path)?;
         Ok(())
     }
 
@@ -396,6 +406,36 @@ mod tests {
             !raw.contains("broken"),
             "the torn line's bytes must be gone from disk after self-heal, got: {raw}"
         );
+    }
+
+    #[test]
+    fn read_events_self_heals_when_the_torn_line_is_the_only_line() {
+        let dir = TempDir::new().unwrap();
+        let log = WorkflowRunLog::create(dir.path(), "run-only-line-torn").unwrap();
+
+        // No complete events written yet — simulate a crash during the very
+        // first writeln!, before any event ever completed.
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(log.path())
+                .unwrap();
+            write!(
+                f,
+                r#"{{"version":1,"id":"broken","seq":1,"kind":{{"workflowStart"#
+            )
+            .unwrap();
+        }
+
+        let events = log.read_events().unwrap();
+        assert_eq!(
+            events.len(),
+            0,
+            "a torn-only-line log must self-heal to empty, not error"
+        );
+
+        let log2 = WorkflowRunLog::open(dir.path(), "run-only-line-torn").unwrap();
+        assert_eq!(log2.read_events().unwrap().len(), 0);
     }
 
     #[test]
