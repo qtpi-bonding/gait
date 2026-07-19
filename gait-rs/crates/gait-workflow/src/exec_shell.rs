@@ -37,21 +37,23 @@ pub async fn exec_shell_node(
     shell: &ShellNode,
     ctx: &NodeContext<'_>,
 ) -> anyhow::Result<NodeOutput> {
-    let cmd = substitute(&shell.command, &ctx.vars);
+    let cmd_str = substitute(&shell.command, &ctx.vars);
     let timeout_ms: u64 = shell.timeout_ms.unwrap_or(120_000);
     let cwd = ctx.run_worktree;
 
-    let result = tokio::time::timeout(
-        std::time::Duration::from_millis(timeout_ms),
-        tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(&cmd)
-            .current_dir(cwd)
-            .output(),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("shell timed out after {}ms", timeout_ms))?
-    .map_err(|e| anyhow::anyhow!("shell exec error: {}", e))?;
+    let mut cmd = tokio::process::Command::new("sh");
+    cmd.arg("-c").arg(&cmd_str).current_dir(cwd);
+    // Without this, a timeout only bounds the *wait* — tokio's default is to
+    // NOT kill the child on drop, so dropping the timed-out output() future
+    // (or the whole scheduler task pool on a sibling node's failure, see
+    // runner.rs's FuturesUnordered teardown on anyhow::bail!) leaves `sh` and
+    // whatever it spawned running as an orphan. Same fix as grep.rs/ls.rs.
+    cmd.kill_on_drop(true);
+
+    let result = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), cmd.output())
+        .await
+        .map_err(|_| anyhow::anyhow!("shell timed out after {}ms", timeout_ms))?
+        .map_err(|e| anyhow::anyhow!("shell exec error: {}", e))?;
 
     let stdout = String::from_utf8_lossy(&result.stdout).to_string();
     let stderr = String::from_utf8_lossy(&result.stderr).to_string();
@@ -120,6 +122,18 @@ mod tests {
             "shell cwd must be the run worktree; got: {}",
             out.text
         );
+    }
+
+    #[tokio::test]
+    async fn shell_timeout_still_produces_the_correct_error() {
+        let ws = TempDir::new().unwrap();
+        let shell = ShellNode {
+            command: "sleep 5".into(),
+            timeout_ms: Some(50),
+        };
+        let ctx = make_test_ctx(ws.path());
+        let err = exec_shell_node(&shell, &ctx).await.unwrap_err();
+        assert_eq!(err.to_string(), "shell timed out after 50ms");
     }
 
     fn make_test_ctx(ws: &std::path::Path) -> NodeContext<'static> {
