@@ -41,7 +41,7 @@ pub fn default_sandbox() -> SandboxConfig {
         readable: Vec::new(),
         writable: Vec::new(),
         network: NetworkConfig::Off,
-        whitelist: Vec::new(),
+        shell_whitelist: Vec::new(),
     }
 }
 

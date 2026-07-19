@@ -10,22 +10,39 @@ fn sandbox_config_defaults_to_strict_on() {
 }
 
 #[test]
-fn sandbox_config_whitelist_defaults_to_empty() {
-    assert!(SandboxConfig::default().whitelist.is_empty());
+fn sandbox_config_shell_whitelist_defaults_to_empty() {
+    assert!(SandboxConfig::default().shell_whitelist.is_empty());
 }
 
 #[test]
-fn sandbox_config_whitelist_deserializes_and_round_trips() {
+fn sandbox_config_shell_whitelist_deserializes_and_round_trips() {
     let json = r#"{
         "on": true,
-        "whitelist": [{"pattern":"flutter test *","grants":["network"]}]
+        "shell_whitelist": [{"pattern":"flutter test *","grants":["network"]}]
     }"#;
     let cfg: SandboxConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(cfg.whitelist[0].pattern, "flutter test *");
-    assert_eq!(cfg.whitelist[0].grants, vec!["network"]);
+    assert_eq!(cfg.shell_whitelist[0].pattern, "flutter test *");
+    assert_eq!(cfg.shell_whitelist[0].grants, vec!["network"]);
     let encoded = serde_json::to_string(&cfg).unwrap();
     let decoded: SandboxConfig = serde_json::from_str(&encoded).unwrap();
-    assert_eq!(decoded.whitelist[0].pattern, "flutter test *");
+    assert_eq!(decoded.shell_whitelist[0].pattern, "flutter test *");
+}
+
+#[test]
+fn sandbox_config_shell_whitelist_field_name() {
+    let json = r#"{"shell_whitelist": [{"pattern": "flutter test *", "grants": ["network"]}]}"#;
+    let cfg: SandboxConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(cfg.shell_whitelist.len(), 1);
+    assert_eq!(cfg.shell_whitelist[0].pattern, "flutter test *");
+}
+
+#[test]
+fn sandbox_config_old_whitelist_key_is_silently_ignored() {
+    // No backward compatibility: the old key name is just an unknown field,
+    // not migrated and not an error (SandboxConfig has no deny_unknown_fields).
+    let json = r#"{"whitelist": [{"pattern": "flutter test *", "grants": ["network"]}]}"#;
+    let cfg: SandboxConfig = serde_json::from_str(json).unwrap();
+    assert!(cfg.shell_whitelist.is_empty());
 }
 
 #[test]

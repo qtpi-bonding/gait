@@ -177,9 +177,11 @@ pub struct SandboxConfig {
     /// Network policy applied to sandboxed processes.
     #[serde(default)]
     pub network: NetworkConfig,
-    /// Shell command patterns pre-authorized for extra sandbox scope.
+    /// Shell-only command patterns pre-authorized for extra sandbox scope.
+    /// Only `shell` tool calls are ever checked against this list — see
+    /// `whitelist_match` in gait-state::permissions::matching.
     #[serde(default)]
-    pub whitelist: Vec<SandboxWhitelistEntry>,
+    pub shell_whitelist: Vec<SandboxWhitelistEntry>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -200,7 +202,7 @@ impl Default for SandboxConfig {
             readable: vec![],
             writable: vec![],
             network: NetworkConfig::default(),
-            whitelist: vec![],
+            shell_whitelist: vec![],
         }
     }
 }

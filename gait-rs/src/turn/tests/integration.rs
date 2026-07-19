@@ -2513,9 +2513,9 @@ async fn delegated_read_serves_buffer_not_disk() {
     );
 }
 
-// ─── Task 8: sandbox.whitelist end-to-end integration tests ────────────────
+// ─── Task 8: sandbox.shell_whitelist end-to-end integration tests ────────────────
 //
-// A shell command matching `sandbox.whitelist` gets its `Feedback` back carrying
+// A shell command matching `sandbox.shell_whitelist` gets its `Feedback` back carrying
 // `whitelist_match_items` — proves the wiring through a REAL `run_tool_as_spine`
 // call and a real spawned `gait __run-tool` hand subprocess, not just the pure
 // `shell_access_and_whitelist_hit` unit tests in Task 6 (which never touch the
@@ -2552,7 +2552,7 @@ async fn shell_command_matching_whitelist_carries_match_items_in_feedback() {
     };
 
     let sandbox_cfg = crate::config::SandboxConfig {
-        whitelist: vec![crate::config::SandboxWhitelistEntry {
+        shell_whitelist: vec![crate::config::SandboxWhitelistEntry {
             pattern: "flutter test *".to_string(),
             grants: vec!["network".to_string()],
         }],
@@ -2626,7 +2626,7 @@ async fn shell_command_not_matching_whitelist_carries_no_match_items() {
     };
 
     let sandbox_cfg = crate::config::SandboxConfig {
-        whitelist: vec![crate::config::SandboxWhitelistEntry {
+        shell_whitelist: vec![crate::config::SandboxWhitelistEntry {
             pattern: "flutter test *".to_string(),
             grants: vec!["network".to_string()],
         }],

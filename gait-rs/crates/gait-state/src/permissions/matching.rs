@@ -185,7 +185,8 @@ pub fn wildcard_match(pattern: &str, value: &str) -> bool {
     }
 }
 
-/// Match a non-compound shell command against sandbox whitelist entries.
+/// Match a non-compound shell command against `sandbox.shell_whitelist`
+/// entries. Only ever called for `shell` tool calls.
 pub fn whitelist_match<'a>(
     cmd: &str,
     whitelist: &'a [SandboxWhitelistEntry],
