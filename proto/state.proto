@@ -30,7 +30,7 @@ message SessionState {
     AwaitingPermission awaiting_permission = 2;
     AwaitingClarify    awaiting_clarify    = 3;
     AwaitingInform     awaiting_inform     = 4;
-    AwaitingUnlock     awaiting_unlock     = 5;
+    AwaitingSandboxUnlock awaiting_sandbox_unlock = 5;
   }
 }
 
@@ -38,4 +38,4 @@ message Idle {}
 message AwaitingPermission { repeated gait.log.v1.PermissionItem items = 1; }
 message AwaitingClarify    { repeated gait.log.v1.ClarifyItem    items = 1; }
 message AwaitingInform     { repeated gait.log.v1.InformItem     items = 1; }
-message AwaitingUnlock     { repeated gait.log.v1.UnlockItem     items = 1; }
+message AwaitingSandboxUnlock { repeated gait.log.v1.SandboxUnlockItem items = 1; }

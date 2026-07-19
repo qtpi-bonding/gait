@@ -23,7 +23,7 @@ message Impulse {
 message Feedback {
   google.protobuf.Value result = 1;
   repeated gait.log.v1.Event events = 2;
-  optional gait.log.v1.UnlockItem denied = 3;  // set when the hand signals a seal denial (Phase 2c)
+  optional gait.log.v1.SandboxUnlockItem denied = 3;  // set when the hand signals a seal denial (Phase 2c)
   optional DaemonRecordProto daemon = 5;        // set when the hand spawned a background daemon
   optional string final_content = 6;  // delegated write/edit: tool's final file content
   repeated gait.log.v1.SandboxWhitelistMatchItem whitelist_match_items = 7;

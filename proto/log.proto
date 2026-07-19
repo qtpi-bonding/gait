@@ -97,8 +97,8 @@ CancellationSignal cancellation_signal = 55;
     Inject             inject              = 56;
     ContextStatus      context_status      = 57;
     ThinkingBlock      thinking_block      = 58;
-    Unlock             unlock              = 59;
-    UnlockReply        unlock_reply        = 60;
+    SandboxUnlock      sandbox_unlock      = 59;
+    SandboxUnlockReply sandbox_unlock_reply = 60;
     DaemonStart        daemon_start        = 61;
     DaemonStop         daemon_stop         = 62;
     DaemonUpdate       daemon_update       = 63;
@@ -330,7 +330,7 @@ message RunResult {
     Permissions permissions = 3;
     Inform      inform      = 4;
     CancellationSignal cancelled = 5;
-    Unlock      unlock      = 6;
+    SandboxUnlock sandbox_unlock = 6;
   }
   string ended = 7;  // terminal-reason discriminant; set on every terminal path
 }
@@ -351,7 +351,7 @@ enum SandboxEnforcement {
   SANDBOX_ENFORCEMENT_NOOP        = 3;  // no scope declared or explicitly disabled (tests/unscoped)
 }
 
-// Emitted when a shell command matches a `sandbox.whitelist` config pattern and
+// Emitted when a shell command matches a `sandbox.shell_whitelist` config pattern and
 // is granted extra ceiling scope without pausing the turn.
 message SandboxWhitelistMatch {
   repeated SandboxWhitelistMatchItem items = 1;
@@ -363,19 +363,21 @@ message SandboxWhitelistMatchItem {
   string pattern = 4;
 }
 
-// ── Unlock flow ──────────────────────────────────────────────────────────────
-// Emitted when the hand raises an out-of-scope access for human review.
-// The brain pauses execution and waits for an UnlockReply.
-message UnlockItem {
-  string id              = 1;  // unlock request id (UUIDv4, matches UnlockReplyItem.id)
+// Emitted when the hand raises an out-of-scope access for human review — the
+// sandbox scope-escalation ask/reply flow. Distinct from `Permissions`
+// (pattern-gate ask, see the block above `RunResult`): this fires only when
+// a kernel-enforced ceiling was exceeded, not a config pattern match.
+// The brain pauses execution and waits for a SandboxUnlockReply.
+message SandboxUnlockItem {
+  string id              = 1;  // unlock request id (UUIDv4, matches SandboxUnlockReplyItem.id)
   string tool_name       = 2;  // the tool that triggered the denial
   string resource        = 3;  // the path or host that exceeded scope
   string dimension       = 4;  // "write" | "read" | "network"
   optional string preview = 5; // rendered pending change (diff/content), tool-owned
 }
-message Unlock      { repeated UnlockItem items = 1; }
-message UnlockReply { string from = 1; repeated UnlockReplyItem items = 2; }
-message UnlockReplyItem {
+message SandboxUnlock      { repeated SandboxUnlockItem items = 1; }
+message SandboxUnlockReply { string from = 1; repeated SandboxUnlockReplyItem items = 2; }
+message SandboxUnlockReplyItem {
   string   id       = 1;
   Decision decision = 2;  // reuse existing Decision enum
   Scope    scope    = 3;  // reuse existing Scope enum
