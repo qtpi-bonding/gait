@@ -98,9 +98,10 @@ pub struct HookDef {
 
 // ── Sandbox ────────────────────────────────────────────────────────────────
 // `NetworkConfig` deliberately uses a custom Deserialize (NOT `#[serde(untagged)]`)
-// so that a bare hostname string like "github.com" is treated as an allowlist of
-// one host — not silently coerced into the All-egress variant by serde's untagged
-// matching.
+// so bare strings get exact, non-silent handling: "*" is All, "off" is Off, and
+// anything else (e.g. a bare hostname, or a typo like "all") is a hard parse
+// error rather than silently becoming a one-host allowlist. Multi-host allowlists
+// must use the JSON array form.
 
 /// Network policy for the sandbox.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -121,10 +122,7 @@ impl<'de> serde::Deserialize<'de> for NetworkConfig {
         impl<'de> de::Visitor<'de> for V {
             type Value = NetworkConfig;
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                write!(
-                    f,
-                    "false, \"*\", a hostname string, or an array of hostnames"
-                )
+                write!(f, "false, \"off\", \"*\", or an array of hostnames")
             }
             fn visit_bool<E: de::Error>(self, v: bool) -> Result<NetworkConfig, E> {
                 if !v {
@@ -134,10 +132,10 @@ impl<'de> serde::Deserialize<'de> for NetworkConfig {
                 }
             }
             fn visit_str<E: de::Error>(self, v: &str) -> Result<NetworkConfig, E> {
-                if v == "*" {
-                    Ok(NetworkConfig::All)
-                } else {
-                    Ok(NetworkConfig::Hosts(vec![v.to_owned()]))
+                match v {
+                    "*" => Ok(NetworkConfig::All),
+                    "off" => Ok(NetworkConfig::Off),
+                    other => Err(E::invalid_value(Unexpected::Str(other), &self)),
                 }
             }
             fn visit_seq<A: de::SeqAccess<'de>>(

@@ -44,10 +44,59 @@ fn sandbox_network_config_parses_false_as_off() {
 }
 
 #[test]
-fn sandbox_network_config_parses_string_host_as_hosts() {
+fn sandbox_network_config_rejects_bare_hostname_string() {
     let json = r##"{"model":"x/y","sandbox":{"network":"github.com"}}"##;
-    let c: GaitConfig = serde_json::from_str(json).unwrap();
-    assert!(matches!(c.sandbox.network, NetworkConfig::Hosts(ref h) if h == &["github.com"]));
+    let result: Result<GaitConfig, _> = serde_json::from_str(json);
+    assert!(
+        result.is_err(),
+        "expected a bare hostname string to be a parse error, got {:?}",
+        result
+    );
+}
+
+#[test]
+fn network_config_off_from_string() {
+    let cfg: NetworkConfig = serde_json::from_str(r#""off""#).unwrap();
+    assert_eq!(cfg, NetworkConfig::Off);
+}
+
+#[test]
+fn network_config_off_from_bool_still_works() {
+    let cfg: NetworkConfig = serde_json::from_str("false").unwrap();
+    assert_eq!(cfg, NetworkConfig::Off);
+}
+
+#[test]
+fn network_config_all_from_star() {
+    let cfg: NetworkConfig = serde_json::from_str(r#""*""#).unwrap();
+    assert_eq!(cfg, NetworkConfig::All);
+}
+
+#[test]
+fn network_config_hosts_from_array() {
+    let cfg: NetworkConfig = serde_json::from_str(r#"["github.com", "api.example.com"]"#).unwrap();
+    assert_eq!(
+        cfg,
+        NetworkConfig::Hosts(vec!["github.com".into(), "api.example.com".into()])
+    );
+}
+
+#[test]
+fn network_config_bogus_string_is_an_error() {
+    // The reported bug: "all" (typo for "*") used to silently become
+    // Hosts(["all"]) instead of failing loudly.
+    let result: Result<NetworkConfig, _> = serde_json::from_str(r#""all""#);
+    assert!(
+        result.is_err(),
+        "expected \"all\" to be a parse error, got {:?}",
+        result
+    );
+}
+
+#[test]
+fn network_config_off_serializes_as_false() {
+    let s = serde_json::to_string(&NetworkConfig::Off).unwrap();
+    assert_eq!(s, "false");
 }
 
 #[test]
