@@ -444,13 +444,13 @@ pub struct AllowArgs {
 }
 
 pub fn cmd_allow(args: AllowArgs) {
-    use gait_ops::permission::{allow as op_allow, AllowParams, AllowScope};
+    use gait_ops::permission::{allow as op_allow, AllowParams, GrantScope};
 
     let scope = match args.scope.as_deref() {
-        Some("global") => AllowScope::Global,
-        Some("agent") => AllowScope::Agent,
-        Some("session") => AllowScope::Session,
-        Some("once") | None => AllowScope::Once,
+        Some("global") => GrantScope::Global,
+        Some("agent") => GrantScope::Agent,
+        Some("session") => GrantScope::Session,
+        Some("once") | None => GrantScope::Once,
         Some(other) => {
             eprintln!(
                 "[gait] error: unknown --scope '{}' (expected global|agent|session|once)",
@@ -538,13 +538,13 @@ pub struct UnlockArgs {
 }
 
 pub fn cmd_unlock(args: UnlockArgs) {
-    use gait_ops::permission::{unlock as op_unlock, UnlockParams, UnlockScope};
+    use gait_ops::permission::{unlock as op_unlock, GrantScope, UnlockParams};
 
     let scope = match args.scope.as_str() {
-        "global" => UnlockScope::Global,
-        "agent" => UnlockScope::Agent,
-        "session" => UnlockScope::Session,
-        _ => UnlockScope::Once,
+        "global" => GrantScope::Global,
+        "agent" => GrantScope::Agent,
+        "session" => GrantScope::Session,
+        _ => GrantScope::Once,
     };
 
     let params = UnlockParams {

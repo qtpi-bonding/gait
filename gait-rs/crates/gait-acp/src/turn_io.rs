@@ -18,7 +18,7 @@ use gait_core::proto::gait::log::v1::{
 };
 use gait_core::session::log::{SessionState, session_state};
 use gait_core::turn::TurnResult;
-use gait_ops::permission::{AllowScope, ItemChoice};
+use gait_ops::permission::{GrantScope, ItemChoice};
 
 /// Wrap ACP text into an `AgentMessageChunk` / `AgentThoughtChunk` body.
 fn text_chunk(text: impl Into<String>) -> ContentChunk {
@@ -159,7 +159,7 @@ pub fn build_permission_options(
         map.insert(id, choices);
     };
 
-    let allow = |id: &str, scope: AllowScope, pat: &str| ItemChoice {
+    let allow = |id: &str, scope: GrantScope, pat: &str| ItemChoice {
         id: id.to_string(),
         decision: Decision::Allow,
         scope,
@@ -169,7 +169,7 @@ pub fn build_permission_options(
     let deny = |id: &str| ItemChoice {
         id: id.to_string(),
         decision: Decision::Deny,
-        scope: AllowScope::Once, // ignored for Deny
+        scope: GrantScope::Once, // ignored for Deny
         pattern: None,
         agent: None,
     };
@@ -185,7 +185,7 @@ pub fn build_permission_options(
         "Allow once".to_string(),
         PermissionOptionKind::AllowOnce,
         segs.iter()
-            .map(|s| allow(&s.id, AllowScope::Once, &narrow(s)))
+            .map(|s| allow(&s.id, GrantScope::Once, &narrow(s)))
             .collect(),
     );
     // Canonical: allow this session (broadest per seg).
@@ -195,7 +195,7 @@ pub fn build_permission_options(
         "Allow this session".to_string(),
         PermissionOptionKind::AllowAlways,
         segs.iter()
-            .map(|s| allow(&s.id, AllowScope::Session, &broad(s)))
+            .map(|s| allow(&s.id, GrantScope::Session, &broad(s)))
             .collect(),
     );
     // Canonical: reject.
@@ -218,7 +218,7 @@ pub fn build_permission_options(
                 &mut map,
                 format!("Allow `{rung}` this session"),
                 PermissionOptionKind::AllowAlways,
-                vec![allow(&seg.id, AllowScope::Session, rung)],
+                vec![allow(&seg.id, GrantScope::Session, rung)],
             );
         }
     }
@@ -385,7 +385,7 @@ mod tests {
     use gait_core::proto::events;
     use gait_core::proto::gait::log::v1::Event;
     use gait_core::turn::TurnResult;
-    use gait_ops::permission::AllowScope;
+    use gait_ops::permission::GrantScope;
 
     fn event(body: gait_core::proto::gait::log::v1::event::Body) -> Event {
         Event {
@@ -567,7 +567,7 @@ mod tests {
         let once_choices = &map[&once.option_id];
         assert_eq!(once_choices.len(), 1);
         assert_eq!(once_choices[0].decision, Decision::Allow);
-        assert_eq!(once_choices[0].scope, AllowScope::Once);
+        assert_eq!(once_choices[0].scope, GrantScope::Once);
         assert_eq!(once_choices[0].pattern.as_deref(), Some("cargo build"));
 
         // Reject (kind RejectOnce) -> Deny.
@@ -583,7 +583,7 @@ mod tests {
             .iter()
             .filter(|o| o.kind == PermissionOptionKind::AllowAlways)
             .flat_map(|o| map[&o.option_id].iter())
-            .inspect(|c| assert_eq!(c.scope, AllowScope::Session))
+            .inspect(|c| assert_eq!(c.scope, GrantScope::Session))
             .filter_map(|c| c.pattern.clone())
             .collect();
         assert!(
@@ -619,7 +619,7 @@ mod tests {
         assert!(
             choices
                 .iter()
-                .all(|c| c.id == "tc9" && c.scope == AllowScope::Session)
+                .all(|c| c.id == "tc9" && c.scope == GrantScope::Session)
         );
         let pats: std::collections::HashSet<&str> = choices
             .iter()

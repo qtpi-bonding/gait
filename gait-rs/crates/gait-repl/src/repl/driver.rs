@@ -521,10 +521,10 @@ impl TurnSource for ReplSource {
                 match scope {
                     "once" | "session" | "global" | "agent" => {
                         let op_scope = match scope {
-                            "once" => gait_ops::permission::UnlockScope::Once,
-                            "session" => gait_ops::permission::UnlockScope::Session,
-                            "global" => gait_ops::permission::UnlockScope::Global,
-                            "agent" => gait_ops::permission::UnlockScope::Agent,
+                            "once" => gait_ops::permission::GrantScope::Once,
+                            "session" => gait_ops::permission::GrantScope::Session,
+                            "global" => gait_ops::permission::GrantScope::Global,
+                            "agent" => gait_ops::permission::GrantScope::Agent,
                             _ => unreachable!(),
                         };
                         match gait_ops::permission::unlock(gait_ops::permission::UnlockParams {

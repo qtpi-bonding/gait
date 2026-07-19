@@ -15,13 +15,11 @@ use std::path::{Path, PathBuf};
 // allow
 // -----------------------------------------------------------------------------
 
-/// The scope of an approval grant. Mirrors `gait_state::permissions::AllowScope`,
-/// extended here with `Session` so callers can express the once/session branch
-/// the CLI's `--scope session` already exposes. `Once` is the default — matches
-/// the CLI's default `--scope once`.
+/// The scope of a grant — either a permission allow or a sandbox unlock.
+/// `Once` is the default, matching the CLI's default `--scope once`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum AllowScope {
-    /// Save pattern to `gait.jsonc` (`allow[]`).
+pub enum GrantScope {
+    /// Save pattern to `gait.jsonc` (`allow[]`/`sandbox.*`).
     Global,
     /// Save pattern to the agent's frontmatter (`allow[]`).
     Agent,
@@ -32,14 +30,25 @@ pub enum AllowScope {
     Once,
 }
 
+impl From<GrantScope> for gait_state::proto::gait::log::v1::Scope {
+    fn from(s: GrantScope) -> Self {
+        match s {
+            GrantScope::Global => Self::Global,
+            GrantScope::Agent => Self::Agent,
+            GrantScope::Session => Self::Session,
+            GrantScope::Once => Self::Once,
+        }
+    }
+}
+
 /// Parameters for [`allow`]. Mirrors the `AllowArgs` clap glue fields the CLI
-/// uses; the op itself is clap-free. `scope` defaults to `AllowScope::Once`
+/// uses; the op itself is clap-free. `scope` defaults to `GrantScope::Once`
 /// to match the CLI's `--scope once` default.
 #[derive(Debug, Clone, Default)]
 pub struct AllowParams {
-    pub scope: AllowScope,
+    pub scope: GrantScope,
     pub pattern: Option<String>,
-    /// Required when `scope == AllowScope::Agent`. Resolved against
+    /// Required when `scope == GrantScope::Agent`. Resolved against
     /// `<gait_dir>/agents/<name>/AGENT.md`.
     pub agent: Option<String>,
 }
@@ -49,7 +58,7 @@ pub struct AllowParams {
 #[derive(Debug)]
 pub struct AllowOutcome {
     pub reply_items: Vec<gait_state::proto::gait::log::v1::PermissionsReplyItem>,
-    pub scope: AllowScope,
+    pub scope: GrantScope,
 }
 
 /// Approve all pending permission requests for `session_id`. Wraps
@@ -66,10 +75,10 @@ pub fn allow(
     use gait_state::session::log::{session_state, write_permissions_reply, SessionState};
 
     let core_scope = match params.scope {
-        AllowScope::Global => CoreAllowScope::Global,
-        AllowScope::Agent => CoreAllowScope::Agent,
-        AllowScope::Session => CoreAllowScope::Session,
-        AllowScope::Once => CoreAllowScope::Once,
+        GrantScope::Global => CoreAllowScope::Global,
+        GrantScope::Agent => CoreAllowScope::Agent,
+        GrantScope::Session => CoreAllowScope::Session,
+        GrantScope::Once => CoreAllowScope::Once,
     };
 
     let agent_path = params
@@ -170,10 +179,10 @@ pub struct ItemChoice {
     pub id: String,
     pub decision: pb::Decision,
     /// Scope for an Allow. Ignored for Deny.
-    pub scope: AllowScope,
+    pub scope: GrantScope,
     /// The chosen pattern (a rung of the item's ladder). Required for Allow.
     pub pattern: Option<String>,
-    /// Required only when `scope == AllowScope::Agent`.
+    /// Required only when `scope == GrantScope::Agent`.
     pub agent: Option<String>,
 }
 
@@ -254,15 +263,15 @@ pub fn reply(
                 .as_deref()
                 .map(|n| resolve_markdown_context_path(gait_dir, MarkdownKind::Agent, n));
             let (choice, scope_tag) = match c.scope {
-                AllowScope::Global => {
+                GrantScope::Global => {
                     (PermissionChoice::Global(pattern.clone()), pb::Scope::Global)
                 }
-                AllowScope::Agent => (PermissionChoice::Agent(pattern.clone()), pb::Scope::Agent),
-                AllowScope::Session => (
+                GrantScope::Agent => (PermissionChoice::Agent(pattern.clone()), pb::Scope::Agent),
+                GrantScope::Session => (
                     PermissionChoice::Session(pattern.clone()),
                     pb::Scope::Session,
                 ),
-                AllowScope::Once => (PermissionChoice::Once(pattern.clone()), pb::Scope::Once),
+                GrantScope::Once => (PermissionChoice::Once(pattern.clone()), pb::Scope::Once),
             };
             save_choice(&choice, gait_dir, session_id, agent_path.as_deref())?;
             pb::PermissionsReplyItem {
@@ -292,28 +301,13 @@ pub fn reply(
 // unlock
 // -----------------------------------------------------------------------------
 
-/// Scope of an unlock grant. `Once` is the default — matches the CLI's
-/// default `--scope once`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum UnlockScope {
-    /// Log-only, lifetime = one turn. No file write.
-    #[default]
-    Once,
-    /// Log-only, lifetime = session. No file write.
-    Session,
-    /// Persist to `<gait_dir>/gait.jsonc` `sandbox.*` lists.
-    Global,
-    /// Persist to the agent's frontmatter (resolved under `gait_dir`).
-    Agent,
-}
-
 /// Parameters for [`unlock`].
 #[derive(Debug, Clone, Default)]
 pub struct UnlockParams {
     pub gait_dir: PathBuf,
     pub session_id: String,
-    pub scope: UnlockScope,
-    /// Required when `scope == UnlockScope::Agent`. Resolves against
+    pub scope: GrantScope,
+    /// Required when `scope == GrantScope::Agent`. Resolves against
     /// `<gait_dir>/agents/<name>/AGENT.md`.
     pub agent: Option<String>,
 }
@@ -343,12 +337,7 @@ pub fn unlock(params: UnlockParams) -> Result<UnlockOutcome, OpError> {
     use gait_state::proto::gait::log::v1 as pb;
     use gait_state::session::log::{session_state, write_unlock_reply, SessionState};
 
-    let scope_pb = match params.scope {
-        UnlockScope::Once => pb::Scope::Once,
-        UnlockScope::Session => pb::Scope::Session,
-        UnlockScope::Global => pb::Scope::Global,
-        UnlockScope::Agent => pb::Scope::Agent,
-    };
+    let scope_pb: pb::Scope = params.scope.into();
 
     let tx_path = gait_state::session::live::log_path(&params.gait_dir, &params.session_id);
     let state = session_state(&tx_path).map_err(anyhow::Error::from)?;
@@ -376,13 +365,13 @@ pub fn unlock(params: UnlockParams) -> Result<UnlockOutcome, OpError> {
     // Per-scope persistence side-effects (file writes happen here, never as a
     // print — Wall 1). The op captures warnings instead of printing.
     match params.scope {
-        UnlockScope::Once | UnlockScope::Session => {
+        GrantScope::Once | GrantScope::Session => {
             // log-only; nothing to persist.
         }
-        UnlockScope::Global => {
+        GrantScope::Global => {
             persisted_grants = persist_grant_items(&items, &params.gait_dir, &mut warnings);
         }
-        UnlockScope::Agent => {
+        GrantScope::Agent => {
             if let Some(agent_name) = params.agent.as_deref() {
                 use gait_state::agent_frontmatter::{resolve_markdown_context_path, MarkdownKind};
                 let agent_path = resolve_markdown_context_path(
@@ -463,6 +452,20 @@ mod tests {
     use gait_state::session::log::read_events;
     use tempfile::TempDir;
 
+    #[test]
+    fn grant_scope_default_is_once() {
+        assert_eq!(GrantScope::default(), GrantScope::Once);
+    }
+
+    #[test]
+    fn grant_scope_maps_to_proto_scope() {
+        use gait_state::proto::gait::log::v1 as pb;
+        assert_eq!(pb::Scope::from(GrantScope::Global), pb::Scope::Global);
+        assert_eq!(pb::Scope::from(GrantScope::Agent), pb::Scope::Agent);
+        assert_eq!(pb::Scope::from(GrantScope::Session), pb::Scope::Session);
+        assert_eq!(pb::Scope::from(GrantScope::Once), pb::Scope::Once);
+    }
+
     /// Build a minimal gait-dir with `gait.jsonc` so `SandboxGrant::apply`
     /// has something to read/write, plus a session log path ready to be
     /// seeded with an Unlock event.
@@ -535,7 +538,7 @@ mod tests {
             ws.path(),
             "sallow01",
             AllowParams {
-                scope: AllowScope::Once,
+                scope: GrantScope::Once,
                 pattern: None,
                 agent: None,
             },
@@ -546,7 +549,7 @@ mod tests {
             outcome.reply_items[0].decision,
             gait_state::proto::gait::log::v1::Decision::Allow as i32,
         );
-        assert_eq!(outcome.scope, AllowScope::Once);
+        assert_eq!(outcome.scope, GrantScope::Once);
 
         // A PermissionsReply event now trails the Permissions request.
         let kind = read_kind(&tx, 1);
@@ -574,7 +577,7 @@ mod tests {
             ws.path(),
             "sallow02",
             AllowParams {
-                scope: AllowScope::Session,
+                scope: GrantScope::Session,
                 pattern: None,
                 agent: None,
             },
@@ -597,7 +600,7 @@ mod tests {
             ws.path(),
             "sallow03",
             AllowParams {
-                scope: AllowScope::Once,
+                scope: GrantScope::Once,
                 pattern: None,
                 agent: None,
             },
@@ -671,7 +674,7 @@ mod tests {
         let out = unlock(UnlockParams {
             gait_dir: ws.path().to_path_buf(),
             session_id: "sunc01".to_string(),
-            scope: UnlockScope::Once,
+            scope: GrantScope::Once,
             agent: None,
         })
         .unwrap();
@@ -697,7 +700,7 @@ mod tests {
         let out = unlock(UnlockParams {
             gait_dir: ws.path().to_path_buf(),
             session_id: "sunc02".to_string(),
-            scope: UnlockScope::Global,
+            scope: GrantScope::Global,
             agent: None,
         })
         .unwrap();
@@ -743,7 +746,7 @@ mod tests {
         let out = unlock(UnlockParams {
             gait_dir: ws.path().to_path_buf(),
             session_id: "sunc03".to_string(),
-            scope: UnlockScope::Agent,
+            scope: GrantScope::Agent,
             agent: Some("coder".to_string()),
         })
         .unwrap();
@@ -780,7 +783,7 @@ mod tests {
         let out = unlock(UnlockParams {
             gait_dir: ws.path().to_path_buf(),
             session_id: "sunc04".to_string(),
-            scope: UnlockScope::Agent,
+            scope: GrantScope::Agent,
             agent: None,
         })
         .unwrap();
@@ -805,7 +808,7 @@ mod tests {
         let out = unlock(UnlockParams {
             gait_dir: ws.path().to_path_buf(),
             session_id: "sunc05".to_string(),
-            scope: UnlockScope::Global,
+            scope: GrantScope::Global,
             agent: None,
         })
         .unwrap();
@@ -829,7 +832,7 @@ mod tests {
         let out = unlock(UnlockParams {
             gait_dir: ws.path().to_path_buf(),
             session_id: "sunc06".to_string(),
-            scope: UnlockScope::Session,
+            scope: GrantScope::Session,
             agent: None,
         })
         .unwrap();
@@ -850,7 +853,7 @@ mod tests {
         let err = unlock(UnlockParams {
             gait_dir: ws.path().to_path_buf(),
             session_id: "sunc07".to_string(),
-            scope: UnlockScope::Once,
+            scope: GrantScope::Once,
             agent: None,
         })
         .unwrap_err();
@@ -870,7 +873,7 @@ mod tests {
         let out = unlock(UnlockParams {
             gait_dir: ws.path().to_path_buf(),
             session_id: "sunc08".to_string(),
-            scope: UnlockScope::Global,
+            scope: GrantScope::Global,
             agent: None,
         })
         .unwrap();
@@ -917,14 +920,14 @@ mod tests {
                 ItemChoice {
                     id: "p1".into(),
                     decision: pb::Decision::Allow,
-                    scope: AllowScope::Session,
+                    scope: GrantScope::Session,
                     pattern: Some("shell:cargo *".into()),
                     agent: None,
                 },
                 ItemChoice {
                     id: "p2".into(),
                     decision: pb::Decision::Deny,
-                    scope: AllowScope::Once,
+                    scope: GrantScope::Once,
                     pattern: None,
                     agent: None,
                 },
@@ -975,7 +978,7 @@ mod tests {
             vec![ItemChoice {
                 id: "nope".into(),
                 decision: pb::Decision::Deny,
-                scope: AllowScope::Once,
+                scope: GrantScope::Once,
                 pattern: None,
                 agent: None,
             }],
@@ -995,7 +998,7 @@ mod tests {
             vec![ItemChoice {
                 id: "p1".into(),
                 decision: pb::Decision::Deny,
-                scope: AllowScope::Once,
+                scope: GrantScope::Once,
                 pattern: None,
                 agent: None,
             }],
@@ -1039,7 +1042,7 @@ mod tests {
             vec![ItemChoice {
                 id: "p1".into(),
                 decision: pb::Decision::Allow,
-                scope: AllowScope::Once,
+                scope: GrantScope::Once,
                 pattern: Some("read:a".into()),
                 agent: None,
             }],
