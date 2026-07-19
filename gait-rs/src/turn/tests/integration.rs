@@ -657,14 +657,24 @@ async fn denied_tool_gets_blocked_result_without_prompting() {
     let tx_path = crate::session::live::log_path(ws.path(), "sdeny001");
     let events = read_events(&tx_path).unwrap();
 
-    // Must have a ToolResult indicating blocked by config
-    let blocked_result = events.iter().any(|e| {
-        matches!(event_kind(e), Some(payload::Kind::ToolResult(tr))
-        if tr.call_id == "tc1" && tr.output.contains("Blocked by config"))
+    // Must have a PermissionDenied event for tc1's tool, and its ToolResult
+    // must NOT contain the retired "[Blocked by config:" string convention.
+    let permission_denied = events.iter().any(|e| {
+        matches!(event_kind(e), Some(payload::Kind::PermissionDenied(pd))
+        if pd.tool_name == "shell")
     });
     assert!(
-        blocked_result,
-        "expected blocked ToolResult for tc1; events: {:?}",
+        permission_denied,
+        "expected PermissionDenied event; events: {:?}",
+        events
+    );
+    let no_string_stamp = events.iter().all(|e| {
+        !matches!(event_kind(e), Some(payload::Kind::ToolResult(tr))
+        if tr.output.contains("Blocked by config"))
+    });
+    assert!(
+        no_string_stamp,
+        "the \"[Blocked by config:\" string convention should be retired; events: {:?}",
         events
     );
 
@@ -740,13 +750,22 @@ async fn deny_wins_when_tool_in_both_allow_and_deny() {
     let events = read_events(&tx_path).unwrap();
 
     // Same assertions as the first deny test
-    let blocked_result = events.iter().any(|e| {
-        matches!(event_kind(e), Some(payload::Kind::ToolResult(tr))
-        if tr.call_id == "tc1" && tr.output.contains("Blocked by config"))
+    let permission_denied = events.iter().any(|e| {
+        matches!(event_kind(e), Some(payload::Kind::PermissionDenied(pd))
+        if pd.tool_name == "shell")
     });
     assert!(
-        blocked_result,
-        "expected blocked ToolResult for tc1 even with allow match; events: {:?}",
+        permission_denied,
+        "expected PermissionDenied event even with allow match; events: {:?}",
+        events
+    );
+    let no_string_stamp = events.iter().all(|e| {
+        !matches!(event_kind(e), Some(payload::Kind::ToolResult(tr))
+        if tr.output.contains("Blocked by config"))
+    });
+    assert!(
+        no_string_stamp,
+        "the \"[Blocked by config:\" string convention should be retired; events: {:?}",
         events
     );
 

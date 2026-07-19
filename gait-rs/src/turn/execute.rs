@@ -130,7 +130,7 @@ pub(crate) async fn run_tools(
         } else {
             tc.tool_name.clone()
         };
-        let output = format!("[Blocked by config: {}] permission denied", pattern);
+        let output = "permission denied".to_string();
         env.emitter.record(events::tool_call(
             tc.tool_call_id.clone(),
             tc.tool_name.clone(),
@@ -141,6 +141,11 @@ pub(crate) async fn run_tools(
             output.clone(),
             None,
             None,
+        ))?;
+        env.emitter.record(events::permission_denied(
+            &tc.tool_name,
+            &tc.tool_name,
+            &pattern,
         ))?;
         assistant_parts.push(AssistantPart::ToolCall(ToolCall {
             tool_call_id: tc.tool_call_id.clone(),
