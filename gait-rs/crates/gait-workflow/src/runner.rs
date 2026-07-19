@@ -19,7 +19,7 @@ use crate::observer::WorkflowObserver;
 use crate::run_log::WorkflowRunLog;
 use crate::schema::GATE_PAUSED_SENTINEL;
 use crate::state::{reconstruct_state, NodeStatus, WorkflowState};
-use crate::vars::{substitute, NodeOutput, VarContext, NODE_OPEN_SENTINEL};
+use crate::vars::{substitute_checked, NodeOutput, VarContext, NODE_OPEN_SENTINEL};
 
 /// Inputs for `run_workflow`.
 ///
@@ -1163,7 +1163,8 @@ async fn execute_node(
         Some(node::Body::Shell(s)) => exec_shell_node(s, ctx).await,
         Some(node::Body::Prompt(p)) => exec_prompt_node(node, p, ctx, wf, input).await,
         Some(node::Body::Branch(b)) => {
-            let expr = substitute(&b.on, &ctx.vars);
+            let expr = substitute_checked(&b.on, &ctx.vars)
+                .map_err(|e| anyhow::anyhow!("branch node '{}': {}", node.id, e))?;
             let mut b2 = b.clone();
             b2.on = expr;
             match resolve_branch(&b2, &ctx.vars.node_outputs) {
