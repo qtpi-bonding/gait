@@ -34,6 +34,7 @@ pub struct HooksConfig {
     pub before: Option<String>,
     pub after: Option<String>,
     pub error: Option<String>,
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

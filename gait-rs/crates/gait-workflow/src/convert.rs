@@ -95,6 +95,7 @@ fn hooks(h: &Option<HooksConfig>) -> Option<Hooks> {
         before: h.before.clone(),
         after: h.after.clone(),
         error: h.error.clone(),
+        timeout_ms: h.timeout_ms,
     })
 }
 
@@ -177,6 +178,33 @@ pub fn mint_run_id(workflow_name: &str) -> String {
 mod tests {
     use super::*;
     use gait_core::proto::gait::workflow::v1::node;
+
+    #[test]
+    fn converts_hook_timeout_ms_field() {
+        let def: crate::schema::WorkflowDef = serde_yaml::from_str(
+            r#"
+name: t
+version: "1"
+nodes:
+  - id: a
+    shell: "true"
+    hooks: { before: "echo hi", timeout_ms: 5000 }
+  - id: b
+    shell: "true"
+"#,
+        )
+        .unwrap();
+        let p = to_proto(&def);
+        assert_eq!(p.nodes[0].hooks.as_ref().unwrap().timeout_ms, Some(5000));
+        assert_eq!(
+            p.nodes[0].hooks.as_ref().unwrap().before.as_deref(),
+            Some("echo hi")
+        );
+        assert_eq!(
+            p.nodes[1].hooks, None,
+            "a node with no hooks: block must still convert to None"
+        );
+    }
 
     #[test]
     fn converts_behavioral_fields_not_just_obvious_ones() {
