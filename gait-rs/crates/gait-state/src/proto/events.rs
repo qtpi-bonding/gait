@@ -273,6 +273,25 @@ pub fn sandbox_whitelist_match(items: &[pb::SandboxWhitelistMatchItem]) -> pb::e
     ))
 }
 
+/// `SandboxDenied` — a tool call's failure was attributed to a sandbox
+/// restriction. Fires in both supervised and auto mode, unlike
+/// `SandboxUnlock` (which only exists when there's a human to pause for).
+pub fn sandbox_denied(
+    tool_name: &str,
+    resource: &str,
+    dimension: &str,
+    matched_signature: &str,
+    hint: Option<String>,
+) -> pb::event::Body {
+    wire::body(pb::payload::Kind::SandboxDenied(pb::SandboxDenied {
+        tool_name: tool_name.to_string(),
+        resource: resource.to_string(),
+        dimension: dimension.to_string(),
+        matched_signature: matched_signature.to_string(),
+        hint,
+    }))
+}
+
 /// Parameters for [`turn_complete`].
 #[derive(Debug, Default)]
 pub struct TurnCompleteParams {
@@ -999,6 +1018,28 @@ mod tests {
                 other => panic!("expected whitelist match, got {other:?}"),
             },
             other => panic!("expected payload, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sandbox_denied_event_shape() {
+        let body = sandbox_denied(
+            "shell",
+            "flutter test ...",
+            "network",
+            "CERTIFICATE_VERIFY_FAILED",
+            Some("try running verbatim".to_string()),
+        );
+        match body {
+            pb::event::Body::Payload(p) => match p.kind {
+                Some(pb::payload::Kind::SandboxDenied(sd)) => {
+                    assert_eq!(sd.tool_name, "shell");
+                    assert_eq!(sd.dimension, "network");
+                    assert_eq!(sd.hint.as_deref(), Some("try running verbatim"));
+                }
+                other => panic!("expected SandboxDenied, got {other:?}"),
+            },
+            other => panic!("expected Payload body, got {other:?}"),
         }
     }
 

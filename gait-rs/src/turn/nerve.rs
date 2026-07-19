@@ -225,6 +225,7 @@ mod tests {
                 daemon: None,
                 final_content: None,
                 whitelist_match_items: vec![],
+                sandbox_denied: None,
             })),
         };
         let resp1 = Signal {
@@ -236,6 +237,7 @@ mod tests {
                 daemon: None,
                 final_content: None,
                 whitelist_match_items: vec![],
+                sandbox_denied: None,
             })),
         };
         write_signal(&mut spine_w, &resp2).await.unwrap();

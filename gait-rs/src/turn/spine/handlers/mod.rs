@@ -48,6 +48,7 @@ pub(super) fn feedback_result(value: serde_json::Value) -> Feedback {
         daemon: None,
         final_content: None,
         whitelist_match_items: vec![],
+        sandbox_denied: None,
     }
 }
 
@@ -62,6 +63,7 @@ pub fn error_feedback(msg: &str) -> Feedback {
         daemon: None,
         final_content: None,
         whitelist_match_items: vec![],
+        sandbox_denied: None,
     }
 }
 

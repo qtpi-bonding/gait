@@ -105,6 +105,7 @@ CancellationSignal cancellation_signal = 55;
     Registry           registry            = 64;
     Mode               mode                = 65;
     SandboxWhitelistMatch sandbox_whitelist_match = 66;
+    SandboxDenied      sandbox_denied      = 67;
   }
   reserved 20 to 49;  // workflow family (WorkflowHook* / WorkflowNode* / WorkflowStart …) — deferred to the workflow-subsystem redo
 }
@@ -361,6 +362,21 @@ message SandboxWhitelistMatchItem {
   string resource = 2;
   string dimension = 3;
   string pattern = 4;
+}
+
+// Emitted whenever a tool call's failure is attributed to a sandbox
+// restriction — in BOTH supervised and auto mode, unlike SandboxUnlock
+// which only fires when there's a human to pause for. Not paired with a
+// reply message; this is a same-step, unconditional record, not an ask.
+message SandboxDenied {
+  string tool_name         = 1;  // the tool whose call was denied
+  string resource          = 2;  // command or path that hit the wall
+  string dimension         = 3;  // "read" | "write" | "network"
+  string matched_signature = 4;  // the output substring that triggered
+                                  // detection, e.g. "CERTIFICATE_VERIFY_FAILED"
+  optional string hint     = 5;  // coaching text (e.g. names a shell_whitelist
+                                  // pattern that would have matched, or points
+                                  // at the shell tool's cwd param)
 }
 
 // Emitted when the hand raises an out-of-scope access for human review — the

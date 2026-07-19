@@ -27,6 +27,7 @@ message Feedback {
   optional DaemonRecordProto daemon = 5;        // set when the hand spawned a background daemon
   optional string final_content = 6;  // delegated write/edit: tool's final file content
   repeated gait.log.v1.SandboxWhitelistMatchItem whitelist_match_items = 7;
+  optional gait.log.v1.SandboxDenied sandbox_denied = 8;
 }
 
 // Metadata for a daemon spawned by the shell tool (detached=true).

@@ -271,6 +271,7 @@ mod tests {
                     daemon: None,
                     final_content: None,
                     whitelist_match_items: vec![],
+                    sandbox_denied: None,
                 })),
             };
             nerve::write_signal(&mut w, &canned).await.unwrap();

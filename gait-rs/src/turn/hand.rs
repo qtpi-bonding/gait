@@ -312,6 +312,7 @@ pub async fn run_hand(config: HandConfig) {
         daemon: daemon_record,
         final_content,
         whitelist_match_items: vec![],
+        sandbox_denied: None,
     };
     respond(hand_response::Outcome::Feedback(feedback));
 }
