@@ -1,4 +1,4 @@
-use crate::vars::{substitute, NodeOutput, VarContext};
+use crate::vars::{substitute_shell, NodeOutput, VarContext};
 use gait_core::embed::SinkFrame;
 use gait_core::proto::gait::workflow::v1::ShellNode;
 use std::path::Path;
@@ -37,7 +37,7 @@ pub async fn exec_shell_node(
     shell: &ShellNode,
     ctx: &NodeContext<'_>,
 ) -> anyhow::Result<NodeOutput> {
-    let cmd_str = substitute(&shell.command, &ctx.vars);
+    let cmd_str = substitute_shell(&shell.command, &ctx.vars);
     let timeout_ms: u64 = shell.timeout_ms.unwrap_or(120_000);
     let cwd = ctx.run_worktree;
 
@@ -134,6 +134,35 @@ mod tests {
         let ctx = make_test_ctx(ws.path());
         let err = exec_shell_node(&shell, &ctx).await.unwrap_err();
         assert_eq!(err.to_string(), "shell timed out after 50ms");
+    }
+
+    #[tokio::test]
+    async fn shell_node_output_cannot_inject_a_second_command() {
+        let ws = TempDir::new().unwrap();
+        let shell = ShellNode {
+            command: "echo $mal.output".into(),
+            timeout_ms: None,
+        };
+        let mut ctx = make_test_ctx(ws.path());
+        ctx.vars.node_outputs.insert(
+            "mal".into(),
+            crate::vars::NodeOutput {
+                text: "; touch injected_marker".into(),
+                exit_code: Some(0),
+                json: None,
+                routed_to: None,
+                session_id: String::new(),
+            },
+        );
+        let out = exec_shell_node(&shell, &ctx).await.unwrap();
+        assert_eq!(
+            out.text, "; touch injected_marker",
+            "the malicious text must come back as echo's literal argument, not run as a second command"
+        );
+        assert!(
+            !ws.path().join("injected_marker").exists(),
+            "injected command must not have executed"
+        );
     }
 
     fn make_test_ctx(ws: &std::path::Path) -> NodeContext<'static> {
