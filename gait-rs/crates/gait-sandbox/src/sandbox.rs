@@ -356,6 +356,36 @@ mod tests {
     }
 
     #[test]
+    fn sbpl_network_all_allows_trustd() {
+        let scope = SandboxScope {
+            readable: vec![],
+            writable: vec![],
+            read_all: false,
+            network: NetworkPolicy::All,
+        };
+        let sbpl = build_sbpl(&scope);
+        assert!(
+            sbpl.contains(r#"(allow mach-lookup (global-name "com.apple.trustd"))"#),
+            "expected trustd mach-lookup grant in SBPL output, got:\n{sbpl}"
+        );
+    }
+
+    #[test]
+    fn sbpl_network_hosts_allows_trustd() {
+        let scope = SandboxScope {
+            readable: vec![],
+            writable: vec![],
+            read_all: false,
+            network: NetworkPolicy::Hosts(vec!["github.com".into()]),
+        };
+        let sbpl = build_sbpl(&scope);
+        assert!(
+            sbpl.contains(r#"(allow mach-lookup (global-name "com.apple.trustd"))"#),
+            "expected trustd mach-lookup grant in SBPL output, got:\n{sbpl}"
+        );
+    }
+
+    #[test]
     fn confined_reads_include_platform_defaults_and_scope() {
         let scope = SandboxScope {
             read_all: false,
@@ -924,6 +954,10 @@ pub(crate) mod sbpl {
                     r#"(allow mach-lookup (global-name "com.apple.mDNSResponder"))"#
                 )
                 .unwrap();
+                // TLS cert-chain validation is an XPC call to trustd, not a file
+                // read — without this, DNS/TCP succeed but every HTTPS handshake
+                // fails with a generic CERTIFICATE_VERIFY_FAILED.
+                writeln!(s, r#"(allow mach-lookup (global-name "com.apple.trustd"))"#).unwrap();
             }
             NetworkPolicy::Hosts(_hosts) => {
                 // SBPL host-granular filtering is limited. v1 = allow all egress
@@ -936,6 +970,7 @@ pub(crate) mod sbpl {
                     r#"(allow mach-lookup (global-name "com.apple.mDNSResponder"))"#
                 )
                 .unwrap();
+                writeln!(s, r#"(allow mach-lookup (global-name "com.apple.trustd"))"#).unwrap();
             }
         }
 
