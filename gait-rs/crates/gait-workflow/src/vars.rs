@@ -58,6 +58,24 @@ pub struct VarContext {
 }
 
 pub fn substitute(template: &str, ctx: &VarContext) -> String {
+    substitute_impl(template, ctx, false)
+}
+
+/// Same substitution as `substitute`, except every value drawn from a prior
+/// node's output/exit code/JSON field is POSIX single-quote wrapped before
+/// being spliced in, so it lands in `sh -c` as one opaque shell word — never
+/// as parseable shell syntax. Well-known vars ($WORKFLOW_ID, $SESSION_ID,
+/// $WORKSPACE, $CODEBASE, $ARGS, $NODE_ID, $NODE_EXIT, $FAILED_NODE) are
+/// always gait-controlled and never carry untrusted content, so they are
+/// substituted raw, exactly like `substitute`. Used only by `exec_shell_node`
+/// — every other substitution call site (prompt text, gate messages, branch
+/// conditions) keeps using `substitute` or `substitute_checked`.
+pub fn substitute_shell(template: &str, ctx: &VarContext) -> String {
+    substitute_impl(template, ctx, true)
+}
+
+fn substitute_impl(template: &str, ctx: &VarContext, quote: bool) -> String {
+    let wrap = |s: String| if quote { shell_quote(&s) } else { s };
     let mut result = template.to_string();
 
     // $node_id.output.field (most specific — must be first)
@@ -71,12 +89,14 @@ pub fn substitute(template: &str, ctx: &VarContext) -> String {
                         json as &serde_json::Value,
                         |acc: &serde_json::Value, k: &str| acc.get(k),
                     );
-                    return value
-                        .map(|v| match v {
-                            serde_json::Value::String(s) => s.clone(),
-                            other => other.to_string(),
-                        })
-                        .unwrap_or_default();
+                    return wrap(
+                        value
+                            .map(|v| match v {
+                                serde_json::Value::String(s) => s.clone(),
+                                other => other.to_string(),
+                            })
+                            .unwrap_or_default(),
+                    );
                 }
             }
             caps[0].to_string()
@@ -86,24 +106,29 @@ pub fn substitute(template: &str, ctx: &VarContext) -> String {
     // $node_id.output
     result = RE_OUT
         .replace_all(&result, |caps: &regex::Captures| {
-            ctx.node_outputs
-                .get(&caps[1])
-                .map(|o| o.text.clone())
-                .unwrap_or_default()
+            wrap(
+                ctx.node_outputs
+                    .get(&caps[1])
+                    .map(|o| o.text.clone())
+                    .unwrap_or_default(),
+            )
         })
         .to_string();
 
     // $node_id.exit
     result = RE_EXIT_NODE
         .replace_all(&result, |caps: &regex::Captures| {
-            ctx.node_outputs
-                .get(&caps[1])
-                .and_then(|o| o.exit_code.map(|e| e.to_string()))
-                .unwrap_or_default()
+            wrap(
+                ctx.node_outputs
+                    .get(&caps[1])
+                    .and_then(|o| o.exit_code.map(|e| e.to_string()))
+                    .unwrap_or_default(),
+            )
         })
         .to_string();
 
-    // Well-known vars — longest names first to avoid partial replacement
+    // Well-known vars — longest names first to avoid partial replacement.
+    // Always gait-controlled, never untrusted — substituted raw regardless of `quote`.
     let replacements: &[(&str, String)] = &[
         ("$WORKFLOW_ID", ctx.workflow_id.clone()),
         ("$SESSION_ID", ctx.session_id.clone()),
@@ -121,6 +146,14 @@ pub fn substitute(template: &str, ctx: &VarContext) -> String {
         result = result.replace(key, val);
     }
     result
+}
+
+/// POSIX single-quote-wrap: the standard, fully-correct way to make an
+/// arbitrary byte string one opaque shell word (same algorithm as Python's
+/// `shlex.quote` / git's `sq_quote`). Close the quote, insert a literal
+/// escaped quote, reopen — `it's` becomes `'it'\'s'`.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 pub fn eval_bool_expr(expr: &str) -> bool {
@@ -236,5 +269,74 @@ mod tests {
     fn eval_bool_expr_string() {
         assert!(eval_bool_expr("hello == hello"));
         assert!(!eval_bool_expr("a == b"));
+    }
+
+    #[test]
+    fn substitute_shell_quotes_untrusted_node_output() {
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "mal".into(),
+            NodeOutput {
+                text: "$(rm -rf /)".into(),
+                exit_code: Some(0),
+                json: None,
+                routed_to: None,
+                session_id: "s1".into(),
+            },
+        );
+        let c = VarContext {
+            workflow_id: "wf1".into(),
+            session_id: "s1".into(),
+            gait_dir: std::path::PathBuf::from("/ws"),
+            codebase: std::path::PathBuf::from("/cb"),
+            args: "".into(),
+            node_id: "n1".into(),
+            node_outputs: outputs,
+            node_exit: None,
+            failed_node: None,
+        };
+        assert_eq!(
+            substitute_shell("echo $mal.output", &c),
+            "echo '$(rm -rf /)'"
+        );
+    }
+
+    #[test]
+    fn substitute_shell_escapes_embedded_single_quote() {
+        let mut outputs = HashMap::new();
+        outputs.insert(
+            "mal".into(),
+            NodeOutput {
+                text: "it's done".into(),
+                exit_code: Some(0),
+                json: None,
+                routed_to: None,
+                session_id: "s1".into(),
+            },
+        );
+        let c = VarContext {
+            workflow_id: "wf1".into(),
+            session_id: "s1".into(),
+            gait_dir: std::path::PathBuf::from("/ws"),
+            codebase: std::path::PathBuf::from("/cb"),
+            args: "".into(),
+            node_id: "n1".into(),
+            node_outputs: outputs,
+            node_exit: None,
+            failed_node: None,
+        };
+        assert_eq!(
+            substitute_shell("echo $mal.output", &c),
+            r"echo 'it'\''s done'"
+        );
+    }
+
+    #[test]
+    fn substitute_shell_leaves_well_known_vars_unquoted() {
+        let c = ctx();
+        assert_eq!(
+            substitute_shell("wf=$WORKFLOW_ID sid=$SESSION_ID", &c),
+            "wf=wf1 sid=s1"
+        );
     }
 }
