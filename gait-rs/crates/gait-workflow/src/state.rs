@@ -107,7 +107,16 @@ pub fn reconstruct_state(events: &[WorkflowEvent]) -> WorkflowState {
                 let json = if nc.json_output.is_empty() {
                     None
                 } else {
-                    serde_json::from_str(&nc.json_output).ok()
+                    match serde_json::from_str(&nc.json_output) {
+                        Ok(v) => Some(v),
+                        Err(e) => {
+                            eprintln!(
+                                "[gait workflow] node '{}': dropping unparseable json_output: {}",
+                                nc.node_id, e
+                            );
+                            None
+                        }
+                    }
                 };
                 let routed_to = if nc.routed_to.is_empty() {
                     None
@@ -272,5 +281,37 @@ mod tests {
             ..Default::default()
         }))]);
         assert_eq!(failed.workflow_status(), "failed");
+    }
+
+    #[test]
+    fn corrupt_json_output_falls_back_to_none_not_a_panic() {
+        let evs = vec![
+            we(workflow_event::Kind::WorkflowStart(WorkflowStart {
+                run_id: "r".into(),
+                workflow: "t".into(),
+                ..Default::default()
+            })),
+            we(workflow_event::Kind::NodeStart(NodeStart {
+                node_id: "a".into(),
+                ..Default::default()
+            })),
+            we(workflow_event::Kind::NodeComplete(NodeComplete {
+                node_id: "a".into(),
+                output: "ok".into(),
+                json_output: "{not valid json".into(),
+                ..Default::default()
+            })),
+        ];
+        let st = reconstruct_state(&evs);
+        assert_eq!(st.node_status("a"), NodeStatus::Done);
+        let out = st.node_outputs.get("a").unwrap();
+        assert_eq!(
+            out.json, None,
+            "a corrupt json_output must still fall back to None, exactly as before this fix"
+        );
+        assert_eq!(
+            out.text, "ok",
+            "the rest of the NodeComplete payload must still fold in normally"
+        );
     }
 }
