@@ -51,7 +51,10 @@ async fn cyclic_depends_on_graph_is_rejected_before_any_run_log_is_created() {
     )
     .await;
 
-    assert!(result.is_err(), "cyclic graph must be rejected, got: {result:?}");
+    assert!(
+        result.is_err(),
+        "cyclic graph must be rejected, got: {result:?}"
+    );
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("depends_on cycle"),
@@ -59,7 +62,10 @@ async fn cyclic_depends_on_graph_is_rejected_before_any_run_log_is_created() {
     );
 
     // Zero run-log activity: WorkflowRunLog::create (runner.rs) never ran.
-    let run_log_path = gait_dir.join("workflow-runs").join(&run_id).join("log.jsonl");
+    let run_log_path = gait_dir
+        .join("workflow-runs")
+        .join(&run_id)
+        .join("log.jsonl");
     assert!(
         !run_log_path.exists(),
         "no run-log should be created for a rejected graph"
@@ -105,6 +111,9 @@ async fn dangling_on_error_goto_is_rejected() {
     )
     .await;
 
-    assert!(result.is_err(), "dangling on_error.goto must be rejected, got: {result:?}");
+    assert!(
+        result.is_err(),
+        "dangling on_error.goto must be rejected, got: {result:?}"
+    );
     assert!(result.unwrap_err().to_string().contains("on_error.goto"));
 }
