@@ -1698,7 +1698,7 @@ async fn on_ask_policy_streams_nothing() {
 
 /// Supervised mode: write tool targeting a path outside the sandbox ceiling
 /// (e.g. /etc/x, which is outside the codebase root) must return
-/// TurnResult::Unlock with one item naming that path, and the file must NOT
+/// TurnResult::SandboxUnlock with one item naming that path, and the file must NOT
 /// be written.
 #[tokio::test]
 async fn supervised_write_outside_ceiling_pauses_with_unlock() {
@@ -1752,9 +1752,9 @@ async fn supervised_write_outside_ceiling_pauses_with_unlock() {
     .await
     .unwrap();
 
-    // Must return TurnResult::Unlock, not Done/Permissions.
+    // Must return TurnResult::SandboxUnlock, not Done/Permissions.
     match &result {
-        TurnResult::Unlock { items } => {
+        TurnResult::SandboxUnlock { items } => {
             assert_eq!(items.len(), 1, "expected one unlock item, got {items:?}");
             let item = &items[0];
             assert!(
@@ -1765,7 +1765,7 @@ async fn supervised_write_outside_ceiling_pauses_with_unlock() {
             assert_eq!(item.tool_name, "write", "tool_name should be write");
             assert_eq!(item.dimension, "write", "dimension should be write");
         }
-        other => panic!("expected TurnResult::Unlock, got: {other:?}"),
+        other => panic!("expected TurnResult::SandboxUnlock, got: {other:?}"),
     }
 
     // The file must NOT have been written.
@@ -1782,7 +1782,7 @@ async fn supervised_write_outside_ceiling_pauses_with_unlock() {
 /// `/private/tmp`. `compute_scope` canonicalizes the codebase path to
 /// `/private/tmp/...`, but without the fix in `check_own_tool_scope` the
 /// resolved path `codebase.join("foo.txt")` is `/tmp/.../foo.txt` and fails
-/// `starts_with(/private/tmp/...)`, spuriously returning `TurnResult::Unlock`.
+/// `starts_with(/private/tmp/...)`, spuriously returning `TurnResult::SandboxUnlock`.
 #[tokio::test]
 async fn supervised_write_inside_codebase_returns_done() {
     let ws = TempDir::new().unwrap();
@@ -1839,7 +1839,7 @@ async fn supervised_write_inside_codebase_returns_done() {
     .await
     .unwrap();
 
-    // Must NOT return TurnResult::Unlock — the write is inside the codebase.
+    // Must NOT return TurnResult::SandboxUnlock — the write is inside the codebase.
     assert!(
         matches!(result, TurnResult::Done { .. }),
         "in-codebase write must return Done, not Unlock (canonicalization bug); got: {result:?}"
@@ -1935,7 +1935,7 @@ async fn auto_mode_shell_denial_propagates_as_tool_failure() {
 /// Supervised mode: a sealed `shell` command that attempts an out-of-scope write
 /// (e.g. `echo hi > /etc/gait-probe`) causes the hand to detect EACCES/EPERM
 /// in the output and set `Feedback.denied`. The turn loop must then return
-/// `TurnResult::Unlock` instead of continuing.
+/// `TurnResult::SandboxUnlock` instead of continuing.
 ///
 /// **Requires the `gait` binary to be built first** (the hand is `gait __run-tool`):
 ///
@@ -1999,13 +1999,15 @@ async fn shell_eacces_supervised_pause() {
     .unwrap();
 
     match &result {
-        TurnResult::Unlock { items } => {
+        TurnResult::SandboxUnlock { items } => {
             assert!(!items.is_empty(), "expected at least one unlock item");
             let item = &items[0];
             assert_eq!(item.tool_name, "shell", "tool_name should be shell");
             assert_eq!(item.dimension, "write", "dimension should be write");
         }
-        other => panic!("expected TurnResult::Unlock (shell EACCES → denied), got: {other:?}"),
+        other => {
+            panic!("expected TurnResult::SandboxUnlock (shell EACCES → denied), got: {other:?}")
+        }
     }
 }
 
@@ -2013,7 +2015,7 @@ async fn shell_eacces_supervised_pause() {
 
 /// Supervised mode: when the model issues a `read` of an absolute path that lies
 /// outside the sandbox ceiling (i.e. not under the codebase root), the pre-check
-/// must return `TurnResult::Unlock` with `dimension = "read"`.
+/// must return `TurnResult::SandboxUnlock` with `dimension = "read"`.
 ///
 /// This validates that Phase 2d's `read_all = false` default wires through
 /// `check_own_tool_scope` → `ReadTool::scope_targets` → `Dimension::Read` check
@@ -2079,9 +2081,9 @@ async fn supervised_read_outside_ceiling_pauses_with_unlock() {
     // Cleanup sentinel file regardless of outcome.
     let _ = std::fs::remove_file(&oos_path);
 
-    // Must return TurnResult::Unlock with dimension="read".
+    // Must return TurnResult::SandboxUnlock with dimension="read".
     match &result {
-        TurnResult::Unlock { items } => {
+        TurnResult::SandboxUnlock { items } => {
             assert_eq!(items.len(), 1, "expected one unlock item, got {items:?}");
             let item = &items[0];
             assert_eq!(item.tool_name, "read", "tool_name should be 'read'");
@@ -2092,7 +2094,7 @@ async fn supervised_read_outside_ceiling_pauses_with_unlock() {
                 item.resource
             );
         }
-        other => panic!("expected TurnResult::Unlock (read out-of-scope), got: {other:?}"),
+        other => panic!("expected TurnResult::SandboxUnlock (read out-of-scope), got: {other:?}"),
     }
 }
 

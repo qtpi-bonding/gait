@@ -112,8 +112,8 @@ pub enum TurnResult {
     Inform {
         items: Vec<pb::InformItem>,
     },
-    Unlock {
-        items: Vec<pb::UnlockItem>,
+    SandboxUnlock {
+        items: Vec<pb::SandboxUnlockItem>,
     },
     Cancelled,
     /// A turn that ended in failure. `ended` is the typed reason
@@ -586,7 +586,7 @@ pub async fn run_turn(
         // Scope pre-check (supervised mode + sandbox on only): for each world-touching
         // tool call that exposes resolvable path targets, verify every target falls
         // within the sandbox ceiling (codebase root + default config). If any target
-        // is outside the ceiling, pause immediately with TurnResult::Unlock — the tool
+        // is outside the ceiling, pause immediately with TurnResult::SandboxUnlock — the tool
         // is NOT run. In auto mode the kernel seal (EACCES) handles out-of-scope writes
         // via Task 6; the pre-check is a supervised-only UX feature.
         if !auto && sandbox_on {
@@ -596,7 +596,7 @@ pub async fn run_turn(
                 let evs = ingestor.events().unwrap_or_default();
                 active_unlock_state(&evs)
             };
-            let mut pending_unlocks: Vec<pb::UnlockItem> = vec![];
+            let mut pending_unlocks: Vec<pb::SandboxUnlockItem> = vec![];
             for tc in &step_tool_calls {
                 if let Some(tool) = state.tools.iter().find(|t| t.name() == tc.tool_name) {
                     let items =
@@ -614,7 +614,7 @@ pub async fn run_turn(
                 }
             }
             if !pending_unlocks.is_empty() {
-                break 'turn finalize::StepOutcome::Pause(finalize::PauseKind::Unlock(
+                break 'turn finalize::StepOutcome::Pause(finalize::PauseKind::SandboxUnlock(
                     pending_unlocks,
                 ));
             }
@@ -643,7 +643,7 @@ pub async fn run_turn(
 
 /// Check whether a single tool call targets any path outside its sandbox ceiling.
 ///
-/// Returns a list of `UnlockItem`s — one per out-of-scope target. Returns an
+/// Returns a list of `SandboxUnlockItem`s — one per out-of-scope target. Returns an
 /// empty vec when all targets are within scope (or the tool exposes no resolvable
 /// targets via `scope_targets`).
 fn check_own_tool_scope(
@@ -651,7 +651,7 @@ fn check_own_tool_scope(
     tool: &dyn Tool,
     codebase: &std::path::Path,
     sandbox_cfg: &crate::config::SandboxConfig,
-) -> Vec<pb::UnlockItem> {
+) -> Vec<pb::SandboxUnlockItem> {
     use crate::sandbox::ceiling::compute_scope_nofs;
     use crate::sandbox::normalize_lexical;
     use crate::types::Dimension;
@@ -691,7 +691,7 @@ fn check_own_tool_scope(
             }
         };
         if !in_scope {
-            items.push(pb::UnlockItem {
+            items.push(pb::SandboxUnlockItem {
                 id: uuid::Uuid::new_v4().to_string(),
                 tool_name: tc.tool_name.clone(),
                 resource: path.to_string_lossy().into_owned(),

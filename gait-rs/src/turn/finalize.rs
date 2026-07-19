@@ -14,7 +14,7 @@
 //! | `Pause(Permissions)` | `permissions` | — | ✓ | "permissions" | — |
 //! | `Pause(Clarify)` | — | — | ✓ | "clarify" | — |
 //! | `Pause(Inform)` | — | — | ✓ | "inform" | — |
-//! | `Pause(Unlock)` | `unlock` | — | ✓ | "unlock" | — |
+//! | `Pause(SandboxUnlock)` | `sandbox_unlock` | — | ✓ | "unlock" | — |
 //! | `Cancelled` | `cancellation_signal` | — | ✓ | *(skipped today — inconsistency, preserved)* | — |
 //! | `MaxSteps` | — | — | *(drain-commit only, swallowed)* | — | ✓ |
 //! | `Fail(err)` | *(none)* | — | *(none)* | *(none)* | — |
@@ -54,7 +54,7 @@ pub(crate) enum PauseKind {
     Permissions,
     Clarify(Vec<pb::ClarifyItem>),
     Inform(Vec<pb::InformItem>),
-    Unlock(Vec<pb::UnlockItem>),
+    SandboxUnlock(Vec<pb::SandboxUnlockItem>),
 }
 
 /// What a step produced, in a form `finalize` can dispatch on.
@@ -174,11 +174,11 @@ pub(crate) async fn finalize(
             Ok(TurnResult::Inform { items })
         }
 
-        StepOutcome::Pause(PauseKind::Unlock(items)) => {
-            env.emitter.record(events::unlock(&items))?;
+        StepOutcome::Pause(PauseKind::SandboxUnlock(items)) => {
+            env.emitter.record(events::sandbox_unlock(&items))?;
             persist.commit(&format!("session({}): unlock", env.session_id))?;
             post_turn(env, "unlock", state.final_step_index + 1, None);
-            Ok(TurnResult::Unlock { items })
+            Ok(TurnResult::SandboxUnlock { items })
         }
 
         StepOutcome::Cancelled => {
@@ -639,7 +639,7 @@ mod tests {
             vec![],
             vec![],
         ));
-        let items = vec![pb::UnlockItem {
+        let items = vec![pb::SandboxUnlockItem {
             id: "u1".into(),
             tool_name: "shell".into(),
             resource: "/x".into(),
@@ -651,11 +651,11 @@ mod tests {
             &env,
             &mut state,
             &persist,
-            StepOutcome::Pause(PauseKind::Unlock(items.clone())),
+            StepOutcome::Pause(PauseKind::SandboxUnlock(items.clone())),
         )
         .await
         .unwrap();
-        assert!(matches!(result, TurnResult::Unlock { .. }));
+        assert!(matches!(result, TurnResult::SandboxUnlock { .. }));
         assert_eq!(fx.spy_hook.outcomes(), vec!["unlock".to_string()]);
         assert_eq!(
             fx.trace.commits(),

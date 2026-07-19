@@ -27,7 +27,7 @@ pub(super) struct ToolExecResult {
     /// EPERM) from a sealed `shell` command. The turn loop checks this in
     /// supervised mode and calls `pause_for_unlock`; in auto mode it is ignored
     /// (the tool failure result propagates normally). Phase 2c Task 6.
-    pub denied: Option<pb::UnlockItem>,
+    pub denied: Option<pb::SandboxUnlockItem>,
 }
 
 /// Execute one tool call: emit ToolCall event, run the tool, emit ToolResult event.

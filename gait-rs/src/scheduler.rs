@@ -45,7 +45,7 @@ fn summarize(result: &TurnResult) -> (String, String) {
             "paused for clarification".to_string(),
         ),
         TurnResult::Inform { .. } => ("inform".to_string(), "paused to inform user".to_string()),
-        TurnResult::Unlock { .. } => (
+        TurnResult::SandboxUnlock { .. } => (
             "unlock".to_string(),
             "paused for sandbox unlock".to_string(),
         ),
@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn unlock_maps_to_unlock_status() {
-        let result = TurnResult::Unlock { items: vec![] };
+        let result = TurnResult::SandboxUnlock { items: vec![] };
         let (status, summary) = summarize(&result);
         assert_eq!(status, "unlock");
         assert_eq!(summary, "paused for sandbox unlock");

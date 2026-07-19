@@ -60,7 +60,7 @@ impl TurnSink for ReplSink {
                     .builder
                     .write_raw("\u{2298} interrupted\r\n");
             }
-            TurnResult::Unlock { items } => {
+            TurnResult::SandboxUnlock { items } => {
                 let warning_fg = self.shared.borrow().builder.theme().warning.fg();
                 self.shared.borrow_mut().builder.write_raw(&format!(
                     "\r\n{}sandbox: {} item(s) need unlock{}\r\n",
@@ -1392,9 +1392,9 @@ mod command_tests {
 
     /// Task 8 Step 6: `/unlock` must drive `gait_ops::permission::unlock`
     /// in-process — no `Command::new(&self.gait_bin)` subprocess spawn. Seeds a
-    /// pending `Unlock` event directly on the session log (the same shape
+    /// pending `SandboxUnlock` event directly on the session log (the same shape
     /// `gait-ops`'s own unlock tests use), scripts `/unlock` through
-    /// `ReplSource::next()`, then asserts the log gained an `UnlockReply`
+    /// `ReplSource::next()`, then asserts the log gained an `SandboxUnlockReply`
     /// event — proof the op ran and mutated the tempdir session, not a
     /// subprocess writing through some other path.
     #[tokio::test]
@@ -1405,14 +1405,14 @@ mod command_tests {
         let (mut src, _s) = source_with(d.path(), &["/unlock", "/q"]);
         let tx_path = gait_core::session::live::log_path(d.path(), &src.session_id);
         std::fs::create_dir_all(tx_path.parent().unwrap()).unwrap();
-        let item = gait_core::proto::gait::log::v1::UnlockItem {
+        let item = gait_core::proto::gait::log::v1::SandboxUnlockItem {
             id: "u1".into(),
             tool_name: "write".into(),
             resource: "/tmp/a.txt".into(),
             dimension: "write".into(),
             preview: None,
         };
-        wire::append(&tx_path, events::unlock(&[item])).unwrap();
+        wire::append(&tx_path, events::sandbox_unlock(&[item])).unwrap();
 
         let _ = src.next().await; // processes /unlock, then /q ends
 
@@ -1420,13 +1420,13 @@ mod command_tests {
         assert_eq!(
             events.len(),
             2,
-            "expected the seeded Unlock + an UnlockReply"
+            "expected the seeded SandboxUnlock + an SandboxUnlockReply"
         );
         match &events[1].body {
             Some(event::Body::Payload(p)) => {
                 assert!(
-                    matches!(p.kind, Some(payload::Kind::UnlockReply(_))),
-                    "expected UnlockReply, got {:?}",
+                    matches!(p.kind, Some(payload::Kind::SandboxUnlockReply(_))),
+                    "expected SandboxUnlockReply, got {:?}",
                     p.kind
                 );
             }

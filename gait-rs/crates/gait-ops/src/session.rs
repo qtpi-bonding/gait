@@ -98,7 +98,7 @@ pub fn ps(gait_dir: &Path) -> Result<PsOutcome, OpError> {
             Ok(SessionState::AwaitingPermission { .. }) => "awaiting-permission".to_string(),
             Ok(SessionState::AwaitingClarify { .. }) => "awaiting-clarify".to_string(),
             Ok(SessionState::AwaitingInform { .. }) => "awaiting-inform".to_string(),
-            Ok(SessionState::AwaitingUnlock { .. }) => "awaiting-unlock".to_string(),
+            Ok(SessionState::AwaitingSandboxUnlock { .. }) => "awaiting-unlock".to_string(),
             Err(_) => continue, // unparseable / non-session dir
         };
         rows.push(PsRow {
@@ -527,7 +527,7 @@ fn classify_bulk_targets(gait_dir: &Path) -> Result<BulkTargets, OpError> {
             Ok(SessionState::AwaitingPermission { .. }) => Some("awaiting-permission".to_string()),
             Ok(SessionState::AwaitingClarify { .. }) => Some("awaiting-clarify".to_string()),
             Ok(SessionState::AwaitingInform { .. }) => Some("awaiting-inform".to_string()),
-            Ok(SessionState::AwaitingUnlock { .. }) => Some("awaiting-unlock".to_string()),
+            Ok(SessionState::AwaitingSandboxUnlock { .. }) => Some("awaiting-unlock".to_string()),
             Err(_) => continue,
         };
         match reason {

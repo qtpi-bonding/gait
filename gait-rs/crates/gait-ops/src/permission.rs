@@ -323,7 +323,7 @@ pub struct UnlockParams {
 /// non-fatal warnings the persistence step emitted.
 #[derive(Debug)]
 pub struct UnlockOutcome {
-    pub reply_items: Vec<gait_state::proto::gait::log::v1::UnlockReplyItem>,
+    pub reply_items: Vec<gait_state::proto::gait::log::v1::SandboxUnlockReplyItem>,
     pub persisted_grants: usize,
     pub warnings: Vec<String>,
 }
@@ -331,7 +331,7 @@ pub struct UnlockOutcome {
 /// Approve all pending unlock requests for `session_id`. The branch fan-out
 /// from the original `cmd_unlock` is preserved:
 ///
-/// * `Once` / `Session` — write only the `UnlockReply` to the log.
+/// * `Once` / `Session` — write only the `SandboxUnlockReply` to the log.
 /// * `Global` — persist every item as a `SandboxGrant` to `gait.jsonc`,
 ///   then write the reply.
 /// * `Agent` — first resolve `<gait_dir>/agents/<name>/AGENT.md` via
@@ -353,7 +353,7 @@ pub fn unlock(params: UnlockParams) -> Result<UnlockOutcome, OpError> {
     let tx_path = gait_state::session::live::log_path(&params.gait_dir, &params.session_id);
     let state = session_state(&tx_path).map_err(anyhow::Error::from)?;
     let items = match state {
-        SessionState::AwaitingUnlock { items } => items,
+        SessionState::AwaitingSandboxUnlock { items } => items,
         _ => {
             return Err(OpError::NotFound(format!(
                 "no pending unlock for session {}",
@@ -401,10 +401,10 @@ pub fn unlock(params: UnlockParams) -> Result<UnlockOutcome, OpError> {
         }
     }
 
-    // Always write the UnlockReply to the log.
-    let reply_items: Vec<pb::UnlockReplyItem> = items
+    // Always write the SandboxUnlockReply to the log.
+    let reply_items: Vec<pb::SandboxUnlockReplyItem> = items
         .iter()
-        .map(|it| pb::UnlockReplyItem {
+        .map(|it| pb::SandboxUnlockReplyItem {
             id: it.id.clone(),
             decision: pb::Decision::Allow as i32,
             scope: scope_pb as i32,
@@ -420,13 +420,13 @@ pub fn unlock(params: UnlockParams) -> Result<UnlockOutcome, OpError> {
     })
 }
 
-/// Route a list of `UnlockItem`s through `SandboxGrant`. Each item's
+/// Route a list of `SandboxUnlockItem`s through `SandboxGrant`. Each item's
 /// `dimension` is mapped to a `SandboxGrant` arm and persisted via
 /// `SandboxGrant::apply(target_dir, resource)`. Failures and unknown
 /// dimensions are captured as warnings on the supplied buffer instead of
 /// printed (Wall 1). Returns the number of grants successfully persisted.
 fn persist_grant_items(
-    items: &[gait_state::proto::gait::log::v1::UnlockItem],
+    items: &[gait_state::proto::gait::log::v1::SandboxUnlockItem],
     target_dir: &Path,
     warnings: &mut Vec<String>,
 ) -> usize {
@@ -488,8 +488,8 @@ mod tests {
     }
 
     /// Seed `tx_path` with a single Unlock event carrying one item.
-    fn seed_unlock(tx_path: &Path, item: gait_state::proto::gait::log::v1::UnlockItem) {
-        let body = gait_state::proto::events::unlock(&[item]);
+    fn seed_unlock(tx_path: &Path, item: gait_state::proto::gait::log::v1::SandboxUnlockItem) {
+        let body = gait_state::proto::events::sandbox_unlock(&[item]);
         wire::append(tx_path, body).unwrap();
     }
 
@@ -650,8 +650,8 @@ mod tests {
         id: &str,
         dimension: &str,
         resource: &str,
-    ) -> gait_state::proto::gait::log::v1::UnlockItem {
-        gait_state::proto::gait::log::v1::UnlockItem {
+    ) -> gait_state::proto::gait::log::v1::SandboxUnlockItem {
+        gait_state::proto::gait::log::v1::SandboxUnlockItem {
             id: id.into(),
             tool_name: "write".into(),
             resource: resource.into(),
@@ -660,7 +660,7 @@ mod tests {
         }
     }
 
-    /// Test (a): once scope appends only the UnlockReply — no config change.
+    /// Test (a): once scope appends only the SandboxUnlockReply — no config change.
     #[test]
     fn unlock_once_appends_only_unlock_reply_no_config_change() {
         let ws = ws();
@@ -679,9 +679,9 @@ mod tests {
         assert_eq!(out.persisted_grants, 0);
         assert!(out.warnings.is_empty());
 
-        // Log gained one UnlockReply event.
+        // Log gained one SandboxUnlockReply event.
         let kind = read_kind(&tx, 1);
-        assert!(matches!(kind, payload::Kind::UnlockReply(_)));
+        assert!(matches!(kind, payload::Kind::SandboxUnlockReply(_)));
         // gait.jsonc untouched.
         let config_after = std::fs::read_to_string(ws.path().join("gait.jsonc")).unwrap();
         assert_eq!(config_before, config_after);
@@ -717,9 +717,9 @@ mod tests {
             sb.writable
         );
 
-        // Log gained UnlockReply too.
+        // Log gained SandboxUnlockReply too.
         let kind = read_kind(&tx, 1);
-        assert!(matches!(kind, payload::Kind::UnlockReply(_)));
+        assert!(matches!(kind, payload::Kind::SandboxUnlockReply(_)));
     }
 
     /// Test (c): agent scope with a name resolves the agent frontmatter path
@@ -763,9 +763,9 @@ mod tests {
             sb.readable
         );
 
-        // Log gained UnlockReply.
+        // Log gained SandboxUnlockReply.
         let kind = read_kind(&tx, 1);
-        assert!(matches!(kind, payload::Kind::UnlockReply(_)));
+        assert!(matches!(kind, payload::Kind::SandboxUnlockReply(_)));
     }
 
     /// Agent scope without a name captures a warning and writes the reply
@@ -791,7 +791,7 @@ mod tests {
             out.warnings
         );
         let kind = read_kind(&tx, 1);
-        assert!(matches!(kind, payload::Kind::UnlockReply(_)));
+        assert!(matches!(kind, payload::Kind::SandboxUnlockReply(_)));
         let config_after = std::fs::read_to_string(ws.path().join("gait.jsonc")).unwrap();
         assert_eq!(config_before, config_after);
     }
@@ -816,7 +816,7 @@ mod tests {
             out.warnings
         );
         let kind = read_kind(&tx, 1);
-        assert!(matches!(kind, payload::Kind::UnlockReply(_)));
+        assert!(matches!(kind, payload::Kind::SandboxUnlockReply(_)));
     }
 
     #[test]
@@ -864,7 +864,7 @@ mod tests {
         // items" branch.
         let ws = ws();
         let tx = make_session(ws.path(), "sunc08");
-        let body = gait_state::proto::events::unlock(&[]);
+        let body = gait_state::proto::events::sandbox_unlock(&[]);
         wire::append(&tx, body).unwrap();
 
         let out = unlock(UnlockParams {

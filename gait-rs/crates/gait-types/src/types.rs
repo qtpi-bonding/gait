@@ -302,7 +302,7 @@ pub enum Dimension {
 }
 
 impl Dimension {
-    /// Returns `"read"` or `"write"` — the string used in `UnlockItem.dimension`.
+    /// Returns `"read"` or `"write"` — the string used in `SandboxUnlockItem.dimension`.
     pub fn as_str(self) -> &'static str {
         match self {
             Dimension::Read => "read",

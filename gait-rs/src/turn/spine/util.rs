@@ -30,7 +30,9 @@ pub(crate) fn turn_result_from_json(json: &str) -> crate::turn::TurnResult {
     let rr: RunResult = serde_json::from_str(json).unwrap_or_default();
     match rr.result {
         Some(run_result::Result::Cancelled(_)) => crate::turn::TurnResult::Cancelled,
-        Some(run_result::Result::Unlock(u)) => crate::turn::TurnResult::Unlock { items: u.items },
+        Some(run_result::Result::SandboxUnlock(u)) => {
+            crate::turn::TurnResult::SandboxUnlock { items: u.items }
+        }
         Some(run_result::Result::Permissions(_)) => crate::turn::TurnResult::Permissions,
         Some(run_result::Result::Clarify(c)) => crate::turn::TurnResult::Clarify { items: c.items },
         Some(run_result::Result::Inform(i)) => crate::turn::TurnResult::Inform { items: i.items },
@@ -114,7 +116,7 @@ mod tests {
                     }],
                 },
             ),
-            ("unlock", TurnResult::Unlock { items: vec![] }),
+            ("unlock", TurnResult::SandboxUnlock { items: vec![] }),
             ("cancelled", TurnResult::Cancelled),
         ];
 

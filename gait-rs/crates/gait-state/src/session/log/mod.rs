@@ -91,7 +91,7 @@ pub enum SessionState {
         items: Vec<crate::proto::gait::log::v1::InformItem>,
     },
     /// A tool access unlock request is awaiting a decision.
-    AwaitingUnlock { items: Vec<pb::UnlockItem> },
+    AwaitingSandboxUnlock { items: Vec<pb::SandboxUnlockItem> },
 }
 
 /// Walk the transcript backwards to determine the current session state.
@@ -127,12 +127,12 @@ pub fn session_state(tx_path: &std::path::Path) -> Result<SessionState, SessionE
             Some(payload::Kind::InformReply(_)) => {
                 return Ok(SessionState::Idle);
             }
-            Some(payload::Kind::Unlock(u)) => {
-                return Ok(SessionState::AwaitingUnlock {
+            Some(payload::Kind::SandboxUnlock(u)) => {
+                return Ok(SessionState::AwaitingSandboxUnlock {
                     items: u.items.clone(),
                 });
             }
-            Some(payload::Kind::UnlockReply(_)) => {
+            Some(payload::Kind::SandboxUnlockReply(_)) => {
                 return Ok(SessionState::Idle);
             }
             Some(payload::Kind::TurnComplete(_)) => {
@@ -267,17 +267,17 @@ pub fn write_toggle(
     Ok(())
 }
 
-/// Append an `UnlockReply` event to the transcript.
+/// Append a `SandboxUnlockReply` event to the transcript.
 ///
 /// `from` identifies the source of the decision (e.g. "user").
-/// Each `UnlockReplyItem.id` corresponds to an `UnlockItem.id` in
-/// the preceding `Unlock` request.
+/// Each `SandboxUnlockReplyItem.id` corresponds to a `SandboxUnlockItem.id` in
+/// the preceding `SandboxUnlock` request.
 pub fn write_unlock_reply(
     tx_path: &std::path::Path,
     from: &str,
-    items: Vec<pb::UnlockReplyItem>,
+    items: Vec<pb::SandboxUnlockReplyItem>,
 ) -> Result<(), SessionError> {
-    let body = crate::proto::events::unlock_reply(from.to_string(), &items);
+    let body = crate::proto::events::sandbox_unlock_reply(from.to_string(), &items);
     let prev = last_event(tx_path)?;
     let ev = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
     let mut file = std::fs::OpenOptions::new()

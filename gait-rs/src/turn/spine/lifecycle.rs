@@ -319,7 +319,7 @@ pub(crate) async fn teardown(
             crate::turn::TurnResult::Inform { .. } => {
                 format!("session({}): inform", session_id)
             }
-            crate::turn::TurnResult::Unlock { .. } => {
+            crate::turn::TurnResult::SandboxUnlock { .. } => {
                 format!("session({}): unlock", session_id)
             }
             crate::turn::TurnResult::Failed { .. } => {

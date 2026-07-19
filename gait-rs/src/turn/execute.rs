@@ -261,7 +261,7 @@ pub(crate) async fn run_tools(
             // In auto mode the tool failure result propagates normally.
             if !env.auto && env.sandbox_on {
                 if let Some(denial) = exec.denied.take() {
-                    return Ok(StepOutcome::Pause(PauseKind::Unlock(vec![denial])));
+                    return Ok(StepOutcome::Pause(PauseKind::SandboxUnlock(vec![denial])));
                 }
             }
             all_results[*i] = Some((exec.part, exec.result));
@@ -430,7 +430,7 @@ pub(crate) async fn run_tools(
                     // Task 6: seal denial in supervised mode → pause for unlock.
                     if !env.auto && env.sandbox_on {
                         if let Some(denial) = exec.denied.take() {
-                            return Ok(StepOutcome::Pause(PauseKind::Unlock(vec![denial])));
+                            return Ok(StepOutcome::Pause(PauseKind::SandboxUnlock(vec![denial])));
                         }
                     }
                     all_results[*i] = Some((exec.part, exec.result));
@@ -578,7 +578,7 @@ pub(crate) async fn run_tools(
                     // Task 6: seal denial in supervised mode → pause for unlock.
                     if !env.auto && env.sandbox_on {
                         if let Some(denial) = exec.denied.take() {
-                            return Ok(StepOutcome::Pause(PauseKind::Unlock(vec![denial])));
+                            return Ok(StepOutcome::Pause(PauseKind::SandboxUnlock(vec![denial])));
                         }
                     }
                     all_results[*i] = Some((exec.part, exec.result));

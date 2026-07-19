@@ -245,21 +245,24 @@ pub fn permissions_reply(from: String, items: &[pb::PermissionsReplyItem]) -> pb
     }))
 }
 
-/// `Unlock` — raised by the hand when a tool access exceeds the declared scope.
-/// The brain pauses and surfaces these items for human review.
-pub fn unlock(items: &[pb::UnlockItem]) -> pb::event::Body {
-    wire::body(pb::payload::Kind::Unlock(pb::Unlock {
+/// `SandboxUnlock` — raised by the hand when a tool access exceeds the
+/// declared sandbox scope. The brain pauses and surfaces these items for
+/// human review.
+pub fn sandbox_unlock(items: &[pb::SandboxUnlockItem]) -> pb::event::Body {
+    wire::body(pb::payload::Kind::SandboxUnlock(pb::SandboxUnlock {
         items: items.to_vec(),
     }))
 }
 
-/// `UnlockReply` — the human's decision for each `UnlockItem`.
+/// `SandboxUnlockReply` — the human's decision for each `SandboxUnlockItem`.
 /// `from` is the replier id; each item carries a `decision` and `scope`.
-pub fn unlock_reply(from: String, items: &[pb::UnlockReplyItem]) -> pb::event::Body {
-    wire::body(pb::payload::Kind::UnlockReply(pb::UnlockReply {
-        from,
-        items: items.to_vec(),
-    }))
+pub fn sandbox_unlock_reply(from: String, items: &[pb::SandboxUnlockReplyItem]) -> pb::event::Body {
+    wire::body(pb::payload::Kind::SandboxUnlockReply(
+        pb::SandboxUnlockReply {
+            from,
+            items: items.to_vec(),
+        },
+    ))
 }
 
 pub fn sandbox_whitelist_match(items: &[pb::SandboxWhitelistMatchItem]) -> pb::event::Body {
@@ -917,14 +920,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("log.jsonl");
 
-        let items = vec![pb::UnlockItem {
+        let items = vec![pb::SandboxUnlockItem {
             id: "req-1".into(),
             tool_name: "write".into(),
             resource: "/etc/secrets".into(),
             dimension: "write".into(),
             preview: Some("--- old\n+++ new".into()),
         }];
-        wire::append(&path, super::unlock(&items)).expect("append unlock");
+        wire::append(&path, super::sandbox_unlock(&items)).expect("append unlock");
 
         let evs = wire::read_events(&path).expect("read events");
         assert_eq!(evs.len(), 1);
@@ -932,7 +935,7 @@ mod tests {
             crate::proto::gait::log::v1::event::Body::Payload(p) => p.kind.as_ref(),
             _ => None,
         }) {
-            Some(pb::payload::Kind::Unlock(u)) => {
+            Some(pb::payload::Kind::SandboxUnlock(u)) => {
                 assert_eq!(u.items.len(), 1);
                 let item = &u.items[0];
                 assert_eq!(item.id, "req-1");
@@ -941,7 +944,7 @@ mod tests {
                 assert_eq!(item.dimension, "write");
                 assert_eq!(item.preview, Some("--- old\n+++ new".into()));
             }
-            other => panic!("expected Unlock payload, got {other:?}"),
+            other => panic!("expected SandboxUnlock payload, got {other:?}"),
         }
     }
 
@@ -953,12 +956,12 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("log.jsonl");
 
-        let items = vec![pb::UnlockReplyItem {
+        let items = vec![pb::SandboxUnlockReplyItem {
             id: "req-1".into(),
             decision: pb::Decision::Allow as i32,
             scope: pb::Scope::Once as i32,
         }];
-        wire::append(&path, super::unlock_reply("human".into(), &items))
+        wire::append(&path, super::sandbox_unlock_reply("human".into(), &items))
             .expect("append unlock_reply");
 
         let evs = wire::read_events(&path).expect("read events");
@@ -967,7 +970,7 @@ mod tests {
             crate::proto::gait::log::v1::event::Body::Payload(p) => p.kind.as_ref(),
             _ => None,
         }) {
-            Some(pb::payload::Kind::UnlockReply(ur)) => {
+            Some(pb::payload::Kind::SandboxUnlockReply(ur)) => {
                 assert_eq!(ur.from, "human");
                 assert_eq!(ur.items.len(), 1);
                 let item = &ur.items[0];
@@ -975,7 +978,7 @@ mod tests {
                 assert_eq!(item.decision, pb::Decision::Allow as i32);
                 assert_eq!(item.scope, pb::Scope::Once as i32);
             }
-            other => panic!("expected UnlockReply payload, got {other:?}"),
+            other => panic!("expected SandboxUnlockReply payload, got {other:?}"),
         }
     }
 

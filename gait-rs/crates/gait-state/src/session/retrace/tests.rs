@@ -1623,22 +1623,22 @@ fn outgoing_for_step_includes_injected_messages() {
 fn active_unlock_folds_once_grants_and_clears_on_turn_complete() {
     use std::path::PathBuf;
 
-    let unlock_item = pb::UnlockItem {
+    let unlock_item = pb::SandboxUnlockItem {
         id: "u1".to_string(),
         tool_name: "write".to_string(),
         resource: "/external/path/foo.txt".to_string(),
         dimension: "write".to_string(),
         preview: None,
     };
-    let reply_item = pb::UnlockReplyItem {
+    let reply_item = pb::SandboxUnlockReplyItem {
         id: "u1".to_string(),
         decision: pb::Decision::Allow as i32,
         scope: pb::Scope::Once as i32,
     };
 
     let evs = mint_events(vec![
-        events::unlock(&[unlock_item]),
-        events::unlock_reply("user".to_string(), &[reply_item]),
+        events::sandbox_unlock(&[unlock_item]),
+        events::sandbox_unlock_reply("user".to_string(), &[reply_item]),
     ]);
 
     let result = active_unlock_state(&evs);
@@ -1655,14 +1655,14 @@ fn active_unlock_folds_once_grants_and_clears_on_turn_complete() {
 fn active_unlock_session_grant_survives_turn_complete() {
     use std::path::PathBuf;
 
-    let unlock_item = pb::UnlockItem {
+    let unlock_item = pb::SandboxUnlockItem {
         id: "u2".to_string(),
         tool_name: "write".to_string(),
         resource: "/external/dir".to_string(),
         dimension: "write".to_string(),
         preview: None,
     };
-    let reply_item = pb::UnlockReplyItem {
+    let reply_item = pb::SandboxUnlockReplyItem {
         id: "u2".to_string(),
         decision: pb::Decision::Allow as i32,
         scope: pb::Scope::Session as i32,
@@ -1675,8 +1675,8 @@ fn active_unlock_session_grant_survives_turn_complete() {
     };
 
     let evs = mint_events(vec![
-        events::unlock(&[unlock_item]),
-        events::unlock_reply("user".to_string(), &[reply_item]),
+        events::sandbox_unlock(&[unlock_item]),
+        events::sandbox_unlock_reply("user".to_string(), &[reply_item]),
         events::turn_complete(events::TurnCompleteParams {
             usage,
             ..Default::default()

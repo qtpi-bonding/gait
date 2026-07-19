@@ -1122,15 +1122,15 @@ pub struct ActiveUnlockState {
     pub once: std::collections::HashSet<std::path::PathBuf>,
 }
 
-/// Fold all `UnlockReply` events, cross-referencing `Unlock` events to resolve
-/// resource paths, into an `ActiveUnlockState`. `once` grants are cleared on
-/// each `TurnComplete`; `session` grants persist for the session.
-/// `global`/`agent` grants are config-backed and not tracked here.
+/// Fold all `SandboxUnlockReply` events, cross-referencing `SandboxUnlock`
+/// events to resolve resource paths, into an `ActiveUnlockState`. `once`
+/// grants are cleared on each `TurnComplete`; `session` grants persist for
+/// the session. `global`/`agent` grants are config-backed and not tracked here.
 pub fn active_unlock_state(events: &[Event]) -> ActiveUnlockState {
-    // Build a map: unlock_item_id → resource from Unlock events
+    // Build a map: unlock_item_id → resource from SandboxUnlock events
     let mut id_to_resource: std::collections::HashMap<String, String> = Default::default();
     for e in events {
-        if let Some(payload::Kind::Unlock(u)) = crate::proto::event_kind(e) {
+        if let Some(payload::Kind::SandboxUnlock(u)) = crate::proto::event_kind(e) {
             for item in &u.items {
                 id_to_resource.insert(item.id.clone(), item.resource.clone());
             }
@@ -1143,7 +1143,7 @@ pub fn active_unlock_state(events: &[Event]) -> ActiveUnlockState {
             Some(payload::Kind::TurnComplete(_)) => {
                 state.once.clear();
             }
-            Some(payload::Kind::UnlockReply(r)) => {
+            Some(payload::Kind::SandboxUnlockReply(r)) => {
                 for item in &r.items {
                     let decision =
                         pb::Decision::try_from(item.decision).unwrap_or(pb::Decision::Unspecified);

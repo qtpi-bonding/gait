@@ -24,8 +24,8 @@ pub(crate) fn tool_label(name: &str, args: &serde_json::Value) -> String {
 }
 
 use crate::proto::gait::log::v1::Event;
+use crate::proto::gait::log::v1::SandboxUnlockItem;
 use crate::proto::gait::log::v1::SandboxWhitelistMatchItem;
-use crate::proto::gait::log::v1::UnlockItem;
 use crate::proto::Recorder;
 use crate::tools::ToolError;
 use crate::types::{Tool, ToolAccess};
@@ -43,7 +43,7 @@ pub struct ScopeRequest {
 /// Returns `Vec<Event>` (not `Vec<event::Body>`) — Event is serde-derivable via
 /// pbjson, so Phase 2a can pipe the events over the wire directly.
 ///
-/// The third element (`Option<UnlockItem>`) is `Some` when the hand detected a
+/// The third element (`Option<SandboxUnlockItem>`) is `Some` when the hand detected a
 /// kernel-level permission denial (EACCES / EPERM) while executing a `shell`
 /// command under Seatbelt. The turn loop inspects this in supervised mode and
 /// calls `pause_for_unlock`; in auto mode it is ignored and the tool failure
@@ -59,7 +59,7 @@ pub trait Synapse: Send + Sync {
         (
             serde_json::Value,
             Vec<Event>,
-            Option<UnlockItem>,
+            Option<SandboxUnlockItem>,
             Vec<SandboxWhitelistMatchItem>,
         ),
         ToolError,
@@ -83,7 +83,7 @@ impl Synapse for InProcessSynapse {
         (
             serde_json::Value,
             Vec<Event>,
-            Option<UnlockItem>,
+            Option<SandboxUnlockItem>,
             Vec<SandboxWhitelistMatchItem>,
         ),
         ToolError,
@@ -117,7 +117,7 @@ impl Synapse for RelaySynapse {
         (
             serde_json::Value,
             Vec<Event>,
-            Option<UnlockItem>,
+            Option<SandboxUnlockItem>,
             Vec<SandboxWhitelistMatchItem>,
         ),
         ToolError,

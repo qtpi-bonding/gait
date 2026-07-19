@@ -1,7 +1,7 @@
 # unlock_precheck
-# result: Unlock
+# result: SandboxUnlock
 # events: 3
 ---
 000: SessionStart
 001: Unknown
-002: Unlock
+002: SandboxUnlock

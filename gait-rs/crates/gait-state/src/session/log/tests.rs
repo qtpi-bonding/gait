@@ -250,25 +250,25 @@ fn session_state_awaiting_unlock() {
     let path = dir.path().join("log.jsonl");
 
     // Create a log ending with an unlock event
-    let items = vec![pb::UnlockItem {
+    let items = vec![pb::SandboxUnlockItem {
         id: "lock-1".into(),
         tool_name: "edit".into(),
         resource: "/path/to/file".into(),
         dimension: "write".into(),
         preview: None,
     }];
-    wire::append(&path, events::unlock(&items)).unwrap();
+    wire::append(&path, events::sandbox_unlock(&items)).unwrap();
 
     let state = session_state(&path).unwrap();
     match state {
-        SessionState::AwaitingUnlock {
+        SessionState::AwaitingSandboxUnlock {
             items: result_items,
         } => {
             assert_eq!(result_items.len(), 1);
             assert_eq!(result_items[0].id, "lock-1");
             assert_eq!(result_items[0].tool_name, "edit");
         }
-        other => panic!("expected AwaitingUnlock state, got {other:?}"),
+        other => panic!("expected AwaitingSandboxUnlock state, got {other:?}"),
     }
 }
 
@@ -278,21 +278,25 @@ fn session_state_unlock_reply_returns_idle() {
     let path = dir.path().join("log.jsonl");
 
     // Create a log with unlock then unlock_reply
-    let items = vec![pb::UnlockItem {
+    let items = vec![pb::SandboxUnlockItem {
         id: "lock-1".into(),
         tool_name: "edit".into(),
         resource: "/path/to/file".into(),
         dimension: "write".into(),
         preview: None,
     }];
-    wire::append(&path, events::unlock(&items)).unwrap();
+    wire::append(&path, events::sandbox_unlock(&items)).unwrap();
 
-    let reply_items = vec![pb::UnlockReplyItem {
+    let reply_items = vec![pb::SandboxUnlockReplyItem {
         id: "lock-1".into(),
         decision: pb::Decision::Allow as i32,
         scope: pb::Scope::Once as i32,
     }];
-    wire::append(&path, events::unlock_reply("user".into(), &reply_items)).unwrap();
+    wire::append(
+        &path,
+        events::sandbox_unlock_reply("user".into(), &reply_items),
+    )
+    .unwrap();
 
     let state = session_state(&path).unwrap();
     assert!(
@@ -307,7 +311,7 @@ fn session_state_whitelist_match_after_unlock_still_awaiting() {
     let path = dir.path().join("log.jsonl");
     wire::append(
         &path,
-        events::unlock(&[pb::UnlockItem {
+        events::sandbox_unlock(&[pb::SandboxUnlockItem {
             id: "u1".into(),
             tool_name: "shell".into(),
             resource: "/some/path".into(),
@@ -328,7 +332,7 @@ fn session_state_whitelist_match_after_unlock_still_awaiting() {
     .unwrap();
     assert!(matches!(
         session_state(&path).unwrap(),
-        SessionState::AwaitingUnlock { .. }
+        SessionState::AwaitingSandboxUnlock { .. }
     ));
 }
 
@@ -361,23 +365,23 @@ fn unlock_once_grant_round_trip_no_config_change() {
 
     // Step 1: Write an Unlock event (simulating pause_for_unlock)
     let resource_path = "/some/external/path.txt";
-    let unlock_item = pb::UnlockItem {
+    let unlock_item = pb::SandboxUnlockItem {
         id: "unlock-rt-1".to_string(),
         tool_name: "write".to_string(),
         resource: resource_path.to_string(),
         dimension: "write".to_string(),
         preview: None,
     };
-    wire::append(&tx_path, events::unlock(&[unlock_item])).unwrap();
+    wire::append(&tx_path, events::sandbox_unlock(&[unlock_item])).unwrap();
 
-    // Step 2: Verify session is AwaitingUnlock
+    // Step 2: Verify session is AwaitingSandboxUnlock
     assert!(matches!(
         session_state(&tx_path).unwrap(),
-        SessionState::AwaitingUnlock { .. }
+        SessionState::AwaitingSandboxUnlock { .. }
     ));
 
-    // Step 3: Write the UnlockReply with Once scope (simulating cmd_unlock once)
-    let reply_item = pb::UnlockReplyItem {
+    // Step 3: Write the SandboxUnlockReply with Once scope (simulating cmd_unlock once)
+    let reply_item = pb::SandboxUnlockReplyItem {
         id: "unlock-rt-1".to_string(),
         decision: pb::Decision::Allow as i32,
         scope: pb::Scope::Once as i32,
@@ -434,23 +438,23 @@ fn write_unlock_reply_appends_and_state_becomes_idle() {
     let dir = TempDir::new().unwrap();
     let tx_path = dir.path().join("log.jsonl");
 
-    // Write an Unlock event first (so session_state returns AwaitingUnlock)
-    let unlock_item = pb::UnlockItem {
+    // Write an Unlock event first (so session_state returns AwaitingSandboxUnlock)
+    let unlock_item = pb::SandboxUnlockItem {
         id: "item-1".to_string(),
         tool_name: "write".to_string(),
         resource: "/outside/path/foo.txt".to_string(),
         dimension: "write".to_string(),
         preview: None,
     };
-    wire::append(&tx_path, events::unlock(&[unlock_item])).unwrap();
+    wire::append(&tx_path, events::sandbox_unlock(&[unlock_item])).unwrap();
     // Verify session is awaiting unlock
     assert!(matches!(
         session_state(&tx_path).unwrap(),
-        SessionState::AwaitingUnlock { .. }
+        SessionState::AwaitingSandboxUnlock { .. }
     ));
 
     // Write the reply
-    let reply_item = pb::UnlockReplyItem {
+    let reply_item = pb::SandboxUnlockReplyItem {
         id: "item-1".to_string(),
         decision: pb::Decision::Allow as i32,
         scope: pb::Scope::Once as i32,
@@ -467,7 +471,7 @@ fn write_unlock_reply_appends_and_state_becomes_idle() {
     assert_eq!(events.len(), 2);
     assert!(matches!(
         crate::proto::event_kind(&events[1]),
-        Some(crate::proto::gait::log::v1::payload::Kind::UnlockReply(_))
+        Some(crate::proto::gait::log::v1::payload::Kind::SandboxUnlockReply(_))
     ));
 }
 

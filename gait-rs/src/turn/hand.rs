@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use prost::Message as _;
 
 use crate::git::Repos;
-use crate::proto::gait::log::v1::UnlockItem;
+use crate::proto::gait::log::v1::SandboxUnlockItem;
 use crate::proto::Recorder;
 use crate::sandbox::{NetworkPolicy, SandboxScope};
 use crate::tools::fs_backend::{BufferedFs, FsBackend, LocalFs};
@@ -267,7 +267,7 @@ pub async fn run_hand(config: HandConfig) {
     // commands. Scan the combined output for POSIX error strings that indicate
     // EACCES or EPERM. Best-effort — false positives are low-harm in supervised
     // mode (the user sees an unlock prompt they can decline).
-    let denied: Option<UnlockItem> = if config.tool == "shell" {
+    let denied: Option<SandboxUnlockItem> = if config.tool == "shell" {
         let output_str = result_json
             .get("output")
             .and_then(|v| v.as_str())
@@ -275,7 +275,7 @@ pub async fn run_hand(config: HandConfig) {
         let has_denial = output_str.contains("Permission denied")
             || output_str.contains("Operation not permitted");
         if has_denial {
-            Some(UnlockItem {
+            Some(SandboxUnlockItem {
                 id: uuid::Uuid::new_v4().to_string(),
                 tool_name: "shell".to_string(),
                 resource: "(shell)".to_string(),

@@ -173,7 +173,7 @@ enum BodyKind {
     Permissions,
     Clarify,
     Inform,
-    Unlock,
+    SandboxUnlock,
     CancellationSignal,
     ThinkingBlock,
     Error {
@@ -231,7 +231,7 @@ fn body_kind(b: &event::Body) -> BodyKind {
         payload::Kind::Permissions(_) => BodyKind::Permissions,
         payload::Kind::Clarify(_) => BodyKind::Clarify,
         payload::Kind::Inform(_) => BodyKind::Inform,
-        payload::Kind::Unlock(_) => BodyKind::Unlock,
+        payload::Kind::SandboxUnlock(_) => BodyKind::SandboxUnlock,
         payload::Kind::CancellationSignal(_) => BodyKind::CancellationSignal,
         payload::Kind::ThinkingBlock(_) => BodyKind::ThinkingBlock,
         payload::Kind::Error(e) => BodyKind::Error {
@@ -261,7 +261,7 @@ fn body_kind(b: &event::Body) -> BodyKind {
         | payload::Kind::TurnComplete(_)
         | payload::Kind::ClarifyReply(_)
         | payload::Kind::InformReply(_)
-        | payload::Kind::UnlockReply(_)
+        | payload::Kind::SandboxUnlockReply(_)
         | payload::Kind::Mode(_)
         | payload::Kind::SandboxWhitelistMatch(_) => BodyKind::Unknown,
     }
@@ -306,7 +306,7 @@ fn render_body(b: &BodyKind) -> String {
         BodyKind::Permissions => "Permissions".into(),
         BodyKind::Clarify => "Clarify".into(),
         BodyKind::Inform => "Inform".into(),
-        BodyKind::Unlock => "Unlock".into(),
+        BodyKind::SandboxUnlock => "SandboxUnlock".into(),
         BodyKind::CancellationSignal => "CancellationSignal".into(),
         BodyKind::ThinkingBlock => "ThinkingBlock".into(),
         BodyKind::Error { phase } => format!("Error phase={}", phase),
@@ -419,7 +419,7 @@ impl Fixture {
                 crate::turn::TurnResult::Permissions => "Permissions".into(),
                 crate::turn::TurnResult::Clarify { .. } => "Clarify".into(),
                 crate::turn::TurnResult::Inform { .. } => "Inform".into(),
-                crate::turn::TurnResult::Unlock { .. } => "Unlock".into(),
+                crate::turn::TurnResult::SandboxUnlock { .. } => "SandboxUnlock".into(),
                 crate::turn::TurnResult::Cancelled => "Cancelled".into(),
                 crate::turn::TurnResult::Failed { .. } => "Failed".into(),
             },

@@ -1,8 +1,8 @@
 //! Agnostic turn-output port: classify channel items + the TurnSink contract.
 use crate::proto::events;
 use crate::proto::gait::log::v1::{
-    event, payload, run_result, stream_item, Event, RunResult, SessionStart, StreamItem,
-    StructuredDoneOutput, Unlock,
+    event, payload, run_result, stream_item, Event, RunResult, SandboxUnlock, SessionStart,
+    StreamItem, StructuredDoneOutput,
 };
 use crate::turn::TurnResult;
 use std::io::Write;
@@ -164,8 +164,8 @@ pub fn run_result_proto(r: &crate::turn::TurnResult) -> RunResult {
             Some(run_result::Result::Permissions(Default::default())),
             "permissions",
         ),
-        TurnResult::Unlock { items } => (
-            Some(run_result::Result::Unlock(Unlock {
+        TurnResult::SandboxUnlock { items } => (
+            Some(run_result::Result::SandboxUnlock(SandboxUnlock {
                 items: items.clone(),
             })),
             "unlock",

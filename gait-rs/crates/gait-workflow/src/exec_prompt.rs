@@ -439,7 +439,7 @@ fn map_turn_result(turn_result: TurnResult, session_id: &str) -> NodeOutput {
             routed_to: None,
             session_id: session_id.to_string(),
         },
-        TurnResult::Unlock { .. } => NodeOutput {
+        TurnResult::SandboxUnlock { .. } => NodeOutput {
             text: "(paused for sandbox unlock)".into(),
             exit_code: None,
             json: None,

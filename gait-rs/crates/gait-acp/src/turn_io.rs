@@ -109,7 +109,7 @@ pub fn turn_result_to_stop_reason(r: &TurnResult) -> Result<StopReason, String> 
         TurnResult::Permissions
         | TurnResult::Clarify { .. }
         | TurnResult::Inform { .. }
-        | TurnResult::Unlock { .. } => {
+        | TurnResult::SandboxUnlock { .. } => {
             // A turn that ends genuinely awaiting interaction with no cancellation is
             // still unsupported. The cancel path never reaches here: the completion
             // block short-circuits on was_cancelled() before mapping.
@@ -526,7 +526,7 @@ mod tests {
         assert!(turn_result_to_stop_reason(&TurnResult::Permissions).is_err());
         assert!(turn_result_to_stop_reason(&TurnResult::Clarify { items: vec![] }).is_err());
         assert!(turn_result_to_stop_reason(&TurnResult::Inform { items: vec![] }).is_err());
-        assert!(turn_result_to_stop_reason(&TurnResult::Unlock { items: vec![] }).is_err());
+        assert!(turn_result_to_stop_reason(&TurnResult::SandboxUnlock { items: vec![] }).is_err());
     }
 
     fn item(id: &str, cmd: &str, patterns: &[&str]) -> PermissionItem {
