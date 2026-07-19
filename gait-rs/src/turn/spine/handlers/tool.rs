@@ -179,12 +179,23 @@ pub async fn run_tool_as_spine(
         impulse.cwd.clone()
     };
 
+    let shell_whitelist_patterns = if impulse.tool == "shell" {
+        sandbox_cfg
+            .shell_whitelist
+            .iter()
+            .map(|e| e.pattern.clone())
+            .collect()
+    } else {
+        vec![]
+    };
+
     let impulse_with_scope = Impulse {
         tool: impulse.tool.clone(),
         args: impulse.args,
         cwd,
         requested: Some(requested),
         prefetch,
+        shell_whitelist_patterns,
     };
     let bytes = impulse_with_scope.encode_to_vec();
 
@@ -479,6 +490,7 @@ mod tests {
             cwd: String::new(),
             requested: None,
             prefetch: None,
+            shell_whitelist_patterns: vec![],
         };
         let group = crate::process::establish(None);
         let feedback = run_tool_as_spine(

@@ -17,6 +17,11 @@ message Impulse {
   string cwd = 3;
   Scope requested = 4;
   optional Prefetch prefetch = 5;
+  // Shell-only: the sandbox.shell_whitelist pattern strings in effect for
+  // this call, so the hand can build a coaching hint on a network denial
+  // without needing the full SandboxConfig (which it deliberately never
+  // sees). Empty for non-shell tools.
+  repeated string shell_whitelist_patterns = 6;
 }
 
 // Sent hand→brain: one tool invocation response.

@@ -24,6 +24,7 @@ pub(crate) fn tool_label(name: &str, args: &serde_json::Value) -> String {
 }
 
 use crate::proto::gait::log::v1::Event;
+use crate::proto::gait::log::v1::SandboxDenied;
 use crate::proto::gait::log::v1::SandboxUnlockItem;
 use crate::proto::gait::log::v1::SandboxWhitelistMatchItem;
 use crate::proto::Recorder;
@@ -61,6 +62,7 @@ pub trait Synapse: Send + Sync {
             Vec<Event>,
             Option<SandboxUnlockItem>,
             Vec<SandboxWhitelistMatchItem>,
+            Option<SandboxDenied>,
         ),
         ToolError,
     >;
@@ -85,12 +87,13 @@ impl Synapse for InProcessSynapse {
             Vec<Event>,
             Option<SandboxUnlockItem>,
             Vec<SandboxWhitelistMatchItem>,
+            Option<SandboxDenied>,
         ),
         ToolError,
     > {
         let buf = Recorder::buffering();
         let result = tool.execute(args, &buf).await?;
-        Ok((result, buf.take_buffer(), None, vec![]))
+        Ok((result, buf.take_buffer(), None, vec![], None))
     }
 }
 
@@ -119,6 +122,7 @@ impl Synapse for RelaySynapse {
             Vec<Event>,
             Option<SandboxUnlockItem>,
             Vec<SandboxWhitelistMatchItem>,
+            Option<SandboxDenied>,
         ),
         ToolError,
     > {
@@ -140,6 +144,7 @@ impl Synapse for RelaySynapse {
                     cwd: String::new(), // spine reads cwd from session for hands
                     requested: None,    // spine re-derives scope via bound_request
                     prefetch: None,     // no delegation from this code path
+                    shell_whitelist_patterns: vec![], // spine re-derives via sandbox_cfg
                 },
             )),
         };
@@ -174,6 +179,7 @@ impl Synapse for RelaySynapse {
             feedback.events,
             feedback.denied,
             feedback.whitelist_match_items,
+            feedback.sandbox_denied,
         ))
     }
 }
@@ -215,7 +221,7 @@ mod tests {
     #[tokio::test]
     async fn in_process_synapse_returns_result_and_buffered_events() {
         let syn = InProcessSynapse;
-        let (result, events, denied, whitelist_items) = syn
+        let (result, events, denied, whitelist_items, _sandbox_denied) = syn
             .fire(
                 &EchoTool,
                 serde_json::json!({"k":"v"}),
@@ -278,7 +284,7 @@ mod tests {
         });
 
         let syn = RelaySynapse { writer };
-        let (result, events, denied, whitelist_items) = syn
+        let (result, events, denied, whitelist_items, _sandbox_denied) = syn
             .fire(
                 &EchoTool,
                 serde_json::json!({"k": "v"}),

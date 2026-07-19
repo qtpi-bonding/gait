@@ -112,7 +112,7 @@ pub(super) async fn execute_tool_call(
                         .await
                 };
                 match fired {
-                    Ok((value, events, denied_item, whitelist_items)) => {
+                    Ok((value, events, denied_item, whitelist_items, sandbox_denied_item)) => {
                         for event in events {
                             if let Some(body) = event.body {
                                 emitter.record(body)?;
@@ -120,6 +120,15 @@ pub(super) async fn execute_tool_call(
                         }
                         if !whitelist_items.is_empty() {
                             emitter.record(events::sandbox_whitelist_match(&whitelist_items))?;
+                        }
+                        if let Some(sd) = &sandbox_denied_item {
+                            emitter.record(events::sandbox_denied(
+                                &sd.tool_name,
+                                &sd.resource,
+                                &sd.dimension,
+                                &sd.matched_signature,
+                                sd.hint.clone(),
+                            ))?;
                         }
                         (Ok(value), denied_item)
                     }

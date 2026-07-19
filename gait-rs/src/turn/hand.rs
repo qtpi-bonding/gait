@@ -267,24 +267,77 @@ pub async fn run_hand(config: HandConfig) {
     // commands. Scan the combined output for POSIX error strings that indicate
     // EACCES or EPERM. Best-effort — false positives are low-harm in supervised
     // mode (the user sees an unlock prompt they can decline).
-    let denied: Option<SandboxUnlockItem> = if config.tool == "shell" {
-        let output_str = result_json
-            .get("output")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let has_denial = output_str.contains("Permission denied")
-            || output_str.contains("Operation not permitted");
-        if has_denial {
-            Some(SandboxUnlockItem {
-                id: uuid::Uuid::new_v4().to_string(),
-                tool_name: "shell".to_string(),
-                resource: "(shell)".to_string(),
-                dimension: "write".to_string(),
-                preview: None,
+    const FILESYSTEM_DENIAL_SIGNATURES: &[&str] = &["Permission denied", "Operation not permitted"];
+    // Network-denial signatures gated on network_denied (impulse.requested's
+    // NetworkScope.mode was DENY for this call) so a real network outage
+    // isn't misattributed to the sandbox.
+    const NETWORK_DENIAL_SIGNATURES: &[&str] = &[
+        "Failed host lookup",
+        "SocketException",
+        "CERTIFICATE_VERIFY_FAILED",
+        "Connection refused",
+    ];
+
+    let output_str = result_json
+        .get("output")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let fs_signature = FILESYSTEM_DENIAL_SIGNATURES
+        .iter()
+        .find(|sig| output_str.contains(*sig));
+    let denied: Option<SandboxUnlockItem> = if config.tool == "shell" && fs_signature.is_some() {
+        Some(SandboxUnlockItem {
+            id: uuid::Uuid::new_v4().to_string(),
+            tool_name: "shell".to_string(),
+            resource: "(shell)".to_string(),
+            dimension: "write".to_string(),
+            preview: None,
+        })
+    } else {
+        None
+    };
+
+    let network_denied = impulse
+        .requested
+        .as_ref()
+        .and_then(|s| s.network.as_ref())
+        .map(|n| n.mode == gait_proto::gait::sandbox::v1::network_scope::Mode::Deny as i32)
+        .unwrap_or(true);
+    let shell_cmd = impulse
+        .args
+        .as_ref()
+        .and_then(|s| s.fields.get("cmd"))
+        .and_then(|v| match &v.kind {
+            Some(pbjson_types::value::Kind::StringValue(s)) => Some(s.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let network_signature = if network_denied {
+        NETWORK_DENIAL_SIGNATURES
+            .iter()
+            .find(|sig| output_str.contains(*sig))
+    } else {
+        None
+    };
+    let sandbox_denied = if config.tool == "shell" {
+        fs_signature
+            .map(|sig| (sig, "write"))
+            .or_else(|| network_signature.map(|sig| (sig, "network")))
+            .map(|(sig, dimension)| {
+                let hint = if dimension == "network" {
+                    build_network_denial_hint(&shell_cmd, &impulse.shell_whitelist_patterns)
+                } else {
+                    None
+                };
+                crate::proto::gait::log::v1::SandboxDenied {
+                    tool_name: "shell".to_string(),
+                    resource: shell_cmd.clone(),
+                    dimension: dimension.to_string(),
+                    matched_signature: (*sig).to_string(),
+                    hint,
+                }
             })
-        } else {
-            None
-        }
     } else {
         None
     };
@@ -312,7 +365,7 @@ pub async fn run_hand(config: HandConfig) {
         daemon: daemon_record,
         final_content,
         whitelist_match_items: vec![],
-        sandbox_denied: None,
+        sandbox_denied,
     };
     respond(hand_response::Outcome::Feedback(feedback));
 }
@@ -351,6 +404,36 @@ pub fn build_scope_from_impulse(impulse: &Impulse) -> SandboxScope {
     }
 }
 
+/// Build the coaching hint for a network-denied shell command: if it's
+/// compound (cd/&&/pipe) and its first segment alone would match a
+/// shell_whitelist pattern, name that pattern explicitly. Otherwise a
+/// generic no-match message. Filesystem denials get no whitelist-specific
+/// hint (there's no filesystem whitelist mechanism).
+fn build_network_denial_hint(cmd: &str, shell_whitelist_patterns: &[String]) -> Option<String> {
+    use gait_state::permissions::matching::{split_commands, wildcard_match};
+
+    let segments = split_commands(cmd);
+    if segments.len() > 1 {
+        if let Some(first) = segments.first() {
+            if let Some(pattern) = shell_whitelist_patterns
+                .iter()
+                .find(|p| wildcard_match(p, first))
+            {
+                return Some(format!(
+                    "sandbox denied network for this command; pattern \"{pattern}\" would grant it, but shell_whitelist doesn't match compound commands (yours has {} segments: \"{cmd}\"). Try running \"{first}\" verbatim, or use the shell tool's cwd param instead of \"cd &&\".",
+                    segments.len(),
+                ));
+            }
+        }
+        return Some(format!(
+            "sandbox denied network for this command; no shell_whitelist entry matches any segment of \"{cmd}\" — add one to sandbox.shell_whitelist if this should be allowed."
+        ));
+    }
+    Some(format!(
+        "sandbox denied network for this command; no shell_whitelist entry matches \"{cmd}\" — add one to sandbox.shell_whitelist if this should be allowed."
+    ))
+}
+
 /// Pick the fs backend for this hand call: `BufferedFs` when the spine supplied a
 /// prefetch (delegated mode), else `LocalFs` (disk — unchanged behavior).
 fn select_fs(impulse: &Impulse) -> std::sync::Arc<dyn FsBackend> {
@@ -379,6 +462,7 @@ mod tests {
                 path: "/ws/a.rs".into(),
                 content: Some("buf".into()),
             }),
+            shell_whitelist_patterns: vec![],
         };
         assert_eq!(
             select_fs(&with)
@@ -395,5 +479,46 @@ mod tests {
         assert!(select_fs(&without)
             .read_to_string(std::path::Path::new("/ws/a.rs"))
             .is_err());
+    }
+
+    #[test]
+    fn network_denial_hint_names_matching_whitelist_pattern_for_compound_command() {
+        // split_commands does no "cd"-stripping — the first segment here is
+        // "flutter test --coverage" itself, which matches the pattern; the
+        // compound shape (a trailing "&& echo done") is still what triggers
+        // the "doesn't match compound commands" coaching branch.
+        let hint = build_network_denial_hint(
+            "flutter test --coverage && echo done",
+            &["flutter test *".to_string()],
+        )
+        .expect("expected a hint");
+        assert!(
+            hint.contains("flutter test *"),
+            "hint should name the matching pattern: {hint}"
+        );
+        assert!(
+            hint.contains("cwd"),
+            "hint should point at the cwd param: {hint}"
+        );
+    }
+
+    #[test]
+    fn network_denial_hint_is_generic_when_no_pattern_matches() {
+        let hint =
+            build_network_denial_hint("cd /tmp && curl example.com", &[]).expect("expected a hint");
+        assert!(
+            hint.contains("no shell_whitelist entry matches"),
+            "hint should be the generic no-match message: {hint}"
+        );
+    }
+
+    #[test]
+    fn network_denial_hint_for_single_segment_command_is_generic() {
+        let hint = build_network_denial_hint("curl example.com", &["flutter test *".to_string()])
+            .expect("expected a hint");
+        assert!(
+            hint.contains("no shell_whitelist entry matches \"curl example.com\""),
+            "single-segment miss should be the generic message: {hint}"
+        );
     }
 }

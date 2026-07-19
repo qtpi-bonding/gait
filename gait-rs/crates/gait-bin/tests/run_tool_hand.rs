@@ -43,6 +43,7 @@ fn run_tool_executes_read_in_subprocess() {
             }),
         }),
         prefetch: None,
+        shell_whitelist_patterns: vec![],
     };
     let impulse_bytes = impulse.encode_to_vec();
 

@@ -2494,6 +2494,7 @@ async fn delegated_read_serves_buffer_not_disk() {
         cwd: String::new(),
         requested: None,
         prefetch: None,
+        shell_whitelist_patterns: vec![],
     };
     let group = crate::process::establish(None);
     // This test calls run_tool_as_spine directly (no real brain process), but hand
@@ -2568,6 +2569,7 @@ async fn shell_command_matching_whitelist_carries_match_items_in_feedback() {
         cwd: String::new(),
         requested: None,
         prefetch: None,
+        shell_whitelist_patterns: vec![],
     };
 
     let sandbox_cfg = crate::config::SandboxConfig {
@@ -2642,6 +2644,7 @@ async fn shell_command_not_matching_whitelist_carries_no_match_items() {
         cwd: String::new(),
         requested: None,
         prefetch: None,
+        shell_whitelist_patterns: vec![],
     };
 
     let sandbox_cfg = crate::config::SandboxConfig {

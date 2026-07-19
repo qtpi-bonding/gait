@@ -157,6 +157,7 @@ mod confined_read_tests {
                 }),
             }),
             prefetch: None,
+            shell_whitelist_patterns: vec![],
         }
     }
 
@@ -225,6 +226,7 @@ mod confined_read_tests {
                 }),
             }),
             prefetch: None,
+            shell_whitelist_patterns: vec![],
         };
         let fb = run_hand(&cb, "read", impulse);
         let result = feedback_string(&fb);
