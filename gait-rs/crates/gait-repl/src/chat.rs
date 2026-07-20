@@ -277,15 +277,21 @@ pub async fn run_chat(
         }
     }
 
-    let mut resume = format!("gait chat --session {}", session_id);
     let cwd = std::env::current_dir().unwrap_or_default();
-    if gait_dir != cwd {
-        resume.push_str(&format!(" --gait-dir {}", gait_dir.display()));
-    }
+    let gait_dir_flag = if gait_dir != cwd {
+        format!(" --gait-dir {}", gait_dir.display())
+    } else {
+        String::new()
+    };
+    let resume = format!("gait chat --session {}{}", session_id, gait_dir_flag);
+    let persist = format!("gait persist {}{}", session_id, gait_dir_flag);
+    let discard = format!("gait discard {}{}", session_id, gait_dir_flag);
     #[allow(clippy::print_stderr)]
     // post-loop, `shared`'s builder is going out of scope; nothing left to synchronize against
     {
         eprint!("{}{}{}\r\n", DIM_FG, resume, RESET);
+        eprint!("{}{}{}\r\n", DIM_FG, persist, RESET);
+        eprint!("{}{}{}\r\n", DIM_FG, discard, RESET);
     }
 
     Ok(())
