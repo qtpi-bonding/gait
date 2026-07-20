@@ -1,6 +1,7 @@
 //! Turn profile construction, brain argv, and the load-bearing post-loop
 //! teardown sequence (drain → orphan-repair → EOF → reap → checkpoint → commit).
 
+use crate::git::codebase::CodebaseRepo;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -246,6 +247,39 @@ fn synthesize_aborted_if_missing(
     })
 }
 
+/// Builds the trace-commit message for a `teardown` exit, given the already-resolved
+/// `TurnResult` and the trailer inputs available at that point. Pure and unit-testable —
+/// factored out of `teardown` so the phase-to-subject/trailer mapping can be tested without
+/// spawning a real brain process.
+fn teardown_commit_message(
+    result: &crate::turn::TurnResult,
+    session_id: &str,
+    turn_n: u32,
+    codebase: &str,
+    codebase_hash: &str,
+) -> String {
+    let (subject_phase, phase) = match result {
+        crate::turn::TurnResult::Done { .. } => ("turn complete", "turn complete"),
+        crate::turn::TurnResult::Cancelled => ("cancelled", "cancelled"),
+        crate::turn::TurnResult::Permissions => ("permissions", "permissions"),
+        crate::turn::TurnResult::Clarify { .. } => ("clarify", "clarify"),
+        crate::turn::TurnResult::Inform { .. } => ("inform", "inform"),
+        crate::turn::TurnResult::SandboxUnlock { .. } => ("unlock", "unlock"),
+        crate::turn::TurnResult::Failed { .. } => ("failed", "failed"),
+    };
+    let turn = matches!(result, crate::turn::TurnResult::Done { .. }).then_some(turn_n);
+    crate::git::build_trace_message(
+        &format!("session({session_id}): {subject_phase}"),
+        &crate::git::TraceTrailers {
+            phase: phase.to_string(),
+            turn,
+            codebase: codebase.to_string(),
+            codebase_hash: codebase_hash.to_string(),
+            ..Default::default()
+        },
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn teardown(
     sink: &mut dyn crate::port::output::TurnSink,
@@ -303,29 +337,6 @@ pub(crate) async fn teardown(
         // does both here, after the brain exits, so the session worktree and
         // shadow checkpoint repo reflect the transcript at this exitable
         // boundary.
-        let msg = match result {
-            crate::turn::TurnResult::Done { .. } => {
-                format!("session({}): turn complete", session_id)
-            }
-            crate::turn::TurnResult::Cancelled => {
-                format!("session({}): cancelled", session_id)
-            }
-            crate::turn::TurnResult::Permissions => {
-                format!("session({}): permissions", session_id)
-            }
-            crate::turn::TurnResult::Clarify { .. } => {
-                format!("session({}): clarify", session_id)
-            }
-            crate::turn::TurnResult::Inform { .. } => {
-                format!("session({}): inform", session_id)
-            }
-            crate::turn::TurnResult::SandboxUnlock { .. } => {
-                format!("session({}): unlock", session_id)
-            }
-            crate::turn::TurnResult::Failed { .. } => {
-                format!("session({}): failed", session_id)
-            }
-        };
 
         // Checkpoint the codebase (shadow repo in gait-dir). Best-effort — a
         // failure means `gait rewind` won't have a snapshot for this turn,
@@ -333,6 +344,19 @@ pub(crate) async fn teardown(
         let events = log.events();
         let turn_n = crate::session::log::count_turn_complete(&events) as u32;
         let _ = git.checkpoint(codebase, turn_n);
+
+        // Best-effort codebase identity for the Codebase-Hash trailer — a
+        // failed hash lookup must not block the commit itself.
+        let codebase_hash = crate::git::codebase::GitCodebaseRepo
+            .head_hash(codebase)
+            .unwrap_or_default();
+        let msg = teardown_commit_message(
+            result,
+            session_id,
+            turn_n,
+            &codebase.display().to_string(),
+            &codebase_hash,
+        );
 
         // Commit the transcript to the session worktree.
         let _ = git.commit(&msg);
@@ -661,5 +685,46 @@ mod tests {
         };
         let synth = synthesize_aborted_if_missing(Some(r.clone()), true);
         assert!(matches!(synth, Some(crate::turn::TurnResult::Done { .. })));
+    }
+
+    // ── teardown_commit_message (Task 3) ────────────────────────────────────
+
+    #[test]
+    fn teardown_commit_message_done_includes_turn_number() {
+        let result = crate::turn::TurnResult::Done {
+            message: "ok".into(),
+            result: None,
+            changes: None,
+            implicit: true,
+        };
+        let msg = teardown_commit_message(&result, "sabc1234", 5, "/tmp/ws", "deadbeef");
+        assert_eq!(
+            msg,
+            "session(sabc1234): turn complete\n\nPhase: turn complete\nTurn: 5\nCodebase: /tmp/ws\nCodebase-Hash: deadbeef"
+        );
+    }
+
+    #[test]
+    fn teardown_commit_message_non_done_omits_turn_number() {
+        let result = crate::turn::TurnResult::Permissions;
+        let msg = teardown_commit_message(&result, "sabc1234", 5, "/tmp/ws", "deadbeef");
+        assert_eq!(
+            msg,
+            "session(sabc1234): permissions\n\nPhase: permissions\nCodebase: /tmp/ws\nCodebase-Hash: deadbeef"
+        );
+        assert!(!msg.contains("Turn:"));
+    }
+
+    #[test]
+    fn teardown_commit_message_failed_uses_failed_phase() {
+        let result = crate::turn::TurnResult::Failed {
+            ended: "error".into(),
+            message: "boom".into(),
+        };
+        let msg = teardown_commit_message(&result, "sabc1234", 0, "/tmp/ws", "deadbeef");
+        assert_eq!(
+            msg,
+            "session(sabc1234): failed\n\nPhase: failed\nCodebase: /tmp/ws\nCodebase-Hash: deadbeef"
+        );
     }
 }
