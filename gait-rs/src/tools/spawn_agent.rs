@@ -1,4 +1,5 @@
 use crate::config::load_config;
+use crate::git::{build_trace_message, TraceTrailers};
 use crate::proto::{events, wire};
 use crate::session::log::{init_session, InitSessionOpts};
 use crate::tools::ToolError;
@@ -54,7 +55,7 @@ pub fn write_child_session(opts: WriteChildSessionOpts<'_>) -> anyhow::Result<()
         log_path: tx_path.clone(),
         id: opts.new_id.to_string(),
         model: session_model,
-        codebase_hash,
+        codebase_hash: codebase_hash.clone(),
         codebase_dirty: false,
         assigned_by: Some(opts.parent_session_id.to_string()),
         codebase_path: Some(opts.codebase.to_string_lossy().into_owned()),
@@ -68,9 +69,18 @@ pub fn write_child_session(opts: WriteChildSessionOpts<'_>) -> anyhow::Result<()
     opts.repos.traces.commit_session(
         opts.gait_dir,
         opts.new_id,
-        &format!(
-            "session({}): spawn from {}",
-            opts.new_id, opts.parent_session_id
+        &build_trace_message(
+            &format!(
+                "session({}): spawn from {}",
+                opts.new_id, opts.parent_session_id
+            ),
+            &TraceTrailers {
+                phase: "spawn".to_string(),
+                parent_session: Some(opts.parent_session_id.to_string()),
+                codebase: opts.codebase.display().to_string(),
+                codebase_hash: codebase_hash.clone(),
+                ..Default::default()
+            },
         ),
     )?;
 
@@ -321,5 +331,59 @@ mod tests {
             .unwrap();
         let id = result["session_id"].as_str().unwrap();
         assert_eq!(id.len(), 9);
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_commit_has_parent_session_trailer() {
+        let ws = TempDir::new().unwrap();
+        init_git_repo(ws.path());
+        std::fs::create_dir_all(ws.path().join("inferences/parent")).unwrap();
+        std::fs::write(
+            ws.path().join("inferences/parent/INFERENCE.yaml"),
+            "model: minimax/MiniMax-M3\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ws.path().join("gait.jsonc"),
+            r#"{"inference":"parent","allow":[],"tools":[]}"#,
+        )
+        .unwrap();
+
+        let tool = SpawnAgentTool::new(
+            ToolCtx::new(
+                ws.path().to_path_buf(),
+                ws.path().to_path_buf(),
+                "sparent01".into(),
+            ),
+            crate::git::Repos::production(),
+        );
+
+        let result = tool
+            .execute(
+                serde_json::json!({"task": "do the thing"}),
+                &crate::Recorder::detached(),
+            )
+            .await
+            .unwrap();
+        let new_id = result["session_id"].as_str().unwrap().to_string();
+
+        let child_dir = crate::session::live::worktree_dir(ws.path(), &new_id);
+        let repo = git2::Repository::open(&child_dir).unwrap();
+        let msg = repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .message()
+            .unwrap()
+            .to_string();
+        assert!(
+            msg.contains("Phase: spawn"),
+            "expected Phase: spawn trailer, got: {msg}"
+        );
+        assert!(
+            msg.contains("Parent-Session: sparent01"),
+            "expected Parent-Session: sparent01 trailer, got: {msg}"
+        );
     }
 }
