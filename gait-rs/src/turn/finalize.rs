@@ -37,6 +37,7 @@
 //! until Task 19 (see that task's note on why `final_step_index` stays in
 //! the driver loop).
 
+use crate::git::{build_trace_message, TraceTrailers};
 use crate::proto::events;
 use crate::proto::gait::log::v1 as pb;
 use crate::proto::gait::log::v1::TurnTokenUsage;
@@ -135,7 +136,18 @@ pub(crate) async fn finalize(
                     result: result.clone(),
                     changes: changes.clone(),
                 }))?;
-            persist.commit(&format!("session({}): turn {}", env.session_id, turn_n))?;
+            persist.commit(&build_trace_message(
+                &format!("session({}): turn {}", env.session_id, turn_n),
+                &TraceTrailers {
+                    phase: "turn".to_string(),
+                    turn: Some(turn_n),
+                    parent_session: None,
+                    subagent_session: None,
+                    status: None,
+                    codebase: env.codebase_path.display().to_string(),
+                    codebase_hash: env.codebase_hash.to_string(),
+                },
+            ))?;
             post_turn(
                 env,
                 "done",
@@ -154,7 +166,15 @@ pub(crate) async fn finalize(
             // Caller must have already recorded `pending_permissions` on `state`
             // via `events::permissions(..)` before calling finalize — the event
             // itself carries the actual item list, which StepOutcome does not.
-            persist.commit(&format!("session({}): permissions", env.session_id))?;
+            persist.commit(&build_trace_message(
+                &format!("session({}): permissions", env.session_id),
+                &TraceTrailers {
+                    phase: "permissions".to_string(),
+                    codebase: env.codebase_path.display().to_string(),
+                    codebase_hash: env.codebase_hash.to_string(),
+                    ..Default::default()
+                },
+            ))?;
             post_turn(env, "permissions", state.final_step_index + 1, None);
             Ok(TurnResult::Permissions)
         }
@@ -163,27 +183,59 @@ pub(crate) async fn finalize(
             // No terminal event here — the `clarify` event was already recorded
             // by the signal-handling code that produced this outcome (today:
             // the `ExecutionSignal::Clarify` arm). Preserved verbatim.
-            persist.commit(&format!("session({}): clarify", env.session_id))?;
+            persist.commit(&build_trace_message(
+                &format!("session({}): clarify", env.session_id),
+                &TraceTrailers {
+                    phase: "clarify".to_string(),
+                    codebase: env.codebase_path.display().to_string(),
+                    codebase_hash: env.codebase_hash.to_string(),
+                    ..Default::default()
+                },
+            ))?;
             post_turn(env, "clarify", state.final_step_index + 1, None);
             Ok(TurnResult::Clarify { items })
         }
 
         StepOutcome::Pause(PauseKind::Inform(items)) => {
-            persist.commit(&format!("session({}): inform", env.session_id))?;
+            persist.commit(&build_trace_message(
+                &format!("session({}): inform", env.session_id),
+                &TraceTrailers {
+                    phase: "inform".to_string(),
+                    codebase: env.codebase_path.display().to_string(),
+                    codebase_hash: env.codebase_hash.to_string(),
+                    ..Default::default()
+                },
+            ))?;
             post_turn(env, "inform", state.final_step_index + 1, None);
             Ok(TurnResult::Inform { items })
         }
 
         StepOutcome::Pause(PauseKind::SandboxUnlock(items)) => {
             env.emitter.record(events::sandbox_unlock(&items))?;
-            persist.commit(&format!("session({}): unlock", env.session_id))?;
+            persist.commit(&build_trace_message(
+                &format!("session({}): unlock", env.session_id),
+                &TraceTrailers {
+                    phase: "unlock".to_string(),
+                    codebase: env.codebase_path.display().to_string(),
+                    codebase_hash: env.codebase_hash.to_string(),
+                    ..Default::default()
+                },
+            ))?;
             post_turn(env, "unlock", state.final_step_index + 1, None);
             Ok(TurnResult::SandboxUnlock { items })
         }
 
         StepOutcome::Cancelled => {
             env.emitter.record(events::cancellation_signal())?;
-            persist.commit(&format!("session({}): cancelled", env.session_id))?;
+            persist.commit(&build_trace_message(
+                &format!("session({}): cancelled", env.session_id),
+                &TraceTrailers {
+                    phase: "cancelled".to_string(),
+                    codebase: env.codebase_path.display().to_string(),
+                    codebase_hash: env.codebase_hash.to_string(),
+                    ..Default::default()
+                },
+            ))?;
             // Inconsistency preserved verbatim (per plan Global Constraints):
             // cancellation commits but skips post_turn. Normalizing this is
             // Stage 6, explicitly out of scope here.
@@ -513,7 +565,10 @@ mod tests {
         assert_eq!(fx.spy_hook.outcomes(), vec!["done".to_string()]);
         assert_eq!(
             fx.trace.commits(),
-            vec!["session(sfin01): turn 1".to_string()]
+            vec![format!(
+                "session(sfin01): turn 1\n\nPhase: turn\nTurn: 1\nCodebase: {}\nCodebase-Hash: deadbeef",
+                fx.session.codebase_path.display()
+            )]
         );
 
         let events = fx.emitter.take_buffer();
@@ -550,7 +605,10 @@ mod tests {
         assert_eq!(fx.spy_hook.outcomes(), vec!["permissions".to_string()]);
         assert_eq!(
             fx.trace.commits(),
-            vec!["session(sfin01): permissions".to_string()]
+            vec![format!(
+                "session(sfin01): permissions\n\nPhase: permissions\nCodebase: {}\nCodebase-Hash: deadbeef",
+                fx.session.codebase_path.display()
+            )]
         );
         assert!(
             fx.emitter.take_buffer().is_empty(),
@@ -589,7 +647,10 @@ mod tests {
         assert_eq!(fx.spy_hook.outcomes(), vec!["clarify".to_string()]);
         assert_eq!(
             fx.trace.commits(),
-            vec!["session(sfin01): clarify".to_string()]
+            vec![format!(
+                "session(sfin01): clarify\n\nPhase: clarify\nCodebase: {}\nCodebase-Hash: deadbeef",
+                fx.session.codebase_path.display()
+            )]
         );
         assert!(fx.emitter.take_buffer().is_empty());
     }
@@ -623,7 +684,10 @@ mod tests {
         assert_eq!(fx.spy_hook.outcomes(), vec!["inform".to_string()]);
         assert_eq!(
             fx.trace.commits(),
-            vec!["session(sfin01): inform".to_string()]
+            vec![format!(
+                "session(sfin01): inform\n\nPhase: inform\nCodebase: {}\nCodebase-Hash: deadbeef",
+                fx.session.codebase_path.display()
+            )]
         );
         assert!(fx.emitter.take_buffer().is_empty());
     }
@@ -659,7 +723,10 @@ mod tests {
         assert_eq!(fx.spy_hook.outcomes(), vec!["unlock".to_string()]);
         assert_eq!(
             fx.trace.commits(),
-            vec!["session(sfin01): unlock".to_string()]
+            vec![format!(
+                "session(sfin01): unlock\n\nPhase: unlock\nCodebase: {}\nCodebase-Hash: deadbeef",
+                fx.session.codebase_path.display()
+            )]
         );
         assert_eq!(fx.emitter.take_buffer().len(), 1, "unlock event recorded");
     }
@@ -691,7 +758,10 @@ mod tests {
         );
         assert_eq!(
             fx.trace.commits(),
-            vec!["session(sfin01): cancelled".to_string()]
+            vec![format!(
+                "session(sfin01): cancelled\n\nPhase: cancelled\nCodebase: {}\nCodebase-Hash: deadbeef",
+                fx.session.codebase_path.display()
+            )]
         );
     }
 
