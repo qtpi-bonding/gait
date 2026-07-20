@@ -16,6 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::git::{build_trace_message, TraceTrailers};
 use crate::proto::gait::log::v1::event::Body;
 
 /// Pure-data wake intent returned by [`notify_parent`] on the `Woke` path.
@@ -155,10 +156,22 @@ pub fn notify_parent(
         let _ = repos;
         return NotifyOutcome::NoParent;
     }
+    let (subagent_session, status) = match c {
+        Completion::Agent { from, status, .. } => (Some(from.clone()), Some(status.clone())),
+        Completion::Daemon { .. } => (None, None),
+    };
     if let Err(e) = repos.traces.commit_session(
         gait_dir,
         parent_session,
-        &format!("session({}): completion", parent_session),
+        &build_trace_message(
+            &format!("session({}): completion", parent_session),
+            &TraceTrailers {
+                phase: "completion".to_string(),
+                subagent_session,
+                status,
+                ..Default::default()
+            },
+        ),
     ) {
         eprintln!("[gait] notify_parent: commit_session failed: {e}");
     }
@@ -268,5 +281,78 @@ mod tests {
         // Exactly one event line: the dedup hit must not append a duplicate.
         let event_lines = log.lines().filter(|l| l.contains("daemonUpdate")).count();
         assert_eq!(event_lines, 1, "expected 1 event line, got: {log}");
+    }
+
+    #[test]
+    fn agent_completion_commit_has_subagent_session_and_status_trailers() {
+        let gd = TempDir::new().unwrap();
+        crate::git::Repos::production()
+            .traces
+            .init_workspace(gd.path())
+            .unwrap();
+        crate::git::Repos::production()
+            .traces
+            .create_session_worktree(gd.path(), "sparent2")
+            .unwrap();
+        let repos = crate::git::Repos::production();
+        let c = Completion::Agent {
+            from: "schild99".into(),
+            status: "done".into(),
+            summary: "finished the task".into(),
+        };
+        let outcome = notify_parent(gd.path(), &repos, "sparent2", &c);
+        assert!(matches!(outcome, NotifyOutcome::Woke(_)), "got {outcome:?}");
+
+        let parent_dir = crate::session::live::worktree_dir(gd.path(), "sparent2");
+        let repo = git2::Repository::open(&parent_dir).unwrap();
+        let msg = repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .message()
+            .unwrap()
+            .to_string();
+        assert!(msg.contains("Phase: completion"), "got: {msg}");
+        assert!(msg.contains("Subagent-Session: schild99"), "got: {msg}");
+        assert!(msg.contains("Status: done"), "got: {msg}");
+    }
+
+    #[test]
+    fn daemon_completion_commit_has_no_subagent_session_trailer() {
+        let gd = TempDir::new().unwrap();
+        crate::git::Repos::production()
+            .traces
+            .init_workspace(gd.path())
+            .unwrap();
+        crate::git::Repos::production()
+            .traces
+            .create_session_worktree(gd.path(), "sparent3")
+            .unwrap();
+        let repos = crate::git::Repos::production();
+        let c = Completion::Daemon {
+            name: "build".into(),
+            exit_code: 0,
+            status: "done".into(),
+            log_path: "/tmp/build.log".into(),
+        };
+        let outcome = notify_parent(gd.path(), &repos, "sparent3", &c);
+        assert!(matches!(outcome, NotifyOutcome::Woke(_)), "got {outcome:?}");
+
+        let parent_dir = crate::session::live::worktree_dir(gd.path(), "sparent3");
+        let repo = git2::Repository::open(&parent_dir).unwrap();
+        let msg = repo
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .message()
+            .unwrap()
+            .to_string();
+        assert!(msg.contains("Phase: completion"), "got: {msg}");
+        assert!(
+            !msg.contains("Subagent-Session:"),
+            "daemon completion must not carry a subagent-session trailer, got: {msg}"
+        );
     }
 }
