@@ -17,6 +17,6 @@ pub use input::{bang_command_str, is_bang_command};
 pub use prompt::GaitPrompt;
 
 pub(crate) mod line_reader;
-#[cfg(test)]
+#[cfg(any(test, feature = "dev-harness"))]
 pub(crate) use line_reader::ScriptedReader;
 pub(crate) use line_reader::{LineReader, ReedlineReader};

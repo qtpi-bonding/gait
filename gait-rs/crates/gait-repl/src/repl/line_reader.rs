@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(any(test, feature = "dev-harness"))]
 use std::collections::VecDeque;
 use std::io;
 
@@ -22,12 +22,12 @@ impl LineReader for ReedlineReader {
 /// ever constructed from `#[cfg(test)]` code (line_reader/ui/harness/driver
 /// command tests) — gated out of production builds so clippy's `dead_code`
 /// lint doesn't flag it as unused there.
-#[cfg(test)]
+#[cfg(any(test, feature = "dev-harness"))]
 pub(crate) struct ScriptedReader {
     queue: VecDeque<Signal>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "dev-harness"))]
 impl ScriptedReader {
     pub(crate) fn new(lines: impl IntoIterator<Item = Signal>) -> Self {
         Self {
@@ -41,7 +41,7 @@ impl ScriptedReader {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "dev-harness"))]
 impl LineReader for ScriptedReader {
     fn read_line(&mut self, _prompt: &dyn Prompt) -> io::Result<Signal> {
         Ok(self.queue.pop_front().unwrap_or(Signal::CtrlD))
