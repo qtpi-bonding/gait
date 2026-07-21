@@ -1,3 +1,5 @@
+#[cfg(feature = "dev-harness")]
+pub(crate) mod annotate;
 pub mod builder;
 #[cfg(feature = "dev-harness")]
 pub(crate) mod capture;
