@@ -187,7 +187,20 @@ fn write_numbered_frames(gait_dir: &Path, turns: &[Turn]) -> anyhow::Result<()> 
         gait_dir.join("inferences/mock/INFERENCE.yaml"),
         "model: mock/model\n",
     )?;
-    for (n, turn) in turns.iter().enumerate() {
+    // Slash-command turns (those whose `input` starts with `/`) are
+    // short-circuited inside `ReplSource::next()` BEFORE the brain is
+    // ever invoked (the REPL writes the cmd-handler response straight to
+    // the shared builder and `continue`s). So `mock_brain` only sees the
+    // non-slash turns, in order, and its internal `mock_step` counter
+    // increments exactly once per non-slash turn. Number the brain's
+    // `mock_frames.<N>.bin` files by *non-slash turn index*, not by raw
+    // script-turn index, so turn N's `mock_frames.<N>.bin` matches what
+    // the Nth brain invocation will look up.
+    for (n, turn) in turns
+        .iter()
+        .filter(|t| !t.input.trim_start().starts_with('/'))
+        .enumerate()
+    {
         let mut blob = Vec::new();
         for frame in &turn.frames {
             blob.extend_from_slice(&frame_bytes(&frame_to_signal(frame)));
