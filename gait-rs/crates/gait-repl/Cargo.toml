@@ -23,7 +23,16 @@ tokio-util = "0.7"
 reedline = "0.48"
 unicode-width = "0.2"
 nu-ansi-term = "0.50"
+libc = { version = "0.2", optional = true }
+prost = { version = "0.13", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+tempfile = { version = "3", optional = true }
+git2 = { version = "0.19", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
 pbjson-types = "0.7"
+serial_test = "3"
+
+[features]
+dev-harness = ["dep:libc", "dep:prost", "dep:serde", "dep:tempfile", "dep:git2"]

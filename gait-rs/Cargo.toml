@@ -82,6 +82,7 @@ gait-workflow = { path = "crates/gait-workflow" }
 # gait-core's test helpers (e.g. `git::checkpoint::MockCheckpointRepo`) live in
 # gait-state behind `feature = "testing"`; enable it for the test build only.
 gait-state = { path = "crates/gait-state", features = ["testing"] }
+gait-repl = { path = "crates/gait-repl", features = ["dev-harness"] }
 
 [[bin]]
 name = "mock_brain"
