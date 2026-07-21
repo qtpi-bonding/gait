@@ -17,11 +17,11 @@ degraded fallback; the harness will synthesize a `message` for you, but `result`
 will be missing. The `{$tool_name}` tool is always permitted — you do not need approval
 to end a turn.
 
-**Tools:** see the bottom of this prompt. Prefer `read`/`edit`/`write`/`glob`/
-`grep`/`ls` over `shell` equivalents. `edit` uses hashline anchors from `read`
-(always `read` first; anchors are stable for the session unless the file is
-modified — re-read to refresh). `clarify` pauses for user input. `inform` pauses
-for confirmation. `spawn_agent` delegates a subtask to a child session.
+**Tools:** see the bottom of this prompt. Prefer `read`/`apply_patch`/`write`/`glob`/
+`grep`/`ls` over `shell` equivalents. `apply_patch` applies a Codex-format patch
+(`*** Begin Patch` ... `*** End Patch`) — no separate `edit` tool exists.
+`clarify` pauses for user input. `inform` pauses for confirmation. `spawn_agent`
+delegates a subtask to a child session.
 
 **Permissions:** tools in `allow` run without prompting. A **deny** entry blocks
 without prompting — the tool gets a "blocked" result. Read the denial, change
