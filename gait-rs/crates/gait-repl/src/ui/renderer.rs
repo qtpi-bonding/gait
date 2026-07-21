@@ -4,7 +4,7 @@
 
 use unicode_width::UnicodeWidthStr;
 
-use crate::theme::{Theme, DIM_FG, RESET};
+use crate::theme::{Theme, RESET};
 use crate::ui::state::ReplState;
 use crate::ui::view::{clean_repl_item, ReplViewItem};
 use std::io::Write;
@@ -77,12 +77,13 @@ fn to_ccolor(r: u8, g: u8, b: u8) -> CColor {
 
 fn themed_skin(theme: &Theme) -> MadSkin {
     let accent = to_ccolor(theme.accent.0, theme.accent.1, theme.accent.2);
+    let muted = to_ccolor(theme.muted.0, theme.muted.1, theme.muted.2);
 
     let mut skin = MadSkin::default();
     skin.inline_code.set_fgbg(accent, CColor::Reset);
     skin.code_block.set_fgbg(accent, CColor::Reset);
-    skin.quote_mark = termimad::StyledChar::from_fg_char(CColor::DarkGrey, '▐');
-    skin.horizontal_rule = termimad::StyledChar::from_fg_char(CColor::DarkGrey, '─');
+    skin.quote_mark = termimad::StyledChar::from_fg_char(muted, '▐');
+    skin.horizontal_rule = termimad::StyledChar::from_fg_char(muted, '─');
     skin
 }
 
@@ -158,7 +159,7 @@ impl ReplRenderer {
                 eprint!("  {} {}{}{}{}\r\n", color, mark, name, timing, RESET);
             }
             ReplViewItem::SnippetLine { text } => {
-                eprint!("{}     {}{}\r\n", DIM_FG, text, RESET);
+                eprint!("{}     {}{}\r\n", self.theme.muted.fg(), text, RESET);
             }
             ReplViewItem::Error { message } => {
                 eprint!("{}[error] {}{}\r\n", self.theme.danger.fg(), message, RESET);
@@ -179,7 +180,10 @@ impl ReplRenderer {
                 };
                 eprint!(
                     "{}  \u{b7} {} \u{b7} \u{2193} {} tokens{}\r\n",
-                    DIM_FG, elapsed, tokens, RESET
+                    self.theme.muted.fg(),
+                    elapsed,
+                    tokens,
+                    RESET
                 );
             }
             ReplViewItem::StructuredBox { json } => {
@@ -208,7 +212,13 @@ impl ReplRenderer {
         let mut is_first = true;
         for line in rendered.lines() {
             if is_first {
-                eprint!("{}{:>3}\u{2502}{} {}\r\n", DIM_FG, num, RESET, line);
+                eprint!(
+                    "{}{:>3}\u{2502}{} {}\r\n",
+                    self.theme.muted.fg(),
+                    num,
+                    RESET,
+                    line
+                );
                 is_first = false;
             } else {
                 eprint!("     {}\r\n", line);
@@ -216,7 +226,7 @@ impl ReplRenderer {
         }
         if is_first {
             // empty render — just the gutter
-            eprint!("{}{:>3}\u{2502}{}\r\n", DIM_FG, num, RESET);
+            eprint!("{}{:>3}\u{2502}{}\r\n", self.theme.muted.fg(), num, RESET);
         }
     }
 
@@ -228,12 +238,19 @@ impl ReplRenderer {
         let bot_bar = "\u{2500}".repeat(usable.saturating_sub(3));
         eprint!(
             "{}  \u{2500}\u{2500} result {}{}\r\n",
-            DIM_FG, top_bar, RESET
+            self.theme.muted.fg(),
+            top_bar,
+            RESET
         );
         for line in json.lines() {
             eprint!("    {}{}{}\r\n", self.theme.accent.fg(), line, RESET);
         }
-        eprint!("{}  \u{2500}{}{}\r\n", DIM_FG, bot_bar, RESET);
+        eprint!(
+            "{}  \u{2500}{}{}\r\n",
+            self.theme.muted.fg(),
+            bot_bar,
+            RESET
+        );
     }
 }
 

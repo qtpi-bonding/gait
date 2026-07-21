@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::theme::{Theme, DIM_FG, RESET};
+use crate::theme::{Theme, RESET};
 use crate::ui::ReplBuilder;
 
 /// All user-visible hint strings for the REPL, centralised here for easy editing.
@@ -135,7 +135,7 @@ pub async fn run_chat(
             let rev = gait_core::GAIT_BUILD_GIT_HASH
                 .get(..7)
                 .unwrap_or(gait_core::GAIT_BUILD_GIT_HASH);
-            eprint!("{}  {}{}\r\n", DIM_FG, rev, RESET);
+            eprint!("{}  {}{}\r\n", theme.muted.fg(), rev, RESET);
         }
     }
     #[allow(clippy::print_stderr)] // still pre-`shared`
@@ -144,10 +144,10 @@ pub async fn run_chat(
             "{}gait{}  {}session {}{}  {}{}{}\r\n",
             theme.accent.fg(),
             RESET,
-            DIM_FG,
+            theme.muted.fg(),
             session_id,
             RESET,
-            DIM_FG,
+            theme.muted.fg(),
             hints::STARTUP,
             RESET,
         );
@@ -289,9 +289,9 @@ pub async fn run_chat(
     #[allow(clippy::print_stderr)]
     // post-loop, `shared`'s builder is going out of scope; nothing left to synchronize against
     {
-        eprint!("{}{}{}\r\n", DIM_FG, resume, RESET);
-        eprint!("{}{}{}\r\n", DIM_FG, persist, RESET);
-        eprint!("{}{}{}\r\n", DIM_FG, discard, RESET);
+        eprint!("{}{}{}\r\n", theme.muted.fg(), resume, RESET);
+        eprint!("{}{}{}\r\n", theme.muted.fg(), persist, RESET);
+        eprint!("{}{}{}\r\n", theme.muted.fg(), discard, RESET);
     }
 
     Ok(())

@@ -140,7 +140,8 @@ impl ReplBuilder {
         let mut replies = Vec::new();
 
         let bar = "─".repeat(56);
-        eprint!("\r\n{}  ── clarify {}{}\r\n", DIM_FG, bar, RESET);
+        let muted = self.renderer.theme().muted.fg();
+        eprint!("\r\n{}  ── clarify {}{}\r\n", muted, bar, RESET);
 
         for item in &items {
             eprint!("\r\n");
@@ -149,13 +150,13 @@ impl ReplBuilder {
             self.state.flush_buf();
             self.renderer.paint(&mut self.state);
             // Secondary dim line — not part of the block.
-            eprint!("{}     why: {}{}\r\n", DIM_FG, item.why, RESET);
+            eprint!("{}     why: {}{}\r\n", muted, item.why, RESET);
             // Optional lettered options.
             if !item.options.is_empty() {
                 eprint!("\r\n");
                 for (i, opt) in item.options.iter().enumerate() {
                     let letter = (b'a' + i as u8) as char;
-                    eprint!("{}     ({}) {}{}\r\n", DIM_FG, letter, opt, RESET);
+                    eprint!("{}     ({}) {}{}\r\n", muted, letter, opt, RESET);
                 }
             }
             let raw = self.read_line_raw(&prompt_str);
@@ -181,7 +182,8 @@ impl ReplBuilder {
         let mut replies = Vec::new();
 
         let bar = "─".repeat(57);
-        eprint!("\r\n{}  ── inform {}{}\r\n", DIM_FG, bar, RESET);
+        let muted = self.renderer.theme().muted.fg();
+        eprint!("\r\n{}  ── inform {}{}\r\n", muted, bar, RESET);
 
         for item in &items {
             eprint!("\r\n");
@@ -191,7 +193,7 @@ impl ReplBuilder {
             self.renderer.paint(&mut self.state);
             // Optional context dim line — not part of the block.
             if let Some(ctx) = &item.context {
-                eprint!("{}     context: {}{}\r\n", DIM_FG, ctx, RESET);
+                eprint!("{}     context: {}{}\r\n", muted, ctx, RESET);
             }
             let raw = self.read_line_raw(&prompt_str);
             let content = if raw.is_empty() {
@@ -225,13 +227,14 @@ impl ReplBuilder {
         let mut bulk: Option<BulkScope> = None;
 
         for (idx, item) in items.iter().enumerate() {
+            let muted = self.renderer.theme().muted.fg();
             eprint!("\r\n");
             if items.len() > 1 {
                 eprint!(
                     "{}⟳ {}  {}({} of {}){}\r\n",
                     self.renderer.theme().accent.fg(),
                     item.cmd,
-                    DIM_FG,
+                    muted,
                     idx + 1,
                     items.len(),
                     RESET
@@ -245,7 +248,7 @@ impl ReplBuilder {
                 );
             }
             if !item.reason.is_empty() {
-                eprint!("  {}{}{}\r\n", DIM_FG, item.reason, RESET);
+                eprint!("  {}{}{}\r\n", muted, item.reason, RESET);
             }
             for line in crate::ui::permission::preview_block(item.preview.as_deref()) {
                 let color = if line.starts_with('+') {
@@ -253,20 +256,23 @@ impl ReplBuilder {
                 } else if line.starts_with('-') {
                     self.renderer.theme().danger.fg()
                 } else {
+                    // Diff context/unchanged lines keep the theme-independent
+                    // DIM_FG (not `muted`) so they stay visually distinct from
+                    // the surrounding permission-prompt chrome.
                     DIM_FG.to_string()
                 };
                 eprint!("{}{}{}\r\n", color, line, RESET);
             }
             eprint!("\r\n");
             let exact = item.patterns.last().cloned().unwrap_or_default();
-            eprint!("  {}[0] {}  (all){}\r\n", DIM_FG, exact, RESET);
+            eprint!("  {}[0] {}  (all){}\r\n", muted, exact, RESET);
             for (i, pat) in item.patterns.iter().rev().enumerate() {
-                eprint!("  {}[{}] {}{}\r\n", DIM_FG, i + 1, pat, RESET);
+                eprint!("  {}[{}] {}{}\r\n", muted, i + 1, pat, RESET);
             }
             eprint!("\r\n");
             eprint!(
                 "  {}0 = all · number = once · s = session · a = agent · r = reject · esc = abort{}\r\n",
-                DIM_FG, RESET
+                muted, RESET
             );
 
             let broadest = || item.patterns.last().cloned().unwrap_or_default();

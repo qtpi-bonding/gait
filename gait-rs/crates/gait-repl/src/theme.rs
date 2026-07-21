@@ -78,6 +78,14 @@ pub mod palette {
         dark: Color(0x77, 0x99, 0xBB),
         light: Color(0x55, 0x6B, 0x85),
     };
+    /// Chrome/framing grey (gutters, borders, status text, prompt labels).
+    /// Symmetric around DIM_FG's #6c6c6c (108,108,108): lighter on dark
+    /// backgrounds, darker on light backgrounds, so it stays visibly distinct
+    /// from the theme-independent grey used for diff context lines.
+    pub const MUTED: ColorPair = ColorPair {
+        dark: Color(0x94, 0x94, 0x94),
+        light: Color(0x44, 0x44, 0x44),
+    };
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +95,7 @@ pub struct Theme {
     pub danger: Color,
     pub warning: Color,
     pub user_msg: Color,
+    pub muted: Color,
     pub is_dark: bool,
 }
 
@@ -98,6 +107,7 @@ impl Theme {
             danger: palette::DANGER.dark,
             warning: palette::WARNING.dark,
             user_msg: palette::USER_MSG.dark,
+            muted: palette::MUTED.dark,
             is_dark: true,
         }
     }
@@ -109,6 +119,7 @@ impl Theme {
             danger: palette::DANGER.light,
             warning: palette::WARNING.light,
             user_msg: palette::USER_MSG.light,
+            muted: palette::MUTED.light,
             is_dark: false,
         }
     }

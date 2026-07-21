@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::repl::{bang_command_str, commands as cmd, is_bang_command};
-use crate::theme::{DIM_FG, RESET};
+use crate::theme::RESET;
 use crate::ui::{ReplBuilder, ViewSignal};
 use gait_core::embed::{user_turn_events, Diag, TurnSink, TurnSource, TurnStart};
 use gait_core::expand::{expand_input, ExpandCtx};
@@ -68,15 +68,16 @@ impl TurnSink for ReplSink {
                     items.len(),
                     RESET
                 ));
+                let muted = self.shared.borrow().builder.theme().muted.fg();
                 for item in items {
                     self.shared.borrow_mut().builder.write_raw(&format!(
                         "  {}[{}] {}{}\r\n",
-                        DIM_FG, item.dimension, item.resource, RESET
+                        muted, item.dimension, item.resource, RESET
                     ));
                 }
                 self.shared.borrow_mut().builder.write_raw(&format!(
                     "  {}run: /unlock [once|session|global|agent]{}\r\n",
-                    DIM_FG, RESET
+                    muted, RESET
                 ));
             }
             _ => {}
