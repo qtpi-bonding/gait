@@ -13,3 +13,6 @@ pub mod theme;
 pub mod tools;
 #[allow(clippy::print_stderr)]
 pub mod ui;
+
+#[cfg(feature = "dev-harness")]
+pub mod dev_harness;
