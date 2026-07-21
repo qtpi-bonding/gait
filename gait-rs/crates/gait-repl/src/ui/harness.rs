@@ -153,3 +153,26 @@ fn turn_complete_renders_turn_summary() {
 // not duplicated here per the plan — it is covered by the existing state.rs tests
 // `structured_done_message_emitted_as_done_message` and
 // `structured_done_result_emitted_as_json_only_box`.
+
+#[cfg(feature = "dev-harness")]
+fn transcript(items: &[pb::StreamItem]) -> String {
+    let mut b = builder();
+    let capture = crate::ui::capture::Capture::begin();
+    drive(&mut b, items);
+    let bytes = capture.end();
+    crate::ui::annotate::annotate(&bytes, &crate::theme::Theme::dark())
+}
+
+#[cfg(feature = "dev-harness")]
+#[test]
+fn transcript_tags_error_with_danger_and_no_stray_escapes() {
+    let out = transcript(&[ev(events::error("boom".into(), "tool"))]);
+    assert!(
+        out.contains("<danger>") && out.contains("boom") && out.contains("</danger>"),
+        "expected a danger-tagged error line: {out:?}"
+    );
+    assert!(
+        !out.contains("\x1b["),
+        "no raw escape codes should remain for a recognized theme color: {out:?}"
+    );
+}
