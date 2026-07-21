@@ -142,12 +142,20 @@ pub async fn run_hand(config: HandConfig) {
         args_json
     };
 
+    // Computed before ToolCtx so tools (the shell tool in particular) can check
+    // a requested `cwd` against scope before committing to it, instead of only
+    // finding out when the kernel seal later rejects the subprocess spawn.
+    // Pure/side-effect-free (only reads `impulse`) — safe to compute this early;
+    // the seal itself still applies at the same point as before, below.
+    let seal_scope = build_scope_from_impulse(&impulse);
+
     let ctx = {
         let mut ctx = ToolCtx::new(
             config.codebase.clone(),
             config.gait_dir.clone(),
             config.session.clone(),
-        );
+        )
+        .with_scope(seal_scope.clone());
         ctx.fs = select_fs(&impulse); // BufferedFs (delegated) or LocalFs (disk)
                                       // Extract the network allowlist from the Impulse scope so webfetch
                                       // can enforce host-level filtering (the kernel SBPL allows all outbound
@@ -178,9 +186,8 @@ pub async fn run_hand(config: HandConfig) {
 
     let rec = Recorder::buffering();
 
-    // Build the SandboxScope from Impulse.requested and apply the seal BEFORE any
-    // tool I/O. The hand enforces the kernel sandbox itself — this is irreversible.
-    let seal_scope = build_scope_from_impulse(&impulse);
+    // Apply the seal BEFORE any tool I/O. The hand enforces the kernel sandbox
+    // itself — this is irreversible.
     let seal_status = if config.seal {
         crate::sandbox::platform_sandbox()
             .apply(&seal_scope)

@@ -134,6 +134,28 @@ impl Tool for ShellTool {
                 };
                 match std::fs::canonicalize(&target) {
                     Ok(dir) if dir.is_dir() => {
+                        // canonicalize()+is_dir() only prove the path resolves — they say
+                        // nothing about the kernel sandbox scope. A path outside scope can
+                        // still pass this check (canonicalize is metadata-only and typically
+                        // allowed broadly even when data access is scoped), so it must be
+                        // rejected here, before the Cwd event is recorded. Once that event
+                        // is folded into the session's active_cwd it is last-write-wins with
+                        // no rollback, so an out-of-scope path recorded here would wedge
+                        // every later shell call for the rest of the session.
+                        if let Some(scope) = &self.ctx.scope {
+                            let in_scope = scope.read_all
+                                || scope.readable.iter().any(|r| dir.starts_with(r))
+                                || scope.writable.iter().any(|w| dir.starts_with(w));
+                            if !in_scope {
+                                return Ok(serde_json::json!({
+                                    "output": format!(
+                                        "cd: outside sandbox scope: {}",
+                                        dir.display()
+                                    ),
+                                    "exit_code": 1,
+                                }));
+                            }
+                        }
                         // Record via the Recorder: this both appends the event to the
                         // session transcript (so the next call's active_cwd refold sees it)
                         // AND publishes it on the channel (live to stderr via the StdioSink,

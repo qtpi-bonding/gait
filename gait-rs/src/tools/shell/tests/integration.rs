@@ -183,6 +183,119 @@ async fn shell_cd_publishes_cwd_event() {
 }
 
 #[tokio::test]
+async fn cwd_outside_scope_errors_without_emitting_cwd_event() {
+    use crate::proto::gait::log::v1::{event, payload, stream_item};
+    use crate::sandbox::SandboxScope;
+
+    let dir = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap(); // a real, existing directory, but not in scope
+    std::fs::create_dir_all(
+        crate::session::live::log_path(dir.path(), "sh2")
+            .parent()
+            .unwrap(),
+    )
+    .unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let rec = crate::Recorder::for_session(dir.path(), "sh2", tx);
+
+    let scope = SandboxScope {
+        readable: vec![dir.path().to_path_buf()],
+        writable: vec![dir.path().to_path_buf()],
+        read_all: false,
+        network: Default::default(),
+    };
+    let tool = ShellTool::new(
+        crate::tools::ctx::ToolCtx::new(
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            "sh2".into(),
+        )
+        .with_scope(scope),
+    );
+
+    let result = tool
+        .execute(
+            serde_json::json!({
+                "cmd": "pwd",
+                "reason": "test",
+                "cwd": outside.path().to_string_lossy(),
+            }),
+            &rec,
+        )
+        .await
+        .unwrap();
+    let exit_code = result
+        .get("exit_code")
+        .and_then(|v| v.as_i64())
+        .expect("exit_code field");
+    let output = result
+        .get("output")
+        .and_then(|v| v.as_str())
+        .expect("output field");
+    assert_eq!(exit_code, 1, "got: {result}");
+    assert!(output.contains("outside sandbox scope"), "got: {output}");
+
+    // The wedge this guards against: no Cwd event may reach the transcript for
+    // an out-of-scope request, since active_cwd is last-write-wins with no
+    // rollback — one bad Cwd event here would corrupt every later shell call.
+    drop(rec);
+    let mut saw_cwd = false;
+    while let Some(item) = rx.recv().await {
+        if let Some(stream_item::Item::Event(ev)) = item.item {
+            if let Some(event::Body::Payload(p)) = ev.body {
+                if matches!(p.kind, Some(payload::Kind::Cwd(_))) {
+                    saw_cwd = true;
+                }
+            }
+        }
+    }
+    assert!(
+        !saw_cwd,
+        "shell must not record a Cwd event for an out-of-scope path"
+    );
+}
+
+#[tokio::test]
+async fn cwd_inside_scope_still_succeeds_and_emits_cwd_event() {
+    use crate::sandbox::SandboxScope;
+
+    let dir = TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+    let canonical_root = std::fs::canonicalize(dir.path()).unwrap();
+    let scope = SandboxScope {
+        readable: vec![canonical_root.clone()],
+        writable: vec![canonical_root],
+        read_all: false,
+        network: Default::default(),
+    };
+    let tool = ShellTool::new(
+        crate::tools::ctx::ToolCtx::new(
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            "test".into(),
+        )
+        .with_scope(scope),
+    );
+    let result = tool
+        .execute(
+            serde_json::json!({"cmd": "pwd", "reason": "test", "cwd": "sub"}),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap();
+    let exit_code = result
+        .get("exit_code")
+        .and_then(|v| v.as_i64())
+        .expect("exit_code field");
+    let output = result
+        .get("output")
+        .and_then(|v| v.as_str())
+        .expect("output field");
+    assert_eq!(exit_code, 0, "got: {result}");
+    assert!(output.contains("sub"), "got: {output}");
+}
+
+#[tokio::test]
 async fn cwd_nonexistent_errors_without_emitting() {
     let dir = TempDir::new().unwrap();
     let tool = make_tool(&dir);
