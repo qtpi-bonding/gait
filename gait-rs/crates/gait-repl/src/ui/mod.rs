@@ -1,4 +1,6 @@
 pub mod builder;
+#[cfg(feature = "dev-harness")]
+pub(crate) mod capture;
 pub mod permission;
 pub mod renderer;
 pub mod state;
