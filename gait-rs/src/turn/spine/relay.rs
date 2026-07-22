@@ -48,6 +48,13 @@ struct RelayState {
     inflight: tokio::task::JoinSet<()>,
     spine_phase: SpinePhase,
     watchdog: Watchdog,
+    /// Set on the first successfully-read signal of any kind. Distinguishes a
+    /// brain that never got going (cold-start: pipe closes before it ever says
+    /// anything — a benign empty turn, see `silent_brain_runs_to_process_exit_
+    /// not_watchdog_kill`) from one that was genuinely mid-turn — pinged,
+    /// called a tool, streamed a delta — and then vanished without a
+    /// `Terminated` signal, which IS a failure worth surfacing.
+    ever_active: bool,
 }
 
 impl RelayState {
@@ -59,6 +66,7 @@ impl RelayState {
             inflight: tokio::task::JoinSet::new(),
             spine_phase: SpinePhase::BrainPhase,
             watchdog: Watchdog::new(),
+            ever_active: false,
         }
     }
 }
@@ -295,8 +303,32 @@ pub async fn relay_brain_turn(
         )
         .await;
         let signal = match timed {
-            Ok(Ok(s)) => s,
-            Ok(Err(_)) => break, // pipe closed (brain exited)
+            Ok(Ok(s)) => {
+                state.ever_active = true;
+                s
+            }
+            Ok(Err(e)) => {
+                // Pipe closed without a Terminated signal. If the brain never got
+                // going at all (cold start — see `silent_brain_runs_to_process_
+                // exit_not_watchdog_kill`), this is a benign empty turn: keep the
+                // old silent `break`. But if it was genuinely mid-turn (pinged,
+                // called a tool, streamed something) and then vanished — crash,
+                // OOM-kill, any other unexpected exit — that must go through
+                // emit_terminal_failure (not a bare `break`) so brain_failed=true
+                // and teardown's synthesize_aborted_if_missing has something to
+                // synthesize from; otherwise a real failure silently vanishes as
+                // a false "success".
+                if state.ever_active {
+                    lifecycle::emit_terminal_failure(
+                        &log,
+                        &diag,
+                        &mut state.brain_failed,
+                        state.watchdog.phase(),
+                        &format!("brain pipe closed unexpectedly: {e}"),
+                    );
+                }
+                break;
+            }
             Err(_) => {
                 // read timed out → fall through to the watchdog check
                 if let Some(reason) = state.watchdog.breach(state.spine_phase) {
