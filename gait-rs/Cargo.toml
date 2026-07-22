@@ -87,3 +87,12 @@ gait-repl = { path = "crates/gait-repl", features = ["dev-harness"] }
 [[bin]]
 name = "mock_brain"
 path = "src/bin/mock_brain.rs"
+
+# `harness = false`: this test drives `ui::capture::Capture` (a raw fd-2 dup2),
+# which is fundamentally incompatible with the default libtest harness's own
+# process-wide print!/eprint! capture — see the comment at the top of
+# tests/repl_drive_e2e.rs for the full explanation.
+[[test]]
+name = "repl_drive_e2e"
+path = "tests/repl_drive_e2e.rs"
+harness = false

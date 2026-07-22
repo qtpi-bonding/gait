@@ -2,9 +2,32 @@
 //! path (gait_workflow::single_prompt_run, via ScriptedReader + mock_brain)
 //! through a multi-turn script and produces an annotated transcript — see
 //! docs/superpowers/specs/2026-07-20-repl-drive-harness-design.md.
+//!
+//! `harness = false` (see Cargo.toml's `[[test]]` entry for this file): the
+//! default libtest harness installs a process-wide output-capture sink that
+//! intercepts every `print!`/`eprint!` call — on ANY thread, not just the
+//! test's own — before it reaches a real OS-level fd, diverting it into
+//! libtest's own buffer instead. `ui::capture::Capture` (used by
+//! `run_script_fresh` via `single_prompt_run`'s renderer) works by dup2-ing
+//! the real stderr fd and reading back whatever lands on it; under the
+//! default harness that's nothing at all — `Capture::end()` silently returns
+//! zero bytes regardless of what the renderer actually rendered, only
+//! visible when a test panics and libtest dumps its own buffer verbatim
+//! (which is why raw ANSI/spinner text appears in a failing run's terminal
+//! output even though the returned transcript is empty). `harness = false`
+//! skips test::test_main entirely, so no such capture is ever installed and
+//! `Capture` sees everything it's supposed to.
 use gait_repl::dev_harness::{run_script_fresh, Frame, Script, Turn};
 
-#[tokio::test]
+fn main() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build tokio runtime");
+    rt.block_on(three_turn_script_produces_an_ordered_annotated_transcript());
+    println!("test three_turn_script_produces_an_ordered_annotated_transcript ... ok");
+}
+
 async fn three_turn_script_produces_an_ordered_annotated_transcript() {
     let script = Script {
         turns: vec![

@@ -165,6 +165,9 @@ fn transcript(items: &[pb::StreamItem]) -> String {
 
 #[cfg(feature = "dev-harness")]
 #[test]
+#[ignore = "uses ui::capture::Capture, which is incompatible with libtest's default \
+            output capture (see the #[ignore] reasons on ui::capture::tests) — run \
+            manually with `cargo test -p gait-repl --features dev-harness -- --ignored --nocapture`."]
 fn transcript_tags_error_with_danger_and_no_stray_escapes() {
     let out = transcript(&[ev(events::error("boom".into(), "tool"))]);
     assert!(
