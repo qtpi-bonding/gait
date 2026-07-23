@@ -11,7 +11,6 @@
 //!
 //! [`envelope::content_hash`]: crate::envelope::body_json
 
-use std::io::Write;
 use std::path::Path;
 
 use crate::envelope::mint;
@@ -54,6 +53,20 @@ pub fn last_event(path: &Path) -> anyhow::Result<Option<Event>> {
     Ok(read_events(path)?.pop())
 }
 
+/// Append one JSON line to `file` and durably flush it (`sync_all`) before
+/// returning. This is the single choke point every persisted log write goes
+/// through — `write_to_transcript` and `append_with_id` both call it, so a
+/// `write()` that only reached the OS page cache can never be reported back
+/// to a caller as durably logged. Without this, `kill -9` is safe (the OS
+/// still owns the page cache and flushes independently of process death) but
+/// power loss / kernel panic between the write and the OS's own background
+/// flush would silently lose the event.
+fn append_line_durable(file: &mut std::fs::File, json: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    writeln!(file, "{}", json)?;
+    file.sync_all()
+}
+
 /// Mint an [`Event`] for `body` chained after the current tail, write its JSON
 /// line to the file, and return the minted event. Shared by [`append`] and
 /// [`emit`]; also called directly by the `Recorder` sink in gait-core.
@@ -61,6 +74,10 @@ pub fn last_event(path: &Path) -> anyhow::Result<Option<Event>> {
 /// `turn` and `step` are stamped onto the envelope — call them with `0, 0`
 /// for session-level events (use [`append`]); the `Recorder` reads its
 /// per-turn position from its `set_position` slot.
+///
+/// Durability: the underlying write+flush is delegated to
+/// [`append_line_durable`] so a successful return guarantees the line is on
+/// disk, not just in the OS page cache.
 pub fn write_to_transcript(
     path: &Path,
     body: event::Body,
@@ -74,7 +91,7 @@ pub fn write_to_transcript(
         .append(true)
         .open(path)?;
     let json = serde_json::to_string(&ev)?;
-    writeln!(file, "{}", json)?;
+    append_line_durable(&mut file, &json)?;
     Ok(ev)
 }
 
@@ -92,6 +109,10 @@ pub fn append(path: &Path, body: event::Body) -> anyhow::Result<Event> {
 /// tail. Used by the spine in Phase 3: the brain mints a UUID for the event
 /// (needed for Replace targeting), then sends the event via `Append`; the
 /// spine chains it into the log without changing the ID.
+///
+/// Durability: the underlying write+flush is delegated to
+/// [`append_line_durable`] so a successful return guarantees the line is on
+/// disk, not just in the OS page cache.
 pub fn append_with_id(path: &Path, incoming: &Event) -> anyhow::Result<Event> {
     use crate::envelope::stamp_hash;
     let prev = last_event(path)?;
@@ -110,8 +131,7 @@ pub fn append_with_id(path: &Path, incoming: &Event) -> anyhow::Result<Event> {
         .append(true)
         .open(path)?;
     let json = serde_json::to_string(&ev)?;
-    use std::io::Write;
-    writeln!(file, "{}", json)?;
+    append_line_durable(&mut file, &json)?;
     Ok(ev)
 }
 
@@ -222,5 +242,24 @@ mod tests {
         let ev = write_to_transcript(&path, simple_body(), 4, 7).unwrap();
         assert_eq!(ev.turn, 4);
         assert_eq!(ev.step, 7);
+    }
+
+    #[test]
+    fn append_with_id_round_trips_through_shared_write_helper() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("log.jsonl");
+        let seeded = append(&path, simple_body()).unwrap();
+
+        let incoming = crate::envelope::mint(simple_body(), None, 0, 0);
+        let written = append_with_id(&path, &incoming).unwrap();
+
+        // append_with_id preserves the incoming id but re-chains seq/parents.
+        assert_eq!(written.id, incoming.id);
+        assert_eq!(written.seq, seeded.seq + 1);
+        assert_eq!(written.parents, vec![seeded.id.clone()]);
+
+        let events = read_events(&path).unwrap();
+        assert_eq!(events.len(), 2, "both writes must be durably readable back");
+        assert_eq!(events[1].id, written.id);
     }
 }
