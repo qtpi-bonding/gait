@@ -107,6 +107,8 @@ CancellationSignal cancellation_signal = 55;
     SandboxWhitelistMatch sandbox_whitelist_match = 66;
     SandboxDenied      sandbox_denied      = 67;
     PermissionDenied   permission_denied   = 68;
+    LlmCallStarted     llm_call_started    = 69;
+    LlmCallCompleted   llm_call_completed  = 70;
   }
   reserved 20 to 49;  // workflow family (WorkflowHook* / WorkflowNode* / WorkflowStart …) — deferred to the workflow-subsystem redo
 }
@@ -548,6 +550,15 @@ enum GeminiThinkingLevel {
 message ThinkingBlock {
   string content   = 1;
   string signature = 2;  // Anthropic opaque signature; empty for non-Anthropic providers
+}
+
+message LlmCallStarted {
+  string model = 1;  // model id in use for this call
+}
+message LlmCallCompleted {
+  TurnTokenUsage usage           = 1;  // cumulative turn usage AFTER this step (same convention as TurnComplete.usage)
+  uint32         tool_call_count = 2;  // number of tool calls the model requested this step
+  bool           had_text        = 3;  // true if the model produced any text or thinking this step
 }
 
 // Daemon lifecycle events — written to the session log when a daemon is spawned/stopped.

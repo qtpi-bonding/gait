@@ -472,6 +472,34 @@ pub fn thinking_block(content: String, signature: String) -> pb::event::Body {
     }))
 }
 
+/// `LlmCallStarted` — durably marks that an LLM request is about to be sent,
+/// recorded immediately before `provider.stream()` is called. Paired with
+/// `llm_call_completed`; `turn/resume.rs` treats an unmatched
+/// `LlmCallStarted` as a call that crashed mid-stream — since it has no
+/// external side effect, recovery just retries rather than needing a
+/// synthetic failure result (contrast with `tool_result`'s crash path).
+pub fn llm_call_started(model: String) -> pb::event::Body {
+    wire::body(pb::payload::Kind::LlmCallStarted(pb::LlmCallStarted {
+        model,
+    }))
+}
+
+/// `LlmCallCompleted` — durably marks that the LLM stream finished. `usage`
+/// is the cumulative turn usage AFTER this step (same convention as
+/// `TurnComplete.usage`, not a per-step delta); `tool_call_count`/`had_text`
+/// describe this step's own yield.
+pub fn llm_call_completed(
+    usage: pb::TurnTokenUsage,
+    tool_call_count: u32,
+    had_text: bool,
+) -> pb::event::Body {
+    wire::body(pb::payload::Kind::LlmCallCompleted(pb::LlmCallCompleted {
+        usage: Some(usage),
+        tool_call_count,
+        had_text,
+    }))
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 /// Convert `LlmParamsConfig` (serde/config layer) to proto `LlmParams` (wire layer).
@@ -783,6 +811,36 @@ mod tests {
                 assert_eq!(ti.content, "hello from hook");
             }
             other => panic!("expected Inject, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn llm_call_started_carries_model() {
+        let body = llm_call_started("anthropic/claude-sonnet-5".to_string());
+        match kind_of(&body) {
+            pb::payload::Kind::LlmCallStarted(s) => {
+                assert_eq!(s.model, "anthropic/claude-sonnet-5");
+            }
+            other => panic!("expected LlmCallStarted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn llm_call_completed_carries_usage_and_flags() {
+        let usage = pb::TurnTokenUsage {
+            input: 100,
+            output: 20,
+            cache_read: 5,
+            cache_write: 0,
+        };
+        let body = llm_call_completed(usage.clone(), 2, true);
+        match kind_of(&body) {
+            pb::payload::Kind::LlmCallCompleted(c) => {
+                assert_eq!(c.usage, Some(usage));
+                assert_eq!(c.tool_call_count, 2);
+                assert!(c.had_text);
+            }
+            other => panic!("expected LlmCallCompleted, got {other:?}"),
         }
     }
 
