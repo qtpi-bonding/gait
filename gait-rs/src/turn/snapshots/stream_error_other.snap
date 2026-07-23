@@ -1,6 +1,7 @@
 # stream_error_other
 # result: Failed
-# events: 2
+# events: 3
 ---
 000: SessionStart
 001: Unknown
+002: Unknown

@@ -1,7 +1,9 @@
 # clarify
 # result: Clarify
-# events: 3
+# events: 5
 ---
 000: SessionStart
 001: Unknown
-002: Clarify
+002: Unknown
+003: Unknown
+004: Clarify

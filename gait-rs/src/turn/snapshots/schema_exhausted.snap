@@ -1,13 +1,21 @@
 # schema_exhausted
 # result: Failed
-# events: 9
+# events: 17
 ---
 000: SessionStart
 001: Unknown
-002: AssistantText "text only"
-003: UserText "You must finish by calling `structured_done` with a `result` matching the declared schema. Plain-text completion is not accepted for this task."
+002: Unknown
+003: Unknown
 004: AssistantText "text only"
 005: UserText "You must finish by calling `structured_done` with a `result` matching the declared schema. Plain-text completion is not accepted for this task."
-006: AssistantText "text only"
-007: UserText "You must finish by calling `structured_done` with a `result` matching the declared schema. Plain-text completion is not accepted for this task."
+006: Unknown
+007: Unknown
 008: AssistantText "text only"
+009: UserText "You must finish by calling `structured_done` with a `result` matching the declared schema. Plain-text completion is not accepted for this task."
+010: Unknown
+011: Unknown
+012: AssistantText "text only"
+013: UserText "You must finish by calling `structured_done` with a `result` matching the declared schema. Plain-text completion is not accepted for this task."
+014: Unknown
+015: Unknown
+016: AssistantText "text only"

@@ -276,6 +276,76 @@ async fn run_turn_writes_transcript_and_commits() {
 }
 
 #[tokio::test]
+async fn run_turn_brackets_each_step_with_llm_call_events() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+    let codebase = ws.path().to_path_buf();
+
+    let provider = Arc::new(FakeProvider {
+        steps: Arc::new(vec![FakeStep::text("done")]),
+        call_idx: Arc::new(AtomicUsize::new(0)),
+    });
+
+    run_turn_test_call_seeded(
+        ws.path().to_path_buf(),
+        codebase,
+        "stest-llm-events".into(),
+        provider,
+        vec![],
+        vec![],
+        vec![],
+        "say hi",
+        TurnInput {
+            auto: true,
+            max_iter: None,
+            preview_policy: crate::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: true,
+            sandbox_cfg: crate::config::SandboxConfig::default(),
+            relay: None,
+            initial_git: None,
+            daemons: vec![],
+        },
+        crate::git::Repos::production(),
+    )
+    .await
+    .unwrap();
+
+    let tx_path = crate::session::live::log_path(ws.path(), "stest-llm-events");
+    let events = read_events(&tx_path).unwrap();
+    let kinds: Vec<&str> = events
+        .iter()
+        .map(|e| match event_kind(e) {
+            Some(payload::Kind::LlmCallStarted(_)) => "llm_call_started",
+            Some(payload::Kind::LlmCallCompleted(_)) => "llm_call_completed",
+            _ => "other",
+        })
+        .collect();
+    let started_idx = kinds.iter().position(|k| *k == "llm_call_started");
+    let completed_idx = kinds.iter().position(|k| *k == "llm_call_completed");
+    assert!(
+        started_idx.is_some() && completed_idx.is_some(),
+        "expected one LlmCallStarted and one LlmCallCompleted, got: {:?}",
+        kinds
+    );
+    assert!(
+        started_idx.unwrap() < completed_idx.unwrap(),
+        "LlmCallStarted must precede LlmCallCompleted, got: {:?}",
+        kinds
+    );
+
+    let completed = events
+        .iter()
+        .find_map(|e| match event_kind(e) {
+            Some(payload::Kind::LlmCallCompleted(c)) => Some(c),
+            _ => None,
+        })
+        .unwrap();
+    assert!(completed.had_text, "the fake provider yielded text");
+    assert_eq!(completed.tool_call_count, 0);
+}
+
+#[tokio::test]
 async fn output_tool_result_used_in_turn_complete() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());

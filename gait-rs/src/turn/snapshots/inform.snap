@@ -1,7 +1,9 @@
 # inform
 # result: Inform
-# events: 3
+# events: 5
 ---
 000: SessionStart
 001: Unknown
-002: Inform
+002: Unknown
+003: Unknown
+004: Inform

@@ -499,6 +499,11 @@ pub async fn run_turn(
         );
         // `outgoing` is the per-step message list sent to the LLM (rebuilt from
         // the log every step under the log-first design).
+        //
+        // Durable schedule/complete pair around the LLM call (the gait analogue
+        // of Temporal's ScheduleActivityTask/ActivityTaskCompleted): recorded
+        // here, not in stream.rs, which is permission-free generation only.
+        emitter.record(events::llm_call_started(env.model.to_string()))?;
         let stream::StepYield {
             step_text,
             step_tool_calls,
@@ -509,6 +514,17 @@ pub async fn run_turn(
             Ok(y) => y,
             Err(e) => break 'turn finalize::StepOutcome::Fail(e),
         };
+        let usage = pb::TurnTokenUsage {
+            input: state.total_usage.input_tokens as u64,
+            output: state.total_usage.output_tokens as u64,
+            cache_read: state.total_usage.cache_read_tokens as u64,
+            cache_write: state.total_usage.cache_write_tokens as u64,
+        };
+        emitter.record(events::llm_call_completed(
+            usage,
+            step_tool_calls.len() as u32,
+            !step_text.is_empty() || !step_thinking_text.is_empty(),
+        ))?;
         // ALWAYS emit ThinkingBlock to the log — show_thinking in GaitConfig
         // controls terminal rendering only; the event is always written.
         if !step_thinking_text.is_empty() {
