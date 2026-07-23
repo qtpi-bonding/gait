@@ -688,8 +688,14 @@ impl Projection for ActiveMessages {
             // tool_result ("tool call result does not follow tool call").
             // ThinkingBlock is also transparent here — the coalesced view does not
             // expose thinking as a separate message; retrace fold handles it below.
-            payload::Kind::Cwd(_) | payload::Kind::HookRun(_) | payload::Kind::ThinkingBlock(_) => {
-            }
+            // LlmCallStarted/LlmCallCompleted are the durable schedule/complete
+            // bracket around the step's LLM call (see turn/mod.rs) — pure
+            // bookkeeping, never model-visible content, same treatment.
+            payload::Kind::Cwd(_)
+            | payload::Kind::HookRun(_)
+            | payload::Kind::ThinkingBlock(_)
+            | payload::Kind::LlmCallStarted(_)
+            | payload::Kind::LlmCallCompleted(_) => {}
 
             payload::Kind::CancellationSignal(_) => {
                 st.push_user("[turn interrupted by user]".to_string(), &ev.id);
@@ -912,7 +918,10 @@ impl Projection for ActiveRawMessages {
                     id: ev.id.clone(),
                 });
             }
-            payload::Kind::Cwd(_) | payload::Kind::HookRun(_) => {}
+            payload::Kind::Cwd(_)
+            | payload::Kind::HookRun(_)
+            | payload::Kind::LlmCallStarted(_)
+            | payload::Kind::LlmCallCompleted(_) => {}
             payload::Kind::ThinkingBlock(tb) => {
                 // Fold into the raw transcript as AssistantPart::Thinking so
                 // to_anthropic_messages() can pass the signature back verbatim

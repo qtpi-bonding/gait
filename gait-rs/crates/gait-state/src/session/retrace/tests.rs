@@ -127,6 +127,59 @@ fn sidecar_event_between_call_and_result_does_not_drop_result() {
 }
 
 #[test]
+fn llm_call_events_are_transparent_to_tool_run_coalescing() {
+    // LlmCallStarted/LlmCallCompleted must never appear between a ToolCall
+    // and its ToolResult in the current step loop, but the fold must not
+    // silently break if they do (see retrace/mod.rs:685-690 for the same
+    // guarantee already required of Cwd/HookRun).
+    let dir = TempDir::new().unwrap();
+    let path = write_events(
+        dir.path(),
+        vec![
+            events::tool_call(
+                "c1".into(),
+                "shell".into(),
+                &serde_json::json!({"command":"ls"}),
+            ),
+            events::llm_call_started("test-model".into()),
+            events::llm_call_completed(
+                crate::proto::gait::log::v1::TurnTokenUsage::default(),
+                0,
+                false,
+            ),
+            events::tool_result("c1".into(), "out1".into(), None, None),
+        ],
+    );
+    let msgs = messages_from_path(&path).unwrap();
+    let tool_msgs = msgs
+        .iter()
+        .filter(|m| matches!(m, Message::ToolResult { .. }))
+        .count();
+    assert_eq!(
+        tool_msgs, 1,
+        "tool_result must survive an interleaved LlmCallStarted/Completed pair; got {:?}",
+        msgs
+    );
+    assert!(
+        !msgs.iter().any(|m| matches!(
+            m,
+            Message::User {
+                content: MessageContent::Text(_),
+                ..
+            }
+        ) || matches!(
+            m,
+            Message::Assistant {
+                content: AssistantContent::Text(_),
+                ..
+            }
+        )),
+        "LlmCallStarted/Completed must not surface as their own message; got {:?}",
+        msgs
+    );
+}
+
+#[test]
 fn parallel_tool_calls_grouped() {
     let dir = TempDir::new().unwrap();
     let path = write_events(
