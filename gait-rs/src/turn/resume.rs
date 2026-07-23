@@ -28,11 +28,20 @@ use crate::types::ToolCall;
 use super::state::TurnState;
 use super::{event_kind, input_value};
 
-/// Detects a resume-after-permission-approval turn (last two transcript
-/// events are `Permissions` → `PermissionsReply`), executes the approved
-/// tool(s) (or emits denied ToolCall/ToolResult pairs for rejected ones), and
-/// rebuilds `state.messages` from the resulting log — all without an extra
-/// LLM round-trip.
+/// Detects two kinds of "continue without a new user turn" resume:
+/// 1. **Permission resume** — the last two transcript events are
+///    `Permissions` → `PermissionsReply`: executes the approved tool(s) (or
+///    emits denied ToolCall/ToolResult pairs for rejected ones).
+/// 2. **Crash resume** — the last transcript event is a `ToolCall` with no
+///    matching `ToolResult`: gait exited (kill/crash) between recording the
+///    intent to call a tool and recording its outcome. This is NEVER
+///    re-executed blindly — tools aren't guaranteed idempotent (a shell
+///    command or file edit could double-apply) — instead a synthetic
+///    failure `ToolResult` is recorded so the model sees the call as failed
+///    and can decide whether to retry.
+///
+/// Both cases rebuild `state.messages` from the resulting log — all without
+/// an extra LLM round-trip.
 ///
 /// When there is nothing to resume, falls back to the normal path: fold the
 /// log into `state.messages` and build this turn's `state.turn_ctx`.
@@ -181,6 +190,21 @@ pub(crate) async fn apply_if_pending(
         } else {
             false
         }
+    } else if let Some(payload::Kind::ToolCall(tc)) = pre_events.last().and_then(event_kind) {
+        // Crash resume: the last durable event is a ToolCall with no
+        // matching ToolResult — gait exited between recording the intent
+        // and recording the outcome. Synthesize a failure result so the
+        // model sees the call as failed rather than sending a dangling
+        // tool_use straight to the provider (most providers reject that).
+        emitter.record(events::tool_result(
+            tc.call_id.clone(),
+            "interrupted: gait exited before this tool call finished — the result is unknown; retry if the task still needs it.".to_string(),
+            None,
+            None,
+        ))?;
+        let events_after = ingestor.events()?;
+        state.messages = crate::session::retrace::messages(&events_after)?;
+        true
     } else {
         false
     };

@@ -963,6 +963,101 @@ async fn resume_executes_approved_tool_directly() {
 }
 
 #[tokio::test]
+async fn resume_recovers_from_crash_mid_tool_call() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+    let codebase = TempDir::new().unwrap();
+    let session_id = "resume-crash-test";
+    GitTraceRepo
+        .create_session_worktree(ws.path(), session_id)
+        .unwrap();
+    let tx_path = crate::session::live::log_path(ws.path(), session_id);
+    std::fs::create_dir_all(tx_path.parent().unwrap()).unwrap();
+
+    // Pre-populate transcript: SessionStart + UserText + a ToolCall with NO
+    // matching ToolResult — simulates gait crashing mid tool execution.
+    wire::append(
+        &tx_path,
+        events::session_start(session_id.into(), None, None, false),
+    )
+    .unwrap();
+    wire::append(&tx_path, events::user_text("run echo".into(), None)).unwrap();
+    wire::append(
+        &tx_path,
+        events::tool_call(
+            "tc-crash-1".into(),
+            "shell".into(),
+            &serde_json::json!({"cmd": "echo hello"}),
+        ),
+    )
+    .unwrap();
+
+    let provider = Arc::new(FakeProvider {
+        steps: Arc::new(vec![FakeStep::text("got it, retrying")]),
+        call_idx: Arc::new(AtomicUsize::new(0)),
+    });
+    let result = run_turn_test_call(
+        ws.path().to_path_buf(),
+        codebase.path().to_path_buf(),
+        session_id.into(),
+        provider,
+        vec![],
+        vec![],
+        vec![],
+        TurnInput {
+            auto: false,
+            max_iter: None,
+            preview_policy: crate::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: true,
+            sandbox_cfg: crate::config::SandboxConfig::default(),
+            relay: None,
+            initial_git: None,
+            daemons: vec![],
+        },
+        crate::git::Repos::production(),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        matches!(result, TurnResult::Done { .. }),
+        "expected Done, got: {:?}",
+        result
+    );
+
+    let events = read_events(&tx_path).unwrap();
+    let tool_results: Vec<_> = events
+        .iter()
+        .filter_map(|e| match event_kind(e) {
+            Some(payload::Kind::ToolResult(tr)) => Some(tr),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        tool_results.len(),
+        1,
+        "expected exactly one synthesized ToolResult for the dangling call, got: {:?}",
+        tool_results
+    );
+    assert_eq!(tool_results[0].call_id, "tc-crash-1");
+    assert!(
+        tool_results[0].output.contains("interrupted"),
+        "expected an interrupted/failure marker, got: {}",
+        tool_results[0].output
+    );
+
+    let tool_calls = events
+        .iter()
+        .filter(|e| matches!(event_kind(e), Some(payload::Kind::ToolCall(_))))
+        .count();
+    assert_eq!(
+        tool_calls, 1,
+        "must not blindly re-execute — only the original ToolCall should exist"
+    );
+}
+
+#[tokio::test]
 async fn resume_emits_denied_tool_result_for_rejected_call() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
