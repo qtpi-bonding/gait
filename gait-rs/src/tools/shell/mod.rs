@@ -16,9 +16,9 @@ struct ShellParams {
     /// Optional working directory for this command. Relative paths resolve against
     /// the current directory and PERSIST (like `cd`); absolute paths are used as-is.
     /// A nonexistent path errors and leaves the working directory unchanged.
-    // Prefer this over "cd dir && cmd" — sandbox.shell_whitelist only matches
-    // single-segment commands, so a cd-chained command silently misses any
-    // whitelist grant it would otherwise get.
+    /// Prefer this over "cd dir && cmd" in `cmd` — sandbox.shell_whitelist only
+    /// matches single-segment commands, so a cd-chained command silently misses
+    /// any whitelist grant (network, bind, etc.) it would otherwise get.
     cwd: Option<String>,
     /// Run as a background daemon that outlives this turn; returns immediately.
     /// The daemon inherits the agent's sandbox ceiling (not the per-call scope).
@@ -67,9 +67,11 @@ impl Tool for ShellTool {
          large output (cargo test, build logs, grep over large trees) use the `parse` field \
          (e.g. \"grep FAILED | head -30\") to return only relevant lines and keep context small. \
          You can then grep/read the tmp file for more detail without re-running. \
-         Pass `cwd` to run in a subdirectory; it persists for later commands like `cd` \
-         (relative paths resolve against the current dir, absolute used as-is). \
-         All shell commands require permission approval unless pre-allowed."
+         Pass `cwd` to run in a subdirectory — ALWAYS prefer this over `cd dir && cmd` inside \
+         `cmd`: cwd persists across later calls like `cd` (relative paths resolve against the \
+         current dir, absolute used as-is), but cd-chaining inside `cmd` does not persist and \
+         silently forfeits any sandbox whitelist grant (network, bind) the command would \
+         otherwise get. All shell commands require permission approval unless pre-allowed."
     }
     fn parameters(&self) -> &Value {
         &self.parameters
