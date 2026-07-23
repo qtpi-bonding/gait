@@ -270,6 +270,7 @@ fn scope_serializes_network_scope() {
                 mode: Mode::Hosts as i32,
                 hosts: vec!["example.com".into()],
             }),
+            local_bind: false,
         }),
         ..Default::default()
     };

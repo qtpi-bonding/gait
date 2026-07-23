@@ -320,6 +320,11 @@ pub struct ToolAccess {
     pub writes: bool,
     pub network: bool,
     pub spawns: bool,
+    /// Whether the sandboxed process may `bind()` a local loopback port (e.g.
+    /// a test runner's VM-service/HTTP server). Distinct from `network`:
+    /// binding a loopback socket grants no reach beyond the local machine, so
+    /// it is gated independently rather than folded into the network tier.
+    pub local_bind: bool,
 }
 
 impl ToolAccess {
@@ -851,7 +856,8 @@ mod tests {
                 reads: false,
                 writes: false,
                 network: false,
-                spawns: false
+                spawns: false,
+                local_bind: false,
             }
         );
         assert!(!a.touches_world());

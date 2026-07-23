@@ -205,6 +205,8 @@ pub struct ToolAccessOverride {
     pub writes: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_bind: Option<bool>,
 }
 
 fn default_true() -> bool {

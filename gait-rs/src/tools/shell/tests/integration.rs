@@ -203,6 +203,7 @@ async fn cwd_outside_scope_errors_without_emitting_cwd_event() {
         writable: vec![dir.path().to_path_buf()],
         read_all: false,
         network: Default::default(),
+        local_bind: false,
     };
     let tool = ShellTool::new(
         crate::tools::ctx::ToolCtx::new(
@@ -267,6 +268,7 @@ async fn cwd_inside_scope_still_succeeds_and_emits_cwd_event() {
         writable: vec![canonical_root],
         read_all: false,
         network: Default::default(),
+        local_bind: false,
     };
     let tool = ShellTool::new(
         crate::tools::ctx::ToolCtx::new(

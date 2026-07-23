@@ -69,6 +69,12 @@ message Scope {
   repeated string readable = 2;
   repeated string writable = 3;
   NetworkScope network = 4;
+  // Whether the sandboxed process may bind() a local loopback port (e.g. a
+  // test runner's VM-service/HTTP server). Independent of `network` — binding
+  // loopback grants no reach beyond the local machine, so it's a separate
+  // Seatbelt operation (network-bind) gated on its own, not folded into a
+  // NetworkScope mode.
+  bool local_bind = 5;
 }
 
 message NetworkScope {

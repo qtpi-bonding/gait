@@ -50,6 +50,21 @@ fn shell_access_and_whitelist_hit(
             pattern: entry.pattern.clone(),
         });
     }
+    // "bind" isn't in `SandboxGrant` — that enum is specifically the CLI-approval
+    // persistence vocabulary (see its doc comment), and there is no interactive
+    // approval flow for local-bind (a socket-bind denial isn't a pre-flight
+    // "permission required" gate like a declared write path or network host is;
+    // it just fails inside the sandboxed process). So it's read directly off the
+    // whitelist entry's raw grant strings instead of routing through that enum.
+    if entry.grants.iter().any(|g| g == "bind") {
+        access.local_bind = true;
+        items.push(crate::proto::gait::log::v1::SandboxWhitelistMatchItem {
+            tool_name: "shell".into(),
+            resource: cmd.into(),
+            dimension: "bind".into(),
+            pattern: entry.pattern.clone(),
+        });
+    }
     (access, Some(items))
 }
 
@@ -100,6 +115,7 @@ pub async fn run_tool_as_spine(
                 writes: true,
                 network: true,
                 spawns: true,
+                local_bind: true,
             },
             sandbox_cfg,
             codebase,
@@ -363,6 +379,7 @@ pub fn scope_to_proto(s: &SandboxScope) -> Scope {
                 hosts: h.clone(),
             },
         }),
+        local_bind: s.local_bind,
     }
 }
 
@@ -409,6 +426,43 @@ pub fn delegated_target(
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn shell_whitelist_bind_grant_sets_local_bind_and_logs_dimension() {
+        use gait_types::config::{SandboxConfig, SandboxWhitelistEntry};
+
+        let mut cfg = SandboxConfig::default();
+        cfg.shell_whitelist.push(SandboxWhitelistEntry {
+            pattern: "flutter test *".into(),
+            grants: vec!["network".into(), "bind".into()],
+        });
+
+        let (access, items) = shell_access_and_whitelist_hit("flutter test foo.dart", &cfg);
+        assert!(access.network, "network grant must still apply");
+        assert!(access.local_bind, "bind grant must set local_bind");
+        let items = items.expect("whitelist matched");
+        assert!(
+            items.iter().any(|i| i.dimension == "bind"),
+            "expected a bind dimension in whitelist match items: {items:?}"
+        );
+    }
+
+    #[test]
+    fn shell_whitelist_without_bind_grant_leaves_local_bind_false() {
+        use gait_types::config::{SandboxConfig, SandboxWhitelistEntry};
+
+        let mut cfg = SandboxConfig::default();
+        cfg.shell_whitelist.push(SandboxWhitelistEntry {
+            pattern: "flutter test *".into(),
+            grants: vec!["network".into()],
+        });
+
+        let (access, _items) = shell_access_and_whitelist_hit("flutter test foo.dart", &cfg);
+        assert!(
+            !access.local_bind,
+            "no bind grant means local_bind stays false"
+        );
+    }
 
     #[test]
     fn delegated_target_resolves_only_fs_tools() {

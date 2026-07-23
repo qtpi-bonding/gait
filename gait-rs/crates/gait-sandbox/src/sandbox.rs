@@ -37,6 +37,10 @@ pub struct SandboxScope {
     /// `true` when config readable contains `"*"` — disables read restrictions entirely.
     pub read_all: bool,
     pub network: NetworkPolicy,
+    /// Whether the process may `bind()` a local loopback port. Independent of
+    /// `network` — see `ToolAccess::local_bind` for why binding loopback isn't
+    /// folded into the network tier.
+    pub local_bind: bool,
 }
 
 /// Kernel write-enforcement sandbox. Injected at process start (once, before the turn loop).
@@ -181,6 +185,9 @@ pub fn brain_scope() -> SandboxScope {
         readable: vec![],
         writable: vec![],
         network: NetworkPolicy::All,
+        // The sealed brain itself never binds a local port — only tool/hand
+        // processes it dispatches (e.g. a shell running `flutter test`) do.
+        local_bind: false,
     }
 }
 
@@ -296,6 +303,7 @@ mod tests {
             readable: vec![],
             read_all: true,
             network: NetworkPolicy::Deny,
+            local_bind: false,
         };
         let p = build_sbpl(&scope);
         assert!(p.contains("(deny default)"));
@@ -321,6 +329,7 @@ mod tests {
             readable: vec![],
             read_all: true,
             network: NetworkPolicy::All,
+            local_bind: false,
         };
         let p = build_sbpl(&scope);
         assert!(p.contains("(allow network-outbound)"));
@@ -342,6 +351,7 @@ mod tests {
             readable: vec![],
             read_all: true,
             network: NetworkPolicy::Hosts(vec!["github.com".to_owned()]),
+            local_bind: false,
         };
         let p = build_sbpl(&scope);
         assert!(
@@ -362,6 +372,7 @@ mod tests {
             writable: vec![],
             read_all: false,
             network: NetworkPolicy::All,
+            local_bind: false,
         };
         let sbpl = build_sbpl(&scope);
         assert!(
@@ -377,11 +388,48 @@ mod tests {
             writable: vec![],
             read_all: false,
             network: NetworkPolicy::Hosts(vec!["github.com".into()]),
+            local_bind: false,
         };
         let sbpl = build_sbpl(&scope);
         assert!(
             sbpl.contains(r#"(allow mach-lookup (global-name "com.apple.trustd"))"#),
             "expected trustd mach-lookup grant in SBPL output, got:\n{sbpl}"
+        );
+    }
+
+    #[test]
+    fn sbpl_local_bind_emits_network_bind_scoped_to_loopback() {
+        // Regression: a shell command that binds a local loopback port (e.g.
+        // Flutter's test-runner VM-service/HTTP server) needs `network-bind`,
+        // which is a distinct Seatbelt operation from `network-inbound`/
+        // `network-outbound` — granting those alone still EPERMs on bind().
+        let scope = SandboxScope {
+            readable: vec![],
+            writable: vec![],
+            read_all: false,
+            network: NetworkPolicy::Deny,
+            local_bind: true,
+        };
+        let p = build_sbpl(&scope);
+        assert!(
+            p.contains(r#"(allow network-bind (local ip "localhost:*"))"#),
+            "local_bind=true must emit a network-bind rule scoped to loopback: {p}"
+        );
+    }
+
+    #[test]
+    fn sbpl_local_bind_false_emits_no_network_bind_rule() {
+        let scope = SandboxScope {
+            readable: vec![],
+            writable: vec![],
+            read_all: false,
+            network: NetworkPolicy::All,
+            local_bind: false,
+        };
+        let p = build_sbpl(&scope);
+        assert!(
+            !p.contains("network-bind"),
+            "local_bind=false must not emit network-bind even under full network policy: {p}"
         );
     }
 
@@ -392,6 +440,7 @@ mod tests {
             readable: vec![PathBuf::from("/repo")],
             writable: vec![PathBuf::from("/repo")],
             network: NetworkPolicy::Deny,
+            local_bind: false,
         };
         let p = build_sbpl(&scope);
         assert!(
@@ -423,6 +472,7 @@ mod tests {
             readable: vec![],
             read_all: true,
             network: NetworkPolicy::Deny,
+            local_bind: false,
         };
         let p = build_sbpl(&scope);
         assert!(
@@ -646,6 +696,7 @@ mod tests {
                 reads: None,
                 writes: None,
                 network: Some(true),
+                local_bind: None,
             },
         );
         let access = super::ceiling::access_for_tool("shell", &cfg);
@@ -666,6 +717,7 @@ mod tests {
                 reads: Some(true),
                 writes: None,
                 network: None,
+                local_bind: None,
             },
         );
         let access = super::ceiling::access_for_tool("webfetch", &cfg);
@@ -685,6 +737,7 @@ mod tests {
                 reads: None,
                 writes: None,
                 network: Some(true),
+                local_bind: None,
             },
         );
         let scope =
@@ -1041,6 +1094,18 @@ pub(crate) mod sbpl {
             }
         }
 
+        // Local loopback bind: a distinct Seatbelt operation from network-inbound/
+        // outbound above — binding a port (bind()) is gated separately from
+        // sending/receiving on it. Without this, any local dev/test server (e.g.
+        // Flutter's test runner VM-service/HTTP server) fails with EPERM on
+        // bind() regardless of the network policy in effect, since network-inbound
+        // alone does not cover the bind() syscall itself. Scoped to loopback
+        // only ("localhost:*") — this grants no reach beyond the local machine,
+        // so it's independent of (and orthogonal to) `scope.network`'s tier.
+        if scope.local_bind {
+            writeln!(s, r#"(allow network-bind (local ip "localhost:*"))"#).unwrap();
+        }
+
         s
     }
 }
@@ -1099,6 +1164,9 @@ pub mod ceiling {
             }
             if let Some(network) = o.network {
                 access.network = network;
+            }
+            if let Some(local_bind) = o.local_bind {
+                access.local_bind = local_bind;
             }
         }
         access
@@ -1208,6 +1276,10 @@ pub mod ceiling {
             writable,
             read_all,
             network,
+            // Independent of `network`'s tier (Off/Hosts/All): binding a loopback
+            // port grants no reach beyond the local machine, so it's gated purely
+            // by the tool/whitelist access flag, not by the network policy.
+            local_bind: access.local_bind,
         }
     }
 

@@ -408,6 +408,7 @@ pub fn build_scope_from_impulse(impulse: &Impulse) -> SandboxScope {
         writable: s.writable.iter().map(PathBuf::from).collect(),
         read_all,
         network,
+        local_bind: s.local_bind,
     }
 }
 

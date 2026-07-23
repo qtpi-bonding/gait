@@ -41,6 +41,7 @@ fn run_tool_executes_read_in_subprocess() {
                 mode: Mode::Deny as i32,
                 hosts: vec![],
             }),
+            local_bind: false,
         }),
         prefetch: None,
         shell_whitelist_patterns: vec![],
