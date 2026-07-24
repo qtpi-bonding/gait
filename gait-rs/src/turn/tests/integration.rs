@@ -1057,6 +1057,167 @@ async fn resume_recovers_from_crash_mid_tool_call() {
     );
 }
 
+/// Regression test: a crash mid parallel-tool-call batch must not leave a
+/// dangling `tool_use` behind. Two ToolCalls are recorded (as `execute.rs`
+/// does for concurrent tool calls) but only the FIRST gets a ToolResult
+/// before gait "exits" — the LAST transcript event is a ToolResult, not a
+/// ToolCall, so the naive "is the last event a dangling ToolCall" check
+/// would miss this entirely and hand the provider an unmatched tool_use
+/// (the "tool call result does not follow tool call" HTTP 400).
+#[tokio::test]
+async fn resume_recovers_from_crash_mid_parallel_batch() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+    let codebase = TempDir::new().unwrap();
+    let session_id = "resume-crash-parallel-test";
+    GitTraceRepo
+        .create_session_worktree(ws.path(), session_id)
+        .unwrap();
+    let tx_path = crate::session::live::log_path(ws.path(), session_id);
+    std::fs::create_dir_all(tx_path.parent().unwrap()).unwrap();
+
+    // Pre-populate transcript: SessionStart + UserText + two ToolCalls
+    // (a parallel batch) + a ToolResult for only the FIRST call. The second
+    // call ("tc-crash-2") never got a result — gait exited mid-batch.
+    wire::append(
+        &tx_path,
+        events::session_start(session_id.into(), None, None, false),
+    )
+    .unwrap();
+    wire::append(&tx_path, events::user_text("run two things".into(), None)).unwrap();
+    wire::append(
+        &tx_path,
+        events::tool_call(
+            "tc-crash-1".into(),
+            "read".into(),
+            &serde_json::json!({"file_path": "a.txt"}),
+        ),
+    )
+    .unwrap();
+    wire::append(
+        &tx_path,
+        events::tool_call(
+            "tc-crash-2".into(),
+            "read".into(),
+            &serde_json::json!({"file_path": "b.txt"}),
+        ),
+    )
+    .unwrap();
+    wire::append(
+        &tx_path,
+        events::tool_result("tc-crash-1".into(), "content of a".into(), None, None),
+    )
+    .unwrap();
+
+    let provider = Arc::new(FakeProvider {
+        steps: Arc::new(vec![FakeStep::text("got it, retrying")]),
+        call_idx: Arc::new(AtomicUsize::new(0)),
+    });
+    let result = run_turn_test_call(
+        ws.path().to_path_buf(),
+        codebase.path().to_path_buf(),
+        session_id.into(),
+        provider,
+        vec![],
+        vec![],
+        vec![],
+        TurnInput {
+            auto: false,
+            max_iter: None,
+            preview_policy: crate::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: true,
+            sandbox_cfg: crate::config::SandboxConfig::default(),
+            relay: None,
+            initial_git: None,
+            daemons: vec![],
+        },
+        crate::git::Repos::production(),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        matches!(result, TurnResult::Done { .. }),
+        "expected Done, got: {:?}",
+        result
+    );
+
+    let events = read_events(&tx_path).unwrap();
+    let tool_results: Vec<_> = events
+        .iter()
+        .filter_map(|e| match event_kind(e) {
+            Some(payload::Kind::ToolResult(tr)) => Some(tr),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        tool_results.len(),
+        2,
+        "expected the original result plus one synthesized ToolResult for the dangling call, got: {:?}",
+        tool_results
+    );
+    let synthesized = tool_results
+        .iter()
+        .find(|tr| tr.call_id == "tc-crash-2")
+        .expect("must synthesize a ToolResult for the dangling second call");
+    assert!(
+        synthesized.output.contains("interrupted"),
+        "expected an interrupted/failure marker, got: {}",
+        synthesized.output
+    );
+
+    let tool_calls = events
+        .iter()
+        .filter(|e| matches!(event_kind(e), Some(payload::Kind::ToolCall(_))))
+        .count();
+    assert_eq!(
+        tool_calls, 2,
+        "must not blindly re-execute — only the original two ToolCalls should exist"
+    );
+
+    // The core regression: every tool_use in the reconstructed message list
+    // must have a matching tool_result, or the provider would reject the
+    // message list outright.
+    let messages = crate::session::retrace::messages(&events).unwrap();
+    let call_ids: Vec<String> = messages
+        .iter()
+        .flat_map(|m| match m {
+            crate::types::Message::Assistant {
+                content: crate::types::AssistantContent::Parts(parts),
+                ..
+            } => parts
+                .iter()
+                .filter_map(|p| match p {
+                    crate::types::AssistantPart::ToolCall(tc) => Some(tc.tool_call_id.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            _ => vec![],
+        })
+        .collect();
+    let result_ids: std::collections::HashSet<String> = messages
+        .iter()
+        .filter_map(|m| match m {
+            crate::types::Message::ToolResult { content, .. } => Some(
+                content
+                    .iter()
+                    .map(|c| c.tool_call_id.clone())
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    for id in &call_ids {
+        assert!(
+            result_ids.contains(id),
+            "tool_use {id} has no matching tool_result in reconstructed messages: {:?}",
+            messages
+        );
+    }
+}
+
 #[tokio::test]
 async fn resume_emits_denied_tool_result_for_rejected_call() {
     let ws = TempDir::new().unwrap();

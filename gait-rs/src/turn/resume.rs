@@ -32,13 +32,22 @@ use super::{event_kind, input_value};
 /// 1. **Permission resume** — the last two transcript events are
 ///    `Permissions` → `PermissionsReply`: executes the approved tool(s) (or
 ///    emits denied ToolCall/ToolResult pairs for rejected ones).
-/// 2. **Crash resume** — the last transcript event is a `ToolCall` with no
-///    matching `ToolResult`: gait exited (kill/crash) between recording the
+/// 2. **Crash resume** — any `ToolCall` in the log has no matching
+///    `ToolResult` yet: gait exited (kill/crash) between recording the
 ///    intent to call a tool and recording its outcome. This is NEVER
 ///    re-executed blindly — tools aren't guaranteed idempotent (a shell
 ///    command or file edit could double-apply) — instead a synthetic
 ///    failure `ToolResult` is recorded so the model sees the call as failed
 ///    and can decide whether to retry.
+///
+///    This must scan the *whole* log, not just the last event: parallel
+///    tool calls run concurrently (`turn/execute.rs`), so a crash mid-batch
+///    can leave the log as `call_A, call_B, result_A` — the last event is a
+///    `ToolResult`, but `call_B` is still dangling. Left unresolved, the
+///    fold (`retrace::messages`) would emit an assistant message with
+///    `tool_use` for both A and B while the tool-result message only
+///    covers A, which providers reject as a malformed message ("tool call
+///    result does not follow tool call").
 ///
 /// Both cases rebuild `state.messages` from the resulting log — all without
 /// an extra LLM round-trip.
@@ -190,18 +199,20 @@ pub(crate) async fn apply_if_pending(
         } else {
             false
         }
-    } else if let Some(payload::Kind::ToolCall(tc)) = pre_events.last().and_then(event_kind) {
-        // Crash resume: the last durable event is a ToolCall with no
-        // matching ToolResult — gait exited between recording the intent
-        // and recording the outcome. Synthesize a failure result so the
-        // model sees the call as failed rather than sending a dangling
-        // tool_use straight to the provider (most providers reject that).
-        emitter.record(events::tool_result(
-            tc.call_id.clone(),
-            "interrupted: gait exited before this tool call finished — the result is unknown; retry if the task still needs it.".to_string(),
-            None,
-            None,
-        ))?;
+    } else if let Some(dangling_ids) = dangling_tool_call_ids(pre_events) {
+        // Crash resume: one or more ToolCalls in the log have no matching
+        // ToolResult — gait exited between recording the intent and
+        // recording the outcome (possibly mid-parallel-batch, see the
+        // doc comment above). Synthesize a failure result for each so the
+        // model never sees a dangling tool_use with no result.
+        for call_id in dangling_ids {
+            emitter.record(events::tool_result(
+                call_id,
+                "interrupted: gait exited before this tool call finished — the result is unknown; retry if the task still needs it.".to_string(),
+                None,
+                None,
+            ))?;
+        }
         let events_after = ingestor.events()?;
         state.messages = crate::session::retrace::messages(&events_after)?;
         true
@@ -225,4 +236,25 @@ pub(crate) async fn apply_if_pending(
     }
 
     Ok(())
+}
+
+/// Scan the whole event log for `ToolCall`s with no matching `ToolResult`,
+/// preserving call order. Returns `None` if there are none (nothing to
+/// crash-resume); `Some(vec![...])` (possibly with more than one id) if any
+/// dangling calls are found — the caller synthesizes a failure result for
+/// each so no `tool_use` is ever left without a result.
+fn dangling_tool_call_ids(events: &[Event]) -> Option<Vec<String>> {
+    let mut pending: Vec<String> = Vec::new();
+    for event in events {
+        match event_kind(event) {
+            Some(payload::Kind::ToolCall(tc)) => pending.push(tc.call_id.clone()),
+            Some(payload::Kind::ToolResult(tr)) => pending.retain(|id| id != &tr.call_id),
+            _ => {}
+        }
+    }
+    if pending.is_empty() {
+        None
+    } else {
+        Some(pending)
+    }
 }
