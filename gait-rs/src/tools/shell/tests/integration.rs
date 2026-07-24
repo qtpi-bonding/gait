@@ -672,14 +672,16 @@ async fn detached_daemon_record_proto_fields_populated() {
     let name = proto.get("name").and_then(|v| v.as_str()).expect("name");
     assert_eq!(name, "test-daemon");
 
-    // log_path must live under the daemons/ subdirectory.
+    // log_path must live under daemons/<session_id>/ — namespaced per session
+    // so one session can never see (or accidentally read) another session's
+    // daemon logs, even when both share a gait_dir.
     let log_path = proto
         .get("log_path")
         .and_then(|v| v.as_str())
         .expect("log_path");
     assert!(
-        log_path.contains("daemons/"),
-        "log_path should be under daemons/, got: {log_path}"
+        log_path.contains("daemons/test/"),
+        "log_path should be under daemons/<session_id>/ (session is \"test\"), got: {log_path}"
     );
 
     // started_at must be non-zero.
@@ -688,6 +690,130 @@ async fn detached_daemon_record_proto_fields_populated() {
         .and_then(|v| v.as_u64())
         .expect("started_at");
     assert!(started_at > 0, "started_at must be non-zero");
+}
+
+/// Two sessions sharing a gait_dir must never land daemon logs in the same
+/// place — this is what makes the sandbox's per-session grant meaningful. A
+/// later session inspecting its own daemon dir must not stumble on an
+/// unrelated session's stale daemon logs (the failure mode that burned ~35
+/// steps of an agent's step budget re-reading other sessions' task-1 logs).
+#[tokio::test]
+async fn detached_daemon_logs_are_isolated_per_session() {
+    let dir = TempDir::new().unwrap();
+    let tool_a = ShellTool::new(ToolCtx::new(
+        dir.path().to_path_buf(),
+        dir.path().to_path_buf(),
+        "session-a".into(),
+    ));
+    let tool_b = ShellTool::new(ToolCtx::new(
+        dir.path().to_path_buf(),
+        dir.path().to_path_buf(),
+        "session-b".into(),
+    ));
+
+    let result_a = tool_a
+        .execute(
+            serde_json::json!({
+                "cmd": "sleep 30",
+                "reason": "isolation test a",
+                "detached": true,
+                "name": "same-name"
+            }),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap();
+    let result_b = tool_b
+        .execute(
+            serde_json::json!({
+                "cmd": "sleep 30",
+                "reason": "isolation test b",
+                "detached": true,
+                "name": "same-name"
+            }),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap();
+
+    let proto_a = daemon_proto(&result_a);
+    let proto_b = daemon_proto(&result_b);
+    let pid_a = proto_a.get("pid").and_then(|v| v.as_i64()).expect("pid") as i32;
+    let pid_b = proto_b.get("pid").and_then(|v| v.as_i64()).expect("pid") as i32;
+    unsafe {
+        libc::kill(pid_a, libc::SIGKILL);
+        libc::kill(pid_b, libc::SIGKILL);
+    }
+
+    let log_path_a = proto_a
+        .get("log_path")
+        .and_then(|v| v.as_str())
+        .expect("log_path");
+    let log_path_b = proto_b
+        .get("log_path")
+        .and_then(|v| v.as_str())
+        .expect("log_path");
+    assert_ne!(
+        log_path_a, log_path_b,
+        "same daemon name from different sessions must not collide"
+    );
+    assert!(log_path_a.contains("daemons/session-a/"));
+    assert!(log_path_b.contains("daemons/session-b/"));
+}
+
+/// Every shell result must echo the effective cwd, so the model can never
+/// silently lose track of it — the root cause of a real stall where an agent
+/// alternated between assuming cwd was the repo root and assuming it was
+/// already inside a subdirectory, with no feedback to tell it which was true.
+#[tokio::test]
+async fn foreground_result_echoes_effective_cwd() {
+    let dir = TempDir::new().unwrap();
+    let tool = make_tool(&dir);
+    let result = tool
+        .execute(
+            serde_json::json!({
+                "cmd": "echo hi",
+                "reason": "cwd echo test"
+            }),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap();
+    let output = result.get("output").and_then(|v| v.as_str()).unwrap();
+    let expected = format!("[cwd: {}]", dir.path().display());
+    assert!(
+        output.contains(&expected),
+        "expected output to echo cwd {expected:?}, got: {output}"
+    );
+}
+
+/// The cwd echo must reflect an explicit `cwd` param too, not just the
+/// default — this is exactly the case that mattered in the real stall
+/// (mixing an explicit-`cwd` call with later calls that assumed a different
+/// default).
+#[tokio::test]
+async fn foreground_result_echoes_explicit_cwd_param() {
+    let dir = TempDir::new().unwrap();
+    let sub = dir.path().join("subdir");
+    std::fs::create_dir_all(&sub).unwrap();
+    let tool = make_tool(&dir);
+    let result = tool
+        .execute(
+            serde_json::json!({
+                "cmd": "echo hi",
+                "reason": "cwd echo test",
+                "cwd": "subdir"
+            }),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap();
+    let output = result.get("output").and_then(|v| v.as_str()).unwrap();
+    let expected = format!("[cwd: {}]", sub.canonicalize().unwrap().display());
+    assert!(
+        output.contains(&expected),
+        "expected output to echo cwd {expected:?}, got: {output}"
+    );
 }
 
 /// The spine writes a DaemonStart record into `<gait_dir>/daemons.jsonl` using

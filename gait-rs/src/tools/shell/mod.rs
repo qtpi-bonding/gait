@@ -22,7 +22,9 @@ struct ShellParams {
     cwd: Option<String>,
     /// Run as a background daemon that outlives this turn; returns immediately.
     /// The daemon inherits the agent's sandbox ceiling (not the per-call scope).
-    /// Output is written to <gait_dir>/daemons/<name>.log for its lifetime.
+    /// Output is written to <gait_dir>/daemons/<session_id>/<name>.log for its
+    /// lifetime — namespaced per session so one session can never see another
+    /// session's daemon logs.
     #[serde(default)]
     detached: bool,
     /// Name for this daemon (used in registry and log filename).
@@ -185,7 +187,7 @@ impl Tool for ShellTool {
                 format!("daemon-{}", &uid[..8])
             });
 
-            let daemons_dir = self.ctx.gait_dir.join("daemons");
+            let daemons_dir = self.ctx.gait_dir.join("daemons").join(&self.ctx.session_id);
             std::fs::create_dir_all(&daemons_dir)
                 .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
             let log_path = daemons_dir.join(format!("{}.log", name));
@@ -242,7 +244,10 @@ impl Tool for ShellTool {
             // result JSON. hand.rs detects this key, extracts it into Feedback.daemon, and
             // removes it from the result before forwarding.
             return Ok(serde_json::json!({
-                "output": format!("started daemon {} (pid {}) — log: {}", name, pid, log_path_str),
+                "output": format!(
+                    "started daemon {} (pid {}) — log: {} [cwd: {}]",
+                    name, pid, log_path_str, cwd_str
+                ),
                 "exit_code": 0,
                 "__daemon": {
                     "name": name,
@@ -373,8 +378,9 @@ impl Tool for ShellTool {
                 let msg = format!(
                     "[shell: killed after {timeout_secs}s — command exceeded the configured \
                      timeout. If this command is expected to run long, re-run with detached:true \
-                     to run it as a background daemon; partial output (if any) at {}]",
-                    out_path.display()
+                     to run it as a background daemon; partial output (if any) at {}] [cwd: {}]",
+                    out_path.display(),
+                    cwd.display()
                 );
                 return Ok(serde_json::json!({
                     "output": msg,
@@ -385,7 +391,12 @@ impl Tool for ShellTool {
 
         let exit_code = status.code().unwrap_or(1);
         let tail_str = strip_ansi(&String::from_utf8_lossy(tail.make_contiguous()));
-        let note = format!("[full output: {} ({} bytes)]", out_path.display(), total);
+        let note = format!(
+            "[full output: {} ({} bytes)] [cwd: {}]",
+            out_path.display(),
+            total,
+            cwd.display()
+        );
 
         // Structured process-tool shape: turn.rs reads `output` for the model-facing text,
         // and lifts `exit_code` into the proto `ProcessResult`. The "exit N (Xms)"

@@ -107,7 +107,7 @@ pub async fn run_tool_as_spine(
             })
             .unwrap_or(false);
     let mut whitelist_hit = None;
-    let scope = if is_detached_shell {
+    let mut scope = if is_detached_shell {
         use crate::types::ToolAccess;
         crate::sandbox::ceiling::compute_scope(
             ToolAccess {
@@ -137,6 +137,19 @@ pub async fn run_tool_as_spine(
     } else {
         crate::sandbox::ceiling::bound_request(&impulse.tool, sandbox_cfg, codebase, &jail)
     };
+
+    // Grant this session's own daemon-log directory, never any sibling
+    // session's — auto-injected here (not config-driven) so no gait.jsonc
+    // entry can accidentally widen it back to the shared `daemons/` root.
+    // Readable for every tool (so read/grep/ls can inspect a session's own
+    // daemon output); writable only for `shell` (which creates the dir and
+    // the log file when spawning a detached daemon).
+    let session_daemons_dir = gait_dir.join("daemons").join(session_id);
+    scope.readable.push(session_daemons_dir.clone());
+    if impulse.tool == "shell" {
+        scope.writable.push(session_daemons_dir);
+    }
+
     let requested = scope_to_proto(&scope);
 
     // ── fs-delegation: scope-check the path, then pre-read the editor buffer ──

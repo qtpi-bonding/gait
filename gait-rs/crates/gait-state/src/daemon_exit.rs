@@ -55,6 +55,7 @@ pub fn cmd_daemon_exit(args: DaemonExitArgs) -> anyhow::Result<Option<WakeReques
     let log_path = args
         .gait_dir
         .join("daemons")
+        .join(&args.session)
         .join(format!("{}.log", args.name));
     let c = Completion::Daemon {
         name: args.name.clone(),

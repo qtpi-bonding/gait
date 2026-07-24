@@ -68,6 +68,7 @@ pub fn pending_daemon_completions(
         let status = crate::session::daemons::classify_exit(exit_code);
         let log_path = gait_dir
             .join("daemons")
+            .join(session_id)
             .join(format!("{name}.log"))
             .to_string_lossy()
             .into_owned();
@@ -296,6 +297,11 @@ mod tests {
                 assert!(
                     log_path.ends_with("done1.log"),
                     "log_path under daemons/: {log_path}"
+                );
+                assert!(
+                    log_path.contains("daemons/S/"),
+                    "log_path must be namespaced under the owning session's \
+                     own daemons/<session_id>/ dir, got: {log_path}"
                 );
             }
         }
