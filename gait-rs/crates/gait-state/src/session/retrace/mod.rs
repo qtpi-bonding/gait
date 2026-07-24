@@ -336,27 +336,9 @@ impl Projection for ActiveAgent {
     }
 }
 
-/// Last-write-wins working directory. Seeds at the codebase root; each `Cwd`
-/// event overwrites. Folded over the full session (survives compaction), so the
-/// sticky cwd persists across turns and `undo` reverts it (the event is truncated).
-pub struct ActiveCwd {
-    pub root: std::path::PathBuf,
-}
-impl Projection for ActiveCwd {
-    type State = std::path::PathBuf;
-    fn seed(&self) -> Self::State {
-        self.root.clone()
-    }
-    fn apply(&self, state: &mut Self::State, _ev: &Event, kind: &payload::Kind) {
-        if let payload::Kind::Cwd(c) = kind {
-            *state = std::path::PathBuf::from(&c.path);
-        }
-    }
-}
-
 /// Active-mode overlay — LWW over `Mode` events across the full session.
-/// Standalone (like `ActiveCwd`): NO checkpoint override, so an `Agent`
-/// re-baseline never clears it (finding #1). `None` = default / no overlay.
+/// Standalone: NO checkpoint override, so an `Agent` re-baseline never clears
+/// it (finding #1). `None` = default / no overlay.
 pub struct ActiveMode;
 impl Projection for ActiveMode {
     type State = Option<pb::Mode>;
@@ -1376,19 +1358,6 @@ pub fn rebaseline_agent(mut live: pb::Agent, st: &AgentState) -> pb::Agent {
 /// Folded agent-dimension state (config seed + Agent checkpoints + deltas).
 pub fn active_agent(events: &[Event], seed: AgentState) -> AgentState {
     run_projection(&ActiveAgent { seed }, events, &HashMap::new())
-}
-
-/// Current sticky working directory (LWW over `Cwd` events, seeded at `root`).
-/// Mutations are ignored; the shell tool and the `<status>` builder both refold
-/// this so they never diverge.
-pub fn active_cwd(events: &[Event], root: &std::path::Path) -> std::path::PathBuf {
-    run_projection(
-        &ActiveCwd {
-            root: root.to_path_buf(),
-        },
-        events,
-        &HashMap::new(),
-    )
 }
 
 /// Sum of every `TurnComplete.usage` over the log — the session's cumulative

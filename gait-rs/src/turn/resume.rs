@@ -214,14 +214,12 @@ pub(crate) async fn apply_if_pending(
         // turn (Phase 4 Option A); here we only fold the log into messages.
         let events = ingestor.events()?;
         state.messages = crate::session::retrace::messages(&events)?;
-        let cwd = crate::session::retrace::active_cwd(&events, codebase_path);
         // turn_ctx is prepended to `outgoing` INSIDE the step loop (Task 5, plan §5d)
         // so that pre_step mutations logged on this turn land in the transcript alongside
         // a fresh turn_ctx for THIS step, not the prior turn's.
         state.turn_ctx = Some(super::prompt::build_turn_context(
             codebase_hash,
             dirty_files,
-            &cwd,
             daemons,
         ));
     }

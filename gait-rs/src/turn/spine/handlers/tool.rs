@@ -193,21 +193,6 @@ pub async fn run_tool_as_spine(
         None
     };
 
-    // Resolve cwd: if the brain sent a cwd in the Impulse, use it; otherwise
-    // read active_cwd from the session log (same as SubprocessSynapse did).
-    // RelaySynapse sends empty cwd because the brain doesn't read the session
-    // log for cwd — the spine owns it.
-    let cwd = if impulse.cwd.is_empty() {
-        let events =
-            crate::session::log::read_events(&crate::session::live::log_path(gait_dir, session_id))
-                .unwrap_or_default();
-        crate::session::retrace::active_cwd(&events, codebase)
-            .to_string_lossy()
-            .into_owned()
-    } else {
-        impulse.cwd.clone()
-    };
-
     let shell_whitelist_patterns = if impulse.tool == "shell" {
         sandbox_cfg
             .shell_whitelist
@@ -221,7 +206,6 @@ pub async fn run_tool_as_spine(
     let impulse_with_scope = Impulse {
         tool: impulse.tool.clone(),
         args: impulse.args,
-        cwd,
         requested: Some(requested),
         prefetch,
         shell_whitelist_patterns,
@@ -554,7 +538,6 @@ mod tests {
         let impulse = gait_proto::gait::sandbox::v1::Impulse {
             tool: "write".into(),
             args: Some(s),
-            cwd: String::new(),
             requested: None,
             prefetch: None,
             shell_whitelist_patterns: vec![],

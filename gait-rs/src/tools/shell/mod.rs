@@ -13,9 +13,10 @@ struct ShellParams {
     cmd: String,
     /// Why this command is needed
     reason: String,
-    /// Optional working directory for this command. Relative paths resolve against
-    /// the current directory and PERSIST (like `cd`); absolute paths are used as-is.
-    /// A nonexistent path errors and leaves the working directory unchanged.
+    /// Optional working directory for THIS command only. Relative paths resolve
+    /// against the codebase root; absolute paths are used as-is. Does not persist
+    /// to later calls — a call that omits `cwd` always runs at the codebase root,
+    /// regardless of what any earlier call passed. A nonexistent path errors.
     /// Prefer this over "cd dir && cmd" in `cmd` — sandbox.shell_whitelist only
     /// matches single-segment commands, so a cd-chained command silently misses
     /// any whitelist grant (network, bind, etc.) it would otherwise get.
@@ -70,10 +71,12 @@ impl Tool for ShellTool {
          (e.g. \"grep FAILED | head -30\") to return only relevant lines and keep context small. \
          You can then grep/read the tmp file for more detail without re-running. \
          Pass `cwd` to run in a subdirectory — ALWAYS prefer this over `cd dir && cmd` inside \
-         `cmd`: cwd persists across later calls like `cd` (relative paths resolve against the \
-         current dir, absolute used as-is), but cd-chaining inside `cmd` does not persist and \
-         silently forfeits any sandbox whitelist grant (network, bind) the command would \
-         otherwise get. All shell commands require permission approval unless pre-allowed."
+         `cmd`: cwd-chaining inside `cmd` silently forfeits any sandbox whitelist grant (network, \
+         bind) the command would otherwise get. `cwd` applies to this call only and does not \
+         persist — relative paths always resolve against the codebase root (not against any \
+         earlier call's `cwd`), and a call that omits `cwd` always runs at the codebase root. \
+         Every result echoes the effective directory as `[cwd: ...]`. All shell commands require \
+         permission approval unless pre-allowed."
     }
     fn parameters(&self) -> &Value {
         &self.parameters
@@ -109,20 +112,15 @@ impl Tool for ShellTool {
     }
 
     async fn execute(&self, args: Value, rec: &dyn crate::types::Rec) -> Result<Value, ToolError> {
-        // Extract __cwd BEFORE deserializing ShellParams so the reserved key (which
-        // ShellParams silently ignores) is available. __cwd is injected by cmd_run_tool
-        // from the brain's active-cwd state, replacing the old Ingestor refold.
-        // Falls back to the codebase root for in-process calls (brain path).
-        let current = args
-            .get("__cwd")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| self.ctx.codebase_path.clone());
-
         let params: ShellParams = serde_json::from_value(args)
             .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
 
+        // Every call is independent: a relative `cwd` resolves against the codebase
+        // root, an absolute `cwd` is used as-is, and an omitted `cwd` IS the root —
+        // never "wherever an earlier call happened to land." Nothing carries forward
+        // between calls; the per-result `[cwd: ...]` echo below is how the model
+        // learns where a command actually ran.
+        let root = &self.ctx.codebase_path;
         let run_dir = match params
             .cwd
             .as_deref()
@@ -134,7 +132,7 @@ impl Tool for ShellTool {
                 let target = if p.is_absolute() {
                     p.to_path_buf()
                 } else {
-                    current.join(p)
+                    root.join(p)
                 };
                 match std::fs::canonicalize(&target) {
                     Ok(dir) if dir.is_dir() => {
@@ -142,10 +140,8 @@ impl Tool for ShellTool {
                         // nothing about the kernel sandbox scope. A path outside scope can
                         // still pass this check (canonicalize is metadata-only and typically
                         // allowed broadly even when data access is scoped), so it must be
-                        // rejected here, before the Cwd event is recorded. Once that event
-                        // is folded into the session's active_cwd it is last-write-wins with
-                        // no rollback, so an out-of-scope path recorded here would wedge
-                        // every later shell call for the rest of the session.
+                        // rejected here with a clean, immediately-attributable error rather
+                        // than let the kernel sandbox reject the subprocess itself later.
                         if let Some(scope) = &self.ctx.scope {
                             let in_scope = scope.read_all
                                 || scope.readable.iter().any(|r| dir.starts_with(r))
@@ -160,11 +156,12 @@ impl Tool for ShellTool {
                                 }));
                             }
                         }
-                        // Record via the Recorder: this both appends the event to the
-                        // session transcript (so the next call's active_cwd refold sees it)
-                        // AND publishes it on the channel (live to stderr via the StdioSink,
-                        // and to any REPL subscriber). The log-path local is gone.
-                        // cwd event is best-effort: shell executed successfully, do not fail on record error.
+                        // Record via the Recorder: appends a plain historical `Cwd` event to
+                        // the session transcript and publishes it live (stderr via the
+                        // StdioSink, and to any REPL subscriber). Nothing folds this back into
+                        // an authoritative "current directory" for later calls anymore — it's
+                        // audit trail only. cwd event is best-effort: shell executed
+                        // successfully, do not fail on record error.
                         let _ = rec.record(crate::proto::events::cwd(&dir.to_string_lossy()));
                         dir
                     }
@@ -176,7 +173,7 @@ impl Tool for ShellTool {
                     }
                 }
             }
-            None => current,
+            None => root.clone(),
         };
         let cwd = run_dir;
 

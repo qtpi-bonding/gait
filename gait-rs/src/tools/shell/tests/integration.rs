@@ -106,26 +106,76 @@ async fn cwd_param_runs_in_subdir() {
     assert!(output.contains("submarker"), "got: {output}");
 }
 
+/// Regression test for the bug reproduced in dogfood session `sc4f35bf6`: a
+/// model reasonably re-sends the exact same relative `cwd` it used before,
+/// expecting it to always mean "this subdir of the codebase". Before this fix,
+/// a prior call's resolved directory got folded into "current" state and a
+/// later relative `cwd` request was joined against THAT instead of the
+/// codebase root — turning the second, identical request into a nonexistent
+/// doubled path (".../sub/sub") and failing with "cd: no such directory".
+/// `cwd` must be per-call and idempotent: repeating it always resolves the
+/// same way, and omitting it always means the codebase root, regardless of
+/// what any earlier call passed.
 #[tokio::test]
-async fn cwd_param_persists_across_calls() {
+async fn cwd_param_is_per_call_not_sticky() {
     let dir = TempDir::new().unwrap();
     std::fs::create_dir_all(dir.path().join("sub")).unwrap();
     let tool = make_tool(&dir);
-    // Call 1: cd into sub via the cwd param (emits a Cwd event).
-    let _ = tool
-        .execute(
-            serde_json::json!({"cmd": "pwd", "reason": "test", "cwd": "sub"}),
-            &crate::Recorder::detached(),
-        )
-        .await
-        .unwrap();
-    // Call 2: simulate what cmd_run_tool does — inject __cwd (the active cwd from the
-    // brain's session state) so the tool knows where to run. Shell no longer refolids
-    // the session log itself; the caller tracks cwd and injects it per call.
-    let sub_path = dir.path().join("sub").to_string_lossy().into_owned();
+
+    let run = |cmd: &'static str, cwd: Option<&'static str>| {
+        let tool = &tool;
+        async move {
+            let mut args = serde_json::json!({"cmd": cmd, "reason": "test"});
+            if let Some(cwd) = cwd {
+                args["cwd"] = serde_json::Value::String(cwd.to_string());
+            }
+            let result = tool
+                .execute(args, &crate::Recorder::detached())
+                .await
+                .unwrap();
+            result
+                .get("output")
+                .and_then(|v| v.as_str())
+                .expect("output field")
+                .to_string()
+        }
+    };
+
+    // Call 1: cwd: "sub" resolves from the codebase root.
+    let out1 = run("pwd", Some("sub")).await;
+    assert!(out1.contains("sub"), "expected to run in sub, got: {out1}");
+    assert!(!out1.contains("no such directory"), "got: {out1}");
+
+    // Call 2: the exact same relative request again — must succeed identically,
+    // not compound against call 1's resolved directory.
+    let out2 = run("pwd", Some("sub")).await;
+    assert!(
+        out2.contains("sub"),
+        "expected to run in sub again, got: {out2}"
+    );
+    assert!(!out2.contains("no such directory"), "got: {out2}");
+
+    // Call 3: omits `cwd` entirely — must run at the codebase root, not
+    // wherever calls 1/2 happened to land.
+    let out3 = run("pwd", None).await;
+    assert!(
+        !out3.contains("/sub"),
+        "a call omitting cwd must run at the codebase root, not a prior call's dir: {out3}"
+    );
+}
+
+/// A stale `__cwd` key (the old fold-injection channel) must have zero effect —
+/// there is nothing left that reads it. Guards against silently reintroducing
+/// the sticky-cwd channel through the back door.
+#[tokio::test]
+async fn stale_dunder_cwd_key_is_ignored() {
+    let dir = TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+    let tool = make_tool(&dir);
+    let bogus = dir.path().join("sub").to_string_lossy().into_owned();
     let result = tool
         .execute(
-            serde_json::json!({"cmd": "pwd", "reason": "test", "__cwd": sub_path}),
+            serde_json::json!({"cmd": "pwd", "reason": "test", "__cwd": bogus}),
             &crate::Recorder::detached(),
         )
         .await
@@ -135,8 +185,8 @@ async fn cwd_param_persists_across_calls() {
         .and_then(|v| v.as_str())
         .expect("output field");
     assert!(
-        output.contains("sub"),
-        "expected to run in sub, got: {output}"
+        !output.contains("/sub"),
+        "a stale __cwd key must not steer where the command runs: {output}"
     );
 }
 
@@ -236,9 +286,9 @@ async fn cwd_outside_scope_errors_without_emitting_cwd_event() {
     assert_eq!(exit_code, 1, "got: {result}");
     assert!(output.contains("outside sandbox scope"), "got: {output}");
 
-    // The wedge this guards against: no Cwd event may reach the transcript for
-    // an out-of-scope request, since active_cwd is last-write-wins with no
-    // rollback — one bad Cwd event here would corrupt every later shell call.
+    // No Cwd event may reach the transcript for an out-of-scope request — it's
+    // a plain historical log record, but there's no reason to record a
+    // directory the command never actually ran in.
     drop(rec);
     let mut saw_cwd = false;
     while let Some(item) = rx.recv().await {

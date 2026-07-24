@@ -387,20 +387,6 @@ fn active_agent_checkpoint_returns_none_for_no_agent() {
 }
 
 #[test]
-fn active_cwd_defaults_to_root() {
-    let root = std::path::Path::new("/repo/root");
-    let evs = mint_events(vec![events::assistant_text("no cwd here".into())]);
-    assert_eq!(active_cwd(&evs, root), root.to_path_buf());
-}
-
-#[test]
-fn active_cwd_last_write_wins() {
-    let root = std::path::Path::new("/repo/root");
-    let evs = mint_events(vec![events::cwd("/a"), events::cwd("/b")]);
-    assert_eq!(active_cwd(&evs, root), std::path::PathBuf::from("/b"));
-}
-
-#[test]
 fn active_mode_folds_lww_and_empty_clears() {
     let evs = mint_events(vec![
         events::mode("plan", vec!["write".into()], "s", ""),

@@ -140,7 +140,6 @@ mod confined_read_tests {
     fn shell_impulse(codebase: &str, cmd: &str, network_mode: Mode) -> Impulse {
         Impulse {
             tool: "shell".into(),
-            cwd: codebase.into(),
             args: Some(
                 serde_json::from_value(
                     serde_json::json!({ "cmd": cmd, "reason": "confined-read enforcement test" }),
@@ -212,7 +211,6 @@ mod confined_read_tests {
         let cb = codebase();
         let impulse = Impulse {
             tool: "read".into(),
-            cwd: cb.clone(),
             args: Some(
                 serde_json::from_value(serde_json::json!({ "file_path": "Cargo.toml" }))
                     .expect("valid read args"),

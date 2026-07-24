@@ -2656,7 +2656,6 @@ async fn delegated_read_serves_buffer_not_disk() {
     let impulse = gait_proto::gait::sandbox::v1::Impulse {
         tool: "read".into(),
         args: Some(s),
-        cwd: String::new(),
         requested: None,
         prefetch: None,
         shell_whitelist_patterns: vec![],
@@ -2731,7 +2730,6 @@ async fn shell_command_matching_whitelist_carries_match_items_in_feedback() {
     let impulse = gait_proto::gait::sandbox::v1::Impulse {
         tool: "shell".into(),
         args: Some(s),
-        cwd: String::new(),
         requested: None,
         prefetch: None,
         shell_whitelist_patterns: vec![],
@@ -2806,7 +2804,6 @@ async fn shell_command_not_matching_whitelist_carries_no_match_items() {
     let impulse = gait_proto::gait::sandbox::v1::Impulse {
         tool: "shell".into(),
         args: Some(s),
-        cwd: String::new(),
         requested: None,
         prefetch: None,
         shell_whitelist_patterns: vec![],

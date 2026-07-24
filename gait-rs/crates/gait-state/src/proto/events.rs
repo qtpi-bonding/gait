@@ -55,7 +55,10 @@ pub fn assistant_text(content: String) -> pb::event::Body {
     }))
 }
 
-/// A working-directory change. `ActiveCwd` LWW-folds these.
+/// A working-directory change, recorded when a `shell` call's `cwd` param
+/// resolves successfully. Plain historical log record — nothing folds these
+/// into an authoritative "current directory" fed back into later calls; each
+/// `shell` call is independent (see `tools::shell`).
 pub fn cwd(path: &str) -> pb::event::Body {
     wire::body(pb::payload::Kind::Cwd(pb::Cwd {
         path: path.to_string(),

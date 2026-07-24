@@ -12,9 +12,10 @@ message Prefetch {
   optional string content = 2;  // absent = new file (delegate returned Ok(None))
 }
 message Impulse {
+  reserved 3; // was `cwd` — removed; each `shell` call resolves its own cwd,
+              // nothing folds a session-wide "active cwd" into this IPC anymore.
   string tool = 1;
   google.protobuf.Struct args = 2;
-  string cwd = 3;
   Scope requested = 4;
   optional Prefetch prefetch = 5;
   // Shell-only: the sandbox.shell_whitelist pattern strings in effect for

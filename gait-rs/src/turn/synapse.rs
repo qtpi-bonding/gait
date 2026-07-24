@@ -141,9 +141,8 @@ impl Synapse for RelaySynapse {
                 gait_proto::gait::sandbox::v1::Impulse {
                     tool: tool.name().to_string(),
                     args: Some(args_struct),
-                    cwd: String::new(), // spine reads cwd from session for hands
-                    requested: None,    // spine re-derives scope via bound_request
-                    prefetch: None,     // no delegation from this code path
+                    requested: None, // spine re-derives scope via bound_request
+                    prefetch: None,  // no delegation from this code path
                     shell_whitelist_patterns: vec![], // spine re-derives via sandbox_cfg
                 },
             )),

@@ -8,19 +8,14 @@ use crate::types::ToolDef;
 
 #[test]
 fn turn_context_is_wrapped_in_status_tag() {
-    let ctx = build_turn_context(
-        "deadbeef",
-        &["src/a.rs".to_string()],
-        std::path::Path::new("/repo/sub"),
-        &[],
-    );
+    let ctx = build_turn_context("deadbeef", &["src/a.rs".to_string()], &[]);
     assert!(ctx.starts_with("<status>"), "got: {ctx}");
     assert!(ctx.trim_end().ends_with("</status>"), "got: {ctx}");
     assert!(ctx.contains("Codebase commit: deadbeef"));
     assert!(ctx.contains("src/a.rs"));
     assert!(
-        ctx.contains("<cwd>/repo/sub</cwd>"),
-        "expected <cwd> XML tag, got: {ctx}"
+        !ctx.contains("<cwd>"),
+        "cwd no longer persists — the status block must not imply a sticky cwd: {ctx}"
     );
 }
 

@@ -29,7 +29,6 @@ fn run_tool_executes_read_in_subprocess() {
     let impulse = Impulse {
         tool: "read".into(),
         args: Some(args_struct),
-        cwd: dir_str.clone(),
         // Task 6: ship a `requested` scope that lists the tempdir as writable
         // so the hand applies a SandboxApplied seal end-to-end (read_all=true
         // means reads anywhere succeed, so the file_path lookup works).

@@ -122,26 +122,6 @@ pub async fn run_hand(config: HandConfig) {
         crate::tools::coerce_int_params(raw)
     };
 
-    // For `shell`, inject impulse.cwd into args as `__cwd` so the tool reads the
-    // session's active working directory without re-reading the session log itself.
-    let args_json = if config.tool == "shell" {
-        let mut obj = match args_json {
-            serde_json::Value::Object(m) => m,
-            other => {
-                let mut m = serde_json::Map::new();
-                if !other.is_null() {
-                    m.insert("_raw".into(), other);
-                }
-                m
-            }
-        };
-        obj.entry("__cwd")
-            .or_insert_with(|| serde_json::Value::String(impulse.cwd.clone()));
-        serde_json::Value::Object(obj)
-    } else {
-        args_json
-    };
-
     // Computed before ToolCtx so tools (the shell tool in particular) can check
     // a requested `cwd` against scope before committing to it, instead of only
     // finding out when the kernel seal later rejects the subprocess spawn.
@@ -179,9 +159,7 @@ pub async fn run_hand(config: HandConfig) {
     };
 
     // Schema-guided coercion (string -> scalar, float -> int) needs the tool's
-    // parameters schema, so it lives here, after the tool is resolved. The
-    // injected `__cwd` key has no schema entry and falls through to the float->int
-    // pass (a string path is left untouched).
+    // parameters schema, so it lives here, after the tool is resolved.
     let args_json = crate::tools::coerce_scalar_params(args_json, tool.parameters());
 
     let rec = Recorder::buffering();
@@ -464,7 +442,6 @@ mod tests {
         let with = Impulse {
             tool: "read".into(),
             args: None,
-            cwd: String::new(),
             requested: None,
             prefetch: Some(Prefetch {
                 path: "/ws/a.rs".into(),

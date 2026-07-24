@@ -201,7 +201,6 @@ fn impulse_round_trips_via_binary_prost() {
 
     let impulse = Impulse {
         tool: "read".into(),
-        cwd: "/repo".into(),
         args: None,
         requested: None,
         prefetch: None,
@@ -213,7 +212,6 @@ fn impulse_round_trips_via_binary_prost() {
 
     let decoded = Impulse::decode(&bytes[..]).expect("decode Impulse");
     assert_eq!(decoded.tool, "read");
-    assert_eq!(decoded.cwd, "/repo");
     assert_eq!(decoded.args, None);
     assert_eq!(decoded.requested, None);
 }
@@ -261,7 +259,6 @@ fn scope_serializes_network_scope() {
 
     let impulse = Impulse {
         tool: "fetch".into(),
-        cwd: "/repo".into(),
         requested: Some(Scope {
             read_all: true,
             readable: vec!["/repo".into()],
@@ -295,7 +292,6 @@ fn signal_envelope_discriminates_oneof() {
         corr_id: 42,
         body: Some(Body::Impulse(Impulse {
             tool: "read".into(),
-            cwd: "/repo".into(),
             ..Default::default()
         })),
     };
@@ -372,7 +368,6 @@ fn impulse_prefetch_and_feedback_final_content_roundtrip() {
     let imp = Impulse {
         tool: "read".into(),
         args: None,
-        cwd: String::new(),
         requested: None,
         prefetch: Some(Prefetch {
             path: "/ws/a.rs".into(),

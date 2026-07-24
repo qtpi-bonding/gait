@@ -3,7 +3,6 @@
 //! `<status>` system-prompt fragments plus the `MakeMcpToolDef` shim and
 //! the dynamic assembly step that folds hooks into the live system prompt.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use crate::config::McpToolDef;
@@ -11,12 +10,11 @@ use crate::mcp::McpClient;
 use crate::types::{Hook, LoadableEntry, Tool};
 
 /// Render the `<status>` block the model sees at the top of every turn:
-/// unix timestamp, codebase HEAD, dirty files, and a terminal-style cwd
-/// prompt. Tested directly — keep `pub(crate)` so `turn/tests.rs` can call it.
+/// unix timestamp, codebase HEAD, and dirty files. Tested directly — keep
+/// `pub(crate)` so `turn/tests.rs` can call it.
 pub(crate) fn build_turn_context(
     codebase_hash: &str,
     dirty_files: &[String],
-    cwd: &Path,
     daemons: &[(String, i32, bool, String)],
 ) -> String {
     let now = std::time::SystemTime::now()
@@ -43,7 +41,6 @@ pub(crate) fn build_turn_context(
             ));
         }
     }
-    ctx.push_str(&format!("<cwd>{}</cwd>\n", cwd.display()));
     ctx.push_str("</status>\n");
     ctx
 }
