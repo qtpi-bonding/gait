@@ -1,6 +1,3 @@
-use regex::Regex;
-use std::sync::LazyLock;
-
 use crate::types::{PermissionRequest, ToolPermission};
 use gait_types::config::SandboxWhitelistEntry;
 use gait_types::sandbox_grant::SandboxGrant;
@@ -143,16 +140,85 @@ pub fn is_request_approved(tool_name: &str, req: &PermissionRequest, allow: &[St
 }
 
 /// Split a shell command on unquoted operators: ||, &&, |, ;, &
-/// v1: naive regex — does not handle quoted strings (v2 TODO)
-static COMMAND_SPLIT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\|\||&&|[|;&]").expect("valid regex literal"));
-
+/// v1: naive scanner — does not handle quoted strings (v2 TODO). Unlike a
+/// plain regex split, a bare `&` is NOT treated as an operator when it's
+/// adjacent to `>` (`2>&1`, `1>&2`, `&>file`, `&>>file`) — those are fd-dup
+/// redirects, not the background-job operator, and an earlier regex-only
+/// version silently carved `2>&1` into two bogus segments (`"...2>"`,
+/// `"1"`), which broke `whitelist_match` for the extremely common
+/// `cmd 2>&1 | tail -N` pattern (every segment after the first stops being
+/// a single-segment command, so no shell_whitelist entry could ever match
+/// and grants like network/bind were silently withheld).
 pub fn split_commands(cmd: &str) -> Vec<String> {
-    COMMAND_SPLIT_RE
-        .split(cmd)
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
+    scan_operators(cmd).0
+}
+
+/// True if `cmd` contains a genuine command-chaining operator (`&&`, `;`, or
+/// a bare background `&`) — as opposed to only pipe operators (`|`, `||`).
+/// Used by [`whitelist_match`] to decide whether it's safe to match against
+/// just the first segment of a compound command: a pipeline only ever hands
+/// the first command's stdout to the next stage, it can never substitute a
+/// different command to run, so `cmd 2>&1 | tail -N` is exactly as
+/// authorized by a whitelist entry as `cmd` alone. `&&`/`;`/`&` genuinely
+/// run a separate command afterward and must keep requiring an exact
+/// single-segment match (see the shell tool's `cd dir && cmd` docs for why
+/// that's deliberate).
+fn has_command_chaining(cmd: &str) -> bool {
+    scan_operators(cmd).1
+}
+
+/// Shared scanner backing [`split_commands`] and [`has_command_chaining`].
+/// Returns (non-empty trimmed segments, whether any chaining operator was seen).
+fn scan_operators(cmd: &str) -> (Vec<String>, bool) {
+    let bytes = cmd.as_bytes();
+    let mut segments = Vec::new();
+    let mut chained = false;
+    let mut start = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'|' => {
+                if bytes.get(i + 1) == Some(&b'|') {
+                    segments.push(cmd[start..i].trim().to_string());
+                    i += 2;
+                } else {
+                    segments.push(cmd[start..i].trim().to_string());
+                    i += 1;
+                }
+                start = i;
+            }
+            b';' => {
+                segments.push(cmd[start..i].trim().to_string());
+                chained = true;
+                i += 1;
+                start = i;
+            }
+            b'&' => {
+                if bytes.get(i + 1) == Some(&b'&') {
+                    segments.push(cmd[start..i].trim().to_string());
+                    chained = true;
+                    i += 2;
+                    start = i;
+                } else {
+                    let prev_is_gt = i > 0 && bytes[i - 1] == b'>';
+                    let next_is_gt = bytes.get(i + 1) == Some(&b'>');
+                    if prev_is_gt || next_is_gt {
+                        // fd-dup redirect (2>&1, 1>&2, &>file) — not an operator.
+                        i += 1;
+                    } else {
+                        segments.push(cmd[start..i].trim().to_string());
+                        chained = true;
+                        i += 1;
+                        start = i;
+                    }
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    segments.push(cmd[start..].trim().to_string());
+    segments.retain(|s| !s.is_empty());
+    (segments, chained)
 }
 
 /// Generate progressive wildcard prefix patterns for a single (non-compound) shell command.
@@ -185,17 +251,34 @@ pub fn wildcard_match(pattern: &str, value: &str) -> bool {
     }
 }
 
-/// Match a non-compound shell command against `sandbox.shell_whitelist`
-/// entries. Only ever called for `shell` tool calls.
+/// Match a shell command against `sandbox.shell_whitelist` entries. Only
+/// ever called for `shell` tool calls.
+///
+/// A single-segment command matches directly. A multi-segment command
+/// matches against its *first* segment only when every separator present is
+/// a pipe (`|`/`||`) — see [`has_command_chaining`] for why that's safe:
+/// `flutter test foo.dart 2>&1 | tail -60` is authorized by the same
+/// `shell_whitelist` entry as `flutter test foo.dart` alone, so shaping
+/// output through `tail`/`head`/`grep` (the tool's own recommended pattern
+/// for large output) doesn't silently forfeit the grant. Any `&&`/`;`/`&`
+/// still requires an exact single-segment match, unchanged.
 pub fn whitelist_match<'a>(
     cmd: &str,
     whitelist: &'a [SandboxWhitelistEntry],
 ) -> Option<(&'a SandboxWhitelistEntry, Vec<SandboxGrant>)> {
-    if split_commands(cmd).len() != 1 {
-        return None;
-    }
+    let segs = split_commands(cmd);
+    let candidate: &str = match segs.len() {
+        0 => return None,
+        1 => cmd,
+        _ => {
+            if has_command_chaining(cmd) {
+                return None;
+            }
+            segs[0].as_str()
+        }
+    };
     whitelist.iter().find_map(|entry| {
-        wildcard_match(&entry.pattern, cmd).then(|| {
+        wildcard_match(&entry.pattern, candidate).then(|| {
             let grants = entry
                 .grants
                 .iter()
@@ -277,6 +360,34 @@ mod tests {
     #[test]
     fn split_single_command() {
         assert_eq!(split_commands("cargo test"), vec!["cargo test"]);
+    }
+
+    /// `2>&1` is a bare-`&` fd-duplication redirect (merge stderr into
+    /// stdout), not the background-job operator — it must stay attached to
+    /// its command, not get carved into two bogus segments. This is the
+    /// single most common shell idiom in agent-issued commands
+    /// (`cmd 2>&1 | tail -N`), so mis-splitting it broke whitelist matching
+    /// for nearly every real command.
+    #[test]
+    fn split_does_not_break_on_stderr_redirect() {
+        assert_eq!(
+            split_commands("flutter test foo.dart 2>&1 | tail -60"),
+            vec!["flutter test foo.dart 2>&1", "tail -60"]
+        );
+    }
+
+    #[test]
+    fn split_does_not_break_on_other_fd_dup_forms() {
+        assert_eq!(split_commands("cmd 1>&2"), vec!["cmd 1>&2"]);
+        assert_eq!(split_commands("cmd &>out.log"), vec!["cmd &>out.log"]);
+        assert_eq!(split_commands("cmd &>>out.log"), vec!["cmd &>>out.log"]);
+    }
+
+    /// A bare background `&` (not adjacent to `>`) must still split, and
+    /// still count as chaining — unchanged from the old regex behavior.
+    #[test]
+    fn split_background_still_chains() {
+        assert!(has_command_chaining("sleep 5 & echo done"));
     }
 
     #[test]
@@ -611,6 +722,39 @@ mod tests {
         assert!(whitelist_match("flutter test && curl evil.example.com", &whitelist).is_none());
         let (_, grants) = whitelist_match("flutter test", &whitelist).unwrap();
         assert_eq!(grants, vec![SandboxGrant::NetworkHost]);
+    }
+
+    /// The real bug this guards against: `flutter test foo.dart 2>&1 | tail -60`
+    /// is the tool's own recommended pattern for keeping large output short,
+    /// and it must still get the `network`/`bind` grants a plain
+    /// `flutter test foo.dart` would — piping into a read-only filter can't
+    /// smuggle a different command into running, so matching on the first
+    /// segment is safe.
+    #[test]
+    fn whitelist_match_matches_first_segment_of_a_pure_pipeline() {
+        let whitelist = vec![SandboxWhitelistEntry {
+            pattern: "flutter test *".into(),
+            grants: vec!["network".into(), "bind".into()],
+        }];
+        let (entry, grants) = whitelist_match("flutter test foo.dart 2>&1 | tail -60", &whitelist)
+            .expect("pipe-into-tail must still match the whitelist entry");
+        assert_eq!(entry.pattern, "flutter test *");
+        assert_eq!(grants, vec![SandboxGrant::NetworkHost]);
+    }
+
+    #[test]
+    fn whitelist_match_still_rejects_pipeline_mixed_with_chaining() {
+        let whitelist = vec![SandboxWhitelistEntry {
+            pattern: "flutter test *".into(),
+            grants: vec!["network".into()],
+        }];
+        // A `|` alone would be safe, but the trailing `&& rm -rf /` genuinely
+        // chains a second command — must not match.
+        assert!(whitelist_match(
+            "flutter test foo.dart 2>&1 | tail -60 && rm -rf /",
+            &whitelist
+        )
+        .is_none());
     }
 
     #[test]
