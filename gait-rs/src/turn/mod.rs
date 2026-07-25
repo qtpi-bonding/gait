@@ -229,6 +229,7 @@ fn mutation_payload_to_pb(
                 output: output.clone(),
                 duration: None,
                 process: None,
+                checkpoint: None,
             })),
         },
     }

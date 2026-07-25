@@ -1042,6 +1042,7 @@ fn cascade_redact_overrides_orphan_replace() {
         kind: Some(payload::Kind::ToolResult(pb::ToolResult {
             call_id: "cid2".into(),
             output: "new output".into(),
+            checkpoint: None,
             ..Default::default()
         })),
     };
@@ -1463,6 +1464,7 @@ fn fold_replaces_tool_result_in_messages() {
 
             output: "replaced output".into(),
 
+            checkpoint: None,
             ..Default::default()
         })),
     };
@@ -1544,6 +1546,7 @@ fn cascade_replace_tool_result_then_redact_call_hides_both() {
 
             output: "replaced output".into(),
 
+            checkpoint: None,
             ..Default::default()
         })),
     };

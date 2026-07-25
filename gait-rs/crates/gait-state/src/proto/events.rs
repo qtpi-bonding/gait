@@ -144,6 +144,7 @@ pub fn tool_result(
         output,
         duration,
         process,
+        checkpoint: None,
     }))
 }
 

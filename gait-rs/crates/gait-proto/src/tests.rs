@@ -412,3 +412,18 @@ fn impulse_prefetch_and_feedback_final_content_roundtrip() {
     let round = Feedback::decode(fb.encode_to_vec().as_slice()).unwrap();
     assert_eq!(round.final_content.as_deref(), Some("new"));
 }
+
+#[test]
+fn tool_result_checkpoint_field_round_trips() {
+    use crate::gait::log::v1::{ProcessResult, ToolResult};
+    let tr = ToolResult {
+        call_id: "call-1".into(),
+        output: "ok".into(),
+        duration: None,
+        process: Some(ProcessResult { exit_code: 0 }),
+        checkpoint: Some("deadbeef".into()),
+    };
+    let bytes = prost::Message::encode_to_vec(&tr);
+    let decoded = <ToolResult as prost::Message>::decode(bytes.as_slice()).unwrap();
+    assert_eq!(decoded.checkpoint, Some("deadbeef".to_string()));
+}

@@ -271,6 +271,7 @@ message ToolResult {
   string output                     = 2;
   google.protobuf.Duration duration = 3;  // generic — every tool; JSON "0.123s"
   ProcessResult process             = 4;  // present only for shell/process tools
+  optional string checkpoint        = 5;  // shadow-git SHA after this call, mutating tools only
 }
 
 message TurnComplete {

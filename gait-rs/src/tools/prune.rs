@@ -176,6 +176,7 @@ impl Tool for PruneTool {
                             output: tombstone,
                             duration: None,
                             process: None,
+                            checkpoint: None,
                         })),
                     };
 
