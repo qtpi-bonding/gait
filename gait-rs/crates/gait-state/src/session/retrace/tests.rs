@@ -1776,6 +1776,7 @@ fn daemon_update_renders_as_user_message() {
         0,
         "done",
         "/tmp/build.log".into(),
+        "build@1".into(),
     )];
     let msgs = messages(&mint_events(bodies)).unwrap();
     assert_eq!(msgs.len(), 1);
@@ -1803,6 +1804,7 @@ fn daemon_update_raw_messages_includes_user_message() {
         124,
         "killed",
         "/var/log/svc.log".into(),
+        "svc-x@1".into(),
     )]);
     let raw = run_projection(&ActiveRawMessages, &evs, &HashMap::new());
     assert_eq!(raw.base.len(), 1);
@@ -1924,6 +1926,7 @@ fn active_raw_messages_agent_update_uses_provenance_not_session_id() {
                     status: crate::proto::gait::log::v1::AgentStatus::Done as i32,
                     summary: "tests pass".into(),
                     items: None,
+                    idempotency_key: "s1234abcd-evt1".into(),
                 },
             )),
         });

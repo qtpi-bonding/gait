@@ -172,6 +172,7 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
                     from_session: payload.from_session,
                     status: payload.status,
                     summary: payload.summary,
+                    idempotency_key: payload.idempotency_key,
                 })),
             };
             notify_relay_writer.send_one_way(&sig).await.ok();
@@ -588,11 +589,16 @@ impl BrainDriver {
             self.spawn_tx.clone(),
         )
         .with_notify_tx(self.notify_tx.clone());
+        let last_event_id = {
+            let events = self.log_mirror.lock().expect("log mirror poisoned");
+            events.last().map(|e| e.id.clone())
+        };
         let ended = crate::TurnEnded {
             session_id: &self.session_id,
             assigned_by: meta.assigned_by.as_deref(),
             result,
             notify_done: meta.notify_done,
+            last_event_id,
         };
         for action in scheduler.next(&ended) {
             if let Err(e) = harness.execute(&action).await {

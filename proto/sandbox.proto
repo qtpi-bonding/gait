@@ -153,6 +153,9 @@ message Notify {
   string from_session   = 2;
   string status         = 3;
   string summary        = 4;
+  // Stable idempotency key (see Completion, gait-state::session::completion) —
+  // sourced from the ending session's own log-tail event id.
+  string idempotency_key = 5;
 }
 
 // Spine → brain: the first signal, sent immediately after the brain starts and

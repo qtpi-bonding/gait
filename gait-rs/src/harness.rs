@@ -22,6 +22,7 @@ pub struct NotifyPayload {
     pub from_session: String,
     pub status: String,
     pub summary: String,
+    pub idempotency_key: String,
 }
 
 pub struct NativeHarnessBackend {
@@ -72,6 +73,7 @@ impl HarnessBackend for NativeHarnessBackend {
                 from_session,
                 status,
                 summary,
+                idempotency_key,
             } => {
                 if let Some(ref tx) = self.notify_tx {
                     // Sealed brain path: delegate write + commit + wake to spine via Nerve.
@@ -82,16 +84,28 @@ impl HarnessBackend for NativeHarnessBackend {
                         from_session: from_session.clone(),
                         status: status.clone(),
                         summary: summary.clone(),
+                        idempotency_key: idempotency_key.clone(),
                     };
                     let _ = tx.send(payload);
                 } else {
                     // Non-sealed path: use notify_parent — one-shot lock acquire, dedup,
                     // write, commit, and wake. Replaces the 20×500ms retry loop.
                     // ParentBusy → the live turn's per-step poll will surface it.
-                    let c = crate::session::completion::Completion::Agent {
-                        from: from_session.clone(),
-                        status: status.clone(),
-                        summary: summary.clone(),
+                    let c = crate::session::completion::Completion {
+                        provenance: Some(crate::proto::gait::log::v1::Provenance {
+                            from: format!("agent:{from_session}").into_bytes(),
+                            to: vec![],
+                            context: String::new(),
+                            signature: vec![], // placeholder identity — see plan Global Constraints
+                        }),
+                        payload: crate::proto::events::agent_update(
+                            from_session.clone(),
+                            status,
+                            summary.clone(),
+                            None,
+                            idempotency_key.clone(),
+                        ),
+                        idempotency_key: idempotency_key.clone(),
                     };
                     let repos = crate::git::Repos::production();
                     match crate::session::completion::notify_parent(
@@ -130,6 +144,7 @@ mod tests {
             from_session: "child".into(),
             status: "done".into(),
             summary: "x".into(),
+            idempotency_key: "child-evt1".into(),
         };
         assert!(NoopHarnessBackend.execute(&action).await.is_ok());
     }

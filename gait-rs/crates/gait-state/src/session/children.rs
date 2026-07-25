@@ -20,6 +20,11 @@ pub struct ChildInfo {
     pub is_done: bool,
     /// Best-effort summary from the child's last `AssistantText` content.
     pub summary: Option<String>,
+    /// The child's own log-tail event id at the moment this was computed —
+    /// used as the stable component of a completion's idempotency key
+    /// (distinct once the child produces further events; stable across a
+    /// retried check of the same child state). See completion.rs's Completion.
+    pub last_event_id: String,
 }
 
 /// Return all sessions assigned to `parent_session_id` whose lock is no longer
@@ -82,10 +87,13 @@ pub fn children_of(gait_dir: &Path, parent_session_id: &str) -> Vec<ChildInfo> {
             None
         });
 
+        let last_event_id = events.last().map(|e| e.id.clone()).unwrap_or_default();
+
         out.push(ChildInfo {
             id: session_id,
             is_done,
             summary,
+            last_event_id,
         });
     }
     out

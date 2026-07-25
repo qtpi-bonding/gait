@@ -128,6 +128,7 @@ async fn notify_writes_agent_update_to_parent_session() {
             from_session: "child".into(),
             status: "done".into(),
             summary: "child finished".into(),
+            idempotency_key: "child-evt1".into(),
         })),
     };
     let _ = run_one(tmp.path(), "child", &[n, terminated_ok("done")]).await;
@@ -169,6 +170,7 @@ async fn notify_commits_target_session_through_injected_repos() {
             from_session: "child3".into(),
             status: "done".into(),
             summary: "child finished".into(),
+            idempotency_key: "child3-evt1".into(),
         })),
     };
     let (_sink, calls) = run_one(tmp.path(), "child3", &[n, terminated_ok("done")]).await;
@@ -203,6 +205,7 @@ async fn notify_to_missing_parent_does_not_fail_the_turn() {
             from_session: "child2".into(),
             status: "done".into(),
             summary: "x".into(),
+            idempotency_key: "child2-evt1".into(),
         })),
     };
     let (sink, _calls) = run_one(tmp.path(), "child2", &[n, terminated_ok("done")]).await;

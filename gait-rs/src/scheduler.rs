@@ -13,6 +13,11 @@ pub struct TurnEnded<'a> {
     /// When false, suppress `NotifyAndResume` — result delivered via Feedback instead.
     /// Set from `SessionMeta.notify_done` (which mirrors `SessionStart.notify_done`).
     pub notify_done: bool,
+    /// The ending session's own log-tail event id, if any — sourced from the
+    /// log mirror. Used as the stable component of the resulting
+    /// `Action::NotifyAndResume`'s idempotency_key (see Completion,
+    /// gait-state::session::completion).
+    pub last_event_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -23,6 +28,7 @@ pub enum Action {
         from_session: String,
         status: String,
         summary: String,
+        idempotency_key: String,
     },
 }
 
@@ -68,11 +74,16 @@ impl Scheduler for NativeScheduler {
             return vec![];
         }
         let (status, summary) = summarize(ended.result);
+        let idempotency_key = ended
+            .last_event_id
+            .clone()
+            .unwrap_or_else(|| format!("{}#no-events", ended.session_id));
         vec![Action::NotifyAndResume {
             target_session: assigner.to_string(),
             from_session: ended.session_id.to_string(),
             status,
             summary,
+            idempotency_key,
         }]
     }
 }
@@ -94,6 +105,7 @@ mod tests {
             assigned_by: None,
             result: &result,
             notify_done: true,
+            last_event_id: None,
         };
         assert!(NativeScheduler.next(&ended).is_empty());
     }
@@ -111,6 +123,7 @@ mod tests {
             assigned_by: Some("parent"),
             result: &result,
             notify_done: true,
+            last_event_id: Some("evt1".into()),
         };
         let actions = NativeScheduler.next(&ended);
         assert_eq!(
@@ -120,6 +133,7 @@ mod tests {
                 from_session: "child".into(),
                 status: "done".into(),
                 summary: "built the parser".into(),
+                idempotency_key: "evt1".into(),
             }]
         );
     }
@@ -132,6 +146,7 @@ mod tests {
             assigned_by: Some("parent"),
             result: &result,
             notify_done: true,
+            last_event_id: None,
         };
         let actions = NativeScheduler.next(&ended);
         match &actions[0] {
@@ -152,6 +167,7 @@ mod tests {
             assigned_by: Some("parent"),
             result: &result,
             notify_done: false,
+            last_event_id: None,
         };
         assert!(NativeScheduler.next(&ended).is_empty());
     }
@@ -169,6 +185,7 @@ mod tests {
             assigned_by: Some("assigner"),
             result: &result,
             notify_done: true,
+            last_event_id: None,
         };
         let actions = NativeScheduler.next(&ended);
         assert_eq!(actions.len(), 1);

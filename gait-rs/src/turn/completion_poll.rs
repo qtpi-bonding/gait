@@ -72,11 +72,22 @@ pub fn pending_daemon_completions(
             .join(format!("{name}.log"))
             .to_string_lossy()
             .into_owned();
-        out.push(Completion::Daemon {
-            name,
-            exit_code,
-            status: status.into(),
-            log_path,
+        let started_at = crate::session::daemons::history(gait_dir)
+            .ok()
+            .and_then(|h| h.into_iter().find(|(rec, _)| rec.name == name))
+            .map(|(rec, _)| rec.started_at)
+            .unwrap_or(0);
+        let idempotency_key = format!("{name}@{started_at}");
+        out.push(Completion {
+            provenance: None,
+            payload: crate::proto::events::daemon_update(
+                name,
+                exit_code,
+                status,
+                log_path,
+                idempotency_key.clone(),
+            ),
+            idempotency_key,
         });
     }
     // 2. Killed-without-Stop — the Start is in `active()` but the process is
@@ -90,11 +101,17 @@ pub fn pending_daemon_completions(
                 continue;
             }
             if !crate::session::daemons::is_alive(&rec) {
-                out.push(Completion::Daemon {
-                    name: rec.name.clone(),
-                    exit_code: -9,
-                    status: crate::session::daemons::classify_exit(-9).into(),
-                    log_path: rec.log_path.clone(),
+                let idempotency_key = format!("{}@{}", rec.name, rec.started_at);
+                out.push(Completion {
+                    provenance: None,
+                    payload: crate::proto::events::daemon_update(
+                        rec.name.clone(),
+                        -9,
+                        crate::session::daemons::classify_exit(-9),
+                        rec.log_path.clone(),
+                        idempotency_key.clone(),
+                    ),
+                    idempotency_key,
                 });
             }
         }
@@ -132,10 +149,22 @@ pub fn pending_agent_completions(
             continue;
         }
         if child.is_done {
-            out.push(Completion::Agent {
-                from: child.id.clone(),
-                status: "done".into(),
-                summary: child.summary.unwrap_or_default(),
+            let idempotency_key = child.last_event_id.clone();
+            out.push(Completion {
+                provenance: Some(crate::proto::gait::log::v1::Provenance {
+                    from: format!("agent:{}", child.id).into_bytes(),
+                    to: vec![],
+                    context: String::new(),
+                    signature: vec![], // placeholder identity — see plan Global Constraints
+                }),
+                payload: crate::proto::events::agent_update(
+                    child.id.clone(),
+                    "done",
+                    child.summary.unwrap_or_default(),
+                    None,
+                    idempotency_key.clone(),
+                ),
+                idempotency_key,
             });
         }
     }
@@ -156,6 +185,17 @@ mod tests {
         mint(body, None, 0, 0)
     }
 
+    /// Extract the payload kind out of a `Completion` for test assertions.
+    fn completion_kind(c: &Completion) -> payload::Kind {
+        match &c.payload {
+            crate::proto::gait::log::v1::event::Body::Payload(p) => p
+                .kind
+                .clone()
+                .expect("Completion payload must carry a kind"),
+            _ => panic!("Completion payload must be a Payload body"),
+        }
+    }
+
     #[test]
     fn surfaced_names_collects_daemon_updates() {
         let events = vec![
@@ -164,12 +204,14 @@ mod tests {
                 0,
                 "done",
                 "/l".into(),
+                "a@1".into(),
             )),
             ev(crate::proto::events::daemon_update(
                 "b".into(),
                 1,
                 "done",
                 "/l".into(),
+                "b@1".into(),
             )),
         ];
         let s = surfaced_daemon_names(&events);
@@ -263,8 +305,8 @@ mod tests {
 
         let names: HashSet<String> = pending
             .iter()
-            .map(|c| match c {
-                Completion::Daemon { name, .. } => name.clone(),
+            .map(|c| match completion_kind(c) {
+                payload::Kind::DaemonUpdate(du) => du.name,
                 _ => unreachable!(),
             })
             .collect();
@@ -284,24 +326,23 @@ mod tests {
 
         // Surface the entry: exit_code must be the recorded 0, status "done".
         for c in &pending {
-            if let Completion::Daemon {
-                name,
-                exit_code,
-                status,
-                log_path,
-            } = c
-            {
-                assert_eq!(name, "done1");
-                assert_eq!(*exit_code, 0, "done1 exit_code = 0");
-                assert_eq!(status, "done");
-                assert!(
-                    log_path.ends_with("done1.log"),
-                    "log_path under daemons/: {log_path}"
+            if let payload::Kind::DaemonUpdate(du) = completion_kind(c) {
+                assert_eq!(du.name, "done1");
+                assert_eq!(du.exit_code, 0, "done1 exit_code = 0");
+                assert_eq!(
+                    crate::proto::gait::log::v1::DaemonStatus::try_from(du.status).unwrap(),
+                    crate::proto::gait::log::v1::DaemonStatus::Done
                 );
                 assert!(
-                    log_path.contains("daemons/S/"),
+                    du.log_path.ends_with("done1.log"),
+                    "log_path under daemons/: {}",
+                    du.log_path
+                );
+                assert!(
+                    du.log_path.contains("daemons/S/"),
                     "log_path must be namespaced under the owning session's \
-                     own daemons/<session_id>/ dir, got: {log_path}"
+                     own daemons/<session_id>/ dir, got: {}",
+                    du.log_path
                 );
             }
         }
@@ -340,8 +381,8 @@ mod tests {
 
         let mut names: Vec<String> = pending
             .iter()
-            .map(|c| match c {
-                Completion::Daemon { name, .. } => name.clone(),
+            .map(|c| match completion_kind(c) {
+                payload::Kind::DaemonUpdate(du) => du.name,
                 _ => unreachable!(),
             })
             .collect();
@@ -349,16 +390,13 @@ mod tests {
         assert_eq!(names, vec!["dead-killed".to_string()], "got: {names:?}");
 
         for c in &pending {
-            if let Completion::Daemon {
-                name,
-                exit_code,
-                status,
-                ..
-            } = c
-            {
-                assert_eq!(name, "dead-killed");
-                assert_eq!(*exit_code, -9, "killed-no-stop uses exit_code = -9");
-                assert_eq!(status, "killed");
+            if let payload::Kind::DaemonUpdate(du) = completion_kind(c) {
+                assert_eq!(du.name, "dead-killed");
+                assert_eq!(du.exit_code, -9, "killed-no-stop uses exit_code = -9");
+                assert_eq!(
+                    crate::proto::gait::log::v1::DaemonStatus::try_from(du.status).unwrap(),
+                    crate::proto::gait::log::v1::DaemonStatus::Killed
+                );
             }
         }
 
@@ -388,6 +426,7 @@ mod tests {
             "done",
             "finished fine".into(),
             None,
+            "schild01-evt1".into(),
         ))];
         let s = surfaced_agent_ids(&events);
         assert!(s.contains("schild01"), "schild01 must be in surfaced set");
@@ -450,8 +489,8 @@ mod tests {
         let pending = pending_agent_completions(gait_dir, "sparent", &already);
         let ids: Vec<String> = pending
             .iter()
-            .map(|c| match c {
-                Completion::Agent { from, .. } => from.clone(),
+            .map(|c| match completion_kind(c) {
+                payload::Kind::AgentUpdate(au) => au.session_id,
                 _ => unreachable!(),
             })
             .collect();

@@ -331,6 +331,11 @@ message AgentUpdate {
   AgentStatus status = 2;
   string summary = 3;
   google.protobuf.Value items = 4;     // any JSON
+  // Stable idempotency key for dedup (see Completion, gait-state::session::completion).
+  // For an agent completion this is the child's own log-tail event id at the
+  // moment the completion was detected — distinct once the child produces
+  // further events, stable across a retried check of the same child state.
+  string idempotency_key = 5;
 }
 enum AgentStatus {
   AGENT_STATUS_UNSPECIFIED = 0;
@@ -636,4 +641,8 @@ message DaemonUpdate {
   int32        exit_code = 2;
   DaemonStatus status    = 3;
   string       log_path  = 4;
+  // Stable idempotency key for dedup (see Completion, gait-state::session::completion).
+  // `{name}@{started_at}` — disambiguates pid-reuse across separate runs of a
+  // same-named daemon (DaemonStart.started_at already exists for exactly this).
+  string       idempotency_key = 5;
 }

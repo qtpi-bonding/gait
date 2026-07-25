@@ -57,11 +57,24 @@ pub fn cmd_daemon_exit(args: DaemonExitArgs) -> anyhow::Result<Option<WakeReques
         .join("daemons")
         .join(&args.session)
         .join(format!("{}.log", args.name));
-    let c = Completion::Daemon {
-        name: args.name.clone(),
-        exit_code: args.exit,
-        status: status.to_string(),
-        log_path: log_path.to_string_lossy().into_owned(),
+    // `started_at` disambiguates pid-reuse across separate runs of a
+    // same-named daemon — exactly the field DaemonStart carries it for.
+    let started_at = daemons::history(&args.gait_dir)
+        .ok()
+        .and_then(|h| h.into_iter().find(|(rec, _)| rec.name == args.name))
+        .map(|(rec, _)| rec.started_at)
+        .unwrap_or(0);
+    let idempotency_key = format!("{}@{}", args.name, started_at);
+    let c = Completion {
+        provenance: None,
+        payload: crate::proto::events::daemon_update(
+            args.name.clone(),
+            args.exit,
+            status,
+            log_path.to_string_lossy().into_owned(),
+            idempotency_key.clone(),
+        ),
+        idempotency_key,
     };
     let repos = crate::git::Repos::production();
     let wake = match notify_parent(&args.gait_dir, &repos, &args.session, &c) {

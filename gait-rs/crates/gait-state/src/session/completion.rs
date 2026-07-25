@@ -31,21 +31,20 @@ pub struct WakeRequest {
 }
 
 /// A completion event to surface to a parent session.
+///
+/// `idempotency_key` is the producer-supplied stable identity of the specific
+/// completion being reported (a daemon *run*, or an agent's state *at a given
+/// log-tail event*) — NOT derived from payload field values. Two completions
+/// with identical `payload` content but different `idempotency_key`s are
+/// genuinely distinct events (e.g. two separate runs of a same-named daemon)
+/// and must never be deduped against each other; see `matches()` below.
 #[derive(Debug, Clone)]
-pub enum Completion {
-    /// A detached daemon has exited.
-    Daemon {
-        name: String,
-        exit_code: i32,
-        status: String,
-        log_path: String,
-    },
-    /// A subagent has completed (Part 2 will route subagents through here).
-    Agent {
-        from: String,
-        status: String,
-        summary: String,
-    },
+pub struct Completion {
+    pub provenance: Option<crate::proto::gait::log::v1::Provenance>,
+    /// Matches what `events::agent_update`/`events::daemon_update` already
+    /// return — no extraction/wrapping needed.
+    pub payload: crate::proto::gait::log::v1::event::Body,
+    pub idempotency_key: String,
 }
 
 /// The outcome of `notify_parent`. Tells the caller what actually happened
@@ -68,42 +67,21 @@ pub enum NotifyOutcome {
 impl Completion {
     /// Build the proto event body for this completion.
     pub fn body(&self) -> Body {
-        match self {
-            Completion::Daemon {
-                name,
-                exit_code,
-                status,
-                log_path,
-            } => crate::proto::events::daemon_update(
-                name.clone(),
-                *exit_code,
-                status,
-                log_path.clone(),
-            ),
-            Completion::Agent {
-                from,
-                status,
-                summary,
-            } => crate::proto::events::agent_update(from.clone(), status, summary.clone(), None),
-        }
+        self.payload.clone()
     }
 
-    /// True if `ev` is a `*_update` event for this completion. Used for the
-    /// speculative dedup check: after we acquire the lock we scan the parent
-    /// log for a matching event and return `AlreadySurfaced` instead of
-    /// writing + waking a second time.
+    /// True if `ev` is a `*_update` event for this completion, compared by
+    /// `idempotency_key` alone — NOT by payload field values (that was the
+    /// bug: a legitimately-repeated status report with identical field
+    /// values but a distinct idempotency_key must NOT be deduped away). Used
+    /// for the speculative dedup check: after we acquire the lock we scan the
+    /// parent log for a matching event and return `AlreadySurfaced` instead
+    /// of writing + waking a second time.
     fn matches(&self, ev: &crate::proto::gait::log::v1::Event) -> bool {
         use crate::proto::gait::log::v1::payload;
-        match (self, crate::proto::event_kind(ev)) {
-            (
-                Completion::Daemon {
-                    name, exit_code, ..
-                },
-                Some(payload::Kind::DaemonUpdate(du)),
-            ) => du.name == *name && du.exit_code == *exit_code,
-            (Completion::Agent { from, summary, .. }, Some(payload::Kind::AgentUpdate(au))) => {
-                au.session_id == *from && au.summary == *summary
-            }
+        match crate::proto::event_kind(ev) {
+            Some(payload::Kind::AgentUpdate(au)) => au.idempotency_key == self.idempotency_key,
+            Some(payload::Kind::DaemonUpdate(du)) => du.idempotency_key == self.idempotency_key,
             _ => false,
         }
     }
@@ -156,9 +134,25 @@ pub fn notify_parent(
         let _ = repos;
         return NotifyOutcome::NoParent;
     }
-    let (subagent_session, status) = match c {
-        Completion::Agent { from, status, .. } => (Some(from.clone()), Some(status.clone())),
-        Completion::Daemon { .. } => (None, None),
+    let (subagent_session, status) = {
+        use crate::proto::gait::log::v1::{event, payload, AgentStatus};
+        match &c.payload {
+            event::Body::Payload(p) => match &p.kind {
+                Some(payload::Kind::AgentUpdate(au)) => {
+                    let status_str = AgentStatus::try_from(au.status)
+                        .map(|s| match s {
+                            AgentStatus::Done => "done",
+                            AgentStatus::Clarify => "clarify",
+                            AgentStatus::Inform => "inform",
+                            AgentStatus::Unspecified => "unspecified",
+                        })
+                        .unwrap_or("unspecified");
+                    (Some(au.session_id.clone()), Some(status_str.to_string()))
+                }
+                _ => (None, None),
+            },
+            _ => (None, None),
+        }
     };
     if let Err(e) = repos.traces.commit_session(
         gait_dir,
@@ -187,9 +181,66 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    #[test]
+    fn completion_carries_idempotency_key_not_derived_from_payload_values() {
+        let c1 = Completion {
+            provenance: None,
+            payload: crate::proto::events::daemon_update(
+                "build".into(),
+                0,
+                "done",
+                "/l".into(),
+                "build@12345".into(),
+            ),
+            idempotency_key: "build@12345".into(),
+        };
+        let c2 = Completion {
+            idempotency_key: "build@67890".into(), // same name, different started_at — a genuinely
+            // distinct run of the same-named daemon
+            ..c1.clone()
+        };
+        assert_ne!(
+            c1.idempotency_key, c2.idempotency_key,
+            "distinct runs must not share a key even with identical payload values"
+        );
+    }
+
     fn init_parent(gait_dir: &std::path::Path, id: &str) {
         let dir = crate::session::live::worktree_dir(gait_dir, id);
         std::fs::create_dir_all(&dir).unwrap();
+    }
+
+    fn daemon_completion(name: &str, exit_code: i32, status: &str, log_path: &str) -> Completion {
+        Completion {
+            provenance: None,
+            payload: crate::proto::events::daemon_update(
+                name.to_string(),
+                exit_code,
+                status,
+                log_path.to_string(),
+                format!("{name}@1"),
+            ),
+            idempotency_key: format!("{name}@1"),
+        }
+    }
+
+    fn agent_completion(from: &str, status: &str, summary: &str) -> Completion {
+        Completion {
+            provenance: Some(crate::proto::gait::log::v1::Provenance {
+                from: format!("agent:{from}").into_bytes(),
+                to: vec![],
+                context: String::new(),
+                signature: vec![],
+            }),
+            payload: crate::proto::events::agent_update(
+                from.to_string(),
+                status,
+                summary.to_string(),
+                None,
+                format!("{from}-evt1"),
+            ),
+            idempotency_key: format!("{from}-evt1"),
+        }
     }
 
     #[test]
@@ -197,12 +248,7 @@ mod tests {
         let gd = TempDir::new().unwrap();
         init_parent(gd.path(), "sparent");
         let repos = crate::git::Repos::production();
-        let c = Completion::Daemon {
-            name: "build".into(),
-            exit_code: 0,
-            status: "done".into(),
-            log_path: "/tmp/build.log".into(),
-        };
+        let c = daemon_completion("build", 0, "done", "/tmp/build.log");
         let outcome = notify_parent(gd.path(), &repos, "sparent", &c);
         assert!(
             matches!(outcome, NotifyOutcome::Woke(_)),
@@ -227,12 +273,7 @@ mod tests {
         ))
         .unwrap();
         let repos = crate::git::Repos::production();
-        let c = Completion::Daemon {
-            name: "x".into(),
-            exit_code: 0,
-            status: "done".into(),
-            log_path: "/tmp/x.log".into(),
-        };
+        let c = daemon_completion("x", 0, "done", "/tmp/x.log");
         let outcome = notify_parent(gd.path(), &repos, "sbusy", &c);
         assert!(
             matches!(outcome, NotifyOutcome::ParentBusy),
@@ -244,12 +285,7 @@ mod tests {
     fn missing_parent_returns_no_parent() {
         let gd = TempDir::new().unwrap();
         let repos = crate::git::Repos::production();
-        let c = Completion::Daemon {
-            name: "x".into(),
-            exit_code: 0,
-            status: "done".into(),
-            log_path: "/tmp/x.log".into(),
-        };
+        let c = daemon_completion("x", 0, "done", "/tmp/x.log");
         let outcome = notify_parent(gd.path(), &repos, "does_not_exist", &c);
         assert!(
             matches!(outcome, NotifyOutcome::NoParent),
@@ -262,12 +298,7 @@ mod tests {
         let gd = TempDir::new().unwrap();
         init_parent(gd.path(), "sdup");
         let repos = crate::git::Repos::production();
-        let c = Completion::Daemon {
-            name: "build".into(),
-            exit_code: 0,
-            status: "done".into(),
-            log_path: "/tmp/build.log".into(),
-        };
+        let c = daemon_completion("build", 0, "done", "/tmp/build.log");
         let first = notify_parent(gd.path(), &repos, "sdup", &c);
         assert!(matches!(first, NotifyOutcome::Woke(_)), "got {first:?}");
         // Second call for the same completion must dedup, not double-write/wake.
@@ -295,11 +326,7 @@ mod tests {
             .create_session_worktree(gd.path(), "sparent2")
             .unwrap();
         let repos = crate::git::Repos::production();
-        let c = Completion::Agent {
-            from: "schild99".into(),
-            status: "done".into(),
-            summary: "finished the task".into(),
-        };
+        let c = agent_completion("schild99", "done", "finished the task");
         let outcome = notify_parent(gd.path(), &repos, "sparent2", &c);
         assert!(matches!(outcome, NotifyOutcome::Woke(_)), "got {outcome:?}");
 
@@ -330,12 +357,7 @@ mod tests {
             .create_session_worktree(gd.path(), "sparent3")
             .unwrap();
         let repos = crate::git::Repos::production();
-        let c = Completion::Daemon {
-            name: "build".into(),
-            exit_code: 0,
-            status: "done".into(),
-            log_path: "/tmp/build.log".into(),
-        };
+        let c = daemon_completion("build", 0, "done", "/tmp/build.log");
         let outcome = notify_parent(gd.path(), &repos, "sparent3", &c);
         assert!(matches!(outcome, NotifyOutcome::Woke(_)), "got {outcome:?}");
 

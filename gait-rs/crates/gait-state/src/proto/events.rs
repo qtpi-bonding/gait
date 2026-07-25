@@ -207,12 +207,14 @@ pub fn agent_update(
     status: &str,
     summary: String,
     items: Option<serde_json::Value>,
+    idempotency_key: String,
 ) -> pb::event::Body {
     wire::body(pb::payload::Kind::AgentUpdate(pb::AgentUpdate {
         session_id,
         status: agent_status(status),
         summary,
         items: to_value_opt(&items),
+        idempotency_key,
     }))
 }
 
@@ -224,12 +226,14 @@ pub fn daemon_update(
     exit_code: i32,
     status: &str,
     log_path: String,
+    idempotency_key: String,
 ) -> pb::event::Body {
     wire::body(pb::payload::Kind::DaemonUpdate(pb::DaemonUpdate {
         name,
         exit_code,
         status: daemon_status(status),
         log_path,
+        idempotency_key,
     }))
 }
 
