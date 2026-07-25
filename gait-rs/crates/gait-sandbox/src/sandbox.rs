@@ -911,6 +911,97 @@ mod tests {
             vec!["**/.env*".to_string(), "~/.ssh/**".to_string()]
         );
     }
+
+    #[test]
+    fn compute_scope_nofs_expands_path_vars_in_deny_subpaths() {
+        use gait_types::config::{DenyConfig, SandboxConfig};
+        use gait_types::types::ToolAccess;
+        let mut cfg = SandboxConfig::default();
+        cfg.deny = DenyConfig {
+            read: vec!["~/.ssh".to_string()], // no glob metachar -> subpath, needs ~/ expansion
+            write: vec![],
+        };
+        let codebase = std::path::Path::new("/ws/repo");
+        let jail = std::path::Path::new("/tmp/jail");
+        let scope = super::ceiling::compute_scope_nofs(
+            ToolAccess {
+                reads: true,
+                ..Default::default()
+            },
+            &cfg,
+            codebase,
+            jail,
+        );
+        // Must NOT be the literal string "~/.ssh" — must be expanded against home dir.
+        assert!(!scope
+            .read_deny
+            .subpaths
+            .iter()
+            .any(|p| p.to_string_lossy() == "~/.ssh"));
+        assert!(scope.read_deny.subpaths.iter().any(|p| p.ends_with(".ssh")));
+    }
+
+    #[test]
+    fn build_sbpl_emits_trailing_deny_for_read_and_write_denied_globs() {
+        let scope = SandboxScope {
+            readable: vec![],
+            writable: vec![],
+            read_all: true, // the highest-value case per spec: deny must still bite here
+            network: NetworkPolicy::Deny,
+            local_bind: false,
+            read_deny: DenyPolicy {
+                subpaths: vec![],
+                globs: vec!["**/.env*".to_string()],
+            },
+            write_deny: DenyPolicy::default(),
+        };
+        let sbpl = build_sbpl(&scope);
+
+        // Blanket allow is present (read_all: true)...
+        assert!(sbpl.contains("(allow file-read*)"));
+        // ...but a trailing deny for the glob must come AFTER it (SBPL is
+        // last-match-wins) and cover both read and unlink, so a read-denied path
+        // can't be probed by deleting it either.
+        let allow_pos = sbpl.find("(allow file-read*)").unwrap();
+        let deny_read_pos = sbpl
+            .find("(deny file-read*")
+            .expect("must emit a deny file-read* rule");
+        assert!(
+            deny_read_pos > allow_pos,
+            "deny must come after the blanket allow"
+        );
+        assert!(
+            sbpl.contains("(deny file-write-unlink"),
+            "denied read paths must also block unlink to prevent existence-probing"
+        );
+    }
+
+    #[test]
+    fn build_sbpl_emits_deny_for_write_denied_subpaths() {
+        let scope = SandboxScope {
+            readable: vec![],
+            writable: vec![std::path::PathBuf::from("/ws/repo")],
+            read_all: false,
+            network: NetworkPolicy::Deny,
+            local_bind: false,
+            read_deny: DenyPolicy::default(),
+            write_deny: DenyPolicy {
+                subpaths: vec![std::path::PathBuf::from("/ws/repo/.git")],
+                globs: vec![],
+            },
+        };
+        let sbpl = build_sbpl(&scope);
+        let allow_pos = sbpl
+            .find(r#"(allow file-write* file-read* (subpath "/ws/repo""#)
+            .expect("writable root must be allowed");
+        let deny_pos = sbpl
+            .find(r#"(deny file-write*"#)
+            .expect("must emit a deny file-write* rule for the excluded subpath");
+        assert!(
+            deny_pos > allow_pos,
+            "deny must come after the writable-root allow"
+        );
+    }
 }
 
 pub(crate) mod sbpl {
@@ -985,6 +1076,31 @@ pub(crate) mod sbpl {
         path.to_string_lossy()
             .replace('\\', "\\\\")
             .replace('"', "\\\"")
+    }
+
+    /// Translate a `**`/`*`-glob into a POSIX ERE pattern suitable for SBPL's
+    /// `regex` stanza. Hand-rolled for the small subset gait's deny patterns
+    /// actually use (no `?`, no character classes needed for the built-in
+    /// defaults) rather than pulling in a full glob-to-regex crate.
+    fn glob_to_sbpl_regex(glob: &str) -> String {
+        let mut re = String::from("^");
+        let mut chars = glob.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '*' if chars.peek() == Some(&'*') => {
+                    chars.next(); // consume second '*'
+                    re.push_str(".*");
+                }
+                '*' => re.push_str("[^/]*"),
+                '.' | '+' | '(' | ')' | '^' | '$' | '\\' => {
+                    re.push('\\');
+                    re.push(c);
+                }
+                _ => re.push(c),
+            }
+        }
+        re.push('$');
+        re
     }
 
     /// Build a macOS Seatbelt SBPL profile string from a [`SandboxScope`].
@@ -1177,6 +1293,40 @@ pub(crate) mod sbpl {
             writeln!(s, r#"(allow network-bind (local ip "localhost:*"))"#).unwrap();
         }
 
+        // Deny policy — trailing top-level rules, emitted LAST so SBPL's
+        // last-match-wins semantics make them win over every allow rule
+        // above, including the read_all blanket allow and the combined
+        // writable-root read+write allow. Covers file-write-unlink on BOTH
+        // read-deny and write-deny (not just write-deny) so a denied path
+        // can't be probed by deletion regardless of which side denied it.
+        // Credit: mirrors codex's build_seatbelt_unreadable_glob_policy
+        // (codex-rs/sandboxing/src/seatbelt.rs), reimplemented against gait's
+        // SandboxScope shape — not copied code.
+        for p in &scope.read_deny.subpaths {
+            let esc = sbpl_escape(p);
+            writeln!(s, r#"(deny file-read* (subpath "{esc}"))"#).unwrap();
+            writeln!(s, r#"(deny file-read* (literal "{esc}"))"#).unwrap();
+            writeln!(s, r#"(deny file-write-unlink (subpath "{esc}"))"#).unwrap();
+            writeln!(s, r#"(deny file-write-unlink (literal "{esc}"))"#).unwrap();
+        }
+        for g in &scope.read_deny.globs {
+            let re = glob_to_sbpl_regex(g);
+            writeln!(s, r#"(deny file-read* (regex #"{re}"))"#).unwrap();
+            writeln!(s, r#"(deny file-write-unlink (regex #"{re}"))"#).unwrap();
+        }
+        for p in &scope.write_deny.subpaths {
+            let esc = sbpl_escape(p);
+            writeln!(s, r#"(deny file-write* (subpath "{esc}"))"#).unwrap();
+            writeln!(s, r#"(deny file-write* (literal "{esc}"))"#).unwrap();
+            writeln!(s, r#"(deny file-write-unlink (subpath "{esc}"))"#).unwrap();
+            writeln!(s, r#"(deny file-write-unlink (literal "{esc}"))"#).unwrap();
+        }
+        for g in &scope.write_deny.globs {
+            let re = glob_to_sbpl_regex(g);
+            writeln!(s, r#"(deny file-write* (regex #"{re}"))"#).unwrap();
+            writeln!(s, r#"(deny file-write-unlink (regex #"{re}"))"#).unwrap();
+        }
+
         s
     }
 }
@@ -1358,6 +1508,42 @@ pub mod ceiling {
             NetworkPolicy::Deny
         };
 
+        // Deny patterns: split literal-vs-glob, then expand ~/ and $CODEBASE on
+        // both — expand_path_vars already handles subpaths; globs get the same
+        // treatment for their non-metachar prefix (the metachar suffix like
+        // "/**" or "*" passes through unexpanded, since it's not a path var).
+        let expand_deny_subpaths = |patterns: &[String]| -> Vec<PathBuf> {
+            split_deny_patterns(patterns)
+                .subpaths
+                .into_iter()
+                .map(|p| expand_path_vars(&p.to_string_lossy(), &home, codebase))
+                .collect()
+        };
+        let expand_deny_globs = |patterns: &[String]| -> Vec<String> {
+            split_deny_patterns(patterns)
+                .globs
+                .into_iter()
+                .map(|g| {
+                    if let Some(rest) = g.strip_prefix("~/") {
+                        expand_path_vars(&format!("~/{rest}"), &home, codebase)
+                            .to_string_lossy()
+                            .into_owned()
+                    } else {
+                        g
+                    }
+                })
+                .collect()
+        };
+
+        let read_deny = DenyPolicy {
+            subpaths: expand_deny_subpaths(&cfg.deny.read),
+            globs: expand_deny_globs(&cfg.deny.read),
+        };
+        let write_deny = DenyPolicy {
+            subpaths: expand_deny_subpaths(&cfg.deny.write),
+            globs: expand_deny_globs(&cfg.deny.write),
+        };
+
         // Phase 2d: read_all is derived from config — only `"*"` in cfg.readable opens reads.
         // When read_all=false, codebase and temp_jail are already in `readable` (added above
         // when access.reads=true), so the SBPL confined-read subpath rules will cover them.
@@ -1370,9 +1556,8 @@ pub mod ceiling {
             // port grants no reach beyond the local machine, so it's gated purely
             // by the tool/whitelist access flag, not by the network policy.
             local_bind: access.local_bind,
-            // Deny policy wiring lands in Task 7 (path-var expansion of cfg.deny).
-            read_deny: DenyPolicy::default(),
-            write_deny: DenyPolicy::default(),
+            read_deny,
+            write_deny,
         }
     }
 
