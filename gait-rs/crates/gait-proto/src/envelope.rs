@@ -92,6 +92,7 @@ pub fn mint(body: event::Body, prev: Option<&Event>, turn: u32, step: u32) -> Ev
         turn: 0,
         step: 0,
         body: Some(body),
+        provenance: None,
     };
     ev.turn = turn;
     ev.step = step;
