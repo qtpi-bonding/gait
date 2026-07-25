@@ -268,6 +268,8 @@ fn scope_serializes_network_scope() {
                 hosts: vec!["example.com".into()],
             }),
             local_bind: false,
+            read_deny: None,
+            write_deny: None,
         }),
         ..Default::default()
     };

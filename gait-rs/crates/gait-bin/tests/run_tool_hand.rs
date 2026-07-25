@@ -41,6 +41,8 @@ fn run_tool_executes_read_in_subprocess() {
                 hosts: vec![],
             }),
             local_bind: false,
+            read_deny: None,
+            write_deny: None,
         }),
         prefetch: None,
         shell_whitelist_patterns: vec![],

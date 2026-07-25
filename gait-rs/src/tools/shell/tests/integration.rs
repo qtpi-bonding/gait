@@ -254,6 +254,8 @@ async fn cwd_outside_scope_errors_without_emitting_cwd_event() {
         read_all: false,
         network: Default::default(),
         local_bind: false,
+        read_deny: Default::default(),
+        write_deny: Default::default(),
     };
     let tool = ShellTool::new(
         crate::tools::ctx::ToolCtx::new(
@@ -319,6 +321,8 @@ async fn cwd_inside_scope_still_succeeds_and_emits_cwd_event() {
         read_all: false,
         network: Default::default(),
         local_bind: false,
+        read_deny: Default::default(),
+        write_deny: Default::default(),
     };
     let tool = ShellTool::new(
         crate::tools::ctx::ToolCtx::new(

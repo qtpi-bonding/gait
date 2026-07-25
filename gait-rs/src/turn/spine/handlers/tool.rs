@@ -6,7 +6,7 @@ use prost::Message as _;
 
 use crate::config::SandboxConfig;
 use crate::proto::gait::sandbox::v1::{
-    network_scope::Mode, Feedback, Impulse, NetworkScope, Scope,
+    network_scope::Mode, DenyPolicy as ProtoDenyPolicy, Feedback, Impulse, NetworkScope, Scope,
 };
 use crate::sandbox::{NetworkPolicy, SandboxScope};
 
@@ -377,6 +377,24 @@ pub fn scope_to_proto(s: &SandboxScope) -> Scope {
             },
         }),
         local_bind: s.local_bind,
+        read_deny: Some(ProtoDenyPolicy {
+            subpaths: s
+                .read_deny
+                .subpaths
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect(),
+            globs: s.read_deny.globs.clone(),
+        }),
+        write_deny: Some(ProtoDenyPolicy {
+            subpaths: s
+                .write_deny
+                .subpaths
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect(),
+            globs: s.write_deny.globs.clone(),
+        }),
     }
 }
 
@@ -423,6 +441,23 @@ pub fn delegated_target(
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn scope_to_proto_round_trips_deny_policy() {
+        use crate::sandbox::DenyPolicy;
+        let scope = SandboxScope {
+            read_deny: DenyPolicy {
+                subpaths: vec![std::path::PathBuf::from("/home/user/.ssh")],
+                globs: vec!["**/.env*".to_string()],
+            },
+            write_deny: DenyPolicy::default(),
+            ..SandboxScope::default()
+        };
+        let proto = scope_to_proto(&scope);
+        let read_deny = proto.read_deny.expect("read_deny must be populated");
+        assert_eq!(read_deny.subpaths, vec!["/home/user/.ssh".to_string()]);
+        assert_eq!(read_deny.globs, vec!["**/.env*".to_string()]);
+    }
 
     #[test]
     fn shell_whitelist_bind_grant_sets_local_bind_and_logs_dimension() {

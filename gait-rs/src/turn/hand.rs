@@ -10,7 +10,7 @@
 //! `decode`).
 
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use prost::Message as _;
 
@@ -127,7 +127,7 @@ pub async fn run_hand(config: HandConfig) {
     // finding out when the kernel seal later rejects the subprocess spawn.
     // Pure/side-effect-free (only reads `impulse`) — safe to compute this early;
     // the seal itself still applies at the same point as before, below.
-    let seal_scope = build_scope_from_impulse(&impulse);
+    let seal_scope = build_scope_from_impulse(&impulse, &config.gait_dir);
 
     let ctx = {
         let mut ctx = ToolCtx::new(
@@ -321,6 +321,10 @@ pub async fn run_hand(config: HandConfig) {
                     dimension: dimension.to_string(),
                     matched_signature: (*sig).to_string(),
                     hint,
+                    // Populated by Task 8's classify_denial_by_path wiring
+                    // (2026-07-25 sandbox-file-deny-policy plan); not yet
+                    // wired at this construction site.
+                    matched_deny_pattern: None,
                 }
             })
     } else {
@@ -357,14 +361,35 @@ pub async fn run_hand(config: HandConfig) {
 
 // ── build_scope_from_impulse ──────────────────────────────────────────────────
 
+/// Hard floor: read_deny/write_deny are ALWAYS sourced from the hand's own
+/// locally-loaded SandboxConfig, never from `impulse.requested` — a brain
+/// (sealed, network-facing, distrusted) must not be able to supply or widen
+/// these two fields regardless of what it sends over the wire. This is what
+/// makes the deny policy a floor rather than a claim.
+fn local_deny_policy(gait_dir: &Path) -> (crate::sandbox::DenyPolicy, crate::sandbox::DenyPolicy) {
+    let cfg = gait_types::config::load_config(gait_dir);
+    let read = gait_sandbox::sandbox::ceiling::split_deny_patterns(&cfg.sandbox.deny.read);
+    let write = gait_sandbox::sandbox::ceiling::split_deny_patterns(&cfg.sandbox.deny.write);
+    (read, write)
+}
+
 /// Build a `SandboxScope` from `Impulse.requested` for the seal. The brain
 /// computes the ceiling and ships it over the wire; the hand is responsible for
 /// turning it into the kernel-level scope (Seatbelt profile on macOS, Landlock
 /// on Linux) and applying it. Defaults to a Deny-network empty scope if the
 /// Impulse carries no request (defensive — should not happen in practice).
-pub fn build_scope_from_impulse(impulse: &Impulse) -> SandboxScope {
+/// `read_deny`/`write_deny` are ALWAYS sourced from `gait_dir`'s local config —
+/// see [`local_deny_policy`] — never from `impulse.requested`, even in the
+/// defensive empty-scope branch below.
+pub fn build_scope_from_impulse(impulse: &Impulse, gait_dir: &Path) -> SandboxScope {
+    let (read_deny, write_deny) = local_deny_policy(gait_dir);
+
     let Some(s) = impulse.requested.as_ref() else {
-        return SandboxScope::default();
+        return SandboxScope {
+            read_deny,
+            write_deny,
+            ..SandboxScope::default()
+        };
     };
 
     let network = s
@@ -387,6 +412,8 @@ pub fn build_scope_from_impulse(impulse: &Impulse) -> SandboxScope {
         read_all,
         network,
         local_bind: s.local_bind,
+        read_deny,
+        write_deny,
     }
 }
 
@@ -435,6 +462,53 @@ fn select_fs(impulse: &Impulse) -> std::sync::Arc<dyn FsBackend> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_scope_from_impulse_ignores_wire_supplied_deny() {
+        use gait_proto::gait::sandbox::v1::{DenyPolicy as ProtoDenyPolicy, Impulse, Scope};
+
+        let malicious_scope = Scope {
+            read_all: false,
+            readable: vec![],
+            writable: vec![],
+            network: None,
+            local_bind: false,
+            // A compromised/buggy brain tries to ship an empty deny to defeat
+            // the floor — this must be ignored, not honored.
+            read_deny: Some(ProtoDenyPolicy {
+                subpaths: vec![],
+                globs: vec![],
+            }),
+            write_deny: Some(ProtoDenyPolicy {
+                subpaths: vec![],
+                globs: vec![],
+            }),
+        };
+        let impulse = Impulse {
+            tool: "read".into(),
+            args: None,
+            requested: Some(malicious_scope),
+            prefetch: None,
+            shell_whitelist_patterns: vec![],
+        };
+
+        // Use a tempdir with a scaffolded gait.jsonc so local_deny_policy has a
+        // real config to load (the built-in default deny patterns, since this
+        // dir's config was never edited).
+        let dir = tempfile::TempDir::new().unwrap();
+        gait_ops::workspace::run_init(dir.path()).unwrap();
+
+        let scope = build_scope_from_impulse(&impulse, dir.path());
+
+        // The hand must have sourced read_deny/write_deny from its OWN local
+        // SandboxConfig (loaded independently, not from `impulse`), not from the
+        // (empty, attacker-controlled) wire value above. With no local config
+        // override, that means the built-in default secrets patterns are present.
+        assert!(
+            !scope.read_deny.globs.is_empty(),
+            "read_deny must come from local config, not the wire — got empty"
+        );
+    }
 
     #[test]
     fn select_fs_uses_buffered_when_prefetch_present() {
