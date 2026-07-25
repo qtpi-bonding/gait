@@ -27,6 +27,19 @@ pub enum NetworkPolicy {
     All,
 }
 
+/// Exact subpaths and glob patterns denied within an otherwise-granted scope.
+/// Applies to reads, metadata/stat, and unlink — a denied path is indistinguishable
+/// from a missing one. Does not affect execute (see spec Non-goals). A hard floor:
+/// nothing in the unlock-grant flow can lift these — the hand always sources this
+/// from its own local SandboxConfig, never from the wire (see build_scope_from_impulse).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DenyPolicy {
+    /// Exact paths/roots to exclude, including everything beneath them.
+    pub subpaths: Vec<PathBuf>,
+    /// Glob patterns (e.g. `"**/.env*"`) for cases that don't reduce to a literal path.
+    pub globs: Vec<String>,
+}
+
 /// Scope of filesystem and network access for the sandboxed process.
 #[derive(Debug, Clone, Default)]
 pub struct SandboxScope {
@@ -41,6 +54,10 @@ pub struct SandboxScope {
     /// `network` — see `ToolAccess::local_bind` for why binding loopback isn't
     /// folded into the network tier.
     pub local_bind: bool,
+    /// Deny policy applied to the read scope — see [`DenyPolicy`] doc comment.
+    pub read_deny: DenyPolicy,
+    /// Deny policy applied to the write scope — see [`DenyPolicy`] doc comment.
+    pub write_deny: DenyPolicy,
 }
 
 /// Kernel write-enforcement sandbox. Injected at process start (once, before the turn loop).
@@ -188,6 +205,8 @@ pub fn brain_scope() -> SandboxScope {
         // The sealed brain itself never binds a local port — only tool/hand
         // processes it dispatches (e.g. a shell running `flutter test`) do.
         local_bind: false,
+        read_deny: DenyPolicy::default(),
+        write_deny: DenyPolicy::default(),
     }
 }
 
@@ -304,6 +323,8 @@ mod tests {
             read_all: true,
             network: NetworkPolicy::Deny,
             local_bind: false,
+            read_deny: DenyPolicy::default(),
+            write_deny: DenyPolicy::default(),
         };
         let p = build_sbpl(&scope);
         assert!(p.contains("(deny default)"));
@@ -330,6 +351,8 @@ mod tests {
             read_all: true,
             network: NetworkPolicy::All,
             local_bind: false,
+            read_deny: DenyPolicy::default(),
+            write_deny: DenyPolicy::default(),
         };
         let p = build_sbpl(&scope);
         assert!(p.contains("(allow network-outbound)"));
@@ -352,6 +375,8 @@ mod tests {
             read_all: true,
             network: NetworkPolicy::Hosts(vec!["github.com".to_owned()]),
             local_bind: false,
+            read_deny: DenyPolicy::default(),
+            write_deny: DenyPolicy::default(),
         };
         let p = build_sbpl(&scope);
         assert!(
@@ -373,6 +398,8 @@ mod tests {
             read_all: false,
             network: NetworkPolicy::All,
             local_bind: false,
+            read_deny: DenyPolicy::default(),
+            write_deny: DenyPolicy::default(),
         };
         let sbpl = build_sbpl(&scope);
         assert!(
@@ -389,6 +416,8 @@ mod tests {
             read_all: false,
             network: NetworkPolicy::Hosts(vec!["github.com".into()]),
             local_bind: false,
+            read_deny: DenyPolicy::default(),
+            write_deny: DenyPolicy::default(),
         };
         let sbpl = build_sbpl(&scope);
         assert!(
@@ -409,6 +438,8 @@ mod tests {
             read_all: false,
             network: NetworkPolicy::Deny,
             local_bind: true,
+            read_deny: DenyPolicy::default(),
+            write_deny: DenyPolicy::default(),
         };
         let p = build_sbpl(&scope);
         assert!(
@@ -425,6 +456,8 @@ mod tests {
             read_all: false,
             network: NetworkPolicy::All,
             local_bind: false,
+            read_deny: DenyPolicy::default(),
+            write_deny: DenyPolicy::default(),
         };
         let p = build_sbpl(&scope);
         assert!(
@@ -441,6 +474,8 @@ mod tests {
             writable: vec![PathBuf::from("/repo")],
             network: NetworkPolicy::Deny,
             local_bind: false,
+            read_deny: DenyPolicy::default(),
+            write_deny: DenyPolicy::default(),
         };
         let p = build_sbpl(&scope);
         assert!(
@@ -473,6 +508,8 @@ mod tests {
             read_all: true,
             network: NetworkPolicy::Deny,
             local_bind: false,
+            read_deny: DenyPolicy::default(),
+            write_deny: DenyPolicy::default(),
         };
         let p = build_sbpl(&scope);
         assert!(
@@ -840,6 +877,40 @@ mod tests {
         assert_eq!(via_full.readable.len(), via_nofs.readable.len());
         assert_eq!(via_full.read_all, via_nofs.read_all);
     }
+
+    #[test]
+    fn deny_policy_default_is_empty() {
+        let d = DenyPolicy::default();
+        assert!(d.subpaths.is_empty());
+        assert!(d.globs.is_empty());
+    }
+
+    #[test]
+    fn sandbox_scope_default_has_empty_deny() {
+        let s = SandboxScope::default();
+        assert!(s.read_deny.subpaths.is_empty());
+        assert!(s.read_deny.globs.is_empty());
+        assert!(s.write_deny.subpaths.is_empty());
+        assert!(s.write_deny.globs.is_empty());
+    }
+
+    #[test]
+    fn split_deny_patterns_separates_literal_paths_from_globs() {
+        let patterns = vec![
+            "/etc/secrets".to_string(), // no glob metachar -> subpath
+            "**/.env*".to_string(),     // has * -> glob
+            "~/.ssh/**".to_string(),    // has * -> glob (still needs path-var expansion, Task 7)
+        ];
+        let split = super::ceiling::split_deny_patterns(&patterns);
+        assert_eq!(
+            split.subpaths,
+            vec![std::path::PathBuf::from("/etc/secrets")]
+        );
+        assert_eq!(
+            split.globs,
+            vec!["**/.env*".to_string(), "~/.ssh/**".to_string()]
+        );
+    }
 }
 
 pub(crate) mod sbpl {
@@ -1123,10 +1194,29 @@ pub mod ceiling {
     //! Output: a `SandboxScope` that is *bounded* by both — the config can only widen,
     //! the access flags can only narrow. No I/O, no FFI: same inputs → same output.
 
-    use super::{NetworkPolicy, SandboxScope};
+    use super::{DenyPolicy, NetworkPolicy, SandboxScope};
     use gait_types::config::{NetworkConfig, SandboxConfig};
     use gait_types::types::ToolAccess;
     use std::path::{Path, PathBuf};
+
+    /// Split a flat list of deny-config strings into exact subpaths vs. glob
+    /// patterns, by presence of glob metacharacters (`*`, `?`, `[`). A pattern
+    /// with no metacharacter is treated as a literal path to exclude wholesale
+    /// (including everything beneath it); anything else goes through SBPL regex
+    /// translation instead (Task 7). Public so hand.rs (Task 6) can call it when
+    /// loading its local SandboxConfig.
+    pub fn split_deny_patterns(patterns: &[String]) -> DenyPolicy {
+        let mut subpaths = Vec::new();
+        let mut globs = Vec::new();
+        for p in patterns {
+            if p.contains(['*', '?', '[']) {
+                globs.push(p.clone());
+            } else {
+                subpaths.push(PathBuf::from(p));
+            }
+        }
+        DenyPolicy { subpaths, globs }
+    }
 
     /// Return the `ToolAccess` declared by the named builtin tool.
     /// Unknown tools get the zero value (no access) — they are brain-side control tools
@@ -1280,6 +1370,9 @@ pub mod ceiling {
             // port grants no reach beyond the local machine, so it's gated purely
             // by the tool/whitelist access flag, not by the network policy.
             local_bind: access.local_bind,
+            // Deny policy wiring lands in Task 7 (path-var expansion of cfg.deny).
+            read_deny: DenyPolicy::default(),
+            write_deny: DenyPolicy::default(),
         }
     }
 

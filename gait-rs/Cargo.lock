@@ -1354,6 +1354,7 @@ dependencies = [
  "anyhow",
  "dirs-next",
  "gait-types",
+ "glob",
  "libc",
  "serde",
  "serde_json",
