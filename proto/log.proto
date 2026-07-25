@@ -130,6 +130,7 @@ CancellationSignal cancellation_signal = 55;
     PermissionDenied   permission_denied   = 68;
     LlmCallStarted     llm_call_started    = 69;
     LlmCallCompleted   llm_call_completed  = 70;
+    MessageAccept      message_accept      = 71;
   }
   reserved 20 to 49;  // workflow family (WorkflowHook* / WorkflowNode* / WorkflowStart …) — deferred to the workflow-subsystem redo
 }
@@ -157,6 +158,15 @@ message Registry {
   ToggleKind kind   = 1;
   string     name   = 2;
   bool       listed = 3;
+}
+// Per-session accept-policy delta for incoming cross-session Provenance.to
+// deliveries — an OR-Set, same shape as Registry/Toggle above. A session
+// accepts a delivery only if its sender is in the folded accepted-senders
+// set (see the default-policy note in retrace/mod.rs's fold, Task 8) or the
+// sender is an established spawn-hierarchy relation via SessionStart.assigned_by.
+message MessageAccept {
+  bytes sender  = 1;  // pubkey (or placeholder identity) being granted/revoked
+  bool  granted = 2;  // true = add to the accepted-senders set, false = remove
 }
 // A complete model selection. An empty name is the session-selection clear
 // sentinel; model is required for authored and selected snapshots.
