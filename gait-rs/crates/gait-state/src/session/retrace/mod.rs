@@ -493,7 +493,7 @@ impl MessagesState {
         }
     }
 
-    fn push_agent_update(&mut self, au: &pb::AgentUpdate, id: &str) {
+    fn push_agent_update(&mut self, au: &pb::AgentUpdate, ev: &Event) {
         let status = pb::AgentStatus::try_from(au.status)
             .map(|s| match s {
                 pb::AgentStatus::Done => "done",
@@ -502,15 +502,26 @@ impl MessagesState {
                 pb::AgentStatus::Unspecified => "unspecified",
             })
             .unwrap_or("unspecified");
+        // Task 6 (cross-session message attribution): source the rendered
+        // sender from Event.provenance when present (the new durable identity
+        // field), falling back to the (now-vestigial, slated for removal in
+        // Task 9) au.session_id only when no provenance is attached. The
+        // Provenance.from bytes are UTF-8 placeholder identity today
+        // (e.g. "agent:s1234abcd"); see the plan's Global Constraints.
+        let sender = ev
+            .provenance
+            .as_ref()
+            .map(|p| String::from_utf8_lossy(&p.from).into_owned())
+            .unwrap_or_else(|| au.session_id.clone());
         let mut content = format!(
             "[agent:{}] status: {}\nsummary: {}",
-            au.session_id, status, au.summary
+            sender, status, au.summary
         );
         if let Some(items) = &au.items {
             let v = serde_json::to_value(items).unwrap_or(serde_json::Value::Null);
             content.push_str(&format!("\nitems: {}", v));
         }
-        self.push_user(content, id);
+        self.push_user(content, &ev.id);
     }
 
     fn push_daemon_update(&mut self, du: &pb::DaemonUpdate, id: &str) {
@@ -660,7 +671,7 @@ impl Projection for ActiveMessages {
             payload::Kind::ContextStatus(_) => {
                 let _ = ();
             } // metadata only
-            payload::Kind::AgentUpdate(au) => st.push_agent_update(au, &ev.id),
+            payload::Kind::AgentUpdate(au) => st.push_agent_update(au, ev),
             payload::Kind::DaemonUpdate(du) => st.push_daemon_update(du, &ev.id),
             payload::Kind::Clarify(c) => st.push_clarify(c, &ev.id),
             payload::Kind::ClarifyReply(cr) => st.push_clarify_reply(cr, &ev.id),
@@ -786,9 +797,21 @@ impl Projection for ActiveRawMessages {
                         pb::AgentStatus::Unspecified => "unspecified",
                     })
                     .unwrap_or("unspecified");
+                // Task 6 (cross-session message attribution): source the
+                // rendered sender from Event.provenance when present (the new
+                // durable identity field), falling back to the (now-vestigial,
+                // slated for removal in Task 9) au.session_id only when no
+                // provenance is attached. The Provenance.from bytes are UTF-8
+                // placeholder identity today (e.g. "agent:s1234abcd"); see
+                // the plan's Global Constraints.
+                let sender = ev
+                    .provenance
+                    .as_ref()
+                    .map(|p| String::from_utf8_lossy(&p.from).into_owned())
+                    .unwrap_or_else(|| au.session_id.clone());
                 let mut content = format!(
                     "[agent:{}] status: {}\nsummary: {}",
-                    au.session_id, status, au.summary
+                    sender, status, au.summary
                 );
                 if let Some(items) = &au.items {
                     let v = serde_json::to_value(items).unwrap_or(serde_json::Value::Null);

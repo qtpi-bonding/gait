@@ -1910,3 +1910,43 @@ fn full_tool_history_survives_a_resumed_turn() {
         content: MessageContent::Text(t), ..
     } if t.starts_with("Answer to your question"))));
 }
+
+#[test]
+fn active_raw_messages_agent_update_uses_provenance_not_session_id() {
+    use crate::proto::envelope::mint;
+    use std::collections::HashMap;
+
+    let body =
+        crate::proto::gait::log::v1::event::Body::Payload(crate::proto::gait::log::v1::Payload {
+            kind: Some(crate::proto::gait::log::v1::payload::Kind::AgentUpdate(
+                crate::proto::gait::log::v1::AgentUpdate {
+                    session_id: "s_old_field_ignored".into(),
+                    status: crate::proto::gait::log::v1::AgentStatus::Done as i32,
+                    summary: "tests pass".into(),
+                    items: None,
+                },
+            )),
+        });
+    let mut ev = mint(body, None, 0, 0);
+    ev.provenance = Some(crate::proto::gait::log::v1::Provenance {
+        from: b"agent:s1234abcd".to_vec(),
+        to: vec![],
+        context: String::new(),
+        signature: vec![],
+    });
+
+    let raw = run_projection(&ActiveRawMessages, &[ev], &HashMap::new());
+
+    match &raw.base[0] {
+        crate::types::Message::User {
+            content: crate::types::MessageContent::Text(t),
+            ..
+        } => {
+            assert!(
+                t.contains("s1234abcd"),
+                "rendered text must use Provenance.from, got: {t}"
+            );
+        }
+        _ => panic!("expected User variant"),
+    }
+}
