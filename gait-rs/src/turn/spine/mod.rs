@@ -17,6 +17,9 @@ pub(crate) use watchdog::{watchdog_breach, SpinePhase, Watchdog, WatchdogCfg};
 mod preview;
 #[allow(unused_imports)] // path-stable facade re-export; no in-crate caller yet
 pub(crate) use preview::enrich_permissions_preview;
+mod checkpoint_enrich;
+#[allow(unused_imports)] // path-stable facade re-export; relay.rs uses via super::
+pub(crate) use checkpoint_enrich::enrich_checkpoint;
 mod util;
 pub use util::strip_task_from_args;
 #[allow(unused_imports)] // path-stable facade re-export; no in-crate caller yet
