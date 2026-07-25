@@ -25,7 +25,6 @@ fn sample_event() -> Event {
         body: Some(event::Body::Payload(Payload {
             kind: Some(payload::Kind::UserText(UserText {
                 content: "hello".into(),
-                from: Some("user".into()),
             })),
         })),
         provenance: None,
@@ -68,8 +67,28 @@ fn json_is_canonical_proto3() {
     let ut = &v["payload"]["userText"];
     assert_eq!(ut["content"], json!("hello"));
 
-    // Nested message fields are camelCase too.
-    assert!(ut.get("from").is_some(), "expected nested camelCase: {ut}");
+    // Nested message fields are camelCase too — assert on a genuinely
+    // multi-word nested field (UserText.from was removed in favor of
+    // Event.provenance, which has no multi-word field of its own at the
+    // default value used here, so use an AgentUpdate payload instead).
+    let mut au_ev = ev.clone();
+    au_ev.body = Some(event::Body::Payload(Payload {
+        kind: Some(payload::Kind::AgentUpdate(
+            crate::gait::log::v1::AgentUpdate {
+                session_id: "s1".into(),
+                status: 0,
+                summary: String::new(),
+                items: None,
+                idempotency_key: "s1-evt1".into(),
+            },
+        )),
+    }));
+    let au_v = serde_json::to_value(&au_ev).expect("serialize");
+    let au = &au_v["payload"]["agentUpdate"];
+    assert!(
+        au.get("idempotencyKey").is_some(),
+        "expected nested camelCase: {au}"
+    );
 }
 
 #[test]

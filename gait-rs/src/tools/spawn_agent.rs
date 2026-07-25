@@ -69,7 +69,7 @@ pub fn write_child_session(opts: WriteChildSessionOpts<'_>) -> anyhow::Result<()
         context: String::new(),
         signature: vec![], // placeholder identity — see plan Global Constraints
     };
-    wire::append_with_provenance(&tx_path, events::user_text(opts.task, None), provenance)?;
+    wire::append_with_provenance(&tx_path, events::user_text(opts.task), provenance)?;
 
     opts.repos.traces.commit_session(
         opts.gait_dir,

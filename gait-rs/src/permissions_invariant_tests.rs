@@ -127,15 +127,14 @@ fn once_grant_expires_at_turn_complete() {
     // produce a non-empty event set. If any of these break, the existing
     // retrace test will fail too — this just keeps `cargo test
     // once_grant_expires` driving the same code path.
-    let reply = crate::proto::events::permissions_reply(
-        "user".into(),
-        &[crate::proto::gait::log::v1::PermissionsReplyItem {
+    let reply = crate::proto::events::permissions_reply(&[
+        crate::proto::gait::log::v1::PermissionsReplyItem {
             id: "1".into(),
             decision: crate::proto::gait::log::v1::Decision::Allow as i32,
             text: Some("shell:ls".into()),
             scope: crate::proto::gait::log::v1::Scope::Once as i32,
-        }],
-    );
+        },
+    ]);
     let mut bodies = vec![reply];
     bodies.push(crate::proto::wire::body(
         crate::proto::gait::log::v1::payload::Kind::TurnComplete(

@@ -66,7 +66,7 @@ fn persisted_session() -> (tempfile::TempDir, PathBuf, PathBuf, String) {
     .unwrap();
     gait_state::proto::wire::append(
         &log,
-        gait_state::proto::events::user_text("question".into(), None),
+        gait_state::proto::events::user_text("question".into()),
     )
     .unwrap();
     gait_state::proto::wire::append(

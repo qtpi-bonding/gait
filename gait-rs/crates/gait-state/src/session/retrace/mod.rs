@@ -1503,7 +1503,7 @@ mod cancel_tests {
                 0,
                 0,
             ),
-            envelope::mint(events::user_text("hello".into(), None), None, 0, 0),
+            envelope::mint(events::user_text("hello".into()), None, 0, 0),
             envelope::mint(events::cancellation_signal(), None, 0, 0),
         ];
 

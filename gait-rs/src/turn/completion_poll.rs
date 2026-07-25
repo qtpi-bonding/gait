@@ -241,7 +241,7 @@ mod tests {
     fn surfaced_names_ignores_non_daemon_events() {
         let events = vec![
             ev(crate::proto::events::assistant_text("hi".into())),
-            ev(crate::proto::events::user_text("hello".into(), None)),
+            ev(crate::proto::events::user_text("hello".into())),
         ];
         let s = surfaced_daemon_idempotency_keys(&events);
         assert!(s.is_empty(), "no DaemonUpdate events → empty set");
@@ -482,7 +482,7 @@ mod tests {
     fn surfaced_agent_ids_ignores_non_agent_events() {
         let events = vec![
             ev(crate::proto::events::assistant_text("hi".into())),
-            ev(crate::proto::events::user_text("hello".into(), None)),
+            ev(crate::proto::events::user_text("hello".into())),
         ];
         let s = surfaced_agent_idempotency_keys(&events);
         assert!(s.is_empty(), "no AgentUpdate events → empty set");

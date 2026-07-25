@@ -354,7 +354,7 @@ impl ReplBuilder {
         }
 
         Ok(InteractionOutcome {
-            event_body: events::permissions_reply("user".into(), &reply_items),
+            event_body: events::permissions_reply(&reply_items),
             respawn: !cancelled,
         })
     }
@@ -490,7 +490,7 @@ mod tests {
             text: None,
             scope: pb::Scope::Unspecified as i32,
         }];
-        let body = gait_core::proto::events::permissions_reply("user".into(), &replies);
+        let body = gait_core::proto::events::permissions_reply(&replies);
         if let pb::event::Body::Payload(p) = body {
             assert!(matches!(p.kind, Some(payload::Kind::PermissionsReply(_))));
         } else {

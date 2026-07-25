@@ -245,9 +245,8 @@ message Agent {                       // the live agent config from this seq for
 }
 
 message UserText {
-  string content                 = 1;
-  optional string from           = 2;  // sender id (open → string)
-  reserved 3, 4;                   // formerly: CodebaseState codebase, repeated string injected_files
+  string content = 1;
+  reserved 2, 3, 4;  // from removed (2) — superseded by Event.provenance; 3,4 already reserved
 }
 
 message Inject {
@@ -363,7 +362,7 @@ message PermissionsReplyItem {
 enum Decision { DECISION_UNSPECIFIED = 0; DECISION_ALLOW = 1; DECISION_DENY = 2; }
 enum Scope    { SCOPE_UNSPECIFIED = 0; SCOPE_ONCE = 1; SCOPE_AGENT = 2; SCOPE_GLOBAL = 3; SCOPE_SESSION = 4; }
 message Permissions      { repeated PermissionItem items = 1; }
-message PermissionsReply { string from = 1; repeated PermissionsReplyItem items = 2; }  // from = replier id
+message PermissionsReply { reserved 1; repeated PermissionsReplyItem items = 2; }  // 1 = former `from` (replier id) — removed, superseded by Event.provenance
 
 // Emitted when a tool call matches a deny[] pattern — the hard-floor
 // permission-gate block, distinct from a Permissions ask (which ask/allow
@@ -458,7 +457,7 @@ message SandboxUnlockItem {
   optional string preview = 5; // rendered pending change (diff/content), tool-owned
 }
 message SandboxUnlock      { repeated SandboxUnlockItem items = 1; }
-message SandboxUnlockReply { string from = 1; repeated SandboxUnlockReplyItem items = 2; }
+message SandboxUnlockReply { reserved 1; repeated SandboxUnlockReplyItem items = 2; }  // 1 = former `from` (replier id) — removed, superseded by Event.provenance
 message SandboxUnlockReplyItem {
   string   id       = 1;
   Decision decision = 2;  // reuse existing Decision enum

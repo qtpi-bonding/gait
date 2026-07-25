@@ -582,7 +582,6 @@ pub async fn run_turn(
                     "You must finish by calling `structured_done` with a `result` matching \
                      the declared schema. Plain-text completion is not accepted for this task."
                         .into(),
-                    Some("harness".into()),
                 ))?;
                 step_index += 1;
                 continue 'turn;

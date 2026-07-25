@@ -146,15 +146,14 @@ pub fn session_state(tx_path: &std::path::Path) -> Result<SessionState, SessionE
 
 /// Append a `PermissionsReply` event to the transcript and stdout.
 ///
-/// `from` identifies the source of the decisions (e.g. "user", "auto-deny").
 /// Each `PermissionsReplyItem.id` corresponds to a `PermissionItem.id` in
 /// the preceding `Permissions` request, and `decision` is "approve" | "deny" | "instruct".
 pub fn write_permissions_reply(
     tx_path: &std::path::Path,
-    from: &str,
+    _from: &str,
     items: Vec<pb::PermissionsReplyItem>,
 ) -> Result<(), SessionError> {
-    let body = crate::proto::events::permissions_reply(from.to_string(), &items);
+    let body = crate::proto::events::permissions_reply(&items);
     let prev = last_event(tx_path)?;
     let ev = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
     let mut file = std::fs::OpenOptions::new()
@@ -274,10 +273,10 @@ pub fn write_toggle(
 /// the preceding `SandboxUnlock` request.
 pub fn write_unlock_reply(
     tx_path: &std::path::Path,
-    from: &str,
+    _from: &str,
     items: Vec<pb::SandboxUnlockReplyItem>,
 ) -> Result<(), SessionError> {
-    let body = crate::proto::events::sandbox_unlock_reply(from.to_string(), &items);
+    let body = crate::proto::events::sandbox_unlock_reply(&items);
     let prev = last_event(tx_path)?;
     let ev = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
     let mut file = std::fs::OpenOptions::new()

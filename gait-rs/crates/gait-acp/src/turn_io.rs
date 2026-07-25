@@ -407,7 +407,7 @@ mod tests {
 
     #[test]
     fn user_text_maps_to_user_message_chunk() {
-        let ev = event(events::user_text("hello".into(), None));
+        let ev = event(events::user_text("hello".into()));
         match event_to_session_update(&ev) {
             Some(SessionUpdate::UserMessageChunk(chunk)) => {
                 assert!(matches!(&chunk.content, ContentBlock::Text(t) if t.text == "hello"));
@@ -419,7 +419,7 @@ mod tests {
     #[test]
     fn replay_updates_preserve_renderable_event_order() {
         let events = vec![
-            event(events::user_text("question".into(), None)),
+            event(events::user_text("question".into())),
             event(events::assistant_text("answer".into())),
         ];
         let updates = replay_updates(&events);

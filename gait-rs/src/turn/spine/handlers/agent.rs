@@ -450,7 +450,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let log_path = dir.path().join("log.jsonl");
         // Write only a UserText event.
-        let body = crate::proto::events::user_text("some task".into(), None);
+        let body = crate::proto::events::user_text("some task".into());
         wire::append(&log_path, body).unwrap();
 
         let result = read_terminal_result(&log_path);

@@ -244,7 +244,7 @@ mod tests {
         // TurnComplete after it — a Session grant must persist past the turn boundary.
         let evs = vec![
             crate::proto::envelope::mint(
-                crate::proto::events::permissions_reply("user".into(), &reply),
+                crate::proto::events::permissions_reply(&reply),
                 None,
                 0,
                 0,

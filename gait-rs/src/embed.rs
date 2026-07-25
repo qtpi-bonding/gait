@@ -174,7 +174,7 @@ pub fn user_turn_events(
         dirty_files,
     };
     vec![
-        crate::proto::events::user_text(task, None),
+        crate::proto::events::user_text(task),
         crate::proto::events::context_status(Some(codebase), vec![]),
     ]
 }
@@ -537,7 +537,7 @@ pub async fn run_one_off_turn(
     let session_id = "ephemeral";
 
     // Seed the in-memory transcript with the user input event.
-    let body = crate::proto::events::user_text(input_text, None);
+    let body = crate::proto::events::user_text(input_text);
     let input = vec![crate::proto::envelope::mint(body, None, 0, 0)];
 
     let profile_inputs = crate::turn::spine::ProfileInputs {

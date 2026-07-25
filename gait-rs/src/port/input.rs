@@ -55,7 +55,7 @@ mod tests {
 
     #[tokio::test]
     async fn arg_source_yields_task_input_once_then_none() {
-        let body = crate::proto::events::user_text("hi".into(), None);
+        let body = crate::proto::events::user_text("hi".into());
         let mut s = ArgSource::new(Some(body));
         match s.next().await.expect("first yield") {
             TurnStart::Input(ref bodies) => match &bodies[0] {

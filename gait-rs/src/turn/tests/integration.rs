@@ -878,19 +878,16 @@ async fn resume_executes_approved_tool_directly() {
         events::session_start(session_id.into(), None, None, false),
     )
     .unwrap();
-    wire::append(&tx_path, events::user_text("run echo".into(), None)).unwrap();
+    wire::append(&tx_path, events::user_text("run echo".into())).unwrap();
     wire::append(&tx_path, events::permissions(&[perm_item])).unwrap();
     wire::append(
         &tx_path,
-        events::permissions_reply(
-            "user".into(),
-            &[pb::PermissionsReplyItem {
-                id: "tc-resume-1".into(),
-                decision: pb::Decision::Allow as i32,
-                text: Some("shell:echo *".into()),
-                scope: pb::Scope::Unspecified as i32,
-            }],
-        ),
+        events::permissions_reply(&[pb::PermissionsReplyItem {
+            id: "tc-resume-1".into(),
+            decision: pb::Decision::Allow as i32,
+            text: Some("shell:echo *".into()),
+            scope: pb::Scope::Unspecified as i32,
+        }]),
     )
     .unwrap();
 
@@ -981,7 +978,7 @@ async fn resume_recovers_from_crash_mid_tool_call() {
         events::session_start(session_id.into(), None, None, false),
     )
     .unwrap();
-    wire::append(&tx_path, events::user_text("run echo".into(), None)).unwrap();
+    wire::append(&tx_path, events::user_text("run echo".into())).unwrap();
     wire::append(
         &tx_path,
         events::tool_call(
@@ -1084,7 +1081,7 @@ async fn resume_recovers_from_crash_mid_parallel_batch() {
         events::session_start(session_id.into(), None, None, false),
     )
     .unwrap();
-    wire::append(&tx_path, events::user_text("run two things".into(), None)).unwrap();
+    wire::append(&tx_path, events::user_text("run two things".into())).unwrap();
     wire::append(
         &tx_path,
         events::tool_call(
@@ -1247,19 +1244,16 @@ async fn resume_emits_denied_tool_result_for_rejected_call() {
         events::session_start(session_id.into(), None, None, false),
     )
     .unwrap();
-    wire::append(&tx_path, events::user_text("clean up".into(), None)).unwrap();
+    wire::append(&tx_path, events::user_text("clean up".into())).unwrap();
     wire::append(&tx_path, events::permissions(&[perm_item])).unwrap();
     wire::append(
         &tx_path,
-        events::permissions_reply(
-            "user".into(),
-            &[pb::PermissionsReplyItem {
-                id: "tc-deny-1".into(),
-                decision: pb::Decision::Deny as i32,
-                text: None,
-                scope: pb::Scope::Unspecified as i32,
-            }],
-        ),
+        events::permissions_reply(&[pb::PermissionsReplyItem {
+            id: "tc-deny-1".into(),
+            decision: pb::Decision::Deny as i32,
+            text: None,
+            scope: pb::Scope::Unspecified as i32,
+        }]),
     )
     .unwrap();
 
@@ -1359,7 +1353,7 @@ async fn resume_with_scope_agent_shows_whitelist_prefix() {
         events::session_start(session_id.into(), None, None, false),
     )
     .unwrap();
-    wire::append(&tx_path, events::user_text("list files".into(), None)).unwrap();
+    wire::append(&tx_path, events::user_text("list files".into())).unwrap();
     wire::append(
         &tx_path,
         events::permissions(&[pb::PermissionItem {
@@ -1375,15 +1369,12 @@ async fn resume_with_scope_agent_shows_whitelist_prefix() {
     .unwrap();
     wire::append(
         &tx_path,
-        events::permissions_reply(
-            "user".into(),
-            &[pb::PermissionsReplyItem {
-                id: "tc-scope-1".into(),
-                decision: pb::Decision::Allow as i32,
-                text: None,
-                scope: pb::Scope::Agent as i32,
-            }],
-        ),
+        events::permissions_reply(&[pb::PermissionsReplyItem {
+            id: "tc-scope-1".into(),
+            decision: pb::Decision::Allow as i32,
+            text: None,
+            scope: pb::Scope::Agent as i32,
+        }]),
     )
     .unwrap();
 

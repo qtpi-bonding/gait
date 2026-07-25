@@ -19,9 +19,9 @@ pub fn session_start(
 
 /// `UserText` — user-authored message text. Per-turn environment state
 /// (codebase stamp, injected files) is now a separate `ContextStatus` event;
-/// `user_text` carries only content + optional sender id.
-pub fn user_text(content: String, from: Option<String>) -> pb::event::Body {
-    wire::body(pb::payload::Kind::UserText(pb::UserText { content, from }))
+/// `user_text` carries only content — sender attribution lives on Event.provenance.
+pub fn user_text(content: String) -> pb::event::Body {
+    wire::body(pb::payload::Kind::UserText(pb::UserText { content }))
 }
 
 /// `ContextStatus` — per-turn environment state (codebase stamp + injected
@@ -245,9 +245,10 @@ pub fn permissions(items: &[pb::PermissionItem]) -> pb::event::Body {
 }
 
 /// `PermissionsReply` — caller is responsible for constructing `pb::PermissionsReplyItem` with the correct enum values for `decision` and `scope`.
-pub fn permissions_reply(from: String, items: &[pb::PermissionsReplyItem]) -> pb::event::Body {
+/// Replier id is no longer carried on the proto message — it lives on
+/// `Event.provenance` for events that need it.
+pub fn permissions_reply(items: &[pb::PermissionsReplyItem]) -> pb::event::Body {
     wire::body(pb::payload::Kind::PermissionsReply(pb::PermissionsReply {
-        from,
         items: items.to_vec(),
     }))
 }
@@ -263,10 +264,11 @@ pub fn sandbox_unlock(items: &[pb::SandboxUnlockItem]) -> pb::event::Body {
 
 /// `SandboxUnlockReply` — the human's decision for each `SandboxUnlockItem`.
 /// `from` is the replier id; each item carries a `decision` and `scope`.
-pub fn sandbox_unlock_reply(from: String, items: &[pb::SandboxUnlockReplyItem]) -> pb::event::Body {
+/// Replier id is no longer carried on the proto message — it lives on
+/// `Event.provenance` for events that need it.
+pub fn sandbox_unlock_reply(items: &[pb::SandboxUnlockReplyItem]) -> pb::event::Body {
     wire::body(pb::payload::Kind::SandboxUnlockReply(
         pb::SandboxUnlockReply {
-            from,
             items: items.to_vec(),
         },
     ))
@@ -788,12 +790,13 @@ mod tests {
     }
 
     #[test]
-    fn user_text_carries_content_and_from() {
-        let body = user_text("hi".into(), Some("user".into()));
+    fn user_text_carries_content() {
+        // `from` was removed — sender attribution now lives on Event.provenance
+        // (see append_with_provenance / Provenance), not on UserText itself.
+        let body = user_text("hi".into());
         match kind_of(&body) {
             pb::payload::Kind::UserText(u) => {
                 assert_eq!(u.content, "hi");
-                assert_eq!(u.from, Some("user".into()));
             }
             other => panic!("expected UserText, got {other:?}"),
         }
@@ -1065,8 +1068,7 @@ mod tests {
             decision: pb::Decision::Allow as i32,
             scope: pb::Scope::Once as i32,
         }];
-        wire::append(&path, super::sandbox_unlock_reply("human".into(), &items))
-            .expect("append unlock_reply");
+        wire::append(&path, super::sandbox_unlock_reply(&items)).expect("append unlock_reply");
 
         let evs = wire::read_events(&path).expect("read events");
         assert_eq!(evs.len(), 1);
@@ -1075,7 +1077,6 @@ mod tests {
             _ => None,
         }) {
             Some(pb::payload::Kind::SandboxUnlockReply(ur)) => {
-                assert_eq!(ur.from, "human");
                 assert_eq!(ur.items.len(), 1);
                 let item = &ur.items[0];
                 assert_eq!(item.id, "req-1");

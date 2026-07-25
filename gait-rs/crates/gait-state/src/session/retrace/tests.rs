@@ -34,7 +34,7 @@ fn user_and_assistant_text_reconstructed() {
         dir.path(),
         vec![
             events::session_start("s1".into(), None, None, false),
-            events::user_text("hello".into(), None),
+            events::user_text("hello".into()),
             events::assistant_text("hi there".into()),
         ],
     );
@@ -212,20 +212,17 @@ fn parallel_tool_calls_grouped() {
 #[test]
 fn permissions_excluded_from_context_reconstruction() {
     let bodies = vec![
-        events::user_text("do x".into(), None),
+        events::user_text("do x".into()),
         events::permissions(&[pb::PermissionItem {
             tool_args: crate::proto::events::to_struct(&serde_json::Value::Null),
             ..Default::default()
         }]),
-        events::permissions_reply(
-            "user".into(),
-            &[pb::PermissionsReplyItem {
-                id: "tc1".into(),
-                decision: pb::Decision::Allow as i32,
-                text: None,
-                scope: pb::Scope::Unspecified as i32,
-            }],
-        ),
+        events::permissions_reply(&[pb::PermissionsReplyItem {
+            id: "tc1".into(),
+            decision: pb::Decision::Allow as i32,
+            text: None,
+            scope: pb::Scope::Unspecified as i32,
+        }]),
     ];
     let messages = messages(&mint_events(bodies)).unwrap();
     assert_eq!(
@@ -259,7 +256,7 @@ fn compaction_breakpoint_discards_earlier_events() {
     let path = write_events(
         dir.path(),
         vec![
-            events::user_text("old".into(), None),
+            events::user_text("old".into()),
             events::assistant_text("old response".into()),
             events::turn_complete(events::TurnCompleteParams {
                 usage,
@@ -267,7 +264,7 @@ fn compaction_breakpoint_discards_earlier_events() {
                 ..Default::default()
             }),
             events::summary("summary of old stuff".into(), 1, cu),
-            events::user_text("new".into(), None),
+            events::user_text("new".into()),
         ],
     );
     let all = read_events(&path).unwrap();
@@ -310,7 +307,7 @@ fn enabled_loadables_seeds_from_config_and_replays_toggles() {
 #[test]
 fn both_projections_derive_from_one_event_log() {
     let bodies = vec![
-        events::user_text("hi".into(), None),
+        events::user_text("hi".into()),
         events::toggle("mcp", "slack_send", true),
     ];
     let proto_events = mint_events(bodies);
@@ -379,7 +376,7 @@ fn active_agent_checkpoint_returns_last_agent() {
 #[test]
 fn active_agent_checkpoint_returns_none_for_no_agent() {
     let bodies = vec![
-        events::user_text("hi".into(), None),
+        events::user_text("hi".into()),
         events::assistant_text("hello".into()),
     ];
     let proto_events = mint_events(bodies);
@@ -634,7 +631,7 @@ fn fold_returns_all_three_projections() {
                 instructions: String::new(),
                 through_seq: 0,
             })),
-            events::user_text("hi".into(), None),
+            events::user_text("hi".into()),
             events::toggle("skill", "tdd", true),
         ],
     );
@@ -726,9 +723,9 @@ fn active_messages_resets_on_compaction() {
         output: 1,
     };
     let evs = mint_events(vec![
-        events::user_text("before".into(), None),
+        events::user_text("before".into()),
         events::summary("the summary".into(), 1, cu),
-        events::user_text("after".into(), None),
+        events::user_text("after".into()),
     ]);
     let msgs = run_projection(&ActiveMessages, &evs, &HashMap::new()).msgs;
     assert_eq!(
@@ -752,11 +749,11 @@ fn active_messages_two_compactions_second_wins() {
         output: 1,
     };
     let evs = mint_events(vec![
-        events::user_text("before-first".into(), None),
+        events::user_text("before-first".into()),
         events::summary("first summary".into(), 1, cu),
-        events::user_text("between".into(), None),
+        events::user_text("between".into()),
         events::summary("second summary".into(), 1, cu),
-        events::user_text("after-second".into(), None),
+        events::user_text("after-second".into()),
     ]);
     let msgs = run_projection(&ActiveMessages, &evs, &HashMap::new()).msgs;
     // Only the second summary + the turn after it survive; the first summary and
@@ -780,24 +777,18 @@ fn active_messages_two_compactions_second_wins() {
 fn permissions_session_persists_once_expires_on_turn_complete() {
     use std::collections::{HashMap, HashSet};
     let evs = mint_events(vec![
-        events::permissions_reply(
-            "user".into(),
-            &[pb::PermissionsReplyItem {
-                id: "1".into(),
-                decision: pb::Decision::Allow as i32,
-                text: Some("shell:cargo test".into()),
-                scope: pb::Scope::Session as i32,
-            }],
-        ),
-        events::permissions_reply(
-            "user".into(),
-            &[pb::PermissionsReplyItem {
-                id: "2".into(),
-                decision: pb::Decision::Allow as i32,
-                text: Some("shell:ls".into()),
-                scope: pb::Scope::Once as i32,
-            }],
-        ),
+        events::permissions_reply(&[pb::PermissionsReplyItem {
+            id: "1".into(),
+            decision: pb::Decision::Allow as i32,
+            text: Some("shell:cargo test".into()),
+            scope: pb::Scope::Session as i32,
+        }]),
+        events::permissions_reply(&[pb::PermissionsReplyItem {
+            id: "2".into(),
+            decision: pb::Decision::Allow as i32,
+            text: Some("shell:ls".into()),
+            scope: pb::Scope::Once as i32,
+        }]),
         wire::body(payload::Kind::TurnComplete(pb::TurnComplete::default())),
     ]);
     let st = run_projection(
@@ -821,24 +812,18 @@ fn permissions_session_persists_once_expires_on_turn_complete() {
 fn permissions_session_deny_revokes_but_ledger_keeps_both() {
     use std::collections::{HashMap, HashSet};
     let evs = mint_events(vec![
-        events::permissions_reply(
-            "user".into(),
-            &[pb::PermissionsReplyItem {
-                id: "1".into(),
-                decision: pb::Decision::Allow as i32,
-                text: Some("shell:rm".into()),
-                scope: pb::Scope::Session as i32,
-            }],
-        ),
-        events::permissions_reply(
-            "user".into(),
-            &[pb::PermissionsReplyItem {
-                id: "2".into(),
-                decision: pb::Decision::Deny as i32,
-                text: Some("shell:rm".into()),
-                scope: pb::Scope::Session as i32,
-            }],
-        ),
+        events::permissions_reply(&[pb::PermissionsReplyItem {
+            id: "1".into(),
+            decision: pb::Decision::Allow as i32,
+            text: Some("shell:rm".into()),
+            scope: pb::Scope::Session as i32,
+        }]),
+        events::permissions_reply(&[pb::PermissionsReplyItem {
+            id: "2".into(),
+            decision: pb::Decision::Deny as i32,
+            text: Some("shell:rm".into()),
+            scope: pb::Scope::Session as i32,
+        }]),
     ]);
     // Append-only ledger: both the approve and the deny remain on disk.
     assert_eq!(evs.len(), 2, "approve and deny both stay in the log");
@@ -857,15 +842,14 @@ fn permissions_session_deny_revokes_but_ledger_keeps_both() {
 
 #[test]
 fn fold_effective_allow_includes_session_grant() {
-    let evs = mint_events(vec![events::permissions_reply(
-        "user".into(),
-        &[pb::PermissionsReplyItem {
+    let evs = mint_events(vec![events::permissions_reply(&[
+        pb::PermissionsReplyItem {
             id: "1".into(),
             decision: pb::Decision::Allow as i32,
             text: Some("shell:git status".into()),
             scope: pb::Scope::Session as i32,
-        }],
-    )]);
+        },
+    ])]);
     let res = fold(&evs, AgentState::default()).unwrap();
     assert!(
         res.effective_allow.contains("shell:git status"),
@@ -937,7 +921,7 @@ fn redact_removes_event_from_messages() {
     let path = dir.path().join("tx.jsonl");
 
     // Write a UserTurn, then a Redact targeting it.
-    let user_event = wire::append(&path, events::user_text("hello".into(), None)).unwrap();
+    let user_event = wire::append(&path, events::user_text("hello".into())).unwrap();
     wire::append(&path, redact_body(&user_event.id)).unwrap();
 
     let all = read_events(&path).unwrap();
@@ -956,7 +940,7 @@ fn replace_substitutes_payload_in_messages() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("tx.jsonl");
 
-    let user_event = wire::append(&path, events::user_text("old text".into(), None)).unwrap();
+    let user_event = wire::append(&path, events::user_text("old text".into())).unwrap();
     let new_payload = pb::Payload {
         kind: Some(payload::Kind::UserText(pb::UserText {
             content: "new text".into(),
@@ -983,7 +967,7 @@ fn later_redact_overrides_replace() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("tx.jsonl");
 
-    let user_event = wire::append(&path, events::user_text("original".into(), None)).unwrap();
+    let user_event = wire::append(&path, events::user_text("original".into())).unwrap();
     let new_payload = pb::Payload {
         kind: Some(payload::Kind::UserText(pb::UserText {
             content: "replaced".into(),
@@ -1079,7 +1063,7 @@ fn fold_mutations_included_in_result() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("tx.jsonl");
 
-    let e = wire::append(&path, events::user_text("hi".into(), None)).unwrap();
+    let e = wire::append(&path, events::user_text("hi".into())).unwrap();
     wire::append(&path, redact_body(&e.id)).unwrap();
 
     let all = read_events(&path).unwrap();
@@ -1160,7 +1144,7 @@ fn last_turn_blocks_returns_last_complete() {
 fn last_turn_blocks_empty_when_none() {
     // No TurnComplete events in the log → empty Vec.
     let evs = mint_events(vec![
-        events::user_text("hi".into(), None),
+        events::user_text("hi".into()),
         events::assistant_text("hello".into()),
     ]);
     assert!(last_turn_blocks(&evs).is_empty());
@@ -1457,7 +1441,7 @@ fn fold_replaces_tool_result_in_messages() {
 
     // One UserTurn, one ToolCall, one ToolResult.
 
-    wire::append(&path, events::user_text("do it".into(), None)).unwrap();
+    wire::append(&path, events::user_text("do it".into())).unwrap();
 
     wire::append(
         &path,
@@ -1538,7 +1522,7 @@ fn cascade_replace_tool_result_then_redact_call_hides_both() {
 
     let path = dir.path().join("tx.jsonl");
 
-    wire::append(&path, events::user_text("do it".into(), None)).unwrap();
+    wire::append(&path, events::user_text("do it".into())).unwrap();
 
     let tc_event = wire::append(
         &path,
@@ -1601,7 +1585,7 @@ fn raw_messages_carry_event_ids() {
     use crate::proto::envelope::mint;
     use std::collections::HashMap;
     let evs = vec![
-        mint(events::user_text("hello".into(), None), None, 0, 0),
+        mint(events::user_text("hello".into()), None, 0, 0),
         mint(events::assistant_text("hi".into()), None, 0, 0),
     ];
     let raw = run_projection(&ActiveRawMessages, &evs, &HashMap::new());
@@ -1615,7 +1599,7 @@ fn active_raw_messages_populates_attribution_from_provenance() {
     use crate::proto::envelope::mint;
     use std::collections::HashMap;
 
-    let mut ev = mint(events::user_text("do the thing".into(), None), None, 0, 0);
+    let mut ev = mint(events::user_text("do the thing".into()), None, 0, 0);
     ev.provenance = Some(crate::proto::gait::log::v1::Provenance {
         from: b"agent:s1234abcd".to_vec(),
         to: vec![],
@@ -1719,7 +1703,7 @@ fn inject_appears_in_base() {
 #[test]
 fn outgoing_for_step_includes_injected_messages() {
     use crate::proto::envelope::mint;
-    let user_ev = mint(events::user_text("hello".into(), None), None, 0, 0);
+    let user_ev = mint(events::user_text("hello".into()), None, 0, 0);
     let inject_ev = mint(
         events::inject("user", "context from RAG".into()),
         None,
@@ -1762,7 +1746,7 @@ fn active_unlock_folds_once_grants_and_clears_on_turn_complete() {
 
     let evs = mint_events(vec![
         events::sandbox_unlock(&[unlock_item]),
-        events::sandbox_unlock_reply("user".to_string(), &[reply_item]),
+        events::sandbox_unlock_reply(&[reply_item]),
     ]);
 
     let result = active_unlock_state(&evs);
@@ -1800,7 +1784,7 @@ fn active_unlock_session_grant_survives_turn_complete() {
 
     let evs = mint_events(vec![
         events::sandbox_unlock(&[unlock_item]),
-        events::sandbox_unlock_reply("user".to_string(), &[reply_item]),
+        events::sandbox_unlock_reply(&[reply_item]),
         events::turn_complete(events::TurnCompleteParams {
             usage,
             ..Default::default()
@@ -1884,7 +1868,7 @@ fn full_tool_history_survives_a_resumed_turn() {
     use crate::proto::events::TurnCompleteParams;
     const STEPS: usize = 73;
     let dir = TempDir::new().unwrap();
-    let mut bodies = vec![events::user_text("Implement Task 2 ONLY: ...".into(), None)];
+    let mut bodies = vec![events::user_text("Implement Task 2 ONLY: ...".into())];
     for i in 0..STEPS {
         bodies.push(events::tool_call(
             format!("call{i}"),
@@ -1920,7 +1904,6 @@ fn full_tool_history_survives_a_resumed_turn() {
     // branch, which is what actually runs here).
     bodies.push(events::user_text(
         "Answer to your question: proceed with Option 1/C ...".into(),
-        None,
     ));
 
     let path = write_events(dir.path(), bodies);

@@ -20,7 +20,7 @@ use crate::proto::wire;
 fn append_and_read_roundtrip() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("log.jsonl");
-    wire::append(&path, events::user_text("hello".into(), None)).unwrap();
+    wire::append(&path, events::user_text("hello".into())).unwrap();
     wire::append(&path, events::assistant_text("world".into())).unwrap();
     let events = read_events(&path).unwrap();
     assert_eq!(events.len(), 2);
@@ -61,12 +61,12 @@ fn count_turn_complete_counts_correctly() {
         cache_write: 0,
     };
     let events = vec![
-        mint(events::user_text("x".into(), None)),
+        mint(events::user_text("x".into())),
         mint(events::turn_complete(events::TurnCompleteParams {
             usage,
             ..Default::default()
         })),
-        mint(events::user_text("y".into(), None)),
+        mint(events::user_text("y".into())),
         mint(events::turn_complete(events::TurnCompleteParams {
             usage,
             ..Default::default()
@@ -82,9 +82,9 @@ fn last_compaction_index_finds_last() {
         output: 5,
     };
     let events = vec![
-        mint(events::user_text("x".into(), None)),
+        mint(events::user_text("x".into())),
         mint(events::summary("s1".into(), 1, cu)),
-        mint(events::user_text("y".into(), None)),
+        mint(events::user_text("y".into())),
     ];
     assert_eq!(last_compaction_index(&events), Some(1));
 }
@@ -93,16 +93,11 @@ fn last_compaction_index_finds_last() {
 fn user_turn_from_field_roundtrips() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("log.jsonl");
-    wire::append(
-        &path,
-        events::user_text("do the thing".into(), Some("agent:s-parent123".into())),
-    )
-    .unwrap();
+    wire::append(&path, events::user_text("do the thing".into())).unwrap();
     let events = read_events(&path).unwrap();
     assert_eq!(events.len(), 1);
     if let payload::Kind::UserText(u) = k(&events[0]) {
         assert_eq!(u.content, "do the thing");
-        assert_eq!(u.from.as_deref(), Some("agent:s-parent123"));
     } else {
         panic!("expected UserTurn");
     }
@@ -176,13 +171,13 @@ fn all_event_bodies_serialize_roundtrip() {
     };
     let bodies: Vec<event::Body> = vec![
         events::session_start("s1".into(), None, None, false),
-        events::user_text("t".into(), None),
+        events::user_text("t".into()),
         events::assistant_text("a".into()),
         events::tool_call("i".into(), "read".into(), &serde_json::json!({})),
         events::tool_result("i".into(), "r".into(), None, None),
         events::error("e".into(), "llm"),
         events::permissions(&[]),
-        events::permissions_reply("user".into(), &[]),
+        events::permissions_reply(&[]),
         events::turn_complete(events::TurnCompleteParams {
             usage,
             message: "s".into(),
@@ -292,11 +287,7 @@ fn session_state_unlock_reply_returns_idle() {
         decision: pb::Decision::Allow as i32,
         scope: pb::Scope::Once as i32,
     }];
-    wire::append(
-        &path,
-        events::sandbox_unlock_reply("user".into(), &reply_items),
-    )
-    .unwrap();
+    wire::append(&path, events::sandbox_unlock_reply(&reply_items)).unwrap();
 
     let state = session_state(&path).unwrap();
     assert!(

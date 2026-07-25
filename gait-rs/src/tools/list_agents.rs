@@ -213,7 +213,7 @@ mod tests {
             .unwrap();
         let tx1 = crate::session::live::log_path(ws.path(), "srunning1");
         std::fs::create_dir_all(tx1.parent().unwrap()).unwrap();
-        wire::append(&tx1, events::user_text("task".into(), None)).unwrap();
+        wire::append(&tx1, events::user_text("task".into())).unwrap();
         GitTraceRepo
             .commit_session(ws.path(), "srunning1", "session(srunning1): init")
             .unwrap();
@@ -284,7 +284,7 @@ mod tests {
             .unwrap();
         let tx = crate::session::live::log_path(ws.path(), "snested1");
         std::fs::create_dir_all(tx.parent().unwrap()).unwrap();
-        wire::append(&tx, events::user_text("task".into(), None)).unwrap();
+        wire::append(&tx, events::user_text("task".into())).unwrap();
         GitTraceRepo
             .commit_session(ws.path(), "snested1", "session(snested1): init")
             .unwrap();
