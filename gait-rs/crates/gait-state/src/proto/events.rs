@@ -292,6 +292,10 @@ pub fn sandbox_denied(
         dimension: dimension.to_string(),
         matched_signature: matched_signature.to_string(),
         hint,
+        // Populated by the hand's deny-policy classification (Task 8 of the
+        // 2026-07-25 sandbox-file-deny-policy plan); not yet wired at this
+        // construction site — placeholder until that task lands.
+        matched_deny_pattern: None,
     }))
 }
 
@@ -352,6 +356,12 @@ pub fn sandbox_applied(
         enforcement: sandbox_enforcement(enforcement),
         scope_paths,
         reason,
+        // Populated from SandboxScope.read_deny/write_deny by Task 10 of the
+        // 2026-07-25 sandbox-file-deny-policy plan; not yet wired at this
+        // construction site — placeholder until that task lands.
+        read_deny_paths: Vec::new(),
+        write_deny_paths: Vec::new(),
+        deny_enforced: false,
     }))
 }
 
