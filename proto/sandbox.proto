@@ -76,6 +76,19 @@ message Scope {
   // Seatbelt operation (network-bind) gated on its own, not folded into a
   // NetworkScope mode.
   bool local_bind = 5;
+  // Exact subpaths and glob patterns denied within an otherwise-granted read
+  // scope. Applies to reads, metadata/stat, and unlink — a denied path is
+  // indistinguishable from a missing one. A hard floor: the hand always
+  // sources this from its own local SandboxConfig, never from the wire —
+  // see build_scope_from_impulse. Not part of the unlock-reply grant surface.
+  DenyPolicy read_deny = 6;
+  // Same as read_deny, for the write scope.
+  DenyPolicy write_deny = 7;
+}
+
+message DenyPolicy {
+  repeated string subpaths = 1;
+  repeated string globs = 2;
 }
 
 message NetworkScope {
