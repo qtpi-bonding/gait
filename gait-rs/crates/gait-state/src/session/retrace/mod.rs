@@ -175,6 +175,13 @@ pub struct AgentState {
     pub session_skills: std::collections::HashSet<String>,
     pub session_mcp: std::collections::HashSet<String>,
     pub session_plugins: std::collections::HashSet<String>,
+    /// Per-session cross-message accept-policy delta, folded as an OR-Set from
+    /// `MessageAccept` events (same shape/pattern as `Registry` above). A
+    /// sender is accepted for cross-session `Provenance.to` delivery either
+    /// because it's in this set (explicit grant) or because it's an
+    /// established spawn-hierarchy relation (checked separately by the
+    /// caller — see `accepts_sender`).
+    pub accepted_senders: std::collections::HashSet<Vec<u8>>,
 }
 
 impl AgentState {
@@ -239,6 +246,7 @@ impl AgentState {
             session_skills: Default::default(),
             session_mcp: Default::default(),
             session_plugins: Default::default(),
+            accepted_senders: Default::default(),
         }
     }
 }
@@ -274,6 +282,7 @@ impl From<&pb::Agent> for AgentState {
             session_skills: Default::default(),
             session_mcp: Default::default(),
             session_plugins: Default::default(),
+            accepted_senders: Default::default(),
         }
     }
 }
@@ -332,9 +341,33 @@ impl Projection for ActiveAgent {
                     set.remove(&r.name);
                 }
             }
+            // MessageAccept is a per-session accept-policy OR-Set delta —
+            // same shape as Registry above, gating cross-session
+            // `Provenance.to` delivery instead of loadable registration.
+            payload::Kind::MessageAccept(m) => {
+                if m.granted {
+                    st.accepted_senders.insert(m.sender.clone());
+                } else {
+                    st.accepted_senders.remove(&m.sender);
+                }
+            }
             _ => {}
         }
     }
+}
+
+/// Default accept-policy for cross-session `Provenance.to` delivery: a
+/// session accepts, without any `MessageAccept` entries, only from its own
+/// spawn-hierarchy relations (established via `SessionStart.assigned_by`,
+/// checked by the caller and passed in as `is_spawn_relation`) — anything
+/// else requires an explicit grant in `accepted` (the folded
+/// `AgentState.accepted_senders` OR-Set above).
+pub fn accepts_sender(
+    accepted: &std::collections::HashSet<Vec<u8>>,
+    sender: &[u8],
+    is_spawn_relation: bool,
+) -> bool {
+    is_spawn_relation || accepted.contains(sender)
 }
 
 /// Active-mode overlay — LWW over `Mode` events across the full session.

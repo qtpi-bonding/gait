@@ -166,6 +166,7 @@ pub(crate) fn init(
             session_skills: Default::default(),
             session_mcp: Default::default(),
             session_plugins: Default::default(),
+            accepted_senders: Default::default(),
         };
         for n in &config_enabled {
             if crate::registry::whitelist_allows(&agent_whitelist.skills, n) {

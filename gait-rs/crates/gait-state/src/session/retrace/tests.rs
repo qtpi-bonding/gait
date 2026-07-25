@@ -1285,6 +1285,52 @@ fn active_agent_registry_guards_tool_and_unspecified() {
 }
 
 #[test]
+fn message_accept_folds_as_or_set() {
+    use std::collections::HashMap;
+    let seed = AgentState::default();
+    let evs = mint_events(vec![
+        wire::body(payload::Kind::MessageAccept(pb::MessageAccept {
+            sender: b"sender_a".to_vec(),
+            granted: true,
+        })),
+        wire::body(payload::Kind::MessageAccept(pb::MessageAccept {
+            sender: b"sender_b".to_vec(),
+            granted: true,
+        })),
+        wire::body(payload::Kind::MessageAccept(pb::MessageAccept {
+            sender: b"sender_a".to_vec(),
+            granted: false, // revoke
+        })),
+    ]);
+    let st = run_projection(&ActiveAgent { seed }, &evs, &HashMap::new());
+    assert!(!st.accepted_senders.contains(&b"sender_a".to_vec()[..]));
+    assert!(st.accepted_senders.contains(&b"sender_b".to_vec()[..]));
+}
+
+#[test]
+fn accepts_sender_allows_spawn_relations_without_explicit_grant() {
+    let empty_accepted: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+    assert!(
+        super::accepts_sender(&empty_accepted, b"agent:parent_id", true),
+        "spawn-hierarchy relation must be accepted by default"
+    );
+    assert!(
+        !super::accepts_sender(&empty_accepted, b"agent:stranger", false),
+        "non-relation with no explicit grant must be rejected"
+    );
+}
+
+#[test]
+fn accepts_sender_honors_explicit_grant_for_non_relations() {
+    let mut accepted = std::collections::HashSet::new();
+    accepted.insert(b"agent:stranger".to_vec());
+    assert!(
+        super::accepts_sender(&accepted, b"agent:stranger", false),
+        "explicit MessageAccept grant must override the default reject for non-relations"
+    );
+}
+
+#[test]
 fn rebaseline_agent_overlays_skills_and_mcp_from_state() {
     use std::collections::HashSet;
     let live = pb::Agent {
@@ -1317,6 +1363,7 @@ fn rebaseline_agent_overlays_skills_and_mcp_from_state() {
         session_skills: HashSet::new(),
         session_mcp: HashSet::new(),
         session_plugins: HashSet::new(),
+        accepted_senders: HashSet::new(),
     };
     let got = rebaseline_agent(live.clone(), &st);
     assert_eq!(
