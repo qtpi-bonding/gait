@@ -34,7 +34,15 @@ message Event {
 
   uint32 turn               = 7;  // 0-indexed turn ordinal within the session; stamped by emitter
   uint32 step               = 8;  // 0-indexed step ordinal within the current turn; stamped by emitter
-  reserved 9 to 15;             // future envelope fields (origin/writer-id, Merkle prev-hash)
+  // Sender/recipient/thread metadata — required whenever an event crosses a
+  // party boundary (subagent task injection, cross-session delivery, a
+  // multi-writer room log) or lives in a room log; omitted in an ordinary
+  // single-writer session log, where authorship is implicit in the log's
+  // owner. NOT integrity-covered by content_hash (see envelope.rs's doc
+  // comment — content_hash covers only the body arm, by construction) —
+  // do not treat `signature` as tamper-evident.
+  optional Provenance provenance = 9;
+  reserved 10 to 15;             // remaining envelope-field reservation
 
   // NOTE: an unset `body` is a malformed event — the Retrace MUST reject body==None as a hard error
   // (proto3 cannot enforce "exactly one oneof arm set").
@@ -43,6 +51,19 @@ message Event {
     Redact  redact  = 17;       // a mutation: remove a prior event from the working Transcript
     Replace replace = 18;       // a mutation: rewrite a prior event with a fully-typed payload
   }
+}
+
+
+// Sender/recipient/thread metadata carried on Event.provenance. `from` is a
+// placeholder (non-cryptographic) identity until a real keypair system exists;
+// `signature` is NOT integrity-covered by content_hash (see field 9's comment
+// on Event.provenance) — do not treat it as tamper-evident.
+message Provenance {
+  bytes           from      = 1;  // sender identity — placeholder (non-cryptographic) until a
+                                    // real keypair system exists; see plan Global Constraints
+  repeated string to        = 2;  // specific recipients; empty = the room/log at large
+  string          context   = 3;  // room/thread reference — freeform, no enforced vocabulary
+  bytes           signature = 4;  // NOT integrity-covered by content_hash — see field comment above
 }
 
 
