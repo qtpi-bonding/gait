@@ -1564,6 +1564,44 @@ fn raw_messages_carry_event_ids() {
 }
 
 #[test]
+fn active_raw_messages_populates_attribution_from_provenance() {
+    use crate::proto::envelope::mint;
+    use std::collections::HashMap;
+
+    let mut ev = mint(events::user_text("do the thing".into(), None), None, 0, 0);
+    ev.provenance = Some(crate::proto::gait::log::v1::Provenance {
+        from: b"agent:s1234abcd".to_vec(),
+        to: vec![],
+        context: String::new(),
+        signature: vec![],
+    });
+
+    let raw = run_projection(&ActiveRawMessages, &[ev], &HashMap::new());
+
+    match &raw.base[0] {
+        crate::types::Message::User {
+            attribution,
+            content,
+            ..
+        } => {
+            let a = attribution
+                .as_ref()
+                .expect("provenance-bearing event must carry attribution");
+            assert_eq!(a.sender, "agent:s1234abcd");
+            assert!(
+                !a.verified,
+                "placeholder identity must never be marked verified"
+            );
+            match content {
+                crate::types::MessageContent::Text(t) => assert_eq!(t, "do the thing"),
+                _ => panic!("expected text content"),
+            }
+        }
+        _ => panic!("expected User variant"),
+    }
+}
+
+#[test]
 fn coalesce_merges_consecutive_tool_calls() {
     use crate::proto::envelope::mint;
     use std::collections::HashMap;

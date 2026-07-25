@@ -137,6 +137,7 @@ impl Provider for CodexResponsesProvider {
             effective_messages.push(Message::User {
                 content: MessageContent::Text(tail.to_string()),
                 id: String::new(),
+                attribution: None,
             });
         }
         let body = self.request_body(system, &effective_messages, tools);

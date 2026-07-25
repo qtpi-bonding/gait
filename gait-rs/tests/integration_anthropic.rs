@@ -16,6 +16,7 @@ async fn anthropic_streams_hello() {
     let messages = vec![Message::User {
         id: String::new(),
         content: MessageContent::Text("Say exactly: hello world".into()),
+        attribution: None,
     }];
 
     let mut stream = provider

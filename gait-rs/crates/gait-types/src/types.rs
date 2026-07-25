@@ -2,6 +2,17 @@ use gait_proto::gait::log::v1::{event, Event};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// The model-facing summary of an `Event.provenance` — computed once, at
+/// fold time, from the durable `Provenance` on the log. NOT itself
+/// persisted; recomputed from the log on every fold. `verified` is `false`
+/// for every placeholder identity in this plan (no keypair system exists
+/// yet) — see the sandbox/message-attribution spec's Global Constraints.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Attribution {
+    pub sender: String,
+    pub verified: bool,
+}
+
 // Mirrors Vercel AI SDK's CoreMessage union
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "lowercase")]
@@ -10,6 +21,8 @@ pub enum Message {
         content: MessageContent,
         #[serde(skip)]
         id: String,
+        #[serde(skip)]
+        attribution: Option<Attribution>,
     },
     Assistant {
         content: AssistantContent,
@@ -554,6 +567,7 @@ impl Message {
             InjectRole::User => Message::User {
                 content: MessageContent::Text(text),
                 id,
+                attribution: None,
             },
             InjectRole::Assistant => Message::Assistant {
                 content: AssistantContent::Text(text),
@@ -602,6 +616,7 @@ mod tests {
         let msg = Message::User {
             content: MessageContent::Text("hello".into()),
             id: String::new(),
+            attribution: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: Message = serde_json::from_str(&json).unwrap();
@@ -818,8 +833,27 @@ mod tests {
         let msg = Message::User {
             content: MessageContent::Text("hi".into()),
             id: "abc".into(),
+            attribution: None,
         };
         assert_eq!(msg.id(), "abc");
+    }
+
+    #[test]
+    fn message_user_carries_optional_attribution() {
+        let m = Message::User {
+            content: MessageContent::Text("task".into()),
+            id: "ev1".into(),
+            attribution: Some(Attribution {
+                sender: "agent:s1234".into(),
+                verified: false,
+            }),
+        };
+        match m {
+            Message::User { attribution, .. } => {
+                assert_eq!(attribution.unwrap().sender, "agent:s1234");
+            }
+            _ => panic!("expected User variant"),
+        }
     }
 
     #[test]
@@ -827,6 +861,7 @@ mod tests {
         let msg = Message::User {
             content: MessageContent::Text("hi".into()),
             id: "secret".into(),
+            attribution: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(!json.contains("secret"), "id must be skipped: {json}");

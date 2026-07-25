@@ -13,7 +13,8 @@
 use crate::proto::gait::log::v1::{self as pb, event, payload, ClarifyKind, Event};
 use crate::session::{log::read_events, SessionError};
 use crate::types::{
-    AssistantContent, AssistantPart, Message, MessageContent, ToolCall, ToolResult, ToolResultKind,
+    AssistantContent, AssistantPart, Attribution, Message, MessageContent, ToolCall, ToolResult,
+    ToolResultKind,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -418,6 +419,7 @@ impl MessagesState {
             msgs: vec![Message::User {
                 content: MessageContent::Text(format!("[Session history summary: {}]", summary)),
                 id: uuid::Uuid::new_v4().to_string(),
+                attribution: None,
             }],
             phase: MsgPhase::Other,
         }
@@ -427,6 +429,7 @@ impl MessagesState {
         self.msgs.push(Message::User {
             content: MessageContent::Text(text),
             id: id.to_string(),
+            attribution: None,
         });
         self.phase = MsgPhase::Other;
     }
@@ -569,6 +572,7 @@ impl MessagesState {
                 self.msgs.push(Message::User {
                     content: MessageContent::Text(format!("[response] {}", resp)),
                     id: id.to_string(),
+                    attribution: None,
                 });
             }
         }
@@ -712,10 +716,20 @@ impl Projection for ActiveRawMessages {
 
     fn apply(&self, st: &mut Self::State, ev: &Event, kind: &payload::Kind) {
         match kind {
-            payload::Kind::UserText(u) => st.base.push(Message::User {
-                content: MessageContent::Text(u.content.clone()),
-                id: ev.id.clone(),
-            }),
+            payload::Kind::UserText(u) => {
+                let attribution = ev.provenance.as_ref().map(|p| Attribution {
+                    sender: String::from_utf8_lossy(&p.from).into_owned(),
+                    // placeholder-identity events always have an empty signature per
+                    // the plan's Global Constraints, so this is always false today;
+                    // becomes real once a keypair system exists
+                    verified: !p.signature.is_empty(),
+                });
+                st.base.push(Message::User {
+                    content: MessageContent::Text(u.content.clone()),
+                    id: ev.id.clone(),
+                    attribution,
+                });
+            }
             payload::Kind::AssistantText(a) => st.base.push(Message::Assistant {
                 content: AssistantContent::Text(a.content.clone()),
                 id: ev.id.clone(),
@@ -752,6 +766,7 @@ impl Projection for ActiveRawMessages {
                     _ => Message::User {
                         content: MessageContent::Text(ti.content.clone()),
                         id: ev.id.clone(),
+                        attribution: None,
                     },
                 };
                 st.base.push(msg);
@@ -760,6 +775,7 @@ impl Projection for ActiveRawMessages {
             payload::Kind::CancellationSignal(_) => st.base.push(Message::User {
                 content: MessageContent::Text("[turn interrupted by user]".to_string()),
                 id: ev.id.clone(),
+                attribution: None,
             }),
             payload::Kind::AgentUpdate(au) => {
                 let status = pb::AgentStatus::try_from(au.status)
@@ -781,6 +797,7 @@ impl Projection for ActiveRawMessages {
                 st.base.push(Message::User {
                     content: MessageContent::Text(content),
                     id: ev.id.clone(),
+                    attribution: None,
                 });
             }
             payload::Kind::DaemonUpdate(du) => {
@@ -798,6 +815,7 @@ impl Projection for ActiveRawMessages {
                 st.base.push(Message::User {
                     content: MessageContent::Text(content),
                     id: ev.id.clone(),
+                    attribution: None,
                 });
             }
             payload::Kind::Clarify(c) => {
@@ -836,6 +854,7 @@ impl Projection for ActiveRawMessages {
                 st.base.push(Message::User {
                     content: MessageContent::Text(text),
                     id: ev.id.clone(),
+                    attribution: None,
                 });
             }
             payload::Kind::ClarifyConvergence(cc) => {
@@ -848,6 +867,7 @@ impl Projection for ActiveRawMessages {
                         st.base.push(Message::User {
                             content: MessageContent::Text(format!("[response] {}", resp)),
                             id: ev.id.clone(),
+                            attribution: None,
                         });
                     }
                 }
@@ -880,6 +900,7 @@ impl Projection for ActiveRawMessages {
                 st.base.push(Message::User {
                     content: MessageContent::Text(text),
                     id: ev.id.clone(),
+                    attribution: None,
                 });
             }
             payload::Kind::Error(e) => {
@@ -898,6 +919,7 @@ impl Projection for ActiveRawMessages {
                         phase_str, e.message
                     )),
                     id: ev.id.clone(),
+                    attribution: None,
                 });
             }
             payload::Kind::Cwd(_)

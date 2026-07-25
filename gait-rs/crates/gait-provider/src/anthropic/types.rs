@@ -660,6 +660,7 @@ mod tests {
                 content: gait_types::types::MessageContent::Text(
                     "[daemon:build] done — exit 0 — log: /tmp/build.log".into(),
                 ),
+                attribution: None,
             },
         ];
         let converted = to_anthropic_messages(&messages);
