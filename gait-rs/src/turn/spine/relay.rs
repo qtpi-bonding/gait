@@ -13,6 +13,7 @@ use crate::proto::gait::sandbox::v1::{signal, Notify};
 use crate::turn::nerve;
 use crate::turn::DiagnosticSink;
 
+use super::checkpoint_enrich::enrich_checkpoint;
 use super::handlers::{self, tool::run_tool_as_spine, TurnCtx};
 use super::lifecycle::{self, brain_argv, ProfileInputs, TurnMode};
 use super::preview::enrich_permissions_preview;
@@ -195,6 +196,12 @@ pub async fn relay_brain_turn(
     };
     // Fold the durable selected inference before provider/credential binding.
     let events = log.events();
+    // Same computation teardown (lifecycle.rs) does post-turn with its own
+    // `events` snapshot — here it's pre-turn, so it names *this* turn's
+    // number. It cannot change mid-turn (no TurnComplete for this turn has
+    // been logged yet), so compute it once and reuse it for every checkpoint
+    // enrichment below rather than re-reading the log per ToolResult.
+    let turn_n = crate::session::log::count_turn_complete(&events) as u32;
     let mut profile = lifecycle::build_turn_profile(gait_dir, codebase, profile_inputs);
     {
         use crate::session::retrace::{active_inference, active_mutations, apply_cascade};
@@ -408,6 +415,30 @@ pub async fn relay_brain_turn(
                             _ => {}
                         }
                     }
+                    // Stamp a shadow-git checkpoint SHA onto ToolResults (direct or
+                    // Replace-wrapped) from shell/write/apply_patch. For a direct
+                    // ToolResult, pending_calls already had this call_id removed by
+                    // the match arm above, but completed_mutations was just
+                    // populated with it in that same arm — the `.or_else` fallback
+                    // covers it. For a Replace (apply_output_filter's rewrite of an
+                    // earlier ToolResult), pending_calls never had this event's
+                    // call_id (a Replace carries no ToolCall/ToolResult kind of its
+                    // own to trigger that bookkeeping) — only completed_mutations,
+                    // populated when the original ToolResult came through earlier
+                    // in the turn, has it.
+                    enrich_checkpoint(
+                        &mut evt,
+                        |call_id| {
+                            state
+                                .pending_calls
+                                .get(call_id)
+                                .or_else(|| state.completed_mutations.get(call_id))
+                                .cloned()
+                        },
+                        &git,
+                        codebase,
+                        turn_n,
+                    );
                     enrich_permissions_preview(
                         &mut evt,
                         codebase,
