@@ -67,6 +67,19 @@ fn append_line_durable(file: &mut std::fs::File, json: &str) -> std::io::Result<
     file.sync_all()
 }
 
+/// Write `ev` (already minted/chained) to the JSONL transcript with the
+/// shared durability semantics. The single choke point for every persisted
+/// log write — see [`append_line_durable`].
+fn write_event(path: &Path, ev: Event) -> anyhow::Result<Event> {
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    let json = serde_json::to_string(&ev)?;
+    append_line_durable(&mut file, &json)?;
+    Ok(ev)
+}
+
 /// Mint an [`Event`] for `body` chained after the current tail, write its JSON
 /// line to the file, and return the minted event. Shared by [`append`] and
 /// [`emit`]; also called directly by the `Recorder` sink in gait-core.
@@ -86,13 +99,7 @@ pub fn write_to_transcript(
 ) -> anyhow::Result<Event> {
     let prev = last_event(path)?;
     let ev = mint(body, prev.as_ref(), turn, step);
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    let json = serde_json::to_string(&ev)?;
-    append_line_durable(&mut file, &json)?;
-    Ok(ev)
+    write_event(path, ev)
 }
 
 /// Mint an [`Event`] for `body` chained after the current tail (reads
@@ -102,6 +109,28 @@ pub fn write_to_transcript(
 /// Session-level events use `turn=0, step=0` — these are not part of any turn.
 pub fn append(path: &Path, body: event::Body) -> anyhow::Result<Event> {
     write_to_transcript(path, body, 0, 0)
+}
+
+/// Like [`append`], but stamps `provenance` onto the minted event before
+/// it's written to disk. Provenance is set BEFORE the durable append (never
+/// after — the append is one-shot) so the on-disk line already carries the
+/// sender/thread metadata; a subsequent in-memory patch would silently leave
+/// the disk out of sync.
+///
+/// Used by the few call sites that cross a party boundary (subagent task
+/// injection, generalized `notify_parent` delivery); the existing
+/// [`append`]/[`write_to_transcript`] signatures are intentionally left
+/// untouched so their ~49 existing callers don't need to thread a
+/// `Provenance` they don't have.
+pub fn append_with_provenance(
+    path: &Path,
+    body: event::Body,
+    provenance: crate::gait::log::v1::Provenance,
+) -> anyhow::Result<Event> {
+    let prev = last_event(path)?;
+    let mut ev = mint(body, prev.as_ref(), 0, 0);
+    ev.provenance = Some(provenance);
+    write_event(path, ev)
 }
 
 /// Append a brain-minted event preserving its `id`, `body`, `turn`, `step`,
@@ -126,13 +155,7 @@ pub fn append_with_id(path: &Path, incoming: &Event) -> anyhow::Result<Event> {
     // Re-stamp the content hash (body, version, turn, step are preserved; seq/parents
     // don't affect the content hash since it covers only the body arm).
     stamp_hash(&mut ev);
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    let json = serde_json::to_string(&ev)?;
-    append_line_durable(&mut file, &json)?;
-    Ok(ev)
+    write_event(path, ev)
 }
 
 #[cfg(test)]
@@ -261,5 +284,27 @@ mod tests {
         let events = read_events(&path).unwrap();
         assert_eq!(events.len(), 2, "both writes must be durably readable back");
         assert_eq!(events[1].id, written.id);
+    }
+
+    #[test]
+    fn append_with_provenance_stamps_provenance_field() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("log.jsonl");
+        let body = crate::gait::log::v1::event::Body::Payload(crate::gait::log::v1::Payload {
+            kind: Some(crate::gait::log::v1::payload::Kind::UserText(
+                crate::gait::log::v1::UserText {
+                    content: "hi".into(),
+                    from: None,
+                },
+            )),
+        });
+        let provenance = crate::gait::log::v1::Provenance {
+            from: b"agent:s1234abcd".to_vec(),
+            to: vec![],
+            context: String::new(),
+            signature: vec![],
+        };
+        let ev = append_with_provenance(&path, body, provenance.clone()).unwrap();
+        assert_eq!(ev.provenance, Some(provenance));
     }
 }

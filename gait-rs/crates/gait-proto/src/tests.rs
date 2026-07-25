@@ -28,6 +28,7 @@ fn sample_event() -> Event {
                 from: Some("user".into()),
             })),
         })),
+        provenance: None,
     }
 }
 
