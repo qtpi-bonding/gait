@@ -329,6 +329,34 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_gated_tools_stay_serial() {
+        // Per-tool-call checkpointing (see docs/superpowers/plans/2026-07-25-
+        // per-tool-call-checkpointing-plan.md §3) relies on shell/write/
+        // apply_patch never running concurrently with themselves — two
+        // parallel checkpoint() calls against the same shadow repo's HEAD
+        // would race. This test guards that invariant against silent
+        // regression; it should already be true today.
+        let tools = builtin_tools(
+            ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "stest".into()),
+            vec![],
+            vec![],
+            vec![],
+            crate::git::Repos::production(),
+        );
+        for name in ["shell", "write", "apply_patch"] {
+            let tool = tools
+                .iter()
+                .find(|t| t.name() == name)
+                .unwrap_or_else(|| panic!("tool {name} not found in builtin_tools"));
+            assert_eq!(
+                tool.execution_mode(),
+                crate::types::ExecutionMode::Serial,
+                "checkpoint enrichment assumes {name} never runs concurrently with itself"
+            );
+        }
+    }
+
+    #[test]
     fn enable_meta_tool_present() {
         let tools = builtin_tools(
             ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "stest".into()),
