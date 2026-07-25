@@ -24,16 +24,21 @@ use crate::proto::gait::log::v1::payload;
 use crate::proto::gait::log::v1::Event;
 use crate::session::completion::Completion;
 
-/// Daemon names that already have a `DaemonUpdate` event in this session's log.
+/// Idempotency keys (see `Completion`, `gait-state::session::completion`) for
+/// daemons that already have a `DaemonUpdate` event in this session's log.
 ///
 /// Used as the dedup ledger: the per-step poll reads this set and a completion
-/// whose daemon name is in the set has already been surfaced in a prior step
-/// or by the producer's `notify_parent` call, so it must NOT be re-injected.
-pub fn surfaced_daemon_names(events: &[Event]) -> HashSet<String> {
+/// whose idempotency_key is in the set has already been surfaced in a prior
+/// step or by the producer's `notify_parent` call, so it must NOT be
+/// re-injected. Renamed from `surfaced_daemon_names` — the old name implied
+/// (and the old implementation enforced) that a daemon's NAME alone was
+/// sufficient identity, which is wrong: two separate runs of a same-named
+/// daemon are two distinct completions, not duplicates of each other.
+pub fn surfaced_daemon_idempotency_keys(events: &[Event]) -> HashSet<String> {
     let mut out = HashSet::new();
     for ev in events {
         if let Some(payload::Kind::DaemonUpdate(du)) = event_kind(ev) {
-            out.insert(du.name.clone());
+            out.insert(du.idempotency_key.clone());
         }
     }
     out
@@ -59,7 +64,7 @@ pub fn pending_daemon_completions(
     let mut out = Vec::new();
     // 1. Explicit stops — exit code is the recorded one.
     for (name, exit_code) in crate::session::daemons::stopped_for_session(gait_dir, session_id) {
-        if already.contains(&name) {
+        if already.contains(&format!("{name}@{}", started_at_for(gait_dir, &name))) {
             continue;
         }
         // exit_code on the event still lets the agent reason precisely; the
@@ -72,11 +77,7 @@ pub fn pending_daemon_completions(
             .join(format!("{name}.log"))
             .to_string_lossy()
             .into_owned();
-        let started_at = crate::session::daemons::history(gait_dir)
-            .ok()
-            .and_then(|h| h.into_iter().find(|(rec, _)| rec.name == name))
-            .map(|(rec, _)| rec.started_at)
-            .unwrap_or(0);
+        let started_at = started_at_for(gait_dir, &name);
         let idempotency_key = format!("{name}@{started_at}");
         out.push(Completion {
             provenance: None,
@@ -97,7 +98,7 @@ pub fn pending_daemon_completions(
             if rec.session != session_id {
                 continue;
             }
-            if already.contains(&rec.name) {
+            if already.contains(&format!("{}@{}", rec.name, rec.started_at)) {
                 continue;
             }
             if !crate::session::daemons::is_alive(&rec) {
@@ -119,16 +120,31 @@ pub fn pending_daemon_completions(
     out
 }
 
-/// Child session ids that already have an `AgentUpdate` event in this session's log.
+/// Look up a daemon's `started_at` from the on-disk registry. Falls back to
+/// 0 if the registry is unreadable or the daemon is not present (the latter
+/// shouldn't happen for a `stopped_for_session` entry, but matching the
+/// previous behavior keeps tests passing).
+fn started_at_for(gait_dir: &Path, name: &str) -> u64 {
+    crate::session::daemons::history(gait_dir)
+        .ok()
+        .and_then(|h| h.into_iter().find(|(rec, _)| rec.name == name))
+        .map(|(rec, _)| rec.started_at)
+        .unwrap_or(0)
+}
+
+/// Idempotency keys (see `Completion`) for child agents that already have an
+/// `AgentUpdate` event in this session's log.
 ///
-/// Symmetric to `surfaced_daemon_names`: the per-step poll reads this set and
-/// a completion whose child id is in the set has already been surfaced, so it
-/// must NOT be re-injected.
-pub fn surfaced_agent_ids(events: &[Event]) -> HashSet<String> {
+/// Symmetric to `surfaced_daemon_idempotency_keys`: the per-step poll reads
+/// this set and a completion whose idempotency_key is in the set has already
+/// been surfaced, so it must NOT be re-injected. Renamed from
+/// `surfaced_agent_ids` for the same reason as the daemon version — child
+/// `session_id` alone is not stable identity.
+pub fn surfaced_agent_idempotency_keys(events: &[Event]) -> HashSet<String> {
     let mut out = HashSet::new();
     for ev in events {
         if let Some(payload::Kind::AgentUpdate(au)) = event_kind(ev) {
-            out.insert(au.session_id.clone());
+            out.insert(au.idempotency_key.clone());
         }
     }
     out
@@ -145,7 +161,10 @@ pub fn pending_agent_completions(
 ) -> Vec<Completion> {
     let mut out = Vec::new();
     for child in crate::session::children_of(gait_dir, session_id) {
-        if already.contains(&child.id) {
+        // "Already surfaced" = the completion's idempotency_key (the child's
+        // own log-tail event id at detection time) is in the ledger set
+        // returned by `surfaced_agent_idempotency_keys`.
+        if already.contains(&child.last_event_id) {
             continue;
         }
         if child.is_done {
@@ -214,8 +233,8 @@ mod tests {
                 "b@1".into(),
             )),
         ];
-        let s = surfaced_daemon_names(&events);
-        assert!(s.contains("a") && s.contains("b") && s.len() == 2);
+        let s = surfaced_daemon_idempotency_keys(&events);
+        assert!(s.contains("a@1") && s.contains("b@1") && s.len() == 2);
     }
 
     #[test]
@@ -224,10 +243,30 @@ mod tests {
             ev(crate::proto::events::assistant_text("hi".into())),
             ev(crate::proto::events::user_text("hello".into(), None)),
         ];
-        let s = surfaced_daemon_names(&events);
+        let s = surfaced_daemon_idempotency_keys(&events);
         assert!(s.is_empty(), "no DaemonUpdate events → empty set");
     }
 
+    #[test]
+    fn surfaced_daemon_names_distinguishes_repeated_runs_by_idempotency_key() {
+        // Two distinct runs of a same-named daemon ("build") have different
+        // idempotency keys (one per started_at); the surfaced set must key
+        // on the idempotency_key, NOT on the daemon name, so the second run
+        // is not silently swallowed as a duplicate of the first.
+        let events = vec![ev(crate::proto::events::daemon_update(
+            "build".into(),
+            0,
+            "done".into(),
+            "/l".into(),
+            "build@111".into(),
+        ))];
+        let surfaced = surfaced_daemon_idempotency_keys(&events);
+        assert!(surfaced.contains("build@111"));
+        assert!(
+            !surfaced.contains("build@222"),
+            "a different run (different started_at) must not be considered surfaced"
+        );
+    }
     #[test]
     fn pending_excludes_already_surfaced_and_live() {
         use crate::proto::gait::log::v1 as pb;
@@ -402,7 +441,10 @@ mod tests {
 
         // Dedup: same registry, name already surfaced → empty.
         let mut already_seen = HashSet::new();
-        already_seen.insert("dead-killed".to_string());
+        // The surfaced set now keys on the daemon's idempotency_key
+        // (`format!("{name}@{started_at}")`), not the bare name. Mirror
+        // that here so a repeat surface is suppressed.
+        already_seen.insert(format!("dead-killed@{}", u64::MAX));
         let pending2 = pending_daemon_completions(gait_dir, "S", &already_seen);
         assert!(
             pending2.is_empty(),
@@ -428,8 +470,8 @@ mod tests {
             None,
             "schild01-evt1".into(),
         ))];
-        let s = surfaced_agent_ids(&events);
-        assert!(s.contains("schild01"), "schild01 must be in surfaced set");
+        let s = surfaced_agent_idempotency_keys(&events);
+        assert!(s.contains("schild01-evt1"), "schild01-evt1 must be in surfaced set");
         assert_eq!(s.len(), 1);
     }
 
@@ -439,7 +481,7 @@ mod tests {
             ev(crate::proto::events::assistant_text("hi".into())),
             ev(crate::proto::events::user_text("hello".into(), None)),
         ];
-        let s = surfaced_agent_ids(&events);
+        let s = surfaced_agent_idempotency_keys(&events);
         assert!(s.is_empty(), "no AgentUpdate events → empty set");
     }
 
@@ -464,6 +506,13 @@ mod tests {
             notify_done: false,
         })
         .unwrap();
+        let schild02_last_event_id = crate::session::log::read_events(
+            &crate::session::live::log_path(gait_dir, "schild02"),
+        )
+        .unwrap()
+        .last()
+        .map(|e| e.id.clone())
+        .unwrap_or_default();
 
         // Child "schild03" still running — write lock file with OWN pid so is_alive check passes.
         let child03_dir = crate::session::live::worktree_dir(gait_dir, "schild03");
@@ -505,7 +554,10 @@ mod tests {
 
         // Dedup: schild02 already surfaced → empty.
         let mut already_seen = HashSet::new();
-        already_seen.insert("schild02".to_string());
+        // The surfaced set now keys on the child's `last_event_id` (the
+        // idempotency_key stamped on its AgentUpdate). Populate `already`
+        // with schild02's tail event id so it suppresses a repeat surface.
+        already_seen.insert(schild02_last_event_id.clone());
         let pending2 = pending_agent_completions(gait_dir, "sparent", &already_seen);
         assert!(
             pending2.is_empty(),

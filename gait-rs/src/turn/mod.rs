@@ -383,7 +383,7 @@ pub async fn run_turn(
         if persist.poll_completions_allowed() {
             let events_snap = ingestor.events().unwrap_or_default();
             // Daemon completions
-            let already_d = crate::turn::completion_poll::surfaced_daemon_names(&events_snap);
+            let already_d = crate::turn::completion_poll::surfaced_daemon_idempotency_keys(&events_snap);
             for c in crate::turn::completion_poll::pending_daemon_completions(
                 &gait_dir,
                 &session_id,
@@ -392,7 +392,7 @@ pub async fn run_turn(
                 let _ = emitter.record(c.body());
             }
             // Child-agent completions (Stage 4, Task 4)
-            let already_a = crate::turn::completion_poll::surfaced_agent_ids(&events_snap);
+            let already_a = crate::turn::completion_poll::surfaced_agent_idempotency_keys(&events_snap);
             for c in crate::turn::completion_poll::pending_agent_completions(
                 &gait_dir,
                 &session_id,

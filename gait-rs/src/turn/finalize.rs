@@ -255,13 +255,13 @@ pub(crate) async fn finalize(
         StepOutcome::MaxSteps { max_iter } => {
             if persist.is_unsealed() {
                 let events_snap = env.ingestor.events().unwrap_or_default();
-                let already_d = crate::turn::completion_poll::surfaced_daemon_names(&events_snap);
+                let already_d = crate::turn::completion_poll::surfaced_daemon_idempotency_keys(&events_snap);
                 let pending_d = crate::turn::completion_poll::pending_daemon_completions(
                     env.gait_dir,
                     env.session_id,
                     &already_d,
                 );
-                let already_a = crate::turn::completion_poll::surfaced_agent_ids(&events_snap);
+                let already_a = crate::turn::completion_poll::surfaced_agent_idempotency_keys(&events_snap);
                 let pending_a = crate::turn::completion_poll::pending_agent_completions(
                     env.gait_dir,
                     env.session_id,
