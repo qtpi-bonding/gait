@@ -471,7 +471,10 @@ mod tests {
             "schild01-evt1".into(),
         ))];
         let s = surfaced_agent_idempotency_keys(&events);
-        assert!(s.contains("schild01-evt1"), "schild01-evt1 must be in surfaced set");
+        assert!(
+            s.contains("schild01-evt1"),
+            "schild01-evt1 must be in surfaced set"
+        );
         assert_eq!(s.len(), 1);
     }
 
@@ -506,13 +509,12 @@ mod tests {
             notify_done: false,
         })
         .unwrap();
-        let schild02_last_event_id = crate::session::log::read_events(
-            &crate::session::live::log_path(gait_dir, "schild02"),
-        )
-        .unwrap()
-        .last()
-        .map(|e| e.id.clone())
-        .unwrap_or_default();
+        let schild02_last_event_id =
+            crate::session::log::read_events(&crate::session::live::log_path(gait_dir, "schild02"))
+                .unwrap()
+                .last()
+                .map(|e| e.id.clone())
+                .unwrap_or_default();
 
         // Child "schild03" still running — write lock file with OWN pid so is_alive check passes.
         let child03_dir = crate::session::live::worktree_dir(gait_dir, "schild03");
