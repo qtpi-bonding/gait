@@ -197,6 +197,18 @@ pub struct SandboxConfig {
     pub deny: DenyConfig,
 }
 
+/// Enforcement: read via `gait_core::turn::hand::classify_proactive_denial` —
+/// an app-level check-before-serve gate for the `read`/`write`/`apply_patch`
+/// tools (path/glob match in plain Rust, run before any disk I/O). There is
+/// NO kernel-level (Seatbelt/Landlock) enforcement of this list — an SBPL
+/// codegen attempt was built and reverted after proving unreliable on real
+/// hardware (see git history / `docs/superpowers/plans/2026-07-25-sandbox-
+/// file-deny-policy-plan.md`'s notes: an undocumented macOS sandbox-compiler
+/// quirk silently drops trailing `deny` rules in common rule shapes). The
+/// `shell` tool is also NOT covered — it can touch arbitrary paths gait can't
+/// enumerate without parsing shell syntax. Populating this list is real and
+/// effective for `read`/`write`/`apply_patch`; don't assume it's a hard
+/// kernel-level boundary or that it covers `shell`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DenyConfig {
     /// Patterns denied within the read scope. This list IS the effective list —

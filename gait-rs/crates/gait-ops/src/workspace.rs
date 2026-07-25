@@ -129,6 +129,10 @@ pub fn scaffold_gait_dir(gait_dir: &Path) -> std::io::Result<()> {
     // Deny: patterns denied even within the readable/writable scope above.
     // This list IS what's enforced — edit or remove entries to change it,
     // no hidden merge with a built-in list happens behind your back.
+    // Enforced in gait's own code (an app-level path/glob check before the
+    // read/write/apply_patch tools touch disk) — NOT by the OS sandbox, and
+    // NOT for the shell tool (it can touch arbitrary paths gait can't
+    // enumerate without parsing shell syntax).
     "deny": {{
       "read": [{deny_patterns_json}],
       "write": [{deny_patterns_json}]

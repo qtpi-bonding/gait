@@ -34,6 +34,10 @@ mod handlers;
 pub(crate) use handlers::tool::run_tool_as_spine;
 #[allow(unused_imports)] // path-stable facade re-export; no in-crate caller yet
 pub(crate) use handlers::{error_feedback, TurnCtx};
+// Reused by the hand's own app-level deny-policy check (Task 8 of the
+// 2026-07-25 sandbox-file-deny-policy plan) — same path-resolution logic the
+// spine already uses for FsDelegate prefetch, not duplicated.
+pub(crate) use handlers::tool::delegated_target;
 
 mod relay;
 pub use relay::{relay_brain_turn, SignalSlot};

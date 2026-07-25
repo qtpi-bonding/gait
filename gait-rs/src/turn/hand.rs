@@ -17,7 +17,7 @@ use prost::Message as _;
 use crate::git::Repos;
 use crate::proto::gait::log::v1::SandboxUnlockItem;
 use crate::proto::Recorder;
-use crate::sandbox::{NetworkPolicy, SandboxScope};
+use crate::sandbox::{DenyPolicy, NetworkPolicy, SandboxScope};
 use crate::tools::fs_backend::{BufferedFs, FsBackend, LocalFs};
 use crate::tools::{builtin_tools, ToolCtx};
 use gait_proto::gait::sandbox::v1::{
@@ -162,6 +162,19 @@ pub async fn run_hand(config: HandConfig) {
     // parameters schema, so it lives here, after the tool is resolved.
     let args_json = crate::tools::coerce_scalar_params(args_json, tool.parameters());
 
+    // App-level deny-policy gate — check-before-serve, not react-after-fail.
+    // The kernel-level (Seatbelt) deny mechanism this was originally meant to
+    // pair with (2026-07-25 sandbox-file-deny-policy plan, Task 7) turned out
+    // to be unreliable on real hardware (an undocumented macOS sandbox-compiler
+    // quirk silently drops trailing `deny` rules in common rule shapes — see
+    // that plan's notes) and was reverted; this app-level check is therefore
+    // the ONLY thing enforcing `read_deny`/`write_deny` today, not a redundant
+    // second layer over working kernel enforcement. If the kernel mechanism is
+    // ever fixed and reinstated, this becomes true defense-in-depth on top of
+    // it with no changes needed here.
+    let proactive_denial =
+        classify_proactive_denial(&config.tool, &impulse, &config.codebase, &seal_scope);
+
     let rec = Recorder::buffering();
 
     // Apply the seal BEFORE any tool I/O. The hand enforces the kernel sandbox
@@ -196,9 +209,19 @@ pub async fn run_hand(config: HandConfig) {
     ))
     .ok();
 
-    let mut result_json = match tool.execute(args_json, &rec).await {
-        Ok(v) => v,
-        Err(e) => serde_json::Value::String(format!("error: {e}")),
+    let mut result_json = if proactive_denial.is_some() {
+        // Do NOT call tool.execute() — the whole point of check-before-serve is
+        // that a denied path's content never reaches gait's own code, let alone
+        // the model. No disk I/O happens for this call at all.
+        serde_json::Value::String(
+            "error: denied by sandbox deny policy (matches a configured secrets pattern)"
+                .to_string(),
+        )
+    } else {
+        match tool.execute(args_json, &rec).await {
+            Ok(v) => v,
+            Err(e) => serde_json::Value::String(format!("error: {e}")),
+        }
     };
 
     // Extract "__daemon" sideband if the shell tool spawned a detached daemon.
@@ -305,7 +328,19 @@ pub async fn run_hand(config: HandConfig) {
     } else {
         None
     };
-    let sandbox_denied = if config.tool == "shell" {
+    let sandbox_denied = if let Some(ref d) = proactive_denial {
+        // read/write/apply_patch: this IS the deny policy firing (check-before-
+        // serve, not react-after-fail) — matched_deny_pattern is always known
+        // here, no error-text scanning needed.
+        Some(crate::proto::gait::log::v1::SandboxDenied {
+            tool_name: config.tool.clone(),
+            resource: d.target.to_string_lossy().into_owned(),
+            dimension: d.dimension.to_string(),
+            matched_signature: String::new(),
+            hint: None,
+            matched_deny_pattern: Some(d.pattern.clone()),
+        })
+    } else if config.tool == "shell" {
         fs_signature
             .map(|sig| (sig, "write"))
             .or_else(|| network_signature.map(|sig| (sig, "network")))
@@ -321,9 +356,9 @@ pub async fn run_hand(config: HandConfig) {
                     dimension: dimension.to_string(),
                     matched_signature: (*sig).to_string(),
                     hint,
-                    // Populated by Task 8's classify_denial_by_path wiring
-                    // (2026-07-25 sandbox-file-deny-policy plan); not yet
-                    // wired at this construction site.
+                    // Best-effort path extraction from shell output is a
+                    // documented gap (see classify_proactive_denial's doc
+                    // comment) — shell commands aren't proactively gated.
                     matched_deny_pattern: None,
                 }
             })
@@ -371,6 +406,96 @@ fn local_deny_policy(gait_dir: &Path) -> (crate::sandbox::DenyPolicy, crate::san
     let read = gait_sandbox::sandbox::ceiling::split_deny_patterns(&cfg.sandbox.deny.read);
     let write = gait_sandbox::sandbox::ceiling::split_deny_patterns(&cfg.sandbox.deny.write);
     (read, write)
+}
+
+/// One proactive deny-policy match: which dimension (read/write) matched, the
+/// resolved target path, and which configured pattern matched it.
+struct ProactiveDenial {
+    dimension: &'static str,
+    target: PathBuf,
+    pattern: String,
+}
+
+/// Check-before-serve: for `read`/`write`/`apply_patch` tool calls, resolve the
+/// target path (the same resolution the spine's FsDelegate prefetch already
+/// uses — see `delegated_target`) and check it against the hard-floored
+/// `read_deny`/`write_deny` on `scope` BEFORE the tool ever touches disk. This
+/// is currently the ONLY thing enforcing gait's secrets-denylist feature — see
+/// the doc comment at this function's call site in `run_hand` for why
+/// (kernel-level SBPL `deny` rules were found unreliable on real hardware and
+/// reverted; this app-level check is the actual enforcement, not a redundant
+/// second layer over working kernel enforcement).
+///
+/// `shell` is deliberately NOT covered here — a shell command can touch
+/// arbitrary paths gait can't enumerate without parsing shell syntax, which is
+/// out of scope. This is a documented gap, not an oversight: `cat .env` run
+/// via the `shell` tool is not blocked by this check.
+fn classify_proactive_denial(
+    tool: &str,
+    impulse: &Impulse,
+    codebase: &Path,
+    scope: &SandboxScope,
+) -> Option<ProactiveDenial> {
+    let target = crate::turn::spine::delegated_target(tool, &impulse.args, codebase)?;
+    match tool {
+        "read" => {
+            classify_denial_by_path(&target, &scope.read_deny).map(|pattern| ProactiveDenial {
+                dimension: "read",
+                target,
+                pattern,
+            })
+        }
+        "write" => {
+            classify_denial_by_path(&target, &scope.write_deny).map(|pattern| ProactiveDenial {
+                dimension: "write",
+                target,
+                pattern,
+            })
+        }
+        "apply_patch" => {
+            // apply_patch both reads existing content (to build the diff
+            // context) and writes the result — check both dimensions,
+            // whichever matches first.
+            classify_denial_by_path(&target, &scope.read_deny)
+                .map(|pattern| ProactiveDenial {
+                    dimension: "read",
+                    target: target.clone(),
+                    pattern,
+                })
+                .or_else(|| {
+                    classify_denial_by_path(&target, &scope.write_deny).map(|pattern| {
+                        ProactiveDenial {
+                            dimension: "write",
+                            target,
+                            pattern,
+                        }
+                    })
+                })
+        }
+        _ => None,
+    }
+}
+
+/// Compare a known target path against a deny policy, using the `glob` crate
+/// for pattern matching. Returns the first matched pattern string, or `None`
+/// if the path isn't denied by any pattern. This is the ONLY classification
+/// mechanism available — the kernel doesn't report which rule fired even when
+/// it does enforce something, so gait must do this comparison itself using
+/// data it already has locally.
+fn classify_denial_by_path(target: &Path, deny: &DenyPolicy) -> Option<String> {
+    for subpath in &deny.subpaths {
+        if target.starts_with(subpath) {
+            return Some(subpath.to_string_lossy().into_owned());
+        }
+    }
+    for pattern in &deny.globs {
+        if let Ok(compiled) = glob::Pattern::new(pattern) {
+            if compiled.matches_path(target) {
+                return Some(pattern.clone());
+            }
+        }
+    }
+    None
 }
 
 /// Build a `SandboxScope` from `Impulse.requested` for the seal. The brain
@@ -462,6 +587,124 @@ fn select_fs(impulse: &Impulse) -> std::sync::Arc<dyn FsBackend> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classify_denial_by_path_matches_glob_and_subpath() {
+        let deny = DenyPolicy {
+            subpaths: vec![PathBuf::from("/ws/repo/.ssh")],
+            globs: vec!["**/.env*".to_string()],
+        };
+        assert_eq!(
+            classify_denial_by_path(Path::new("/ws/repo/.env"), &deny),
+            Some("**/.env*".to_string())
+        );
+        assert_eq!(
+            classify_denial_by_path(Path::new("/ws/repo/.ssh/id_rsa"), &deny),
+            Some("/ws/repo/.ssh".to_string())
+        );
+        assert_eq!(
+            classify_denial_by_path(Path::new("/ws/repo/src/main.rs"), &deny),
+            None
+        );
+    }
+
+    #[test]
+    fn classify_proactive_denial_blocks_read_of_denied_path() {
+        use gait_proto::gait::sandbox::v1::Impulse;
+
+        let mut args = pbjson_types::Struct::default();
+        args.fields.insert(
+            "file_path".into(),
+            pbjson_types::Value {
+                kind: Some(pbjson_types::value::Kind::StringValue(".env".into())),
+            },
+        );
+        let impulse = Impulse {
+            tool: "read".into(),
+            args: Some(args),
+            requested: None,
+            prefetch: None,
+            shell_whitelist_patterns: vec![],
+        };
+        let codebase = Path::new("/ws/repo");
+        let scope = SandboxScope {
+            read_deny: DenyPolicy {
+                subpaths: vec![],
+                globs: vec!["**/.env*".to_string()],
+            },
+            ..SandboxScope::default()
+        };
+
+        let denial = classify_proactive_denial("read", &impulse, codebase, &scope)
+            .expect("must classify .env as denied");
+        assert_eq!(denial.dimension, "read");
+        assert_eq!(denial.pattern, "**/.env*");
+        assert_eq!(denial.target, PathBuf::from("/ws/repo/.env"));
+    }
+
+    #[test]
+    fn classify_proactive_denial_allows_non_denied_read() {
+        use gait_proto::gait::sandbox::v1::Impulse;
+
+        let mut args = pbjson_types::Struct::default();
+        args.fields.insert(
+            "file_path".into(),
+            pbjson_types::Value {
+                kind: Some(pbjson_types::value::Kind::StringValue("src/main.rs".into())),
+            },
+        );
+        let impulse = Impulse {
+            tool: "read".into(),
+            args: Some(args),
+            requested: None,
+            prefetch: None,
+            shell_whitelist_patterns: vec![],
+        };
+        let codebase = Path::new("/ws/repo");
+        let scope = SandboxScope {
+            read_deny: DenyPolicy {
+                subpaths: vec![],
+                globs: vec!["**/.env*".to_string()],
+            },
+            ..SandboxScope::default()
+        };
+
+        assert!(classify_proactive_denial("read", &impulse, codebase, &scope).is_none());
+    }
+
+    #[test]
+    fn classify_proactive_denial_ignores_shell() {
+        use gait_proto::gait::sandbox::v1::Impulse;
+
+        let mut args = pbjson_types::Struct::default();
+        args.fields.insert(
+            "cmd".into(),
+            pbjson_types::Value {
+                kind: Some(pbjson_types::value::Kind::StringValue("cat .env".into())),
+            },
+        );
+        let impulse = Impulse {
+            tool: "shell".into(),
+            args: Some(args),
+            requested: None,
+            prefetch: None,
+            shell_whitelist_patterns: vec![],
+        };
+        let codebase = Path::new("/ws/repo");
+        let scope = SandboxScope {
+            read_deny: DenyPolicy {
+                subpaths: vec![],
+                globs: vec!["**/.env*".to_string()],
+            },
+            ..SandboxScope::default()
+        };
+
+        // Documented gap: shell isn't proactively gated (see
+        // classify_proactive_denial's doc comment) — it can't enumerate the
+        // paths an arbitrary shell command might touch without parsing shell
+        // syntax, which is out of scope.
+        assert!(classify_proactive_denial("shell", &impulse, codebase, &scope).is_none());
+    }
 
     #[test]
     fn build_scope_from_impulse_ignores_wire_supplied_deny() {
