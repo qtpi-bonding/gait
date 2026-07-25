@@ -45,6 +45,11 @@ struct RelayState {
     brain_failed: bool,
     /// In-flight ToolCall call_id → tool name, for orphan ToolResult synthesis.
     pending_calls: std::collections::HashMap<String, String>,
+    /// call_id → tool_name for ToolResults from checkpoint-gated tools (shell/write/
+    /// apply_patch), kept for the lifetime of the turn (never evicted) so a later
+    /// Replace targeting that call_id can still be recognized as needing a checkpoint
+    /// stamp — pending_calls itself is popped as soon as the ToolResult arrives.
+    completed_mutations: std::collections::HashMap<String, String>,
     inflight: tokio::task::JoinSet<()>,
     spine_phase: SpinePhase,
     watchdog: Watchdog,
@@ -63,6 +68,7 @@ impl RelayState {
             run_result: None,
             brain_failed: false,
             pending_calls: std::collections::HashMap::new(),
+            completed_mutations: std::collections::HashMap::new(),
             inflight: tokio::task::JoinSet::new(),
             spine_phase: SpinePhase::BrainPhase,
             watchdog: Watchdog::new(),
@@ -390,7 +396,11 @@ pub async fn relay_brain_turn(
                                 }
                             }
                             Some(payload::Kind::ToolResult(tr)) => {
-                                state.pending_calls.remove(&tr.call_id);
+                                if let Some(name) = state.pending_calls.remove(&tr.call_id) {
+                                    if matches!(name.as_str(), "shell" | "write" | "apply_patch") {
+                                        state.completed_mutations.insert(tr.call_id.clone(), name);
+                                    }
+                                }
                                 if state.pending_calls.is_empty() {
                                     state.spine_phase = SpinePhase::BrainPhase;
                                 }
@@ -565,4 +575,58 @@ pub async fn relay_brain_turn(
         state.brain_failed,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::gait::log::v1::ToolResult;
+
+    /// Mirrors the bookkeeping done in the `Append` arm's `ToolResult` match: pops
+    /// the originating tool name from `pending_calls` and, if it is one of the
+    /// checkpoint-gated tools (shell/write/apply_patch), records it in
+    /// `completed_mutations` so a later `Replace` targeting that call_id can still
+    /// be recognized. Also updates `spine_phase` based on whether any in-flight
+    /// ToolCalls remain — identical to the inline behavior in the handler.
+    fn record_tool_result(state: &mut RelayState, tr: &ToolResult) {
+        if let Some(name) = state.pending_calls.remove(&tr.call_id) {
+            if matches!(name.as_str(), "shell" | "write" | "apply_patch") {
+                state.completed_mutations.insert(tr.call_id.clone(), name);
+            }
+        }
+        if state.pending_calls.is_empty() {
+            state.spine_phase = SpinePhase::BrainPhase;
+        }
+    }
+
+    #[test]
+    fn tool_result_for_mutating_tool_is_tracked() {
+        let mut state = RelayState::new();
+        state
+            .pending_calls
+            .insert("call-1".to_string(), "shell".to_string());
+        let tr = ToolResult {
+            call_id: "call-1".to_string(),
+            ..Default::default()
+        };
+        record_tool_result(&mut state, &tr);
+        assert_eq!(
+            state.completed_mutations.get("call-1"),
+            Some(&"shell".to_string())
+        );
+    }
+
+    #[test]
+    fn tool_result_for_read_tool_is_not_tracked() {
+        let mut state = RelayState::new();
+        state
+            .pending_calls
+            .insert("call-2".to_string(), "read".to_string());
+        let tr = ToolResult {
+            call_id: "call-2".to_string(),
+            ..Default::default()
+        };
+        record_tool_result(&mut state, &tr);
+        assert!(state.completed_mutations.get("call-2").is_none());
+    }
 }
