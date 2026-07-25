@@ -188,6 +188,33 @@ pub struct SandboxConfig {
     /// built-in default for that dimension.
     #[serde(default)]
     pub tools: std::collections::HashMap<String, ToolAccessOverride>,
+    /// Deny patterns layered inside `readable`/`writable`. Present in a user's
+    /// `gait.jsonc` (scaffolded by `gait init`), authoritative once there — see
+    /// spec §3. Missing sub-fields (not present at all, distinct from an empty
+    /// array) fall back to `default_deny_patterns()` via the function-based
+    /// serde default above.
+    #[serde(default)]
+    pub deny: DenyConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DenyConfig {
+    /// Patterns denied within the read scope. This list IS the effective list —
+    /// no hidden merge with built-in defaults once present in a user's config.
+    #[serde(default = "crate::config::defaults::default_deny_patterns")]
+    pub read: Vec<String>,
+    /// Patterns denied within the write scope.
+    #[serde(default = "crate::config::defaults::default_deny_patterns")]
+    pub write: Vec<String>,
+}
+
+impl Default for DenyConfig {
+    fn default() -> Self {
+        Self {
+            read: crate::config::defaults::default_deny_patterns(),
+            write: crate::config::defaults::default_deny_patterns(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -222,6 +249,7 @@ impl Default for SandboxConfig {
             network: NetworkConfig::default(),
             shell_whitelist: vec![],
             tools: std::collections::HashMap::new(),
+            deny: DenyConfig::default(),
         }
     }
 }
