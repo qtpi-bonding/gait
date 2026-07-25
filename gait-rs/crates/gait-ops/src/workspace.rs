@@ -99,6 +99,11 @@ pub fn scaffold_gait_dir(gait_dir: &Path) -> std::io::Result<()> {
         } else {
             format!("  //   {}", system_reads.join("  "))
         };
+        let deny_patterns_json = gait_state::config::defaults::default_deny_patterns()
+            .iter()
+            .map(|p| format!("\"{p}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
         let config = format!(
             r#"{{
   // gait configuration
@@ -120,7 +125,14 @@ pub fn scaffold_gait_dir(gait_dir: &Path) -> std::io::Result<()> {
     "on": true,
     "readable": ["$CODEBASE"],
     "writable": ["$CODEBASE"],
-    "network": false
+    "network": false,
+    // Deny: patterns denied even within the readable/writable scope above.
+    // This list IS what's enforced — edit or remove entries to change it,
+    // no hidden merge with a built-in list happens behind your back.
+    "deny": {{
+      "read": [{deny_patterns_json}],
+      "write": [{deny_patterns_json}]
+    }}
   }},
   // Tier 1 config-defined tools: shell commands the LLM can call by name
   "tools": []
@@ -358,6 +370,24 @@ mod tests {
             cfg.sandbox.on,
             gait_state::config::defaults::default_sandbox().on,
             "scaffold sandbox.on must match default_sandbox().on"
+        );
+    }
+
+    #[test]
+    fn scaffolded_gait_jsonc_deny_matches_default_deny_patterns() {
+        let dir = tempfile::TempDir::new().unwrap();
+        run_init(dir.path()).unwrap();
+        let config_text = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
+        let parsed = gait_state::config::load_config(dir.path()); // infallible -> GaitConfig
+        let expected = gait_state::config::defaults::default_deny_patterns();
+        assert_eq!(parsed.sandbox.deny.read, expected);
+        assert_eq!(parsed.sandbox.deny.write, expected);
+        // Also assert the scaffold TEXT itself names the patterns, not just that
+        // parsing resolves to them via the serde default — this is what makes them
+        // visible/editable, the actual point of writing them into the scaffold.
+        assert!(
+            config_text.contains("\"deny\""),
+            "scaffold must literally write sandbox.deny"
         );
     }
 
