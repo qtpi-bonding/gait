@@ -63,8 +63,13 @@ pub fn write_child_session(opts: WriteChildSessionOpts<'_>) -> anyhow::Result<()
     })?;
     wire::append(&tx_path, events::inference(inference))?;
 
-    let from = format!("agent:{}", opts.parent_session_id);
-    wire::append(&tx_path, events::user_text(opts.task, Some(from)))?;
+    let provenance = gait_proto::gait::log::v1::Provenance {
+        from: format!("agent:{}", opts.parent_session_id).into_bytes(),
+        to: vec![],
+        context: String::new(),
+        signature: vec![], // placeholder identity — see plan Global Constraints
+    };
+    wire::append_with_provenance(&tx_path, events::user_text(opts.task, None), provenance)?;
 
     opts.repos.traces.commit_session(
         opts.gait_dir,
@@ -284,15 +289,19 @@ mod tests {
         assert!(types.contains(&"session_start"), "{:?}", types);
         assert!(types.contains(&"user_turn"), "{:?}", types);
 
-        let user_turn = events
+        let user_turn_event = events
             .iter()
-            .find_map(|e| match ek(e) {
-                Some(payload::Kind::UserText(u)) => Some(u),
-                _ => None,
-            })
+            .find(|e| matches!(ek(e), Some(payload::Kind::UserText(_))))
             .unwrap();
+        let user_turn = match ek(user_turn_event) {
+            Some(payload::Kind::UserText(u)) => u,
+            _ => unreachable!(),
+        };
         assert_eq!(user_turn.content, "implement feature X");
-        assert_eq!(user_turn.from.as_deref(), Some("agent:scaller001"));
+        assert_eq!(
+            user_turn_event.provenance.as_ref().map(|p| p.from.clone()),
+            Some(b"agent:scaller001".to_vec()),
+        );
 
         let meta = read_session_meta(ws.path(), new_id).unwrap();
         assert_eq!(meta.assigned_by.as_deref(), Some("scaller001"));
@@ -385,5 +394,64 @@ mod tests {
             msg.contains("Parent-Session: sparent01"),
             "expected Parent-Session: sparent01 trailer, got: {msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_task_injection_carries_provenance() {
+        let ws = TempDir::new().unwrap();
+        init_git_repo(ws.path());
+        std::fs::create_dir_all(ws.path().join("inferences/parent")).unwrap();
+        std::fs::write(
+            ws.path().join("inferences/parent/INFERENCE.yaml"),
+            "model: minimax/MiniMax-M3\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(ws.path().join("inferences/child")).unwrap();
+        std::fs::write(
+            ws.path().join("inferences/child/INFERENCE.yaml"),
+            "model: anthropic/child\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ws.path().join("gait.jsonc"),
+            r#"{"inference":"parent","allow":[],"tools":[]}"#,
+        )
+        .unwrap();
+
+        let tool = SpawnAgentTool::new(
+            ToolCtx::new(
+                ws.path().to_path_buf(),
+                ws.path().to_path_buf(),
+                "scaller001".into(),
+            ),
+            crate::git::Repos::production(),
+        );
+
+        let result = tool
+            .execute(
+                serde_json::json!({"task": "implement feature X", "inference": "child"}),
+                &crate::Recorder::detached(),
+            )
+            .await
+            .unwrap();
+        let new_id = result["session_id"].as_str().unwrap();
+
+        let tx = crate::session::live::log_path(ws.path(), new_id);
+        let events = read_events(&tx).unwrap();
+        let ek = |e: &crate::proto::gait::log::v1::Event| -> Option<payload::Kind> {
+            match &e.body {
+                Some(event::Body::Payload(p)) => p.kind.clone(),
+                _ => None,
+            }
+        };
+        let user_text_event = events
+            .iter()
+            .find(|e| matches!(ek(e), Some(payload::Kind::UserText(_))))
+            .expect("task injection event must exist");
+        let prov = user_text_event
+            .provenance
+            .as_ref()
+            .expect("task injection must carry provenance");
+        assert_eq!(prov.from, b"agent:scaller001".to_vec());
     }
 }

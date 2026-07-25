@@ -184,18 +184,19 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
     // Verify child transcript has user_turn with from = agent:sparent001
     let tx = gait_core::session::live::log_path(ws.path(), &child_id);
     let events = read_events(&tx).unwrap();
-    let user_turn = events
+    let user_turn_event = events
         .iter()
-        .find_map(|e| match event_kind(e) {
-            Some(payload::Kind::UserText(u)) => Some(u),
-            _ => None,
-        })
+        .find(|e| matches!(event_kind(e), Some(payload::Kind::UserText(_))))
         .expect("child transcript must have user_turn");
+    let user_turn = match event_kind(user_turn_event) {
+        Some(payload::Kind::UserText(u)) => u,
+        _ => unreachable!(),
+    };
     assert_eq!(user_turn.content, "fix the failing tests");
     assert_eq!(
-        user_turn.from.as_deref(),
-        Some("agent:sparent001"),
-        "child user_turn must have from=agent:sparent001"
+        user_turn_event.provenance.as_ref().map(|p| p.from.clone()),
+        Some(b"agent:sparent001".to_vec()),
+        "child user_turn must have provenance.from=agent:sparent001"
     );
 }
 
