@@ -40,7 +40,12 @@ pub enum HunkLine {
 pub fn parse(input: &str) -> anyhow::Result<Patch> {
     let lines: Vec<&str> = input.lines().collect();
     if lines.len() < 3 || lines[0] != "*** Begin Patch" || lines.last() != Some(&"*** End Patch") {
-        anyhow::bail!("patch must start with *** Begin Patch and end with *** End Patch")
+        anyhow::bail!(
+            "patch must start with a line that is exactly '*** Begin Patch' and end with a \
+             line that is exactly '*** End Patch' (got first line {:?}, last line {:?})",
+            lines.first().copied().unwrap_or(""),
+            lines.last().copied().unwrap_or(""),
+        )
     }
     let mut headers = Vec::new();
     for (i, line) in lines.iter().enumerate().skip(1).take(lines.len() - 2) {
@@ -50,11 +55,19 @@ pub fn parse(input: &str) -> anyhow::Result<Patch> {
             || line.starts_with("*** Move to:")
             || line.starts_with("*** End of File")
         {
-            anyhow::bail!("unsupported patch operation: {line}")
+            anyhow::bail!(
+                "unsupported patch operation {line:?}: this implementation only supports a \
+                 single '*** Add File: <path>' or '*** Update File: <path>' per call — \
+                 delete/move/end-of-file markers are not supported"
+            )
         }
     }
     if headers.len() != 1 {
-        anyhow::bail!("patch must contain exactly one Add or Update file header")
+        anyhow::bail!(
+            "patch must contain exactly one '*** Add File: <path>' or '*** Update File: \
+             <path>' header, found {} — use a separate apply_patch call per file",
+            headers.len()
+        )
     }
     let (header_i, header) = headers[0];
     let (operation, raw_path) = if let Some(p) = header.strip_prefix("*** Add File: ") {
@@ -69,8 +82,11 @@ pub fn parse(input: &str) -> anyhow::Result<Patch> {
     let body = &lines[header_i + 1..lines.len() - 1];
     match operation {
         Operation::Add => {
-            if body.iter().any(|l| !l.starts_with('+')) {
-                anyhow::bail!("Add File body must contain only + lines")
+            if let Some(bad) = body.iter().find(|l| !l.starts_with('+')) {
+                anyhow::bail!(
+                    "Add File body must contain only '+'-prefixed lines (every line of a \
+                     new file is an insertion, with no '@@' header) — found {bad:?}"
+                )
             }
             Ok(Patch {
                 operation,
@@ -85,7 +101,10 @@ pub fn parse(input: &str) -> anyhow::Result<Patch> {
         }
         Operation::Update => {
             if body.is_empty() {
-                anyhow::bail!("Update File requires at least one hunk")
+                anyhow::bail!(
+                    "Update File requires at least one '@@' hunk header followed by \
+                     ' '/'-'/'+'-prefixed lines"
+                )
             }
             let mut hunks = Vec::new();
             let mut current: Option<Vec<HunkLine>> = None;
@@ -93,32 +112,57 @@ pub fn parse(input: &str) -> anyhow::Result<Patch> {
                 if line.starts_with("@@") {
                     if let Some(lines) = current.take() {
                         if lines.is_empty() {
-                            anyhow::bail!("empty hunk")
+                            anyhow::bail!(
+                                "empty hunk: a '@@' header was immediately followed by another \
+                                 '@@' header (or the end of the patch) with no ' '/'-'/'+' \
+                                 lines in between"
+                            )
                         }
                         hunks.push(Hunk { lines });
                     }
                     current = Some(Vec::new());
                 } else {
-                    let h = current
-                        .as_mut()
-                        .ok_or_else(|| anyhow::anyhow!("hunk content before @@"))?;
-                    let parsed = match line.as_bytes().first() {
-                        Some(b' ') => HunkLine::Context(line[1..].to_string()),
-                        Some(b'-') => HunkLine::Delete(line[1..].to_string()),
-                        Some(b'+') => HunkLine::Insert(line[1..].to_string()),
-                        _ => anyhow::bail!("malformed hunk line: {line}"),
+                    let h = current.as_mut().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "hunk content before @@: line {line:?} appeared before any \
+                             '@@' hunk header — every hunk must start with a line that is \
+                             exactly '@@' (or '@@ <context>')"
+                        )
+                    })?;
+                    // A bare empty line (no leading space) is an unchanged blank line in
+                    // the file, not a formatting error — models very commonly emit a
+                    // truly empty line here instead of remembering the leading space.
+                    // The reference Codex parser treats it the same way.
+                    let parsed = if line.is_empty() {
+                        HunkLine::Context(String::new())
+                    } else {
+                        match line.as_bytes().first() {
+                            Some(b' ') => HunkLine::Context(line[1..].to_string()),
+                            Some(b'-') => HunkLine::Delete(line[1..].to_string()),
+                            Some(b'+') => HunkLine::Insert(line[1..].to_string()),
+                            _ => anyhow::bail!(
+                                "malformed hunk line {line:?}: every line inside a hunk must \
+                                 start with ' ' (unchanged context), '-' (removed), or '+' \
+                                 (added) — or be completely empty for an unchanged blank line"
+                            ),
+                        }
                     };
                     h.push(parsed);
                 }
             }
             if let Some(lines) = current {
                 if lines.is_empty() {
-                    anyhow::bail!("empty hunk")
+                    anyhow::bail!(
+                        "empty hunk: the final '@@' header has no ' '/'-'/'+' lines after it"
+                    )
                 }
                 hunks.push(Hunk { lines });
             }
             if hunks.is_empty() {
-                anyhow::bail!("Update File requires a hunk")
+                anyhow::bail!(
+                    "Update File requires at least one '@@' hunk header followed by \
+                     ' '/'-'/'+'-prefixed lines"
+                )
             }
             Ok(Patch {
                 operation,
@@ -131,7 +175,11 @@ pub fn parse(input: &str) -> anyhow::Result<Patch> {
 
 pub fn validate_relative_path(raw: &str) -> anyhow::Result<PathBuf> {
     if raw.is_empty() || Path::new(raw).is_absolute() {
-        anyhow::bail!("patch target must be a non-empty relative path")
+        anyhow::bail!(
+            "patch target must be a non-empty path RELATIVE to the codebase root (e.g. \
+             'src/lib.rs', never '/absolute/path/...' or ''), got {raw:?} — fix the '*** Add \
+             File:'/'*** Update File:' header and retry"
+        )
     }
     let p = Path::new(raw);
     if p.components().any(|c| {
@@ -220,19 +268,35 @@ pub fn apply(patch: &Patch, old: Option<&str>) -> anyhow::Result<String> {
                     })
                     .collect();
                 if before.is_empty() {
-                    anyhow::bail!("hunk has no context or deletion")
+                    anyhow::bail!(
+                        "hunk has no context or deletion lines: a hunk needs at least one \
+                         ' '-prefixed (context) or '-'-prefixed (deletion) line so its \
+                         location in the file can be found — a hunk of only '+' lines has \
+                         nothing to anchor on"
+                    )
                 }
                 let matches: Vec<usize> = (cursor..=result.len().saturating_sub(before.len()))
                     .filter(|&i| result[i..i + before.len()] == before[..])
                     .collect();
                 if matches.len() != 1 {
+                    let preview: String = before
+                        .iter()
+                        .take(3)
+                        .map(|l| format!("  {l:?}"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
                     anyhow::bail!(
-                        "hunk context is {}",
+                        "hunk context is {} in the file (matching is exact — every character, \
+                         including leading/trailing whitespace and indentation, must match the \
+                         current file content verbatim; re-read the file and copy the context \
+                         lines exactly). First lines of this hunk's context/deletion block:\n{}",
                         if matches.is_empty() {
-                            "missing"
+                            "missing: no location in the file matches it"
                         } else {
-                            "ambiguous"
-                        }
+                            "ambiguous: more than one location in the file matches it — add \
+                             more surrounding context lines to disambiguate"
+                        },
+                        preview
                     )
                 }
                 let at = matches[0];
@@ -389,5 +453,36 @@ mod tests {
         );
         let p = parse("*** Begin Patch\n*** Update File: x\n@@\n-a\n+b\n*** End Patch").unwrap();
         assert!(apply(&p, Some("a\na")).is_err());
+    }
+    #[test]
+    fn bare_blank_line_in_hunk_is_unchanged_blank_context() {
+        // A model-emitted truly-empty line (no leading space) inside a hunk must be
+        // treated as an unchanged blank line, matching the reference Codex parser —
+        // not rejected as "malformed hunk line: ".
+        let p = parse("*** Begin Patch\n*** Update File: x\n@@\n a\n\n-b\n+B\n c\n*** End Patch")
+            .unwrap();
+        assert_eq!(apply(&p, Some("a\n\nb\nc")).unwrap(), "a\n\nB\nc");
+    }
+    #[test]
+    fn malformed_hunk_line_error_names_the_offending_line() {
+        let err = parse("*** Begin Patch\n*** Update File: x\n@@\n a\n?bogus\n*** End Patch")
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("?bogus"),
+            "error should quote the bad line: {msg}"
+        );
+    }
+    #[test]
+    fn missing_context_error_previews_the_hunk() {
+        let p =
+            parse("*** Begin Patch\n*** Update File: x\n@@\n z\n-a\n+b\n*** End Patch").unwrap();
+        let err = apply(&p, Some("a\nb\nc")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("missing"), "error should say missing: {msg}");
+        assert!(
+            msg.contains("\"z\""),
+            "error should preview the context: {msg}"
+        );
     }
 }
