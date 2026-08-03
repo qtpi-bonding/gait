@@ -1,37 +1,34 @@
-//! Config verbs: `set_model` — the `/model` rewrite previously inlined in the
-//! REPL.
+//! Config verbs: `set` / `get` — the jsonc-safe config mutators shared by
+//! the CLI (`gait config set|get`) and the REPL.
 //!
 //! # Why this exists
 //!
-//! `crates/gait-repl/src/repl/driver.rs:311-335` (the original `/model`
-//! inline code) called `serde_json::from_str(&raw).unwrap_or(json!({}))` on
-//! the raw `gait.jsonc` contents without first stripping jsonc comments.
-//! On any config with `//` comments — or any other parse error — the
-//! `unwrap_or` silently wiped the entire file to `{}`, losing every other
-//! setting (allow, deny, tools, sandbox, hooks, llm_params, …). This
-//! implementation fixes the bug as the relocation. It's a deliberate,
-//! documented behavior change (called out in the plan as the single
-//! intentional correctness improvement in this sweep); the REPL adopts the
-//! op in Task 8.
+//! The original `/model` inline code in `crates/gait-repl/src/repl/driver.rs:311-335`
+//! called `serde_json::from_str(&raw).unwrap_or(json!({}))` on the raw
+//! `gait.jsonc` contents without first stripping jsonc comments. On any
+//! config with `//` comments — or any other parse error — the `unwrap_or`
+//! silently wiped the entire file to `{}`, losing every other setting
+//! (allow, deny, tools, sandbox, hooks, …). This module fixed that bug as
+//! the relocation to the ops layer; the comment-safe primitive is now
+//! available to any caller via `set` / `get`.
 //!
 //! # How it works
 //!
 //! 1. Read `<gait_dir>/gait.jsonc` (missing file → start from `{}`).
 //! 2. Strip `//` and `/* */` comments via
 //!    `gait_state::config::strip_jsonc_comments` — the same private helper
-//!    `extension.rs` already uses. This is the bug fix: a config that
-//!    contains comments must not be wiped.
+//!    `extension.rs` uses. This is the bug fix: a config that contains
+//!    comments must not be wiped.
 //! 3. Parse the stripped text as a `serde_json::Value::Object`. If the
 //!    parse still fails (malformed JSON beyond comments), return
 //!    `OpError::Conflict` instead of silently dropping the file.
-//! 4. Set `model` to the new value.
+//! 4. Set/replace the named key (or read it back, for `get`).
 //! 5. Pretty-serialize and write back, preserving all other keys.
 use crate::OpError;
 use std::path::Path;
 
 /// Set `<gait_dir>/gait.jsonc`'s `key` field to `value`, preserving every
-/// other key. The general primitive `set_model` is now built on: any
-/// top-level key, not just `model`. Comment-safe (see module doc comment).
+/// other key. Comment-safe (see module doc comment).
 pub fn set(gait_dir: &Path, key: &str, value: serde_json::Value) -> Result<(), OpError> {
     let path = gait_dir.join("gait.jsonc");
     let mut val = read_config_object(&path)?;
@@ -45,17 +42,6 @@ pub fn get(gait_dir: &Path, key: &str) -> Result<Option<serde_json::Value>, OpEr
     let path = gait_dir.join("gait.jsonc");
     let val = read_config_object(&path)?;
     Ok(val.get(key).cloned())
-}
-
-/// Set the `model` field of `<gait_dir>/gait.jsonc` to `model`. Typed
-/// convenience wrapper over [`set`] — kept because the REPL's `/model`
-/// command calls this exact function today; do not remove.
-pub fn set_model(gait_dir: &Path, model: &str) -> Result<(), OpError> {
-    set(
-        gait_dir,
-        "model",
-        serde_json::Value::String(model.to_string()),
-    )
 }
 
 // -----------------------------------------------------------------------------
@@ -113,12 +99,12 @@ fn json_root_kind(v: &serde_json::Value) -> &'static str {
 // -----------------------------------------------------------------------------
 // tests
 //
-// (a) Round-trip on a plain config — the model field gets set; nothing else
-//     is disturbed.
+// (a) Round-trip of an arbitrary key on a plain config — the value gets set;
+//     nothing else is disturbed.
 // (b) Comments-and-other-keys config — the regression test that proves the
 //     pre-fix inline code would have wiped the file (it didn't strip
 //     comments, so `from_str` errored and `unwrap_or(json!({}))` produced
-//     an empty object, losing allow/deny/tools/sandbox/etc.). set_model
+//     an empty object, losing allow/deny/tools/sandbox/etc.). `set`
 //     preserves them.
 // -----------------------------------------------------------------------------
 
@@ -136,52 +122,14 @@ mod tests {
     }
 
     #[test]
-    fn set_model_round_trips_on_a_plain_config() {
+    fn set_creates_config_when_missing() {
         let dir = ws();
-        std::fs::write(
-            dir.path().join("gait.jsonc"),
-            r#"{
-  "model": "openai/gpt-4o-mini",
-  "allow": ["read", "grep"],
-  "deny": ["shell"]
-}
-"#,
-        )
-        .unwrap();
-
-        set_model(dir.path(), "anthropic/claude-3-5-sonnet").unwrap();
+        // No gait.jsonc on disk — `set` should bootstrap the file.
+        set(dir.path(), "max_iter", serde_json::json!(50)).unwrap();
 
         let raw = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
         let v = parse(&raw);
-        assert_eq!(v["model"], "anthropic/claude-3-5-sonnet");
-        assert_eq!(v["allow"][0], "read");
-        assert_eq!(v["allow"][1], "grep");
-        assert_eq!(v["deny"][0], "shell");
-    }
-
-    #[test]
-    fn set_model_creates_model_field_when_config_is_empty() {
-        let dir = ws();
-        std::fs::write(dir.path().join("gait.jsonc"), "{}\n").unwrap();
-
-        set_model(dir.path(), "openai/gpt-4o").unwrap();
-
-        let raw = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
-        let v = parse(&raw);
-        assert_eq!(v["model"], "openai/gpt-4o");
-        // No phantom keys were invented.
-        assert_eq!(v.as_object().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn set_model_creates_config_when_missing() {
-        let dir = ws();
-        // No gait.jsonc on disk — set_model should bootstrap the file.
-        set_model(dir.path(), "anthropic/claude-3-5-sonnet").unwrap();
-
-        let raw = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
-        let v = parse(&raw);
-        assert_eq!(v["model"], "anthropic/claude-3-5-sonnet");
+        assert_eq!(v["max_iter"], 50);
     }
 
     /// The regression test: a config with comments AND other keys. The
@@ -189,10 +137,10 @@ mod tests {
     /// `serde_json::from_str(&raw).unwrap_or(json!({}))` without stripping
     /// jsonc comments, so the parse failed on the first `//` line, the
     /// `unwrap_or` produced `{}`, and *every other setting in the file
-    /// was lost*. set_model strips comments first, so the parse succeeds
+    /// was lost*. `set` strips comments first, so the parse succeeds
     /// and the write round-trips all other keys.
     #[test]
-    fn set_model_preserves_comments_and_other_keys() {
+    fn set_preserves_comments_and_other_keys() {
         let dir = ws();
         std::fs::write(
             dir.path().join("gait.jsonc"),
@@ -222,15 +170,16 @@ mod tests {
         )
         .unwrap();
 
-        set_model(dir.path(), "anthropic/claude-3-5-sonnet").unwrap();
+        set(dir.path(), "max_iter", serde_json::json!(250)).unwrap();
 
         let raw = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
         let v = parse(&raw);
 
-        // The model got set:
-        assert_eq!(v["model"], "anthropic/claude-3-5-sonnet");
+        // The new key got set:
+        assert_eq!(v["max_iter"], 250);
 
         // Every other key from the pre-fix file MUST still be present:
+        assert_eq!(v["model"], "openai/gpt-4o-mini");
         assert_eq!(v["allow"][0], "read");
         assert_eq!(v["allow"][1], "glob");
         assert_eq!(v["allow"][2], "grep");
@@ -246,28 +195,26 @@ mod tests {
         assert_eq!(v["shell_timeout_secs"], 300);
         assert_eq!(v["preview"], "on-ask");
 
-        // Top-level object still has model + 7 preserved siblings
-        // (allow/deny/tools/sandbox/output_schema_retries/shell_timeout_secs/
-        // preview).
+        // Top-level object still has all 8 pre-existing keys + the new one.
         assert_eq!(
             v.as_object().unwrap().len(),
-            8,
-            "expected model + 7 preserved top-level keys, got {:?}",
+            9,
+            "expected 9 top-level keys (8 preserved + max_iter), got {:?}",
             v.as_object().unwrap().keys().collect::<Vec<_>>()
         );
     }
 
     /// If the file is present but not valid JSON even after stripping
-    /// comments, set_model must surface the parse error — NOT silently
+    /// comments, `set` must surface the parse error — NOT silently
     /// overwrite the file. The pre-fix inline code would have wiped the
     /// file in this case (its `unwrap_or(json!({}))` swallowed the error).
     #[test]
-    fn set_model_errors_on_present_but_malformed_config_without_wiping() {
+    fn set_errors_on_present_but_malformed_config_without_wiping() {
         let dir = ws();
         let original = "this is not json at all\n";
         std::fs::write(dir.path().join("gait.jsonc"), original).unwrap();
 
-        let err = set_model(dir.path(), "anthropic/claude-3-5-sonnet").unwrap_err();
+        let err = set(dir.path(), "max_iter", serde_json::json!(50)).unwrap_err();
         assert!(
             matches!(err, OpError::Conflict(_)),
             "malformed config must surface as Conflict, got {err:?}"
@@ -275,31 +222,25 @@ mod tests {
 
         // File must be unchanged — never clobber on parse failure.
         let after = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
-        assert_eq!(
-            after, original,
-            "set_model must not clobber on parse failure"
-        );
+        assert_eq!(after, original, "set must not clobber on parse failure");
     }
 
     /// A non-object root (e.g. a bare array) is a conflict, not a wipe.
     /// Mirrors the malformed-config behavior: surface the issue without
     /// silently dropping the user's settings.
     #[test]
-    fn set_model_errors_on_non_object_root_without_wiping() {
+    fn set_errors_on_non_object_root_without_wiping() {
         let dir = ws();
         let original = "[1, 2, 3]\n";
         std::fs::write(dir.path().join("gait.jsonc"), original).unwrap();
 
-        let err = set_model(dir.path(), "anthropic/claude-3-5-sonnet").unwrap_err();
+        let err = set(dir.path(), "max_iter", serde_json::json!(50)).unwrap_err();
         assert!(
             matches!(err, OpError::Conflict(_)),
             "non-object root must surface as Conflict, got {err:?}"
         );
         let after = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
-        assert_eq!(
-            after, original,
-            "set_model must not clobber on non-object root"
-        );
+        assert_eq!(after, original, "set must not clobber on non-object root");
     }
 
     #[test]
@@ -310,17 +251,6 @@ mod tests {
         let raw = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
         let v = parse(&raw);
         assert_eq!(v["max_iter"], 50);
-    }
-
-    #[test]
-    fn set_model_is_now_a_wrapper_over_set() {
-        let dir = ws();
-        std::fs::write(dir.path().join("gait.jsonc"), "{}\n").unwrap();
-        set_model(dir.path(), "anthropic/claude-opus-4").unwrap();
-        assert_eq!(
-            get(dir.path(), "model").unwrap(),
-            Some(serde_json::Value::String("anthropic/claude-opus-4".into()))
-        );
     }
 
     #[test]

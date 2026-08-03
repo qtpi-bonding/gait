@@ -27,6 +27,10 @@ pub struct InferenceArgs {
     pub gait_dir: PathBuf,
     pub action: Option<String>,
     pub name: Option<String>,
+    /// Model for the `add` action, in `provider/id` form (e.g. `opencode/kimi-k2.6`).
+    /// Ignored by other actions.
+    #[arg(long)]
+    pub model: Option<String>,
     #[arg(long)]
     pub session: Option<String>,
 }
@@ -75,8 +79,25 @@ pub fn cmd_inference(args: InferenceArgs) {
                 std::process::exit(1);
             }
         }
+        "add" => {
+            let name = args.name.as_deref().unwrap_or_else(|| {
+                eprintln!("[gait] usage: gait inference add <name> --model <provider/id>");
+                std::process::exit(2)
+            });
+            let model = args.model.as_deref().unwrap_or_else(|| {
+                eprintln!("[gait] usage: gait inference add <name> --model <provider/id>");
+                std::process::exit(2)
+            });
+            match gait_ops::inference::add(&args.gait_dir, name, model) {
+                Ok(i) => println!("added inference '{}' → model {}", i.name, i.model),
+                Err(e) => {
+                    eprintln!("[gait] {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
         _ => {
-            eprintln!("[gait] inference action must be list, show, select, or clear");
+            eprintln!("[gait] inference action must be list, show, select, clear, or add");
             std::process::exit(2)
         }
     }
@@ -510,16 +531,16 @@ pub fn cmd_unregister(args: UnregisterArgs) -> anyhow::Result<()> {
 
 /// Parse a `gait config set` value: try JSON first (numbers, bools, arrays,
 /// objects), fall back to a raw string (so `anthropic/claude-opus-4` doesn't
-/// need quoting) — matches `set_model`'s existing ergonomics.
+/// need quoting) — matches the existing ergonomic of the generic `set`.
 fn parse_config_value(raw: &str) -> serde_json::Value {
     serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.to_string()))
 }
 
 /// `gait config <set|get> ...` — the general external-CLI equivalent of any
-/// REPL slash command that mutates `gait.jsonc` (`/model` included: it calls
-/// `gait_ops::config::set_model`, itself now a wrapper over the same
-/// `gait_ops::config::set` this calls). gait-dir-wide, not session-scoped.
-/// Mirrors `WorkflowArgs`/`cmd_workflow`'s action+rest shape exactly.
+/// REPL slash command that mutates `gait.jsonc`. Calls the generic
+/// `gait_ops::config::set`/`get` directly (the comment-safe jsonc mutators).
+/// gait-dir-wide, not session-scoped. Mirrors `WorkflowArgs`/`cmd_workflow`'s
+/// action+rest shape exactly.
 #[derive(Parser, Debug)]
 #[command(no_binary_name = true)]
 pub struct ConfigArgs {

@@ -24,7 +24,7 @@ pub const COMMANDS: &[ReplCommand] = &[
     ReplCommand {
         slug: "/inference",
         aliases: &[],
-        desc: "List or select a named inference",
+        desc: "List, show, add, select, or clear a named inference",
         group: "general",
     },
     ReplCommand {

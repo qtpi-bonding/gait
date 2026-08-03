@@ -374,8 +374,10 @@ impl TurnSource for ReplSource {
                 continue;
             }
 
-            // /inference [name|default] — durable session selection using the
-            // exact same operation as `gait run --inference`.
+            // /inference [name|default|show <name>|add <name> <provider/id>] — durable
+            // session selection using the exact same operations as
+            // `gait inference ...`. Subcommands `show` and `add` mirror the
+            // CLI for REPL/CLI symmetry.
             if let Some(rest) = line.strip_prefix("/inference") {
                 let arg = rest.trim();
                 if arg.is_empty() {
@@ -384,6 +386,46 @@ impl TurnSource for ReplSource {
                             .borrow_mut()
                             .builder
                             .write_raw(&format!("  {name}\r\n"));
+                    }
+                    continue;
+                }
+                // /inference show <name> — print the inference's resolved model.
+                if let Some(name) = arg.strip_prefix("show ") {
+                    let name = name.trim();
+                    match gait_ops::inference::show(&self.gait_dir, name) {
+                        Ok(i) => self
+                            .shared
+                            .borrow_mut()
+                            .builder
+                            .write_raw(&format!("  {}\t{}\r\n", i.name, i.model)),
+                        Err(e) => self
+                            .shared
+                            .borrow_mut()
+                            .builder
+                            .write_raw(&format!("[gait] /inference: {e}\r\n")),
+                    }
+                    continue;
+                }
+                // /inference add <name> <provider/id> — author a new INFERENCE.yaml.
+                if let Some(args) = arg.strip_prefix("add ") {
+                    let parts: Vec<&str> = args.splitn(2, char::is_whitespace).collect();
+                    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+                        self.shared
+                            .borrow_mut()
+                            .builder
+                            .write_raw("[gait] /inference add <name> <provider/id>\r\n");
+                        continue;
+                    }
+                    match gait_ops::inference::add(&self.gait_dir, parts[0], parts[1]) {
+                        Ok(i) => self.shared.borrow_mut().builder.write_raw(&format!(
+                            "  added inference '{}' → model {}\r\n",
+                            i.name, i.model
+                        )),
+                        Err(e) => self
+                            .shared
+                            .borrow_mut()
+                            .builder
+                            .write_raw(&format!("[gait] /inference: {e}\r\n")),
                     }
                     continue;
                 }
@@ -1357,6 +1399,91 @@ mod command_tests {
         assert!(
             !logs.is_empty(),
             "/inference must append a durable session selection"
+        );
+    }
+
+    /// `/inference add <name> <provider/id>` must write a fresh
+    /// `inferences/<name>/INFERENCE.yaml` containing only the bare `model:`
+    /// line — same shape `gait inference add` writes from the CLI. Mirrors
+    /// the CLI/REPL symmetry contract: both paths route through
+    /// `gait_ops::inference::add`, which calls `gait_state::inferences::write_inference`.
+    #[tokio::test]
+    async fn slash_inference_add_writes_inference_yaml() {
+        let d = temp_gait_dir();
+        let (mut src, _s) = source_with(
+            d.path(),
+            &["/inference add opencode opencode/kimi-k2.6", "/q"],
+        );
+        let _ = src.next().await; // processes /inference add; /q ends
+        let inf_file = d.path().join("inferences/opencode/INFERENCE.yaml");
+        let content = std::fs::read_to_string(&inf_file)
+            .expect("/inference add must write inferences/<name>/INFERENCE.yaml");
+        assert_eq!(
+            content, "model: opencode/kimi-k2.6\n",
+            "REPL /inference add must produce the same bare-model YAML as the CLI op"
+        );
+    }
+
+    /// `/inference add` refuses overwrite — same contract as the CLI op.
+    /// Drives the source with two `add` lines for the same name; the second
+    /// must NOT modify the file written by the first. The error goes to stderr
+    /// via write_raw (uncaptured here); the observable is the original content
+    /// surviving on disk. One `next()` call consumes all three scripted lines
+    /// (the add branch `continue`s back to the reader; `/q` then raises Quit).
+    #[tokio::test]
+    async fn slash_inference_add_refuses_overwrite() {
+        let d = temp_gait_dir();
+        let lines = [
+            "/inference add p anthropic/claude-3-5-sonnet",
+            "/inference add p openai/gpt-4o",
+            "/q",
+        ];
+        let (mut src, _s) = source_with(d.path(), &lines);
+        let _ = src.next().await; // consumes all three lines
+        let content =
+            std::fs::read_to_string(d.path().join("inferences/p/INFERENCE.yaml")).unwrap();
+        assert_eq!(
+            content, "model: anthropic/claude-3-5-sonnet\n",
+            "second /inference add must NOT clobber the first file"
+        );
+    }
+
+    /// `/inference show <name>` must dispatch through
+    /// `gait_ops::inference::show` and NOT fall through to `select` (which would
+    /// append a durable session selection to `.active`). The show's text output
+    /// goes to stderr via write_raw (uncaptured here), so the observable is the
+    /// absence of a session-selection log append — the same side-effect
+    /// `slash_inference_appends_session_selection` checks in the positive
+    /// direction. `next()` consumes both lines because the show branch
+    /// `continue`s back to the reader, so by the end of one `next()` call both
+    /// `/inference show deep` and `/q` have been processed and control is Quit.
+    #[tokio::test]
+    async fn slash_inference_show_dispatches_without_session_append() {
+        let d = temp_gait_dir();
+        std::fs::create_dir_all(d.path().join("inferences/deep")).unwrap();
+        std::fs::write(
+            d.path().join("inferences/deep/INFERENCE.yaml"),
+            "model: prov/mdl\n",
+        )
+        .unwrap();
+        let (mut src, shared) = source_with(d.path(), &["/inference show deep", "/q"]);
+        let _ = src.next().await; // consumes both lines: `show` continues; `/q` raises Quit
+        assert!(
+            matches!(shared.borrow().control, Some(crate::repl::Control::Quit)),
+            "/q after /inference show must raise Quit"
+        );
+        // Critical: NO session-selection log append happened (the observable
+        // that distinguishes `show` from falling through to `select`-shaped
+        // arg, which would have tried to append to `.active`).
+        let active = d.path().join(".active");
+        let appended = if active.exists() {
+            std::fs::read_dir(&active).unwrap().count()
+        } else {
+            0
+        };
+        assert_eq!(
+            appended, 0,
+            "/inference show must not append a durable session selection"
         );
     }
 

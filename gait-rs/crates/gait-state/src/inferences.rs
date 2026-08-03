@@ -56,6 +56,37 @@ pub fn load_inference(gait_dir: &Path, name: &str) -> anyhow::Result<pb::Inferen
     })
 }
 
+/// Write `<gait_dir>/inferences/<name>/INFERENCE.yaml` with a bare `model:`
+/// line and no `llm_params` block — callers who want provider knob tuning edit
+/// the YAML in place (`vi inferences/<name>/INFERENCE.yaml`).
+///
+/// **Refuses overwrite**: if `<name>/INFERENCE.yaml` already exists, errors.
+/// Pick a new name or `rm -rf inferences/<name>/` first — never silently
+/// clobber a profile the user might be hand-tuning.
+///
+/// **Validates at write time** so a malformed `provider/id` or a reserved
+/// name surfaces here, not on the first turn that tries to load the inference.
+pub fn write_inference(gait_dir: &Path, name: &str, model: &str) -> anyhow::Result<()> {
+    if name.is_empty() || name == "default" {
+        anyhow::bail!("'{name}' is not a valid inference name (reserved)");
+    }
+    // Validate the model shape up front (no llm_params to mismatch-check here).
+    validate(name, model, &None)?;
+    let inf_dir = gait_dir.join("inferences").join(name);
+    let inf_file = inf_dir.join("INFERENCE.yaml");
+    if inf_file.exists() {
+        anyhow::bail!(
+            "inference '{name}' already exists at {}; pick a new name or `rm -rf {}` first",
+            inf_file.display(),
+            inf_dir.display()
+        );
+    }
+    std::fs::create_dir_all(&inf_dir)?;
+    std::fs::write(&inf_file, format!("model: {model}\n"))
+        .map_err(|e| anyhow::anyhow!("write {}: {e}", inf_file.display()))?;
+    Ok(())
+}
+
 pub fn list_inferences(gait_dir: &Path) -> Vec<String> {
     let mut names = Vec::new();
     if let Ok(entries) = std::fs::read_dir(gait_dir.join("inferences")) {
@@ -75,5 +106,84 @@ pub fn clear_inference() -> pb::Inference {
         name: String::new(),
         model: String::new(),
         llm_params: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ws() -> tempfile::TempDir {
+        tempfile::TempDir::new().unwrap()
+    }
+
+    #[test]
+    fn write_inference_then_load_round_trips() {
+        let dir = ws();
+        write_inference(dir.path(), "opencode", "opencode/kimi-k2.6").unwrap();
+
+        let loaded = load_inference(dir.path(), "opencode").unwrap();
+        assert_eq!(loaded.name, "opencode");
+        assert_eq!(loaded.model, "opencode/kimi-k2.6");
+        assert!(
+            loaded.llm_params.is_none(),
+            "bare write leaves no llm_params"
+        );
+
+        // On-disk contents are the minimal single-line YAML.
+        let text =
+            std::fs::read_to_string(dir.path().join("inferences/opencode/INFERENCE.yaml")).unwrap();
+        assert_eq!(text, "model: opencode/kimi-k2.6\n");
+    }
+
+    #[test]
+    fn write_inference_refuses_overwrite() {
+        let dir = ws();
+        write_inference(dir.path(), "p", "anthropic/claude-3-5-sonnet").unwrap();
+        let err = load_inference(dir.path(), "p").unwrap(); // loads fine the first time
+        drop(err);
+        let second = write_inference(dir.path(), "p", "openai/gpt-4o").unwrap_err();
+        // Wraps the `already exists` error.
+        assert!(
+            format!("{second}").contains("already exists"),
+            "got: {second}"
+        );
+        // And the original file is unchanged — no clobber mid-error.
+        let text = std::fs::read_to_string(dir.path().join("inferences/p/INFERENCE.yaml")).unwrap();
+        assert_eq!(text, "model: anthropic/claude-3-5-sonnet\n");
+    }
+
+    #[test]
+    fn write_inference_rejects_default_name() {
+        let dir = ws();
+        let err = write_inference(dir.path(), "default", "anthropic/x").unwrap_err();
+        assert!(format!("{err}").contains("reserved"), "got: {err}");
+        // No directory should have been created.
+        assert!(!dir.path().join("inferences/default").exists());
+    }
+
+    #[test]
+    fn write_inference_rejects_empty_name() {
+        let dir = ws();
+        let err = write_inference(dir.path(), "", "anthropic/x").unwrap_err();
+        assert!(format!("{err}").contains("reserved"), "got: {err}");
+    }
+
+    #[test]
+    fn write_inference_rejects_bad_model_shape() {
+        let dir = ws();
+        // Missing provider/id split.
+        let err = write_inference(dir.path(), "p", "noproviderid").unwrap_err();
+        assert!(format!("{err}").contains("invalid model"), "got: {err}");
+        // No directory should have been created on a validation failure.
+        assert!(!dir.path().join("inferences/p").exists());
+    }
+
+    #[test]
+    fn write_inference_rejects_slash_in_id_part() {
+        let dir = ws();
+        // Provider/id has a '/' in the id half — invalid per `validate`.
+        let err = write_inference(dir.path(), "p", "openai/gpt-4o/extra").unwrap_err();
+        assert!(format!("{err}").contains("invalid model"), "got: {err}");
     }
 }

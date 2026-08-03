@@ -599,8 +599,9 @@ pub struct EnableParams {
 /// Flip an extension's `enabled` flag. Mirrors `cmd_enable_disable_inner`:
 /// disk-file path for mcp / plugin / skill; falls through to the
 /// `gait.jsonc` legacy `mcp_servers` / `skills` arrays when the disk file
-/// doesn't exist.
-pub fn set_enabled(params: EnableParams, enabled: bool) -> Result<EnableOutcome, OpError> {
+/// doesn't exist. `pub(crate)` — the public entry points for toggling
+/// extensions are `enable`/`disable`; this is just the shared backing impl.
+pub(crate) fn set_enabled(params: EnableParams, enabled: bool) -> Result<EnableOutcome, OpError> {
     // Disk-file path for mcp, plugin, and skill kinds.
     let disk_path: Option<PathBuf> = match params.kind.as_str() {
         "mcp" => {

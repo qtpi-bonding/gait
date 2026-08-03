@@ -56,6 +56,7 @@ pub struct InitOutcome {
 /// Thin wrapper around [`scaffold_gait_dir`] for use in tests and programmatic
 /// callers that want to initialize a gait-dir without the git init / staging /
 /// commit steps.
+#[doc(hidden)]
 pub fn run_init(gait_dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(gait_dir)?;
     scaffold_gait_dir(gait_dir)
@@ -63,7 +64,7 @@ pub fn run_init(gait_dir: &Path) -> std::io::Result<()> {
 
 /// Create the empty, editable layer affordances in the gait-dir (idempotent,
 /// never clobbers) and ensure USER.md and sessions/ are gitignored.
-pub fn scaffold_gait_dir(gait_dir: &Path) -> std::io::Result<()> {
+pub(crate) fn scaffold_gait_dir(gait_dir: &Path) -> std::io::Result<()> {
     // agents/default/ — Phase 4 directory form
     let default_agent_dir = gait_dir.join("agents").join("default");
     std::fs::create_dir_all(&default_agent_dir)?;
@@ -107,7 +108,11 @@ pub fn scaffold_gait_dir(gait_dir: &Path) -> std::io::Result<()> {
         let config = format!(
             r#"{{
   // gait configuration
-  "model": "minimax/MiniMax-M3",
+  // Pick a provider via the named-inference system: "inference" holds a
+  // name that resolves through inferences/<name>/INFERENCE.yaml to the
+  // actual provider/model-id string. The default below is bootstrap-scaffolded
+  // by scaffold_gait_dir alongside this file. See `gait inference --help`.
+  "inference": "minimax-m3",
   // Allow list: tools the agent may call without a human approval prompt.
   "allow": ["read", "glob", "grep", "ls", "clarify", "inform"],
   // Sandbox: kernel write-enforcement (Seatbelt on macOS, Landlock on Linux).
@@ -144,6 +149,17 @@ pub fn scaffold_gait_dir(gait_dir: &Path) -> std::io::Result<()> {
 "#
         );
         std::fs::write(&config_path, config)?;
+    }
+
+    // inferences/minimax-m3/ — default named inference. With
+    // `"inference": "minimax-m3"` in gait.jsonc above, fresh installs work
+    // out of the box: the name resolves through this file to
+    // `minimax/MiniMax-M3`. Idempotent — never clobbers a hand-edited file.
+    let inf_dir = gait_dir.join("inferences").join("minimax-m3");
+    std::fs::create_dir_all(&inf_dir)?;
+    let inf_file = inf_dir.join("INFERENCE.yaml");
+    if !inf_file.exists() {
+        std::fs::write(&inf_file, "model: minimax/MiniMax-M3\n")?;
     }
 
     // .gitignore — merge required entries, no duplicates

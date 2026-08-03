@@ -38,6 +38,20 @@ pub fn clear(gait_dir: &Path, session_id: &str) -> Result<(), OpError> {
     )
 }
 
+/// Author a new named inference at `<gait_dir>/inferences/<name>/INFERENCE.yaml`
+/// with a bare `model: <provider/id>` line (no `llm_params` block). Returns the
+/// `InferenceInfo { name, model }` it just wrote so callers can echo it back.
+///
+/// Refuses overwrite — see `gait_state::inferences::write_inference`. To tune
+/// llm_params or anything else after creation, edit the YAML in place.
+pub fn add(gait_dir: &Path, name: &str, model: &str) -> Result<InferenceInfo, OpError> {
+    gait_state::inferences::write_inference(gait_dir, name, model)?;
+    Ok(InferenceInfo {
+        name: name.to_string(),
+        model: model.to_string(),
+    })
+}
+
 fn append(
     gait_dir: &Path,
     session_id: &str,
