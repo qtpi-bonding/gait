@@ -11,6 +11,14 @@ pub fn worktree_dir(gait_dir: &Path, session_id: &str) -> PathBuf {
     gait_dir.join(".active").join(session_id)
 }
 
+/// Runtime outputs owned by a live session. These files intentionally live
+/// inside the active worktree so they survive turns but disappear with
+/// `persist`/`discard`. The worktree's allow-list `.gitignore` keeps them out
+/// of the persisted session tree.
+pub fn outputs_dir(gait_dir: &Path, session_id: &str) -> PathBuf {
+    worktree_dir(gait_dir, session_id).join("outputs")
+}
+
 /// The live session's log, nested one level inside the worktree to match the
 /// shape its branch's tree will have on `main` after persist:
 /// `gait_dir/.active/<id>/sessions/<id>/log.jsonl`.
@@ -40,6 +48,15 @@ mod tests {
         assert_eq!(
             worktree_dir(gait_dir, "sabc123"),
             Path::new("/tmp/gd/.active/sabc123")
+        );
+    }
+
+    #[test]
+    fn outputs_dir_lives_inside_the_active_session() {
+        let gait_dir = Path::new("/tmp/gd");
+        assert_eq!(
+            outputs_dir(gait_dir, "sabc123"),
+            Path::new("/tmp/gd/.active/sabc123/outputs")
         );
     }
 

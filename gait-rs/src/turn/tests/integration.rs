@@ -2765,6 +2765,137 @@ fn gait_bin_path() -> Option<std::path::PathBuf> {
     bin.exists().then_some(bin)
 }
 
+/// The shell's advertised full-output path must survive the spine's per-hand
+/// jail cleanup and be reachable by a later read hand through the automatic
+/// current-session output grant.
+#[allow(clippy::print_stderr)]
+#[tokio::test]
+async fn session_shell_output_is_readable_after_the_hand_exits() {
+    let gait_dir = TempDir::new().unwrap();
+    let codebase = TempDir::new().unwrap();
+    let session_id = "sess-output-01";
+    std::fs::create_dir_all(crate::session::live::worktree_dir(
+        gait_dir.path(),
+        session_id,
+    ))
+    .unwrap();
+
+    let Some(exe) = gait_bin_path() else {
+        eprintln!(
+            "skipping session_shell_output_is_readable_after_the_hand_exits: `gait` binary not built"
+        );
+        return;
+    };
+
+    let group = crate::process::establish(None);
+    let mut leader_cmd = std::process::Command::new("sleep");
+    leader_cmd.arg("30");
+    let mut dummy_leader = group
+        .spawn_enrolled(leader_cmd)
+        .expect("spawn dummy leader");
+
+    let shell_args: pbjson_types::Struct = serde_json::from_value(serde_json::json!({
+        "cmd": "printf 'later-turn-marker\\ntmp=%s\\n' \"$TMPDIR\"",
+        "reason": "session output lifecycle regression"
+    }))
+    .unwrap();
+    let shell_feedback = crate::turn::spine::run_tool_as_spine(
+        gait_proto::gait::sandbox::v1::Impulse {
+            tool: "shell".into(),
+            args: Some(shell_args),
+            requested: None,
+            prefetch: None,
+            shell_whitelist_patterns: vec![],
+        },
+        &crate::config::SandboxConfig::default(),
+        gait_dir.path(),
+        codebase.path(),
+        session_id,
+        true,
+        &exe,
+        group.clone(),
+        None,
+    )
+    .await;
+    let shell_result = shell_feedback.result.expect("shell feedback result");
+    let shell_object = match shell_result.kind {
+        Some(pbjson_types::value::Kind::StructValue(value)) => value,
+        other => panic!("expected structured shell result, got {other:?}"),
+    };
+    let shell_output = match shell_object
+        .fields
+        .get("output")
+        .and_then(|value| value.kind.as_ref())
+    {
+        Some(pbjson_types::value::Kind::StringValue(value)) => value,
+        other => panic!("expected shell output string, got {other:?}"),
+    };
+    let path_suffix = shell_output
+        .split_once("[full output: ")
+        .unwrap_or_else(|| panic!("missing output path: {shell_output}"))
+        .1;
+    let output_path = std::path::PathBuf::from(
+        path_suffix
+            .split_once(" (")
+            .unwrap_or_else(|| panic!("malformed output path: {shell_output}"))
+            .0,
+    );
+    let expected_process_root = crate::session::live::outputs_dir(gait_dir.path(), session_id)
+        .join("process")
+        .canonicalize()
+        .unwrap();
+    assert!(
+        shell_output.contains(&format!("tmp={}/", expected_process_root.display())),
+        "spine must give shell a session-lived process TMPDIR: {shell_output}"
+    );
+    assert!(
+        output_path.starts_with(
+            crate::session::live::outputs_dir(gait_dir.path(), session_id).join("shell")
+        ),
+        "shell output must be session-scoped: {}",
+        output_path.display()
+    );
+    assert!(
+        output_path.exists(),
+        "spine must not delete the advertised output with the hand jail"
+    );
+
+    let read_args: pbjson_types::Struct = serde_json::from_value(serde_json::json!({
+        "file_path": output_path
+    }))
+    .unwrap();
+    let read_feedback = crate::turn::spine::run_tool_as_spine(
+        gait_proto::gait::sandbox::v1::Impulse {
+            tool: "read".into(),
+            args: Some(read_args),
+            requested: None,
+            prefetch: None,
+            shell_whitelist_patterns: vec![],
+        },
+        &crate::config::SandboxConfig::default(),
+        gait_dir.path(),
+        codebase.path(),
+        session_id,
+        true,
+        &exe,
+        group.clone(),
+        None,
+    )
+    .await;
+
+    let _ = dummy_leader.kill();
+    let _ = dummy_leader.wait();
+
+    let read_result = read_feedback.result.expect("read feedback result");
+    match read_result.kind {
+        Some(pbjson_types::value::Kind::StringValue(value)) => assert!(
+            value.contains("later-turn-marker"),
+            "later read hand must reach the advertised output: {value}"
+        ),
+        other => panic!("expected read string result, got {other:?}"),
+    }
+}
+
 /// Delegated read must serve the editor buffer, NOT disk. Seed disk with
 /// different bytes to prove the buffer wins. Runs whenever the `gait` binary
 /// has been built (any prior `cargo build`/`cargo test` of the workspace);
@@ -2778,6 +2909,11 @@ async fn delegated_read_serves_buffer_not_disk() {
     use std::sync::Arc;
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
+    std::fs::create_dir_all(crate::session::live::worktree_dir(
+        ws.path(),
+        "sess-deleg-01",
+    ))
+    .unwrap();
     std::fs::write(ws.path().join("a.rs"), b"DISK CONTENT").unwrap();
 
     struct Fake;
@@ -2861,6 +2997,11 @@ async fn delegated_read_serves_buffer_not_disk() {
 async fn shell_command_matching_whitelist_carries_match_items_in_feedback() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
+    std::fs::create_dir_all(crate::session::live::worktree_dir(
+        ws.path(),
+        "sess-whitelist-01",
+    ))
+    .unwrap();
 
     let Some(exe) = gait_bin_path() else {
         eprintln!(
@@ -2937,6 +3078,11 @@ async fn shell_command_matching_whitelist_carries_match_items_in_feedback() {
 async fn shell_command_not_matching_whitelist_carries_no_match_items() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
+    std::fs::create_dir_all(crate::session::live::worktree_dir(
+        ws.path(),
+        "sess-whitelist-02",
+    ))
+    .unwrap();
 
     let Some(exe) = gait_bin_path() else {
         eprintln!(

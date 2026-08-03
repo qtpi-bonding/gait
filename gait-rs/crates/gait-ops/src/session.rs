@@ -708,24 +708,40 @@ mod tests {
     fn bulk_act_persists_eligible_set_when_confirmed() {
         let ws = ws_with_session("sbulk03");
         write_empty_log(ws.path(), "sbulk03");
+        let output =
+            gait_state::session::live::outputs_dir(ws.path(), "sbulk03").join("shell/full.txt");
+        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+        std::fs::write(&output, "runtime-only").unwrap();
         let plan = classify_bulk(ws.path(), BulkVerb::Persist).unwrap();
         let outcome = bulk_act(ws.path(), &plan, true).unwrap();
         assert_eq!(outcome.acted, vec!["sbulk03".to_string()]);
         assert!(outcome.failed.is_empty());
         // The session's branch is now merged into main — the worktree dir is gone.
         assert!(!gait_state::session::live::worktree_dir(ws.path(), "sbulk03").exists());
+        assert!(!output.exists(), "persist must remove runtime outputs");
+        let repo = git2::Repository::open(ws.path()).unwrap();
+        let tree = repo.head().unwrap().peel_to_tree().unwrap();
+        assert!(
+            tree.get_path(std::path::Path::new("outputs")).is_err(),
+            "persist must not merge runtime outputs into main"
+        );
     }
 
     #[test]
     fn bulk_act_discards_eligible_set_when_confirmed() {
         let ws = ws_with_session("sbulk04");
         write_empty_log(ws.path(), "sbulk04");
+        let output =
+            gait_state::session::live::outputs_dir(ws.path(), "sbulk04").join("shell/full.txt");
+        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+        std::fs::write(&output, "runtime-only").unwrap();
         let plan = classify_bulk(ws.path(), BulkVerb::Discard).unwrap();
         let outcome = bulk_act(ws.path(), &plan, true).unwrap();
         assert_eq!(outcome.acted, vec!["sbulk04".to_string()]);
         assert!(outcome.failed.is_empty());
         // discard_session removes the worktree dir without merging into main.
         assert!(!gait_state::session::live::worktree_dir(ws.path(), "sbulk04").exists());
+        assert!(!output.exists(), "discard must remove runtime outputs");
     }
 
     // -- additional classify_bulk tests (parity with cli/session.rs) --

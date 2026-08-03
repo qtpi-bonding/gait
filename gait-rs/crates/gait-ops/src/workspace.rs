@@ -124,8 +124,8 @@ pub(crate) fn scaffold_gait_dir(gait_dir: &Path) -> std::io::Result<()> {
   // Platform paths always readable regardless of 'readable' (OS bootstrap requirement):
 {system_reads_comment}
   //
-  // The codebase root is always readable+writable for tools that need it,
-  // regardless of what you list here.
+  // The codebase root and current session's outputs directory are automatically
+  // accessible to tools that need them, regardless of what you list here.
   "sandbox": {{
     "on": true,
     "readable": ["$CODEBASE"],
@@ -443,6 +443,21 @@ mod tests {
         assert!(
             config_text.contains("\"deny\""),
             "scaffold must literally write sandbox.deny"
+        );
+    }
+
+    #[test]
+    fn scaffolded_gait_jsonc_documents_automatic_session_outputs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        run_init(dir.path()).unwrap();
+        let config_text = std::fs::read_to_string(dir.path().join("gait.jsonc")).unwrap();
+        assert!(
+            config_text.contains("current session's outputs directory are automatically"),
+            "generated config must explain the hard-coded session output grant"
+        );
+        assert!(
+            !config_text.contains(".active/<session-id>"),
+            "generated config must not suggest a shared or placeholder path grant"
         );
     }
 

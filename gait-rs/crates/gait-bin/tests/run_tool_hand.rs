@@ -15,6 +15,44 @@ use gait_proto::gait::sandbox::v1::{
 };
 use prost::Message;
 
+fn feedback_from_output(out: std::process::Output) -> gait_proto::gait::sandbox::v1::Feedback {
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let hand_resp =
+        HandResponse::decode(out.stdout.as_slice()).expect("valid HandResponse from hand");
+    match hand_resp.outcome {
+        Some(hand_response::Outcome::Feedback(f)) => f,
+        other => panic!("expected Feedback outcome, got {:?}", other),
+    }
+}
+
+fn structured_output(feedback: gait_proto::gait::sandbox::v1::Feedback) -> String {
+    let result = feedback.result.expect("Feedback.result must be set");
+    let object = match result.kind {
+        Some(pbjson_types::value::Kind::StructValue(s)) => s,
+        other => panic!("expected structured result, got {other:?}"),
+    };
+    match object.fields.get("output").and_then(|v| v.kind.as_ref()) {
+        Some(pbjson_types::value::Kind::StringValue(s)) => s.clone(),
+        other => panic!("expected output string, got {other:?}"),
+    }
+}
+
+fn full_output_path(output: &str) -> std::path::PathBuf {
+    let rest = output
+        .split_once("[full output: ")
+        .unwrap_or_else(|| panic!("missing full-output note: {output}"))
+        .1;
+    std::path::PathBuf::from(
+        rest.split_once(" (")
+            .unwrap_or_else(|| panic!("malformed full-output note: {output}"))
+            .0,
+    )
+}
+
 #[test]
 fn run_tool_executes_read_in_subprocess() {
     let dir = tempfile::tempdir().unwrap();
@@ -74,20 +112,7 @@ fn run_tool_executes_read_in_subprocess() {
     stdin.write_all(&impulse_bytes).unwrap();
     drop(stdin);
 
-    let out = child.wait_with_output().unwrap();
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    // Decode binary HandResponse from stdout.
-    let hand_resp =
-        HandResponse::decode(out.stdout.as_slice()).expect("valid HandResponse from hand");
-    let feedback = match hand_resp.outcome {
-        Some(hand_response::Outcome::Feedback(f)) => f,
-        other => panic!("expected Feedback outcome, got {:?}", other),
-    };
+    let feedback = feedback_from_output(child.wait_with_output().unwrap());
     // Result should be the file content wrapped in <file>...</file> (a string value).
     let result_proto = feedback.result.expect("Feedback.result must be set");
     let result_str = match result_proto.kind {
@@ -98,5 +123,168 @@ fn run_tool_executes_read_in_subprocess() {
         result_str.contains("hi from hand"),
         "file content should be in result, got: {:?}",
         result_str
+    );
+}
+
+#[test]
+fn shell_output_and_tmpdir_survive_the_hand_subprocess() {
+    let dir = tempfile::tempdir().unwrap();
+    let session_id = "sshell-output";
+    let outputs = gait_state::session::live::outputs_dir(dir.path(), session_id);
+    let process_tmp = outputs.join("process/integration");
+    std::fs::create_dir_all(&process_tmp).unwrap();
+
+    let args_struct: pbjson_types::Struct = serde_json::from_value(serde_json::json!({
+        "cmd": "printf 'tmp=%s\\nfull-marker\\n' \"$TMPDIR\"",
+        "reason": "session output integration"
+    }))
+    .unwrap();
+    let impulse = Impulse {
+        tool: "shell".into(),
+        args: Some(args_struct),
+        requested: Some(Scope {
+            read_all: false,
+            readable: vec![
+                dir.path().to_string_lossy().into_owned(),
+                outputs.to_string_lossy().into_owned(),
+            ],
+            writable: vec![
+                dir.path().to_string_lossy().into_owned(),
+                outputs.to_string_lossy().into_owned(),
+            ],
+            network: Some(NetworkScope {
+                mode: Mode::Deny as i32,
+                hosts: vec![],
+            }),
+            local_bind: false,
+            read_deny: None,
+            write_deny: None,
+        }),
+        prefetch: None,
+        shell_whitelist_patterns: vec![],
+    };
+
+    let exe = env!("CARGO_BIN_EXE_gait");
+    let mut child = Command::new(exe)
+        .args([
+            "__run-tool",
+            "--gait-dir",
+            dir.path().to_str().unwrap(),
+            "--codebase",
+            dir.path().to_str().unwrap(),
+            "--session",
+            session_id,
+            "--tool",
+            "shell",
+        ])
+        .env("TMPDIR", &process_tmp)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&impulse.encode_to_vec())
+        .unwrap();
+
+    let output = structured_output(feedback_from_output(child.wait_with_output().unwrap()));
+    assert!(
+        output.contains(&format!("tmp={}", process_tmp.display())),
+        "shell subprocess must inherit its session-lived TMPDIR: {output}"
+    );
+    let full_path = full_output_path(&output);
+    assert!(full_path.starts_with(outputs.join("shell")));
+    assert_eq!(
+        std::fs::read_to_string(full_path).unwrap(),
+        format!("tmp={}\nfull-marker\n", process_tmp.display()),
+        "the reported output must remain readable after the hand exits"
+    );
+}
+
+#[test]
+fn detached_shell_keeps_its_inherited_session_tmpdir_after_hand_exit() {
+    let dir = tempfile::tempdir().unwrap();
+    let session_id = "sdetached-output";
+    let outputs = gait_state::session::live::outputs_dir(dir.path(), session_id);
+    let process_tmp = outputs.join("process/detached-integration");
+    let marker = process_tmp.join("after-hand.txt");
+    std::fs::create_dir_all(&process_tmp).unwrap();
+
+    let args_struct: pbjson_types::Struct = serde_json::from_value(serde_json::json!({
+        "cmd": "sleep 0.1; printf detached-ok > \"$TMPDIR/after-hand.txt\"",
+        "reason": "detached tmpdir lifecycle",
+        "detached": true,
+        "name": "tmpdir-lifecycle"
+    }))
+    .unwrap();
+    let impulse = Impulse {
+        tool: "shell".into(),
+        args: Some(args_struct),
+        requested: Some(Scope {
+            read_all: false,
+            readable: vec![
+                dir.path().to_string_lossy().into_owned(),
+                outputs.to_string_lossy().into_owned(),
+            ],
+            writable: vec![
+                dir.path().to_string_lossy().into_owned(),
+                outputs.to_string_lossy().into_owned(),
+            ],
+            network: Some(NetworkScope {
+                mode: Mode::Deny as i32,
+                hosts: vec![],
+            }),
+            local_bind: false,
+            read_deny: None,
+            write_deny: None,
+        }),
+        prefetch: None,
+        shell_whitelist_patterns: vec![],
+    };
+
+    let exe = env!("CARGO_BIN_EXE_gait");
+    let mut child = Command::new(exe)
+        .args([
+            "__run-tool",
+            "--gait-dir",
+            dir.path().to_str().unwrap(),
+            "--codebase",
+            dir.path().to_str().unwrap(),
+            "--session",
+            session_id,
+            "--tool",
+            "shell",
+        ])
+        .env("TMPDIR", &process_tmp)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&impulse.encode_to_vec())
+        .unwrap();
+    let feedback = feedback_from_output(child.wait_with_output().unwrap());
+    assert!(
+        feedback.daemon.is_some(),
+        "hand must return before its daemon"
+    );
+
+    for _ in 0..100 {
+        if marker.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(
+        std::fs::read_to_string(marker).unwrap(),
+        "detached-ok",
+        "detached process must retain a writable TMPDIR after hand exit"
     );
 }

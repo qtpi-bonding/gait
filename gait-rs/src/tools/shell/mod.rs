@@ -66,10 +66,10 @@ impl Tool for ShellTool {
     }
     fn description(&self) -> &str {
         "Run a shell command in the codebase directory. Full output is always written to a \
-         workspace tmp file and its path is included in the result. For commands that produce \
+         session output file and its path is included in the result. For commands that produce \
          large output (cargo test, build logs, grep over large trees) use the `parse` field \
          (e.g. \"grep FAILED | head -30\") to return only relevant lines and keep context small. \
-         You can then grep/read the tmp file for more detail without re-running. \
+         You can then grep/read the output file on a later turn without re-running. \
          Pass `cwd` to run in a subdirectory — ALWAYS prefer this over `cd dir && cmd` inside \
          `cmd`: cwd-chaining inside `cmd` silently forfeits any sandbox whitelist grant (network, \
          bind) the command would otherwise get. `cwd` applies to this call only and does not \
@@ -258,14 +258,17 @@ impl Tool for ShellTool {
             }));
         }
 
-        let tmp_dir = std::env::temp_dir().join("gait-hand");
-        let _ = std::fs::create_dir_all(&tmp_dir);
+        let output_dir =
+            crate::session::live::outputs_dir(&self.ctx.gait_dir, &self.ctx.session_id)
+                .join("shell");
+        std::fs::create_dir_all(&output_dir)
+            .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
 
         let run_id = {
             let s = uuid::Uuid::new_v4().to_string().replace('-', "");
             s[..8].to_string()
         };
-        let out_path = tmp_dir.join(format!("shell-{}.txt", run_id));
+        let out_path = output_dir.join(format!("shell-{}.txt", run_id));
 
         let timeout_secs = crate::config::load_config(&self.ctx.gait_dir).shell_timeout_secs;
 
@@ -369,7 +372,7 @@ impl Tool for ShellTool {
             None => {
                 // Timeout: SIGKILL the whole subtree (sh + any children) and return
                 // a real result so the brain continues. Partial output (if any) is in
-                // the tmp file; we do not await the drain (the pipe may never EOF if a
+                // the session output file; we do not await the drain (the pipe may never EOF if a
                 // grandchild holds it open).
                 scope.kill();
                 let msg = format!(

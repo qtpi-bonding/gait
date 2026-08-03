@@ -10,6 +10,23 @@ fn make_tool(dir: &TempDir) -> ShellTool {
     ))
 }
 
+fn full_output_path(result: &serde_json::Value) -> std::path::PathBuf {
+    let output = result
+        .get("output")
+        .and_then(|v| v.as_str())
+        .expect("output field");
+    let marker = "[full output: ";
+    let rest = output
+        .split_once(marker)
+        .unwrap_or_else(|| panic!("missing full-output note: {output}"))
+        .1;
+    let path = rest
+        .split_once(" (")
+        .unwrap_or_else(|| panic!("malformed full-output note: {output}"))
+        .0;
+    std::path::PathBuf::from(path)
+}
+
 #[tokio::test]
 async fn runs_command_and_captures_output() {
     let dir = TempDir::new().unwrap();
@@ -37,6 +54,99 @@ async fn runs_command_and_captures_output() {
         .expect("exit_code field");
     assert_eq!(exit_code, 0, "got: {result}");
     assert!(output.contains("hello"), "got: {output}");
+}
+
+#[tokio::test]
+async fn full_output_file_is_session_scoped_and_survives_tool_return() {
+    let dir = TempDir::new().unwrap();
+    let tool = make_tool(&dir);
+    let result = tool
+        .execute(
+            serde_json::json!({
+                "cmd": "printf 'first-line\\nsecond-line\\n'",
+                "reason": "output lifecycle test"
+            }),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap();
+
+    let path = full_output_path(&result);
+    let expected_root = crate::session::live::outputs_dir(dir.path(), "test").join("shell");
+    assert!(
+        path.starts_with(&expected_root),
+        "full output must be owned by the active session: {}",
+        path.display()
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "first-line\nsecond-line\n",
+        "reported full-output path must remain readable after execute returns"
+    );
+}
+
+#[tokio::test]
+async fn full_output_retains_content_omitted_from_the_bounded_tail() {
+    let dir = TempDir::new().unwrap();
+    let tool = make_tool(&dir);
+    let result = tool
+        .execute(
+            serde_json::json!({
+                "cmd": "printf 'only-in-full\\n'; yes x | head -c 70000",
+                "reason": "large output lifecycle test"
+            }),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap();
+
+    let displayed = result.get("output").and_then(|v| v.as_str()).unwrap();
+    assert!(
+        !displayed.starts_with("only-in-full"),
+        "the old prefix should be outside the bounded tail: {displayed}"
+    );
+    let full = std::fs::read_to_string(full_output_path(&result)).unwrap();
+    assert!(
+        full.starts_with("only-in-full\n"),
+        "the complete output file must retain content omitted from the tail"
+    );
+    assert!(full.len() > 64 * 1024);
+}
+
+#[tokio::test]
+async fn full_output_files_are_isolated_by_session() {
+    let dir = TempDir::new().unwrap();
+    let tool_a = ShellTool::new(ToolCtx::new(
+        dir.path().to_path_buf(),
+        dir.path().to_path_buf(),
+        "session-a".into(),
+    ));
+    let tool_b = ShellTool::new(ToolCtx::new(
+        dir.path().to_path_buf(),
+        dir.path().to_path_buf(),
+        "session-b".into(),
+    ));
+
+    let result_a = tool_a
+        .execute(
+            serde_json::json!({"cmd": "printf a", "reason": "isolation a"}),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap();
+    let result_b = tool_b
+        .execute(
+            serde_json::json!({"cmd": "printf b", "reason": "isolation b"}),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap();
+
+    let path_a = full_output_path(&result_a);
+    let path_b = full_output_path(&result_b);
+    assert!(path_a.starts_with(crate::session::live::outputs_dir(dir.path(), "session-a")));
+    assert!(path_b.starts_with(crate::session::live::outputs_dir(dir.path(), "session-b")));
+    assert_ne!(path_a, path_b);
 }
 
 #[tokio::test]
@@ -436,6 +546,7 @@ async fn streams_output_to_file_before_completion() {
     use uuid::Uuid;
 
     let dir = TempDir::new().unwrap();
+    let output_dir = crate::session::live::outputs_dir(dir.path(), "test").join("shell");
     let tool = make_tool(&dir);
 
     // Use a unique sentinel so only this test's file can possibly match,
@@ -461,10 +572,9 @@ async fn streams_output_to_file_before_completion() {
 
     // Find shell-*.txt files that contain our unique sentinel marker.
     // Because the sentinel is a UUID-based string, no other test's file can match.
-    let tmp_dir = std::env::temp_dir().join("gait-hand");
     let early_marker = format!("{sentinel}_early");
     let mut contents = String::new();
-    if let Ok(entries) = std::fs::read_dir(&tmp_dir) {
+    if let Ok(entries) = std::fs::read_dir(&output_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name();
             if !name.to_string_lossy().starts_with("shell-") {
@@ -543,7 +653,7 @@ async fn total_bytes_reflects_file_not_tail() {
 }
 
 #[tokio::test]
-async fn writes_output_to_tmp_file() {
+async fn writes_output_to_session_file() {
     let dir = TempDir::new().unwrap();
     let tool = make_tool(&dir);
     let result = tool
@@ -556,20 +666,21 @@ async fn writes_output_to_tmp_file() {
         )
         .await
         .unwrap();
-    // Result's `output` field references the tmp file (file note is part of display).
+    // Result's `output` field references the session file (file note is part of display).
     let output = result
         .get("output")
         .and_then(|v| v.as_str())
         .expect("output field");
     assert!(output.contains("full output:"), "got: {output}");
     assert!(output.contains("shell-"), "got: {output}");
-    // Scratch goes to the system temp dir under gait-hand/ (not the gait-dir).
+    let path = full_output_path(&result);
+    let expected = crate::session::live::outputs_dir(dir.path(), "test").join("shell");
     assert!(
-        output.contains("gait-hand"),
-        "expected gait-hand in output path, got: {output}"
+        path.starts_with(&expected),
+        "expected session output path, got: {}",
+        path.display()
     );
-    let tmp_dir = std::env::temp_dir().join("gait-hand");
-    assert!(tmp_dir.exists(), "gait-hand tmp dir not created");
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "payload\n");
 }
 
 // ── Detached daemon tests ──────────────────────────────────────────────────

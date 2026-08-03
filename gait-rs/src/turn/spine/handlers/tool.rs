@@ -68,6 +68,55 @@ fn shell_access_and_whitelist_hit(
     (access, Some(items))
 }
 
+/// Add Gait-owned, current-session runtime paths to a hand's bounded scope.
+/// These are invariants rather than user-configured grants: using the dynamic
+/// session id here keeps sibling sessions isolated without asking users to
+/// grant the shared `.active/` or `daemons/` roots.
+fn grant_session_runtime_paths(
+    scope: &mut SandboxScope,
+    gait_dir: &Path,
+    session_id: &str,
+    tool: &str,
+) -> std::io::Result<std::path::PathBuf> {
+    let worktree = crate::session::live::worktree_dir(gait_dir, session_id);
+    if !worktree.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "active session worktree does not exist: {}",
+                worktree.display()
+            ),
+        ));
+    }
+    let canonical_worktree = worktree.canonicalize()?;
+    let outputs = crate::session::live::outputs_dir(gait_dir, session_id);
+    std::fs::create_dir_all(&outputs)?;
+    let outputs = outputs.canonicalize()?;
+    if !outputs.starts_with(&canonical_worktree) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "session outputs escape active worktree: {}",
+                outputs.display()
+            ),
+        ));
+    }
+    scope.readable.push(outputs.clone());
+    if tool == "shell" {
+        scope.writable.push(outputs.clone());
+    }
+
+    // Daemon logs predate session outputs and remain in their existing
+    // location. Keep the same current-session-only access rule.
+    let session_daemons_dir = gait_dir.join("daemons").join(session_id);
+    scope.readable.push(session_daemons_dir.clone());
+    if tool == "shell" {
+        scope.writable.push(session_daemons_dir);
+    }
+
+    Ok(outputs)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run_tool_as_spine(
     impulse: Impulse,
@@ -142,17 +191,29 @@ pub async fn run_tool_as_spine(
         Err(error) => return error_feedback(&error.to_string()),
     };
 
-    // Grant this session's own daemon-log directory, never any sibling
-    // session's — auto-injected here (not config-driven) so no gait.jsonc
-    // entry can accidentally widen it back to the shared `daemons/` root.
-    // Readable for every tool (so read/grep/ls can inspect a session's own
-    // daemon output); writable only for `shell` (which creates the dir and
-    // the log file when spawning a detached daemon).
-    let session_daemons_dir = gait_dir.join("daemons").join(session_id);
-    scope.readable.push(session_daemons_dir.clone());
-    if impulse.tool == "shell" {
-        scope.writable.push(session_daemons_dir);
-    }
+    let session_outputs =
+        match grant_session_runtime_paths(&mut scope, gait_dir, session_id, &impulse.tool) {
+            Ok(path) => path,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&jail);
+                return error_feedback(&format!("failed to prepare session outputs: {error}"));
+            }
+        };
+
+    // Shell subprocesses may outlive the hand (detached mode), so their
+    // inherited TMPDIR must share the active session's lifetime rather than
+    // the per-hand jail's lifetime.
+    let shell_process_dir = if impulse.tool == "shell" {
+        let invocation_id = uuid::Uuid::new_v4().to_string().replace('-', "");
+        let path = session_outputs.join("process").join(invocation_id);
+        if let Err(error) = std::fs::create_dir_all(&path) {
+            let _ = std::fs::remove_dir_all(&jail);
+            return error_feedback(&format!("failed to prepare shell process output: {error}"));
+        }
+        Some(path)
+    } else {
+        None
+    };
 
     let requested = scope_to_proto(&scope);
 
@@ -251,7 +312,10 @@ pub async fn run_tool_as_spine(
                     "PATH" | "HOME" | "USER" | "SHELL" | "TERM" | "LANG" | "LC_ALL" | "TMPDIR"
                 )
             }))
-            .env("TMPDIR", &jail);
+            .env(
+                "TMPDIR",
+                shell_process_dir.as_deref().unwrap_or(jail.as_path()),
+            );
         // Enroll hand into the cascade group (joins brain's process group).
         if let Err(e) = group.configure_enrolled(&mut std_cmd) {
             let _ = std::fs::remove_dir_all(&jail);
@@ -447,6 +511,77 @@ mod tests {
     use std::path::Path;
 
     #[test]
+    fn current_session_outputs_are_auto_granted_without_sibling_access() {
+        let gait_dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(crate::session::live::worktree_dir(
+            gait_dir.path(),
+            "session-a",
+        ))
+        .unwrap();
+        let mut shell_scope = SandboxScope::default();
+        let own =
+            grant_session_runtime_paths(&mut shell_scope, gait_dir.path(), "session-a", "shell")
+                .unwrap();
+        let sibling = crate::session::live::outputs_dir(gait_dir.path(), "session-b");
+
+        assert!(own.is_dir(), "auto-granted output root must exist");
+        assert!(shell_scope.readable.contains(&own));
+        assert!(shell_scope.writable.contains(&own));
+        assert!(!shell_scope.readable.contains(&sibling));
+        assert!(!shell_scope.writable.contains(&sibling));
+
+        let mut read_scope = SandboxScope::default();
+        let own_for_read =
+            grant_session_runtime_paths(&mut read_scope, gait_dir.path(), "session-a", "read")
+                .unwrap();
+        assert!(read_scope.readable.contains(&own_for_read));
+        assert!(
+            !read_scope.writable.contains(&own_for_read),
+            "non-shell tools must not receive automatic output write access"
+        );
+    }
+
+    #[test]
+    fn output_grant_never_precreates_the_active_worktree() {
+        let gait_dir = tempfile::TempDir::new().unwrap();
+        let worktree = crate::session::live::worktree_dir(gait_dir.path(), "not-started");
+        let error = grant_session_runtime_paths(
+            &mut SandboxScope::default(),
+            gait_dir.path(),
+            "not-started",
+            "shell",
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(
+            !worktree.exists(),
+            "the spine must not steal session-worktree creation from startup"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_grant_rejects_a_symlink_escape() {
+        let gait_dir = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let worktree = crate::session::live::worktree_dir(gait_dir.path(), "session-a");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::os::unix::fs::symlink(
+            outside.path(),
+            crate::session::live::outputs_dir(gait_dir.path(), "session-a"),
+        )
+        .unwrap();
+
+        let mut scope = SandboxScope::default();
+        let error = grant_session_runtime_paths(&mut scope, gait_dir.path(), "session-a", "shell")
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(scope.readable.is_empty());
+        assert!(scope.writable.is_empty());
+    }
+
+    #[test]
     fn scope_to_proto_round_trips_deny_policy() {
         use crate::sandbox::DenyPolicy;
         let scope = SandboxScope {
@@ -565,6 +700,11 @@ mod tests {
         }
 
         let ws = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(crate::session::live::worktree_dir(
+            ws.path(),
+            "sess-escape-01",
+        ))
+        .unwrap();
         let mut s = pbjson_types::Struct::default();
         s.fields.insert(
             "file_path".into(),

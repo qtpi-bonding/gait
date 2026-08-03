@@ -68,9 +68,11 @@ impl TraceRepo for GitTraceRepo {
             "*\n!sessions/\n!sessions/*/\n!sessions/*/log.jsonl\n!sessions/*/diagnostic.jsonl\n";
 
         // Already a worktree — idempotent. Still (re-)write .gitignore: see
-        // above, this must not be a no-op.
+        // above, this must not be a no-op. The runtime output root is likewise
+        // restored if a caller removed it between turns.
         if worktree_dir.join(".git").exists() {
             std::fs::write(worktree_dir.join(".gitignore"), GITIGNORE_CONTENT)?;
+            std::fs::create_dir_all(crate::session::live::outputs_dir(gait_dir, session_id))?;
             return Ok(());
         }
 
@@ -100,6 +102,7 @@ impl TraceRepo for GitTraceRepo {
             opts.reference(Some(&reference));
             repo.worktree(session_id, &worktree_dir, Some(&opts))?;
             std::fs::write(worktree_dir.join(".gitignore"), GITIGNORE_CONTENT)?;
+            std::fs::create_dir_all(crate::session::live::outputs_dir(gait_dir, session_id))?;
             return Ok(());
         }
 
@@ -132,6 +135,7 @@ impl TraceRepo for GitTraceRepo {
         // Now that the (empty) tree is checked out, write .gitignore directly
         // to disk.
         std::fs::write(worktree_dir.join(".gitignore"), GITIGNORE_CONTENT)?;
+        std::fs::create_dir_all(crate::session::live::outputs_dir(gait_dir, session_id))?;
 
         Ok(())
     }
@@ -531,6 +535,15 @@ mod tests {
                 .expect("status_should_ignore failed"),
             ".gitignore must be ignored by itself"
         );
+        let outputs = crate::session::live::outputs_dir(ws.path(), "sorph01");
+        assert!(outputs.is_dir(), "session output root must be provisioned");
+        std::fs::write(outputs.join("marker.txt"), "runtime-only").unwrap();
+        assert!(
+            wt_repo
+                .status_should_ignore(Path::new("outputs/marker.txt"))
+                .expect("status_should_ignore failed"),
+            "session outputs must remain outside persisted Git history"
+        );
     }
 
     #[test]
@@ -555,6 +568,10 @@ mod tests {
             gi,
             "*\n!sessions/\n!sessions/*/\n!sessions/*/log.jsonl\n!sessions/*/diagnostic.jsonl\n",
             ".gitignore must be re-written on re-attach, not left absent"
+        );
+        assert!(
+            crate::session::live::outputs_dir(ws.path(), "sreatt1").is_dir(),
+            "output root must be recreated on re-attach"
         );
     }
 
@@ -603,6 +620,42 @@ mod tests {
         assert_eq!(
             head.message().unwrap(),
             "session(sabc1234): turn 1\n\nCo-Authored-By: gait <gait@localhost>"
+        );
+    }
+
+    #[test]
+    fn commit_session_never_tracks_runtime_outputs() {
+        let ws = TempDir::new().unwrap();
+        init_repo(ws.path());
+        let git_ws = GitTraceRepo;
+        git_ws
+            .create_session_worktree(ws.path(), "soutput1")
+            .unwrap();
+
+        let tx = crate::session::live::log_path(ws.path(), "soutput1");
+        std::fs::create_dir_all(tx.parent().unwrap()).unwrap();
+        std::fs::write(&tx, "{\"type\":\"session_start\"}\n").unwrap();
+        let output =
+            crate::session::live::outputs_dir(ws.path(), "soutput1").join("shell/full.txt");
+        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+        std::fs::write(&output, "must not persist").unwrap();
+
+        git_ws
+            .commit_session(ws.path(), "soutput1", "session(soutput1): turn 1")
+            .unwrap();
+
+        let repo =
+            git2::Repository::open(crate::session::live::worktree_dir(ws.path(), "soutput1"))
+                .unwrap();
+        let tree = repo.head().unwrap().peel_to_tree().unwrap();
+        assert!(
+            tree.get_path(Path::new("outputs")).is_err(),
+            "runtime outputs must not be present in the session commit"
+        );
+        assert_eq!(
+            std::fs::read_to_string(output).unwrap(),
+            "must not persist",
+            "committing a turn must not delete live outputs"
         );
     }
 
