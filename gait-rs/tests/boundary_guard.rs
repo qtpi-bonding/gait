@@ -50,3 +50,29 @@ fn sealed_mechanism_is_not_named_by_consumers() {
         "sealed mechanism leaked into a consumer crate:\n{leaks}"
     );
 }
+
+#[test]
+fn one_off_frontends_cannot_bypass_typed_credential_resolution() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for path in [
+        "crates/gait-cli/src/cli/exec.rs",
+        "crates/gait-repl/src/repl/driver.rs",
+    ] {
+        let source = fs::read_to_string(root.join(path)).unwrap();
+        assert!(
+            !source.contains("resolve_api_key("),
+            "{path} must leave credential resolution to the shared spine"
+        );
+    }
+
+    let embed = fs::read_to_string(root.join("src/embed.rs")).unwrap();
+    assert!(
+        !embed.contains("pub api_key: String"),
+        "BrainLaunch must not expose a raw API-key channel"
+    );
+    let relay = fs::read_to_string(root.join("src/turn/spine/relay.rs")).unwrap();
+    assert!(
+        !relay.contains("_api_key: &str"),
+        "relay must resolve typed credentials from the effective profile"
+    );
+}

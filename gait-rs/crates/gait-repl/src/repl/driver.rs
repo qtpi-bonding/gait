@@ -508,23 +508,21 @@ impl TurnSource for ReplSource {
                     }
                     continue;
                 }
-                let result = if arg == "default" {
-                    gait_ops::inference::clear(&self.gait_dir, &self.session_id).map(|_| None)
-                } else {
-                    gait_ops::inference::select(&self.gait_dir, &self.session_id, arg).map(Some)
+                let selection = match gait_ops::inference::resolve_selection(&self.gait_dir, arg) {
+                    Ok(selection) => selection,
+                    Err(e) => {
+                        self.shared
+                            .borrow_mut()
+                            .builder
+                            .write_raw(&format!("[gait] /inference: {e}\r\n"));
+                        continue;
+                    }
                 };
-                if let Err(e) = result {
-                    self.shared
-                        .borrow_mut()
-                        .builder
-                        .write_raw(&format!("[gait] /inference: {e}\r\n"));
-                    continue;
-                }
                 self.shared
                     .borrow_mut()
                     .builder
                     .write_raw(&format!("inference set to {arg}\r\n"));
-                continue;
+                return Some(TurnStart::SessionUpdate(vec![selection.event_body]));
             }
 
             // /mode [name] — show available modes + active one (no arg), or
@@ -1141,13 +1139,13 @@ fn repl_skill_currently_loaded(
     loaded
 }
 
-/// Drive the `/sh <desc>` one-off: resolve model + key from the loaded config,
+/// Drive the `/sh <desc>` one-off: resolve the configured inference snapshot,
 /// call `gait_core::embed::run_one_off_turn` directly (gait-repl may not depend
 /// on gait-cli), and parse the returned `Done.result` as `{cmd|output}`. Returns
 /// the plain text to print.
 async fn run_sh_one_off(
     desc: String,
-    model_override: Option<String>,
+    inference_override: Option<String>,
     codebase: std::path::PathBuf,
     gait_dir: std::path::PathBuf,
 ) -> anyhow::Result<String> {
@@ -1169,27 +1167,21 @@ async fn run_sh_one_off(
             std::process::exit(1);
         }
     };
-    let model = match model_override {
-        Some(m) => m,
-        None => cfg
-            .inference
-            .ok_or_else(|| anyhow::anyhow!("no inference set; select an inference"))?,
-    };
-    let provider = model
-        .split_once('/')
-        .map(|(p, _)| p)
-        .ok_or_else(|| anyhow::anyhow!("model must be 'provider/model-id'"))?;
-    let api_key = gait_core::auth::resolve_api_key(provider)
-        .ok_or_else(|| anyhow::anyhow!("no API key for `{provider}`"))?;
+    let inference_name = inference_override
+        .or(cfg.inference)
+        .ok_or_else(|| anyhow::anyhow!("no inference set; select an inference"))?;
+    let inference = gait_ops::inference::resolve_selection(&gait_dir, &inference_name)?.inference;
+    if inference.model.is_empty() {
+        anyhow::bail!("inference '{inference_name}' does not select a model");
+    }
     let exe = std::env::current_exe()?;
     let schema = one_off_schema();
     let res = gait_core::embed::run_one_off_turn(
         &codebase,
-        &api_key,
         &exe,
         &gait_core::config::SandboxConfig::default(),
         /* sandbox_on */ true,
-        &model,
+        inference,
         desc,
         schema,
     )
@@ -1618,7 +1610,7 @@ mod command_tests {
     }
 
     #[tokio::test]
-    async fn slash_inference_appends_session_selection() {
+    async fn slash_inference_yields_core_session_update_without_appending() {
         let d = temp_gait_dir();
         std::fs::create_dir_all(d.path().join("inferences/deep")).unwrap();
         std::fs::write(
@@ -1627,13 +1619,16 @@ mod command_tests {
         )
         .unwrap();
         let (mut src, _s) = source_with(d.path(), &["/inference deep", "/q"]);
-        let _ = src.next().await;
-        let logs: Vec<_> = std::fs::read_dir(d.path().join(".active"))
-            .unwrap()
-            .collect();
+        let update = src.next().await.expect("selection update");
+        let TurnStart::SessionUpdate(bodies) = update else {
+            panic!("/inference must yield SessionUpdate")
+        };
+        assert_eq!(bodies.len(), 1);
+        let expected = gait_ops::inference::resolve_selection(d.path(), "deep").unwrap();
+        assert_eq!(bodies, vec![expected.event_body]);
         assert!(
-            !logs.is_empty(),
-            "/inference must append a durable session selection"
+            !d.path().join(".active").exists(),
+            "REPL resolves the update; core owns session writes"
         );
     }
 

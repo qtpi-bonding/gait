@@ -48,11 +48,13 @@ async fn main() {
 
     // Mode dispatch: -e (exec), -i (interactive), bare positional (task)
     if let Some(exec_prompt) = cli.exec {
+        let gait_dir = resolve_gait_dir();
+        let codebase = cli.codebase.clone().unwrap_or_else(cwd_or_dot);
         let args = gait_cli::cli::exec::ExecArgs {
-            model: cli.inference,
+            inference: cli.inference,
             prompt: vec![exec_prompt],
         };
-        gait_cli::cli::exec::cmd_exec(args).await;
+        gait_cli::cli::exec::cmd_exec(args, &gait_dir, &codebase).await;
         return;
     }
 

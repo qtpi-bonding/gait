@@ -220,6 +220,20 @@ impl Profile {
         let inference =
             resolve_inference_checked(gait_dir, config, agent_path, inference_override.as_deref())
                 .expect("inference must be resolved before building Profile");
+        Self::from_resolved_inference(config, gait_dir, codebase, agent_path, &inference)
+    }
+
+    /// Build a profile from an already validated immutable inference snapshot.
+    /// Ephemeral consumers use this path so named inference resolution happens
+    /// against the real Gait workspace while session storage remains scratch
+    /// and non-persistent.
+    pub fn from_resolved_inference(
+        config: &GaitConfig,
+        gait_dir: &Path,
+        codebase: Option<&Path>,
+        agent_path: Option<&Path>,
+        inference: &crate::proto::gait::log::v1::Inference,
+    ) -> Self {
         let model = inference.model.clone();
 
         let mut instructions = crate::prompt::compose_system_prompt(

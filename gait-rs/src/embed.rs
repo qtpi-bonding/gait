@@ -67,8 +67,6 @@ pub trait FsDelegate: Send + Sync {
 pub struct BrainLaunch {
     /// Absolute path to the codebase root (required by relay_brain_turn).
     pub codebase: std::path::PathBuf,
-    /// Resolved LLM API key (empty string if none).
-    pub api_key: String,
     /// Absolute path to the gait binary (current_exe or resolved path).
     pub gait_bin: std::path::PathBuf,
     /// Sandbox configuration to apply to the brain process.
@@ -97,7 +95,6 @@ impl BrainLaunch {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         codebase: std::path::PathBuf,
-        api_key: String,
         gait_bin: std::path::PathBuf,
         sandbox_cfg: crate::config::SandboxConfig,
         sandbox_on: bool,
@@ -113,7 +110,6 @@ impl BrainLaunch {
     ) -> Self {
         Self {
             codebase,
-            api_key,
             gait_bin,
             sandbox_cfg,
             sandbox_on,
@@ -125,6 +121,7 @@ impl BrainLaunch {
             profile_inputs: crate::turn::spine::ProfileInputs {
                 agent_name,
                 inference_override,
+                resolved_inference: None,
                 explicit_inference_override,
                 allow,
                 deny,
@@ -228,13 +225,43 @@ mod intree_guard_tests {
     }
 }
 
-/// Run turns until the source is exhausted — one sealed `gait __brain` per `TurnStart`.
+/// Persist session-control bodies through core's sole-writer boundary.
+///
+/// Worktree creation must happen before any path below `.active/<session>` is
+/// created. Keeping that ordering here prevents frontends from producing a
+/// plain directory that libgit2 can no longer attach as a worktree.
+pub fn record_session_update(
+    repos: &crate::git::Repos,
+    gait_dir: &Path,
+    session_id: &str,
+    bodies: Vec<crate::proto::gait::log::v1::event::Body>,
+) -> anyhow::Result<()> {
+    if bodies.is_empty() {
+        return Ok(());
+    }
+    repos.traces.create_session_worktree(gait_dir, session_id)?;
+    let worktree = crate::session::live::worktree_dir(gait_dir, session_id);
+    let _lock = crate::session::SessionLock::acquire(&worktree)?;
+    let log_path = crate::session::live::log_path(gait_dir, session_id);
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    for body in bodies {
+        crate::proto::wire::append(&log_path, body)?;
+    }
+    Ok(())
+}
+
+/// Run turns until the source is exhausted — one sealed `gait __brain` per
+/// `Input` or `Resume`. `SessionUpdate` persists without spawning a brain.
 ///
 /// `run_loop` is the **spine loop**: per `TurnSource::next()` it calls
 /// `relay_brain_turn` (spawn sealed brain, relay Nerve, serve tools, write log).
 /// The brain runs `run_turn` in-process; the spine relays events to `sink`.
 ///
-/// `Input` bodies are pre-written before the brain spawns (spine is the sole writer).
+/// `Input` and `SessionUpdate` bodies are pre-written by the spine, the sole
+/// runtime writer. A session update then continues directly to the next source
+/// item; it is not a model turn.
 /// `cascade` is an optional process-lifetime `SignalSlot` for the top-level kill
 /// handle; `run_loop` stores the group per turn and clears it after each turn.
 pub async fn run_loop(
@@ -246,25 +273,16 @@ pub async fn run_loop(
     driver: &mut impl TurnDriver,
     cascade: Option<&CascadeKillHandle>,
 ) -> anyhow::Result<()> {
-    let tx_path = crate::session::live::log_path(gait_dir, session_id);
     while let Some(start) = source.next().await {
-        if let TurnStart::Input(bodies) = start {
-            // Pre-write input events (spine is the sole gait-dir writer).
-            // Ensure session worktree exists before first append (once per turn, not per body).
-            session
-                .repos
-                .traces
-                .create_session_worktree(gait_dir, session_id)?;
-            // create_session_worktree's orphan tree starts empty -- the nested
-            // sessions/<id>/ dir (see crate::session::live) doesn't exist until
-            // the session's first write. Create it before this, the first
-            // real write to tx_path.
-            if let Some(parent) = tx_path.parent() {
-                std::fs::create_dir_all(parent)?;
+        match start {
+            TurnStart::SessionUpdate(bodies) => {
+                record_session_update(&session.repos, gait_dir, session_id, bodies)?;
+                continue;
             }
-            for body in bodies {
-                crate::proto::wire::append(&tx_path, body)?;
+            TurnStart::Input(bodies) => {
+                record_session_update(&session.repos, gait_dir, session_id, bodies)?;
             }
+            TurnStart::Resume => {}
         }
         let launch = driver.brain_launch(session_id);
         // Safety invariant (design §7): the gait-dir holds the agent's own config,
@@ -288,7 +306,6 @@ pub async fn run_loop(
             gait_dir,
             &launch.codebase,
             session_id,
-            &launch.api_key,
             &launch.gait_bin,
             &launch.sandbox_cfg,
             launch.sandbox_on,
@@ -340,14 +357,9 @@ pub async fn run_loop(
     Ok(())
 }
 
-/// Resolve a live profile (provider + tools + MCP) for one session from an
-/// already-loaded `config` + optional agent file + optional model override — the
-/// same resolution the CLI and REPL do. Embedders load config via [`load_config`]
-/// and pass it in (reusing it across turns), instead of touching `Profile`.
-///
-/// `api_key` must already be resolved by the caller (the spine in Phase 3, the
-/// REPL driver before that). Keeping key resolution outside this function ensures
-/// the brain never needs to read `auth.json` directly.
+/// Resolve a live profile for embedders that already hold a typed credential.
+/// Raw API keys are represented only as `ResolvedCredential::ApiKey`; callers
+/// cannot accidentally bypass subscription-aware provider construction.
 #[allow(clippy::too_many_arguments)]
 pub async fn resolve_profile(
     config: &crate::config::GaitConfig,
@@ -357,7 +369,7 @@ pub async fn resolve_profile(
     agent_path: Option<&Path>,
     inference_override: Option<String>,
     repos: &crate::git::Repos,
-    api_key: Option<String>,
+    credential: Option<gait_auth::ResolvedCredential>,
 ) -> anyhow::Result<crate::profile::ResolvedProfile> {
     let profile = crate::profile::Profile::from_config_and_agent(
         config,
@@ -372,7 +384,7 @@ pub async fn resolve_profile(
             session_id.to_string(),
             gait_dir.to_path_buf(),
             repos.clone(),
-            api_key.map(gait_auth::ResolvedCredential::ApiKey),
+            credential,
         )
         .await
 }
@@ -524,11 +536,10 @@ impl<F: FnMut(JsonFrame)> TurnSink for JsonSink<F> {
 #[allow(clippy::too_many_arguments)]
 pub async fn run_one_off_turn(
     codebase: &std::path::Path,
-    api_key: &str,
     exe: &std::path::Path,
     sandbox_cfg: &crate::config::SandboxConfig,
     sandbox_on: bool,
-    inference: &str,
+    inference: crate::proto::gait::log::v1::Inference,
     input_text: String,
     schema: serde_json::Value,
 ) -> anyhow::Result<crate::turn::TurnResult> {
@@ -542,7 +553,8 @@ pub async fn run_one_off_turn(
 
     let profile_inputs = crate::turn::spine::ProfileInputs {
         agent_name: None,
-        inference_override: Some(inference.to_string()),
+        inference_override: None,
+        resolved_inference: Some(inference),
         explicit_inference_override: true,
         allow: vec![],
         deny: vec![],
@@ -555,7 +567,6 @@ pub async fn run_one_off_turn(
         scratch.path(),
         codebase,
         session_id,
-        api_key,
         exe,
         sandbox_cfg,
         sandbox_on,

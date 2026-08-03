@@ -80,7 +80,6 @@ impl TurnDriver for PromptNodeDriver {
             .unwrap_or_else(|| std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gait")));
         let mut bl = BrainLaunch::new(
             self.codebase.clone(),
-            String::new(),
             gait_bin,
             self.sandbox_cfg.clone(),
             self.sandbox_on,
@@ -188,12 +187,16 @@ impl TurnSink for CapturingSink {
 
 /// Single-turn source: yields exactly one `Input([user_turn, context_status])` then `None`.
 pub struct OneTurnSource {
+    pub session_updates: Option<Vec<gait_core::proto::gait::log::v1::event::Body>>,
     pub bodies: Option<Vec<gait_core::proto::gait::log::v1::event::Body>>,
 }
 
 #[async_trait::async_trait(?Send)]
 impl TurnSource for OneTurnSource {
     async fn next(&mut self) -> Option<TurnStart> {
+        if let Some(updates) = self.session_updates.take().filter(|v| !v.is_empty()) {
+            return Some(TurnStart::SessionUpdate(updates));
+        }
         self.bodies.take().map(TurnStart::Input)
     }
 }
@@ -314,6 +317,7 @@ pub async fn exec_prompt_node(
     // instead of building its own driver directly. Every real workflow node
     // has `ctx.profile == None` and is unaffected.
     let ov = ctx.profile;
+    let session_updates = ov.map(|p| p.session_updates.clone()).unwrap_or_default();
     let inference = ov.and_then(|p| p.inference.clone()).unwrap_or(inference);
     let explicit_inference_override = ov.map(|p| p.explicit_inference_override).unwrap_or(false);
     let allow = ov
@@ -354,6 +358,7 @@ pub async fn exec_prompt_node(
         let repos = gait_core::git::Repos::production();
         let user_bodies = embed::user_turn_events(&repos, &codebase, task);
         let source = NodeSource::Literal(OneTurnSource {
+            session_updates: Some(session_updates),
             bodies: Some(user_bodies),
         });
 

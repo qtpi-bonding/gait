@@ -67,6 +67,7 @@ pub struct RunArgs {
 /// Single-turn source: yields exactly one `Input([user_bodies])` then `None`.
 /// For `--task`-less runs (resume), yields one `Resume`.
 struct CliSource {
+    session_updates: Option<Vec<gait_core::proto::gait::log::v1::event::Body>>,
     bodies: Option<Vec<gait_core::proto::gait::log::v1::event::Body>>,
     done: bool,
 }
@@ -74,6 +75,9 @@ struct CliSource {
 #[async_trait::async_trait(?Send)]
 impl TurnSource for CliSource {
     async fn next(&mut self) -> Option<TurnStart> {
+        if let Some(updates) = self.session_updates.take().filter(|v| !v.is_empty()) {
+            return Some(TurnStart::SessionUpdate(updates));
+        }
         if self.done {
             return None;
         }
@@ -176,12 +180,12 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
             std::process::exit(1);
         }
     }
-    if let Some(name) = &args.inference {
-        if let Err(e) = gait_ops::inference::select(&gait_dir, &session_id, name) {
+    let inference_selection = args.inference.as_deref().map(|name| {
+        gait_ops::inference::resolve_selection(&gait_dir, name).unwrap_or_else(|e| {
             eprintln!("[gait] --inference {name}: {e}");
             std::process::exit(1);
-        }
-    }
+        })
+    });
 
     // Build profile to extract provider name for API key resolution.
     let agent_path: Option<PathBuf> = if let Some(ref name) = args.agent_name {
@@ -292,6 +296,9 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
     // has no interactive loop of its own — a single turn, then exit).
     let input: Option<Box<dyn TurnSource>> = if prompt.is_none() {
         Some(Box::new(CliSource {
+            session_updates: inference_selection
+                .as_ref()
+                .map(|selection| vec![selection.event_body.clone()]),
             bodies: None,
             done: false,
         }))
@@ -307,6 +314,14 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
     let profile_override = gait_workflow::ProfileOverride {
         inference: args.inference.clone(),
         explicit_inference_override: args.inference.is_some(),
+        session_updates: if prompt.is_some() {
+            inference_selection
+                .as_ref()
+                .map(|selection| vec![selection.event_body.clone()])
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        },
         allow: args.allow.clone(),
         deny: args.deny.clone(),
         agent: args.agent_name.clone(),
@@ -403,6 +418,27 @@ mod tests {
     #[test]
     fn parse_no_task_is_none() {
         assert!(RunArgs::parse_from(&["--auto".to_string()]).task.is_none());
+    }
+
+    #[tokio::test]
+    async fn cli_source_yields_session_update_before_resume() {
+        let body =
+            gait_core::proto::events::inference(gait_core::proto::gait::log::v1::Inference {
+                name: "codex".into(),
+                model: "openai-codex/gpt-test".into(),
+                llm_params: None,
+            });
+        let mut source = CliSource {
+            session_updates: Some(vec![body]),
+            bodies: None,
+            done: false,
+        };
+        assert!(matches!(
+            source.next().await,
+            Some(TurnStart::SessionUpdate(_))
+        ));
+        assert!(matches!(source.next().await, Some(TurnStart::Resume)));
+        assert!(source.next().await.is_none());
     }
     #[test]
     fn sandbox_locked_parsed() {

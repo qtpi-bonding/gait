@@ -191,7 +191,6 @@ impl TurnDriver for MockDriver {
     fn brain_launch(&self, _session_id: &str) -> BrainLaunch {
         BrainLaunch::new(
             self.codebase.clone(),
-            String::new(),
             self.gait_bin.clone(),
             Default::default(),
             /*sandbox_on*/ false,

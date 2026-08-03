@@ -20,6 +20,10 @@ pub struct ProfileOverride {
     /// Whether `inference` is an explicit caller override rather than a resolved
     /// workflow/config model passed across the driver boundary.
     pub explicit_inference_override: bool,
+    /// Durable session-control events queued before the degenerate CLI node's
+    /// first model turn. Core persists these through `SessionUpdate`; the
+    /// workflow/frontend never appends them directly.
+    pub session_updates: Vec<gait_core::proto::gait::log::v1::event::Body>,
     pub allow: Vec<String>,
     pub deny: Vec<String>,
     pub agent: Option<String>,

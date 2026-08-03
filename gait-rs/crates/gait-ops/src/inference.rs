@@ -1,5 +1,6 @@
-//! Named inference operations shared by CLI and REPL.  These functions own
-//! session-log mutation and deliberately perform no terminal I/O.
+//! Named inference operations shared by CLI and REPL. Selection resolution is
+//! pure: frontends submit the returned event through core's session-update
+//! port. These functions deliberately perform no terminal I/O.
 use crate::OpError;
 use std::path::Path;
 
@@ -7,6 +8,16 @@ use std::path::Path;
 pub struct InferenceInfo {
     pub name: String,
     pub model: String,
+}
+
+/// A fully resolved, immutable session selection. Frontends submit
+/// `event_body` to core's session-update port; this operation performs no
+/// session initialization or log writes.
+#[derive(Debug, Clone)]
+pub struct ResolvedInferenceSelection {
+    pub info: InferenceInfo,
+    pub inference: gait_proto::gait::log::v1::Inference,
+    pub event_body: gait_proto::gait::log::v1::event::Body,
 }
 
 pub fn list(gait_dir: &Path) -> Vec<String> {
@@ -21,21 +32,28 @@ pub fn show(gait_dir: &Path, name: &str) -> Result<InferenceInfo, OpError> {
     })
 }
 
-pub fn select(gait_dir: &Path, session_id: &str, name: &str) -> Result<InferenceInfo, OpError> {
-    let i = gait_state::inferences::load_inference(gait_dir, name)?;
-    append(gait_dir, session_id, i.clone())?;
-    Ok(InferenceInfo {
-        name: i.name,
-        model: i.model,
+pub fn resolve_selection(
+    gait_dir: &Path,
+    name: &str,
+) -> Result<ResolvedInferenceSelection, OpError> {
+    let inference = if name == "default" {
+        gait_state::inferences::clear_inference()
+    } else {
+        gait_state::inferences::load_inference(gait_dir, name)?
+    };
+    let info = InferenceInfo {
+        name: if inference.name.is_empty() {
+            "default".into()
+        } else {
+            inference.name.clone()
+        },
+        model: inference.model.clone(),
+    };
+    Ok(ResolvedInferenceSelection {
+        info,
+        event_body: gait_state::proto::events::inference(inference.clone()),
+        inference,
     })
-}
-
-pub fn clear(gait_dir: &Path, session_id: &str) -> Result<(), OpError> {
-    append(
-        gait_dir,
-        session_id,
-        gait_state::inferences::clear_inference(),
-    )
 }
 
 /// Author a new named inference at `<gait_dir>/inferences/<name>/INFERENCE.yaml`
@@ -52,18 +70,52 @@ pub fn add(gait_dir: &Path, name: &str, model: &str) -> Result<InferenceInfo, Op
     })
 }
 
-fn append(
-    gait_dir: &Path,
-    session_id: &str,
-    inference: gait_state::gait::log::v1::Inference,
-) -> Result<(), OpError> {
-    let dir = gait_state::session::live::worktree_dir(gait_dir, session_id);
-    std::fs::create_dir_all(&dir).map_err(anyhow::Error::from)?;
-    let _lock = gait_state::session::SessionLock::acquire(&dir)?;
-    let path = gait_state::session::live::log_path(gait_dir, session_id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(anyhow::Error::from)?;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gait_proto::gait::log::v1::{event, payload};
+
+    #[test]
+    fn resolve_selection_returns_snapshot_without_session_write() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("inferences/codex")).unwrap();
+        std::fs::write(
+            dir.path().join("inferences/codex/INFERENCE.yaml"),
+            "model: openai-codex/gpt-test\nllm_params:\n  openai:\n    reasoning_effort: high\n",
+        )
+        .unwrap();
+
+        let selection = resolve_selection(dir.path(), "codex").unwrap();
+        assert_eq!(selection.info.name, "codex");
+        assert_eq!(selection.info.model, "openai-codex/gpt-test");
+        let event::Body::Payload(payload) = selection.event_body else {
+            panic!("expected payload")
+        };
+        let Some(payload::Kind::Inference(inference)) = payload.kind else {
+            panic!("expected inference")
+        };
+        assert!(
+            inference.llm_params.is_some(),
+            "snapshot retains llm_params"
+        );
+        assert!(
+            !dir.path().join(".active").exists(),
+            "resolution must not initialize or write a session"
+        );
     }
-    gait_state::wire::append(&path, gait_state::proto::events::inference(inference))?;
-    Ok(())
+
+    #[test]
+    fn default_resolves_to_clear_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let selection = resolve_selection(dir.path(), "default").unwrap();
+        assert_eq!(selection.info.name, "default");
+        let event::Body::Payload(payload) = selection.event_body else {
+            panic!("expected payload")
+        };
+        let Some(payload::Kind::Inference(inference)) = payload.kind else {
+            panic!("expected inference")
+        };
+        assert!(inference.name.is_empty());
+        assert!(inference.model.is_empty());
+    }
 }

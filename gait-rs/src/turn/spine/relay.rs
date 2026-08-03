@@ -97,7 +97,6 @@ pub async fn relay_brain_turn(
     gait_dir: &Path,
     codebase: &Path,
     session_id: &str,
-    _api_key: &str,
     exe: &Path,
     sandbox_cfg: &SandboxConfig,
     sandbox_on: bool,

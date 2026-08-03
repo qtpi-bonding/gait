@@ -1,12 +1,14 @@
 use crate::proto::gait::log::v1::event;
 
-/// What begins the next turn. Either a new input event to append to the log
-/// before folding (a `user_turn` from `--task`/a REPL line, or a reply body), or
-/// a bare `Resume` — run a turn that folds the existing log with no new input
-/// (e.g. `gait run` with no `--task`, or a harness re-invocation). `None` from
-/// [`TurnSource::next`] means no more turns.
+/// What the session source wants core to do next.
+///
+/// `Input` appends bodies and then runs a model turn. `SessionUpdate` appends
+/// durable session-control bodies without launching a model turn. `Resume`
+/// runs a turn that folds the existing log with no new input. `None` from
+/// [`TurnSource::next`] means no more work.
 pub enum TurnStart {
     Input(Vec<event::Body>),
+    SessionUpdate(Vec<event::Body>),
     Resume,
 }
 

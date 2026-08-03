@@ -69,7 +69,20 @@ pub fn cmd_inference(args: InferenceArgs) {
                 eprintln!("[gait] --session is required");
                 std::process::exit(2)
             });
-            if let Err(e) = gait_ops::inference::select(&args.gait_dir, session, name) {
+            let result = (|| -> anyhow::Result<()> {
+                let worktree = gait_core::session::live::worktree_dir(&args.gait_dir, session);
+                if !worktree.exists() {
+                    anyhow::bail!("session '{session}' is not active");
+                }
+                let selection = gait_ops::inference::resolve_selection(&args.gait_dir, name)?;
+                gait_core::embed::record_session_update(
+                    &gait_core::git::Repos::production(),
+                    &args.gait_dir,
+                    session,
+                    vec![selection.event_body],
+                )
+            })();
+            if let Err(e) = result {
                 eprintln!("[gait] {e}");
                 std::process::exit(1);
             }
@@ -79,7 +92,20 @@ pub fn cmd_inference(args: InferenceArgs) {
                 eprintln!("[gait] --session is required");
                 std::process::exit(2)
             });
-            if let Err(e) = gait_ops::inference::clear(&args.gait_dir, session) {
+            let result = (|| -> anyhow::Result<()> {
+                let worktree = gait_core::session::live::worktree_dir(&args.gait_dir, session);
+                if !worktree.exists() {
+                    anyhow::bail!("session '{session}' is not active");
+                }
+                let selection = gait_ops::inference::resolve_selection(&args.gait_dir, "default")?;
+                gait_core::embed::record_session_update(
+                    &gait_core::git::Repos::production(),
+                    &args.gait_dir,
+                    session,
+                    vec![selection.event_body],
+                )
+            })();
+            if let Err(e) = result {
                 eprintln!("[gait] {e}");
                 std::process::exit(1);
             }

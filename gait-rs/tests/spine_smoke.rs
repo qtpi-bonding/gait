@@ -2,6 +2,120 @@ mod common;
 use common::*;
 use gait_proto::gait::sandbox::v1::{signal, Diagnostic, Signal};
 
+struct UpdateOnlySource {
+    body: Option<gait_core::proto::gait::log::v1::event::Body>,
+}
+
+#[async_trait::async_trait(?Send)]
+impl gait_core::embed::TurnSource for UpdateOnlySource {
+    async fn next(&mut self) -> Option<gait_core::embed::TurnStart> {
+        self.body
+            .take()
+            .map(|body| gait_core::embed::TurnStart::SessionUpdate(vec![body]))
+    }
+}
+
+#[tokio::test]
+async fn session_update_persists_without_launching_a_brain_turn() {
+    use std::sync::Arc;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let calls = Calls::default();
+    let repos = mock_repos(&calls);
+    let session_id = "supdate1";
+    let session = Arc::new(gait_core::Session {
+        id: session_id.into(),
+        gait_dir: tmp.path().to_path_buf(),
+        codebase_path: tmp.path().to_path_buf(),
+        assigned_by: None,
+        repos,
+    });
+    let body = gait_core::proto::events::inference(gait_core::proto::gait::log::v1::Inference {
+        name: "deep".into(),
+        model: "openai/gpt-test".into(),
+        llm_params: None,
+    });
+    let source = UpdateOnlySource { body: Some(body) };
+    let mut sink = gait_core::embed::RecordingSink::default();
+    let mut driver = MockDriver {
+        codebase: tmp.path().to_path_buf(),
+        gait_bin: std::path::PathBuf::from("must-not-launch"),
+    };
+
+    gait_core::embed::run_loop(
+        source,
+        &mut sink,
+        session,
+        tmp.path(),
+        session_id,
+        &mut driver,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let events = gait_core::session::log::read_events(&gait_core::session::live::log_path(
+        tmp.path(),
+        session_id,
+    ))
+    .unwrap();
+    assert!(matches!(
+        events[0].body.as_ref().and_then(|body| match body {
+            gait_core::proto::gait::log::v1::event::Body::Payload(payload) => {
+                payload.kind.as_ref()
+            }
+            _ => None,
+        }),
+        Some(gait_core::proto::gait::log::v1::payload::Kind::Inference(_))
+    ));
+    let calls = calls.snapshot();
+    assert_eq!(calls, vec![format!("create_session_worktree:{session_id}")]);
+    assert!(
+        sink.results.is_empty(),
+        "session updates are not model turns"
+    );
+}
+
+#[test]
+fn fresh_session_update_creates_a_real_idempotent_git_worktree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(tmp.path()).unwrap();
+    let mut config = repo.config().unwrap();
+    config.set_str("user.name", "test").unwrap();
+    config.set_str("user.email", "test@example.com").unwrap();
+    drop(config);
+    let signature = git2::Signature::now("test", "test@example.com").unwrap();
+    let tree_id = repo.index().unwrap().write_tree().unwrap();
+    let tree = repo.find_tree(tree_id).unwrap();
+    repo.commit(Some("HEAD"), &signature, &signature, "init", &tree, &[])
+        .unwrap();
+    if let Ok(mut master) = repo.find_branch("master", git2::BranchType::Local) {
+        master.rename("main", false).unwrap();
+        repo.set_head("refs/heads/main").unwrap();
+    }
+    drop(tree);
+    drop(repo);
+
+    let session_id = "sfreshup";
+    let repos = gait_core::git::Repos::production();
+    let body = gait_core::proto::events::inference(gait_core::proto::gait::log::v1::Inference {
+        name: "codex".into(),
+        model: "openai-codex/gpt-test".into(),
+        llm_params: None,
+    });
+    gait_core::embed::record_session_update(&repos, tmp.path(), session_id, vec![body]).unwrap();
+
+    let worktree = gait_core::session::live::worktree_dir(tmp.path(), session_id);
+    assert!(
+        worktree.join(".git").is_file(),
+        "must be a linked Git worktree"
+    );
+    repos
+        .traces
+        .create_session_worktree(tmp.path(), session_id)
+        .expect("the normal turn's repeated ensure must be idempotent");
+}
+
 #[tokio::test]
 async fn mock_terminated_reaches_sink_and_records_persistence() {
     let tmp = tempfile::tempdir().unwrap(); // bare temp dir — NO git init

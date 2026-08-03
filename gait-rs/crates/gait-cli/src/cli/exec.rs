@@ -6,9 +6,9 @@ use std::path::Path;
 #[derive(Parser, Debug)]
 #[command(no_binary_name = true)]
 pub struct ExecArgs {
-    /// Model override (provider/id)
-    #[arg(short = 'm', long)]
-    pub model: Option<String>,
+    /// Named inference override.
+    #[arg(long)]
+    pub inference: Option<String>,
     /// The prompt (each positional is joined with spaces)
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub prompt: Vec<String>,
@@ -57,6 +57,25 @@ pub fn decide_key(key: char) -> Option<RunDecision> {
     }
 }
 
+fn resolve_one_off_inference(
+    gait_dir: &Path,
+    inference_override: Option<&str>,
+) -> anyhow::Result<gait_core::proto::gait::log::v1::Inference> {
+    let config =
+        gait_core::config::load_config_with(gait_dir, gait_core::config::ConfigLoadPolicy::Strict)?;
+    let name = inference_override
+        .map(str::to_owned)
+        .or(config.inference)
+        .ok_or_else(|| {
+            anyhow::anyhow!("no inference set; pass --inference <name> or set config.inference")
+        })?;
+    let selection = gait_ops::inference::resolve_selection(gait_dir, &name)?;
+    if selection.inference.model.is_empty() {
+        anyhow::bail!("inference '{name}' does not select a model");
+    }
+    Ok(selection.inference)
+}
+
 pub fn render_and_maybe_run(one_off: OneOff, is_tty: bool) -> anyhow::Result<i32> {
     match one_off {
         OneOff::Output(text) => {
@@ -98,46 +117,21 @@ fn read_single_key() -> anyhow::Result<char> {
 
 pub async fn run_one_off(
     prompt: &str,
-    model_override: Option<String>,
+    inference_override: Option<String>,
+    gait_dir: &Path,
     codebase: &Path,
 ) -> anyhow::Result<OneOff> {
-    // model: override > config.model (pwd-fallback load) ; never panic, never a default.
-    let model = match model_override {
-        Some(m) => m,
-        None => {
-            // Entry point: surface gait.jsonc parse errors instead of silently
-            // defaulting. `gait -e <prompt>` has no other config-loaded path;
-            // silently defaulting here would let a broken `gait.jsonc` route
-            // through a model the user never picked.
-            match gait_core::config::load_config_with(
-                codebase,
-                gait_core::config::ConfigLoadPolicy::Strict,
-            ) {
-                Ok(c) => c.inference.ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "no inference set; pass --inference <name> or set config.inference"
-                    )
-                })?,
-                Err(e) => return Err(e),
-            }
-        }
-    };
-    let model = gait_core::inferences::load_inference(codebase, &model)?.model;
-    let provider = model
-        .split_once('/')
-        .map(|(p, _)| p)
-        .ok_or_else(|| anyhow::anyhow!("model must be 'provider/model-id'"))?;
-    let api_key = gait_core::auth::resolve_api_key(provider).ok_or_else(|| {
-        anyhow::anyhow!("no API key for `{provider}`; run `gait auth add {provider}`")
-    })?;
+    // Resolve the same immutable named inference as persistent CLI/REPL turns.
+    // The snapshot crosses the ephemeral boundary in memory; no selection
+    // event or session is created.
+    let inference = resolve_one_off_inference(gait_dir, inference_override.as_deref())?;
     let exe = std::env::current_exe()?;
     let res = gait_core::embed::run_one_off_turn(
         codebase,
-        &api_key,
         &exe,
         &Default::default(),
         /* sandbox_on */ true,
-        &model,
+        inference,
         prompt.to_string(),
         one_off_schema(),
     )
@@ -151,8 +145,8 @@ pub async fn run_one_off(
     parse_one_off(&result)
 }
 
-pub async fn cmd_exec(args: ExecArgs) {
-    let model = args.model;
+pub async fn cmd_exec(args: ExecArgs, gait_dir: &Path, codebase: &Path) {
+    let inference = args.inference;
     let mut prompt = args.prompt.join(" ");
     if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         use std::io::Read;
@@ -165,8 +159,7 @@ pub async fn cmd_exec(args: ExecArgs) {
             prompt.push_str(piped.trim_end());
         }
     }
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let code = match run_one_off(&prompt, model, &cwd).await {
+    let code = match run_one_off(&prompt, inference, gait_dir, codebase).await {
         Ok(one) => {
             let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
             render_and_maybe_run(one, is_tty).unwrap_or(1)
@@ -216,5 +209,27 @@ mod tests {
         assert_eq!(decide_key('\r'), None);
         assert_eq!(decide_key('q'), Some(RunDecision::Quit));
         assert_eq!(decide_key('x'), Some(RunDecision::Quit)); // any other key quits
+    }
+
+    #[test]
+    fn one_off_resolves_named_snapshot_from_gait_workspace_with_params() {
+        let gait_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(gait_dir.path().join("inferences/codex")).unwrap();
+        std::fs::write(
+            gait_dir.path().join("inferences/codex/INFERENCE.yaml"),
+            "model: openai-codex/gpt-test\nllm_params:\n  openai:\n    reasoning_effort: high\n",
+        )
+        .unwrap();
+        std::fs::write(
+            gait_dir.path().join("gait.jsonc"),
+            r#"{"inference":"missing-default"}"#,
+        )
+        .unwrap();
+
+        let inference = resolve_one_off_inference(gait_dir.path(), Some("codex")).unwrap();
+        assert_eq!(inference.name, "codex");
+        assert_eq!(inference.model, "openai-codex/gpt-test");
+        assert!(inference.llm_params.is_some());
+        assert!(!gait_dir.path().join(".active").exists());
     }
 }

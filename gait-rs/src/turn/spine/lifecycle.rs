@@ -14,6 +14,10 @@ use std::sync::Arc;
 pub struct ProfileInputs {
     pub agent_name: Option<String>,
     pub inference_override: Option<String>,
+    /// Already validated immutable snapshot, used by ephemeral consumers that
+    /// resolve against a real workspace but keep session storage in scratch.
+    /// Mutually exclusive with `inference_override`.
+    pub resolved_inference: Option<crate::proto::gait::log::v1::Inference>,
     /// True only when the named inference came from an explicit caller choice.
     pub explicit_inference_override: bool,
     pub allow: Vec<String>,
@@ -93,13 +97,26 @@ pub fn build_turn_profile(
             default.exists().then_some(default)
         }
     };
-    let mut profile = crate::profile::Profile::from_config_and_agent(
-        &cfg,
-        gait_dir,
-        Some(codebase),
-        agent_path.as_deref(),
-        inputs.inference_override.clone(),
+    assert!(
+        inputs.resolved_inference.is_none() || inputs.inference_override.is_none(),
+        "resolved inference and named inference override are mutually exclusive"
     );
+    let mut profile = match &inputs.resolved_inference {
+        Some(inference) => crate::profile::Profile::from_resolved_inference(
+            &cfg,
+            gait_dir,
+            Some(codebase),
+            agent_path.as_deref(),
+            inference,
+        ),
+        None => crate::profile::Profile::from_config_and_agent(
+            &cfg,
+            gait_dir,
+            Some(codebase),
+            agent_path.as_deref(),
+            inputs.inference_override.clone(),
+        ),
+    };
     profile.hands_free = inputs.hands_free;
     profile
 }
@@ -473,6 +490,7 @@ mod tests {
         let inputs = ProfileInputs {
             agent_name: None,
             inference_override: None,
+            resolved_inference: None,
             explicit_inference_override: false,
             allow: vec![],
             deny: vec![],
@@ -497,6 +515,7 @@ mod tests {
         let inputs = ProfileInputs {
             agent_name: None,
             inference_override: None,
+            resolved_inference: None,
             explicit_inference_override: false,
             allow: vec!["read".into()],
             deny: vec![],
@@ -516,6 +535,7 @@ mod tests {
         let inputs = ProfileInputs {
             agent_name: None,
             inference_override: None,
+            resolved_inference: None,
             explicit_inference_override: false,
             allow: vec![],
             deny: vec![],
