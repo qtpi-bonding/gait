@@ -11,13 +11,9 @@ pub enum ReplViewItem {
         num: usize,
         content: String,
     },
-    /// First line of a structured_done message — rendered with ✓│ gutter.
-    DoneStart {
-        text: String,
-    },
-    /// Continuation lines for DoneStart (multi-line done messages).
-    DoneCont {
-        text: String,
+    /// A structured_done message — rendered as Markdown with a ✓│ gutter.
+    DoneMessage {
+        content: String,
     },
     ToolResult {
         ok: bool,
@@ -80,22 +76,7 @@ pub(crate) fn clean_repl_item(item: crate::ui::state::ReplItem) -> Vec<ReplViewI
             elapsed_ms,
             output_tokens,
         }],
-        ReplItem::DoneMessage { content } => {
-            let mut lines = content.lines();
-            if let Some(first) = lines.next() {
-                let mut out = vec![ReplViewItem::DoneStart {
-                    text: first.to_string(),
-                }];
-                for line in lines {
-                    out.push(ReplViewItem::DoneCont {
-                        text: line.to_string(),
-                    });
-                }
-                out
-            } else {
-                vec![]
-            }
-        }
+        ReplItem::DoneMessage { content } => vec![ReplViewItem::DoneMessage { content }],
         ReplItem::StructuredResult { json } => vec![ReplViewItem::StructuredBox { json }],
     }
 }
@@ -221,6 +202,17 @@ mod tests {
         let item = ReplItem::StructuredResult { json: "{}".into() };
         let out = clean_repl_item(item);
         assert!(matches!(out[0], ReplViewItem::StructuredBox { ref json } if json == "{}"));
+    }
+
+    #[test]
+    fn clean_repl_item_done_message_preserves_markdown_as_one_item() {
+        let content = "## Done\n\n- **first**\n- second";
+        let out = clean_repl_item(ReplItem::DoneMessage {
+            content: content.into(),
+        });
+        assert!(
+            matches!(&out[..], [ReplViewItem::DoneMessage { content: actual }] if actual == content)
+        );
     }
 
     #[test]

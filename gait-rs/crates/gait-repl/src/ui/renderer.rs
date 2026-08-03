@@ -2,8 +2,6 @@
 //! transforms items via the pure view layer in ui/view.rs, and writes the result
 //! to stderr. No business logic here.
 
-use unicode_width::UnicodeWidthStr;
-
 use crate::theme::{Theme, RESET};
 use crate::ui::state::ReplState;
 use crate::ui::view::{clean_repl_item, ReplViewItem};
@@ -13,23 +11,6 @@ use termimad::MadSkin;
 
 /// Display width of the `NNN│ ` / `  ✓│ ` gutter all continuation lines align under.
 const GUTTER: usize = 5;
-
-/// Print `text` wrapped to the terminal, with `first_prefix` on the first
-/// physical line and `hang_prefix` (the GUTTER-wide indent) on every wrapped
-/// continuation line. All lines end with `\r\n`.
-fn emit_wrapped(first_prefix: &str, hang_prefix: &str, text: &str) {
-    let term_w = crossterm::terminal::size()
-        .map(|(w, _)| w as usize)
-        .unwrap_or(80);
-    let segs = word_wrap(text, term_w.saturating_sub(GUTTER));
-    let mut it = segs.into_iter();
-    if let Some(first) = it.next() {
-        eprint!("{first_prefix}{first}\r\n");
-    }
-    for seg in it {
-        eprint!("{hang_prefix}{seg}\r\n");
-    }
-}
 
 /// Extract the most meaningful argument from a tool call to show beside the tool name.
 pub(crate) fn tool_target(name: &str, args: &serde_json::Value) -> Option<String> {
@@ -207,12 +188,8 @@ impl ReplRenderer {
             ReplViewItem::Block { num, content } => {
                 self.paint_block(*num, content);
             }
-            ReplViewItem::DoneStart { text } => {
-                let first = format!("{}  \u{2713}\u{2502}{} ", self.theme.success.fg(), RESET);
-                emit_wrapped(&first, "     ", text);
-            }
-            ReplViewItem::DoneCont { text } => {
-                emit_wrapped("     ", "     ", text);
+            ReplViewItem::DoneMessage { content } => {
+                self.paint_done_message(content);
             }
             ReplViewItem::ToolResult {
                 ok,
@@ -278,39 +255,7 @@ impl ReplRenderer {
             .map(|(w, _)| w as usize)
             .unwrap_or(80);
         let content_w = term_w.saturating_sub(GUTTER);
-
-        let mut rendered_lines: Vec<String> = Vec::new();
-        for chunk in split_markdown(content) {
-            match chunk {
-                MdChunk::Text(text) => {
-                    let text = self.skin.text(&text, Some(content_w));
-                    let rendered = format!("{text}");
-                    rendered_lines.extend(rendered.lines().map(|s| s.to_string()));
-                }
-                MdChunk::Code { lang, code } => {
-                    // Code blocks get a 5-char line-number gutter ("  NN│ ") so
-                    // content width is reduced by 5.  Long lines are truncated by
-                    // syntect before highlighting.
-                    let code_w = content_w.saturating_sub(5);
-                    if let Some(hl) =
-                        crate::syntax::highlight_block(&code, &lang, &self.theme, Some(code_w))
-                    {
-                        for (i, line) in hl.lines().enumerate() {
-                            let n = format!("{:>3}", i + 1);
-                            let gutter =
-                                format!("{}{}\u{2502}{} ", self.theme.muted.fg(), n, RESET);
-                            rendered_lines.push(format!("{}{}", gutter, line));
-                        }
-                    } else {
-                        // fallback to termimad's plain code_block styling
-                        let block = format!("```{lang}\n{code}\n```");
-                        let text = self.skin.text(&block, Some(content_w));
-                        let rendered = format!("{text}");
-                        rendered_lines.extend(rendered.lines().map(|s| s.to_string()));
-                    }
-                }
-            }
-        }
+        let rendered_lines = self.render_markdown_lines(content, content_w);
 
         let mut is_first = true;
         for line in &rendered_lines {
@@ -331,6 +276,70 @@ impl ReplRenderer {
             // empty render — just the gutter
             eprint!("{}{:>3}\u{2502}{}\r\n", self.theme.muted.fg(), num, RESET);
         }
+    }
+
+    /// Render a structured completion message through the same Markdown path as
+    /// ordinary assistant prose, retaining the distinct completion gutter.
+    fn paint_done_message(&self, content: &str) {
+        let term_w = crossterm::terminal::size()
+            .map(|(w, _)| w as usize)
+            .unwrap_or(80);
+        let content_w = term_w.saturating_sub(GUTTER);
+        let rendered_lines = self.render_markdown_lines(content, content_w);
+
+        let mut lines = rendered_lines.iter();
+        if let Some(first) = lines.next() {
+            eprint!(
+                "{}  \u{2713}\u{2502}{} {}\r\n",
+                self.theme.success.fg(),
+                RESET,
+                first
+            );
+        } else {
+            eprint!("{}  \u{2713}\u{2502}{}\r\n", self.theme.success.fg(), RESET);
+        }
+        for line in lines {
+            eprint!("     {}\r\n", line);
+        }
+    }
+
+    /// Convert Markdown to terminal-ready lines without painting them. Both
+    /// ordinary assistant blocks and structured completion messages use this
+    /// path so headings, lists, emphasis, and fenced code behave identically.
+    fn render_markdown_lines(&self, content: &str, content_w: usize) -> Vec<String> {
+        let mut rendered_lines = Vec::new();
+        for chunk in split_markdown(content) {
+            match chunk {
+                MdChunk::Text(text) => {
+                    let text = self.skin.text(&text, Some(content_w));
+                    let rendered = format!("{text}");
+                    rendered_lines.extend(rendered.lines().map(str::to_string));
+                }
+                MdChunk::Code { lang, code } => {
+                    // Code blocks get a 5-char line-number gutter ("  NN│ ") so
+                    // content width is reduced by 5. Long lines are truncated by
+                    // syntect before highlighting.
+                    let code_w = content_w.saturating_sub(5);
+                    if let Some(hl) =
+                        crate::syntax::highlight_block(&code, &lang, &self.theme, Some(code_w))
+                    {
+                        for (i, line) in hl.lines().enumerate() {
+                            let n = format!("{:>3}", i + 1);
+                            let gutter =
+                                format!("{}{}\u{2502}{} ", self.theme.muted.fg(), n, RESET);
+                            rendered_lines.push(format!("{gutter}{line}"));
+                        }
+                    } else {
+                        // Fallback to termimad's plain code-block styling.
+                        let block = format!("```{lang}\n{code}\n```");
+                        let text = self.skin.text(&block, Some(content_w));
+                        let rendered = format!("{text}");
+                        rendered_lines.extend(rendered.lines().map(str::to_string));
+                    }
+                }
+            }
+        }
+        rendered_lines
     }
 
     fn paint_structured_result(&self, json: &str) {
@@ -354,63 +363,6 @@ impl ReplRenderer {
             bot_bar,
             RESET
         );
-    }
-}
-
-/// Split `text` into segments of at most `max_width` display columns, breaking
-/// on whitespace. Returns a single-element vec if no wrapping is needed.
-fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
-    if max_width == 0 || text.is_empty() || text.width() <= max_width {
-        return vec![text.to_string()];
-    }
-    let mut out = Vec::new();
-    let mut line = String::new();
-    let mut line_w = 0usize;
-    for word in text.split_whitespace() {
-        let ww = word.width();
-        if line_w == 0 {
-            line.push_str(word);
-            line_w = ww;
-        } else if line_w + 1 + ww <= max_width {
-            line.push(' ');
-            line.push_str(word);
-            line_w += 1 + ww;
-        } else {
-            out.push(std::mem::take(&mut line));
-            line.push_str(word);
-            line_w = ww;
-        }
-    }
-    if !line.is_empty() || out.is_empty() {
-        out.push(line);
-    }
-    out
-}
-
-#[cfg(test)]
-mod word_wrap_tests {
-    use super::*;
-
-    #[test]
-    fn word_wrap_uses_display_width_not_char_count() {
-        // "ｗ" (fullwidth w, U+FF57) is 2 display columns. Three of them = 6 cols.
-        // With max_width 4, display-width math must wrap (each word is 2 cols,
-        // two together = 4, third pushes to 7 > 4 -> split); char-count math
-        // would fit 4 single-width chars so it might not split correctly.
-        let segs = word_wrap("ｗ ｗ ｗ", 4);
-        assert!(
-            segs.len() >= 2,
-            "expected wrapping by display width, got {segs:?}"
-        );
-    }
-
-    #[test]
-    fn emit_wrapped_hangs_under_gutter() {
-        // Long single word-stream wraps; we can only assert the wrap count here
-        // since emit_wrapped prints. Verify via word_wrap the segment count.
-        let long = "alpha beta gamma delta epsilon zeta eta theta";
-        let segs = word_wrap(long, 10);
-        assert!(segs.len() >= 4);
     }
 }
 
@@ -476,6 +428,25 @@ mod tests {
         });
         r.paint(&mut state);
         assert!(state.pending.is_empty());
+    }
+
+    #[test]
+    fn structured_done_message_uses_markdown_renderer() {
+        let r = ReplRenderer::new(Theme::dark());
+        let rendered = r
+            .render_markdown_lines("## Result\n\n- **formatted**", 72)
+            .join("\n");
+
+        assert!(rendered.contains("Result"));
+        assert!(rendered.contains("formatted"));
+        assert!(
+            !rendered.contains("##"),
+            "heading markup leaked: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains("**"),
+            "emphasis markup leaked: {rendered:?}"
+        );
     }
 
     #[test]
