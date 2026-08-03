@@ -76,15 +76,86 @@ fn to_ccolor(r: u8, g: u8, b: u8) -> CColor {
 }
 
 fn themed_skin(theme: &Theme) -> MadSkin {
-    let accent = to_ccolor(theme.accent.0, theme.accent.1, theme.accent.2);
+    let _accent = to_ccolor(theme.accent.0, theme.accent.1, theme.accent.2);
     let muted = to_ccolor(theme.muted.0, theme.muted.1, theme.muted.2);
+    let md_heading = to_ccolor(theme.md_heading.0, theme.md_heading.1, theme.md_heading.2);
+    let md_code = to_ccolor(theme.md_code.0, theme.md_code.1, theme.md_code.2);
+    let md_strong = to_ccolor(theme.md_strong.0, theme.md_strong.1, theme.md_strong.2);
+    let md_emph = to_ccolor(theme.md_emph.0, theme.md_emph.1, theme.md_emph.2);
+    let _md_link = to_ccolor(theme.md_link.0, theme.md_link.1, theme.md_link.2);
 
     let mut skin = MadSkin::default();
-    skin.inline_code.set_fgbg(accent, CColor::Reset);
-    skin.code_block.set_fgbg(accent, CColor::Reset);
+    skin.inline_code.set_fgbg(md_code, CColor::Reset);
+    skin.code_block
+        .compound_style
+        .set_fgbg(md_code, CColor::Reset);
+    skin.bold.set_fg(md_strong);
+    skin.italic.set_fg(md_emph);
+    skin.set_headers_fg(md_heading);
     skin.quote_mark = termimad::StyledChar::from_fg_char(muted, '▐');
     skin.horizontal_rule = termimad::StyledChar::from_fg_char(muted, '─');
+    // Links have no direct skin slot in termimad; keep default.
     skin
+}
+
+/// A chunk of markdown: plain text or a fenced code block.
+enum MdChunk {
+    Text(String),
+    Code { lang: String, code: String },
+}
+
+/// Split raw markdown into alternating text/code chunks.
+/// Fences are ` ```lang ` … ` ``` ` on their own lines.
+fn split_markdown(src: &str) -> Vec<MdChunk> {
+    let mut out = Vec::new();
+    let mut text_buf = String::new();
+    let mut inside = false;
+    let mut lang = String::new();
+    let mut code_buf = String::new();
+
+    for line in src.lines() {
+        if inside {
+            if line.trim() == "```" {
+                // End of code block
+                if !text_buf.is_empty() {
+                    out.push(MdChunk::Text(std::mem::take(&mut text_buf)));
+                }
+                out.push(MdChunk::Code {
+                    lang: std::mem::take(&mut lang),
+                    code: std::mem::take(&mut code_buf),
+                });
+                inside = false;
+            } else {
+                if !code_buf.is_empty() {
+                    code_buf.push('\n');
+                }
+                code_buf.push_str(line);
+            }
+        } else if let Some(rest) = line.trim_start().strip_prefix("```") {
+            // Start of code block
+            if !text_buf.is_empty() {
+                out.push(MdChunk::Text(std::mem::take(&mut text_buf)));
+            }
+            inside = true;
+            lang = rest.trim().to_string();
+        } else {
+            if !text_buf.is_empty() {
+                text_buf.push('\n');
+            }
+            text_buf.push_str(line);
+        }
+    }
+
+    // Remaining text after the last code block
+    if !text_buf.is_empty() {
+        out.push(MdChunk::Text(text_buf));
+    }
+    // If we ended while still inside a code block, treat remainder as plain text
+    if inside && !code_buf.is_empty() {
+        out.push(MdChunk::Text(code_buf));
+    }
+
+    out
 }
 
 /// Stateless terminal painter — the StatelessWidget in the Flutter/Bloc analogy.
@@ -199,18 +270,50 @@ impl ReplRenderer {
     /// headers, etc.) is formatted. The gutter (`NNN│`) appears on the first
     /// rendered line; continuation lines get a plain `     ` indent to align under
     /// the content column.
+    ///
+    /// Fenced code blocks (```lang … ```) are intercepted and highlighted with
+    /// syntect using the theme's syntax palette.
     fn paint_block(&self, num: usize, content: &str) {
         let term_w = crossterm::terminal::size()
             .map(|(w, _)| w as usize)
             .unwrap_or(80);
         let content_w = term_w.saturating_sub(GUTTER);
-        // Render markdown to an ANSI-colored string via termimad.
-        let rendered = {
-            let text = self.skin.text(content, Some(content_w));
-            format!("{text}")
-        };
+
+        let mut rendered_lines: Vec<String> = Vec::new();
+        for chunk in split_markdown(content) {
+            match chunk {
+                MdChunk::Text(text) => {
+                    let text = self.skin.text(&text, Some(content_w));
+                    let rendered = format!("{text}");
+                    rendered_lines.extend(rendered.lines().map(|s| s.to_string()));
+                }
+                MdChunk::Code { lang, code } => {
+                    // Code blocks get a 5-char line-number gutter ("  NN│ ") so
+                    // content width is reduced by 5.  Long lines are truncated by
+                    // syntect before highlighting.
+                    let code_w = content_w.saturating_sub(5);
+                    if let Some(hl) =
+                        crate::syntax::highlight_block(&code, &lang, &self.theme, Some(code_w))
+                    {
+                        for (i, line) in hl.lines().enumerate() {
+                            let n = format!("{:>3}", i + 1);
+                            let gutter =
+                                format!("{}{}\u{2502}{} ", self.theme.muted.fg(), n, RESET);
+                            rendered_lines.push(format!("{}{}", gutter, line));
+                        }
+                    } else {
+                        // fallback to termimad's plain code_block styling
+                        let block = format!("```{lang}\n{code}\n```");
+                        let text = self.skin.text(&block, Some(content_w));
+                        let rendered = format!("{text}");
+                        rendered_lines.extend(rendered.lines().map(|s| s.to_string()));
+                    }
+                }
+            }
+        }
+
         let mut is_first = true;
-        for line in rendered.lines() {
+        for line in &rendered_lines {
             if is_first {
                 eprint!(
                     "{}{:>3}\u{2502}{} {}\r\n",

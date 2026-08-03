@@ -1,9 +1,10 @@
 use std::io::Write;
 
 use reedline::{DefaultPrompt, DefaultPromptSegment, Prompt, Signal};
+use unicode_width::UnicodeWidthStr;
 
 use crate::theme::Theme;
-use crate::theme::{DIM_FG, RESET};
+use crate::theme::RESET;
 use crate::ui::renderer::ReplRenderer;
 use crate::ui::state::Pending;
 use crate::ui::state::{ReplState, ViewSignal};
@@ -250,18 +251,51 @@ impl ReplBuilder {
             if !item.reason.is_empty() {
                 eprint!("  {}{}{}\r\n", muted, item.reason, RESET);
             }
-            for line in crate::ui::permission::preview_block(item.preview.as_deref()) {
-                let color = if line.starts_with('+') {
-                    self.renderer.theme().success.fg()
-                } else if line.starts_with('-') {
-                    self.renderer.theme().danger.fg()
-                } else {
-                    // Diff context/unchanged lines keep the theme-independent
-                    // DIM_FG (not `muted`) so they stay visually distinct from
-                    // the surrounding permission-prompt chrome.
-                    DIM_FG.to_string()
-                };
-                eprint!("{}{}{}\r\n", color, line, RESET);
+            {
+                let preview_lines = crate::ui::permission::preview_block(item.preview.as_deref());
+                let num_width = preview_lines.len().to_string().len().max(2);
+                let term_w = crossterm::terminal::size()
+                    .map(|(w, _)| w as usize)
+                    .unwrap_or(80);
+                for (i, line) in preview_lines.iter().enumerate() {
+                    let n = format!("{:>num_width$}", i + 1);
+                    let (bg, fg) = if line.starts_with('+') {
+                        (
+                            self.renderer.theme().diff_added_bg.bg(),
+                            self.renderer.theme().diff_added.fg(),
+                        )
+                    } else if line.starts_with('-') {
+                        (
+                            self.renderer.theme().diff_removed_bg.bg(),
+                            self.renderer.theme().diff_removed.fg(),
+                        )
+                    } else {
+                        (
+                            // No background for context lines
+                            String::new(),
+                            self.renderer.theme().diff_context.fg(),
+                        )
+                    };
+                    // Pad background-colored lines so the strip spans the full terminal width.
+                    let visible_prefix = 3 + num_width; // "  NN "
+                    let visible_line = line.width();
+                    let pad = term_w.saturating_sub(visible_prefix + visible_line);
+                    let tail = if !bg.is_empty() && pad > 0 {
+                        format!("{}{}", " ".repeat(pad), RESET)
+                    } else {
+                        RESET.to_string()
+                    };
+                    eprint!(
+                        "  {}{}{} {}{}{}{}\r\n",
+                        self.renderer.theme().muted.fg(),
+                        n,
+                        RESET,
+                        bg,
+                        fg,
+                        line,
+                        tail
+                    );
+                }
             }
             eprint!("\r\n");
             let exact = item.patterns.last().cloned().unwrap_or_default();

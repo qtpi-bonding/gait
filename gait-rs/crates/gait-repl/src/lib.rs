@@ -9,6 +9,7 @@
 
 pub mod chat;
 pub mod repl;
+pub mod syntax;
 pub mod theme;
 pub mod tools;
 #[allow(clippy::print_stderr)]

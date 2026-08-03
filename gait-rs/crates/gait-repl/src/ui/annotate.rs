@@ -19,18 +19,42 @@ struct SlotColor {
 /// (which depends on `supports_truecolor()`'s process-lifetime cache and may
 /// have already resolved one way or the other before we get a turn).
 fn slot_table(theme: &Theme) -> Vec<SlotColor> {
-    let mk = |name: &'static str, c: crate::theme::Color| SlotColor {
+    let mk_fg = |name: &'static str, c: crate::theme::Color| SlotColor {
         name,
         truecolor: format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2),
         fallback256: format!("\x1b[38;5;{}m", rgb_to_ansi256(c.0, c.1, c.2)),
     };
+    let mk_bg = |name: &'static str, c: crate::theme::Color| SlotColor {
+        name,
+        truecolor: format!("\x1b[48;2;{};{};{}m", c.0, c.1, c.2),
+        fallback256: format!("\x1b[48;5;{}m", rgb_to_ansi256(c.0, c.1, c.2)),
+    };
     vec![
-        mk("accent", theme.accent),
-        mk("success", theme.success),
-        mk("danger", theme.danger),
-        mk("warning", theme.warning),
-        mk("user_msg", theme.user_msg),
-        mk("muted", theme.muted),
+        mk_fg("accent", theme.accent),
+        mk_fg("success", theme.success),
+        mk_fg("danger", theme.danger),
+        mk_fg("warning", theme.warning),
+        mk_fg("user_msg", theme.user_msg),
+        mk_fg("muted", theme.muted),
+        mk_fg("diff_added", theme.diff_added),
+        mk_fg("diff_removed", theme.diff_removed),
+        mk_bg("diff_added_bg", theme.diff_added_bg),
+        mk_bg("diff_removed_bg", theme.diff_removed_bg),
+        mk_fg("diff_context", theme.diff_context),
+        mk_fg("md_heading", theme.md_heading),
+        mk_fg("md_code", theme.md_code),
+        mk_fg("md_strong", theme.md_strong),
+        mk_fg("md_emph", theme.md_emph),
+        mk_fg("md_link", theme.md_link),
+        mk_fg("syntax_comment", theme.syntax_comment),
+        mk_fg("syntax_keyword", theme.syntax_keyword),
+        mk_fg("syntax_function", theme.syntax_function),
+        mk_fg("syntax_variable", theme.syntax_variable),
+        mk_fg("syntax_string", theme.syntax_string),
+        mk_fg("syntax_number", theme.syntax_number),
+        mk_fg("syntax_type", theme.syntax_type),
+        mk_fg("syntax_operator", theme.syntax_operator),
+        mk_fg("syntax_punctuation", theme.syntax_punctuation),
     ]
 }
 
