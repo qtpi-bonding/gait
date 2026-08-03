@@ -1,12 +1,14 @@
-//! Auth/model verbs: `list`, `add`, `remove`, and the async `models`.
+//! Auth/model verbs: owned credentials, external-source links, and models.
 //!
 //! `add`/`remove`/`list` wrap `gait_state::auth` and never read stdin — the CLI
 //! adapter handles the key prompt per design §4. `models` is async because it
 //! hits `models.dev` (with disk-cache fallback); the pure `filter_models`
 //! helper stays in gait-core and we just delegate here.
 use crate::OpError;
-use gait_auth::AuthMethod;
+use gait_auth::sources::codex::{CodexAuthSource, CODEX_SOURCE_ID};
+use gait_auth::{AuthMethod, AuthSource};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// Provider → masked-display-string map. Each key is a provider name
 /// (`"anthropic"`, `"openai"`, …); each value is the rendering shown by
@@ -28,6 +30,49 @@ pub struct AuthWriteOutcome {
 #[derive(Debug, Clone)]
 pub struct AuthRemoveOutcome {
     pub provider: String,
+}
+
+/// Bind a provider to an external credential owner without copying secrets.
+pub fn link(
+    provider: &str,
+    source_id: &str,
+    home: Option<PathBuf>,
+) -> Result<AuthWriteOutcome, OpError> {
+    if provider.is_empty() {
+        return Err(OpError::Conflict("provider name is required".to_string()));
+    }
+    let source: Box<dyn AuthSource> = match source_id {
+        CODEX_SOURCE_ID => Box::new(CodexAuthSource),
+        other => {
+            return Err(OpError::Conflict(format!(
+                "unsupported authentication source '{other}'"
+            )))
+        }
+    };
+    if !source.supports(provider) {
+        return Err(OpError::Conflict(format!(
+            "authentication source '{source_id}' does not support provider '{provider}'"
+        )));
+    }
+    gait_state::auth::write_external_binding(provider, source_id, home.as_deref())
+        .map_err(|error| OpError::Other(error.into()))?;
+    Ok(AuthWriteOutcome {
+        provider: provider.to_string(),
+        display: format!("external ({source_id})"),
+    })
+}
+
+/// Remove only gait's pointer to an external source. The owning CLI's
+/// credential file/keyring entry is never changed or revoked.
+pub fn unlink(provider: &str) -> Result<AuthRemoveOutcome, OpError> {
+    if provider.is_empty() {
+        return Err(OpError::Conflict("provider name is required".to_string()));
+    }
+    gait_state::auth::unlink_external_binding(provider)
+        .map_err(|error| OpError::Other(error.into()))?;
+    Ok(AuthRemoveOutcome {
+        provider: provider.to_string(),
+    })
 }
 
 /// Outcome of [`models`]. The filtered view the CLI / REPL renders. We
@@ -128,24 +173,35 @@ where
 /// List every provider configured in the credential store, sorted by
 /// provider name with masked-display values (`"abcd1234..."` for `api`
 /// entries, literal `"oauth"`/`"wellknown"`/`"unknown"` for the rest).
-pub fn list() -> AuthListOutcome {
-    let mut creds = gait_state::auth::list_credentials();
+pub fn list() -> Result<AuthListOutcome, OpError> {
+    let mut creds =
+        gait_state::auth::list_credentials().map_err(|error| OpError::Other(error.into()))?;
     let mut sorted: Vec<(String, String)> = creds.drain().collect();
     sorted.sort_by(|a, b| a.0.cmp(&b.0));
-    sorted.into_iter().collect()
+    Ok(sorted.into_iter().collect())
 }
 
 /// Non-secret status display for one configured provider.
-pub fn status(provider: &str) -> Option<String> {
-    list().remove(provider)
+pub fn status(provider: &str) -> Result<Option<String>, OpError> {
+    Ok(list()?.remove(provider))
 }
 
 /// Revoke the Codex refresh token when possible, then remove its local
 /// credential. Local removal still proceeds when the remote revoke endpoint is
 /// unavailable so logout is reliable offline.
 pub async fn logout_codex() -> Result<AuthRemoveOutcome, OpError> {
+    if gait_state::auth::external_binding(gait_auth::codex::CODEX_PROVIDER_ID)
+        .map_err(|error| OpError::Other(error.into()))?
+        .is_some()
+    {
+        return Err(OpError::Conflict(
+            "openai-codex is linked to externally owned credentials; run `gait auth unlink openai-codex` instead"
+                .into(),
+        ));
+    }
     if let Some(credential) =
-        gait_state::auth::resolve_credential(gait_auth::codex::CODEX_PROVIDER_ID)
+        gait_state::auth::resolve_credential_result(gait_auth::codex::CODEX_PROVIDER_ID)
+            .map_err(|error| OpError::Other(error.into()))?
     {
         gait_auth::codex::CodexSubscriptionAuth::new()
             .logout(&credential)
@@ -178,7 +234,7 @@ pub async fn models(filter: Option<&str>) -> Result<ModelsOutcome, OpError> {
 // caller-supplied path, so the *overridable* branch is fully covered there.
 //
 // `gait_state::auth::list_credentials`/`write_api_key`/`remove_api_key` (the
-// no-arg forms the op must use) hardcode `~/.local/share/gait/auth.json`,
+// no-arg forms the op must use) resolve `$GAIT_HOME/auth.json`,
 // so an end-to-end round-trip here would touch the real filesystem
 // credential store. We deliberately do NOT write that test — the gait-core
 // tests above prove the underlying I/O works, and a u32 mock-everything
@@ -233,6 +289,16 @@ mod tests {
         assert!(op_err_conflict(err), "empty provider must error");
     }
 
+    #[test]
+    fn link_rejects_unknown_or_incompatible_sources_before_writing() {
+        assert!(op_err_conflict(
+            link("openai-codex", "unknown", None).unwrap_err()
+        ));
+        assert!(op_err_conflict(
+            link("openai", CODEX_SOURCE_ID, None).unwrap_err()
+        ));
+    }
+
     // -- list --
 
     #[test]
@@ -240,7 +306,7 @@ mod tests {
         // The user's home-dir credential store is unlikely to exist in CI;
         // even when it does, `list()` must not panic — it returns whatever
         // the core helper reports.
-        let out = list();
+        let out = list().unwrap();
         // Insertion-order check is too strict (depends on the host's real
         // auth.json), so just assert the value is a well-formed map.
         for v in out.values() {

@@ -184,6 +184,7 @@ impl CodexSubscriptionAuth {
             id_token: refreshed.id_token.unwrap_or(tokens.id_token),
             access_token: refreshed.access_token.unwrap_or(tokens.access_token),
             refresh_token: refreshed.refresh_token.unwrap_or(tokens.refresh_token),
+            account_id: tokens.account_id,
         })
     }
 }
@@ -252,7 +253,7 @@ pub fn credential_details(
     let claims = parse_id_token_claims(&tokens.id_token)?;
     Ok(CodexCredentialDetails {
         access_token: tokens.access_token,
-        account_id: claims.account_id,
+        account_id: claims.account_id.or(tokens.account_id),
         is_fedramp_account: claims.is_fedramp_account,
     })
 }
@@ -268,6 +269,8 @@ struct CodexTokens {
     id_token: String,
     access_token: String,
     refresh_token: String,
+    #[serde(default)]
+    account_id: Option<String>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -332,15 +335,30 @@ struct IdTokenClaims {
 
 fn credential_from_tokens(tokens: CodexTokens) -> Result<ResolvedCredential, AuthError> {
     let claims = parse_id_token_claims(&tokens.id_token)?;
+    let account_id = claims.account_id.or_else(|| tokens.account_id.clone());
     Ok(ResolvedCredential::Subscription(SubscriptionCredential {
         provider_id: CODEX_PROVIDER_ID.into(),
         method_id: "codex-subscription".into(),
         version: 1,
         expires_at_unix_s: claims.expires_at_unix_s,
-        account_label: claims.email.or(claims.account_id),
+        account_label: claims.email.or(account_id),
         secret: serde_json::to_value(tokens)
             .map_err(|error| AuthError::Other(error.to_string()))?,
     }))
+}
+
+pub(crate) fn credential_from_external_tokens(
+    id_token: String,
+    access_token: String,
+    refresh_token: String,
+    account_id: Option<String>,
+) -> Result<ResolvedCredential, AuthError> {
+    credential_from_tokens(CodexTokens {
+        id_token,
+        access_token,
+        refresh_token,
+        account_id,
+    })
 }
 
 fn tokens_from_credential(credential: &ResolvedCredential) -> Result<CodexTokens, AuthError> {

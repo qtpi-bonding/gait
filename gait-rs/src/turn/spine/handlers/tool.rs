@@ -107,7 +107,7 @@ pub async fn run_tool_as_spine(
             })
             .unwrap_or(false);
     let mut whitelist_hit = None;
-    let mut scope = if is_detached_shell {
+    let scope_result = if is_detached_shell {
         use crate::types::ToolAccess;
         crate::sandbox::ceiling::compute_scope(
             ToolAccess {
@@ -136,6 +136,10 @@ pub async fn run_tool_as_spine(
         crate::sandbox::ceiling::compute_scope(access, sandbox_cfg, codebase, &jail)
     } else {
         crate::sandbox::ceiling::bound_request(&impulse.tool, sandbox_cfg, codebase, &jail)
+    };
+    let mut scope = match scope_result {
+        Ok(scope) => scope,
+        Err(error) => return error_feedback(&error.to_string()),
     };
 
     // Grant this session's own daemon-log directory, never any sibling

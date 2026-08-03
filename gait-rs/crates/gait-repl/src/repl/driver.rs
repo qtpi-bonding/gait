@@ -374,6 +374,85 @@ impl TurnSource for ReplSource {
                 continue;
             }
 
+            // /auth list|status|link|unlink — use the same op boundary as the
+            // CLI. Linking stores only a non-secret pointer to the external
+            // credential owner.
+            if let Some(command) = parse_repl_auth_command(&line) {
+                match command {
+                    Err(usage) => self
+                        .shared
+                        .borrow_mut()
+                        .builder
+                        .write_raw(&format!("[gait] usage: {usage}\r\n")),
+                    Ok(ReplAuthCommand::List) => match gait_ops::auth::list() {
+                        Ok(credentials) if credentials.is_empty() => self
+                            .shared
+                            .borrow_mut()
+                            .builder
+                            .write_raw("No credentials configured.\r\n"),
+                        Ok(credentials) => {
+                            for (provider, display) in credentials {
+                                self.shared
+                                    .borrow_mut()
+                                    .builder
+                                    .write_raw(&format!("  {provider}: {display}\r\n"));
+                            }
+                        }
+                        Err(error) => {
+                            self.shared
+                                .borrow_mut()
+                                .builder
+                                .write_raw(&format!("[gait] /auth: {error}\r\n"));
+                        }
+                    },
+                    Ok(ReplAuthCommand::Status { provider }) => {
+                        match gait_ops::auth::status(&provider) {
+                            Ok(status) => {
+                                let status = status.unwrap_or_else(|| "not configured".to_string());
+                                self.shared
+                                    .borrow_mut()
+                                    .builder
+                                    .write_raw(&format!("{provider}: {status}\r\n"));
+                            }
+                            Err(error) => self
+                                .shared
+                                .borrow_mut()
+                                .builder
+                                .write_raw(&format!("[gait] /auth: {error}\r\n")),
+                        }
+                    }
+                    Ok(ReplAuthCommand::Link {
+                        provider,
+                        source,
+                        home,
+                    }) => match gait_ops::auth::link(&provider, &source, home) {
+                        Ok(out) => self.shared.borrow_mut().builder.write_raw(&format!(
+                            "Linked {} credentials ({})\r\n",
+                            out.provider, out.display
+                        )),
+                        Err(error) => self
+                            .shared
+                            .borrow_mut()
+                            .builder
+                            .write_raw(&format!("[gait] /auth: {error}\r\n")),
+                    },
+                    Ok(ReplAuthCommand::Unlink { provider }) => {
+                        match gait_ops::auth::unlink(&provider) {
+                            Ok(out) => self.shared.borrow_mut().builder.write_raw(&format!(
+                                "Unlinked {} external credentials\r\n",
+                                out.provider
+                            )),
+                            Err(error) => self
+                                .shared
+                                .borrow_mut()
+                                .builder
+                                .write_raw(&format!("[gait] /auth: {error}\r\n")),
+                        }
+                    }
+                }
+                continue;
+            }
+
             // /inference [name|default|show <name>|add <name> <provider/id>] — durable
             // session selection using the exact same operations as
             // `gait inference ...`. Subcommands `show` and `add` mirror the
@@ -843,6 +922,101 @@ impl TurnSource for ReplSource {
 /// Reserved REPL built-in prefixes that must NOT be treated as skill names.
 fn builtin_prefixes() -> &'static [&'static str] {
     Box::leak(cmd::builtin_prefixes().into_boxed_slice())
+}
+
+const REPL_AUTH_USAGE: &str =
+    "/auth [list|status <provider>|link <provider> <source> [--home <path>]|unlink <provider>]";
+
+#[derive(Debug, PartialEq, Eq)]
+enum ReplAuthCommand {
+    List,
+    Status {
+        provider: String,
+    },
+    Link {
+        provider: String,
+        source: String,
+        home: Option<PathBuf>,
+    },
+    Unlink {
+        provider: String,
+    },
+}
+
+fn take_word(input: &str) -> Option<(&str, &str)> {
+    let input = input.trim_start();
+    if input.is_empty() {
+        return None;
+    }
+    match input.find(char::is_whitespace) {
+        Some(index) => Some((&input[..index], &input[index..])),
+        None => Some((input, "")),
+    }
+}
+
+/// Parse the non-interactive auth operations supported by the REPL.
+///
+/// The path after `--home` consumes the remainder of the line so native paths
+/// containing spaces work without adding shell parsing semantics to the REPL.
+fn parse_repl_auth_command(line: &str) -> Option<Result<ReplAuthCommand, &'static str>> {
+    let rest = line.strip_prefix("/auth")?;
+    if rest.chars().next().is_some_and(|c| !c.is_whitespace()) {
+        return None;
+    }
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return Some(Ok(ReplAuthCommand::List));
+    }
+
+    let Some((action, rest)) = take_word(rest) else {
+        return Some(Err(REPL_AUTH_USAGE));
+    };
+    let parsed = match action {
+        "list" if rest.trim().is_empty() => Ok(ReplAuthCommand::List),
+        "status" | "unlink" => {
+            let Some((provider, trailing)) = take_word(rest) else {
+                return Some(Err(REPL_AUTH_USAGE));
+            };
+            if !trailing.trim().is_empty() {
+                return Some(Err(REPL_AUTH_USAGE));
+            }
+            if action == "status" {
+                Ok(ReplAuthCommand::Status {
+                    provider: provider.to_string(),
+                })
+            } else {
+                Ok(ReplAuthCommand::Unlink {
+                    provider: provider.to_string(),
+                })
+            }
+        }
+        "link" => {
+            let Some((provider, rest)) = take_word(rest) else {
+                return Some(Err(REPL_AUTH_USAGE));
+            };
+            let Some((source, rest)) = take_word(rest) else {
+                return Some(Err(REPL_AUTH_USAGE));
+            };
+            let home = if rest.trim().is_empty() {
+                None
+            } else {
+                let Some((flag, path)) = take_word(rest) else {
+                    return Some(Err(REPL_AUTH_USAGE));
+                };
+                if flag != "--home" || path.trim().is_empty() {
+                    return Some(Err(REPL_AUTH_USAGE));
+                }
+                Some(PathBuf::from(path.trim()))
+            };
+            Ok(ReplAuthCommand::Link {
+                provider: provider.to_string(),
+                source: source.to_string(),
+                home,
+            })
+        }
+        _ => Err(REPL_AUTH_USAGE),
+    };
+    Some(parsed)
 }
 
 /// Parse a REPL line as a skill-toggle command.
@@ -1346,6 +1520,67 @@ mod command_tests {
             ran_turn: false,
         };
         (src, shared)
+    }
+
+    #[test]
+    fn slash_auth_parser_covers_link_home_unlink_and_status() {
+        assert_eq!(
+            parse_repl_auth_command("/auth link openai-codex codex")
+                .unwrap()
+                .unwrap(),
+            ReplAuthCommand::Link {
+                provider: "openai-codex".into(),
+                source: "codex".into(),
+                home: None,
+            }
+        );
+        assert_eq!(
+            parse_repl_auth_command("/auth link openai-codex codex --home /Users/Test User/.codex")
+                .unwrap()
+                .unwrap(),
+            ReplAuthCommand::Link {
+                provider: "openai-codex".into(),
+                source: "codex".into(),
+                home: Some(PathBuf::from("/Users/Test User/.codex")),
+            }
+        );
+        assert_eq!(
+            parse_repl_auth_command("/auth unlink openai-codex")
+                .unwrap()
+                .unwrap(),
+            ReplAuthCommand::Unlink {
+                provider: "openai-codex".into(),
+            }
+        );
+        assert_eq!(
+            parse_repl_auth_command("/auth status openai-codex")
+                .unwrap()
+                .unwrap(),
+            ReplAuthCommand::Status {
+                provider: "openai-codex".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn slash_auth_parser_rejects_incomplete_commands() {
+        assert!(parse_repl_auth_command("/auth link openai-codex")
+            .unwrap()
+            .is_err());
+        assert!(parse_repl_auth_command("/auth unlink").unwrap().is_err());
+        assert!(parse_repl_auth_command("/authorize").is_none());
+    }
+
+    #[tokio::test]
+    async fn slash_auth_status_is_consumed_without_starting_a_turn() {
+        let d = temp_gait_dir();
+        let (mut src, shared) =
+            source_with(d.path(), &["/auth status __gait_repl_test_missing__", "/q"]);
+        assert!(src.next().await.is_none());
+        assert!(matches!(
+            shared.borrow().control,
+            Some(crate::repl::Control::Quit)
+        ));
     }
 
     #[tokio::test]

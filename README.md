@@ -76,6 +76,11 @@ gait -i
 gait -e "what's the current git branch?"
 ```
 
+Global credentials and the models cache live under `$GAIT_HOME`, which defaults
+to `~/.gait-home`. This is separate from `GAIT_DIR`: the former is machine-local
+state, while the latter is the Git-backed Gait workspace holding configuration
+and session history.
+
 Driving gait from another coding agent (as a dispatched subagent) or a human REPL session? See [`skills/gait-agent/SKILL.md`](skills/gait-agent/SKILL.md) — a portable, agent-agnostic skill covering both.
 
 ## Modes

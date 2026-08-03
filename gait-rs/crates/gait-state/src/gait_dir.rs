@@ -5,22 +5,34 @@
 //! docs/plans/2026-07-09-gait-workspace-discovery-design.md.
 use std::path::{Path, PathBuf};
 
+use gait_platform::{NativePlatform, Platform};
+
 pub fn resolve(explicit: Option<PathBuf>, start: &Path) -> anyhow::Result<PathBuf> {
+    resolve_with(&NativePlatform, explicit, start)
+}
+
+pub fn resolve_with(
+    platform: &dyn Platform,
+    explicit: Option<PathBuf>,
+    start: &Path,
+) -> anyhow::Result<PathBuf> {
     if let Some(dir) = explicit {
         return Ok(dir);
     }
-    if let Ok(env) = std::env::var("GAIT_DIR") {
-        if !env.is_empty() {
-            return Ok(PathBuf::from(env));
-        }
+    if let Some(dir) = platform.env("GAIT_DIR").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(dir));
     }
-    discover(start)
+    discover_with(platform, start)
 }
 
 /// Walk up from `start` for a `.gait/` directory or a `.gaitref` pointer file.
 /// This is `resolve` **without** the `$GAIT_DIR` step — the ACP adapter is a
 /// multi-cwd process and must resolve each session purely from its own cwd.
 pub fn discover(start: &Path) -> anyhow::Result<PathBuf> {
+    discover_with(&NativePlatform, start)
+}
+
+pub fn discover_with(platform: &dyn Platform, start: &Path) -> anyhow::Result<PathBuf> {
     let mut cur = Some(start);
     while let Some(dir) = cur {
         let d = dir.join(".gait");
@@ -29,7 +41,7 @@ pub fn discover(start: &Path) -> anyhow::Result<PathBuf> {
         }
         let r = dir.join(".gaitref");
         if r.is_file() {
-            return read_gaitref(&r);
+            return read_gaitref_with(platform, &r);
         }
         cur = dir.parent();
     }
@@ -43,7 +55,7 @@ pub fn discover(start: &Path) -> anyhow::Result<PathBuf> {
 /// Read a `.gaitref` pointer → the gait-dir it names. First non-empty line,
 /// optional `gaitdir:` prefix, then a path (`~`-expanded; absolute verbatim;
 /// relative resolved against the `.gaitref` file's own directory).
-fn read_gaitref(marker: &Path) -> anyhow::Result<PathBuf> {
+fn read_gaitref_with(platform: &dyn Platform, marker: &Path) -> anyhow::Result<PathBuf> {
     let raw = std::fs::read_to_string(marker)
         .map_err(|e| anyhow::anyhow!("cannot read {}: {e}", marker.display()))?;
     let line = raw
@@ -55,7 +67,7 @@ fn read_gaitref(marker: &Path) -> anyhow::Result<PathBuf> {
     if path.is_empty() {
         anyhow::bail!("{} names no path", marker.display());
     }
-    let expanded = expand_tilde(path);
+    let expanded = expand_tilde_with(platform, path)?;
     if expanded.is_absolute() {
         Ok(expanded)
     } else {
@@ -66,18 +78,59 @@ fn read_gaitref(marker: &Path) -> anyhow::Result<PathBuf> {
     }
 }
 
-fn expand_tilde(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
+fn expand_tilde_with(platform: &dyn Platform, path: &str) -> anyhow::Result<PathBuf> {
+    if path == "~" {
+        return platform.home_dir().ok_or_else(|| {
+            anyhow::anyhow!("cannot expand '~': user home directory is unavailable")
+        });
     }
-    PathBuf::from(path)
+    if let Some(rest) = path.strip_prefix("~/") {
+        let home = platform.home_dir().ok_or_else(|| {
+            anyhow::anyhow!("cannot expand '{path}': user home directory is unavailable")
+        })?;
+        return Ok(home.join(rest));
+    }
+    Ok(PathBuf::from(path))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gait_platform::PlatformKind;
+    use std::ffi::OsString;
+
+    struct FakePlatform {
+        home: Option<PathBuf>,
+        gait_dir: Option<OsString>,
+    }
+
+    impl Platform for FakePlatform {
+        fn kind(&self) -> PlatformKind {
+            PlatformKind::MacOs
+        }
+
+        fn home_dir(&self) -> Option<PathBuf> {
+            self.home.clone()
+        }
+
+        fn config_dir(&self) -> Option<PathBuf> {
+            None
+        }
+
+        fn data_dir(&self) -> Option<PathBuf> {
+            None
+        }
+
+        fn cache_dir(&self) -> Option<PathBuf> {
+            None
+        }
+
+        fn env(&self, name: &str) -> Option<OsString> {
+            (name == "GAIT_DIR")
+                .then(|| self.gait_dir.clone())
+                .flatten()
+        }
+    }
 
     #[test]
     fn explicit_wins() {
@@ -85,6 +138,18 @@ mod tests {
         assert_eq!(
             resolve(Some(p.clone()), Path::new("/unrelated")).unwrap(),
             p
+        );
+    }
+
+    #[test]
+    fn injected_gait_dir_wins_over_discovery() {
+        let platform = FakePlatform {
+            home: Some(PathBuf::from("/Users/test")),
+            gait_dir: Some(OsString::from("/tmp/from-env")),
+        };
+        assert_eq!(
+            resolve_with(&platform, None, Path::new("/unrelated")).unwrap(),
+            PathBuf::from("/tmp/from-env")
         );
     }
 
@@ -132,5 +197,31 @@ mod tests {
         let t = tempfile::TempDir::new().unwrap();
         std::fs::write(t.path().join(".gaitref"), "\n").unwrap();
         assert!(discover(t.path()).is_err());
+    }
+
+    #[test]
+    fn discover_expands_gaitref_against_injected_home() {
+        let t = tempfile::TempDir::new().unwrap();
+        std::fs::write(t.path().join(".gaitref"), "~/workspaces/gait\n").unwrap();
+        let platform = FakePlatform {
+            home: Some(PathBuf::from("/Users/test")),
+            gait_dir: None,
+        };
+        assert_eq!(
+            discover_with(&platform, t.path()).unwrap(),
+            PathBuf::from("/Users/test/workspaces/gait")
+        );
+    }
+
+    #[test]
+    fn discover_rejects_tilde_when_home_is_unavailable() {
+        let t = tempfile::TempDir::new().unwrap();
+        std::fs::write(t.path().join(".gaitref"), "~/workspaces/gait\n").unwrap();
+        let platform = FakePlatform {
+            home: None,
+            gait_dir: None,
+        };
+        let error = discover_with(&platform, t.path()).unwrap_err();
+        assert!(error.to_string().contains("home directory is unavailable"));
     }
 }

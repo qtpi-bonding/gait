@@ -22,6 +22,12 @@ pub const COMMANDS: &[ReplCommand] = &[
         group: "general",
     },
     ReplCommand {
+        slug: "/auth",
+        aliases: &[],
+        desc: "List, inspect, link, or unlink credentials",
+        group: "general",
+    },
+    ReplCommand {
         slug: "/inference",
         aliases: &[],
         desc: "List, show, add, select, or clear a named inference",
@@ -142,6 +148,7 @@ mod tests {
         for s in [
             "/help",
             "/info",
+            "/auth",
             "/inference",
             "/sh",
             "/new",

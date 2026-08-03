@@ -579,7 +579,8 @@ mod tests {
         // A read tool with a bogus claimed writable must get empty writable.
         let cfg = SandboxConfig::default();
         let scope =
-            super::ceiling::bound_request("read", &cfg, Path::new("/repo"), Path::new("/tmp/jail"));
+            super::ceiling::bound_request("read", &cfg, Path::new("/repo"), Path::new("/tmp/jail"))
+                .unwrap();
         assert!(scope.writable.is_empty(), "read tool must not get writable");
         assert!(!scope.read_all, "default config must confine reads");
     }
@@ -594,7 +595,8 @@ mod tests {
             &cfg,
             Path::new("/repo"),
             Path::new("/tmp/jail"),
-        );
+        )
+        .unwrap();
         assert!(scope.writable.contains(&PathBuf::from("/repo")));
         assert!(scope.writable.contains(&PathBuf::from("/tmp/jail")));
     }
@@ -609,7 +611,8 @@ mod tests {
             &cfg,
             Path::new("/repo"),
             Path::new("/tmp/jail"),
-        );
+        )
+        .unwrap();
         assert!(scope.writable.is_empty());
         assert!(scope.readable.is_empty());
         assert!(matches!(scope.network, NetworkPolicy::Deny));
@@ -629,7 +632,8 @@ mod tests {
             &cfg,
             Path::new("/repo"),
             Path::new("/tmp/jail"),
-        );
+        )
+        .unwrap();
         assert!(
             scope.writable.is_empty(),
             "read-only tool must not be granted writes"
@@ -652,7 +656,8 @@ mod tests {
             &cfg,
             Path::new("/repo"),
             Path::new("/tmp/jail"),
-        );
+        )
+        .unwrap();
         assert!(scope.writable.contains(&PathBuf::from("/repo")));
         assert!(scope.writable.contains(&PathBuf::from("/tmp/jail")));
     }
@@ -671,7 +676,8 @@ mod tests {
             &cfg,
             Path::new("/repo"),
             Path::new("/tmp/jail"),
-        );
+        )
+        .unwrap();
         assert!(matches!(scope.network, NetworkPolicy::Deny));
     }
 
@@ -689,7 +695,8 @@ mod tests {
             &cfg,
             Path::new("/repo"),
             Path::new("/tmp/jail"),
-        );
+        )
+        .unwrap();
         assert!(!scope.read_all, "default must confine reads");
         assert!(scope.readable.contains(&PathBuf::from("/repo")));
     }
@@ -711,7 +718,8 @@ mod tests {
             &cfg,
             Path::new("/repo"),
             Path::new("/tmp/jail"),
-        );
+        )
+        .unwrap();
         assert!(scope.read_all);
     }
 
@@ -778,7 +786,8 @@ mod tests {
             },
         );
         let scope =
-            super::ceiling::bound_request("shell", &cfg, Path::new("/tmp"), Path::new("/tmp"));
+            super::ceiling::bound_request("shell", &cfg, Path::new("/tmp"), Path::new("/tmp"))
+                .unwrap();
         // NetworkPolicy does not derive PartialEq (confirmed: sandbox.rs's existing
         // tests all use matches!, not assert_eq!, for this exact reason) — use
         // matches! here too, not assert_eq!.
@@ -805,9 +814,85 @@ mod tests {
             &cfg,
             codebase,
             Path::new("/tmp/jail"),
-        );
+        )
+        .unwrap();
         assert!(scope.readable.contains(&PathBuf::from("/repo/myproject")));
         assert!(scope.writable.contains(&PathBuf::from("/repo/myproject")));
+    }
+
+    #[test]
+    fn injected_home_expands_tilde_paths() {
+        use gait_types::config::SandboxConfig;
+        use gait_types::types::ToolAccess;
+        use std::path::Path;
+
+        let cfg = SandboxConfig {
+            readable: vec!["~/Documents".into()],
+            ..Default::default()
+        };
+        let scope = super::ceiling::compute_scope_nofs_with_home(
+            Path::new("/Users/injected"),
+            ToolAccess {
+                reads: true,
+                ..Default::default()
+            },
+            &cfg,
+            Path::new("/repo"),
+            Path::new("/tmp/jail"),
+        );
+        assert!(scope
+            .readable
+            .contains(&PathBuf::from("/Users/injected/Documents")));
+    }
+
+    #[test]
+    fn missing_platform_home_is_a_typed_error() {
+        use gait_platform::{Platform, PlatformKind};
+        use gait_types::config::SandboxConfig;
+        use gait_types::types::ToolAccess;
+        use std::ffi::OsString;
+        use std::path::Path;
+
+        struct NoHome;
+
+        impl Platform for NoHome {
+            fn kind(&self) -> PlatformKind {
+                PlatformKind::MacOs
+            }
+
+            fn home_dir(&self) -> Option<PathBuf> {
+                None
+            }
+
+            fn config_dir(&self) -> Option<PathBuf> {
+                None
+            }
+
+            fn data_dir(&self) -> Option<PathBuf> {
+                None
+            }
+
+            fn cache_dir(&self) -> Option<PathBuf> {
+                None
+            }
+
+            fn env(&self, _name: &str) -> Option<OsString> {
+                None
+            }
+        }
+
+        let error = super::ceiling::compute_scope_nofs_with_platform(
+            &NoHome,
+            ToolAccess::default(),
+            &SandboxConfig::default(),
+            Path::new("/repo"),
+            Path::new("/tmp/jail"),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "cannot expand sandbox paths: user home directory is unavailable"
+        );
     }
 
     // ── compute_scope_nofs tests ──────────────────────────────────────────────
@@ -826,7 +911,8 @@ mod tests {
             &cfg,
             Path::new("/repo/sub/../src"), // deliberately un-normalized — passed as-given to verify compute_scope_nofs stores the codebase path verbatim (no normalization inside)
             Path::new("/tmp/jail"),
-        );
+        )
+        .unwrap();
         // The codebase path is used as-given (no canonicalize call)
         assert!(scope
             .readable
@@ -850,7 +936,8 @@ mod tests {
             &cfg,
             Path::new("/repo"),
             Path::new("/tmp/jail"),
-        );
+        )
+        .unwrap();
         assert!(scope.writable.contains(&PathBuf::from("/repo")));
         assert!(scope.writable.contains(&PathBuf::from("/tmp/jail")));
     }
@@ -871,8 +958,8 @@ mod tests {
         };
         let codebase = Path::new("/tmp");
         let jail = Path::new("/tmp/jail");
-        let via_full = super::ceiling::compute_scope(access, &cfg, codebase, jail);
-        let via_nofs = super::ceiling::compute_scope_nofs(access, &cfg, codebase, jail);
+        let via_full = super::ceiling::compute_scope(access, &cfg, codebase, jail).unwrap();
+        let via_nofs = super::ceiling::compute_scope_nofs(access, &cfg, codebase, jail).unwrap();
         assert_eq!(via_full.writable.len(), via_nofs.writable.len());
         assert_eq!(via_full.readable.len(), via_nofs.readable.len());
         assert_eq!(via_full.read_all, via_nofs.read_all);
@@ -1195,9 +1282,20 @@ pub mod ceiling {
     //! the access flags can only narrow. No I/O, no FFI: same inputs → same output.
 
     use super::{DenyPolicy, NetworkPolicy, SandboxScope};
+    use gait_platform::{NativePlatform, Platform};
     use gait_types::config::{NetworkConfig, SandboxConfig};
     use gait_types::types::ToolAccess;
     use std::path::{Path, PathBuf};
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum ScopePathError {
+        #[error("cannot expand sandbox paths: user home directory is unavailable")]
+        HomeUnavailable,
+    }
+
+    fn platform_home(platform: &dyn Platform) -> Result<PathBuf, ScopePathError> {
+        platform.home_dir().ok_or(ScopePathError::HomeUnavailable)
+    }
 
     /// Split a flat list of deny-config strings into exact subpaths vs. glob
     /// patterns, by presence of glob metacharacters (`*`, `?`, `[`). A pattern
@@ -1272,15 +1370,26 @@ pub mod ceiling {
         cfg: &SandboxConfig,
         codebase: &Path,
         jail: &Path,
-    ) -> SandboxScope {
+    ) -> Result<SandboxScope, ScopePathError> {
         compute_scope(access_for_tool(tool_name, cfg), cfg, codebase, jail)
+    }
+
+    pub fn bound_request_with_home(
+        home: &Path,
+        tool_name: &str,
+        cfg: &SandboxConfig,
+        codebase: &Path,
+        jail: &Path,
+    ) -> SandboxScope {
+        compute_scope_with_home(home, access_for_tool(tool_name, cfg), cfg, codebase, jail)
     }
 
     /// Compute the per-call sandbox scope ceiling.
     ///
     /// Base: `{codebase, temp_jail}` for reads + writes the tool needs.
     /// Extended with: config `readable` (always) and config `writable` (when writes
-    /// are permitted by the tool). `~/` is tilde-expanded against `dirs_next::home_dir()`.
+    /// are permitted by the tool). `~/` is tilde-expanded against the native
+    /// home resolved at this boundary.
     /// Network: config `Off` always denies; `Hosts`/`All` honored only when
     /// `access.network` is true. `read_all` defaults to true in Phase 2b; Phase 2d
     /// will flip it to false and emit per-path subpath rules instead.
@@ -1293,6 +1402,29 @@ pub mod ceiling {
         cfg: &SandboxConfig,
         codebase: &Path,
         temp_jail: &Path,
+    ) -> Result<SandboxScope, ScopePathError> {
+        compute_scope_with_platform(&NativePlatform, access, cfg, codebase, temp_jail)
+    }
+
+    pub fn compute_scope_with_platform(
+        platform: &dyn Platform,
+        access: ToolAccess,
+        cfg: &SandboxConfig,
+        codebase: &Path,
+        temp_jail: &Path,
+    ) -> Result<SandboxScope, ScopePathError> {
+        let home = platform_home(platform)?;
+        Ok(compute_scope_with_home(
+            &home, access, cfg, codebase, temp_jail,
+        ))
+    }
+
+    pub fn compute_scope_with_home(
+        home: &Path,
+        access: ToolAccess,
+        cfg: &SandboxConfig,
+        codebase: &Path,
+        temp_jail: &Path,
     ) -> SandboxScope {
         // Canonicalize codebase so the SBPL subpath matches what the kernel sees
         // (handles /tmp → /private/tmp on macOS and symlinks). temp_jail is already
@@ -1300,7 +1432,7 @@ pub mod ceiling {
         let codebase = codebase
             .canonicalize()
             .unwrap_or_else(|_| codebase.to_path_buf());
-        compute_scope_nofs(access, cfg, &codebase, temp_jail)
+        compute_scope_nofs_with_home(home, access, cfg, &codebase, temp_jail)
     }
 
     /// Like [`compute_scope`], but assumes `codebase` is already normalized and does
@@ -1310,6 +1442,29 @@ pub mod ceiling {
         access: ToolAccess,
         cfg: &SandboxConfig,
         codebase: &Path, // caller-normalized (e.g. via normalize_lexical)
+        temp_jail: &Path,
+    ) -> Result<SandboxScope, ScopePathError> {
+        compute_scope_nofs_with_platform(&NativePlatform, access, cfg, codebase, temp_jail)
+    }
+
+    pub fn compute_scope_nofs_with_platform(
+        platform: &dyn Platform,
+        access: ToolAccess,
+        cfg: &SandboxConfig,
+        codebase: &Path,
+        temp_jail: &Path,
+    ) -> Result<SandboxScope, ScopePathError> {
+        let home = platform_home(platform)?;
+        Ok(compute_scope_nofs_with_home(
+            &home, access, cfg, codebase, temp_jail,
+        ))
+    }
+
+    pub fn compute_scope_nofs_with_home(
+        home: &Path,
+        access: ToolAccess,
+        cfg: &SandboxConfig,
+        codebase: &Path,
         temp_jail: &Path,
     ) -> SandboxScope {
         // Base readable + writable: codebase + temp_jail (bound by access).
@@ -1328,14 +1483,13 @@ pub mod ceiling {
         // Extend from config (expand "~/" and "$CODEBASE" in paths).
         // `"*"` is the open-read sentinel — it sets read_all=true and must not be
         // added as a literal path, so filter it out before expanding.
-        let home = dirs_next::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
         let read_all = cfg.readable.iter().any(|r| r == "*");
         for p in cfg.readable.iter().filter(|r| *r != "*") {
-            readable.push(expand_path_vars(p, &home, codebase));
+            readable.push(expand_path_vars(p, home, codebase));
         }
         if access.writes {
             for p in &cfg.writable {
-                writable.push(expand_path_vars(p, &home, codebase));
+                writable.push(expand_path_vars(p, home, codebase));
             }
         }
 

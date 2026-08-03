@@ -211,13 +211,13 @@ pub async fn relay_brain_turn(
             profile.overlay_inference(&inference)?;
         }
     }
-    let credential = crate::auth::resolve_credential(
+    let credential_lease = crate::auth::resolve_credential_lease_result(
         profile
             .model
             .split_once('/')
             .map(|(provider, _)| provider)
             .unwrap_or(""),
-    );
+    )?;
 
     // ── Spawn brain (enrolled as cascade group leader) ──────────────────────
     let mut child = {
@@ -290,9 +290,9 @@ pub async fn relay_brain_turn(
             }),
             profile_json,
             daemons,
-            credential_json: credential
+            credential_json: credential_lease
                 .as_ref()
-                .map(credential_to_wire_json)
+                .map(|lease| credential_to_wire_json(&lease.credential))
                 .transpose()?
                 .unwrap_or_default(),
         };

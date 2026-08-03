@@ -164,12 +164,24 @@ gait auth remove <provider>                     # delete stored key
 gait auth status <provider>                     # show whether a provider is configured
 gait auth login openai-codex                    # ChatGPT subscription device-code flow
 gait auth logout openai-codex                   # remove a subscription
+gait auth link openai-codex codex               # use the Codex CLI's existing login
+gait auth unlink openai-codex                   # remove only gait's external binding
 
 gait models                                     # list all available models
 gait models anthropic                           # filter by substring
 ```
 
-API keys are stored via the OS credential store. They can also be set via environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `MINIMAX_API_KEY`, etc.). Subscription login (`openai-codex`) uses a device-code flow rather than an API key.
+API keys and non-secret external-source bindings are stored in
+`$GAIT_HOME/auth.json`; `GAIT_HOME` defaults to `~/.gait-home`. This global
+home is separate from `GAIT_DIR` and is not a gait workspace or Git repository.
+Keys can also be set via environment variables (`ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `MINIMAX_API_KEY`, etc.). Subscription login
+(`openai-codex`) uses a device-code flow rather than an API key. Linking to
+`codex` stores only a non-secret pointer in gait; credentials remain in Codex's
+canonical `$CODEX_HOME/auth.json` file (normally `~/.codex/auth.json`).
+
+`gait models` caches the models.dev catalog at
+`$GAIT_HOME/cache/models.json`.
 
 ### Named inference profiles
 

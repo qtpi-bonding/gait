@@ -12,6 +12,7 @@ Source of truth: `crates/gait-repl/src/repl/commands.rs::COMMANDS`. The REPL and
 |---|---|---|
 | `/help` | `/?` | Show this command guide. |
 | `/info` | | Show model, session, gait-dir, codebase. |
+| `/auth` | | List or inspect credentials; link/unlink external CLI authentication. |
 | `/exit` | `/quit`, `/q` | Exit the REPL. |
 
 ### Shell
@@ -45,6 +46,21 @@ Source of truth: `crates/gait-repl/src/repl/commands.rs::COMMANDS`. The REPL and
 | `/uc` | Undo checkpoint (code only). |
 | `/ut` | Undo turn (transcript only). |
 
+### External authentication
+
+The REPL uses the same non-secret auth-source operations as the CLI:
+
+```text
+/auth
+/auth status openai-codex
+/auth link openai-codex codex
+/auth link openai-codex codex --home /custom/codex/home
+/auth unlink openai-codex
+```
+
+Linking selects Codex's existing login; it does not copy or revoke Codex's
+credentials.
+
 ---
 
 ## Input syntax (works in any message)
@@ -66,5 +82,9 @@ The REPL is a thin frontend over the same engine the CLI uses. State lives in th
 - **Session log** — `<gait-dir>/sessions/<id>/log.jsonl` (the source of truth).
 - **In-flight worktree** — `<gait-dir>/.active/<id>/` (gitignored, removed on `gait persist` or `gait discard`).
 - **Config** — `<gait-dir>/gait.jsonc`.
+
+Global credentials and the models cache do not live in the gait-dir. They use
+`$GAIT_HOME/auth.json` and `$GAIT_HOME/cache/models.json`; `GAIT_HOME` defaults
+to `~/.gait-home`.
 
 If the REPL dies mid-turn, the turn is committed to the log and the brain subprocess is reaped by the OS. Re-running `gait -i --session <id>` continues from where the log left off.

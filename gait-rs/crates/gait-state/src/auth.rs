@@ -1,14 +1,35 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
-use gait_auth::ResolvedCredential;
+use gait_auth::sources::codex::{CodexAuthSource, CODEX_SOURCE_ID};
+use gait_auth::{AuthLocation, AuthSource, CredentialLease, ResolvedCredential};
+use gait_platform::{NativePlatform, Platform};
+
+use crate::gait_home::{GaitHome, GaitHomeError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("path has no parent: {0}")]
-    NoParent(std::path::PathBuf),
+    NoParent(PathBuf),
+    #[error("unsupported authentication source '{0}'")]
+    UnsupportedSource(String),
+    #[error("authentication source '{source_id}' has no credentials for provider '{provider}'")]
+    ExternalCredentialMissing { source_id: String, provider: String },
+    #[error("provider '{0}' is not linked to an external authentication source")]
+    NotExternalBinding(String),
+    #[error(transparent)]
+    Source(#[from] gait_auth::AuthError),
+    #[error(transparent)]
+    GaitHome(#[from] GaitHomeError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalAuthBinding {
+    pub source: String,
+    pub home: Option<PathBuf>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -38,10 +59,16 @@ pub enum AuthEntry {
         account_label: Option<String>,
         secret: serde_json::Value,
     },
+    /// Non-secret pointer to a credential store owned by another CLI.
+    External {
+        source: String,
+        #[serde(default)]
+        home: Option<PathBuf>,
+    },
 }
 
 /// Resolve API key for a provider.
-/// Priority: environment variable > ~/.local/share/gait/auth.json
+/// Priority: provider environment variable > `$GAIT_HOME/auth.json`.
 pub fn resolve_api_key(provider: &str) -> Option<String> {
     resolve_credential(provider).and_then(|credential| credential.api_key().map(str::to_string))
 }
@@ -53,32 +80,117 @@ pub fn resolve_api_key(provider: &str) -> Option<String> {
 /// auth method; legacy OAuth records intentionally do not masquerade as API
 /// keys or bearer tokens.
 pub fn resolve_credential(provider: &str) -> Option<ResolvedCredential> {
+    resolve_credential_result(provider).ok().flatten()
+}
+
+/// Resolve a credential while preserving source-discovery errors for callers
+/// that can render them. Compatibility callers may continue using
+/// [`resolve_credential`], which retains the old `Option` surface.
+pub fn resolve_credential_result(provider: &str) -> Result<Option<ResolvedCredential>, AuthError> {
+    resolve_credential_lease_result(provider).map(|lease| lease.map(|lease| lease.credential))
+}
+
+pub fn resolve_credential_with(
+    platform: &dyn Platform,
+    provider: &str,
+) -> Result<Option<ResolvedCredential>, AuthError> {
+    resolve_credential_lease_with(platform, provider)
+        .map(|lease| lease.map(|lease| lease.credential))
+}
+
+/// Resolve a credential while retaining its non-secret source metadata in the
+/// spine. The sealed brain receives only `lease.credential`.
+pub fn resolve_credential_lease_result(
+    provider: &str,
+) -> Result<Option<CredentialLease>, AuthError> {
+    resolve_credential_lease_with(&NativePlatform, provider)
+}
+
+pub fn resolve_credential_lease_with(
+    platform: &dyn Platform,
+    provider: &str,
+) -> Result<Option<CredentialLease>, AuthError> {
     // 1. Check env var (ANTHROPIC_API_KEY, MINIMAX_API_KEY, OPENAI_API_KEY, etc.)
     let env_var = format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"));
-    if let Ok(key) = std::env::var(&env_var) {
+    if let Some(key) = platform
+        .env(&env_var)
+        .and_then(|value| value.into_string().ok())
+    {
         if !key.is_empty() {
-            return Some(ResolvedCredential::ApiKey(key));
+            return Ok(Some(CredentialLease {
+                credential: ResolvedCredential::ApiKey(key),
+                source_id: "environment".into(),
+                location: AuthLocation::Environment(env_var),
+                revision: None,
+            }));
         }
     }
     // 2. Check auth.json
-    let auth_path = dirs_next::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("~"))
-        .join(".local")
-        .join("share")
-        .join("gait")
-        .join("auth.json");
+    let auth_path = auth_path_for(platform)?;
     if !auth_path.exists() {
-        return no_auth_placeholder(provider).map(ResolvedCredential::ApiKey);
+        return Ok(no_auth_placeholder(provider).map(|key| CredentialLease {
+            credential: ResolvedCredential::ApiKey(key),
+            source_id: "local-runtime".into(),
+            location: AuthLocation::Synthetic,
+            revision: None,
+        }));
     }
-    let Ok(text) = std::fs::read_to_string(&auth_path) else {
-        return no_auth_placeholder(provider).map(ResolvedCredential::ApiKey);
+    let text = std::fs::read_to_string(&auth_path)?;
+    let map = serde_json::from_str::<HashMap<String, AuthEntry>>(&text)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    match map.get(provider) {
+        Some(AuthEntry::External { source, home }) => {
+            resolve_external(platform, provider, source, home.as_deref())
+        }
+        Some(entry) => {
+            Ok(
+                credential_from_entry(provider, entry).map(|credential| CredentialLease {
+                    credential,
+                    source_id: "gait".into(),
+                    location: AuthLocation::File(auth_path),
+                    revision: None,
+                }),
+            )
+        }
+        None => Ok(no_auth_placeholder(provider).map(|key| CredentialLease {
+            credential: ResolvedCredential::ApiKey(key),
+            source_id: "local-runtime".into(),
+            location: AuthLocation::Synthetic,
+            revision: None,
+        })),
+    }
+}
+
+fn resolve_external(
+    platform: &dyn Platform,
+    provider: &str,
+    source_id: &str,
+    explicit_home: Option<&Path>,
+) -> Result<Option<CredentialLease>, AuthError> {
+    let source: Box<dyn AuthSource> = match source_id {
+        CODEX_SOURCE_ID => Box::new(CodexAuthSource),
+        other => return Err(AuthError::UnsupportedSource(other.to_string())),
     };
-    let Ok(map) = serde_json::from_str::<HashMap<String, AuthEntry>>(&text) else {
-        return no_auth_placeholder(provider).map(ResolvedCredential::ApiKey);
-    };
-    map.get(provider)
-        .and_then(|entry| credential_from_entry(provider, entry))
-        .or_else(|| no_auth_placeholder(provider).map(ResolvedCredential::ApiKey))
+    if !source.supports(provider) {
+        return Err(AuthError::UnsupportedSource(format!(
+            "{source_id} for provider {provider}"
+        )));
+    }
+    for location in source.discover(platform, explicit_home)? {
+        if let Some(lease) = source.resolve(&location, provider)? {
+            return Ok(Some(lease));
+        }
+    }
+    if source_id == CODEX_SOURCE_ID {
+        return Err(AuthError::Source(gait_auth::AuthError::LoginRequired(
+            "Codex has no file-backed ChatGPT credentials; run `codex login` or configure Codex with cli_auth_credentials_store = \"file\""
+                .into(),
+        )));
+    }
+    Err(AuthError::ExternalCredentialMissing {
+        source_id: source_id.to_string(),
+        provider: provider.to_string(),
+    })
 }
 
 fn credential_from_entry(provider: &str, entry: &AuthEntry) -> Option<ResolvedCredential> {
@@ -105,6 +217,7 @@ fn credential_from_entry(provider: &str, entry: &AuthEntry) -> Option<ResolvedCr
             },
         )),
         AuthEntry::Subscription { .. } => None,
+        AuthEntry::External { .. } => None,
     }
 }
 
@@ -121,14 +234,8 @@ fn no_auth_placeholder(provider: &str) -> Option<String> {
     }
 }
 
-fn auth_path() -> std::path::PathBuf {
-    // Match TypeScript gait: always ~/.local/share/gait/auth.json (cross-platform convention)
-    dirs_next::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("~"))
-        .join(".local")
-        .join("share")
-        .join("gait")
-        .join("auth.json")
+fn auth_path_for(platform: &dyn Platform) -> Result<PathBuf, AuthError> {
+    Ok(GaitHome::resolve_with(platform)?.auth_file())
 }
 
 fn read_raw_auth(path: &std::path::Path) -> HashMap<String, serde_json::Value> {
@@ -172,7 +279,15 @@ pub fn write_api_key_to(
 }
 
 pub fn write_api_key(provider: &str, key: &str) -> Result<(), AuthError> {
-    write_api_key_to(&auth_path(), provider, key)
+    write_api_key_with(&NativePlatform, provider, key)
+}
+
+pub fn write_api_key_with(
+    platform: &dyn Platform,
+    provider: &str,
+    key: &str,
+) -> Result<(), AuthError> {
+    write_api_key_to(&auth_path_for(platform)?, provider, key)
 }
 
 /// Persist a versioned subscription credential.  The file's schema remains a
@@ -212,7 +327,108 @@ pub fn write_subscription_credential(
     provider: &str,
     credential: &gait_auth::SubscriptionCredential,
 ) -> Result<(), AuthError> {
-    write_subscription_credential_to(&auth_path(), provider, credential)
+    write_subscription_credential_with(&NativePlatform, provider, credential)
+}
+
+pub fn write_subscription_credential_with(
+    platform: &dyn Platform,
+    provider: &str,
+    credential: &gait_auth::SubscriptionCredential,
+) -> Result<(), AuthError> {
+    write_subscription_credential_to(&auth_path_for(platform)?, provider, credential)
+}
+
+/// Store a non-secret binding to an external CLI's credential source.
+pub fn write_external_binding_to(
+    path: &Path,
+    provider: &str,
+    source: &str,
+    home: Option<&Path>,
+) -> Result<(), AuthError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| AuthError::NoParent(path.to_owned()))?;
+    std::fs::create_dir_all(parent)?;
+    let mut data = read_raw_auth(path);
+    data.insert(
+        provider.to_string(),
+        serde_json::to_value(AuthEntry::External {
+            source: source.to_string(),
+            home: home.map(Path::to_path_buf),
+        })
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,
+    );
+    std::fs::write(
+        path,
+        serde_json::to_string_pretty(&data)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,
+    )?;
+    restrict_auth_file_permissions(path)?;
+    Ok(())
+}
+
+pub fn write_external_binding(
+    provider: &str,
+    source: &str,
+    home: Option<&Path>,
+) -> Result<(), AuthError> {
+    write_external_binding_with(&NativePlatform, provider, source, home)
+}
+
+pub fn write_external_binding_with(
+    platform: &dyn Platform,
+    provider: &str,
+    source: &str,
+    home: Option<&Path>,
+) -> Result<(), AuthError> {
+    write_external_binding_to(&auth_path_for(platform)?, provider, source, home)
+}
+
+pub fn external_binding_from(path: &Path, provider: &str) -> Option<ExternalAuthBinding> {
+    let value = read_raw_auth(path).remove(provider)?;
+    let AuthEntry::External { source, home } = serde_json::from_value(value).ok()? else {
+        return None;
+    };
+    Some(ExternalAuthBinding { source, home })
+}
+
+pub fn external_binding(provider: &str) -> Result<Option<ExternalAuthBinding>, AuthError> {
+    external_binding_with(&NativePlatform, provider)
+}
+
+pub fn external_binding_with(
+    platform: &dyn Platform,
+    provider: &str,
+) -> Result<Option<ExternalAuthBinding>, AuthError> {
+    Ok(external_binding_from(&auth_path_for(platform)?, provider))
+}
+
+pub fn unlink_external_binding_from(path: &Path, provider: &str) -> Result<(), AuthError> {
+    let mut data = read_raw_auth(path);
+    match data.get(provider).and_then(|value| value.get("type")) {
+        None => return Ok(()),
+        Some(kind) if kind.as_str() == Some("external") => {}
+        Some(_) => return Err(AuthError::NotExternalBinding(provider.to_string())),
+    }
+    data.remove(provider);
+    std::fs::write(
+        path,
+        serde_json::to_string_pretty(&data)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,
+    )?;
+    restrict_auth_file_permissions(path)?;
+    Ok(())
+}
+
+pub fn unlink_external_binding(provider: &str) -> Result<(), AuthError> {
+    unlink_external_binding_with(&NativePlatform, provider)
+}
+
+pub fn unlink_external_binding_with(
+    platform: &dyn Platform,
+    provider: &str,
+) -> Result<(), AuthError> {
+    unlink_external_binding_from(&auth_path_for(platform)?, provider)
 }
 
 pub fn remove_api_key_from(path: &std::path::Path, provider: &str) -> Result<(), AuthError> {
@@ -228,7 +444,11 @@ pub fn remove_api_key_from(path: &std::path::Path, provider: &str) -> Result<(),
 }
 
 pub fn remove_api_key(provider: &str) -> Result<(), AuthError> {
-    remove_api_key_from(&auth_path(), provider)
+    remove_api_key_with(&NativePlatform, provider)
+}
+
+pub fn remove_api_key_with(platform: &dyn Platform, provider: &str) -> Result<(), AuthError> {
+    remove_api_key_from(&auth_path_for(platform)?, provider)
 }
 
 /// Returns provider → masked_display string for `auth list`.
@@ -251,6 +471,13 @@ pub fn list_credentials_from(path: &std::path::Path) -> HashMap<String, String> 
                     .and_then(|label| label.as_str())
                     .map(|label| format!("subscription ({label})"))
                     .unwrap_or_else(|| "subscription".to_string()),
+                Some("external") => {
+                    let source = v
+                        .get("source")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("unknown");
+                    format!("external ({source})")
+                }
                 other => other.unwrap_or("unknown").to_string(),
             };
             (k, display)
@@ -258,13 +485,55 @@ pub fn list_credentials_from(path: &std::path::Path) -> HashMap<String, String> 
         .collect()
 }
 
-pub fn list_credentials() -> HashMap<String, String> {
-    list_credentials_from(&auth_path())
+pub fn list_credentials() -> Result<HashMap<String, String>, AuthError> {
+    list_credentials_with(&NativePlatform)
+}
+
+pub fn list_credentials_with(
+    platform: &dyn Platform,
+) -> Result<HashMap<String, String>, AuthError> {
+    Ok(list_credentials_from(&auth_path_for(platform)?))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::ffi::OsString;
+
+    use gait_platform::PlatformKind;
+
     use super::*;
+
+    struct FakePlatform {
+        home: PathBuf,
+        env: HashMap<String, OsString>,
+    }
+
+    impl Platform for FakePlatform {
+        fn kind(&self) -> PlatformKind {
+            PlatformKind::Linux
+        }
+
+        fn home_dir(&self) -> Option<PathBuf> {
+            Some(self.home.clone())
+        }
+
+        fn config_dir(&self) -> Option<PathBuf> {
+            None
+        }
+
+        fn data_dir(&self) -> Option<PathBuf> {
+            None
+        }
+
+        fn cache_dir(&self) -> Option<PathBuf> {
+            None
+        }
+
+        fn env(&self, name: &str) -> Option<OsString> {
+            self.env.get(name).cloned()
+        }
+    }
 
     #[test]
     fn no_auth_provider_resolves_without_key_or_env_var() {
@@ -293,6 +562,29 @@ mod tests {
         let list = list_credentials_from(&auth_path);
         assert_eq!(
             list.get("anthropic").map(|s| s.as_str()),
+            Some("sk-test-...")
+        );
+    }
+
+    #[test]
+    fn default_auth_operations_use_gait_home_only() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let platform = FakePlatform {
+            home: dir.path().to_path_buf(),
+            env: HashMap::new(),
+        };
+
+        write_api_key_with(&platform, "anthropic", "sk-test-123").unwrap();
+
+        let new_path = dir.path().join(".gait-home/auth.json");
+        let old_path = dir.path().join(".local/share/gait/auth.json");
+        assert!(new_path.is_file());
+        assert!(!old_path.exists());
+        assert_eq!(
+            list_credentials_with(&platform)
+                .unwrap()
+                .get("anthropic")
+                .map(String::as_str),
             Some("sk-test-...")
         );
     }
@@ -420,6 +712,89 @@ mod tests {
         assert!(
             !masked.contains("abcdefghijklmnop"),
             "full key should not appear"
+        );
+    }
+
+    #[test]
+    fn external_binding_contains_no_secret_and_resolves_from_codex_home() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let platform = FakePlatform {
+            home: dir.path().to_path_buf(),
+            env: HashMap::new(),
+        };
+        let gait_auth_path = auth_path_for(&platform).unwrap();
+        let codex_home = dir.path().join("codex-home");
+        std::fs::create_dir_all(&codex_home).unwrap();
+        std::fs::write(
+            codex_home.join("auth.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "id_token": "header.eyJlbWFpbCI6InBlcnNvbkBleGFtcGxlLnRlc3QiLCJleHAiOjQxMDI0NDQ4MDAsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vYXV0aCI6eyJjaGF0Z3B0X2FjY291bnRfaWQiOiJhY2N0LXRlc3QifX0.signature",
+                    "access_token": "external-access-secret",
+                    "refresh_token": "external-refresh-secret",
+                    "account_id": "acct-test"
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        write_external_binding_to(&gait_auth_path, "openai-codex", "codex", Some(&codex_home))
+            .unwrap();
+
+        let binding_text = std::fs::read_to_string(&gait_auth_path).unwrap();
+        assert!(binding_text.contains("\"source\": \"codex\""));
+        assert!(!binding_text.contains("external-access-secret"));
+        assert!(!binding_text.contains("external-refresh-secret"));
+
+        let lease = resolve_credential_lease_with(&platform, "openai-codex")
+            .unwrap()
+            .unwrap();
+        assert_eq!(lease.credential.provider_id(), Some("openai-codex"));
+        assert_eq!(lease.source_id, "codex");
+        assert_eq!(
+            lease.location,
+            AuthLocation::File(codex_home.join("auth.json"))
+        );
+        assert_eq!(
+            list_credentials_from(&gait_auth_path).get("openai-codex"),
+            Some(&"external (codex)".to_string())
+        );
+    }
+
+    #[test]
+    fn unlink_removes_only_external_bindings() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("auth.json");
+        write_external_binding_to(&path, "openai-codex", "codex", None).unwrap();
+        unlink_external_binding_from(&path, "openai-codex").unwrap();
+        assert!(external_binding_from(&path, "openai-codex").is_none());
+
+        write_api_key_to(&path, "openai", "sk-test").unwrap();
+        assert!(matches!(
+            unlink_external_binding_from(&path, "openai"),
+            Err(AuthError::NotExternalBinding(provider)) if provider == "openai"
+        ));
+        assert_eq!(
+            list_credentials_from(&path).get("openai"),
+            Some(&"sk-test...".to_string())
+        );
+    }
+
+    #[test]
+    fn environment_credentials_retain_source_metadata() {
+        let platform = FakePlatform {
+            home: PathBuf::from("/users/test"),
+            env: HashMap::from([("OPENAI_API_KEY".into(), OsString::from("sk-environment"))]),
+        };
+        let lease = resolve_credential_lease_with(&platform, "openai")
+            .unwrap()
+            .unwrap();
+        assert_eq!(lease.credential.api_key(), Some("sk-environment"));
+        assert_eq!(lease.source_id, "environment");
+        assert_eq!(
+            lease.location,
+            AuthLocation::Environment("OPENAI_API_KEY".into())
         );
     }
 }

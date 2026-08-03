@@ -445,7 +445,7 @@ fn check_own_tool_scope_in_codebase_is_in_scope() {
         )],
     };
     let cfg = SandboxConfig::default();
-    let items = check_own_tool_scope(&tc, &tool, std::path::Path::new("/codebase"), &cfg);
+    let items = check_own_tool_scope(&tc, &tool, std::path::Path::new("/codebase"), &cfg).unwrap();
     assert!(
         items.is_empty(),
         "in-codebase target must be in-scope, got: {items:?}"
@@ -471,7 +471,7 @@ fn check_own_tool_scope_outside_codebase_is_out_of_scope() {
         targets: vec![(std::path::PathBuf::from("/etc/passwd"), Dimension::Write)],
     };
     let cfg = SandboxConfig::default();
-    let items = check_own_tool_scope(&tc, &tool, std::path::Path::new("/codebase"), &cfg);
+    let items = check_own_tool_scope(&tc, &tool, std::path::Path::new("/codebase"), &cfg).unwrap();
     assert_eq!(
         items.len(),
         1,
@@ -510,7 +510,7 @@ fn check_own_tool_scope_nonexistent_path_does_not_touch_disk() {
     };
     let cfg = SandboxConfig::default();
     // Must not panic; should return exactly 1 item (the truly outside path).
-    let items = check_own_tool_scope(&tc, &tool, std::path::Path::new("/codebase"), &cfg);
+    let items = check_own_tool_scope(&tc, &tool, std::path::Path::new("/codebase"), &cfg).unwrap();
     assert_eq!(
         items.len(),
         1,
@@ -539,7 +539,7 @@ fn check_own_tool_scope_lexical_dotdot_in_codebase_path() {
         targets: vec![(tricky, Dimension::Read)],
     };
     let cfg = SandboxConfig::default();
-    let items = check_own_tool_scope(&tc, &tool, std::path::Path::new("/codebase"), &cfg);
+    let items = check_own_tool_scope(&tc, &tool, std::path::Path::new("/codebase"), &cfg).unwrap();
     assert!(
         items.is_empty(),
         "lexically in-scope path with .. must not be flagged: {items:?}"

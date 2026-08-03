@@ -229,10 +229,30 @@ fn init_decision(target: &Path, force: bool) -> Result<Option<PathBuf>, PathBuf>
     }
 }
 
+fn is_global_gait_home(target: &Path, home: &gait_state::gait_home::GaitHome) -> bool {
+    let absolute_target = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(target)
+    };
+    absolute_target == home.as_path()
+}
+
 /// Initialize a gait-dir, committing the scaffold. The CLI adapter renders
 /// success / error; this op carries no terminal I/O.
 pub fn init(params: InitParams) -> Result<InitOutcome, OpError> {
     let gait_dir = params.path;
+
+    if let Ok(home) = gait_state::gait_home::GaitHome::resolve() {
+        if is_global_gait_home(&gait_dir, &home) {
+            return Err(OpError::Conflict(format!(
+                "{} is GAIT_HOME and cannot be initialized as a gait workspace",
+                gait_dir.display()
+            )));
+        }
+    }
 
     // Decide (pre-creation) whether to proceed and, if so, capture the enclosing
     // codebase repo for later auto-gitignore. An existing gait workspace re-init
@@ -337,6 +357,21 @@ pub fn init(params: InitParams) -> Result<InitOutcome, OpError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn global_gait_home_is_not_a_workspace_target() {
+        let home =
+            gait_state::gait_home::GaitHome::from_path(PathBuf::from("/Users/test/.gait-home"))
+                .unwrap();
+        assert!(is_global_gait_home(
+            Path::new("/Users/test/.gait-home"),
+            &home
+        ));
+        assert!(!is_global_gait_home(
+            Path::new("/Users/test/workspaces/example"),
+            &home
+        ));
+    }
 
     #[test]
     #[serial_test::serial]

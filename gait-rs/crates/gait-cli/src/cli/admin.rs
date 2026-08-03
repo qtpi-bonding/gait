@@ -4,13 +4,18 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-/// `gait auth list|add|remove|login|status|logout [provider]`
+/// `gait auth list|add|remove|login|status|logout|link|unlink [provider] [source]`
 #[derive(Parser, Debug)]
 pub struct AuthArgs {
-    /// Action: list (default), add, remove, login, status, logout
+    /// Action: list (default), add, remove, login, status, logout, link, unlink
     pub action: Option<String>,
-    /// Provider name (used with add/remove)
+    /// Provider name
     pub provider: Option<String>,
+    /// External source name (used with link)
+    pub source: Option<String>,
+    /// Override the external CLI's home directory
+    #[arg(long)]
+    pub home: Option<PathBuf>,
 }
 
 /// `gait models [filter]`
@@ -239,7 +244,13 @@ pub async fn cmd_auth(args: AuthArgs) {
     let provider = args.provider.as_deref();
     match action {
         "list" => {
-            let creds = gait_ops::auth::list();
+            let creds = match gait_ops::auth::list() {
+                Ok(credentials) => credentials,
+                Err(error) => {
+                    eprintln!("[gait] error: {error}");
+                    std::process::exit(1);
+                }
+            };
             if creds.is_empty() {
                 println!("No credentials configured. Run: gait auth add <provider>");
             } else {
@@ -314,8 +325,51 @@ pub async fn cmd_auth(args: AuthArgs) {
                 }
             };
             match gait_ops::auth::status(provider) {
-                Some(status) => println!("{provider}: {status}"),
-                None => println!("{provider}: not configured"),
+                Ok(Some(status)) => println!("{provider}: {status}"),
+                Ok(None) => println!("{provider}: not configured"),
+                Err(error) => {
+                    eprintln!("[gait] error: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        "link" => {
+            let provider = match provider {
+                Some(provider) => provider,
+                None => {
+                    eprintln!("usage: gait auth link <provider> <source> [--home <path>]");
+                    std::process::exit(1);
+                }
+            };
+            let source = match args.source.as_deref() {
+                Some(source) => source,
+                None => {
+                    eprintln!("usage: gait auth link <provider> <source> [--home <path>]");
+                    std::process::exit(1);
+                }
+            };
+            match gait_ops::auth::link(provider, source, args.home) {
+                Ok(out) => println!("Linked {} credentials ({})", out.provider, out.display),
+                Err(error) => {
+                    eprintln!("[gait] error: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        "unlink" => {
+            let provider = match provider {
+                Some(provider) => provider,
+                None => {
+                    eprintln!("usage: gait auth unlink <provider>");
+                    std::process::exit(1);
+                }
+            };
+            match gait_ops::auth::unlink(provider) {
+                Ok(out) => println!("Unlinked {} external credentials", out.provider),
+                Err(error) => {
+                    eprintln!("[gait] error: {error}");
+                    std::process::exit(1);
+                }
             }
         }
         "logout" => {
@@ -350,7 +404,7 @@ pub async fn cmd_auth(args: AuthArgs) {
         }
         other => {
             eprintln!("unknown auth subcommand: {}", other);
-            eprintln!("usage: gait auth <list|add|remove|login|status|logout> [<provider>]");
+            eprintln!("usage: gait auth <list|add|remove|login|status|logout|link|unlink> [<provider>] [<source>]");
             std::process::exit(1);
         }
     }
@@ -382,16 +436,7 @@ pub async fn cmd_models(args: ModelsArgs) {
 }
 
 pub fn cmd_register(args: RegisterArgs) -> anyhow::Result<()> {
-    let gait_dir: PathBuf = args
-        .gait_dir
-        .clone()
-        .or_else(|| {
-            std::env::var("GAIT_DIR")
-                .ok()
-                .filter(|v| !v.is_empty())
-                .map(PathBuf::from)
-        })
-        .ok_or_else(|| anyhow::anyhow!("no gait dir: pass --gait-dir <path> or set $GAIT_DIR"))?;
+    let gait_dir = crate::cli::args::resolve_gait_dir_from(args.gait_dir.clone())?;
 
     let params = gait_ops::extension::RegisterParams {
         gait_dir,
@@ -436,15 +481,10 @@ pub fn cmd_register(args: RegisterArgs) -> anyhow::Result<()> {
 }
 
 pub fn cmd_enable(args: EnableArgs) {
-    let gait_dir: PathBuf = match args.gait_dir.clone().or_else(|| {
-        std::env::var("GAIT_DIR")
-            .ok()
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-    }) {
-        Some(d) => d,
-        None => {
-            eprintln!("[gait] no gait dir: pass --gait-dir <path> or set $GAIT_DIR");
+    let gait_dir = match crate::cli::args::resolve_gait_dir_from(args.gait_dir.clone()) {
+        Ok(dir) => dir,
+        Err(error) => {
+            eprintln!("[gait] {error}");
             std::process::exit(1);
         }
     };
@@ -463,15 +503,10 @@ pub fn cmd_enable(args: EnableArgs) {
 }
 
 pub fn cmd_disable(args: DisableArgs) {
-    let gait_dir: PathBuf = match args.gait_dir.clone().or_else(|| {
-        std::env::var("GAIT_DIR")
-            .ok()
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-    }) {
-        Some(d) => d,
-        None => {
-            eprintln!("[gait] no gait dir: pass --gait-dir <path> or set $GAIT_DIR");
+    let gait_dir = match crate::cli::args::resolve_gait_dir_from(args.gait_dir.clone()) {
+        Ok(dir) => dir,
+        Err(error) => {
+            eprintln!("[gait] {error}");
             std::process::exit(1);
         }
     };
@@ -490,16 +525,7 @@ pub fn cmd_disable(args: DisableArgs) {
 }
 
 pub fn cmd_unregister(args: UnregisterArgs) -> anyhow::Result<()> {
-    let gait_dir: PathBuf = args
-        .gait_dir
-        .clone()
-        .or_else(|| {
-            std::env::var("GAIT_DIR")
-                .ok()
-                .filter(|v| !v.is_empty())
-                .map(PathBuf::from)
-        })
-        .ok_or_else(|| anyhow::anyhow!("no gait dir: pass --gait-dir <path> or set $GAIT_DIR"))?;
+    let gait_dir = crate::cli::args::resolve_gait_dir_from(args.gait_dir.clone())?;
 
     let params = gait_ops::extension::UnregisterParams {
         gait_dir,
@@ -592,5 +618,27 @@ pub fn cmd_config(args: ConfigArgs) {
             eprintln!("[gait] usage: gait config <set|get> ...");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auth_link_parses_source_and_home() {
+        let args = AuthArgs::try_parse_from([
+            "gait-auth",
+            "link",
+            "openai-codex",
+            "codex",
+            "--home",
+            "/tmp/codex-home",
+        ])
+        .unwrap();
+        assert_eq!(args.action.as_deref(), Some("link"));
+        assert_eq!(args.provider.as_deref(), Some("openai-codex"));
+        assert_eq!(args.source.as_deref(), Some("codex"));
+        assert_eq!(args.home, Some(PathBuf::from("/tmp/codex-home")));
     }
 }

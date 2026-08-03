@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+use gait_platform::{NativePlatform, Platform};
+
+use crate::gait_home::{GaitHome, GaitHomeError};
+
 const MODELS_URL: &str = "https://models.dev/api.json";
 const CACHE_TTL_SECS: u64 = 3600; // 1 hour
 
@@ -12,11 +16,8 @@ pub struct ModelInfo {
     pub context_length: Option<u64>,
 }
 
-fn cache_path() -> std::path::PathBuf {
-    dirs_next::cache_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("~/.cache"))
-        .join("gait")
-        .join("models.json")
+pub fn cache_path_with(platform: &dyn Platform) -> Result<std::path::PathBuf, GaitHomeError> {
+    Ok(GaitHome::resolve_with(platform)?.models_cache_file())
 }
 
 pub fn load_from_cache(path: &Path) -> Option<Vec<ModelInfo>> {
@@ -38,7 +39,11 @@ fn cache_is_fresh(path: &Path) -> bool {
 }
 
 pub async fn get_models() -> anyhow::Result<Vec<ModelInfo>> {
-    let cache = cache_path();
+    get_models_with(&NativePlatform).await
+}
+
+pub async fn get_models_with(platform: &dyn Platform) -> anyhow::Result<Vec<ModelInfo>> {
+    let cache = cache_path_with(platform)?;
 
     if cache.exists() && cache_is_fresh(&cache) {
         if let Some(models) = load_from_cache(&cache) {
@@ -115,7 +120,51 @@ pub fn filter_models<'a>(models: &'a [ModelInfo], filter: Option<&str>) -> Vec<&
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gait_platform::PlatformKind;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
     use tempfile::TempDir;
+
+    struct FakePlatform {
+        home: PathBuf,
+    }
+
+    impl Platform for FakePlatform {
+        fn kind(&self) -> PlatformKind {
+            PlatformKind::MacOs
+        }
+
+        fn home_dir(&self) -> Option<PathBuf> {
+            Some(self.home.clone())
+        }
+
+        fn config_dir(&self) -> Option<PathBuf> {
+            None
+        }
+
+        fn data_dir(&self) -> Option<PathBuf> {
+            None
+        }
+
+        fn cache_dir(&self) -> Option<PathBuf> {
+            None
+        }
+
+        fn env(&self, _name: &str) -> Option<OsString> {
+            None
+        }
+    }
+
+    #[test]
+    fn cache_path_uses_gait_home() {
+        let platform = FakePlatform {
+            home: PathBuf::from("/Users/test"),
+        };
+        assert_eq!(
+            cache_path_with(&platform).unwrap(),
+            PathBuf::from("/Users/test/.gait-home/cache/models.json")
+        );
+    }
 
     #[test]
     fn get_models_from_cache() {

@@ -60,18 +60,15 @@ fn extract_gait_dir_from_rest(rest: &[String]) -> (Option<PathBuf>, Vec<String>)
 
 pub async fn cmd_workflow(args: WorkflowArgs) {
     let (gait_dir_from_rest, rest) = extract_gait_dir_from_rest(&args.rest);
-    let gait_dir: PathBuf = match args.gait_dir.clone().or(gait_dir_from_rest).or_else(|| {
-        std::env::var("GAIT_DIR")
-            .ok()
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-    }) {
-        Some(d) => d,
-        None => {
-            eprintln!("[gait] no gait dir: pass --gait-dir <path> or set $GAIT_DIR");
-            std::process::exit(1);
-        }
-    };
+    let gait_dir =
+        match crate::cli::args::resolve_gait_dir_from(args.gait_dir.clone().or(gait_dir_from_rest))
+        {
+            Ok(dir) => dir,
+            Err(error) => {
+                eprintln!("[gait] {error}");
+                std::process::exit(1);
+            }
+        };
     let sub = args.action.as_deref().unwrap_or("");
     match sub {
         "run" => cmd_workflow_run(&rest, gait_dir).await,

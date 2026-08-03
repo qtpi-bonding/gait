@@ -11,6 +11,13 @@ pub fn extract_path_arg(args: &[String], flag: &str) -> Option<std::path::PathBu
 /// > error. See `gait_core::gait_dir`.
 pub fn resolve_gait_dir(args: &[String]) -> anyhow::Result<std::path::PathBuf> {
     let explicit = extract_path_arg(args, "--gait-dir");
+    resolve_gait_dir_from(explicit)
+}
+
+/// Resolve a parsed gait-dir option through the shared state policy.
+pub fn resolve_gait_dir_from(
+    explicit: Option<std::path::PathBuf>,
+) -> anyhow::Result<std::path::PathBuf> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     gait_core::gait_dir::resolve(explicit, &cwd)
 }

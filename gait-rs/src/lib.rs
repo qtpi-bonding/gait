@@ -152,16 +152,12 @@ pub async fn __dispatch_role(argv: &[String]) {
                     .find(|w| w[0] == flag)
                     .map(|w| std::path::PathBuf::from(&w[1]))
             }
-            let gait_dir = extract(argv, "--gait-dir").unwrap_or_else(|| {
-                std::env::var("GAIT_DIR")
-                    .ok()
-                    .filter(|v| !v.is_empty())
-                    .map(std::path::PathBuf::from)
-                    .unwrap_or_else(|| {
-                        eprintln!("[gait] no gait dir: pass --gait-dir <path> or set $GAIT_DIR");
-                        std::process::exit(1);
-                    })
-            });
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let gait_dir = crate::gait_dir::resolve(extract(argv, "--gait-dir"), &cwd)
+                .unwrap_or_else(|error| {
+                    eprintln!("[gait] {error}");
+                    std::process::exit(1);
+                });
             let codebase = extract(argv, "--codebase").unwrap_or_else(|| {
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
             });

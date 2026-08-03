@@ -23,7 +23,7 @@ This is the actual list shipped in the binary. Adding a new OpenAI-compatible pr
 | `anthropic` | Anthropic | (default) | `ANTHROPIC_API_KEY` | yes |
 | `minimax` | Anthropic | `https://api.minimax.io/anthropic/v1` | `MINIMAX_API_KEY` | yes |
 | `openai` | OpenAI | (default) | `OPENAI_API_KEY` | yes |
-| `openai-codex` | Codex Responses | `https://chatgpt.com/backend-api/codex` | `OPENAI_CODEX_API_KEY` | yes |
+| `openai-codex` | Codex Responses | `https://chatgpt.com/backend-api/codex` | subscription | yes |
 | `groq` | OpenAI | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | yes |
 | `mistral` | OpenAI | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | yes |
 | `openrouter` | OpenAI | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | yes |
@@ -37,6 +37,20 @@ This is the actual list shipped in the binary. Adding a new OpenAI-compatible pr
 | `lmstudio` | OpenAI | `http://localhost:1234/v1` | `LMSTUDIO_API_KEY` | **no** |
 
 `openai-codex` is a distinct namespace from `openai`: it talks to the ChatGPT subscription backend, not the public API-key endpoint, so users with a ChatGPT Plus/Pro subscription can use it without an OpenAI API key. The CLI form is `gait auth login openai-codex` (device code) rather than `gait auth add openai-codex`.
+
+To reuse an existing file-backed Codex CLI login without copying its tokens into gait:
+
+```bash
+gait auth link openai-codex codex
+gait --model openai-codex/<model> "your task"
+```
+
+The Codex source follows Codex's own home precedence: an explicit `--home`, then `CODEX_HOME`, then `~/.codex`. `gait auth unlink openai-codex` removes only gait's non-secret binding. Codex keyring-backed auth is not supported yet; configure Codex's `cli_auth_credentials_store` as `file` for this integration.
+
+Gait's own credential map and external-source pointers live at
+`$GAIT_HOME/auth.json`, where `GAIT_HOME` defaults to `~/.gait-home`.
+`GAIT_HOME` is global machine state and is independent of the selected
+`GAIT_DIR` workspace.
 
 `ollama` and `lmstudio` are local servers that don't check the `Authorization` header. `gait auth add` is not required for them — set the URL below if you're not on the default port.
 
@@ -96,13 +110,17 @@ The REPL equivalent is `/inference`. Selecting a named profile is a `gait.jsonc`
 
 ## Auth resolution
 
-For each turn, the provider adapter asks `gait-core::auth::resolve_api_key(provider)` for a key. The order:
+For each turn, the spine resolves a typed credential before starting the sealed brain. The order:
 
-1. The OS credential store, keyed by provider id (what `gait auth add` writes).
-2. The provider's `env_var` from the environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.).
-3. For local providers (`ollama`, `lmstudio`): no key, proceed without one.
+1. The provider environment variable (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.).
+2. The provider entry in gait's auth store: an owned API key/subscription or a non-secret external-source binding.
+3. For an external binding, the selected source's canonical credential location.
+4. For local providers (`ollama`, `lmstudio`): no key, proceed without one.
 
-If the provider requires a key and none is found, the turn refuses to start with `[gait] no API key for 'anthropic'; run gait auth add anthropic`.
+If the provider requires a credential and none is found, the turn refuses to start with a provider/source-specific error.
+
+The auth store is `$GAIT_HOME/auth.json`; the models.dev cache is
+`$GAIT_HOME/cache/models.json`.
 
 ## Switching models mid-session
 

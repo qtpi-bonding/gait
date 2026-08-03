@@ -618,7 +618,11 @@ pub async fn run_turn(
             for tc in &step_tool_calls {
                 if let Some(tool) = state.tools.iter().find(|t| t.name() == tc.tool_name) {
                     let items =
-                        check_own_tool_scope(tc, tool.as_ref(), &codebase_path, &sandbox_cfg);
+                        match check_own_tool_scope(tc, tool.as_ref(), &codebase_path, &sandbox_cfg)
+                        {
+                            Ok(items) => items,
+                            Err(error) => break 'turn finalize::StepOutcome::Fail(error),
+                        };
                     // Filter out items whose resource path is already granted
                     // by a prior unlock reply (once or session scope).
                     for item in items {
@@ -669,14 +673,14 @@ fn check_own_tool_scope(
     tool: &dyn Tool,
     codebase: &std::path::Path,
     sandbox_cfg: &crate::config::SandboxConfig,
-) -> Vec<pb::SandboxUnlockItem> {
+) -> anyhow::Result<Vec<pb::SandboxUnlockItem>> {
     use crate::sandbox::ceiling::compute_scope_nofs;
     use crate::sandbox::normalize_lexical;
     use crate::types::Dimension;
 
     let targets = tool.scope_targets(&tc.args);
     if targets.is_empty() {
-        return vec![];
+        return Ok(vec![]);
     }
 
     let temp_jail = std::path::Path::new("/tmp/gait-jail");
@@ -684,7 +688,7 @@ fn check_own_tool_scope(
     // The hand's kernel seal remains the authoritative enforcement; this advisory
     // check only needs to be a sound approximation (no symlink resolution needed).
     let codebase_norm = normalize_lexical(codebase);
-    let ceiling = compute_scope_nofs(tool.access(), sandbox_cfg, &codebase_norm, temp_jail);
+    let ceiling = compute_scope_nofs(tool.access(), sandbox_cfg, &codebase_norm, temp_jail)?;
 
     let mut items = vec![];
     for (path, dim) in targets {
@@ -718,7 +722,7 @@ fn check_own_tool_scope(
             });
         }
     }
-    items
+    Ok(items)
 }
 
 #[cfg(test)]

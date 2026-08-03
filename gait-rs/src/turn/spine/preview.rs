@@ -53,8 +53,11 @@ pub(crate) fn enrich_permissions_preview(
             .unwrap_or(serde_json::Value::Null);
 
         // Scope-bound the read: only preview targets within the tool's read ceiling.
-        let ceiling =
-            crate::sandbox::ceiling::compute_scope(tool.access(), sandbox_cfg, codebase, &jail);
+        let Ok(ceiling) =
+            crate::sandbox::ceiling::compute_scope(tool.access(), sandbox_cfg, codebase, &jail)
+        else {
+            continue;
+        };
         let targets = tool.scope_targets(&args);
         // Empty targets → no declared scope; treat as out-of-scope (skip preview).
         let in_scope = !targets.is_empty()

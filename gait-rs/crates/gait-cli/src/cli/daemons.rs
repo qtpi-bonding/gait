@@ -21,14 +21,8 @@ pub struct DaemonsArgs {
 }
 
 pub fn cmd_daemons(args: DaemonsArgs) {
-    let gait_dir = args
-        .gait_dir
-        .or_else(|| {
-            std::env::var("GAIT_DIR")
-                .ok()
-                .filter(|v| !v.is_empty())
-                .map(PathBuf::from)
-        })
+    let gait_dir = crate::cli::args::resolve_gait_dir_from(args.gait_dir)
+        .ok()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     match args.action.as_deref() {
         Some("stop") => {

@@ -14,8 +14,10 @@ source of truth.
 | Crate | Role |
 |---|---|
 | **gait-types** | foundation leaf: `types` (`Tool`/`Hook` traits, `ToolError`, the `Rec` recorder-surface trait), `config/`, `diagnostic.rs`. Depends only on `gait-proto`. |
+| **gait-platform** | host leaf: injectable platform kind, native directories, and environment access. Its direct consumers are restricted to `gait-auth`, `gait-state`, and `gait-sandbox`. |
+| **gait-auth** | credential/auth-method contracts and external auth-source adapters. Depends on `gait-platform`. |
 | **gait-provider** | generation/wire leaf: `provider.rs`, `transport.rs`, `factory.rs`, `providers.rs`, `anthropic/`, `openai/`, `strict.rs`. Depends only on `gait-types`. |
-| **gait-sandbox** | containment leaf: `sandbox.rs` (incl. `brain_scope()`), `process/` (incl. `proc_start_time()`). Depends only on `gait-types`. |
+| **gait-sandbox** | containment leaf: `sandbox.rs` (incl. `brain_scope()`), `process/` (incl. `proc_start_time()`). Depends on `gait-types` and uses `gait-platform` only at native host-discovery boundaries; pure scope computation receives resolved paths. |
 | **gait-core** | the library: `turn/` (incl. the sealed runtimes `brain.rs`/`spine.rs`/`hand.rs`), `tools/`, `session/`, `embed.rs`. Depends on `gait-types`/`gait-provider`/`gait-sandbox`, re-exporting their modules at the crate root (`crate::types`, `crate::config`, `crate::diagnostic`, `crate::provider`, `crate::sandbox`, `crate::process`, …) so internal `crate::…` paths are unchanged. |
 | **gait-proto** | proto codegen + the log codec: `gait.{log,state,sandbox,workflow}.v1` and `envelope`/`wire`/`hash` (mint, append, `content_hash`) |
 | **gait-cli** | command implementations — `cmd_run`, `cmd_spine`, `cmd_brain`, `cmd_run_tool` — thin arg-parsers over the `gait-core` runtimes |
@@ -27,9 +29,11 @@ The three sealed runtimes live in **gait-core** so both the CLI and the REPL can
 them; `gait-cli`'s `cmd_brain` / `cmd_run_tool` just parse args and call `run_brain` /
 `run_hand`.
 
-`gait-types`/`gait-provider`/`gait-sandbox` form a compiler-enforced DAG under
-`gait-core`: `gait-types` is the sole foundation leaf (depends only on `gait-proto`),
-and `gait-provider`/`gait-sandbox` each depend on `gait-types` alone — neither can
+`gait-platform` and `gait-types` are foundation leaves;
+`gait-provider`/`gait-sandbox` form a compiler-enforced DAG under
+`gait-core`: `gait-types` is the protocol/type foundation (depending only on
+`gait-proto`), and `gait-provider` depends only on `gait-types`, while
+`gait-sandbox` additionally depends on the host-facts leaf — neither can
 reach `turn`/`session`/`spine`/`permissions`, which is enforced by each building
 standalone (`cargo build -p gait-types`, `-p gait-provider`, `-p gait-sandbox`).
 This broke a live `types ↔ tools` cycle (`ToolError` moved down into `gait-types`;
@@ -68,6 +72,18 @@ Cross-cutting:
   auth.rs       API key resolution
   sandbox       brain/spine/hands process seal — see sandbox-security.md
 ```
+
+### Global home versus repositories
+
+`GAIT_HOME` is global, non-repository state. It resolves from the environment or
+defaults to `~/.gait-home`, and currently owns `auth.json` and
+`cache/models.json`. It is never a gait workspace.
+
+`GAIT_DIR` is a durable Gait workspace Git repository containing config,
+extensions, session history, and live session worktrees. Each live session's
+bare codebase checkpoint repository remains at
+`<gait-dir>/.active/<id>/codebase.git`. `CODEBASE` is the user-owned source tree
+that tools edit. None of these three roots is an implicit fallback for another.
 
 ### Tier 1 · Entry (`bin/gait.rs`, `cli/run.rs`, `chat.rs` + `repl_loop.rs`)
 CLI/REPL parsing, command dispatch, session-ID generation, Docker sandbox decision. The actual
