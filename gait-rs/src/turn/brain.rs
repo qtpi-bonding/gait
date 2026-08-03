@@ -9,7 +9,7 @@
 //! - `brain_scope()` — the seal spec: compute + network only, no disk reads
 //! - `BrainSink` — a TurnSink that routes output to stderr (stdout is the Nerve)
 //! - `BrainDriver` — a TurnDriver that wires the Nerve + remote-sink Recorder
-//! - `run_brain()` — the brain's entry point (seal → nerve → run_loop → Terminated)
+//! - `run_brain()` — the brain's entry point (seal → nerve → run_turn → Terminated)
 
 use std::path::PathBuf;
 
@@ -30,6 +30,111 @@ use gait_proto::gait::sandbox::v1::{
 // root as `crate::sandbox::brain_scope`) — it constructs a `SandboxScope`, so it
 // belongs in `sandbox`, not here.
 pub use crate::sandbox::brain_scope;
+
+// The ping and Nerve feedback-reader tasks live for the lifetime of the brain
+// process. These four relays are different: once their senders are dropped,
+// they drain a finite queue and exit. Keeping their handles lets shutdown wait
+// for every queued event before it publishes the terminal signal.
+struct BrainRelaySenders {
+    event_tx: mpsc::UnboundedSender<Event>,
+    stream_fwd_tx: mpsc::UnboundedSender<StreamItem>,
+    spawn_tx: mpsc::UnboundedSender<(Vec<String>, bool)>,
+    notify_tx: mpsc::UnboundedSender<crate::harness::NotifyPayload>,
+}
+
+struct BrainRelayTasks {
+    handles: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl BrainRelayTasks {
+    async fn drain(self) {
+        for handle in self.handles {
+            let _join_result = handle.await;
+        }
+    }
+}
+
+async fn send_terminated_after_relays(
+    relay_tasks: BrainRelayTasks,
+    nerve_writer: &NerveWriter,
+    terminated: &Signal,
+) {
+    relay_tasks.drain().await;
+    nerve_writer.send_one_way(terminated).await.ok();
+}
+
+fn start_brain_relays(nerve_writer: &NerveWriter) -> (BrainRelaySenders, BrainRelayTasks) {
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
+    let relay_writer = nerve_writer.clone();
+    let append_handle = tokio::spawn(async move {
+        while let Some(evt) = event_rx.recv().await {
+            let sig = Signal {
+                corr_id: 0,
+                body: Some(signal::Body::Append(Append { event: Some(evt) })),
+            };
+            relay_writer.send_one_way(&sig).await.ok();
+        }
+    });
+
+    let (stream_fwd_tx, mut stream_fwd_rx) = mpsc::unbounded_channel::<StreamItem>();
+    let stream_relay_writer = nerve_writer.clone();
+    let stream_handle = tokio::spawn(async move {
+        while let Some(item) = stream_fwd_rx.recv().await {
+            let sig = Signal {
+                corr_id: 0,
+                body: Some(signal::Body::StreamForward(StreamForward {
+                    item: Some(item),
+                })),
+            };
+            stream_relay_writer.send_one_way(&sig).await.ok();
+        }
+    });
+
+    let (spawn_tx, mut spawn_rx) = mpsc::unbounded_channel::<(Vec<String>, bool)>();
+    let spawn_relay_writer = nerve_writer.clone();
+    let spawn_handle = tokio::spawn(async move {
+        while let Some((argv, detached)) = spawn_rx.recv().await {
+            let sig = Signal {
+                corr_id: 0,
+                body: Some(signal::Body::Spawn(gait_proto::gait::sandbox::v1::Spawn {
+                    argv,
+                    detached,
+                })),
+            };
+            spawn_relay_writer.send_one_way(&sig).await.ok();
+        }
+    });
+
+    let (notify_tx, mut notify_rx) = mpsc::unbounded_channel::<crate::harness::NotifyPayload>();
+    let notify_relay_writer = nerve_writer.clone();
+    let notify_handle = tokio::spawn(async move {
+        while let Some(payload) = notify_rx.recv().await {
+            let sig = Signal {
+                corr_id: 0,
+                body: Some(signal::Body::Notify(Notify {
+                    target_session: payload.target_session,
+                    from_session: payload.from_session,
+                    status: payload.status,
+                    summary: payload.summary,
+                    idempotency_key: payload.idempotency_key,
+                })),
+            };
+            notify_relay_writer.send_one_way(&sig).await.ok();
+        }
+    });
+
+    (
+        BrainRelaySenders {
+            event_tx,
+            stream_fwd_tx,
+            spawn_tx,
+            notify_tx,
+        },
+        BrainRelayTasks {
+            handles: vec![append_handle, stream_handle, spawn_handle, notify_handle],
+        },
+    )
+}
 
 // ── BrainConfig ───────────────────────────────────────────────────────────────
 
@@ -53,9 +158,9 @@ pub struct BrainConfig {
 ///
 /// 1. Apply the brain seal (read-all, zero writes, outbound network).
 /// 2. Start the Nerve (stdin → Feedback, stdout → Signals).
-/// 3. Spawn relay tasks (Append, StreamForward, Spawn).
+/// 3. Spawn relay tasks (Append, StreamForward, Spawn, Notify).
 /// 4. Load session + profile, create BrainDriver + BrainSink.
-/// 5. Call `embed::run_loop`.
+/// 5. Call `turn::run_turn`.
 /// 6. Send Terminated signal to the spine.
 pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: PathBuf) {
     // ── Apply brain seal ──────────────────────────────────────────────────────
@@ -99,8 +204,15 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
     // Brain reads Feedback from stdin (spine→brain), writes Signals to stdout (brain→spine).
     let (nerve_writer, _nerve_handle) = nerve::start_nerve(stdin, tokio::io::stdout());
 
-    // Channel for AppendRelay: Recorder sends Events here; relay task forwards as Append signals.
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
+    // Recorder and harness operations send through finite relay queues. Their
+    // tasks are retained so shutdown can drain them before Terminated.
+    let (relay_senders, relay_tasks) = start_brain_relays(&nerve_writer);
+    let BrainRelaySenders {
+        event_tx,
+        stream_fwd_tx,
+        spawn_tx,
+        notify_tx,
+    } = relay_senders;
 
     // Emit the brain-seal SandboxApplied event as the first Append signal.
     {
@@ -112,72 +224,6 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
         let evt = gait_proto::envelope::mint(evt_body, None, 0, 0);
         let _ = event_tx.send(evt);
     }
-
-    // AppendRelay task: drain event channel, send Append Signals to spine.
-    let relay_writer = nerve_writer.clone();
-    tokio::spawn(async move {
-        while let Some(evt) = event_rx.recv().await {
-            let sig = Signal {
-                corr_id: 0,
-                body: Some(signal::Body::Append(Append { event: Some(evt) })),
-            };
-            relay_writer.send_one_way(&sig).await.ok();
-        }
-    });
-
-    // StreamForward relay: Recorder's stream_tx feeds this; relay task sends
-    // StreamForward Signals to the spine so it can call sink.item().
-    let (stream_fwd_tx, mut stream_fwd_rx) = mpsc::unbounded_channel::<StreamItem>();
-    let stream_relay_writer = nerve_writer.clone();
-    tokio::spawn(async move {
-        while let Some(item) = stream_fwd_rx.recv().await {
-            let sig = Signal {
-                corr_id: 0,
-                body: Some(signal::Body::StreamForward(StreamForward {
-                    item: Some(item),
-                })),
-            };
-            stream_relay_writer.send_one_way(&sig).await.ok();
-        }
-    });
-
-    // Spawn relay: tools (spawn_agent) and harness send argv here; relay task
-    // forwards as Spawn Signals so the spine (not the sealed brain) executes
-    // the child process. Spine appends --sandbox-locked when sandbox_on.
-    let (spawn_tx, mut spawn_rx) = mpsc::unbounded_channel::<(Vec<String>, bool)>();
-    let spawn_relay_writer = nerve_writer.clone();
-    tokio::spawn(async move {
-        while let Some((argv, detached)) = spawn_rx.recv().await {
-            let sig = Signal {
-                corr_id: 0,
-                body: Some(signal::Body::Spawn(gait_proto::gait::sandbox::v1::Spawn {
-                    argv,
-                    detached,
-                })),
-            };
-            spawn_relay_writer.send_one_way(&sig).await.ok();
-        }
-    });
-
-    // Notify relay: harness sends NotifyPayload here; relay task forwards as
-    // Notify Signals so the spine (not the sealed brain) performs the write.
-    let (notify_tx, mut notify_rx) = mpsc::unbounded_channel::<crate::harness::NotifyPayload>();
-    let notify_relay_writer = nerve_writer.clone();
-    tokio::spawn(async move {
-        while let Some(payload) = notify_rx.recv().await {
-            let sig = Signal {
-                corr_id: 0,
-                body: Some(signal::Body::Notify(Notify {
-                    target_session: payload.target_session,
-                    from_session: payload.from_session,
-                    status: payload.status,
-                    summary: payload.summary,
-                    idempotency_key: payload.idempotency_key,
-                })),
-            };
-            notify_relay_writer.send_one_way(&sig).await.ok();
-        }
-    });
 
     let session_id = match config.session_id.clone() {
         Some(id) => id,
@@ -440,6 +486,11 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
         }
     };
 
+    // BrainDriver owns the persistent sender clones. Dropping it closes all
+    // four finite queues once any turn-local clones have gone away; awaiting
+    // their tasks guarantees Append/StreamForward/Spawn/Notify signals already
+    // queued by finalization are written before Terminated can overtake them.
+    drop(driver);
     let terminated = Signal {
         corr_id: 0,
         body: Some(signal::Body::Terminated(Terminated {
@@ -447,7 +498,7 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
             failed,
         })),
     };
-    nerve_writer.send_one_way(&terminated).await.ok();
+    send_terminated_after_relays(relay_tasks, &nerve_writer, &terminated).await;
     // Drop the nerve writer to close stdout — this signals EOF to the spine's
     // relay loop as a fallback if it's still reading (in practice the spine
     // already breaks its loop on receiving Terminated itself, per spine.rs;
@@ -456,13 +507,9 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
     drop(nerve_writer);
     let _ = tokio::io::stdout().flush().await;
 
-    // Explicit exit, not a plain return: run_brain spawned five background
-    // tasks (AppendRelay, StreamForward relay, Spawn relay, Notify relay, and
-    // the 15s ping loop) that only stop when send_one_way fails on a closed
-    // pipe — an unbounded wait. Every other exit path in this function already
-    // calls std::process::exit(1) on error; this mirrors that for the success
-    // path so the spine's reap_brain() isn't racing a brain that's still alive
-    // and able to relay a late Spawn/Notify signal after Terminated was sent.
+    // Explicit exit, not a plain return: the long-lived Nerve feedback reader
+    // and 15s ping loop only stop when their pipes close. The finite relays have
+    // already drained above, so forced exit cannot discard queued turn events.
     std::process::exit(0);
 }
 
@@ -643,6 +690,9 @@ fn parse_bootstrap_credential(
 
 #[cfg(test)]
 mod tests {
+    use crate::proto::gait::log::v1::{payload, stream_item, StreamItem};
+    use gait_proto::gait::sandbox::v1::{signal, Signal, Terminated};
+
     #[test]
     fn brain_init_seeds_identity_and_config() {
         let cfg = crate::config::GaitConfig::default();
@@ -726,5 +776,86 @@ mod tests {
             "turn_config() must hand out a clone of the driver's live token, \
              so external cancellation is observable to a subsequent turn build"
         );
+    }
+
+    #[tokio::test]
+    async fn finite_relays_flush_turn_complete_before_terminated() {
+        let (brain_write, mut spine_read) = tokio::io::duplex(64 * 1024);
+        let (nerve_writer, _reader_handle) =
+            crate::turn::nerve::start_nerve(tokio::io::empty(), brain_write);
+        let (senders, relay_tasks) = super::start_brain_relays(&nerve_writer);
+
+        let turn_complete = gait_proto::envelope::mint(
+            crate::proto::events::turn_complete(crate::proto::events::TurnCompleteParams::default()),
+            None,
+            0,
+            0,
+        );
+        senders
+            .event_tx
+            .send(turn_complete.clone())
+            .expect("append relay must be open");
+        senders
+            .stream_fwd_tx
+            .send(StreamItem {
+                item: Some(stream_item::Item::Event(turn_complete)),
+            })
+            .expect("stream relay must be open");
+
+        // Production drops BrainDriver at this point. The test drops the
+        // equivalent sender owner directly so every finite relay can finish.
+        drop(senders);
+
+        let terminated = Signal {
+            corr_id: 0,
+            body: Some(signal::Body::Terminated(Terminated {
+                run_result_json: "{}".into(),
+                failed: false,
+            })),
+        };
+        super::send_terminated_after_relays(relay_tasks, &nerve_writer, &terminated).await;
+
+        let mut saw_turn_complete_append = false;
+        let mut saw_turn_complete_stream = false;
+        for _ in 0..3 {
+            let signal = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                crate::turn::nerve::read_signal(&mut spine_read),
+            )
+            .await
+            .expect("timed out waiting for relayed signal")
+            .expect("valid relayed signal");
+            match signal.body {
+                Some(signal::Body::Append(append)) => {
+                    saw_turn_complete_append = append.event.is_some_and(|event| {
+                        matches!(
+                            crate::proto::event_kind(&event),
+                            Some(payload::Kind::TurnComplete(_))
+                        )
+                    });
+                }
+                Some(signal::Body::StreamForward(forward)) => {
+                    saw_turn_complete_stream = forward.item.is_some_and(|item| {
+                        matches!(
+                            item.item,
+                            Some(stream_item::Item::Event(ref event))
+                                if matches!(
+                                    crate::proto::event_kind(event),
+                                    Some(payload::Kind::TurnComplete(_))
+                                )
+                        )
+                    });
+                }
+                Some(signal::Body::Terminated(_)) => {
+                    assert!(
+                        saw_turn_complete_append && saw_turn_complete_stream,
+                        "Terminated must follow both durable and streamed TurnComplete relays"
+                    );
+                    return;
+                }
+                other => panic!("unexpected signal before termination: {other:?}"),
+            }
+        }
+        panic!("missing Terminated signal");
     }
 }

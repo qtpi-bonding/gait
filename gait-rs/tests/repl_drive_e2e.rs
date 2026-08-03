@@ -26,6 +26,42 @@ fn main() {
         .expect("build tokio runtime");
     rt.block_on(three_turn_script_produces_an_ordered_annotated_transcript());
     println!("test three_turn_script_produces_an_ordered_annotated_transcript ... ok");
+    rt.block_on(structured_only_completion_renders_the_done_message());
+    println!("test structured_only_completion_renders_the_done_message ... ok");
+}
+
+async fn structured_only_completion_renders_the_done_message() {
+    let message = "Codex structured reply reached the REPL";
+    let script = Script {
+        turns: vec![Turn {
+            input: "hello".into(),
+            frames: vec![
+                Frame::ToolCall {
+                    name: "structured_done".into(),
+                    args: serde_json::json!({"message": message}),
+                },
+                Frame::ToolResult {
+                    ok: true,
+                    name: "structured_done".into(),
+                },
+                Frame::TurnComplete {
+                    message: message.into(),
+                    result: None,
+                },
+                Frame::TerminatedOk(message.into()),
+            ],
+        }],
+    };
+
+    let mock_brain = std::path::PathBuf::from(env!("CARGO_BIN_EXE_mock_brain"));
+    let (_tempdir, transcript) = run_script_fresh(&script, &mock_brain)
+        .await
+        .expect("run_script_fresh");
+
+    assert!(
+        transcript.contains("<success>  ✓│</success>") && transcript.contains(message),
+        "a structured_done-only turn must render its final message: {transcript}"
+    );
 }
 
 async fn three_turn_script_produces_an_ordered_annotated_transcript() {

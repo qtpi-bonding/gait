@@ -30,7 +30,7 @@ pub struct Turn {
 
 /// Hand-written single-key YAML map visitor for `Frame`. The plan's YAML form
 /// (`- delta: "..."`, `- terminated_ok: "..."`, `- tool_call: { name: "read",
-/// args: {...} }`) is a single-key map per element with no discriminator
+/// args: {...} }`, `- turn_complete: { message: "..." }`) is a single-key map per element with no discriminator
 /// field. `serde_yaml`'s enum deserializer (`#[serde(rename_all =
 /// "snake_case")]`) refuses bare mappings without a `!Tag`, so a manual
 /// visitor is the only way to match the plan's YAML verbatim. The string
@@ -46,6 +46,10 @@ pub enum Frame {
         ok: bool,
         name: String,
     },
+    TurnComplete {
+        message: String,
+        result: Option<serde_json::Value>,
+    },
     TerminatedOk(String),
     TerminatedFail(String),
 }
@@ -57,7 +61,7 @@ impl<'de> Deserialize<'de> for Frame {
             type Value = Frame;
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
                 f.write_str(
-                    "a single-key frame map (delta|tool_call|tool_result|terminated_ok|terminated_fail)",
+                    "a single-key frame map (delta|tool_call|tool_result|turn_complete|terminated_ok|terminated_fail)",
                 )
             }
             fn visit_map<M: MapAccess<'de>>(self, mut m: M) -> Result<Frame, M::Error> {
@@ -92,12 +96,27 @@ impl<'de> Deserialize<'de> for Frame {
                             name: i.name,
                         })
                     }
+                    "turn_complete" => {
+                        #[derive(Deserialize)]
+                        struct In {
+                            #[serde(default)]
+                            message: String,
+                            #[serde(default)]
+                            result: Option<serde_json::Value>,
+                        }
+                        let i: In = m.next_value()?;
+                        Ok(Frame::TurnComplete {
+                            message: i.message,
+                            result: i.result,
+                        })
+                    }
                     other => Err(serde::de::Error::unknown_variant(
                         other,
                         &[
                             "delta",
                             "tool_call",
                             "tool_result",
+                            "turn_complete",
                             "terminated_ok",
                             "terminated_fail",
                         ],
@@ -176,6 +195,13 @@ fn frame_to_signal(frame: &Frame) -> Signal {
             None,
             None,
         )),
+        Frame::TurnComplete { message, result } => {
+            event_signal(events::turn_complete(events::TurnCompleteParams {
+                message: message.clone(),
+                result: result.clone(),
+                ..Default::default()
+            }))
+        }
         Frame::TerminatedOk(msg) => terminated_signal(msg, false),
         Frame::TerminatedFail(msg) => terminated_signal(msg, true),
     }
@@ -337,6 +363,7 @@ turns:
       - tool_call: { name: "read", args: { path: "foo.rs" } }
       - tool_result: { ok: true, name: "read" }
       - delta: "Added.\n"
+      - turn_complete: { message: "done", result: { changed: true } }
       - terminated_ok: "done"
 "#;
         let script: Script = serde_yaml::from_str(yaml).expect("valid script");
@@ -344,5 +371,9 @@ turns:
         assert_eq!(script.turns[0].frames.len(), 2);
         assert!(script.turns[1].frames.is_empty());
         assert!(matches!(script.turns[2].frames[0], Frame::ToolCall { .. }));
+        assert!(matches!(
+            script.turns[2].frames[3],
+            Frame::TurnComplete { .. }
+        ));
     }
 }
