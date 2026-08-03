@@ -1,7 +1,6 @@
 pub mod sse;
 pub mod types;
 
-use crate::anthropic::sse::SseClient;
 use crate::anthropic::types::{
     to_anthropic_messages, AnthropicBlock, AnthropicContent, AnthropicOutputConfig,
     AnthropicRequest, AnthropicSystem, AnthropicSystemBlock, AnthropicThinkingRequest,
@@ -35,19 +34,11 @@ fn anthropic_model_gen(model: &str) -> AnthropicModelGen {
 }
 
 pub struct AnthropicProvider {
-    // api_key / base_url / http are stored for future public inspection (e.g.
-    // tests reading back the provider's config); they are currently only used
-    // during construction to seed the SseClient.
-    #[allow(dead_code)]
     pub api_key: String,
     pub model: String,
-    #[allow(dead_code)]
     pub base_url: Option<String>,
     pub cache: bool,
-    #[allow(dead_code)]
-    http: reqwest::Client,
-    transport: crate::transport::TransportConfig,
-    sse: SseClient,
+    transport: crate::transport::SseTransport,
 }
 
 impl AnthropicProvider {
@@ -56,28 +47,14 @@ impl AnthropicProvider {
         model: String,
         base_url: Option<String>,
         cache: bool,
-        transport: crate::transport::TransportConfig,
+        transport: crate::transport::SseTransport,
     ) -> Self {
-        let http = reqwest::Client::builder()
-            .connect_timeout(transport.connect_timeout)
-            .build()
-            .expect("reqwest client");
-        let resolved_base = base_url
-            .clone()
-            .unwrap_or_else(|| "https://api.anthropic.com/v1".into());
-        let sse = SseClient {
-            http: http.clone(),
-            api_key: api_key.clone(),
-            base_url: resolved_base,
-        };
         Self {
             api_key,
             model,
             base_url,
             cache,
-            http,
             transport,
-            sse,
         }
     }
 
@@ -307,27 +284,28 @@ impl Provider for AnthropicProvider {
             tool_choice,
         };
         let body = serde_json::to_value(&req)?;
-        // Retry the zero-byte first-event TTFB stall in place (plan-12): the
-        // retryable unit is "connect -> await first event", sharing one budget
-        // across both phases, instead of the old retry_phase1 + guard_idle_sse
-        // compose (which could only retry pre-headers). Cancel-continuity lives
-        // at the call site in turn/mod.rs (the outer select on
-        // `cancel_token_fut(&cancel)`); here we pass a fresh placeholder token.
-        // set_phase is called inside the closure so each retry attempt resets the
-        // PhaseCell clock — otherwise several attempts × ttfb_timeout + backoffs
-        // can exceed the watchdog's 90s stall_cap before it fires.
-        use eventsource_stream::Eventsource;
-        let stream = crate::transport::connect_and_first_event(
-            self.transport,
-            &tokio_util::sync::CancellationToken::new(),
-            || async {
-                gait_types::diagnostic::set_phase(gait_types::diagnostic::Phase::LlmRequest);
-                let resp = self.sse.connect(&body).await?;
-                Ok(resp.bytes_stream().eventsource())
-            },
-        )
-        .await?;
-        Ok(Box::pin(SseClient::body_stream(stream)))
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::HeaderName::from_static("x-api-key"),
+            crate::transport::sensitive_header(&self.api_key)?,
+        );
+        headers.insert(
+            reqwest::header::HeaderName::from_static("anthropic-version"),
+            reqwest::header::HeaderValue::from_static("2023-06-01"),
+        );
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+        let base_url = self
+            .base_url
+            .as_deref()
+            .unwrap_or("https://api.anthropic.com/v1")
+            .trim_end_matches('/');
+        let request =
+            crate::transport::SseRequest::new(format!("{base_url}/messages"), headers, body);
+        let stream = self.transport.stream(request).await?;
+        Ok(Box::pin(crate::anthropic::sse::body_stream(stream)))
     }
 
     fn model_id(&self) -> &str {

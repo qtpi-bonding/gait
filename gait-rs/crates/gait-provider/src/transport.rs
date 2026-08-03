@@ -1,14 +1,176 @@
 //! Transport-layer knobs and helpers shared by every LLM provider.
 //!
-//! Lives at `pub(crate)` scope on purpose: this is not a public API, and it is
-//! intentionally not `serde`-derived. Defaults are the policy; tests can override
-//! individual fields by struct-literal.
+//! Defaults are the production policy; tests can override individual fields by
+//! struct literal. Provider adapters receive the transport as a required
+//! dependency and cannot access its raw HTTP client.
 
 use crate::provider::{ProviderError, TimeoutPhase};
+use eventsource_stream::Eventsource;
 use futures_util::{Stream, StreamExt};
+use reqwest::header::{HeaderMap, HeaderValue};
 use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
+
+const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
+
+/// A complete, replayable JSON-over-HTTP request for an SSE endpoint.
+///
+/// Adapters own the URL, headers, and provider-specific body. The transport
+/// owns request execution and may clone this value only before the first SSE
+/// event has been consumed.
+#[derive(Clone)]
+pub struct SseRequest {
+    pub url: String,
+    pub headers: HeaderMap,
+    pub body: serde_json::Value,
+}
+
+impl SseRequest {
+    pub fn new(url: String, headers: HeaderMap, body: serde_json::Value) -> Self {
+        Self { url, headers, body }
+    }
+}
+
+/// Mark a credential-bearing header value as sensitive before placing it in an
+/// [`SseRequest`]. Sensitive values are redacted from bounded HTTP error bodies
+/// and reqwest's header debug formatting.
+pub fn sensitive_header(value: &str) -> Result<HeaderValue, ProviderError> {
+    let mut value = HeaderValue::from_str(value)
+        .map_err(|error| ProviderError::Other(format!("invalid sensitive header: {error}")))?;
+    value.set_sensitive(true);
+    Ok(value)
+}
+
+pub type GuardedSseStream =
+    Pin<Box<dyn Stream<Item = Result<eventsource_stream::Event, ProviderError>> + Send>>;
+
+type RawSseStream = Pin<
+    Box<
+        dyn Stream<
+                Item = Result<
+                    eventsource_stream::Event,
+                    eventsource_stream::EventStreamError<reqwest::Error>,
+                >,
+            > + Send,
+    >,
+>;
+
+/// Mandatory HTTP/SSE execution boundary shared by every production adapter.
+#[derive(Clone)]
+pub struct SseTransport {
+    http: reqwest::Client,
+    config: TransportConfig,
+}
+
+impl SseTransport {
+    pub fn new(config: TransportConfig) -> Result<Self, ProviderError> {
+        let http = reqwest::Client::builder()
+            .connect_timeout(config.connect_timeout)
+            .build()
+            .map_err(ProviderError::from_reqwest)?;
+        Ok(Self { http, config })
+    }
+
+    pub fn config(&self) -> TransportConfig {
+        self.config
+    }
+
+    /// Execute a replayable request and return a stream that has already crossed
+    /// the first-event retry boundary and is guarded by idle/absolute deadlines.
+    pub async fn stream(&self, request: SseRequest) -> Result<GuardedSseStream, ProviderError> {
+        let transport = self.clone();
+        let request_template = request.clone();
+        let cancel = CancellationToken::new();
+        let stream = connect_and_first_event(self.config, &cancel, move || {
+            let transport = transport.clone();
+            let request = request_template.clone();
+            async move { transport.open(request).await }
+        })
+        .await?;
+        Ok(Box::pin(stream))
+    }
+
+    async fn open(&self, request: SseRequest) -> Result<RawSseStream, ProviderError> {
+        let secrets = sensitive_values(&request.headers);
+        let response = self
+            .http
+            .post(&request.url)
+            .headers(request.headers)
+            .json(&request.body)
+            .send()
+            .await
+            .map_err(ProviderError::from_reqwest)?;
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let retry_after = parse_retry_after(&response);
+            let body = bounded_error_body(response).await;
+            return Err(ProviderError::Http {
+                status,
+                body: truncate_utf8(redact_secrets(body, &secrets), MAX_ERROR_BODY_BYTES),
+                retry_after,
+            });
+        }
+
+        Ok(Box::pin(response.bytes_stream().eventsource()))
+    }
+}
+
+fn sensitive_values(headers: &HeaderMap) -> Vec<String> {
+    headers
+        .values()
+        .filter(|value| value.is_sensitive())
+        .filter_map(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .flat_map(|value| {
+            let mut values = vec![value.to_owned()];
+            if let Some(token) = value
+                .strip_prefix("Bearer ")
+                .filter(|token| !token.is_empty())
+            {
+                values.push(token.to_owned());
+            }
+            values
+        })
+        .collect()
+}
+
+fn redact_secrets(mut body: String, secrets: &[String]) -> String {
+    for secret in secrets {
+        body = body.replace(secret, "[REDACTED]");
+    }
+    body
+}
+
+fn truncate_utf8(mut value: String, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value.truncate(end);
+    value
+}
+
+async fn bounded_error_body(response: reqwest::Response) -> String {
+    let mut bytes = Vec::with_capacity(MAX_ERROR_BODY_BYTES.min(4096));
+    let mut chunks = response.bytes_stream();
+    while bytes.len() < MAX_ERROR_BODY_BYTES {
+        let Some(chunk) = chunks.next().await else {
+            break;
+        };
+        let Ok(chunk) = chunk else {
+            break;
+        };
+        let remaining = MAX_ERROR_BODY_BYTES - bytes.len();
+        bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
 
 /// All knobs the LLM path cares about. `Default` *is* the production policy.
 #[derive(Debug, Clone, Copy)]
@@ -69,6 +231,7 @@ pub(crate) fn backoff_delay(cfg: &TransportConfig, attempt: u32) -> Duration {
 /// is correctly seen as alive. Emits the matching `ProviderError::Timeout { phase }` on
 /// overrun and stops the stream (terminal — once any event has arrived, a timeout here
 /// is never retried; a partial completion must never be re-requested).
+#[cfg(test)]
 pub(crate) fn guard_idle_sse<E>(
     inner: impl Stream<Item = Result<eventsource_stream::Event, eventsource_stream::EventStreamError<E>>>
         + Send
@@ -78,9 +241,21 @@ pub(crate) fn guard_idle_sse<E>(
 where
     E: std::fmt::Display + Send + 'static,
 {
+    guard_idle_sse_until(inner, cfg, tokio::time::Instant::now() + cfg.absolute_cap)
+}
+
+fn guard_idle_sse_until<E>(
+    inner: impl Stream<Item = Result<eventsource_stream::Event, eventsource_stream::EventStreamError<E>>>
+        + Send
+        + 'static,
+    cfg: TransportConfig,
+    deadline: tokio::time::Instant,
+) -> impl Stream<Item = Result<eventsource_stream::Event, ProviderError>> + Send + 'static
+where
+    E: std::fmt::Display + Send + 'static,
+{
     async_stream::stream! {
     tokio::pin!(inner);
-    let deadline = tokio::time::Instant::now() + cfg.absolute_cap;
     loop {
     let next = inner.next();
     tokio::select! {
@@ -148,6 +323,7 @@ where
     E: std::fmt::Display + Send + 'static,
 {
     let mut attempt: u32 = 0;
+    let absolute_deadline = tokio::time::Instant::now() + cfg.absolute_cap;
     // Loop breaks with (Option<first_event>, owned_rest_stream). `None` = the
     // stream ended before any event (terminal, not a timeout) — the single
     // generator below drains an immediately-empty guarded stream in that case.
@@ -159,23 +335,29 @@ where
             ProviderError,
         > = async {
             // 1) Connect (POST + header check) — BOUNDED, else a header-stall hangs forever.
-            let stream = match tokio::time::timeout(cfg.ttfb_timeout, connect()).await {
-                Err(_) => {
-                    return Err(ProviderError::Timeout {
-                        phase: TimeoutPhase::Ttfb,
-                    })
+            let stream = tokio::select! {
+                biased;
+                _ = tokio::time::sleep_until(absolute_deadline) => {
+                    return Err(ProviderError::Timeout { phase: TimeoutPhase::Absolute });
                 }
-                Ok(r) => r?, // connect-phase errors (Connect / Http 429·5xx) surface here
+                result = tokio::time::timeout(cfg.ttfb_timeout, connect()) => match result {
+                    Err(_) => return Err(ProviderError::Timeout { phase: TimeoutPhase::Ttfb }),
+                    Ok(result) => result?,
+                }
             };
             let mut stream = Box::pin(stream); // owned, Unpin, Send + 'static
                                                // 2) First event — BOUNDED. Zero bytes on overrun → retryable Ttfb.
-            match tokio::time::timeout(cfg.ttfb_timeout, stream.next()).await {
-                Err(_) => Err(ProviderError::Timeout {
-                    phase: TimeoutPhase::Ttfb,
-                }),
-                Ok(None) => Ok((None, stream)), // ended before any event → terminal
-                Ok(Some(Err(e))) => Err(ProviderError::Sse(e.to_string())), // real error → terminal
-                Ok(Some(Ok(first))) => Ok((Some(first), stream)), // got it → hand off
+            tokio::select! {
+                biased;
+                _ = tokio::time::sleep_until(absolute_deadline) => {
+                    Err(ProviderError::Timeout { phase: TimeoutPhase::Absolute })
+                }
+                result = tokio::time::timeout(cfg.ttfb_timeout, stream.next()) => match result {
+                    Err(_) => Err(ProviderError::Timeout { phase: TimeoutPhase::Ttfb }),
+                    Ok(None) => Ok((None, stream)),
+                    Ok(Some(Err(e))) => Err(ProviderError::Sse(e.to_string())),
+                    Ok(Some(Ok(first))) => Ok((Some(first), stream)),
+                }
             }
         }
         .await;
@@ -187,16 +369,19 @@ where
                 if !e.is_retryable() || attempts_used >= cfg.max_attempts as u32 {
                     return Err(e);
                 }
-                eprintln!(
-                    "[gait] transport_retry attempt={attempts_used}/{} reason={e:?}",
-                    cfg.max_attempts
-                );
                 let delay = e
                     .retry_after()
                     .unwrap_or_else(|| backoff_delay(&cfg, attempt));
+                eprintln!(
+                    "[gait] {}",
+                    retry_diagnostic(attempts_used, cfg.max_attempts, &e)
+                );
                 tokio::select! {
                     biased;
                     _ = cancel.cancelled() => return Err(ProviderError::Other("cancelled".into())),
+                    _ = tokio::time::sleep_until(absolute_deadline) => {
+                        return Err(ProviderError::Timeout { phase: TimeoutPhase::Absolute });
+                    }
                     _ = tokio::time::sleep(delay) => {}
                 }
                 attempt += 1;
@@ -205,7 +390,7 @@ where
     };
 
     // Single generator (one opaque type). Guard only idle+absolute on the remainder.
-    let guarded = guard_idle_sse(rest, cfg);
+    let guarded = guard_idle_sse_until(rest, cfg, absolute_deadline);
     Ok(async_stream::stream! {
         if let Some(first) = first {
             gait_types::diagnostic::set_phase(gait_types::diagnostic::Phase::Streaming);
@@ -214,6 +399,29 @@ where
         tokio::pin!(guarded);
         while let Some(item) = guarded.next().await { yield item; }
     })
+}
+
+fn retry_diagnostic(attempt: u32, max_attempts: u8, error: &ProviderError) -> String {
+    let reason = match error {
+        ProviderError::Connect(_) => "connect",
+        ProviderError::Timeout { phase } => match phase {
+            TimeoutPhase::Connect => "connect_timeout",
+            TimeoutPhase::Ttfb => "ttfb_timeout",
+            TimeoutPhase::Idle => "idle_timeout",
+            TimeoutPhase::Absolute => "absolute_timeout",
+        },
+        ProviderError::Http { status, .. } => {
+            return format!(
+                "transport_retry attempt={attempt}/{max_attempts} reason=http_status_{status}"
+            )
+        }
+        ProviderError::Overloaded => "overloaded",
+        ProviderError::Sse(_) => "sse",
+        ProviderError::StreamIncomplete { .. } => "stream_incomplete",
+        ProviderError::Json(_) => "json",
+        ProviderError::Other(_) => "other",
+    };
+    format!("transport_retry attempt={attempt}/{max_attempts} reason={reason}")
 }
 
 #[cfg(test)]
@@ -405,6 +613,118 @@ mod tests {
             calls.load(Ordering::SeqCst),
             2,
             "connect should be called twice"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn connect_error_retries_then_delivers_one_sequence() {
+        use futures_util::stream;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let cfg = TransportConfig {
+            max_attempts: 2,
+            initial_backoff: Duration::ZERO,
+            max_backoff: Duration::ZERO,
+            ..TransportConfig::default()
+        };
+        let cancel = CancellationToken::new();
+        let observed = calls.clone();
+        let connect = move || {
+            let observed = observed.clone();
+            async move {
+                if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Err(ProviderError::Connect("temporary".into()))
+                } else {
+                    Ok::<BoxedSse, ProviderError>(Box::pin(stream::iter(vec![Ok(sse_event(
+                        "only-sequence",
+                    ))])))
+                }
+            }
+        };
+
+        let stream = connect_and_first_event(cfg, &cancel, connect)
+            .await
+            .expect("connect error should retry");
+        let events = stream.collect::<Vec<_>>().await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].as_ref().expect("event").data, "only-sequence");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stream_error_after_first_event_is_never_replayed() {
+        use futures_util::stream;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let connect = move || {
+            let observed = observed.clone();
+            async move {
+                observed.fetch_add(1, Ordering::SeqCst);
+                let bad_utf8 = String::from_utf8(vec![0xff]).unwrap_err();
+                Ok::<BoxedSse, ProviderError>(Box::pin(stream::iter(vec![
+                    Ok(sse_event("first")),
+                    Err(eventsource_stream::EventStreamError::Utf8(bad_utf8)),
+                ])))
+            }
+        };
+        let cfg = TransportConfig {
+            max_attempts: 3,
+            ..TransportConfig::default()
+        };
+        let cancel = CancellationToken::new();
+
+        let stream = connect_and_first_event(cfg, &cancel, connect)
+            .await
+            .expect("first event establishes the stream");
+        let items = stream.collect::<Vec<_>>().await;
+        assert!(matches!(items.first(), Some(Ok(event)) if event.data == "first"));
+        assert!(matches!(items.get(1), Some(Err(ProviderError::Sse(_)))));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn sensitive_headers_and_diagnostics_never_render_credentials() {
+        let header = sensitive_header("Bearer top-secret-token").expect("valid header");
+        assert!(header.is_sensitive());
+
+        let error = ProviderError::Http {
+            status: 503,
+            body: "top-secret-token".into(),
+            retry_after: Some(Duration::ZERO),
+        };
+        let diagnostic = retry_diagnostic(1, 3, &error);
+        assert_eq!(
+            diagnostic,
+            "transport_retry attempt=1/3 reason=http_status_503"
+        );
+        assert!(!diagnostic.contains("top-secret-token"));
+
+        let secrets = vec!["Bearer top-secret-token".into(), "top-secret-token".into()];
+        assert_eq!(
+            redact_secrets(
+                "echo Bearer top-secret-token and top-secret-token".into(),
+                &secrets,
+            ),
+            "echo [REDACTED] and [REDACTED]"
+        );
+        assert_eq!(truncate_utf8("éé".into(), 3), "é");
+    }
+
+    #[test]
+    fn transport_retains_configured_connect_timeout() {
+        let cfg = TransportConfig {
+            connect_timeout: Duration::from_millis(17),
+            ..TransportConfig::default()
+        };
+        let transport = SseTransport::new(cfg).expect("transport");
+        assert_eq!(
+            transport.config().connect_timeout,
+            Duration::from_millis(17)
         );
     }
 

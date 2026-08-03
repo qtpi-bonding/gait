@@ -1,5 +1,4 @@
 use crate::provider::{ChunkStream, Provider, ProviderError, StreamChunk};
-use eventsource_stream::Eventsource;
 use gait_types::types::{AssistantContent, AssistantPart, Message, MessageContent, Tool, Usage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -9,8 +8,7 @@ pub struct OpenAIProvider {
     pub api_key: String,
     pub model: String,
     pub base_url: String,
-    http: reqwest::Client,
-    transport: crate::transport::TransportConfig,
+    transport: crate::transport::SseTransport,
 }
 
 impl OpenAIProvider {
@@ -25,17 +23,12 @@ impl OpenAIProvider {
         api_key: String,
         model: String,
         base_url: Option<String>,
-        transport: crate::transport::TransportConfig,
+        transport: crate::transport::SseTransport,
     ) -> Self {
-        let http = reqwest::Client::builder()
-            .connect_timeout(transport.connect_timeout)
-            .build()
-            .expect("reqwest client");
         Self {
             api_key,
             model,
             base_url: base_url.unwrap_or_else(|| "https://api.openai.com/v1".into()),
-            http,
             transport,
         }
     }
@@ -265,9 +258,7 @@ impl Provider for OpenAIProvider {
         params: &gait_types::config::LlmParamsConfig,
         tail_context: Option<&str>,
     ) -> Result<ChunkStream, ProviderError> {
-        let http = self.http.clone();
         let url = format!("{}/chat/completions", self.base_url);
-        let api_key = self.api_key.clone();
 
         let want_strict = self.resolve_strict(params.openai.as_ref().and_then(|o| o.strict_tools));
         let chat_tools: Vec<ChatTool> = tools
@@ -335,42 +326,17 @@ impl Provider for OpenAIProvider {
 
         let body_value = serde_json::to_value(&body)?;
 
-        // Retry the zero-byte first-event TTFB stall in place (plan-12): the
-        // retryable unit is "connect -> await first event", sharing one budget
-        // across both phases, instead of the old retry_phase1 + guard_idle_sse
-        // compose (which could only retry pre-headers). Cancel-continuity lives
-        // at the call site in turn/mod.rs (the outer select on
-        // `cancel_token_fut(&cancel)`); here we pass a fresh placeholder token.
-        // set_phase is called inside the closure so each retry attempt resets the
-        // PhaseCell clock — otherwise several attempts × ttfb_timeout + backoffs
-        // can exceed the watchdog's 90s stall_cap before it fires.
-        let stream = crate::transport::connect_and_first_event(
-            self.transport,
-            &tokio_util::sync::CancellationToken::new(),
-            || async {
-                gait_types::diagnostic::set_phase(gait_types::diagnostic::Phase::LlmRequest);
-                let resp = http
-                    .post(&url)
-                    .header("Authorization", format!("Bearer {}", api_key))
-                    .header("Content-Type", "application/json")
-                    .json(&body_value)
-                    .send()
-                    .await
-                    .map_err(ProviderError::from_reqwest)?;
-                if !resp.status().is_success() {
-                    let status = resp.status().as_u16();
-                    let retry_after = crate::transport::parse_retry_after(&resp);
-                    let body = resp.text().await.unwrap_or_default();
-                    return Err(ProviderError::Http {
-                        status,
-                        body,
-                        retry_after,
-                    });
-                }
-                Ok(resp.bytes_stream().eventsource())
-            },
-        )
-        .await?;
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            crate::transport::sensitive_header(&format!("Bearer {}", self.api_key))?,
+        );
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+        let request = crate::transport::SseRequest::new(url, headers, body_value);
+        let stream = self.transport.stream(request).await?;
         Ok(Box::pin(body_stream(stream)))
     }
 
@@ -404,7 +370,13 @@ fn body_stream(
                 // case; surface StreamIncomplete. Parse/Utf8 errors stay Sse.
                 Err(e) => Err(e)?,
             };
-            if event.data == "[DONE]" { saw_terminal = true; break; }
+            if event.data == "[DONE]" {
+                if !saw_terminal {
+                    yield StreamChunk::Done;
+                }
+                saw_terminal = true;
+                break;
+            }
             if event.data.is_empty() { continue; }
 
             let chunk: StreamChunkData = match serde_json::from_str(&event.data) {

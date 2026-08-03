@@ -87,8 +87,8 @@ pub enum ProviderError {
 
 impl ProviderError {
     /// Map a raw `reqwest::Error` into a classified `ProviderError`.
-    /// Use this at every `.send().await` site — `reqwest::Error` no longer
-    /// carries `#[from]`, so the bare `?` operator won't compile.
+    /// Raw request execution is centralized in `SseTransport`; keeping the
+    /// mapping here preserves the provider-neutral error vocabulary.
     pub fn from_reqwest(e: reqwest::Error) -> Self {
         if e.is_timeout() {
             ProviderError::Timeout {

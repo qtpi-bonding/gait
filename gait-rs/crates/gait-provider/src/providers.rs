@@ -9,6 +9,12 @@ pub enum Wire {
     CodexResponses,
 }
 
+impl Wire {
+    /// Every production SSE schema. Conformance tests match this list
+    /// exhaustively so adding a wire requires an explicit fixture.
+    pub const ALL: &'static [Self] = &[Self::Anthropic, Self::OpenAI, Self::CodexResponses];
+}
+
 /// How a provider authenticates. Kept separate from `Wire` because the
 /// two are orthogonal: a Chat Completions provider can use either an
 /// API key (`opencode`, `openai`, ...) or a subscription (`openai-codex`

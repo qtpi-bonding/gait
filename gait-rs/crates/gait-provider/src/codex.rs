@@ -7,7 +7,6 @@
 //! `THIRD_PARTY_NOTICES.md` for the complete attribution.
 
 use crate::provider::{ChunkStream, Provider, ProviderError, StreamChunk};
-use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use gait_auth::codex::{credential_details, CODEX_PROVIDER_ID};
 use gait_auth::{ResolvedCredential, SubscriptionCredential};
@@ -26,7 +25,7 @@ pub struct CodexResponsesProvider {
     fedramp: bool,
     model: String,
     base_url: String,
-    http: reqwest::Client,
+    transport: crate::transport::SseTransport,
 }
 
 impl CodexResponsesProvider {
@@ -34,6 +33,7 @@ impl CodexResponsesProvider {
         credential: SubscriptionCredential,
         model: String,
         base_url: Option<String>,
+        transport: crate::transport::SseTransport,
     ) -> Result<Self, String> {
         if credential.provider_id != CODEX_PROVIDER_ID {
             return Err("subscription credential belongs to a different provider".into());
@@ -46,7 +46,7 @@ impl CodexResponsesProvider {
             fedramp: details.is_fedramp_account,
             model,
             base_url: base_url.unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
-            http: reqwest::Client::new(),
+            transport,
         })
     }
 
@@ -141,30 +141,34 @@ impl Provider for CodexResponsesProvider {
             });
         }
         let body = self.request_body(system, &effective_messages, tools);
-        let mut request = self
-            .http
-            .post(format!("{}/responses", self.base_url.trim_end_matches('/')))
-            .bearer_auth(&self.access_token)
-            .header("Content-Type", "application/json")
-            .json(&body);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            crate::transport::sensitive_header(&format!("Bearer {}", self.access_token))?,
+        );
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
         if let Some(account_id) = &self.account_id {
-            request = request.header("ChatGPT-Account-ID", account_id);
+            headers.insert(
+                reqwest::header::HeaderName::from_static("chatgpt-account-id"),
+                crate::transport::sensitive_header(account_id)?,
+            );
         }
         if self.fedramp {
-            request = request.header("X-OpenAI-FedRAMP", "true");
+            headers.insert(
+                reqwest::header::HeaderName::from_static("x-openai-fedramp"),
+                reqwest::header::HeaderValue::from_static("true"),
+            );
         }
-        let response = request.send().await.map_err(ProviderError::from_reqwest)?;
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let body = response.text().await.unwrap_or_default();
-            return Err(ProviderError::Http {
-                status,
-                body,
-                retry_after: None,
-            });
-        }
+        let request = crate::transport::SseRequest::new(
+            format!("{}/responses", self.base_url.trim_end_matches('/')),
+            headers,
+            body,
+        );
         Ok(Box::pin(response_stream(
-            response.bytes_stream().eventsource(),
+            self.transport.stream(request).await?,
         )))
     }
 
@@ -174,12 +178,8 @@ impl Provider for CodexResponsesProvider {
 }
 
 fn response_stream(
-    events: impl futures_util::Stream<
-            Item = Result<
-                eventsource_stream::Event,
-                eventsource_stream::EventStreamError<reqwest::Error>,
-            >,
-        > + Send
+    events: impl futures_util::Stream<Item = Result<eventsource_stream::Event, ProviderError>>
+        + Send
         + 'static,
 ) -> impl futures_util::Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static {
     async_stream::try_stream! {
@@ -188,7 +188,7 @@ fn response_stream(
         let mut terminal = false;
         let mut received_bytes = 0usize;
         while let Some(event) = events.next().await {
-            let event = event.map_err(|error| ProviderError::Sse(error.to_string()))?;
+            let event = event?;
             let value: Value = match serde_json::from_str(&event.data) { Ok(value) => value, Err(_) => continue };
             match event.event.as_str() {
                 "response.output_text.delta" => if let Some(delta) = value.get("delta").and_then(Value::as_str) {
@@ -237,6 +237,22 @@ fn response_stream(
 mod tests {
     use super::*;
 
+    fn test_credential(access_token: &str) -> SubscriptionCredential {
+        SubscriptionCredential {
+            provider_id: CODEX_PROVIDER_ID.into(),
+            method_id: "codex-subscription".into(),
+            version: 1,
+            expires_at_unix_s: None,
+            account_label: None,
+            secret: json!({
+                "id_token": "e30.e30.sig",
+                "access_token": access_token,
+                "refresh_token": "refresh-test",
+                "account_id": "acct-test"
+            }),
+        }
+    }
+
     #[test]
     fn rejects_non_codex_subscription() {
         let result = CodexResponsesProvider::new(
@@ -250,7 +266,107 @@ mod tests {
             },
             "gpt-5".into(),
             None,
+            crate::transport::SseTransport::new(Default::default()).expect("transport"),
         );
         assert!(matches!(result, Err(error) if error.contains("different provider")));
+    }
+
+    #[tokio::test]
+    async fn retries_retryable_status_before_first_event() {
+        use futures_util::StreamExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        async fn read_request(socket: &mut tokio::net::TcpStream) {
+            let mut bytes = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let mut expected_len = None;
+            loop {
+                let read = socket.read(&mut chunk).await.expect("read request");
+                if read == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&chunk[..read]);
+                if expected_len.is_none() {
+                    if let Some(header_end) =
+                        bytes.windows(4).position(|window| window == b"\r\n\r\n")
+                    {
+                        let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                        let content_len = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        expected_len = Some(header_end + 4 + content_len);
+                    }
+                }
+                if expected_len.is_some_and(|expected| bytes.len() >= expected) {
+                    break;
+                }
+            }
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = requests.clone();
+        tokio::spawn(async move {
+            for attempt in 0..2 {
+                let (mut socket, _) = listener.accept().await.expect("accept request");
+                observed.fetch_add(1, Ordering::SeqCst);
+                read_request(&mut socket).await;
+                if attempt == 0 {
+                    socket
+                        .write_all(
+                            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 5\r\nConnection: close\r\n\r\nretry",
+                        )
+                        .await
+                        .expect("write 503");
+                } else {
+                    let body = "event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n";
+                    let headers = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    socket
+                        .write_all(headers.as_bytes())
+                        .await
+                        .expect("write headers");
+                    socket.write_all(body.as_bytes()).await.expect("write SSE");
+                }
+            }
+        });
+
+        let provider = CodexResponsesProvider::new(
+            test_credential("access-test"),
+            "gpt-test".into(),
+            Some(format!("http://{addr}")),
+            crate::transport::SseTransport::new(crate::transport::TransportConfig {
+                initial_backoff: std::time::Duration::ZERO,
+                max_backoff: std::time::Duration::ZERO,
+                ..Default::default()
+            })
+            .expect("transport"),
+        )
+        .expect("provider");
+        let mut stream = provider
+            .stream("", &[], &[], &Default::default(), None)
+            .await
+            .expect("503 should be retried before the first event");
+
+        let mut saw_done = false;
+        while let Some(item) = stream.next().await {
+            if matches!(item.expect("stream item"), StreamChunk::Done) {
+                saw_done = true;
+            }
+        }
+        assert!(saw_done, "successful retry should deliver Done");
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
     }
 }

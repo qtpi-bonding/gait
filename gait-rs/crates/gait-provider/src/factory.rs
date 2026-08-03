@@ -17,6 +17,8 @@ pub enum FactoryError {
     MissingSubscription(String),
     #[error("invalid credential: {0}")]
     InvalidCredential(String),
+    #[error("transport setup failed: {0}")]
+    Transport(#[source] crate::provider::ProviderError),
 }
 
 /// Per-provider base URL override, e.g. `OLLAMA_BASE_URL=http://192.168.1.50:11500/v1`
@@ -46,11 +48,13 @@ pub fn load_provider_with_credential(
     let spec = crate::providers::lookup(&provider_id)
         .ok_or_else(|| FactoryError::UnknownProvider(provider_id.clone()))?;
     let base = base_url_override(&provider_id).or_else(|| spec.base_url.map(String::from));
+    let transport =
+        crate::transport::SseTransport::new(crate::transport::TransportConfig::default())
+            .map_err(FactoryError::Transport)?;
 
     match spec.auth_method {
         AuthMethod::ApiKey => {
             let key = resolve_api_key(spec, credential)?;
-            let transport = crate::transport::TransportConfig::default();
             Ok(match spec.wire {
                 Wire::Anthropic => {
                     Box::new(AnthropicProvider::new(key, model_id, base, true, transport))
@@ -71,9 +75,11 @@ pub fn load_provider_with_credential(
                 _ => return Err(FactoryError::MissingSubscription(spec.id.into())),
             };
             match spec.wire {
-                Wire::CodexResponses => CodexResponsesProvider::new(subscription, model_id, base)
-                    .map(|provider| Box::new(provider) as Box<dyn Provider>)
-                    .map_err(FactoryError::InvalidCredential),
+                Wire::CodexResponses => {
+                    CodexResponsesProvider::new(subscription, model_id, base, transport)
+                        .map(|provider| Box::new(provider) as Box<dyn Provider>)
+                        .map_err(FactoryError::InvalidCredential)
+                }
                 _ => unreachable!(
                     "Subscription auth on non-CodexResponses wire (provider '{}')",
                     spec.id
