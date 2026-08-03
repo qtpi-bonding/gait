@@ -2,6 +2,7 @@ use crate::anthropic::AnthropicProvider;
 use crate::codex::CodexResponsesProvider;
 use crate::openai::OpenAIProvider;
 use crate::provider::Provider;
+use crate::providers::{AuthMethod, ProviderSpec, Wire};
 use gait_auth::ResolvedCredential;
 
 #[derive(Debug, thiserror::Error)]
@@ -12,6 +13,8 @@ pub enum FactoryError {
     UnknownProvider(String),
     #[error("missing API key for provider '{0}': set {1} env var")]
     MissingApiKey(String, String),
+    #[error("missing credential for provider '{0}': run `gait auth login {0}`")]
+    MissingSubscription(String),
     #[error("invalid credential: {0}")]
     InvalidCredential(String),
 }
@@ -30,8 +33,11 @@ pub fn load_provider(
     load_provider_with_credential(model_str, api_key.map(ResolvedCredential::ApiKey))
 }
 
-/// Typed factory boundary. API-key providers accept `ApiKey`; the Codex
-/// Responses provider accepts only its versioned subscription credential.
+/// Typed factory boundary. Dispatches on the provider's declared
+/// `AuthMethod`: `ApiKey` providers resolve a Bearer token from an env var
+/// or the credential store; `Subscription` providers require an OAuth
+/// credential from `gait auth login`. Wire format selection happens inside
+/// each branch so the (auth, wire) cross-product stays exhaustive.
 pub fn load_provider_with_credential(
     model_str: &str,
     credential: Option<ResolvedCredential>,
@@ -39,48 +45,72 @@ pub fn load_provider_with_credential(
     let (provider_id, model_id) = parse_model_string(model_str)?;
     let spec = crate::providers::lookup(&provider_id)
         .ok_or_else(|| FactoryError::UnknownProvider(provider_id.clone()))?;
-    if matches!(spec.wire, crate::providers::Wire::CodexResponses) {
-        let Some(ResolvedCredential::Subscription(subscription)) = credential else {
-            return Err(FactoryError::MissingApiKey(
-                spec.id.into(),
-                "run `gait auth login openai-codex`".into(),
-            ));
-        };
-        return CodexResponsesProvider::new(
-            subscription,
-            model_id,
-            base_url_override(&provider_id).or_else(|| spec.base_url.map(String::from)),
-        )
-        .map(|provider| Box::new(provider) as Box<dyn Provider>)
-        .map_err(FactoryError::InvalidCredential);
-    }
-    let key = match credential.and_then(|credential| match credential {
-        ResolvedCredential::ApiKey(key) if !key.is_empty() => Some(key),
-        _ => None,
-    }) {
-        Some(k) => k,
-        None => match std::env::var(spec.env_var) {
-            Ok(k) if !k.is_empty() => k,
-            _ if !spec.requires_auth => "not-needed".to_string(),
-            _ => {
-                return Err(FactoryError::MissingApiKey(
-                    spec.id.into(),
-                    spec.env_var.into(),
-                ));
-            }
-        },
-    };
     let base = base_url_override(&provider_id).or_else(|| spec.base_url.map(String::from));
-    let transport = crate::transport::TransportConfig::default();
-    Ok(match spec.wire {
-        crate::providers::Wire::Anthropic => {
-            Box::new(AnthropicProvider::new(key, model_id, base, true, transport))
+
+    match spec.auth_method {
+        AuthMethod::ApiKey => {
+            let key = resolve_api_key(spec, credential)?;
+            let transport = crate::transport::TransportConfig::default();
+            Ok(match spec.wire {
+                Wire::Anthropic => {
+                    Box::new(AnthropicProvider::new(key, model_id, base, true, transport))
+                }
+                Wire::OpenAI => Box::new(OpenAIProvider::new(key, model_id, base, transport)),
+                // CodexResponses always rides on Subscription auth; the table
+                // never pairs it with ApiKey. Guard against drift with a panic
+                // rather than silently falling back to Bearer auth.
+                Wire::CodexResponses => unreachable!(
+                    "CodexResponses wire must use AuthMethod::Subscription (provider '{}')",
+                    spec.id
+                ),
+            })
         }
-        crate::providers::Wire::OpenAI => {
-            Box::new(OpenAIProvider::new(key, model_id, base, transport))
+        AuthMethod::Subscription => {
+            let subscription = match credential {
+                Some(ResolvedCredential::Subscription(sub)) => sub,
+                _ => return Err(FactoryError::MissingSubscription(spec.id.into())),
+            };
+            match spec.wire {
+                Wire::CodexResponses => CodexResponsesProvider::new(subscription, model_id, base)
+                    .map(|provider| Box::new(provider) as Box<dyn Provider>)
+                    .map_err(FactoryError::InvalidCredential),
+                _ => unreachable!(
+                    "Subscription auth on non-CodexResponses wire (provider '{}')",
+                    spec.id
+                ),
+            }
         }
-        crate::providers::Wire::CodexResponses => unreachable!("handled above"),
-    })
+    }
+}
+
+/// Resolve a Bearer API key for an `ApiKey` provider. Order: explicit
+/// credential passed to the factory, then the provider's env var, then a
+/// placeholder for local runtimes that never inspect the Authorization
+/// header (`requires_auth == false`). Errors carry the env var name so the
+/// user knows exactly what to set.
+fn resolve_api_key(
+    spec: &ProviderSpec,
+    credential: Option<ResolvedCredential>,
+) -> Result<String, FactoryError> {
+    if let Some(ResolvedCredential::ApiKey(key)) = credential {
+        if !key.is_empty() {
+            return Ok(key);
+        }
+    }
+    if let Some(env_var) = spec.env_var {
+        if let Ok(k) = std::env::var(env_var) {
+            if !k.is_empty() {
+                return Ok(k);
+            }
+        }
+    }
+    if !spec.requires_auth {
+        return Ok("not-needed".to_string());
+    }
+    Err(FactoryError::MissingApiKey(
+        spec.id.into(),
+        spec.env_var.unwrap_or("<unknown>").into(),
+    ))
 }
 
 fn parse_model_string(s: &str) -> Result<(String, String), FactoryError> {
@@ -150,6 +180,27 @@ mod tests {
     fn load_xai_uses_openai_wire() {
         let p = load_provider("xai/grok-beta", Some("key".into())).unwrap();
         assert_eq!(p.model_id(), "grok-beta");
+    }
+
+    #[test]
+    fn load_opencode_with_explicit_key() {
+        // OpenCode Go rides the OpenAI wire with a Bearer key against the
+        // zen/go base URL — no subscription required, no custom adapter.
+        std::env::remove_var("OPENCODE_API_KEY");
+        let p = load_provider("opencode/kimi-k2.6", Some("sk-test".into()))
+            .expect("opencode loads with an explicit API key");
+        assert_eq!(p.model_id(), "kimi-k2.6");
+    }
+
+    #[test]
+    fn load_opencode_missing_key_errors_with_env_var_name() {
+        std::env::remove_var("OPENCODE_API_KEY");
+        let err = load_provider("opencode/kimi-k2.6", None).err().unwrap();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("OPENCODE_API_KEY"),
+            "error should name the env var, got: {msg}"
+        );
     }
 
     #[test]
