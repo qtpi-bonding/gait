@@ -1,100 +1,221 @@
 ---
 name: gait-agent
-description: Use gait — this repo's turn-based AI coding agent — either as a dispatchable subagent for scoped exploration/implementation tasks, or interactively via its REPL. Use when a task calls for a second coding agent to explore/implement against a codebase in the background, or when a human wants to drive gait turn-by-turn themselves.
+description: Use the Gait command-line interface to run turns, select inference profiles, manage sessions, permissions, extensions, and workflows.
 ---
 
-# gait
+# Gait CLI
 
-gait is a stateless, turn-based coding agent: one invocation = one turn (read/edit/run/commit), then it exits. No daemon, no server. Every turn is committed to a session's git branch, so nothing is lost if it's interrupted. Full reference: [README.md](../../README.md).
+Gait runs one turn per invocation. A gait workspace contains `gait.jsonc`,
+inference profiles, agent files, and session history. The target repository is
+passed separately as `--codebase`.
 
-There are two ways to use it:
-
-1. **As a subagent** — another agent (you) dispatches `gait "<task>"` in the background and reads the result when it exits. Good for well-scoped exploration or implementation work you want to hand off.
-2. **Interactively** — a human runs `gait -i` and drives it turn-by-turn in a REPL.
-
-## One-time setup
-
-Every gait invocation needs a **gait-dir** (holds config + session history) and a **codebase** (the repo being worked on — they can be the same directory, or the gait-dir can live elsewhere and point at any repo via `--codebase`).
+Set the workspace path once:
 
 ```bash
-mkdir -p /path/to/gait-workspace && cd /path/to/gait-workspace
-gait init                       # scaffolds gait.jsonc, agents/default/AGENT.md, etc.
-gait auth add anthropic         # or openai / minimax / any supported provider
-export GAIT_DIR=/path/to/gait-workspace   # lets you drop --gait-dir from every call below
+export GAIT_DIR=/path/to/gait-workspace
 ```
 
-Check `gait.jsonc`'s `model` field is set to a provider you've authenticated (`gait models` lists what's available).
+Use `--gait-dir <path>` instead of `GAIT_DIR` when needed. Use
+`--codebase <path>` to select the repository the agent can access.
 
----
-
-## Using gait as a subagent
-
-Dispatch it in the background — it runs to completion on its own and exits; there's nothing to poll.
+## Workspace
 
 ```bash
-gait "Read src/auth.rs and src/session.rs, summarize the session lifecycle and what events get written to the transcript. Call structured_done() with your findings." \
-  --gait-dir /path/to/gait-workspace \
-  --codebase /path/to/target/repo \
-  --auto-approve
+gait init <path>
+gait init <path> --force
+gait link /path/to/gait-workspace
+gait config get <key>
+gait config set <key> <value>
 ```
 
-Notes:
+`gait init` creates a workspace. `gait link` writes a `.gaitref` in the current
+directory. `gait config` reads or updates `gait.jsonc`.
 
-- **The task is a bare positional string** — there's no `--task` flag.
-- **`--codebase` is the sandbox root** — gait cannot read outside it. If the task needs to read from one directory and edit another, pass their common ancestor as `--codebase`.
-- **`--auto-approve` skips human permission prompts** but not the kernel-level sandbox (`readable`/`writable`/`network` in `gait.jsonc`). For a task that writes files or runs shell commands, also pass explicit `--allow` patterns (e.g. `--allow 'write:*' --allow 'shell:*' --allow 'edit_replace:*'`) — treat broad `shell:*`/`write:*` grants as a real capability escalation and confirm with the user before using them, the same way you would for any other broad auto-approval.
-- **One task per invocation.** gait has no memory between processes; give it everything it needs in the prompt (absolute paths, the exact test/build command, the commit message) and keep each dispatch to one logical change. Continue related work in the same session with `--session <id>` (printed at start as `{"type":"session_id","id":"..."}`) rather than starting fresh each time.
-- **Always end the prompt** with an explicit completion instruction, e.g. `Call structured_done() when done.` — otherwise you can't tell success from a silent stall.
-- **Prefer intent over verbatim code.** Describe the goal, name the files, point it at a spec/plan to read rather than pasting code blocks. If the change is too tricky or error-prone to describe this way, it's a sign you should do it yourself instead of delegating it.
+## Inference profiles
 
-After it exits, verify independently — don't trust "done" at face value:
+An inference profile is stored in
+`inferences/<inference-name>/INFERENCE.yaml`:
+
+```yaml
+model: <provider>/<model-id>
+```
 
 ```bash
-git -C /path/to/target/repo log --oneline -3
-gait ps --gait-dir /path/to/gait-workspace --json      # list active sessions + their state
-gait stats <session-id> --gait-dir /path/to/gait-workspace   # token usage / cost
+gait inference list
+gait inference show <inference-name>
+gait inference add <inference-name> --model <provider>/<model-id>
 ```
 
-When you're satisfied with a session's result, merge its transcript into the gait-dir's history (or drop it if the run didn't pan out):
+Set the workspace default:
 
 ```bash
-gait persist <session-id> --gait-dir /path/to/gait-workspace   # merge + keep
-gait discard <session-id> --gait-dir /path/to/gait-workspace   # tear down, no merge
+gait config set inference <inference-name>
+gait config get inference
 ```
 
-Multiple sessions can run in parallel against the same codebase as long as they touch disjoint files — each has its own lock, log, and shadow checkpoint repo. Don't run `cargo build`/`test`-equivalents from two parallel sessions at once; they'll fight over shared build artifacts. Run the full build/test suite yourself, once, after all parallel sessions land.
-
----
-
-## Using gait interactively (REPL)
-
-For a human driving gait turn-by-turn instead of one-shot dispatch:
+Use a profile for one turn:
 
 ```bash
-gait -i --gait-dir /path/to/gait-workspace --codebase /path/to/target/repo
+gait --inference <inference-name> \
+  --codebase /path/to/codebase \
+  "<task>"
 ```
 
-Inside the REPL:
+Use a profile for an ephemeral request without a session:
 
-| Command | Aliases | What it does |
-|---|---|---|
-| `/help` | `/?` | Show the command guide |
-| `/info` | | Show model, session, gait-dir, codebase |
-| `/model` | | Show or switch model (`provider/id`) |
-| `/new` | `/n` | Start a fresh session |
-| `/undo` | `/u` | Undo the last turn (code + transcript) |
-| `/sandbox` | | Toggle the sandbox |
-| `/unlock` | | Grant access when a turn is paused on a sandbox boundary |
-| `/workflow` | | Run a workflow |
-| `/exit` | `/quit`, `/q` | Exit the REPL |
+```bash
+gait -e --inference <inference-name> \
+  --codebase /path/to/codebase \
+  "<prompt>"
+```
 
-Message syntax:
+Select or clear the profile recorded for an active session:
 
-| Syntax | What it does |
-|---|---|
-| `!cmd` | Run a shell command locally, captured into shell history |
-| `$(N)` / `$(cmd)` | Paste shell history entry N / inline a fresh command's output |
-| `>(N)` / `>(N-M)` | Quote line(s) from the last agent response |
-| `@path` | Inline a file's contents into the message |
+```bash
+gait inference select <inference-name> --session <session-id>
+gait inference clear --session <session-id>
+```
 
-Resume a prior REPL session later with `gait -i --session <id>`.
+The `--inference` flag selects a profile for the invocation. The `inference`
+config value supplies the default when the flag is absent.
+
+## Turns
+
+Run a new turn:
+
+```bash
+gait --inference <inference-name> \
+  --codebase /path/to/codebase \
+  "<task>"
+```
+
+Continue a session:
+
+```bash
+gait --session <session-id> \
+  --codebase /path/to/codebase \
+  "<task>"
+```
+
+Run with permission and execution flags:
+
+```bash
+gait --auto-approve \
+  --allow '<pattern>' \
+  --deny '<pattern>' \
+  --unlock /path/to/file \
+  --max-iter <count> \
+  --codebase /path/to/codebase \
+  "<task>"
+```
+
+Use `gait --help` for all top-level flags.
+
+## Authentication and models
+
+```bash
+gait auth list
+gait auth status <provider>
+gait auth add <provider>
+gait auth remove <provider>
+gait auth login <provider>
+gait auth logout <provider>
+gait auth link <provider> <source>
+gait auth unlink <provider>
+gait models
+gait models <filter>
+```
+
+## Sessions
+
+```bash
+gait sessions
+gait sessions --json
+gait ps
+gait ps --json
+gait stats <session-id>
+gait stats <session-id> --json
+```
+
+Persist a session by merging it into the main codebase:
+
+```bash
+gait persist <session-id> --yes
+gait persist --all --yes
+gait persist <session-id> --json
+```
+
+Discard a session without merging it:
+
+```bash
+gait discard <session-id> --yes
+gait discard --all --yes
+gait discard <session-id> --json
+```
+
+Inspect or undo turns:
+
+```bash
+gait undo <session-id> --list
+gait undo <session-id> --turn <turn-number>
+gait undo <session-id> --turn <turn-number> --code
+gait undo <session-id> --turn <turn-number> --transcript
+```
+
+## Permissions and session updates
+
+```bash
+gait allow <session-id> --pattern '<pattern>'
+gait allow <session-id> --pattern '<pattern>' --scope <once|session|global|agent>
+gait allow <session-id> --pattern '<pattern>' --scope agent --agent <agent-name>
+gait deny <session-id>
+gait unlock <session-id>
+gait unlock <session-id> --scope <once|session|global|agent>
+gait unlock <session-id> --scope agent --agent <agent-name>
+gait reply <session-id> "<message>"
+```
+
+Load or unload a registered extension for a session:
+
+```bash
+gait load <mcp|skill|plugin> <name> <session-id>
+gait unload <mcp|skill|plugin> <name> <session-id>
+```
+
+## Extensions
+
+```bash
+gait register <mcp|skill|plugin> <name> [options]
+gait unregister <mcp|skill|plugin> <name>
+gait enable <mcp|skill|plugin> <name>
+gait disable <mcp|skill|plugin> <name>
+```
+
+Use `gait register --help` and the kind-specific help for registration
+options. Scope options are `global`, `agent`, and `session`.
+
+## Workflows and daemons
+
+```bash
+gait workflow list
+gait workflow validate <workflow-name>
+gait workflow run <workflow-name>
+gait workflow continue <run-id>
+gait workflow abort <run-id>
+gait workflow log <run-id>
+
+gait daemons list
+gait daemons list --all
+gait daemons stop <daemon-name>
+```
+
+## Common command options
+
+Most workspace and session commands accept `--gait-dir <path>` or use
+`GAIT_DIR`. Commands that operate on a codebase accept `--codebase <path>`.
+Commands with machine-readable output accept `--json`.
+
+```bash
+gait <command> --help
+gait --help
+```
