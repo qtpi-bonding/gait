@@ -18,6 +18,7 @@ serde_yaml = "0.9"
 async-trait = "0.1"
 futures-util = "0.3"
 regex = "1"
+jsonschema = { version = "0.18", default-features = false }
 
 
 [dev-dependencies]

@@ -76,10 +76,16 @@ fn build_line_editor(
         .with_edit_mode(Box::new(Emacs::new(kb)))
 }
 
+fn repl_history_file(gait_dir: &std::path::Path, session_id: &str) -> std::path::PathBuf {
+    gait_dir
+        .join("tmp")
+        .join(format!("repl_history-{}", session_id))
+}
+
 /// The REPL: a banner + reedline editor, then an outer session loop. Each
 /// `run_loop` runs one session's turns through the shared input boundary
-/// (`ReplSource`); `/n` ends it and starts a new session (reusing the
-/// same editor/history), `/q`/EOF exits. (Phase 4b — the REPL on `run_loop`.)
+/// (`ReplSource`); `/n` ends it and starts a new session, `/q`/EOF exits.
+/// (Phase 4b — the REPL on `run_loop`.)
 pub async fn run_chat(
     gait_dir: PathBuf,
     codebase: PathBuf,
@@ -153,7 +159,7 @@ pub async fn run_chat(
         );
     }
 
-    let history_file = gait_dir.join("repl_history");
+    let history_file = repl_history_file(&gait_dir, &session_id);
     let rl = build_line_editor(
         shell_history_path.clone(),
         history_file,
@@ -162,8 +168,8 @@ pub async fn run_chat(
         &theme,
     );
 
-    // One builder, shared by the per-session source + sink. It outlives every
-    // `run_loop` so editor history and view state persist across `/n`.
+    // One builder, shared by the per-session source + sink. It outlives each
+    // turn within a session; `/n` replaces it so editor history stays local.
     let builder = ReplBuilder::new(Box::new(crate::repl::ReedlineReader(rl)), theme.clone());
     let shared: crate::repl::Shared =
         std::rc::Rc::new(std::cell::RefCell::new(crate::repl::ReplShared {
@@ -267,6 +273,20 @@ pub async fn run_chat(
         match control {
             Some(crate::repl::Control::NewSession(id)) => {
                 session_id = id;
+                // Reedline history is session-local. Recreate the editor here so a
+                // `/n` session does not inherit the prior session's suggestions.
+                let history_file = repl_history_file(&gait_dir, &session_id);
+                let rl = build_line_editor(
+                    gait_dir
+                        .join("tmp")
+                        .join(format!("shell-{}.jsonl", session_id)),
+                    history_file,
+                    gait_dir.clone(),
+                    codebase.clone(),
+                    &theme,
+                );
+                shared.borrow_mut().builder =
+                    ReplBuilder::new(Box::new(crate::repl::ReedlineReader(rl)), theme.clone());
                 shared
                     .borrow_mut()
                     .builder

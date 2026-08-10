@@ -16,6 +16,7 @@ use crate::exec_prompt::exec_prompt_node;
 use crate::exec_shell::{exec_shell_node, NodeContext};
 use crate::hooks::run_hook;
 use crate::observer::WorkflowObserver;
+use crate::output::validate_node_output;
 use crate::run_log::WorkflowRunLog;
 use crate::schema::GATE_PAUSED_SENTINEL;
 use crate::state::{reconstruct_state, NodeStatus, WorkflowState};
@@ -1191,8 +1192,8 @@ async fn execute_node(
     wf: &Workflow,
     input: Option<Box<dyn TurnSource>>,
 ) -> anyhow::Result<NodeOutput> {
-    match node.body.as_ref() {
-        Some(node::Body::Shell(s)) => exec_shell_node(s, ctx).await,
+    let output = match node.body.as_ref() {
+        Some(node::Body::Shell(s)) => exec_shell_node(s, ctx, &node.output_schema_json).await,
         Some(node::Body::Prompt(p)) => exec_prompt_node(node, p, ctx, wf, input).await,
         Some(node::Body::Branch(b)) => {
             let expr = substitute_checked(&b.on, &ctx.vars)
@@ -1218,7 +1219,9 @@ async fn execute_node(
         }
         Some(node::Body::Gate(g)) => exec_gate_node(&node.id, g, &ctx.vars),
         None => anyhow::bail!("node '{}' has no body", node.id),
-    }
+    }?;
+
+    validate_node_output(node, &output)
 }
 
 fn propagate_branch_skips(

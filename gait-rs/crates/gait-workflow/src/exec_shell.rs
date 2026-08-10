@@ -36,6 +36,7 @@ pub struct NodeContext<'a> {
 pub async fn exec_shell_node(
     shell: &ShellNode,
     ctx: &NodeContext<'_>,
+    output_schema_json: &str,
 ) -> anyhow::Result<NodeOutput> {
     let cmd_str = substitute_shell(&shell.command, &ctx.vars);
     let timeout_ms: u64 = shell.timeout_ms.unwrap_or(120_000);
@@ -57,6 +58,15 @@ pub async fn exec_shell_node(
 
     let stdout = String::from_utf8_lossy(&result.stdout).to_string();
     let stderr = String::from_utf8_lossy(&result.stderr).to_string();
+    let json = if output_schema_json.is_empty() {
+        None
+    } else {
+        Some(serde_json::from_str(stdout.trim()).map_err(|e| {
+            anyhow::anyhow!(
+                "node output_schema requires JSON stdout, but shell stdout was invalid JSON: {e}"
+            )
+        })?)
+    };
     let combined = if stderr.is_empty() {
         stdout
     } else {
@@ -66,7 +76,7 @@ pub async fn exec_shell_node(
     Ok(NodeOutput {
         text: combined.trim_end().to_string(),
         exit_code: result.status.code(),
-        json: None,
+        json,
         routed_to: None,
         session_id: String::new(),
     })
@@ -85,7 +95,7 @@ mod tests {
             timeout_ms: None,
         };
         let ctx = make_test_ctx(ws.path());
-        let out = exec_shell_node(&shell, &ctx).await.unwrap();
+        let out = exec_shell_node(&shell, &ctx, "").await.unwrap();
         assert_eq!(out.text.trim(), "hello");
         assert_eq!(out.exit_code, Some(0));
     }
@@ -98,7 +108,7 @@ mod tests {
             timeout_ms: None,
         };
         let ctx = make_test_ctx(ws.path());
-        let out = exec_shell_node(&shell, &ctx).await.unwrap();
+        let out = exec_shell_node(&shell, &ctx, "").await.unwrap();
         assert_eq!(out.exit_code, Some(1));
     }
 
@@ -116,7 +126,7 @@ mod tests {
         let mut ctx = make_test_ctx(ws.path());
         let leaked: &'static Path = Box::leak(Box::new(run_wt.clone()));
         ctx.run_worktree = leaked; // shell must cwd here, not ctx.codebase
-        let out = exec_shell_node(&shell, &ctx).await.unwrap();
+        let out = exec_shell_node(&shell, &ctx, "").await.unwrap();
         assert!(
             out.text.contains("marker"),
             "shell cwd must be the run worktree; got: {}",
@@ -132,7 +142,7 @@ mod tests {
             timeout_ms: Some(50),
         };
         let ctx = make_test_ctx(ws.path());
-        let err = exec_shell_node(&shell, &ctx).await.unwrap_err();
+        let err = exec_shell_node(&shell, &ctx, "").await.unwrap_err();
         assert_eq!(err.to_string(), "shell timed out after 50ms");
     }
 
@@ -154,7 +164,7 @@ mod tests {
                 session_id: String::new(),
             },
         );
-        let out = exec_shell_node(&shell, &ctx).await.unwrap();
+        let out = exec_shell_node(&shell, &ctx, "").await.unwrap();
         assert_eq!(
             out.text, "; touch injected_marker",
             "the malicious text must come back as echo's literal argument, not run as a second command"
