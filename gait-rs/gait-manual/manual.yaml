@@ -1,0 +1,53 @@
+guides:
+  - title: Getting started
+    cli_cmds:
+      - init
+    repl_cmds:
+      - /help
+      - /info
+    body: |
+      Gait is an AI coding agent with a command-line interface and an interactive REPL.
+
+      Use the CLI to initialize a Gait directory, run one-off tasks, or continue a session.
+      Use the REPL when you want an interactive coding session.
+
+  - title: Sessions
+    cli_cmds:
+      - sessions
+    repl_cmds:
+      - /new
+      - /undo
+      - /unlock
+    body: |
+      Sessions preserve turns, tool activity, and workspace state.
+
+      Start a fresh session when you want a clean conversation. Use undo when you need to
+      restore an earlier turn or inspect available checkpoints.
+
+  - title: Inferences and providers
+    cli_cmds:
+      - inference
+      - auth
+      - models
+    repl_cmds:
+      - /inference
+      - /auth
+    body: |
+      Inferences name the models Gait can use. Provider credentials are managed separately
+      from inference selection.
+
+      Use the CLI for durable configuration and the REPL commands for inspecting or changing
+      the current interactive session.
+
+  - title: Workflows and extensions
+    cli_cmds:
+      - workflow
+      - enable
+      - disable
+    repl_cmds:
+      - /workflow
+      - /skill
+    body: |
+      Workflows run repeatable sequences of prompts and operations. Skills, MCP tools, and
+      plugins can be enabled for a session when they are available in the configured Gait
+      directory.

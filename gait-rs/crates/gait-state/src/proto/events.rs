@@ -854,7 +854,7 @@ mod tests {
             cache_read: 5,
             cache_write: 0,
         };
-        let body = llm_call_completed(usage.clone(), 2, true);
+        let body = llm_call_completed(usage, 2, true);
         match kind_of(&body) {
             pb::payload::Kind::LlmCallCompleted(c) => {
                 assert_eq!(c.usage, Some(usage));

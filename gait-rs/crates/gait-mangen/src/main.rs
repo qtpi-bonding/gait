@@ -1,16 +1,28 @@
 use clap_mangen::Man;
+use gait_mangen::render_default_skill;
 use std::fs;
 use std::path::PathBuf;
 
 fn main() {
-    let out_dir = PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "man".to_string()));
-    fs::create_dir_all(&out_dir).expect("create output dir");
+    let mut args = std::env::args().skip(1);
+    let out_dir = PathBuf::from(args.next().unwrap_or_else(|| "man".to_string()));
+    let skill_path = args.next().map(PathBuf::from);
 
     let cmd = gait_bin::cli();
-    generate(&cmd, &out_dir, None);
+    generate_man(&cmd, &out_dir, None);
+
+    if let Some(path) = skill_path {
+        let skill = render_default_skill().expect("render gait-manual");
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            fs::create_dir_all(parent).expect("create skill parent directory");
+        }
+        fs::write(&path, skill).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+        println!("wrote {}", path.display());
+    }
 }
 
-fn generate(cmd: &clap::Command, out_dir: &PathBuf, parent: Option<&str>) {
+fn generate_man(cmd: &clap::Command, out_dir: &PathBuf, parent: Option<&str>) {
+    fs::create_dir_all(out_dir).expect("create output dir");
     let qualified = match parent {
         Some(p) => format!("{}-{}", p, cmd.get_name()),
         None => cmd.get_name().to_string(),
@@ -25,6 +37,6 @@ fn generate(cmd: &clap::Command, out_dir: &PathBuf, parent: Option<&str>) {
     println!("wrote {}", path.display());
 
     for sub in cmd.get_subcommands() {
-        generate(sub, out_dir, Some(&qualified));
+        generate_man(sub, out_dir, Some(&qualified));
     }
 }

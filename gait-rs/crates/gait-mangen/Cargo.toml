@@ -12,5 +12,10 @@ path = "src/main.rs"
 
 [dependencies]
 gait-bin    = { path = "../gait-bin" }
+gait-repl   = { path = "../gait-repl" }
 clap        = { version = "4", features = ["derive"] }
 clap_mangen = "0.3"
+serde       = { version = "1", features = ["derive"] }
+serde_yaml  = "0.9"
+sha2        = "0.10"
+thiserror   = "1"

@@ -680,9 +680,9 @@ mod tests {
             ..GaitConfig::default()
         };
         let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
-        assert_eq!(profile.skills.len(), 1);
-        assert_eq!(profile.skills[0].name, "tdd");
-        assert!(profile.skills[0].content.contains("TDD"));
+        let tdd = profile.skills.iter().find(|s| s.name == "tdd").unwrap();
+        assert!(profile.skills.iter().any(|s| s.name == "gait-manual"));
+        assert_eq!(tdd.content, "# TDD\nbody");
     }
 
     #[test]
@@ -700,8 +700,11 @@ mod tests {
             ..GaitConfig::default()
         };
         let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
-        assert_eq!(profile.skills.len(), 1);
-        assert_eq!(profile.skills[0].name, "inline");
+        assert_eq!(
+            profile.skills.iter().filter(|s| s.name == "inline").count(),
+            1
+        );
+        assert!(profile.skills.iter().any(|s| s.name == "gait-manual"));
     }
 
     #[test]
@@ -726,12 +729,11 @@ mod tests {
             ..GaitConfig::default()
         };
         let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
-        assert_eq!(
-            profile.skills.len(),
-            1,
-            "should deduplicate same-named skill"
-        );
-        assert_eq!(profile.skills[0].description, "Disk version", "disk wins");
+        let tdd_count = profile.skills.iter().filter(|s| s.name == "tdd").count();
+        assert_eq!(tdd_count, 1, "should deduplicate same-named skill");
+        let tdd = profile.skills.iter().find(|s| s.name == "tdd").unwrap();
+        assert_eq!(tdd.description, "Disk version", "disk wins");
+        assert!(profile.skills.iter().any(|s| s.name == "gait-manual"));
     }
 
     #[test]

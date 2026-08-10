@@ -350,9 +350,17 @@ impl TurnSource for ReplSource {
                 continue;
             }
 
+            let parsed_command = cmd::parse(&line);
+
             // /help (or /?) — emit the grouped command guide via the sink (raw eprint
             // bypasses the themed ReplRenderer; the help text is plain by design).
-            if line.trim() == "/help" || line.trim() == "/?" {
+            if matches!(
+                parsed_command,
+                Some(cmd::ParsedCommand {
+                    id: cmd::ReplCommandId::Help,
+                    args: ""
+                })
+            ) {
                 self.shared
                     .borrow_mut()
                     .builder
@@ -361,7 +369,13 @@ impl TurnSource for ReplSource {
             }
 
             // /info — print current model, session id, gait-dir, codebase.
-            if line.trim() == "/info" {
+            if matches!(
+                parsed_command,
+                Some(cmd::ParsedCommand {
+                    id: cmd::ReplCommandId::Info,
+                    args: ""
+                })
+            ) {
                 let cfg = gait_core::config::load_config(&self.gait_dir);
                 let model = cfg.inference.as_deref().unwrap_or("(none)");
                 self.shared.borrow_mut().builder.write_raw(&format!(
@@ -457,8 +471,11 @@ impl TurnSource for ReplSource {
             // session selection using the exact same operations as
             // `gait inference ...`. Subcommands `show` and `add` mirror the
             // CLI for REPL/CLI symmetry.
-            if let Some(rest) = line.strip_prefix("/inference") {
-                let arg = rest.trim();
+            if let Some(cmd::ParsedCommand {
+                id: cmd::ReplCommandId::Inference,
+                args: arg,
+            }) = parsed_command
+            {
                 if arg.is_empty() {
                     for name in gait_ops::inference::list(&self.gait_dir) {
                         self.shared
@@ -528,8 +545,11 @@ impl TurnSource for ReplSource {
             // /mode [name] — show available modes + active one (no arg), or
             // activate/clear a mode by appending a `Mode` event to the log.
             // `/mode` / `/mode default` clears back to the no-op baseline.
-            if let Some(rest) = line.strip_prefix("/mode") {
-                let arg = rest.trim();
+            if let Some(cmd::ParsedCommand {
+                id: cmd::ReplCommandId::Mode,
+                args: arg,
+            }) = parsed_command
+            {
                 if arg.is_empty() {
                     let modes = gait_core::modes::list_modes(&self.gait_dir);
                     let active = gait_core::session::Ingestor::from_session(
@@ -578,8 +598,11 @@ impl TurnSource for ReplSource {
             // /sh <desc> (alias /e) — one-off: ask the model for {cmd|output}, render it,
             // append to shell history so $(N) recall works. Calls gait_core's
             // run_one_off_turn directly (gait-repl may not depend on gait-cli).
-            if let Some(rest) = line.strip_prefix("/sh").or_else(|| line.strip_prefix("/e")) {
-                let desc = rest.trim();
+            if let Some(cmd::ParsedCommand {
+                id: cmd::ReplCommandId::Shell,
+                args: desc,
+            }) = parsed_command
+            {
                 if desc.is_empty() {
                     self.shared
                         .borrow_mut()
@@ -615,7 +638,26 @@ impl TurnSource for ReplSource {
             // the next turn (ephemeral: never mutates a live sealed process).
             // Must be checked before parse_skill_toggle so "sandbox" isn't treated as
             // a skill name.
-            if line.trim() == "/sandbox" || line.trim() == "/sandbox on" {
+            if let Some(cmd::ParsedCommand {
+                id: cmd::ReplCommandId::Sandbox,
+                args,
+            }) = parsed_command
+            {
+                if !args.is_empty() && args != "on" && args != "off" {
+                    self.shared
+                        .borrow_mut()
+                        .builder
+                        .write_raw("[gait] usage: /sandbox [off|on]\r\n");
+                    continue;
+                }
+                if args == "off" {
+                    self.shared.borrow_mut().sandbox_on = false;
+                    self.shared
+                        .borrow_mut()
+                        .builder
+                        .write_raw("sandbox disabled\r\n");
+                    continue;
+                }
                 self.shared.borrow_mut().sandbox_on = true;
                 self.shared
                     .borrow_mut()
@@ -623,20 +665,15 @@ impl TurnSource for ReplSource {
                     .write_raw("sandbox enabled\r\n");
                 continue;
             }
-            if line.trim() == "/sandbox off" {
-                self.shared.borrow_mut().sandbox_on = false;
-                self.shared
-                    .borrow_mut()
-                    .builder
-                    .write_raw("sandbox disabled\r\n");
-                continue;
-            }
 
             // /unlock [scope] — drive gait_ops::permission::unlock in-process for
             // the current session. Scope defaults to "once". Mirrors /u N →
             // gait_ops::session::undo.
-            if let Some(scope_str) = line.strip_prefix("/unlock") {
-                let scope = scope_str.trim();
+            if let Some(cmd::ParsedCommand {
+                id: cmd::ReplCommandId::Unlock,
+                args: scope,
+            }) = parsed_command
+            {
                 let scope = if scope.is_empty() { "once" } else { scope };
                 match scope {
                     "once" | "session" | "global" | "agent" => {
@@ -685,8 +722,11 @@ impl TurnSource for ReplSource {
             // gait_ops::extension::{load,unload} in-process for the current
             // session (mirrors /unlock's op-call pattern, since those mutate a
             // live session's log).
-            if let Some(rest) = line.strip_prefix("/skill") {
-                let rest = rest.trim();
+            if let Some(cmd::ParsedCommand {
+                id: cmd::ReplCommandId::Skill,
+                args: rest,
+            }) = parsed_command
+            {
                 if rest.is_empty() {
                     let loaded = repl_skill_currently_loaded(&self.gait_dir, &self.session_id);
                     let mut out = String::new();
@@ -792,7 +832,11 @@ impl TurnSource for ReplSource {
             }
 
             // /workflow <name> [args...] — start a named workflow non-blocking, print run_id.
-            if let Some(rest) = line.strip_prefix("/workflow") {
+            if let Some(cmd::ParsedCommand {
+                id: cmd::ReplCommandId::Workflow,
+                args: rest,
+            }) = parsed_command
+            {
                 let mut parts = rest.split_whitespace();
                 match parts.next() {
                     None => self
@@ -815,13 +859,13 @@ impl TurnSource for ReplSource {
                 continue;
             }
 
-            match line.as_str() {
-                "/n" | "/new" => {
+            match parsed_command.map(|c| c.id) {
+                Some(cmd::ReplCommandId::New) => {
                     self.shared.borrow_mut().control =
                         Some(Control::NewSession(gait_core::session::new_session_id()));
                     return None;
                 }
-                "/q" | "/exit" | "exit" | "quit" => {
+                Some(cmd::ReplCommandId::Exit) => {
                     self.shared.borrow_mut().control = Some(Control::Quit);
                     return None;
                 }
@@ -833,16 +877,20 @@ impl TurnSource for ReplSource {
             // slash-variant to (code, transcript) mirrors the CLI's
             // --code/--transcript flag combinations exactly (see
             // gait_ops::session::undo's do_code/do_transcript derivation).
-            let line: String =
-                if line.starts_with("/uc") || line.starts_with("/ut") || line.starts_with("/u") {
-                    let (code, transcript, label, arg_start) = if line.starts_with("/uc") {
-                        (true, false, "code", 3usize)
-                    } else if line.starts_with("/ut") {
-                        (false, true, "transcript", 3usize)
-                    } else {
-                        (true, true, "both", 2usize)
+            let line: String = match parsed_command.map(|c| (c.id, c.args)) {
+                Some((
+                    id @ (cmd::ReplCommandId::Undo
+                    | cmd::ReplCommandId::UndoCode
+                    | cmd::ReplCommandId::UndoTranscript),
+                    arg,
+                )) => {
+                    let (code, transcript, label) = match id {
+                        cmd::ReplCommandId::UndoCode => (true, false, "code"),
+                        cmd::ReplCommandId::UndoTranscript => (false, true, "transcript"),
+                        cmd::ReplCommandId::Undo => (true, true, "both"),
+                        _ => unreachable!(),
                     };
-                    let arg = line[arg_start..].trim().to_owned();
+                    let arg = arg.to_owned();
                     if arg.is_empty() {
                         match gait_ops::session::undo(gait_ops::session::UndoParams {
                             gait_dir: self.gait_dir.clone(),
@@ -896,9 +944,9 @@ impl TurnSource for ReplSource {
                         ));
                         continue;
                     }
-                } else {
-                    line
-                };
+                }
+                _ => line,
+            };
 
             // Reedline records history automatically on Signal::Success; no manual add needed.
             // Unified expansion (identical to the CLI path): $(cmd)/$(N), @path, >(N).
@@ -957,11 +1005,11 @@ fn take_word(input: &str) -> Option<(&str, &str)> {
 /// The path after `--home` consumes the remainder of the line so native paths
 /// containing spaces work without adding shell parsing semantics to the REPL.
 fn parse_repl_auth_command(line: &str) -> Option<Result<ReplAuthCommand, &'static str>> {
-    let rest = line.strip_prefix("/auth")?;
-    if rest.chars().next().is_some_and(|c| !c.is_whitespace()) {
+    let parsed = cmd::parse(line)?;
+    if parsed.id != cmd::ReplCommandId::Auth {
         return None;
     }
-    let rest = rest.trim();
+    let rest = parsed.args;
     if rest.is_empty() {
         return Some(Ok(ReplAuthCommand::List));
     }

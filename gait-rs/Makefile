@@ -4,16 +4,19 @@
 INSTALL_DIR ?= /usr/local/bin
 MAN_DIR     ?= $(INSTALL_DIR)/../share/man/man1
 
-.PHONY: build install man fmt lint test check hooks
+.PHONY: build install man manual fmt lint test check hooks
 
 build:
 	cargo build --release -p gait-bin -p gait-mangen
 
 TARGET_DIR := $(shell cargo metadata --no-deps --format-version 1 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['target_directory'])")
 
+manual:
+	GAIT_MANUAL_UPDATE=1 cargo run -p gait-mangen -- $(TARGET_DIR)/man gait-manual/SKILL.md
+
 man:
 	@mkdir -p $(TARGET_DIR)/man
-	$(TARGET_DIR)/release/gait-mangen $(TARGET_DIR)/man
+	$(TARGET_DIR)/release/gait-mangen $(TARGET_DIR)/man gait-manual/SKILL.md
 	@echo "man pages → $(TARGET_DIR)/man/"
 
 install: build man

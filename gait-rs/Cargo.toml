@@ -74,6 +74,9 @@ tempfile       = "3"
 [features]
 testing = []
 
+[build-dependencies]
+sha2 = "0.10"
+
 [dev-dependencies]
 tempfile = "3"
 serial_test = "3"
