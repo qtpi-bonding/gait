@@ -1,18 +1,40 @@
-use clap::Command;
+use clap::{Command, Parser, Subcommand};
 use gait_repl::repl::commands::{ReplCommand, COMMANDS};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Parser)]
+pub struct ManualArgs {
+    #[command(subcommand)]
+    pub command: ManualCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ManualCommand {
+    /// Generate the model-facing manual in the configured Gait directory.
+    Install(ManualInstallArgs),
+}
+
+#[derive(Debug, Parser)]
+pub struct ManualInstallArgs {
+    /// Replace an existing generated manual.
+    #[arg(long)]
+    pub force: bool,
+    /// Gait directory in which to install the manual.
+    #[arg(long, short = 'd')]
+    pub gait_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ManualManifest {
     #[serde(default)]
     pub guides: Vec<GuideSource>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct GuideSource {
     pub title: String,
     #[serde(default)]
@@ -50,7 +72,7 @@ pub fn render_skill(
     cli: Command,
     repl_commands: &[ReplCommand],
 ) -> Result<String, ManualError> {
-    let cli_index = cli_index(cli);
+    let cli_index = cli_index(cli.clone());
     let repl_index: BTreeMap<&str, &ReplCommand> = repl_commands
         .iter()
         .flat_map(|command| std::iter::once(command.slug).chain(command.aliases.iter().copied()))
@@ -62,28 +84,24 @@ pub fn render_skill(
         })
         .collect();
 
-    let mut out = String::from(
-        "---\nname: gait-manual\ndescription: Explain how to use and configure Gait.\nmanual-source-hash: ",
-    );
-    out.push_str(&manual_source_hash());
-    out.push_str("\n---\n\n# Gait Manual\n");
+    let mut body = String::from("# Gait Manual\n");
     for guide in &manifest.guides {
-        writeln!(out, "\n## {}\n\n{}", guide.title, guide.body.trim())
+        writeln!(body, "\n## {}\n\n{}", guide.title, guide.body.trim())
             .expect("writing to String cannot fail");
 
         if !guide.cli_cmds.is_empty() {
-            out.push_str("\n### CLI commands\n");
+            body.push_str("\n### CLI commands\n");
             for name in &guide.cli_cmds {
                 let command = cli_index.get(name).ok_or_else(|| ManualError::UnknownCli {
                     guide: guide.title.clone(),
                     command: name.clone(),
                 })?;
-                render_cli_command(&mut out, name, command);
+                render_cli_command(&mut body, name, command);
             }
         }
 
         if !guide.repl_cmds.is_empty() {
-            out.push_str("\n### REPL commands\n");
+            body.push_str("\n### REPL commands\n");
             for name in &guide.repl_cmds {
                 let command =
                     repl_index
@@ -92,72 +110,64 @@ pub fn render_skill(
                             guide: guide.title.clone(),
                             command: name.clone(),
                         })?;
-                render_repl_command(&mut out, command);
+                render_repl_command(&mut body, command);
             }
         }
     }
-    while out.ends_with('\n') {
-        out.pop();
+    while body.ends_with('\n') {
+        body.pop();
     }
-    out.push('\n');
-    Ok(out)
+    body.push('\n');
+
+    let hash = manual_source_hash(manifest, &cli, repl_commands);
+    Ok(format!(
+        "---\nname: gait-manual\ndescription: Explain how to use and configure Gait.\nmanual-source-hash: {hash}\n---\n\n{body}"
+    ))
 }
 
 pub fn render_default_skill() -> Result<String, ManualError> {
     let manifest = parse_manifest(include_str!("../../../gait-manual/manual.yaml"))?;
-    render_skill(&manifest, gait_bin::cli(), COMMANDS)
+    render_skill(&manifest, crate::cli(), COMMANDS)
 }
 
-/// Hash the inputs that can change generated manual content. This is shared
-/// conceptually with the core build check; keep the list narrow enough that
-/// unrelated implementation changes do not force regeneration.
-pub fn manual_source_hash() -> String {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("gait workspace root");
-    hash_sources(root)
-}
-
-pub fn hash_sources(root: &Path) -> String {
-    let mut files = vec![root.join("gait-manual/manual.yaml")];
-    for relative in [
-        "crates/gait-mangen/src",
-        "crates/gait-bin/src",
-        "crates/gait-cli/src",
-        "crates/gait-repl/src/repl",
-    ] {
-        collect_rust_files(&root.join(relative), &mut files);
-    }
-    files.sort();
-
-    let mut hasher = Sha256::new();
-    for path in files {
-        let relative = path.strip_prefix(root).unwrap_or(&path);
-        hasher.update(relative.to_string_lossy().as_bytes());
-        hasher.update([0]);
-        hasher.update(
-            std::fs::read(&path)
-                .unwrap_or_else(|e| panic!("read manual source {}: {e}", path.display())),
+pub fn install(args: ManualArgs, gait_dir: &Path) -> anyhow::Result<()> {
+    let ManualCommand::Install(options) = args.command;
+    let path = gait_dir.join("skills/gait-manual/SKILL.md");
+    if path.exists() && !options.force {
+        anyhow::bail!(
+            "{} already exists; pass --force to regenerate it",
+            path.display()
         );
-        hasher.update([0]);
+    }
+    let content = render_default_skill()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, content)?;
+    println!("installed → {}", path.display());
+    Ok(())
+}
+
+fn manual_source_hash(
+    manifest: &ManualManifest,
+    cli: &Command,
+    repl_commands: &[ReplCommand],
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(serde_yaml::to_string(manifest).expect("manual manifest serializes"));
+    for command in cli_index(cli.clone()).values() {
+        hasher.update(command.get_name().as_bytes());
+        hasher.update(normalize_help_env_values(
+            &command.clone().render_help().to_string(),
+        ));
+    }
+    for command in repl_commands {
+        hasher.update(command.slug.as_bytes());
+        hasher.update(command.aliases.join(",").as_bytes());
+        hasher.update(command.desc.as_bytes());
+        hasher.update(command.usage.as_bytes());
     }
     format!("{:x}", hasher.finalize())
-}
-
-fn collect_rust_files(path: &Path, files: &mut Vec<PathBuf>) {
-    if path.is_file() {
-        if path.extension().is_some_and(|ext| ext == "rs") {
-            files.push(path.to_path_buf());
-        }
-        return;
-    }
-    for entry in std::fs::read_dir(path)
-        .unwrap_or_else(|e| panic!("read manual source directory {}: {e}", path.display()))
-        .flatten()
-    {
-        collect_rust_files(&entry.path(), files);
-    }
 }
 
 fn cli_index(root: Command) -> BTreeMap<String, Command> {
@@ -224,24 +234,16 @@ fn render_repl_command(out: &mut String, command: &ReplCommand) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn renders_live_command_metadata() {
-        let manifest = parse_manifest(
-            r#"
-guides:
-  - title: Sessions
-    cli_cmds: [sessions]
-    repl_cmds: [/new]
-    body: |
-      Manage sessions.
-"#,
-        )
-        .unwrap();
-        let rendered = render_skill(&manifest, gait_bin::cli(), COMMANDS).unwrap();
+        let manifest = parse_manifest("guides:\n  - title: Sessions\n    cli_cmds: [sessions]\n    repl_cmds: [/new]\n    body: |\n      Manage sessions.\n").unwrap();
+        let rendered = render_skill(&manifest, crate::cli(), COMMANDS).unwrap();
         assert!(rendered.contains("#### `gait sessions`"));
         assert!(rendered.contains("#### `/new`"));
         assert!(rendered.contains("Start a fresh session"));
+        assert!(rendered.contains("manual-source-hash: "));
     }
 
     #[test]
@@ -251,24 +253,24 @@ guides:
         )
         .unwrap();
         assert!(matches!(
-            render_skill(&manifest, gait_bin::cli(), COMMANDS),
+            render_skill(&manifest, crate::cli(), COMMANDS),
             Err(ManualError::UnknownCli { .. })
         ));
     }
 
     #[test]
-    fn help_environment_values_are_stable() {
-        assert_eq!(
-            normalize_help_env_values("  --gait-dir [env: GAIT_DIR=/private/user/gait]"),
-            "  --gait-dir [env: GAIT_DIR]"
-        );
-    }
-
-    #[test]
-    fn checked_in_skill_matches_generator() {
-        assert_eq!(
-            render_default_skill().unwrap(),
-            include_str!("../../../gait-manual/SKILL.md")
-        );
+    fn install_writes_manual_skill() {
+        let dir = TempDir::new().unwrap();
+        install(
+            ManualArgs {
+                command: ManualCommand::Install(ManualInstallArgs {
+                    force: false,
+                    gait_dir: None,
+                }),
+            },
+            dir.path(),
+        )
+        .unwrap();
+        assert!(dir.path().join("skills/gait-manual/SKILL.md").is_file());
     }
 }

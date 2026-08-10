@@ -256,7 +256,7 @@ mod tests {
         let events = vec![ev(crate::proto::events::daemon_update(
             "build".into(),
             0,
-            "done".into(),
+            "done",
             "/l".into(),
             "build@111".into(),
         ))];

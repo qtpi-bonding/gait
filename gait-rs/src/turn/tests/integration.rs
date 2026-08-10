@@ -5,7 +5,6 @@ use crate::session::log::read_events;
 use crate::session::retrace;
 use crate::test_utils::init_git_repo;
 use crate::tools::StructuredDoneTool;
-use crate::turn::exec::stream_preview_if_always;
 use crate::types::ToolDef;
 use async_stream::stream;
 use gait_provider::provider::Provider;

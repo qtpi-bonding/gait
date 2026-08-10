@@ -44,20 +44,6 @@ pub fn scan_skills(gait_dir: &Path) -> Vec<SkillDef> {
     out
 }
 
-/// Return skills shipped with the Gait binary. Built-ins are generated from
-/// the live CLI/REPL definitions and embedded so the manual is available even
-/// when the user's gait directory has no skills directory.
-pub fn builtin_skills() -> Vec<SkillDef> {
-    vec![SkillDef {
-        name: "gait-manual".to_string(),
-        description: "Explain how to use and configure Gait.".to_string(),
-        content: include_str!("../../../gait-manual/SKILL.md")
-            .trim_end()
-            .to_string(),
-        enabled: true,
-    }]
-}
-
 fn parse_skill_file(path: &Path) -> Option<SkillDef> {
     let content = std::fs::read_to_string(path).ok()?;
     let (fm, body) = split_frontmatter(&content);
@@ -104,12 +90,6 @@ pub fn merged_skill_registry(gait_dir: &Path, config: &GaitConfig) -> Vec<SkillD
     for s in &config.skills {
         if !disk_names.contains(&s.name) {
             disk_skills.push(s.clone());
-        }
-    }
-    let names: HashSet<String> = disk_skills.iter().map(|s| s.name.clone()).collect();
-    for s in builtin_skills() {
-        if !names.contains(&s.name) {
-            disk_skills.push(s);
         }
     }
     disk_skills
@@ -210,13 +190,5 @@ mod tests {
         write_skill(&dir, "nodesc", "name: nodesc\n", "# Body\ncontent\n");
         let skills = scan_skills(dir.path());
         assert_eq!(skills[0].description, "");
-    }
-
-    #[test]
-    fn builtin_manual_is_available() {
-        let skills = builtin_skills();
-        let manual = skills.iter().find(|s| s.name == "gait-manual").unwrap();
-        assert!(manual.content.contains("# Gait Manual"));
-        assert!(manual.content.contains("gait inference"));
     }
 }

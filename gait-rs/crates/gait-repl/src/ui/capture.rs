@@ -5,8 +5,6 @@
 //! `dup2`-ing fd 2 repoints stderr for the *entire process*, not per-thread.
 //! Every caller MUST serialize (`#[serial]`, from `serial_test`) against any
 //! other test using this or writing to stderr concurrently.
-#![cfg(feature = "dev-harness")]
-
 use std::io::Read;
 use std::os::unix::io::{FromRawFd, RawFd};
 

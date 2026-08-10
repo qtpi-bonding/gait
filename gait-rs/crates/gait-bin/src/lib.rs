@@ -14,6 +14,8 @@ use gait_cli::cli::session::{
 };
 use gait_cli::cli::workflow::WorkflowArgs;
 
+pub mod manual;
+
 #[derive(Parser)]
 #[command(
     name = "gait",
@@ -76,6 +78,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    Manual(manual::ManualArgs),
     Init(InitArgs),
     Link(LinkArgs),
     Sessions(SessionsArgs),

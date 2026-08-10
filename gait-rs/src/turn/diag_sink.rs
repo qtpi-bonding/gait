@@ -105,6 +105,7 @@ mod tests {
     /// `diagnostic.jsonl` is created. Mirrors the integration pin in
     /// `spine_relay_arms::diagnostic_writes_diagnostic_jsonl_only_when_gait_debug_set`.
     #[test]
+    #[serial_test::serial]
     fn ping_is_suppressed_when_gait_debug_unset() {
         // Make sure GAIT_DEBUG is unset for this test, regardless of the
         // surrounding shell environment.
@@ -131,6 +132,7 @@ mod tests {
     /// Terminal records follow the same GAIT_DEBUG gate as pings and lifecycle
     /// records.
     #[test]
+    #[serial_test::serial]
     fn terminal_is_suppressed_without_gait_debug() {
         std::env::remove_var("GAIT_DEBUG");
         assert!(

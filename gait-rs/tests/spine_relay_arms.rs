@@ -14,12 +14,10 @@
 //! - **Diagnostic** (per-phase ping) → written to `diagnostic.jsonl`, but ONLY
 //!   when `GAIT_DEBUG` is set to a non-empty value
 //!   (`src/turn/spine.rs:619-621` gates on
-//!   `crate::diagnostic::debug_enabled()`). The terminal-failure record
-//!   (Task 7 / `src/turn/spine.rs:528-531`) is a separate code path and is
-//!   NOT gated — see `spine_terminal_failure.rs` for that. This test pins the
-//!   current gating behavior: per-phase Diagnostic pings do NOT land in
-//!   `diagnostic.jsonl` unless `GAIT_DEBUG` is set. A refactor that drops the
-//!   gate (or adds one to the terminal record) will fail this test.
+//!   `crate::diagnostic::debug_enabled()`). Terminal-failure records use the
+//!   same gate; see `spine_terminal_failure.rs`. This test pins the current
+//!   behavior: per-phase Diagnostic pings do NOT land in `diagnostic.jsonl`
+//!   unless `GAIT_DEBUG` is set.
 //!
 //! - **Notify** → spine is sole gait-dir writer. It acquires the target
 //!   parent's session lock, appends an `AgentUpdate` event to the parent's

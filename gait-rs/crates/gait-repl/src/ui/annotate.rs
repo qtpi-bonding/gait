@@ -4,8 +4,6 @@
 //! and cursor/erase control codes collapse to short markers. Colors the
 //! current theme fixture can't produce are left as raw escape text — a
 //! mismatch there means this table is stale, not something to guess at.
-#![cfg(feature = "dev-harness")]
-
 use crate::theme::{rgb_to_ansi256, Theme, DIM_FG, RESET};
 
 struct SlotColor {
@@ -65,7 +63,7 @@ pub(crate) fn annotate(bytes: &[u8], theme: &Theme) -> String {
     let mut open: Option<&'static str> = None;
     let mut rest: &str = &input;
 
-    while let Some(pos) = rest.find(|c| c == '\x1b' || c == '\r') {
+    while let Some(pos) = rest.find(['\x1b', '\r']) {
         out.push_str(&rest[..pos]);
         rest = &rest[pos..];
 

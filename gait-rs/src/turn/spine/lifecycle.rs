@@ -640,7 +640,9 @@ mod tests {
     // ── emit_terminal_failure ordering test ──────────────────────────────────
 
     #[test]
+    #[serial_test::serial]
     fn terminal_failure_writes_error_event_and_diagnostic() {
+        std::env::set_var("GAIT_DEBUG", "1");
         let tmp = tempfile::tempdir().unwrap();
         let gait_dir = tmp.path();
         let session = "sterm";
@@ -666,6 +668,7 @@ mod tests {
             std::fs::read_to_string(crate::session::live::diagnostic_path(gait_dir, session))
                 .unwrap();
         assert!(diag.contains("streaming") && diag.contains("absolute backstop"));
+        std::env::remove_var("GAIT_DEBUG");
     }
 
     // ── aborted synthesis (Task 5) ─────────────────────────────────────────

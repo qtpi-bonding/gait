@@ -681,7 +681,6 @@ mod tests {
         };
         let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
         let tdd = profile.skills.iter().find(|s| s.name == "tdd").unwrap();
-        assert!(profile.skills.iter().any(|s| s.name == "gait-manual"));
         assert_eq!(tdd.content, "# TDD\nbody");
     }
 
@@ -704,7 +703,7 @@ mod tests {
             profile.skills.iter().filter(|s| s.name == "inline").count(),
             1
         );
-        assert!(profile.skills.iter().any(|s| s.name == "gait-manual"));
+        assert_eq!(profile.skills.len(), 1);
     }
 
     #[test]
@@ -733,7 +732,6 @@ mod tests {
         assert_eq!(tdd_count, 1, "should deduplicate same-named skill");
         let tdd = profile.skills.iter().find(|s| s.name == "tdd").unwrap();
         assert_eq!(tdd.description, "Disk version", "disk wins");
-        assert!(profile.skills.iter().any(|s| s.name == "gait-manual"));
     }
 
     #[test]

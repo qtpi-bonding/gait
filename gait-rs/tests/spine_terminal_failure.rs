@@ -6,15 +6,13 @@ use common::*;
 /// 1. `Terminated { failed: true }` causes `run_loop` to return `Ok(true)`,
 ///    which routes to `driver.on_turn_error` (embed.rs:204-231). The harness
 ///    `MockDriver::on_turn_error` surfaces this as a `Diag::Error` on the sink.
-/// 2. The spine (spine.rs:514-533) writes a `DiagRecord::terminal` line to
-///    `diagnostic.jsonl` for any failed Terminated — **always**, regardless
-///    of `GAIT_DEBUG` (the gated branch at spine.rs:619-621 is only for the
-///    per-phase `Signal::Body::Diagnostic` pings, not the terminal record).
+/// 2. The spine routes the terminal diagnostic through `DiagnosticSink`, so
+///    it follows the same `GAIT_DEBUG` visibility gate as other diagnostics.
 ///
-/// If a future refactor starts gating the terminal record on `GAIT_DEBUG`,
-/// or stops surfacing the error on the sink, this test fails loudly.
+/// The user-facing error must remain visible even when diagnostic tracing is
+/// disabled.
 #[tokio::test]
-async fn failed_terminated_sets_error_and_writes_diagnostic() {
+async fn failed_terminated_sets_error_without_debug_log() {
     let tmp = tempfile::tempdir().unwrap();
     let (sink, _calls) = run_one(tmp.path(), "tf1", &[terminated_fail("boom")]).await;
 
@@ -27,22 +25,13 @@ async fn failed_terminated_sets_error_and_writes_diagnostic() {
         sink.diagnostics
     );
 
-    // (2) Terminal DiagRecord is written to diagnostic.jsonl regardless of
-    //     GAIT_DEBUG — that's the load-bearing "always explained" rule.
+    // (2) Debug tracing remains disabled, while the user-facing error above
+    //     still explains the failure.
     let diag_path = gait_core::session::live::diagnostic_path(tmp.path(), "tf1");
     assert!(
-        diag_path.exists(),
-        "diagnostic.jsonl must exist for a failed Terminated (no GAIT_DEBUG gate); \
+        !diag_path.exists(),
+        "diagnostic.jsonl must remain absent when GAIT_DEBUG is unset; \
          diagnostics={:?}",
         sink.diagnostics
-    );
-    let body = std::fs::read_to_string(&diag_path).unwrap();
-    assert!(
-        body.contains("\"event\":\"error\""),
-        "diagnostic.jsonl must contain a terminal error record: {body}"
-    );
-    assert!(
-        body.contains("brain reported failure via Terminated signal"),
-        "diagnostic.jsonl must carry the terminal-failure detail: {body}"
     );
 }

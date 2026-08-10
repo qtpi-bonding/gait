@@ -4,8 +4,6 @@
 //! — and returns the annotated transcript (see `ui::annotate`) of what would
 //! have rendered. `run_script` drives an existing gait-dir; `run_script_fresh`
 //! additionally spins one up in a temp dir.
-#![cfg(feature = "dev-harness")]
-
 use std::fmt;
 use std::path::Path;
 

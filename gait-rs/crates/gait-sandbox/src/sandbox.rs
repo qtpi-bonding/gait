@@ -774,8 +774,10 @@ mod tests {
     fn bound_request_applies_per_tool_override() {
         use gait_types::config::{NetworkConfig, SandboxConfig, ToolAccessOverride};
         use std::path::Path;
-        let mut cfg = SandboxConfig::default();
-        cfg.network = NetworkConfig::All;
+        let mut cfg = SandboxConfig {
+            network: NetworkConfig::All,
+            ..Default::default()
+        };
         cfg.tools.insert(
             "shell".to_string(),
             ToolAccessOverride {

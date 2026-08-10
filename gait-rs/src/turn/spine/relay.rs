@@ -684,6 +684,6 @@ mod tests {
             ..Default::default()
         };
         record_tool_result(&mut state, &tr);
-        assert!(state.completed_mutations.get("call-2").is_none());
+        assert!(!state.completed_mutations.contains_key("call-2"));
     }
 }

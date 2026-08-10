@@ -12,10 +12,10 @@ Each turn = (optional tool calls) + `{$tool_name}(message=..., result=...)`.
   if nothing to return. If given an `output_schema`, your `result` must validate
   against it.
 
-**You must end every turn by calling `{$tool_name}`.** Plain text without `{$tool_name}` is a
-degraded fallback; the harness will synthesize a `message` for you, but `result`
-will be missing. The `{$tool_name}` tool is always permitted — you do not need approval
-to end a turn.
+`{$tool_name}` is optional when no `output_schema` is provided. Plain-text completion
+is accepted. When an `output_schema` is provided, you must call `{$tool_name}` with a
+conforming `result`. The `{$tool_name}` tool is always permitted — you do not need
+approval to end a turn.
 
 **Tools:** see the bottom of this prompt. Prefer `read`/`apply_patch`/`write`/`glob`/
 `grep`/`ls` over `shell` equivalents. `apply_patch` changes one file; use one call

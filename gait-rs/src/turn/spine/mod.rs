@@ -50,7 +50,9 @@ pub use relay::{relay_brain_turn, SignalSlot};
 #[cfg(test)]
 mod tests {
     #[test]
+    #[serial_test::serial]
     fn diagnostic_line_is_appended_to_diagnostic_jsonl() {
+        std::env::set_var("GAIT_DEBUG", "1");
         let tmp = tempfile::tempdir().unwrap();
         let gait_dir = tmp.path();
         let session = "stest";
@@ -66,5 +68,6 @@ mod tests {
         assert!(lines[0].contains("awaiting_headers"));
         // And it did NOT touch log.jsonl
         assert!(!crate::session::live::log_path(gait_dir, session).exists());
+        std::env::remove_var("GAIT_DEBUG");
     }
 }

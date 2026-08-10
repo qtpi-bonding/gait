@@ -39,8 +39,9 @@ async fn main() {
     let cli = Cli::parse();
 
     let cwd = cwd_or_dot();
+    let gait_dir_arg = cli.gait_dir.clone();
     let resolve_gait_dir = || -> PathBuf {
-        gait_core::gait_dir::resolve(cli.gait_dir.clone(), &cwd).unwrap_or_else(|e| {
+        gait_core::gait_dir::resolve(gait_dir_arg.clone(), &cwd).unwrap_or_else(|e| {
             eprintln!("[gait] {e}");
             std::process::exit(1);
         })
@@ -117,6 +118,23 @@ async fn main() {
     };
 
     match command {
+        Commands::Manual(args) => {
+            let manual_gait_dir = match &args.command {
+                gait_bin::manual::ManualCommand::Install(options) => options.gait_dir.clone(),
+            };
+            let gait_dir = gait_core::gait_dir::resolve(
+                manual_gait_dir.or_else(|| gait_dir_arg.clone()),
+                &cwd,
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("[gait] {e}");
+                std::process::exit(1);
+            });
+            if let Err(e) = gait_bin::manual::install(args, &gait_dir) {
+                eprintln!("[gait] error: {e}");
+                std::process::exit(1);
+            }
+        }
         Commands::Init(args) => gait_cli::cli::init::cmd_init(args),
         Commands::Link(args) => gait_cli::cli::link::cmd_link(args),
         Commands::Sessions(args) => gait_cli::cli::session::cmd_sessions(args),
