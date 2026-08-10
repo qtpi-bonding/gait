@@ -30,5 +30,5 @@ pub mod proto; // the facade: events, emitter (Recorder), error
 pub mod registry;
 pub mod session;
 pub mod skills;
-// hashline / input-subset / harness: add here ONLY if the isolation build proves
+// input-subset / harness: add here ONLY if the isolation build proves
 // gait-state needs them.

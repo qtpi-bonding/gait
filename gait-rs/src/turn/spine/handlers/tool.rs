@@ -649,7 +649,6 @@ mod tests {
             delegated_target("read", &Some(s.clone()), cb),
             Some(Path::new("/ws/src/a.rs").to_path_buf())
         );
-        assert_eq!(delegated_target("edit_replace", &Some(s.clone()), cb), None);
         assert_eq!(delegated_target("shell", &Some(s.clone()), cb), None); // not a delegating tool
 
         let mut abs = pbjson_types::Struct::default();

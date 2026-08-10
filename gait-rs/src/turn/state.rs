@@ -1,7 +1,7 @@
 //! `TurnState` and `TurnEnv` — the bundled locals of `run_turn()`.
 //!
 //! These two structs are the State- and Env-halves of the Stage-1 refactor in
-//! `architecture-mapping/plan-01-run-turn-decomposition.md` (Tasks 2 and 3).
+//! the turn decomposition design (Tasks 2 and 3).
 //! Together they replace the forest of `let mut` locals that `run_turn` used
 //! to scatter across its setup section.
 //!
@@ -109,7 +109,7 @@ pub(crate) struct TurnState {
 /// Read-only borrows into the `run_turn()` frame, used by future phase modules.
 ///
 /// This is the Env-half of the Stage-1 refactor in
-/// `architecture-mapping/plan-01-run-turn-decomposition.md` (Task 3). It is a
+/// the turn decomposition design (Task 3). It is a
 /// pure mechanical hoist: the read-only borrows that the loop body and the
 /// future phase modules (`stream.rs`, `execute.rs`, `signal.rs`,
 /// `finalize.rs`) will all need are gathered here so they can be threaded in as a

@@ -7,7 +7,6 @@ pub mod annotate;
 pub mod apply_patch;
 pub mod clarify;
 pub mod codesearch;
-pub mod edit;
 pub mod fs_backend;
 pub mod glob;
 pub mod grep;
@@ -30,9 +29,6 @@ pub use codesearch::CodesearchTool;
 pub mod ctx;
 pub use apply_patch::ApplyPatchTool;
 pub use ctx::ToolCtx;
-// Legacy hashline editors remain available to direct unit tests and downstream
-// code, but are deliberately not constructed by `builtin_tools`.
-pub use edit::{EditAppendTool, EditPrependTool, EditReplaceTool};
 pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use inform::InformTool;

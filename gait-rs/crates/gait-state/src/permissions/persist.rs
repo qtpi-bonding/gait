@@ -11,7 +11,7 @@
 //! `matching::is_request_approved` predicate, but its job is to write, not to
 //! classify — classification lives in `permissions::gate`.
 //! Deny persistence is intentionally unsupported today and is tracked in
-//! `spec-09-deny-persistence.md` (see `architecture-mapping/`). The
+//! the deny-persistence design. The
 //! `PermissionChoice::Deny` arm in `save_choice` is a no-op: persisting a
 //! user's deny choice via `save_choice` is unbuilt. Note this does **not**
 //! affect the deny floor at evaluation time — the gate still honors the

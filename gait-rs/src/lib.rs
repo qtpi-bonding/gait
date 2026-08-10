@@ -39,7 +39,6 @@ pub use gait_state::{
 mod input;
 
 // anthropic / transport are pub for integration tests (AnthropicProvider, TransportConfig)
-pub(crate) mod hashline;
 pub(crate) mod mcp;
 #[cfg(test)]
 mod permissions_invariant_tests;

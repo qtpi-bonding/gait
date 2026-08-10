@@ -20,7 +20,6 @@ pub enum TurnStart {
 /// work (see `runner::handle_open_node`). **Invariant a maintainer must not
 /// break:** do not spawn a `TurnSource`/`TurnDriver` onto another thread — drive
 /// them inline. If you ever need cross-thread execution, revisit
-/// `architecture-mapping/spec-05-interactive-suspension.md` first.
 #[async_trait::async_trait(?Send)]
 pub trait TurnSource {
     /// The next turn to run, or `None` at EOF (single-shot done / quit / disconnect).

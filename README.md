@@ -162,7 +162,6 @@ All tools go through the permission gate. Tools in `allow` run immediately; othe
 |---|---|
 | `read` | Read a file |
 | `write` | Write a file (creates or overwrites) |
-| `edit_replace` / `edit_append` / `edit_prepend` | In-place edits |
 | `glob` | Glob file paths |
 | `grep` | Regex search over file contents |
 | `ls` | List a directory |
