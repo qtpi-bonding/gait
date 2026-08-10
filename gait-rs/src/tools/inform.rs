@@ -43,7 +43,7 @@ impl Tool for InformTool {
         "inform"
     }
     fn description(&self) -> &str {
-        "Convey an explanation or understanding to the user and pause until they confirm they understood. Use when you want to check that the user correctly understood something important you explained. Each item needs an 'id', 'content' (what to explain), and optionally 'context' (what prompted this)."
+        "Explain something important to the user and pause for confirmation. Each item needs an id and content; context is optional."
     }
     fn parameters(&self) -> &Value {
         &self.parameters

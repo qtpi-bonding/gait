@@ -49,7 +49,7 @@ impl Tool for ClarifyTool {
         "clarify"
     }
     fn description(&self) -> &str {
-        "Ask the user one or more questions and pause until they answer. Use when you need information or judgment from the user before you can proceed correctly. Each item needs an 'id', 'content' (the question), 'why' (what changes based on the answer), and 'kind' ('is' for facts, 'ought' for judgment)."
+        "Ask the user questions and pause for answers. Use when missing information or judgment blocks correct progress. Each item needs id, content, why, and kind ('is' or 'ought')."
     }
     fn parameters(&self) -> &Value {
         &self.parameters

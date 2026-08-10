@@ -64,7 +64,7 @@ pub fn build_loadable_catalog(entries: &[LoadableEntry]) -> String {
         .map(|e| format!("  {} {} — {}", e.kind.as_str(), e.name, e.description))
         .collect();
     format!(
-        "\n<loadable-catalog>\nCall load(name, enabled=true/false) to enable or disable.\n{}\n</loadable-catalog>",
+        "\n<loadable-catalog>\nCall enable(name, enabled=true/false) to enable or disable.\n{}\n</loadable-catalog>",
         lines.join("\n")
     )
 }

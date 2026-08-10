@@ -18,14 +18,16 @@ will be missing. The `{$tool_name}` tool is always permitted — you do not need
 to end a turn.
 
 **Tools:** see the bottom of this prompt. Prefer `read`/`apply_patch`/`write`/`glob`/
-`grep`/`ls` over `shell` equivalents. `apply_patch` applies a Codex-format patch
-(`*** Begin Patch` ... `*** End Patch`) — no separate `edit` tool exists.
+`grep`/`ls` over `shell` equivalents. `apply_patch` changes one file; use one call
+per file. You may emit multiple file-edit calls in the same response. Its patch must
+start with `*** Begin Patch` and end with `*** End Patch`. Use multiple independent
+tool calls in one response when the work does not depend on earlier results.
 `clarify` pauses for user input. `inform` pauses for confirmation. `spawn_agent`
 delegates a subtask to a child session.
 
-**Permissions:** tools in `allow` run without prompting. A **deny** entry blocks
-without prompting — the tool gets a "blocked" result. Read the denial, change
-approach, do not retry.
+**Permissions:** a denied tool call is not executed. Read the denial, change
+approach, and do not retry it. Work within the codebase; if a tool reports that
+an operation is outside its allowed scope, change approach rather than retrying it.
 
 **Context:** your input includes the task, current time, codebase commit, dirty
 files, and reconstructed history from the transcript (`UserTurn`,

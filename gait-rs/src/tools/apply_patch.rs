@@ -318,7 +318,7 @@ pub fn apply(patch: &Patch, old: Option<&str>) -> anyhow::Result<String> {
 
 #[derive(Deserialize, JsonSchema)]
 struct ApplyPatchParams {
-    /// Codex-compatible patch body for one relative Add or Update target.
+    /// Patch body for one relative Add or Update target.
     patch: String,
 }
 
@@ -341,7 +341,7 @@ impl Tool for ApplyPatchTool {
         "apply_patch"
     }
     fn description(&self) -> &str {
-        "Apply one Codex-compatible Add or Update patch to one relative file. Use multiple calls for multiple files."
+        "Apply an Add or Update patch to one relative file. The patch must use the Begin/End markers. Use one call per file; multiple calls may be made in one response."
     }
     fn parameters(&self) -> &Value {
         &self.parameters

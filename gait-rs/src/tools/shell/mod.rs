@@ -13,13 +13,9 @@ struct ShellParams {
     cmd: String,
     /// Why this command is needed
     reason: String,
-    /// Optional working directory for THIS command only. Relative paths resolve
-    /// against the codebase root; absolute paths are used as-is. Does not persist
-    /// to later calls — a call that omits `cwd` always runs at the codebase root,
-    /// regardless of what any earlier call passed. A nonexistent path errors.
-    /// Prefer this over "cd dir && cmd" in `cmd` — sandbox.shell_whitelist only
-    /// matches single-segment commands, so a cd-chained command silently misses
-    /// any whitelist grant (network, bind, etc.) it would otherwise get.
+    /// Optional working directory for this call. Relative paths resolve against
+    /// the codebase root; absolute paths are used as-is. It does not persist to
+    /// later calls. A nonexistent path errors.
     cwd: Option<String>,
     /// Run as a background daemon that outlives this turn; returns immediately.
     /// The daemon inherits the agent's sandbox ceiling (not the per-call scope).
@@ -65,18 +61,7 @@ impl Tool for ShellTool {
         "shell"
     }
     fn description(&self) -> &str {
-        "Run a shell command in the codebase directory. Full output is always written to a \
-         session output file and its path is included in the result. For commands that produce \
-         large output (cargo test, build logs, grep over large trees) use the `parse` field \
-         (e.g. \"grep FAILED | head -30\") to return only relevant lines and keep context small. \
-         You can then grep/read the output file on a later turn without re-running. \
-         Pass `cwd` to run in a subdirectory — ALWAYS prefer this over `cd dir && cmd` inside \
-         `cmd`: cwd-chaining inside `cmd` silently forfeits any sandbox whitelist grant (network, \
-         bind) the command would otherwise get. `cwd` applies to this call only and does not \
-         persist — relative paths always resolve against the codebase root (not against any \
-         earlier call's `cwd`), and a call that omits `cwd` always runs at the codebase root. \
-         Every result echoes the effective directory as `[cwd: ...]`. All shell commands require \
-         permission approval unless pre-allowed."
+        "Run a shell command in the codebase. Use cwd for a different working directory; it applies only to this call. Relative paths resolve from the codebase root. Large output is saved to a session file; use parse to return only relevant lines."
     }
     fn parameters(&self) -> &Value {
         &self.parameters

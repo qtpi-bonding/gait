@@ -107,14 +107,7 @@ impl Tool for PruneTool {
     }
 
     fn description(&self) -> &str {
-        "Retrospectively collapse one or more prior tool results into a compact tombstone. \
-         Use this AFTER you know which search/read results turned out to be noise — not at \
-         the moment of the call. Each target call_id's full result is replaced with a one-line \
-         tombstone that preserves the call name and your optional note. \
-         Scope: only results from the current turn or the immediately preceding turn are \
-         prunable (older results are compacted separately). \
-         The `reason` field is capped at 200 characters — longer values are truncated. \
-         Does not require approval; the log is immutable (prune is reversible via undo)."
+        "Collapse noisy tool results from this or the previous turn into short tombstones. Use after deciding the results are not useful. The optional reason is capped at 200 characters."
     }
 
     fn parameters(&self) -> &Value {

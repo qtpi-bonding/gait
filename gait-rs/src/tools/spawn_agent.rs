@@ -143,7 +143,7 @@ impl Tool for SpawnAgentTool {
         "spawn_agent"
     }
     fn description(&self) -> &str {
-        "Delegate a subtask to a subagent. By default (detached:false) this blocks until the child finishes and returns its structured_done result; pass a schema to require a typed result. detached:true returns {session_id} immediately (peer agent)."
+        "Delegate a subtask to another agent. The default waits for the child and returns its result. Use detached=true to start a peer and return its session_id immediately."
     }
     fn parameters(&self) -> &Value {
         &self.parameters

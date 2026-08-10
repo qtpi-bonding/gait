@@ -63,9 +63,9 @@ impl Tool for StructuredDoneTool {
     }
     fn description(&self) -> &str {
         if self.result_schema.is_some() {
-            "Return structured output from this turn. Your `result` field MUST conform to the schema declared by the caller — see <result-schema> in the system prompt. Validation is enforced; a mismatch sends the error back for you to retry."
+            "Return structured output. The result must match the caller's <result-schema>; invalid results are returned for retry."
         } else {
-            "Return structured output from this turn. Use when the caller needs to read specific fields — in a workflow via $node.output.field, or from a parent agent via spawn_agent. For plain-text completion, just respond — the turn ends automatically."
+            "Return structured output when a workflow or parent agent needs specific fields. For plain-text completion, respond normally."
         }
     }
     fn parameters(&self) -> &Value {

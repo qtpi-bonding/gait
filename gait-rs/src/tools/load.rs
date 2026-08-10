@@ -44,9 +44,7 @@ impl Tool for LoadTool {
     }
 
     fn description(&self) -> &str {
-        "Enable or disable an MCP tool or skill for this session. \
-         enabled=true activates it; enabled=false deactivates. \
-         Check <loadable-index> in the system prompt for available items."
+        "Enable or disable an MCP tool or skill for this session. Check <loadable-catalog> for available items."
     }
 
     fn parameters(&self) -> &Value {
@@ -100,7 +98,7 @@ impl Tool for LoadTool {
         }
 
         Err(ToolError::Execute(format!(
-            "enable: unknown '{}'. Check <loadable-index> for available items.",
+            "enable: unknown '{}'. Check <loadable-catalog> for available items.",
             name
         )))
     }
