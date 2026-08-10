@@ -17,6 +17,7 @@ use crate::exec_shell::{exec_shell_node, NodeContext};
 use crate::hooks::run_hook;
 use crate::observer::WorkflowObserver;
 use crate::output::validate_node_output;
+use crate::record;
 use crate::run_log::WorkflowRunLog;
 use crate::schema::GATE_PAUSED_SENTINEL;
 use crate::state::{reconstruct_state, NodeStatus, WorkflowState};
@@ -155,6 +156,7 @@ fn needs_run_workspace(wf: &Workflow) -> bool {
             .nodes
             .iter()
             .any(|n| matches!(n.body.as_ref(), Some(node::Body::Shell(_))))
+        || wf.record.as_ref().is_some_and(|r| !r.commands.is_empty())
 }
 
 /// The effective gait session id for a node's turn (item 13b/13c).
@@ -669,6 +671,12 @@ pub async fn run_workflow(
 
     let wf_events = run_log.read_events().unwrap_or_default();
     let mut state = reconstruct_state(&wf_events);
+    let record_file = record::record_path(&run_dir);
+    let mut workflow_record = if !wf_events.is_empty() && record_file.exists() {
+        Some(record::read(&record_file)?)
+    } else {
+        None
+    };
 
     let stuck_shell_nodes: Vec<&str> = wf
         .nodes
@@ -755,6 +763,12 @@ pub async fn run_workflow(
                 observer,
             )
             .await?;
+
+            if wf.record.as_ref().is_some_and(|r| !r.commands.is_empty()) {
+                let captured = record::begin(&run_id, &wf, &run_worktree).await?;
+                record::write(&captured, &record_file)?;
+                workflow_record = Some(captured);
+            }
         }
 
         if let Some(gate_id) = state.gate_paused.take() {
@@ -1135,6 +1149,17 @@ pub async fn run_workflow(
     while let Ok(item) = item_rx.try_recv() {
         sink.item(&item);
     }
+
+    if let Some(record) = workflow_record.as_mut() {
+        let workflow_status = match &run_result {
+            Ok(WorkflowOutcome::Completed) => "completed",
+            Ok(WorkflowOutcome::GatePaused) => "paused",
+            Ok(WorkflowOutcome::NodeOpen) => "open",
+            Err(_) => "failed",
+        };
+        record::finish(record, &record_file, workflow_status, &run_worktree)?;
+    }
+
     match run_result? {
         WorkflowOutcome::GatePaused => Ok(WorkflowOutcome::GatePaused),
         WorkflowOutcome::NodeOpen => Ok(WorkflowOutcome::NodeOpen),

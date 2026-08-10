@@ -22,6 +22,8 @@ pub struct WorkflowDef {
     pub auto: bool,
     #[serde(default)]
     pub hooks: Option<HooksConfig>,
+    #[serde(default)]
+    pub record: Option<RecordConfig>,
     pub nodes: Vec<NodeDef>,
 }
 
@@ -35,6 +37,24 @@ pub struct HooksConfig {
     pub after: Option<String>,
     pub error: Option<String>,
     pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RecordConfig {
+    #[serde(default)]
+    pub commands: Vec<RecordCommand>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordCommand {
+    pub id: String,
+    pub command: String,
+    #[serde(default = "default_record_timeout")]
+    pub timeout: u64,
+}
+
+fn default_record_timeout() -> u64 {
+    120_000
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,6 +252,28 @@ nodes:
         assert_eq!(wf.name, "test-wf");
         assert_eq!(wf.nodes.len(), 1);
         assert!(wf.nodes[0].shell.is_some());
+    }
+
+    #[test]
+    fn parse_record_commands() {
+        let yaml = r#"
+name: record-wf
+record:
+  commands:
+    - id: cargo
+      command: cargo --version
+    - id: uname
+      command: uname -a
+      timeout: 5000
+nodes:
+  - id: test
+    shell: "true"
+"#;
+        let wf: WorkflowDef = serde_yaml::from_str(yaml).unwrap();
+        let record = wf.record.unwrap();
+        assert_eq!(record.commands.len(), 2);
+        assert_eq!(record.commands[0].timeout, 120_000);
+        assert_eq!(record.commands[1].timeout, 5000);
     }
 
     #[test]

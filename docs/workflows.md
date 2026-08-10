@@ -22,6 +22,13 @@ hooks:
   error:  "echo failed at $FAILED_NODE"
   timeout_ms: 120000       # per-hook timeout (kill_on_drop); default 120s
 
+record:
+  commands:
+    - id: cargo
+      command: cargo --version
+    - id: rustc
+      command: rustc --version
+
 nodes:
   - id: test
     shell:
@@ -66,6 +73,23 @@ nodes:
 | `allow` | inherits from `gait.jsonc` | Pre-approve tool patterns workflow-wide. |
 | `auto` | inherits from `gait.jsonc` | If `true`, all `prompt` nodes auto-approve permission requests. |
 | `hooks` | none | Workflow-scoped `before`/`after`/`error` commands run at the right point. |
+| `record` | none | Explicit commands whose results are captured in the run record. Gait does not infer tooling. |
+
+### `record` — capture developer-declared evidence
+
+`record.commands` contains arbitrary shell commands that Gait runs once at the
+start of a new workflow run, in the run worktree. Their command text, output,
+exit code, duration, and timeout status are saved in:
+
+```text
+workflow-runs/<run-id>/record.json
+```
+
+Record commands are not graph nodes and do not determine workflow success. The
+existing node result remains authoritative: a workflow that runs tests should
+represent those tests as shell nodes (or other appropriate nodes). A failing
+record command is still captured as evidence and does not change the workflow
+result.
 
 ## Node types
 

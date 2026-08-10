@@ -1,8 +1,8 @@
 //! Canonical workflow IR. yaml -> serde WorkflowDef (parser) -> proto Workflow
 //! (canonical). The proto is the source of truth; serde is only the parser.
 use gait_core::proto::gait::workflow::v1::{
-    node, workflow_event, BranchNode, GateNode, Hooks, Node, OnError, PromptNode, ShellNode,
-    Workflow, WorkflowEvent,
+    node, workflow_event, BranchNode, GateNode, Hooks, Node, OnError, PromptNode, RecordCommand,
+    RecordConfig, ShellNode, Workflow, WorkflowEvent,
 };
 use gait_core::proto::hash::content_hash;
 
@@ -17,6 +17,17 @@ pub fn to_proto(def: &WorkflowDef) -> Workflow {
         allow: def.allow.clone(),
         auto: def.auto,
         nodes: def.nodes.iter().map(node_to_proto).collect(),
+        record: def.record.as_ref().map(|r| RecordConfig {
+            commands: r
+                .commands
+                .iter()
+                .map(|c| RecordCommand {
+                    id: c.id.clone(),
+                    command: c.command.clone(),
+                    timeout_ms: c.timeout,
+                })
+                .collect(),
+        }),
     }
 }
 
@@ -204,6 +215,29 @@ nodes:
             p.nodes[1].hooks, None,
             "a node with no hooks: block must still convert to None"
         );
+    }
+
+    #[test]
+    fn converts_record_commands_into_canonical_workflow_ir() {
+        let def: crate::schema::WorkflowDef = serde_yaml::from_str(
+            r#"
+name: t
+record:
+  commands:
+    - id: cargo
+      command: cargo --version
+      timeout: 5000
+nodes:
+  - id: a
+    shell: "true"
+"#,
+        )
+        .unwrap();
+        let p = to_proto(&def);
+        let record = p.record.unwrap();
+        assert_eq!(record.commands[0].id, "cargo");
+        assert_eq!(record.commands[0].command, "cargo --version");
+        assert_eq!(record.commands[0].timeout_ms, 5000);
     }
 
     #[test]

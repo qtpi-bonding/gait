@@ -1492,14 +1492,17 @@ dependencies = [
  "gait-core",
  "gait-proto",
  "git2",
+ "hex",
  "jsonschema",
  "regex",
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "tempfile",
  "tokio",
  "tokio-util",
+ "walkdir",
 ]
 
 [[package]]

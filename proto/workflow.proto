@@ -55,6 +55,19 @@ message Workflow {
   repeated string allow         = 5;
   bool            auto          = 6;
   repeated Node   nodes         = 7;
+  RecordConfig    record        = 8;  // developer-declared evidence commands
+}
+
+// Explicit evidence probes. These are not workflow nodes and are not automatic
+// tooling discovery; the workflow's node result remains the source of success.
+message RecordConfig {
+  repeated RecordCommand commands = 1;
+}
+
+message RecordCommand {
+  string id         = 1;
+  string command    = 2;
+  uint64 timeout_ms = 3;
 }
 
 message Node {

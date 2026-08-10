@@ -18,6 +18,10 @@ use tempfile::TempDir;
 /// Minimal two-node sequential shell workflow.
 const WORKFLOW_YAML: &str = r#"
 name: parity-test
+record:
+  commands:
+    - id: runtime
+      command: printf record-ok
 nodes:
   - id: step1
     shell: "echo hello"
@@ -103,6 +107,23 @@ async fn observer_parity_shell_workflow() {
     .unwrap();
 
     assert_eq!(outcome, WorkflowOutcome::Completed);
+
+    let record: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            gait_dir
+                .join("workflow-runs")
+                .join(&session_id)
+                .join("record.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["workflow_status"], "completed");
+    assert_eq!(record["commands"][0]["id"], "runtime");
+    assert_eq!(record["commands"][0]["stdout"], "record-ok");
+    assert_eq!(record["commands"][0]["exit_code"], 0);
+    assert_ne!(record["initial_tree_hash"], "");
+    assert_ne!(record["final_tree_hash"], "");
 
     // ── Fold the run-log and assert node statuses ──────────────────────────
     let workflow_runs_dir = gait_dir.join("workflow-runs");

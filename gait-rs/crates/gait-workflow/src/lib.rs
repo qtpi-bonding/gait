@@ -16,6 +16,7 @@ pub mod vars;
 pub mod convert;
 pub mod observer;
 pub mod output;
+pub mod record;
 pub mod run_log;
 
 pub mod single_prompt;
