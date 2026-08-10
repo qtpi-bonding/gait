@@ -46,7 +46,7 @@ pub(crate) fn launch_child(
     session_id: &str,
     detached: bool,
     inference: Option<String>,
-) -> Option<std::process::Child> {
+) -> anyhow::Result<Option<std::process::Child>> {
     let cascade_group = if detached { None } else { ctx.group.handle() };
     if !detached && cascade_group.is_none() {
         #[allow(clippy::print_stderr)]
@@ -71,15 +71,46 @@ pub(crate) fn launch_child(
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        let _ = ctx.group.spawn_detached(cmd);
-        None
+        let result = ctx.group.spawn_detached(cmd);
+        let rec = crate::diagnostic::DiagRecord::lifecycle(
+            &ctx.session_id,
+            crate::diagnostic::Phase::AwaitFeedback,
+            if result.is_ok() {
+                crate::diagnostic::PhaseEvent::Start
+            } else {
+                crate::diagnostic::PhaseEvent::Error
+            },
+            &format!(
+                "agent_spawn detached=true child_session={} result={:?}",
+                session_id,
+                result.as_ref().err()
+            ),
+        );
+        ctx.diag.debug(&rec.to_json_line());
+        result.map(|_| None).map_err(Into::into)
     } else {
         let mut cmd = std::process::Command::new(&ctx.exe);
         cmd.args(&argv)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        ctx.group.spawn_enrolled(cmd).ok()
+        let result = ctx.group.spawn_enrolled(cmd);
+        let rec = crate::diagnostic::DiagRecord::lifecycle(
+            &ctx.session_id,
+            crate::diagnostic::Phase::AwaitFeedback,
+            if result.is_ok() {
+                crate::diagnostic::PhaseEvent::Start
+            } else {
+                crate::diagnostic::PhaseEvent::Error
+            },
+            &format!(
+                "agent_spawn detached=false child_session={} result={:?}",
+                session_id,
+                result.as_ref().err()
+            ),
+        );
+        ctx.diag.debug(&rec.to_json_line());
+        result.map(Some).map_err(Into::into)
     }
 }
 
@@ -155,14 +186,22 @@ pub(crate) async fn handle_spawn_agent(args: SpawnAgentArgs, ctx: TurnCtx) -> Fe
 
     if args.detached {
         // Fire-and-forget peer: break out of the cascade group, don't wait.
-        let _ = launch_child(&ctx, &new_id, true, args.inference);
-        return feedback_result(serde_json::json!({ "session_id": new_id }));
+        match launch_child(&ctx, &new_id, true, args.inference) {
+            Ok(None) => return feedback_result(serde_json::json!({ "session_id": new_id })),
+            Ok(Some(_)) => {
+                return error_feedback("spawn_agent: detached launch returned a child handle")
+            }
+            Err(e) => return error_feedback(&format!("spawn_agent: failed to launch peer: {e}")),
+        }
     }
 
     // Blocking subagent: wait for the child process to exit, then read its result.
     let tx_path = crate::session::live::log_path(&ctx.gait_dir, &new_id);
 
-    let Some(mut child) = launch_child(&ctx, &new_id, false, args.inference) else {
+    let Some(mut child) = (match launch_child(&ctx, &new_id, false, args.inference) {
+        Ok(child) => child,
+        Err(e) => return error_feedback(&format!("spawn_agent: failed to launch subagent: {e}")),
+    }) else {
         return error_feedback("spawn_agent: failed to launch subagent");
     };
 
@@ -171,6 +210,18 @@ pub(crate) async fn handle_spawn_agent(args: SpawnAgentArgs, ctx: TurnCtx) -> Fe
         .await
         .ok() // JoinError → None
         .and_then(|r| r.ok()); // io::Error → None
+
+    let rec = crate::diagnostic::DiagRecord::lifecycle(
+        &ctx.session_id,
+        crate::diagnostic::Phase::AwaitFeedback,
+        if status.is_some() {
+            crate::diagnostic::PhaseEvent::Ok
+        } else {
+            crate::diagnostic::PhaseEvent::Error
+        },
+        &format!("agent_exit child_session={} status={status:?}", new_id),
+    );
+    ctx.diag.debug(&rec.to_json_line());
 
     // Check if killed by signal (cascade kill = parent cancelled the session).
     let was_signalled = status
@@ -515,6 +566,7 @@ mod tests {
             exe: sleep_exe,
             group: group.clone(),
             sandbox_on: false,
+            diag: crate::turn::DiagnosticSink::new(ws.path(), "parent"),
         };
 
         // Spawn the "enrolled" subagent: launch_child with detached=false.

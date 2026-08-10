@@ -178,6 +178,8 @@ pub struct SandboxConfig {
     #[serde(default)]
     pub network: NetworkConfig,
     /// Shell-only command patterns pre-authorized for extra sandbox scope.
+    /// Grants may also include `unsandbox` to run the matching hand without its
+    /// kernel seal; the brain remains sandboxed.
     /// Only `shell` tool calls are ever checked against this list — see
     /// `whitelist_match` in gait-state::permissions::matching.
     #[serde(default)]

@@ -226,8 +226,7 @@ pub(crate) fn emit_terminal_failure(
     log.relay_event(&evt).ok();
     *brain_failed = true;
 
-    // 2) DiagRecord → diagnostic.jsonl SECOND (always, even when GAIT_DEBUG is
-    //    off — a terminal failure must always be explained).
+    // 2) DiagRecord → diagnostic.jsonl SECOND (gated by DiagnosticSink).
     let rec = crate::diagnostic::DiagRecord::terminal(diag.session_id(), phase, detail);
     diag.terminal(&rec.to_json_line());
 }

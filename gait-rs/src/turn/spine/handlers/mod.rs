@@ -30,6 +30,7 @@ pub(crate) struct TurnCtx {
     pub exe: std::path::PathBuf,
     pub group: std::sync::Arc<dyn crate::process::Containment>,
     pub sandbox_on: bool,
+    pub diag: crate::turn::DiagnosticSink,
 }
 
 /// Build a `Feedback` carrying a JSON value result.
@@ -94,6 +95,7 @@ pub(super) fn test_ctx(ws: &std::path::Path, session_id: &str) -> TurnCtx {
         exe: std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("gait")),
         group: crate::process::establish(None),
         sandbox_on: false,
+        diag: crate::turn::DiagnosticSink::new(ws, session_id),
     }
 }
 

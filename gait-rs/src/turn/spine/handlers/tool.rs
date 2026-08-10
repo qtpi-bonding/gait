@@ -18,6 +18,7 @@ fn shell_access_and_whitelist_hit(
 ) -> (
     crate::types::ToolAccess,
     Option<Vec<crate::proto::gait::log::v1::SandboxWhitelistMatchItem>>,
+    bool,
 ) {
     use crate::sandbox_grant::SandboxGrant;
 
@@ -25,7 +26,7 @@ fn shell_access_and_whitelist_hit(
     let Some((entry, grants)) =
         crate::permissions::matching::whitelist_match(cmd, &sandbox_cfg.shell_whitelist)
     else {
-        return (access, None);
+        return (access, None, false);
     };
     let mut items = Vec::with_capacity(grants.len());
     for grant in grants {
@@ -65,7 +66,16 @@ fn shell_access_and_whitelist_hit(
             pattern: entry.pattern.clone(),
         });
     }
-    (access, Some(items))
+    let sandbox_free = entry.grants.iter().any(|g| g == "unsandbox");
+    if sandbox_free {
+        items.push(crate::proto::gait::log::v1::SandboxWhitelistMatchItem {
+            tool_name: "shell".into(),
+            resource: cmd.into(),
+            dimension: "unsandbox".into(),
+            pattern: entry.pattern.clone(),
+        });
+    }
+    (access, Some(items), sandbox_free)
 }
 
 /// Add Gait-owned, current-session runtime paths to a hand's bounded scope.
@@ -131,6 +141,9 @@ pub async fn run_tool_as_spine(
 ) -> Feedback {
     use tokio::io::AsyncWriteExt;
 
+    let diag = crate::turn::DiagnosticSink::new(gait_dir, session_id);
+    let mut sandbox_free = false;
+
     let jail_raw = std::env::temp_dir().join(format!(
         "gait-hand-{}",
         uuid::Uuid::new_v4().to_string().replace('-', "")
@@ -180,8 +193,9 @@ pub async fn run_tool_as_spine(
                 _ => None,
             })
             .unwrap_or("");
-        let (access, hit) = shell_access_and_whitelist_hit(cmd, sandbox_cfg);
+        let (access, hit, matched_sandbox_free) = shell_access_and_whitelist_hit(cmd, sandbox_cfg);
         whitelist_hit = hit;
+        sandbox_free = matched_sandbox_free;
         crate::sandbox::ceiling::compute_scope(access, sandbox_cfg, codebase, &jail)
     } else {
         crate::sandbox::ceiling::bound_request(&impulse.tool, sandbox_cfg, codebase, &jail)
@@ -301,7 +315,11 @@ pub async fn run_tool_as_spine(
             .arg("--tool")
             .arg(&impulse.tool)
             .arg("--seal")
-            .arg(if sandbox_on { "true" } else { "false" })
+            .arg(if sandbox_on && !sandbox_free {
+                "true"
+            } else {
+                "false"
+            })
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -325,6 +343,18 @@ pub async fn run_tool_as_spine(
         match tokio_cmd.spawn() {
             Ok(c) => {
                 group.register_pid(c.id().unwrap_or(0) as i32);
+                let rec = crate::diagnostic::DiagRecord::lifecycle(
+                    session_id,
+                    crate::diagnostic::Phase::AwaitFeedback,
+                    crate::diagnostic::PhaseEvent::Start,
+                    &format!(
+                        "hand_spawned tool={} pid={} seal={} stdout=hand_response stderr=piped",
+                        impulse.tool,
+                        c.id().unwrap_or(0),
+                        sandbox_on && !sandbox_free
+                    ),
+                );
+                diag.debug(&rec.to_json_line());
                 c
             }
             Err(e) => {
@@ -355,6 +385,24 @@ pub async fn run_tool_as_spine(
             return error_feedback(&format!("wait_with_output failed: {e}"));
         }
     };
+    let exit_detail = format!(
+        "hand_exited tool={} status={} stdout_bytes={} stderr_bytes={}",
+        impulse.tool,
+        out.status,
+        out.stdout.len(),
+        out.stderr.len()
+    );
+    let rec = crate::diagnostic::DiagRecord::lifecycle(
+        session_id,
+        crate::diagnostic::Phase::AwaitFeedback,
+        if out.status.success() {
+            crate::diagnostic::PhaseEvent::Ok
+        } else {
+            crate::diagnostic::PhaseEvent::Error
+        },
+        &exit_detail,
+    );
+    diag.debug(&rec.to_json_line());
     let _ = std::fs::remove_dir_all(&jail);
 
     // The hand always writes a HandResponse on stdout. Decode it regardless of
@@ -608,9 +656,14 @@ mod tests {
             grants: vec!["network".into(), "bind".into()],
         });
 
-        let (access, items) = shell_access_and_whitelist_hit("flutter test foo.dart", &cfg);
+        let (access, items, sandbox_free) =
+            shell_access_and_whitelist_hit("flutter test foo.dart", &cfg);
         assert!(access.network, "network grant must still apply");
         assert!(access.local_bind, "bind grant must set local_bind");
+        assert!(
+            !sandbox_free,
+            "network/bind grants do not disable the sandbox"
+        );
         let items = items.expect("whitelist matched");
         assert!(
             items.iter().any(|i| i.dimension == "bind"),
@@ -628,11 +681,34 @@ mod tests {
             grants: vec!["network".into()],
         });
 
-        let (access, _items) = shell_access_and_whitelist_hit("flutter test foo.dart", &cfg);
+        let (access, _items, sandbox_free) =
+            shell_access_and_whitelist_hit("flutter test foo.dart", &cfg);
         assert!(
             !access.local_bind,
             "no bind grant means local_bind stays false"
         );
+        assert!(!sandbox_free);
+    }
+
+    #[test]
+    fn shell_whitelist_unsandbox_grant_only_matches_the_command_pattern() {
+        use gait_types::config::{SandboxConfig, SandboxWhitelistEntry};
+
+        let mut cfg = SandboxConfig::default();
+        cfg.shell_whitelist.push(SandboxWhitelistEntry {
+            pattern: "flutter test *".into(),
+            grants: vec!["unsandbox".into()],
+        });
+
+        let (_, items, matched) = shell_access_and_whitelist_hit("flutter test foo.dart", &cfg);
+        assert!(matched);
+        assert!(items
+            .unwrap()
+            .iter()
+            .any(|item| item.dimension == "unsandbox"));
+
+        let (_, _, unmatched) = shell_access_and_whitelist_hit("dart test foo.dart", &cfg);
+        assert!(!unmatched);
     }
 
     #[test]

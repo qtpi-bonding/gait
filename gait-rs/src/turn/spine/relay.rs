@@ -134,6 +134,7 @@ pub async fn relay_brain_turn(
         exe: exe.to_path_buf(),
         group: Arc::clone(&group),
         sandbox_on,
+        diag: DiagnosticSink::new(gait_dir, session_id),
     };
 
     // Sole owner of diagnostic.jsonl writes for this turn. Built once after
@@ -246,10 +247,22 @@ pub async fn relay_brain_turn(
         let child = tokio_cmd
             .spawn()
             .map_err(|e| anyhow::anyhow!("failed to spawn __brain: {e}"))?;
+        let rec = crate::diagnostic::DiagRecord::lifecycle(
+            session_id,
+            crate::diagnostic::Phase::TurnBegin,
+            crate::diagnostic::PhaseEvent::Start,
+            &format!(
+                "brain_spawned pid={} sandbox_on={} stdout=nerve stderr=inherited",
+                child.id().unwrap_or(0),
+                sandbox_on
+            ),
+        );
+        diag.debug(&rec.to_json_line());
         // Register brain pid so group can reap it and knows its pgid.
         group.register_pid(child.id().unwrap_or(0) as i32);
         child
     };
+    let brain_pid = child.id().unwrap_or(0);
     // Capture the group handle now that the brain (leader) is realized.
     let _group_handle = group.handle(); // Future: pass to blocking subagents (Plan 4).
 
@@ -331,12 +344,27 @@ pub async fn relay_brain_turn(
                 // synthesize from; otherwise a real failure silently vanishes as
                 // a false "success".
                 if state.ever_active {
+                    let error = e.to_string();
+                    let class = if error.contains("nerve: unsupported version") {
+                        "nerve_protocol_error"
+                    } else if error.contains("read version")
+                        || error.contains("read len")
+                        || error.contains("read signal bytes")
+                        || error.contains("decode Signal")
+                    {
+                        "nerve_read_error"
+                    } else {
+                        "brain_pipe_error"
+                    };
                     lifecycle::emit_terminal_failure(
                         &log,
                         &diag,
                         &mut state.brain_failed,
                         state.watchdog.phase(),
-                        &format!("brain pipe closed unexpectedly: {e}"),
+                        &format!(
+                            "{class} brain_pid={brain_pid} phase={:?} error={error}",
+                            state.watchdog.phase()
+                        ),
                     );
                 }
                 break;
@@ -470,8 +498,7 @@ pub async fn relay_brain_turn(
                 // Brain-reported failure: the brain already appended its own Error
                 // event to log.jsonl via Signal::Append before sending Terminated,
                 // so we must NOT double-write the event here. We do write a
-                // diagnostic record so the failure is always explained in
-                // diagnostic.jsonl regardless of GAIT_DEBUG.
+                // diagnostic record when GAIT_DEBUG is enabled.
                 if t.failed {
                     let rec = crate::diagnostic::DiagRecord::terminal(
                         session_id,

@@ -268,6 +268,23 @@ impl DiagRecord {
             detail: Some(detail.into()),
         }
     }
+
+    /// A debug-only lifecycle record. Unlike a heartbeat, this carries a
+    /// compact process/IPC detail while remaining outside the event log.
+    pub fn lifecycle(session: &str, phase: Phase, event: PhaseEvent, detail: &str) -> Self {
+        Self {
+            ts: now_unix_millis(),
+            mono_ms: 0,
+            session: session.into(),
+            turn: 0,
+            phase,
+            event,
+            elapsed_ms: 0,
+            attempt: None,
+            model: String::new(),
+            detail: Some(detail.into()),
+        }
+    }
 }
 
 #[cfg(test)]
