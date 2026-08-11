@@ -72,7 +72,6 @@ impl SessionLog {
     }
 
     /// Mint and append a fresh spine-side event.
-    #[allow(dead_code)] // used in tests; production writes go via wire::append directly
     pub(crate) fn append_body(
         &self,
         body: event::Body,

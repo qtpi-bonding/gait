@@ -5,6 +5,40 @@ use std::path::Path;
 #[cfg(any(test, feature = "testing"))]
 use std::sync::Mutex;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CheckpointBoundary {
+    RunBaseline {
+        run: u32,
+    },
+    ToolResult {
+        run: u32,
+        turn: u32,
+        step: Option<u32>,
+    },
+    RunFinal {
+        run: u32,
+    },
+}
+
+impl std::fmt::Display for CheckpointBoundary {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RunBaseline { run } => write!(formatter, "run {run} baseline"),
+            Self::ToolResult {
+                run,
+                turn,
+                step: Some(step),
+            } => write!(formatter, "run {run} turn {turn} step {step} tool result"),
+            Self::ToolResult {
+                run,
+                turn,
+                step: None,
+            } => write!(formatter, "run {run} turn {turn} tool result"),
+            Self::RunFinal { run } => write!(formatter, "run {run} final"),
+        }
+    }
+}
+
 pub trait CheckpointRepo: Send + Sync {
     fn init(&self, gait_dir: &Path, session_id: &str, codebase: &Path) -> anyhow::Result<()>;
     fn checkpoint(
@@ -12,7 +46,7 @@ pub trait CheckpointRepo: Send + Sync {
         gait_dir: &Path,
         session_id: &str,
         codebase: &Path,
-        turn: u32,
+        boundary: CheckpointBoundary,
     ) -> anyhow::Result<String>;
     fn restore_to(
         &self,
@@ -80,7 +114,7 @@ impl CheckpointRepo for GitCheckpointRepo {
         gait_dir: &Path,
         session_id: &str,
         codebase: &Path,
-        turn: u32,
+        boundary: CheckpointBoundary,
     ) -> anyhow::Result<String> {
         let git_dir = checkpoint_git_dir(gait_dir, session_id);
         if !git_dir.join("HEAD").exists() {
@@ -119,7 +153,7 @@ impl CheckpointRepo for GitCheckpointRepo {
 
         let tree = shadow.find_tree(tree_id)?;
         let sig = signature_or_default(&shadow)?;
-        let msg = format!("checkpoint({}): turn {}", session_id, turn);
+        let msg = format!("checkpoint({session_id}): {boundary}");
         let parents: Vec<&git2::Commit> = parent.iter().collect();
         let oid = shadow.commit(Some("HEAD"), &sig, &sig, &msg, &tree, &parents)?;
         Ok(oid.to_string())
@@ -249,7 +283,7 @@ impl CheckpointRepo for GitCheckpointRepo {
 #[derive(Default)]
 struct MockState {
     init_calls: Vec<String>,
-    checkpoint_calls: Vec<(String, u32)>,
+    checkpoint_calls: Vec<(String, CheckpointBoundary)>,
     restore_calls: Vec<(String, String)>,
     remove_calls: Vec<String>,
     checkpoint_error: Option<String>,
@@ -281,7 +315,7 @@ impl MockCheckpointRepo {
             .init_calls
             .clone()
     }
-    pub fn checkpoint_calls(&self) -> Vec<(String, u32)> {
+    pub fn checkpoint_calls(&self) -> Vec<(String, CheckpointBoundary)> {
         self.state
             .lock()
             .expect("mock mutex never poisoned")
@@ -324,10 +358,10 @@ impl CheckpointRepo for MockCheckpointRepo {
         _ws: &Path,
         session_id: &str,
         _cb: &Path,
-        turn: u32,
+        boundary: CheckpointBoundary,
     ) -> anyhow::Result<String> {
         let mut s = self.state.lock().expect("mock mutex never poisoned");
-        s.checkpoint_calls.push((session_id.to_string(), turn));
+        s.checkpoint_calls.push((session_id.to_string(), boundary));
         if let Some(msg) = s.checkpoint_error.clone() {
             return Err(anyhow::anyhow!(msg));
         }

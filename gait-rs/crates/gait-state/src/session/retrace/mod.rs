@@ -442,6 +442,7 @@ pub struct RawMessagesState {
 /// Accumulator for the `ActiveMessages` projection.
 pub struct MessagesState {
     msgs: Vec<Message>,
+    deferred: Vec<Message>,
     phase: MsgPhase,
 }
 impl MessagesState {
@@ -454,25 +455,38 @@ impl MessagesState {
                 id: uuid::Uuid::new_v4().to_string(),
                 attribution: None,
             }],
+            deferred: vec![],
             phase: MsgPhase::Other,
         }
     }
 
+    fn push_non_tool(&mut self, message: Message) {
+        // Provider protocols require tool results to immediately follow the
+        // tool-call run. Lifecycle errors can be recorded between a call and
+        // teardown's synthesized result, so hold model-visible side messages
+        // until the result run is complete.
+        if self.phase == MsgPhase::ToolCallRun {
+            self.deferred.push(message);
+            return;
+        }
+        self.msgs.append(&mut self.deferred);
+        self.msgs.push(message);
+        self.phase = MsgPhase::Other;
+    }
+
     fn push_user(&mut self, text: String, id: &str) {
-        self.msgs.push(Message::User {
+        self.push_non_tool(Message::User {
             content: MessageContent::Text(text),
             id: id.to_string(),
             attribution: None,
         });
-        self.phase = MsgPhase::Other;
     }
 
     fn push_assistant(&mut self, text: String, id: &str) {
-        self.msgs.push(Message::Assistant {
+        self.push_non_tool(Message::Assistant {
             content: AssistantContent::Text(text),
             id: id.to_string(),
         });
-        self.phase = MsgPhase::Other;
     }
 
     fn coalesce_tool_call(&mut self, tc: &pb::ToolCall, id: &str) {
@@ -495,6 +509,7 @@ impl MessagesState {
                 });
             }
         } else {
+            self.msgs.append(&mut self.deferred);
             self.msgs.push(Message::Assistant {
                 content: AssistantContent::Parts(vec![part]),
                 id: id.to_string(),
@@ -608,19 +623,11 @@ impl MessagesState {
 
     fn push_clarify_convergence(&mut self, cc: &pb::ClarifyConvergence, id: &str) {
         for item in &cc.items {
-            self.msgs.push(Message::Assistant {
-                content: AssistantContent::Text(format!("[proposal] {}", item.proposal)),
-                id: id.to_string(),
-            });
+            self.push_assistant(format!("[proposal] {}", item.proposal), id);
             if let Some(resp) = &item.response {
-                self.msgs.push(Message::User {
-                    content: MessageContent::Text(format!("[response] {}", resp)),
-                    id: id.to_string(),
-                    attribution: None,
-                });
+                self.push_user(format!("[response] {}", resp), id);
             }
         }
-        self.phase = MsgPhase::Other;
     }
 
     fn push_inform(&mut self, inf: &pb::Inform, id: &str) {
@@ -661,6 +668,11 @@ impl MessagesState {
             .unwrap_or("unspecified");
         self.push_user(format!("error during {}: {}", phase_str, e.message), id);
     }
+
+    fn into_messages(mut self) -> Vec<Message> {
+        self.msgs.append(&mut self.deferred);
+        self.msgs
+    }
 }
 
 /// The Transcript: the `Vec<Message>` the model reads, folded from the Log.
@@ -675,6 +687,7 @@ impl Projection for ActiveMessages {
     fn seed(&self) -> Self::State {
         MessagesState {
             msgs: vec![],
+            deferred: vec![],
             phase: MsgPhase::Other,
         }
     }
@@ -1018,8 +1031,24 @@ impl Projection for ActiveRawMessages {
 /// - Any other message resets the phase to Other and breaks the run.
 pub fn coalesce(raw: Vec<Message>) -> Vec<Message> {
     let mut out: Vec<Message> = Vec::new();
+    let mut deferred: Vec<Message> = Vec::new();
     let mut phase = MsgPhase::Other;
     for msg in raw {
+        let is_tool_result = matches!(msg, Message::ToolResult { .. });
+        let is_tool_call = matches!(
+            &msg,
+            Message::Assistant {
+                content: AssistantContent::Parts(parts),
+                ..
+            } if parts.len() == 1 && matches!(&parts[0], AssistantPart::ToolCall(_))
+        );
+        if phase == MsgPhase::ToolCallRun && !is_tool_call && !is_tool_result {
+            deferred.push(msg);
+            continue;
+        }
+        if phase != MsgPhase::ToolCallRun && !is_tool_result {
+            out.append(&mut deferred);
+        }
         match &msg {
             // Thinking-only assistant message: fold into the last Assistant(Parts)
             // if one exists, or start a new one. The following text/tool-call
@@ -1120,6 +1149,7 @@ pub fn coalesce(raw: Vec<Message>) -> Vec<Message> {
             }
         }
     }
+    out.append(&mut deferred);
     out
 }
 
@@ -1385,7 +1415,7 @@ pub fn fold(all_events: &[Event], agent_seed: AgentState) -> Result<RetraceResul
         .union(&allow_state.once)
         .cloned()
         .collect();
-    let messages = run_projection(&ActiveMessages, all_events, &mutations).msgs;
+    let messages = run_projection(&ActiveMessages, all_events, &mutations).into_messages();
     let active_unlock = active_unlock_state(all_events);
 
     Ok(RetraceResult {

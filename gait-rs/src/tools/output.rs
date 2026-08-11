@@ -65,7 +65,29 @@ pub(crate) fn archive_value(
 ) -> std::io::Result<ToolOutputArtifact> {
     match value {
         serde_json::Value::String(text) => archive_text(path, text),
-        value => archive_text(path, &value.to_string()),
+        value => archive_text(path, &canonical_json(value).to_string()),
+    }
+}
+
+/// Proto Struct fields are map-backed and do not preserve the insertion order
+/// of an originating serde_json object. Sort object keys recursively so the
+/// archived representation of the same structured value is stable across runs.
+fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.iter().map(canonical_json).collect())
+        }
+        serde_json::Value::Object(object) => {
+            let mut entries = object.iter().collect::<Vec<_>>();
+            entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+            serde_json::Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key.clone(), canonical_json(value)))
+                    .collect(),
+            )
+        }
+        value => value.clone(),
     }
 }
 
@@ -307,6 +329,23 @@ pub(crate) fn ensure_archived_model_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn structured_artifacts_have_canonical_key_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("structured.json");
+        let value = serde_json::json!({
+            "z": { "second": 2, "first": 1 },
+            "a": true
+        });
+
+        archive_value(path.clone(), &value).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            r#"{"a":true,"z":{"first":1,"second":2}}"#
+        );
+    }
 
     #[test]
     fn artifact_keeps_full_text_while_model_gets_head_tail_and_path() {

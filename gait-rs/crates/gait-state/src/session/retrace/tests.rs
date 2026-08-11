@@ -46,6 +46,39 @@ fn empty_transcript_returns_empty() {
 }
 
 #[test]
+fn coalesce_defers_interstitial_message_until_after_tool_result() {
+    let raw = vec![
+        Message::Assistant {
+            content: AssistantContent::Parts(vec![AssistantPart::ToolCall(ToolCall {
+                tool_call_id: "call-1".into(),
+                tool_name: "read".into(),
+                args: serde_json::json!({}),
+            })]),
+            id: "call-event".into(),
+        },
+        Message::User {
+            content: MessageContent::Text("error during llm: timed out".into()),
+            id: "error-event".into(),
+            attribution: None,
+        },
+        Message::ToolResult {
+            content: vec![ToolResult {
+                kind: ToolResultKind::ToolResult,
+                tool_call_id: "call-1".into(),
+                result: serde_json::Value::String("timed out".into()),
+            }],
+            id: "result-event".into(),
+        },
+    ];
+
+    let messages = coalesce(raw);
+
+    assert!(matches!(messages[0], Message::Assistant { .. }));
+    assert!(matches!(messages[1], Message::ToolResult { .. }));
+    assert!(matches!(messages[2], Message::User { .. }));
+}
+
+#[test]
 fn user_and_assistant_text_reconstructed() {
     let dir = TempDir::new().unwrap();
     let path = write_events(

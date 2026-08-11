@@ -79,10 +79,10 @@ impl CheckpointRepo for RecCheckpoint {
         _g: &Path,
         session_id: &str,
         _c: &Path,
-        turn: u32,
+        boundary: gait_core::git::checkpoint::CheckpointBoundary,
     ) -> anyhow::Result<String> {
-        self.0.push(format!("checkpoint:{session_id}:turn={turn}"));
-        Ok(format!("mocksha{turn:040}"))
+        self.0.push(format!("checkpoint:{session_id}:{boundary}"));
+        Ok("a".repeat(40))
     }
     fn restore_to(&self, _: &Path, _: &str, _: &Path, _: &str) -> anyhow::Result<()> {
         unimplemented!("not used in turn path")

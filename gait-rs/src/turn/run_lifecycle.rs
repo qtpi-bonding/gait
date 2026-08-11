@@ -53,7 +53,10 @@ pub(crate) fn begin_turn(
                 .max()
                 .map_or(0, |index| index + 1);
             let baseline = git
-                .checkpoint(codebase, index)
+                .checkpoint(
+                    codebase,
+                    crate::git::checkpoint::CheckpointBoundary::RunBaseline { run: index },
+                )
                 .ok()
                 .filter(|sha| !sha.is_empty());
             let run_id = uuid::Uuid::new_v4().to_string();
@@ -162,7 +165,10 @@ fn repair_incomplete_tail(
     };
 
     let checkpoint = git
-        .checkpoint(codebase, active.next_turn_index())
+        .checkpoint(
+            codebase,
+            crate::git::checkpoint::CheckpointBoundary::RunFinal { run: active.index },
+        )
         .ok()
         .filter(|sha| !sha.is_empty());
     let dirty_files = crate::git::codebase::CodebaseRepo::dirty_files(

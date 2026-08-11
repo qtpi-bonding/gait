@@ -37,11 +37,17 @@ impl GrepTool {
 /// rg exit codes: 0 = matches found, 1 = no matches, 2 = error.
 async fn rg_search(
     pattern: &str,
-    search_path: &str,
+    search_path: &std::path::Path,
     include: Option<&str>,
     timeout_secs: u64,
     output_path: &std::path::Path,
+    excluded_root: &std::path::Path,
 ) -> anyhow::Result<Option<bool>> {
+    if search_path.starts_with(excluded_root) {
+        std::fs::File::create(output_path)?;
+        return Ok(Some(false));
+    }
+
     let mut cmd = tokio::process::Command::new("rg");
     cmd.args([
         "-nH",
@@ -54,12 +60,14 @@ async fn rg_search(
     if let Some(inc) = include {
         cmd.args(["--glob", inc]);
     }
+    if let Some(exclusion) = rg_exclusion_glob(search_path, excluded_root) {
+        cmd.args(["--glob", &exclusion]);
+    }
     cmd.arg(search_path);
-    let search_path_obj = std::path::Path::new(search_path);
-    cmd.current_dir(if search_path_obj.is_dir() {
-        search_path_obj
+    cmd.current_dir(if search_path.is_dir() {
+        search_path
     } else {
-        search_path_obj.parent().unwrap_or(search_path_obj)
+        search_path.parent().unwrap_or(search_path)
     });
     // Without this, a timeout only bounds the *wait* — tokio's default is to
     // NOT kill the child on drop, so dropping the timed-out output() future
@@ -82,31 +90,107 @@ async fn rg_search(
     }
 }
 
+fn rg_exclusion_glob(
+    search_path: &std::path::Path,
+    excluded_root: &std::path::Path,
+) -> Option<String> {
+    let search_root = if search_path.is_dir() {
+        search_path
+    } else {
+        search_path.parent()?
+    };
+    let relative = excluded_root.strip_prefix(search_root).ok()?;
+    if relative.as_os_str().is_empty() {
+        return None;
+    }
+    let relative = relative.to_string_lossy().replace('\\', "/");
+    let escaped = relative
+        .chars()
+        .fold(String::new(), |mut escaped, character| {
+            if matches!(character, '*' | '?' | '[' | ']' | '{' | '}') {
+                escaped.push('\\');
+            }
+            escaped.push(character);
+            escaped
+        });
+    Some(format!("!{escaped}/**"))
+}
+
+fn expand_braces(pattern: &str) -> Vec<String> {
+    let Some(open) = pattern.find('{') else {
+        return vec![pattern.to_string()];
+    };
+    let Some(relative_close) = pattern[open + 1..].find('}') else {
+        return vec![pattern.to_string()];
+    };
+    let close = open + 1 + relative_close;
+    let choices = &pattern[open + 1..close];
+    if !choices.contains(',') {
+        return vec![pattern.to_string()];
+    }
+
+    choices
+        .split(',')
+        .flat_map(|choice| {
+            let expanded = format!("{}{}{}", &pattern[..open], choice, &pattern[close + 1..]);
+            expand_braces(&expanded)
+        })
+        .collect()
+}
+
+fn compile_include(include: Option<&str>) -> anyhow::Result<Vec<glob::Pattern>> {
+    include
+        .map(expand_braces)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|pattern| {
+            glob::Pattern::new(&pattern)
+                .map_err(|error| anyhow::anyhow!("Invalid include glob: {error}"))
+        })
+        .collect()
+}
+
+fn included(patterns: &[glob::Pattern], path: &std::path::Path, root: &std::path::Path) -> bool {
+    if patterns.is_empty() {
+        return true;
+    }
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    patterns.iter().any(|pattern| {
+        pattern.matches_path(relative)
+            || relative
+                .file_name()
+                .is_some_and(|name| pattern.matches_path(std::path::Path::new(name)))
+    })
+}
+
 fn regex_search(
     pattern: &str,
     search_path: &std::path::Path,
+    include: Option<&str>,
     output_path: &std::path::Path,
+    excluded_root: &std::path::Path,
 ) -> anyhow::Result<bool> {
     let re =
         regex::Regex::new(pattern).map_err(|e| anyhow::anyhow!("Invalid regex pattern: {e}"))?;
+    let include = compile_include(include)?;
     let mut output = std::io::BufWriter::new(std::fs::File::create(output_path)?);
     let mut found = false;
-    let files: Box<dyn Iterator<Item = walkdir::DirEntry>> = if search_path.is_file() {
-        Box::new(
-            walkdir::WalkDir::new(search_path)
-                .into_iter()
-                .filter_map(|e| e.ok()),
-        )
+    let search_root = if search_path.is_dir() {
+        search_path
     } else {
-        Box::new(
-            walkdir::WalkDir::new(search_path)
-                .into_iter()
-                .filter_map(|e| e.ok())
-                .filter(|e| e.file_type().is_file()),
-        )
+        search_path.parent().unwrap_or(search_path)
     };
-    for entry in files {
+    let files = walkdir::WalkDir::new(search_path)
+        .into_iter()
+        .filter_entry(|entry| !entry.path().starts_with(excluded_root));
+    for entry in files.filter_map(|entry| entry.ok()) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
         let path = entry.path();
+        if !included(&include, path, search_root) {
+            continue;
+        }
         let Ok(content) = std::fs::read_to_string(path) else {
             continue;
         };
@@ -177,19 +261,28 @@ impl Tool for GrepTool {
             )
             .map_err(|error| crate::tools::ToolError::Internal(error.into()))?,
         };
+        let excluded_root =
+            crate::session::live::outputs_dir(&self.ctx.gait_dir, &self.ctx.session_id);
         let rg_result = rg_search(
             &params.pattern,
-            &resolved.display().to_string(),
+            &resolved,
             params.include.as_deref(),
             timeout_secs,
             &output_path,
+            &excluded_root,
         )
         .await;
         let found = match rg_result {
             Err(error) => return grep_error_result(&output_path, &error),
             Ok(result) => match result {
                 Some(found) => found, // rg ran — authoritative (even if empty)
-                None => match regex_search(&params.pattern, &resolved, &output_path) {
+                None => match regex_search(
+                    &params.pattern,
+                    &resolved,
+                    params.include.as_deref(),
+                    &output_path,
+                    &excluded_root,
+                ) {
                     Ok(found) => found,
                     Err(error) => return grep_error_result(&output_path, &error),
                 }, // rg unavailable/errored — fall back
@@ -371,10 +464,11 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), "needle").unwrap();
         let result = rg_search(
             "needle",
-            &dir.path().display().to_string(),
+            dir.path(),
             None,
             0,
             &dir.path().join("grep-output.txt"),
+            &dir.path().join("excluded"),
         )
         .await;
         assert!(result.is_err(), "expected timeout error, got: {result:?}");
@@ -382,5 +476,54 @@ mod tests {
             result.unwrap_err().to_string().contains("timed out"),
             "error should mention timeout"
         );
+    }
+
+    #[test]
+    fn regex_fallback_honors_include_and_excludes_session_outputs() {
+        let dir = TempDir::new().unwrap();
+        let output_root = crate::session::live::outputs_dir(dir.path(), "test");
+        std::fs::create_dir_all(&output_root).unwrap();
+        std::fs::write(dir.path().join("keep.rs"), "needle").unwrap();
+        std::fs::write(dir.path().join("skip.txt"), "needle").unwrap();
+        std::fs::write(output_root.join("old.rs"), "needle").unwrap();
+        let output_path = output_root.join("grep.txt");
+
+        assert!(regex_search(
+            "needle",
+            dir.path(),
+            Some("*.rs"),
+            &output_path,
+            &output_root,
+        )
+        .unwrap());
+
+        let output = std::fs::read_to_string(output_path).unwrap();
+        assert!(output.contains("keep.rs"));
+        assert!(!output.contains("skip.txt"));
+        assert!(!output.contains("old.rs"));
+    }
+
+    #[test]
+    fn regex_fallback_expands_braced_include() {
+        let dir = TempDir::new().unwrap();
+        let output_root = dir.path().join("excluded");
+        std::fs::write(dir.path().join("one.ts"), "needle").unwrap();
+        std::fs::write(dir.path().join("two.tsx"), "needle").unwrap();
+        std::fs::write(dir.path().join("skip.js"), "needle").unwrap();
+        let output_path = dir.path().join("grep.txt");
+
+        assert!(regex_search(
+            "needle",
+            dir.path(),
+            Some("*.{ts,tsx}"),
+            &output_path,
+            &output_root,
+        )
+        .unwrap());
+
+        let output = std::fs::read_to_string(output_path).unwrap();
+        assert!(output.contains("one.ts"));
+        assert!(output.contains("two.tsx"));
+        assert!(!output.contains("skip.js"));
     }
 }

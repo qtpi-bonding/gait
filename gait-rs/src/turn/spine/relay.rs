@@ -43,8 +43,9 @@ pub type SignalSlot =
 struct RelayState {
     finalized_turn: Option<crate::proto::gait::sandbox::v1::FinalizedTurn>,
     brain_failed: bool,
-    /// In-flight ToolCall call_id → tool name, for orphan ToolResult synthesis.
-    pending_calls: std::collections::HashMap<String, String>,
+    /// In-flight ToolCall call_id → its originating tool and step, for orphan
+    /// ToolResult synthesis at the exact same lifecycle coordinate.
+    pending_calls: std::collections::HashMap<String, lifecycle::PendingCall>,
     /// call_id → tool_name for ToolResults from checkpoint-gated tools (shell/write/
     /// apply_patch), kept for the lifetime of the turn (never evicted) so a later
     /// Replace targeting that call_id can still be recognized as needing a checkpoint
@@ -451,17 +452,26 @@ pub async fn relay_brain_turn(
                     if let Some(event::Body::Payload(ref p)) = evt.body {
                         match p.kind.as_ref() {
                             Some(payload::Kind::ToolCall(tc)) => {
-                                state
-                                    .pending_calls
-                                    .insert(tc.call_id.clone(), tc.name.clone());
+                                state.pending_calls.insert(
+                                    tc.call_id.clone(),
+                                    lifecycle::PendingCall {
+                                        tool_name: tc.name.clone(),
+                                        step: evt.step,
+                                    },
+                                );
                                 if state.pending_calls.len() == 1 {
                                     state.spine_phase = SpinePhase::HandsPhase;
                                 }
                             }
                             Some(payload::Kind::ToolResult(tr)) => {
-                                if let Some(name) = state.pending_calls.remove(&tr.call_id) {
-                                    if matches!(name.as_str(), "shell" | "write" | "apply_patch") {
-                                        state.completed_mutations.insert(tr.call_id.clone(), name);
+                                if let Some(pending) = state.pending_calls.remove(&tr.call_id) {
+                                    if matches!(
+                                        pending.tool_name.as_str(),
+                                        "shell" | "write" | "apply_patch"
+                                    ) {
+                                        state
+                                            .completed_mutations
+                                            .insert(tr.call_id.clone(), pending.tool_name);
                                     }
                                 }
                                 if state.pending_calls.is_empty() {
@@ -488,11 +498,12 @@ pub async fn relay_brain_turn(
                             state
                                 .pending_calls
                                 .get(call_id)
-                                .or_else(|| state.completed_mutations.get(call_id))
-                                .cloned()
+                                .map(|pending| pending.tool_name.clone())
+                                .or_else(|| state.completed_mutations.get(call_id).cloned())
                         },
                         &git,
                         codebase,
+                        started.run.index,
                         turn_n,
                     );
                     enrich_permissions_preview(
@@ -676,9 +687,14 @@ mod tests {
     /// be recognized. Also updates `spine_phase` based on whether any in-flight
     /// ToolCalls remain — identical to the inline behavior in the handler.
     fn record_tool_result(state: &mut RelayState, tr: &ToolResult) {
-        if let Some(name) = state.pending_calls.remove(&tr.call_id) {
-            if matches!(name.as_str(), "shell" | "write" | "apply_patch") {
-                state.completed_mutations.insert(tr.call_id.clone(), name);
+        if let Some(pending) = state.pending_calls.remove(&tr.call_id) {
+            if matches!(
+                pending.tool_name.as_str(),
+                "shell" | "write" | "apply_patch"
+            ) {
+                state
+                    .completed_mutations
+                    .insert(tr.call_id.clone(), pending.tool_name);
             }
         }
         if state.pending_calls.is_empty() {
@@ -689,9 +705,13 @@ mod tests {
     #[test]
     fn tool_result_for_mutating_tool_is_tracked() {
         let mut state = RelayState::new();
-        state
-            .pending_calls
-            .insert("call-1".to_string(), "shell".to_string());
+        state.pending_calls.insert(
+            "call-1".to_string(),
+            lifecycle::PendingCall {
+                tool_name: "shell".to_string(),
+                step: Some(3),
+            },
+        );
         let tr = ToolResult {
             call_id: "call-1".to_string(),
             ..Default::default()
@@ -706,9 +726,13 @@ mod tests {
     #[test]
     fn tool_result_for_read_tool_is_not_tracked() {
         let mut state = RelayState::new();
-        state
-            .pending_calls
-            .insert("call-2".to_string(), "read".to_string());
+        state.pending_calls.insert(
+            "call-2".to_string(),
+            lifecycle::PendingCall {
+                tool_name: "read".to_string(),
+                step: Some(4),
+            },
+        );
         let tr = ToolResult {
             call_id: "call-2".to_string(),
             ..Default::default()

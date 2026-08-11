@@ -226,13 +226,7 @@ pub(crate) fn emit_terminal_failure(
     let prev = log.last_event();
     let scope = prev
         .as_ref()
-        .and_then(|event| {
-            Some(crate::proto::envelope::EventScope::Step {
-                run: event.run?,
-                turn: event.turn?,
-                step: event.step.unwrap_or(0),
-            })
-        })
+        .map(scope_of_previous_event)
         .unwrap_or(crate::proto::envelope::EventScope::Session);
     let evt = crate::proto::envelope::mint(body, prev.as_ref(), scope);
     log.relay_event(&evt).ok();
@@ -241,6 +235,48 @@ pub(crate) fn emit_terminal_failure(
     // 2) DiagRecord → diagnostic.jsonl SECOND (gated by DiagnosticSink).
     let rec = crate::diagnostic::DiagRecord::terminal(diag.session_id(), phase, detail);
     diag.terminal(&rec.to_json_line());
+}
+
+fn scope_of_previous_event(
+    event: &crate::proto::gait::log::v1::Event,
+) -> crate::proto::envelope::EventScope {
+    match (event.run, event.turn, event.step) {
+        (Some(run), Some(turn), Some(step)) => {
+            crate::proto::envelope::EventScope::Step { run, turn, step }
+        }
+        (Some(run), Some(turn), None) => crate::proto::envelope::EventScope::Turn { run, turn },
+        (Some(run), None, None) => crate::proto::envelope::EventScope::Run { run },
+        _ => crate::proto::envelope::EventScope::Session,
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct PendingCall {
+    pub tool_name: String,
+    pub step: Option<u32>,
+}
+
+fn append_orphan_tool_result(
+    log: &crate::turn::SessionLog,
+    run: u32,
+    turn: u32,
+    call_id: String,
+    pending: PendingCall,
+) -> anyhow::Result<()> {
+    let step = pending.step.ok_or_else(|| {
+        anyhow::anyhow!(
+            "cannot repair orphan tool call {call_id}: originating ToolCall had no step scope"
+        )
+    })?;
+    let msg = format!(
+        "[LLM timed out before '{}' result was received]",
+        pending.tool_name
+    );
+    log.append_body(
+        crate::proto::events::tool_result(call_id, msg, None, None),
+        crate::proto::envelope::EventScope::Step { run, turn, step },
+    )?;
+    Ok(())
 }
 
 /// Post-loop epilogue. The step order is load-bearing:
@@ -267,7 +303,7 @@ pub(crate) fn emit_terminal_failure(
 pub(crate) async fn teardown(
     sink: &mut dyn crate::port::output::TurnSink,
     inflight: tokio::task::JoinSet<()>,
-    mut pending_calls: std::collections::HashMap<String, String>,
+    mut pending_calls: std::collections::HashMap<String, PendingCall>,
     child_stdin: Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>,
     group: Arc<dyn crate::process::Containment>,
     child: tokio::process::Child,
@@ -292,21 +328,8 @@ pub(crate) async fn teardown(
     // it could emit results). Tools that completed already have real results in the
     // log; only call_ids still in pending_calls are orphans. Must run before
     // commit_session so the repair lands in the same commit as the transcript.
-    for (call_id, tool_name) in pending_calls.drain() {
-        let msg = format!("[LLM timed out before '{}' result was received]", tool_name);
-        let body = crate::proto::events::tool_result(call_id, msg, None, None);
-        let prev = log.last_event();
-        let step = prev.as_ref().and_then(|event| event.step).unwrap_or(0);
-        let ev = crate::proto::envelope::mint(
-            body,
-            prev.as_ref(),
-            crate::proto::envelope::EventScope::Step {
-                run: started.run.index,
-                turn: started.turn_index,
-                step,
-            },
-        );
-        log.relay_event(&ev).ok();
+    for (call_id, pending) in pending_calls.drain() {
+        append_orphan_tool_result(log, started.run.index, started.turn_index, call_id, pending)?;
     }
 
     // Drop the brain's stdin writer to signal EOF — the brain's Nerve reader
@@ -344,7 +367,12 @@ pub(crate) async fn teardown(
         Outcome::Pause(_) => {}
         outcome => {
             let checkpoint = git
-                .checkpoint(codebase, started.turn_index)
+                .checkpoint(
+                    codebase,
+                    crate::git::checkpoint::CheckpointBoundary::RunFinal {
+                        run: started.run.index,
+                    },
+                )
                 .ok()
                 .filter(|sha| !sha.is_empty());
             let dirty_files = crate::git::codebase::GitCodebaseRepo.dirty_files(codebase);
@@ -756,18 +784,15 @@ mod tests {
     /// A cancelled turn with an orphan ToolCall leaves a synthesized ToolResult
     /// in the log, so retrace::messages reconstructs with no orphan.
     ///
-    /// This test exercises the synthesis logic directly: write a ToolCall to the
-    /// log, then simulate what the spine's teardown does (drain pending_calls and
-    /// append synthetic ToolResults), and verify the log ends with a matching
-    /// ToolResult and retrace sees no orphan tool calls.
+    /// This test also puts a turn-scoped event after the call. The repair must use
+    /// the call's captured step rather than inventing step 0 from the log tail.
     #[test]
     fn cancelled_turn_synthesizes_tool_result_for_orphan_call_id() {
+        use crate::proto::envelope::EventScope;
         use crate::proto::gait::log::v1::{event, payload};
-        use crate::proto::{envelope, wire};
         use crate::session::retrace;
 
-        let dir = tempfile::TempDir::new().unwrap();
-        let log_path = dir.path().join("log.jsonl");
+        let log = crate::turn::SessionLog::ephemeral(Vec::new());
 
         // 1. Write a ToolCall (simulating what the brain emits mid-turn).
         let call_id = "call-orphan-1".to_string();
@@ -776,32 +801,41 @@ mod tests {
             "read".into(),
             &serde_json::json!({"file_path": "foo.rs"}),
         );
-        wire::append(&log_path, tc_body).expect("append tool_call");
-
-        // 2. Simulate cancel: the spine synthesizes a ToolResult for the orphan.
-        // tool_name "read" is the value stored in pending_calls (call_id → tool_name).
-        let body = crate::proto::events::tool_result(
-            call_id.clone(),
-            "[LLM timed out before 'read' result was received]".into(),
-            None,
-            None,
-        );
-        let prev = crate::session::log::last_event(&log_path).ok().flatten();
-        let ev = envelope::mint(
-            body,
-            prev.as_ref(),
-            envelope::EventScope::Step {
-                run: 0,
-                turn: 0,
-                step: 0,
+        log.append_body(
+            tc_body,
+            EventScope::Step {
+                run: 2,
+                turn: 3,
+                step: 7,
             },
-        );
-        wire::append_with_id(&log_path, &ev).expect("append synthesized tool_result");
+        )
+        .expect("append tool_call");
+        log.append_body(
+            crate::proto::events::error("turn ending".into(), "coordinator"),
+            EventScope::Turn { run: 2, turn: 3 },
+        )
+        .expect("append turn-scoped tail");
+
+        // 2. Simulate cancel using the call metadata captured by the relay.
+        append_orphan_tool_result(
+            &log,
+            2,
+            3,
+            call_id.clone(),
+            PendingCall {
+                tool_name: "read".into(),
+                step: Some(7),
+            },
+        )
+        .expect("append synthesized tool_result");
 
         // 3. Assert: the last event is a ToolResult with the correct call_id.
-        let events = crate::session::log::read_events(&log_path).unwrap();
-        assert_eq!(events.len(), 2, "log must have exactly 2 events");
+        let events = log.events();
+        assert_eq!(events.len(), 3, "log must have exactly 3 events");
         let last = events.last().unwrap();
+        assert_eq!(last.run, Some(2));
+        assert_eq!(last.turn, Some(3));
+        assert_eq!(last.step, Some(7));
         match last.body.as_ref() {
             Some(event::Body::Payload(p)) => match p.kind.as_ref() {
                 Some(payload::Kind::ToolResult(tr)) => {

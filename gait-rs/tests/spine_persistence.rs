@@ -165,26 +165,28 @@ async fn persistence_call_sequence_is_pinned() {
         .iter()
         .position(|c| c.starts_with("create_session_worktree:p2"));
     let init = seq.iter().position(|c| c == "checkpoint.init:p2");
-    let ckpt = seq
-        .iter()
-        .position(|c| c.starts_with("checkpoint:p2:turn="));
+    let baseline = seq.iter().position(|c| c == "checkpoint:p2:run 0 baseline");
+    let final_checkpoint = seq.iter().position(|c| c == "checkpoint:p2:run 0 final");
     let commit = seq.iter().position(|c| c.starts_with("commit_session:p2:"));
 
     assert!(
-        worktree.is_some() && init.is_some() && ckpt.is_some() && commit.is_some(),
-        "expected all four persistence calls; got: {seq:?}"
+        worktree.is_some()
+            && init.is_some()
+            && baseline.is_some()
+            && final_checkpoint.is_some()
+            && commit.is_some(),
+        "expected all five persistence calls; got: {seq:?}"
     );
 
     // worktree + checkpoint init happen during startup (spine-owned writes,
     // before brain spawn — see `src/turn/spine.rs:266-274`). The per-turn
-    // checkpoint + commit_session happen after the brain exits, in the
-    // post-turn finalize block (`src/turn/spine.rs:721-727`).
+    // final checkpoint + commit_session happen after the brain exits, in the
+    // post-turn finalize block.
     assert!(
-        worktree.unwrap() < commit.unwrap(),
-        "worktree must precede commit_session: {seq:?}"
-    );
-    assert!(
-        ckpt.unwrap() <= commit.unwrap(),
-        "checkpoint must precede or equal commit_session: {seq:?}"
+        worktree.unwrap() < init.unwrap()
+            && init.unwrap() < baseline.unwrap()
+            && baseline.unwrap() < final_checkpoint.unwrap()
+            && final_checkpoint.unwrap() < commit.unwrap(),
+        "persistence boundaries must stay ordered: {seq:?}"
     );
 }

@@ -139,9 +139,8 @@ mod tests {
         let artifact =
             crate::tools::artifact_reference_from_value(&model, gait_dir.path(), "s-parent")
                 .expect("special spine-routed output must return a valid artifact reference");
-        assert_eq!(
-            std::fs::read_to_string(artifact.path).unwrap(),
-            original.to_string()
-        );
+        let archived: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(artifact.path).unwrap()).unwrap();
+        assert_eq!(archived, original);
     }
 }

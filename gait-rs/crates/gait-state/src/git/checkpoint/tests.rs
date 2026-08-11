@@ -2,6 +2,10 @@ use super::*;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
+fn checkpoint_boundary(run: u32) -> CheckpointBoundary {
+    CheckpointBoundary::RunFinal { run }
+}
+
 /// A gait_dir with sessions/<id>/ present, plus a separate codebase repo
 /// with one commit. Returns (workspace_tmp, codebase_tmp, session_id).
 fn fixture() -> (TempDir, TempDir, String) {
@@ -90,7 +94,7 @@ fn checkpoint_after_edit_returns_fresh_sha() {
     GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
     std::fs::write(cb.path().join("a.txt"), "two\n").unwrap();
     let sha = GitCheckpointRepo
-        .checkpoint(ws.path(), &id, cb.path(), 1)
+        .checkpoint(ws.path(), &id, cb.path(), checkpoint_boundary(1))
         .unwrap();
     assert_eq!(sha.len(), 40);
 }
@@ -101,10 +105,10 @@ fn checkpoint_no_change_returns_same_sha() {
     GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
     std::fs::write(cb.path().join("a.txt"), "two\n").unwrap();
     let first = GitCheckpointRepo
-        .checkpoint(ws.path(), &id, cb.path(), 1)
+        .checkpoint(ws.path(), &id, cb.path(), checkpoint_boundary(1))
         .unwrap();
     let second = GitCheckpointRepo
-        .checkpoint(ws.path(), &id, cb.path(), 2)
+        .checkpoint(ws.path(), &id, cb.path(), checkpoint_boundary(2))
         .unwrap();
     assert_eq!(first, second, "no change -> no new commit");
 }
@@ -116,7 +120,7 @@ fn checkpoint_captures_shell_style_changes_and_ignores_dotgit() {
     std::fs::write(cb.path().join("created.txt"), "x\n").unwrap();
     std::fs::remove_file(cb.path().join("a.txt")).unwrap();
     let sha = GitCheckpointRepo
-        .checkpoint(ws.path(), &id, cb.path(), 1)
+        .checkpoint(ws.path(), &id, cb.path(), checkpoint_boundary(1))
         .unwrap();
 
     let git_dir = checkpoint_git_dir(ws.path(), &id);
@@ -146,7 +150,7 @@ fn checkpoint_works_without_codebase_git() {
     GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
     std::fs::write(cb.path().join("a.txt"), "v1\n").unwrap();
     let sha = GitCheckpointRepo
-        .checkpoint(ws.path(), &id, cb.path(), 1)
+        .checkpoint(ws.path(), &id, cb.path(), checkpoint_boundary(1))
         .unwrap();
     assert_eq!(sha.len(), 40);
 }
@@ -160,11 +164,11 @@ fn checkpoint_and_diff_work_for_non_git_codebase() {
     GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
     assert!(checkpoint_git_dir(ws.path(), &id).join("HEAD").exists());
     let baseline = GitCheckpointRepo
-        .checkpoint(ws.path(), &id, cb.path(), 0)
+        .checkpoint(ws.path(), &id, cb.path(), checkpoint_boundary(0))
         .unwrap();
     std::fs::write(cb.path().join("f.txt"), "v1\n").unwrap();
     let final_sha = GitCheckpointRepo
-        .checkpoint(ws.path(), &id, cb.path(), 1)
+        .checkpoint(ws.path(), &id, cb.path(), checkpoint_boundary(1))
         .unwrap();
     assert_eq!(final_sha.len(), 40);
     let ch = GitCheckpointRepo
@@ -182,10 +186,10 @@ fn baseline_captures_dirty_start_and_unchanged_run_has_empty_diff() {
     GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
     std::fs::write(cb.path().join("a.txt"), "dirty before run\n").unwrap();
     let baseline = GitCheckpointRepo
-        .checkpoint(ws.path(), &id, cb.path(), 0)
+        .checkpoint(ws.path(), &id, cb.path(), checkpoint_boundary(0))
         .unwrap();
     let final_sha = GitCheckpointRepo
-        .checkpoint(ws.path(), &id, cb.path(), 1)
+        .checkpoint(ws.path(), &id, cb.path(), checkpoint_boundary(1))
         .unwrap();
     assert_eq!(baseline, final_sha);
     let summary = GitCheckpointRepo
@@ -203,7 +207,7 @@ fn baseline_to_final_reports_delete_and_rename_deterministically() {
     std::fs::write(cb.path().join("delete.txt"), "gone\n").unwrap();
     std::fs::write(cb.path().join("rename-old.txt"), "same content\n").unwrap();
     let baseline = GitCheckpointRepo
-        .checkpoint(ws.path(), &id, cb.path(), 0)
+        .checkpoint(ws.path(), &id, cb.path(), checkpoint_boundary(0))
         .unwrap();
     std::fs::remove_file(cb.path().join("delete.txt")).unwrap();
     std::fs::rename(
@@ -212,7 +216,7 @@ fn baseline_to_final_reports_delete_and_rename_deterministically() {
     )
     .unwrap();
     let final_sha = GitCheckpointRepo
-        .checkpoint(ws.path(), &id, cb.path(), 1)
+        .checkpoint(ws.path(), &id, cb.path(), checkpoint_boundary(1))
         .unwrap();
     let summary = GitCheckpointRepo
         .diff_between(ws.path(), &id, &baseline, &final_sha)
@@ -229,11 +233,11 @@ fn binary_change_keeps_file_identity_but_omits_unreliable_line_totals() {
     GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
     std::fs::write(cb.path().join("blob.bin"), [0, 159, 146, 150]).unwrap();
     let baseline = GitCheckpointRepo
-        .checkpoint(ws.path(), &id, cb.path(), 0)
+        .checkpoint(ws.path(), &id, cb.path(), checkpoint_boundary(0))
         .unwrap();
     std::fs::write(cb.path().join("blob.bin"), [0, 159, 146, 151]).unwrap();
     let final_sha = GitCheckpointRepo
-        .checkpoint(ws.path(), &id, cb.path(), 1)
+        .checkpoint(ws.path(), &id, cb.path(), checkpoint_boundary(1))
         .unwrap();
     let summary = GitCheckpointRepo
         .diff_between(ws.path(), &id, &baseline, &final_sha)
@@ -251,11 +255,11 @@ fn restore_to_restores_file_content() {
     GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
     std::fs::write(cb.path().join("a.txt"), "v1\n").unwrap();
     let cp1 = GitCheckpointRepo
-        .checkpoint(ws.path(), &id, cb.path(), 1)
+        .checkpoint(ws.path(), &id, cb.path(), checkpoint_boundary(1))
         .unwrap();
     std::fs::write(cb.path().join("a.txt"), "v2\n").unwrap();
     GitCheckpointRepo
-        .checkpoint(ws.path(), &id, cb.path(), 2)
+        .checkpoint(ws.path(), &id, cb.path(), checkpoint_boundary(2))
         .unwrap();
 
     GitCheckpointRepo
@@ -272,11 +276,11 @@ fn restore_to_removes_files_created_after_checkpoint() {
     let (ws, cb, id) = fixture();
     GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
     let cp1 = GitCheckpointRepo
-        .checkpoint(ws.path(), &id, cb.path(), 1)
+        .checkpoint(ws.path(), &id, cb.path(), checkpoint_boundary(1))
         .unwrap();
     std::fs::write(cb.path().join("new.txt"), "later\n").unwrap();
     GitCheckpointRepo
-        .checkpoint(ws.path(), &id, cb.path(), 2)
+        .checkpoint(ws.path(), &id, cb.path(), checkpoint_boundary(2))
         .unwrap();
 
     GitCheckpointRepo
@@ -301,7 +305,7 @@ fn restore_to_does_not_touch_codebase_git() {
     GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
     std::fs::write(cb.path().join("a.txt"), "v2\n").unwrap();
     let cp1 = GitCheckpointRepo
-        .checkpoint(ws.path(), &id, cb.path(), 1)
+        .checkpoint(ws.path(), &id, cb.path(), checkpoint_boundary(1))
         .unwrap();
     GitCheckpointRepo
         .restore_to(ws.path(), &id, cb.path(), &cp1)
@@ -348,12 +352,12 @@ fn diff_reports_added_modified_deleted() {
     let (ws, cb, id) = fixture();
     GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
     let baseline = GitCheckpointRepo
-        .checkpoint(ws.path(), &id, cb.path(), 0)
+        .checkpoint(ws.path(), &id, cb.path(), checkpoint_boundary(0))
         .unwrap();
     std::fs::write(cb.path().join("a.txt"), "two\n").unwrap();
     std::fs::write(cb.path().join("new.txt"), "x\n").unwrap();
     let final_sha = GitCheckpointRepo
-        .checkpoint(ws.path(), &id, cb.path(), 1)
+        .checkpoint(ws.path(), &id, cb.path(), checkpoint_boundary(1))
         .unwrap();
     let ch = GitCheckpointRepo
         .diff_between(ws.path(), &id, &baseline, &final_sha)
@@ -422,13 +426,20 @@ fn records_calls_and_injects_error() {
     let cb = PathBuf::from("/cb");
 
     mock.init(&ws, "s1", &cb).unwrap();
-    let sha = mock.checkpoint(&ws, "s1", &cb, 1).unwrap();
+    let sha = mock
+        .checkpoint(&ws, "s1", &cb, checkpoint_boundary(1))
+        .unwrap();
     assert_eq!(sha, "mock-sha-1");
     assert_eq!(mock.init_calls(), vec!["s1".to_string()]);
-    assert_eq!(mock.checkpoint_calls(), vec![("s1".to_string(), 1u32)]);
+    assert_eq!(
+        mock.checkpoint_calls(),
+        vec![("s1".to_string(), checkpoint_boundary(1))]
+    );
 
     mock.inject_checkpoint_error("boom");
-    let err = mock.checkpoint(&ws, "s1", &cb, 2).unwrap_err();
+    let err = mock
+        .checkpoint(&ws, "s1", &cb, checkpoint_boundary(2))
+        .unwrap_err();
     assert!(err.to_string().contains("boom"));
     assert_eq!(mock.checkpoint_calls().len(), 2);
 

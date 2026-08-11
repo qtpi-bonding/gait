@@ -25,8 +25,10 @@ pub(crate) fn enrich_checkpoint(
     tool_name_for_call: impl Fn(&str) -> Option<String>,
     git: &SessionGit,
     codebase: &Path,
+    run_n: u32,
     turn_n: u32,
 ) {
+    let step_n = event.step;
     // `payload::Kind::ToolResult(tr)` for a direct event; and `Replace(...)`
     // when a later event rewrites a prior `ToolResult` — in that case the
     // replacement's `kind` is the inner `ToolResult` (proto comment confirms
@@ -55,7 +57,14 @@ pub(crate) fn enrich_checkpoint(
         return;
     }
 
-    if let Ok(sha) = git.checkpoint(codebase, turn_n) {
+    if let Ok(sha) = git.checkpoint(
+        codebase,
+        crate::git::checkpoint::CheckpointBoundary::ToolResult {
+            run: run_n,
+            turn: turn_n,
+            step: step_n,
+        },
+    ) {
         if !sha.is_empty() {
             tr.checkpoint = Some(sha);
         }
@@ -118,7 +127,13 @@ mod tests {
         fn init(&self, _: &Path, _s: &str, _: &Path) -> anyhow::Result<()> {
             Ok(())
         }
-        fn checkpoint(&self, _: &Path, _s: &str, _: &Path, _t: u32) -> anyhow::Result<String> {
+        fn checkpoint(
+            &self,
+            _: &Path,
+            _s: &str,
+            _: &Path,
+            _boundary: crate::git::checkpoint::CheckpointBoundary,
+        ) -> anyhow::Result<String> {
             self.0.lock().unwrap().push("checkpoint".into());
             Ok("deadbeef".to_string())
         }
@@ -181,6 +196,7 @@ mod tests {
             |cid| (cid == "call-1").then(|| "shell".to_string()),
             &git,
             Path::new("/tmp/cb"),
+            0,
             1,
         );
         let Some(event::Body::Payload(p)) = ev.body else {
@@ -202,6 +218,7 @@ mod tests {
             |cid| (cid == "call-2").then(|| "read".to_string()),
             &git,
             Path::new("/tmp/cb"),
+            0,
             1,
         );
         let Some(event::Body::Payload(p)) = ev.body else {
@@ -239,6 +256,7 @@ mod tests {
             |cid| (cid == "call-3").then(|| "shell".to_string()),
             &git,
             Path::new("/tmp/cb"),
+            0,
             1,
         );
         let Some(event::Body::Replace(replace)) = ev.body else {

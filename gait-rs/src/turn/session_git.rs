@@ -12,7 +12,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::git::{checkpoint::CheckpointRepo, trace::TraceRepo};
+use crate::git::{
+    checkpoint::{CheckpointBoundary, CheckpointRepo},
+    trace::TraceRepo,
+};
 
 pub(crate) enum SessionGit {
     /// Production: session-scoped trace + checkpoint persistence.
@@ -68,14 +71,18 @@ impl SessionGit {
         }
     }
 
-    pub(crate) fn checkpoint(&self, codebase: &Path, turn: u32) -> anyhow::Result<String> {
+    pub(crate) fn checkpoint(
+        &self,
+        codebase: &Path,
+        boundary: CheckpointBoundary,
+    ) -> anyhow::Result<String> {
         match self {
             Self::Persistent {
                 checkpoints,
                 gait_dir,
                 session_id,
                 ..
-            } => checkpoints.checkpoint(gait_dir, session_id, codebase, turn),
+            } => checkpoints.checkpoint(gait_dir, session_id, codebase, boundary),
             Self::Null => Ok(String::new()),
         }
     }
@@ -161,8 +168,14 @@ mod tests {
             self.0.lock().unwrap().push(format!("init:{s}"));
             Ok(())
         }
-        fn checkpoint(&self, _: &Path, s: &str, _: &Path, t: u32) -> anyhow::Result<String> {
-            self.0.lock().unwrap().push(format!("ckpt:{s}:{t}"));
+        fn checkpoint(
+            &self,
+            _: &Path,
+            s: &str,
+            _: &Path,
+            boundary: CheckpointBoundary,
+        ) -> anyhow::Result<String> {
+            self.0.lock().unwrap().push(format!("ckpt:{s}:{boundary}"));
             Ok(String::new())
         }
         fn restore_to(&self, _: &Path, _: &str, _: &Path, _: &str) -> anyhow::Result<()> {
@@ -205,12 +218,18 @@ mod tests {
         let git = SessionGit::for_session(&repos, g, "sess");
         git.ensure_worktree().unwrap();
         git.checkpoint_init(cb).unwrap();
-        git.checkpoint(cb, 3).unwrap();
+        git.checkpoint(cb, CheckpointBoundary::RunFinal { run: 3 })
+            .unwrap();
         git.commit("msg").unwrap();
         let calls = rec.0.lock().unwrap().clone();
         assert_eq!(
             calls,
-            vec!["worktree:sess", "init:sess", "ckpt:sess:3", "commit:sess"]
+            vec![
+                "worktree:sess",
+                "init:sess",
+                "ckpt:sess:run 3 final",
+                "commit:sess"
+            ]
         );
     }
 
@@ -221,7 +240,11 @@ mod tests {
         git.checkpoint_init(std::path::Path::new("/tmp/cb"))
             .unwrap();
         assert_eq!(
-            git.checkpoint(std::path::Path::new("/tmp/cb"), 1).unwrap(),
+            git.checkpoint(
+                std::path::Path::new("/tmp/cb"),
+                CheckpointBoundary::RunFinal { run: 1 },
+            )
+            .unwrap(),
             ""
         );
         git.commit("msg").unwrap();
