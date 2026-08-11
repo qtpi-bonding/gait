@@ -58,7 +58,12 @@ async fn stream_forward_reaches_sink_items() {
             item: Some(stream_item_text("hello")),
         })),
     };
-    let (sink, _calls) = run_one(tmp.path(), "r1", &[sf, terminated_ok("done")]).await;
+    let (sink, _calls) = run_one(
+        tmp.path(),
+        "r1",
+        &[append_assistant("done"), sf, terminated_ok("done")],
+    )
+    .await;
 
     assert_eq!(
         sink.items.len(),
@@ -99,7 +104,12 @@ async fn diagnostic_writes_diagnostic_jsonl_only_when_gait_debug_set() {
             elapsed_ms: 0,
         })),
     };
-    let _ = run_one(tmp.path(), "r2", &[d, terminated_ok("done")]).await;
+    let _ = run_one(
+        tmp.path(),
+        "r2",
+        &[append_assistant("done"), d, terminated_ok("done")],
+    )
+    .await;
 
     let path = gait_core::session::live::diagnostic_path(tmp.path(), "r2");
     assert!(
@@ -116,7 +126,12 @@ async fn notify_writes_agent_update_to_parent_session() {
     // That gives us a real session dir + log.jsonl (sole writer = spine) for
     // the Notify target to append into.
     let tmp = tempfile::tempdir().unwrap();
-    let _ = run_one(tmp.path(), "parent", &[terminated_ok("seed")]).await;
+    let _ = run_one(
+        tmp.path(),
+        "parent",
+        &[append_assistant("seed"), terminated_ok("seed")],
+    )
+    .await;
 
     // Now a child turn that notifies the parent on the way out.
     let n = Signal {
@@ -129,7 +144,12 @@ async fn notify_writes_agent_update_to_parent_session() {
             idempotency_key: "child-evt1".into(),
         })),
     };
-    let _ = run_one(tmp.path(), "child", &[n, terminated_ok("done")]).await;
+    let _ = run_one(
+        tmp.path(),
+        "child",
+        &[append_assistant("done"), n, terminated_ok("done")],
+    )
+    .await;
 
     // The parent log.jsonl must now carry the AgentUpdate event. The AgentUpdate
     // payload carries the child's `from_session` as `sessionId` (pbjson camelCase)
@@ -159,7 +179,12 @@ async fn notify_commits_target_session_through_injected_repos() {
     // show only the child's own `commit_session:child:...`. After it, the same
     // mock observes a SECOND commit, this time against the *parent* target.
     let tmp = tempfile::tempdir().unwrap();
-    let _ = run_one(tmp.path(), "parent3", &[terminated_ok("seed")]).await;
+    let _ = run_one(
+        tmp.path(),
+        "parent3",
+        &[append_assistant("seed"), terminated_ok("seed")],
+    )
+    .await;
 
     let n = Signal {
         corr_id: 0,
@@ -171,7 +196,12 @@ async fn notify_commits_target_session_through_injected_repos() {
             idempotency_key: "child3-evt1".into(),
         })),
     };
-    let (_sink, calls) = run_one(tmp.path(), "child3", &[n, terminated_ok("done")]).await;
+    let (_sink, calls) = run_one(
+        tmp.path(),
+        "child3",
+        &[append_assistant("done"), n, terminated_ok("done")],
+    )
+    .await;
     let seq = calls.snapshot();
 
     // The cross-session commit lands on the SAME injected mock as the child's
@@ -206,7 +236,12 @@ async fn notify_to_missing_parent_does_not_fail_the_turn() {
             idempotency_key: "child2-evt1".into(),
         })),
     };
-    let (sink, _calls) = run_one(tmp.path(), "child2", &[n, terminated_ok("done")]).await;
+    let (sink, _calls) = run_one(
+        tmp.path(),
+        "child2",
+        &[append_assistant("done"), n, terminated_ok("done")],
+    )
+    .await;
     assert_eq!(
         sink.results.len(),
         1,

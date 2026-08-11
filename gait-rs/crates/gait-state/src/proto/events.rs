@@ -316,36 +316,28 @@ pub fn permission_denied(tool_name: &str, resource: &str, pattern: &str) -> pb::
     }))
 }
 
-/// Parameters for [`turn_complete`].
-#[derive(Debug, Default)]
-pub struct TurnCompleteParams {
-    pub usage: pb::TurnTokenUsage,
-    pub codebase_hash: String,
-    pub codebase_dirty: bool,
-    pub checkpoint: Option<String>,
-    pub blocks: Vec<String>,
-    pub message: String,
-    pub result: Option<serde_json::Value>,
-    pub changes: Option<pb::Changes>,
+pub fn run_start(run: pb::RunStart) -> pb::event::Body {
+    wire::body(pb::payload::Kind::RunStart(run))
 }
 
-/// `TurnComplete`.
-pub fn turn_complete(p: TurnCompleteParams) -> pb::event::Body {
-    wire::body(pb::payload::Kind::TurnComplete(pb::TurnComplete {
-        usage: Some(p.usage),
-        codebase: Some(pb::CodebaseState {
-            hash: p.codebase_hash,
-            dirty: p.codebase_dirty,
-            dirty_files: Vec::new(),
-        }),
-        checkpoint: p.checkpoint,
-        blocks: p.blocks,
-        output: Some(pb::StructuredDoneOutput {
-            message: p.message,
-            result: to_value_opt(&p.result),
-            changes: p.changes,
-        }),
-    }))
+pub fn turn_start(turn: pb::TurnStart) -> pb::event::Body {
+    wire::body(pb::payload::Kind::TurnStart(turn))
+}
+
+pub fn turn_result(result: pb::TurnResult) -> pb::event::Body {
+    wire::body(pb::payload::Kind::TurnResult(result))
+}
+
+pub fn run_complete(result: pb::RunComplete) -> pb::event::Body {
+    wire::body(pb::payload::Kind::RunComplete(result))
+}
+
+pub fn run_cancelled(result: pb::RunCancelled) -> pb::event::Body {
+    wire::body(pb::payload::Kind::RunCancelled(result))
+}
+
+pub fn run_failed(result: pb::RunFailed) -> pb::event::Body {
+    wire::body(pb::payload::Kind::RunFailed(result))
 }
 
 // NOTE: the `ResolvedProfile`-typed `agent_msg` / `agent` builders formerly
@@ -505,11 +497,10 @@ pub fn llm_call_started(model: String) -> pb::event::Body {
 }
 
 /// `LlmCallCompleted` — durably marks that the LLM stream finished. `usage`
-/// is the cumulative turn usage AFTER this step (same convention as
-/// `TurnComplete.usage`, not a per-step delta); `tool_call_count`/`had_text`
-/// describe this step's own yield.
+/// is the delta for this step; `tool_call_count`/`had_text` describe the same
+/// invocation.
 pub fn llm_call_completed(
-    usage: pb::TurnTokenUsage,
+    usage: pb::StepTokenUsage,
     tool_call_count: u32,
     had_text: bool,
 ) -> pb::event::Body {
@@ -848,7 +839,7 @@ mod tests {
 
     #[test]
     fn llm_call_completed_carries_usage_and_flags() {
-        let usage = pb::TurnTokenUsage {
+        let usage = pb::StepTokenUsage {
             input: 100,
             output: 20,
             cache_read: 5,
@@ -957,34 +948,32 @@ mod tests {
     }
 
     #[test]
-    fn turn_complete_carries_changes() {
-        use crate::proto::gait::log::v1::{payload, Changes, TurnTokenUsage};
-        let usage = TurnTokenUsage {
-            input: 0,
-            output: 0,
-            cache_read: 0,
-            cache_write: 0,
-        };
-        let changes = Some(Changes {
-            added: vec!["a.rs".into()],
-            modified: vec![],
-            deleted: vec![],
+    fn run_complete_carries_change_summary() {
+        use crate::proto::gait::log::v1::{payload, ChangeSummary, FileChange};
+        let changes = Some(ChangeSummary {
+            added: vec![FileChange {
+                path: "a.rs".into(),
+                ..Default::default()
+            }],
+            file_count: 1,
+            ..Default::default()
         });
-        let body = turn_complete(TurnCompleteParams {
-            usage,
-            message: "done".into(),
-            changes,
+        let body = run_complete(pb::RunComplete {
+            summary: Some(pb::RunSummary {
+                changes,
+                ..Default::default()
+            }),
             ..Default::default()
         });
         let pb::event::Body::Payload(p) = body else {
             panic!()
         };
-        let Some(payload::Kind::TurnComplete(tc)) = p.kind else {
+        let Some(payload::Kind::RunComplete(complete)) = p.kind else {
             panic!()
         };
         assert_eq!(
-            tc.output.unwrap().changes.unwrap().added,
-            vec!["a.rs".to_string()]
+            complete.summary.unwrap().changes.unwrap().added[0].path,
+            "a.rs"
         );
     }
 

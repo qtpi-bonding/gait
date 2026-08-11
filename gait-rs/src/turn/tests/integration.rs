@@ -178,7 +178,7 @@ impl Provider for FakeProvider {
 }
 
 #[tokio::test]
-async fn run_turn_writes_transcript_and_commits() {
+async fn run_turn_writes_brain_events_without_coordinator_lifecycle() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
     // Codebase dir (can be same as gait_dir for test)
@@ -250,7 +250,7 @@ async fn run_turn_writes_transcript_and_commits() {
             Some(payload::Kind::ToolCall(_)) => "tool_call",
             Some(payload::Kind::ToolResult(_)) => "tool_result",
             Some(payload::Kind::AssistantText(_)) => "assistant_text",
-            Some(payload::Kind::TurnComplete(_)) => "turn_complete",
+            Some(payload::Kind::RunComplete(_)) => "run_complete",
             _ => "other",
         })
         .collect();
@@ -258,20 +258,10 @@ async fn run_turn_writes_transcript_and_commits() {
     assert!(types.contains(&"user_turn"), "got: {:?}", types);
     assert!(types.contains(&"tool_call"), "got: {:?}", types);
     assert!(types.contains(&"tool_result"), "got: {:?}", types);
-    assert!(types.contains(&"turn_complete"), "got: {:?}", types);
-
-    // Verify git commit was created
-    let repo =
-        git2::Repository::open(crate::session::live::worktree_dir(ws.path(), "stest001")).unwrap();
-    let msg = repo
-        .head()
-        .unwrap()
-        .peel_to_commit()
-        .unwrap()
-        .message()
-        .unwrap()
-        .to_string();
-    assert!(msg.contains("turn 1"), "got: {msg}");
+    assert!(
+        !types.contains(&"run_complete"),
+        "the brain primitive must leave durable lifecycle finalization to the coordinator: {types:?}"
+    );
 }
 
 #[tokio::test]
@@ -345,11 +335,11 @@ async fn run_turn_brackets_each_step_with_llm_call_events() {
 }
 
 #[tokio::test]
-async fn output_tool_result_used_in_turn_complete() {
+async fn output_tool_result_used_in_turn_result() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
 
-    // output tool now exits immediately on ExecutionSignal::TurnComplete —
+    // output tool now exits immediately on ExecutionSignal::FinishTurn —
     // no second LLM call, no empty-text follow-up response.
     let provider = Arc::new(MockProvider {
         responses: Arc::new(vec![vec![
@@ -365,7 +355,7 @@ async fn output_tool_result_used_in_turn_complete() {
 
     let output_tool = StructuredDoneTool::new();
 
-    run_turn_test_call(
+    let result = run_turn_test_call(
         ws.path().to_path_buf(),
         ws.path().to_path_buf(),
         "stest_out".into(),
@@ -389,18 +379,15 @@ async fn output_tool_result_used_in_turn_complete() {
     .await
     .unwrap();
 
-    let tx_path = crate::session::live::log_path(ws.path(), "stest_out");
-    let events = read_events(&tx_path).unwrap();
-    let tc = events
-        .iter()
-        .find_map(|e| match event_kind(e) {
-            Some(payload::Kind::TurnComplete(tc)) => Some(tc),
-            _ => None,
-        })
-        .unwrap();
-    let output = tc.output.as_ref().unwrap();
-    assert_eq!(output.message, "fixed the bug");
-    assert!(output.result.is_some());
+    match result {
+        crate::turn::TurnResult::Done {
+            message, result, ..
+        } => {
+            assert_eq!(message, "fixed the bug");
+            assert!(result.is_some());
+        }
+        other => panic!("expected structured done, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -408,7 +395,7 @@ async fn output_tool_exempt_from_permission_gating() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
 
-    // output tool now exits immediately on ExecutionSignal::TurnComplete.
+    // output tool now exits immediately on ExecutionSignal::FinishTurn.
     let provider = Arc::new(MockProvider {
         responses: Arc::new(vec![vec![
             StreamChunk::ToolCallComplete {
@@ -423,7 +410,7 @@ async fn output_tool_exempt_from_permission_gating() {
 
     let output_tool = StructuredDoneTool::new();
 
-    run_turn_test_call(
+    let result = run_turn_test_call(
         ws.path().to_path_buf(),
         ws.path().to_path_buf(),
         "stest_out2".into(),
@@ -447,15 +434,16 @@ async fn output_tool_exempt_from_permission_gating() {
     .await
     .unwrap();
 
+    assert!(
+        matches!(result, crate::turn::TurnResult::Done { .. }),
+        "output tool should complete the brain turn"
+    );
+
     let tx_path = crate::session::live::log_path(ws.path(), "stest_out2");
     let events = read_events(&tx_path).unwrap();
-    let has_tc = events
-        .iter()
-        .any(|e| matches!(event_kind(e), Some(payload::Kind::TurnComplete(_))));
     let has_permissions = events
         .iter()
         .any(|e| matches!(event_kind(e), Some(payload::Kind::Permissions(_))));
-    assert!(has_tc, "output tool should complete the turn");
     assert!(
         !has_permissions,
         "output tool should not trigger permission gating"
@@ -508,13 +496,13 @@ async fn permission_gating_pauses_turn_in_non_auto_mode() {
     let has_permissions = events
         .iter()
         .any(|e| matches!(event_kind(e), Some(payload::Kind::Permissions(_))));
-    let has_turn_complete = events
+    let has_turn_result = events
         .iter()
-        .any(|e| matches!(event_kind(e), Some(payload::Kind::TurnComplete(_))));
+        .any(|e| matches!(event_kind(e), Some(payload::Kind::RunComplete(_))));
     assert!(has_permissions, "should have permissions event");
     assert!(
-        !has_turn_complete,
-        "should NOT have turn_complete — turn was paused"
+        !has_turn_result,
+        "should NOT have turn_result — turn was paused"
     );
 }
 
@@ -1434,77 +1422,6 @@ async fn resume_with_scope_agent_shows_whitelist_prefix() {
 }
 
 #[tokio::test]
-async fn run_turn_records_code_checkpoint_for_git_codebase() {
-    let ws = TempDir::new().unwrap();
-    init_git_repo(ws.path());
-
-    // Build a SEPARATE codebase dir that is its own git repo with one commit
-    let codebase_dir = TempDir::new().unwrap();
-    {
-        let repo = git2::Repository::init(codebase_dir.path()).unwrap();
-        let mut cfg = repo.config().unwrap();
-        cfg.set_str("user.name", "test").unwrap();
-        cfg.set_str("user.email", "test@test.com").unwrap();
-        std::fs::write(codebase_dir.path().join("hello.txt"), "hello\n").unwrap();
-        let mut idx = repo.index().unwrap();
-        idx.add_path(std::path::Path::new("hello.txt")).unwrap();
-        idx.write().unwrap();
-        let tree_id = idx.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let sig = git2::Signature::now("test", "test@test.com").unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
-            .unwrap();
-    }
-
-    let session_id = "scpgit001";
-
-    let provider = Arc::new(MockProvider {
-        responses: Arc::new(vec![vec![
-            StreamChunk::Text("done".into()),
-            StreamChunk::Done,
-        ]]),
-        call_idx: Arc::new(AtomicUsize::new(0)),
-    });
-
-    run_turn_test_call(
-        ws.path().to_path_buf(),
-        codebase_dir.path().to_path_buf(),
-        session_id.into(),
-        provider,
-        vec![],
-        vec![],
-        vec![],
-        TurnInput {
-            auto: true,
-            max_iter: None,
-            preview_policy: crate::config::PreviewPolicy::default(),
-            cancel: None,
-            sandbox_on: true,
-            sandbox_cfg: crate::config::SandboxConfig::default(),
-            relay: None,
-            initial_git: None,
-            daemons: vec![],
-        },
-        crate::git::Repos::production(),
-    )
-    .await
-    .unwrap();
-
-    let tx_path = crate::session::live::log_path(ws.path(), session_id);
-    let events = read_events(&tx_path).unwrap();
-    let cp = events
-        .iter()
-        .rev()
-        .find_map(|e| match event_kind(e) {
-            Some(payload::Kind::TurnComplete(tc)) => Some(tc.checkpoint.clone()),
-            _ => None,
-        })
-        .flatten();
-    assert!(cp.is_some(), "expected a code checkpoint SHA");
-    assert!(crate::git::checkpoint_git_dir(ws.path(), session_id).exists());
-}
-
-#[tokio::test]
 async fn run_turn_persists_codebase_path_in_session_start() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
@@ -1572,84 +1489,6 @@ async fn run_turn_persists_codebase_path_in_session_start() {
         meta.codebase_path.as_deref(),
         Some(codebase_dir.path().to_string_lossy().as_ref()),
         "codebase_path value should match the input"
-    );
-}
-
-#[tokio::test]
-async fn run_turn_calls_rewind_init_and_checkpoint_via_injected_repo() {
-    use crate::git::checkpoint::MockCheckpointRepo;
-
-    let ws = TempDir::new().unwrap();
-    init_git_repo(ws.path());
-
-    // Build a SEPARATE codebase dir that is its own git repo with one commit
-    let codebase_dir = TempDir::new().unwrap();
-    {
-        let repo = git2::Repository::init(codebase_dir.path()).unwrap();
-        let mut cfg = repo.config().unwrap();
-        cfg.set_str("user.name", "test").unwrap();
-        cfg.set_str("user.email", "test@test.com").unwrap();
-        std::fs::write(codebase_dir.path().join("hello.txt"), "hello\n").unwrap();
-        let mut idx = repo.index().unwrap();
-        idx.add_path(std::path::Path::new("hello.txt")).unwrap();
-        idx.write().unwrap();
-        let tree_id = idx.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let sig = git2::Signature::now("test", "test@test.com").unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
-            .unwrap();
-    }
-
-    let session_id = "rewindinject001";
-
-    let provider = Arc::new(MockProvider {
-        responses: Arc::new(vec![vec![
-            StreamChunk::Text("done".into()),
-            StreamChunk::Done,
-        ]]),
-        call_idx: Arc::new(AtomicUsize::new(0)),
-    });
-
-    let mock = Arc::new(MockCheckpointRepo::new());
-    let repos = crate::git::Repos {
-        codebase: Arc::new(crate::git::codebase::GitCodebaseRepo),
-        traces: Arc::new(crate::git::trace::GitTraceRepo),
-        checkpoints: mock.clone(),
-    };
-
-    run_turn_test_call(
-        ws.path().to_path_buf(),
-        codebase_dir.path().to_path_buf(),
-        session_id.into(),
-        provider,
-        vec![],
-        vec![],
-        vec![],
-        TurnInput {
-            auto: true,
-            max_iter: None,
-            preview_policy: crate::config::PreviewPolicy::default(),
-            cancel: None,
-            sandbox_on: true,
-            sandbox_cfg: crate::config::SandboxConfig::default(),
-            relay: None,
-            initial_git: None,
-            daemons: vec![],
-        },
-        repos,
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(
-        mock.init_calls().len(),
-        1,
-        "rewind.init should be called exactly once at session start"
-    );
-    assert_eq!(
-        mock.checkpoint_calls(),
-        vec![(session_id.to_string(), 1u32)],
-        "rewind.checkpoint should be called for turn 1"
     );
 }
 
@@ -2354,95 +2193,6 @@ async fn supervised_read_outside_ceiling_pauses_with_unlock() {
         }
         other => panic!("expected TurnResult::SandboxUnlock (read out-of-scope), got: {other:?}"),
     }
-}
-
-// ── Task 5: initial_git seeding ───────────────────────────────────────────────
-
-/// Behavioral test: when `TurnInput.initial_git` is `Some(GitSnapshot { head_hash: "seeded_hash_abc", .. })`,
-/// `run_turn` must use that hash in the emitted `TurnComplete` event instead of reading from disk.
-///
-/// Proof: we use a real git codebase dir whose actual HEAD hash is NOT "seeded_hash_abc". If the
-/// `Some` branch is taken, the `TurnComplete.codebase.hash` will equal `"seeded_hash_abc"`.
-/// If the `None` branch were taken (disk read), the hash would be the real git SHA — which differs.
-#[tokio::test]
-async fn run_turn_uses_seeded_git_hash_from_initial_git() {
-    let ws = TempDir::new().unwrap();
-    init_git_repo(ws.path());
-
-    // Build a SEPARATE codebase dir that is its own git repo with a real commit.
-    // The real HEAD hash will be some full 40-char SHA, not "seeded_hash_abc".
-    let codebase_dir = TempDir::new().unwrap();
-    {
-        let repo = git2::Repository::init(codebase_dir.path()).unwrap();
-        let mut cfg = repo.config().unwrap();
-        cfg.set_str("user.name", "test").unwrap();
-        cfg.set_str("user.email", "test@test.com").unwrap();
-        std::fs::write(codebase_dir.path().join("seed.txt"), "seed\n").unwrap();
-        let mut idx = repo.index().unwrap();
-        idx.add_path(std::path::Path::new("seed.txt")).unwrap();
-        idx.write().unwrap();
-        let tree_id = idx.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let sig = git2::Signature::now("test", "test@test.com").unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
-            .unwrap();
-    }
-
-    let session_id = "sgitseed001";
-
-    let provider = Arc::new(MockProvider {
-        responses: Arc::new(vec![vec![
-            StreamChunk::Text("done".into()),
-            StreamChunk::Done,
-        ]]),
-        call_idx: Arc::new(AtomicUsize::new(0)),
-    });
-
-    run_turn_test_call(
-        ws.path().to_path_buf(),
-        codebase_dir.path().to_path_buf(),
-        session_id.into(),
-        provider,
-        vec![],
-        vec![],
-        vec![],
-        TurnInput {
-            auto: true,
-            max_iter: None,
-            preview_policy: crate::config::PreviewPolicy::default(),
-            cancel: None,
-            sandbox_on: true,
-            sandbox_cfg: crate::config::SandboxConfig::default(),
-            relay: None,
-            initial_git: Some(crate::turn::GitSnapshot {
-                head_hash: "seeded_hash_abc".into(),
-                dirty_files: vec![],
-            }),
-            daemons: vec![],
-        },
-        crate::git::Repos::production(),
-    )
-    .await
-    .unwrap();
-
-    let tx_path = crate::session::live::log_path(ws.path(), session_id);
-    let events = read_events(&tx_path).unwrap();
-
-    // The TurnComplete event must carry the seeded hash, not the real git SHA.
-    let tc = events
-        .iter()
-        .find_map(|e| match event_kind(e) {
-            Some(payload::Kind::TurnComplete(tc)) => Some(tc),
-            _ => None,
-        })
-        .expect("TurnComplete event must be present");
-
-    let recorded_hash = tc.codebase.as_ref().map(|c| c.hash.as_str()).unwrap_or("");
-    assert_eq!(
-        recorded_hash, "seeded_hash_abc",
-        "TurnComplete.codebase.hash must use the seeded value from initial_git, not disk; got: {:?}",
-        recorded_hash
-    );
 }
 
 // ---------------------------------------------------------------------------

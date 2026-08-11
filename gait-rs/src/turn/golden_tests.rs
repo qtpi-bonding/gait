@@ -257,8 +257,13 @@ fn body_kind(b: &event::Body) -> BodyKind {
         },
         payload::Kind::DaemonStart(_) | payload::Kind::DaemonStop(_) => BodyKind::DaemonUpdate,
         payload::Kind::Agent(_)
+        | payload::Kind::RunStart(_)
+        | payload::Kind::TurnStart(_)
+        | payload::Kind::TurnResult(_)
         | payload::Kind::PermissionsReply(_)
-        | payload::Kind::TurnComplete(_)
+        | payload::Kind::RunComplete(_)
+        | payload::Kind::RunCancelled(_)
+        | payload::Kind::RunFailed(_)
         | payload::Kind::ClarifyReply(_)
         | payload::Kind::InformReply(_)
         | payload::Kind::SandboxUnlockReply(_)
@@ -574,7 +579,7 @@ fn golden_done_implicit() {
     run_scenario("done_implicit", fx);
 }
 
-// 2. done_structured — output tool fires ExecutionSignal::TurnComplete.
+// 2. done_structured — output tool fires ExecutionSignal::FinishTurn.
 #[test]
 fn golden_done_structured() {
     let provider = GoldenProvider::new(vec![GoldenStep::Ok(vec![
@@ -615,7 +620,7 @@ fn golden_permissions() {
 // 4. clarify — ExecutionSignal::Clarify.
 #[test]
 fn golden_clarify() {
-    // `structured_done` always signals TurnComplete — Clarify comes from the
+    // `structured_done` always signals FinishTurn — Clarify comes from the
     // dedicated `clarify` tool (ExecutionSignal::Clarify).
     let provider = GoldenProvider::new(vec![GoldenStep::Ok(vec![
         StreamChunk::ToolCallComplete {
@@ -635,7 +640,7 @@ fn golden_clarify() {
 // 5. inform — ExecutionSignal::Inform.
 #[test]
 fn golden_inform() {
-    // `structured_done` always signals TurnComplete — Inform comes from the
+    // `structured_done` always signals FinishTurn — Inform comes from the
     // dedicated `inform` tool (ExecutionSignal::Inform).
     let provider = GoldenProvider::new(vec![GoldenStep::Ok(vec![
         StreamChunk::ToolCallComplete {

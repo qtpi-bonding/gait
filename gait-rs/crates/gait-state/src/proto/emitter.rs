@@ -1,4 +1,5 @@
 use crate::proto::{
+    envelope::EventScope,
     gait::log::v1::{event, stream_item, Event, StreamItem, TextDelta},
     wire,
 };
@@ -9,9 +10,9 @@ use tokio::sync::mpsc::UnboundedSender;
 pub struct Recorder {
     pub tx_path: PathBuf,
     sender: UnboundedSender<StreamItem>,
-    /// (turn, step) stamped onto every event produced by `record`.
-    /// Defaults to (0, 0); updated via [`set_position`] as the turn loop advances.
-    position: Arc<Mutex<(u32, u32)>>,
+    /// Explicit hierarchy scope stamped onto every event produced by `record`.
+    /// Defaults to session scope and is changed at lifecycle boundaries.
+    scope: Arc<Mutex<EventScope>>,
     /// When `Some`, `record` appends the Event here and skips file+channel.
     /// Holds `Vec<Event>` (not `Vec<event::Body>`) so Phase 2a can serialize and pipe events over the wire.
     buffer: Option<Arc<Mutex<Vec<Event>>>>,
@@ -35,7 +36,7 @@ impl Recorder {
         Self {
             tx_path,
             sender,
-            position: Arc::new(Mutex::new((0, 0))),
+            scope: Arc::new(Mutex::new(EventScope::Session)),
             buffer: None,
             remote: None,
             spawn_tx: None,
@@ -54,7 +55,7 @@ impl Recorder {
         Self {
             tx_path: std::path::PathBuf::new(),
             sender: stream_sender,
-            position: Arc::new(Mutex::new((0, 0))),
+            scope: Arc::new(Mutex::new(EventScope::Session)),
             buffer: None,
             remote: Some(event_tx),
             spawn_tx: None,
@@ -98,10 +99,9 @@ impl Recorder {
             .spawn();
     }
 
-    /// Stamp subsequent `record` calls with this (turn, step). Reads the
-    /// slot under a Mutex so a setter from another task can update it.
-    pub fn set_position(&self, turn: u32, step: u32) {
-        *self.position.lock().expect("position mutex poisoned") = (turn, step);
+    /// Stamp subsequent `record` calls with an explicit hierarchy scope.
+    pub fn set_scope(&self, scope: EventScope) {
+        *self.scope.lock().expect("scope mutex poisoned") = scope;
     }
 
     /// Construct from a session layout: writes to `<gait_dir>/.active/<id>/sessions/<id>/log.jsonl`.
@@ -132,7 +132,7 @@ impl Recorder {
         Self {
             tx_path: std::path::PathBuf::new(),
             sender: tx,
-            position: Arc::new(Mutex::new((0, 0))),
+            scope: Arc::new(Mutex::new(EventScope::Session)),
             buffer: Some(Arc::new(Mutex::new(Vec::new()))),
             remote: None,
             spawn_tx: None,
@@ -157,11 +157,18 @@ impl Recorder {
     ///    A brain-side relay task reads from the channel and sends `Append` Nerve signals.
     /// 3. **Live** (default): writes to `tx_path` and sends `StreamItem{event}` on the channel.
     pub fn record(&self, body: event::Body) -> anyhow::Result<Event> {
-        let (turn, step) = *self.position.lock().expect("position mutex poisoned");
+        let scope = *self.scope.lock().expect("scope mutex poisoned");
 
         // Mode 1: buffering (hand-side recorder in Phase 2).
         if let Some(buf) = &self.buffer {
+            let (run, turn, step) = match scope {
+                EventScope::Session => (None, None, None),
+                EventScope::Run { run } => (Some(run), None, None),
+                EventScope::Turn { run, turn } => (Some(run), Some(turn), None),
+                EventScope::Step { run, turn, step } => (Some(run), Some(turn), Some(step)),
+            };
             let evt = Event {
+                run,
                 turn,
                 step,
                 body: Some(body),
@@ -176,7 +183,7 @@ impl Recorder {
             // Mint a local event so callers can use event.id for Replace targeting.
             // The brain has no log file, so mint with prev=None (seq=1, no parents).
             // The spine's append_with_id() will update seq/parents when persisting.
-            let evt = crate::proto::envelope::mint(body, None, turn, step);
+            let evt = crate::proto::envelope::mint(body, None, scope);
             if let Some(mirror) = &self.log_mirror {
                 mirror
                     .lock()
@@ -191,7 +198,7 @@ impl Recorder {
         }
 
         // Mode 3: live file write (default).
-        let event = wire::write_to_transcript(&self.tx_path, body, turn, step)?;
+        let event = wire::write_to_transcript(&self.tx_path, body, scope)?;
         // receiver dropped (e.g. headless / test) — transcript write already succeeded, so ignore.
         let _ = self.sender.send(StreamItem {
             item: Some(stream_item::Item::Event(event.clone())),
@@ -293,15 +300,20 @@ mod tests {
     }
 
     #[test]
-    fn set_position_stamps_turn_and_step() {
+    fn set_scope_stamps_run_turn_and_step() {
         let dir = tempdir().unwrap();
         let (em, _rx) = make(dir.path());
-        em.set_position(2, 3);
+        em.set_scope(EventScope::Step {
+            run: 1,
+            turn: 2,
+            step: 3,
+        });
         let ev = em
             .record(crate::proto::events::assistant_text("x".into()))
             .unwrap();
-        assert_eq!(ev.turn, 2);
-        assert_eq!(ev.step, 3);
+        assert_eq!(ev.run, Some(1));
+        assert_eq!(ev.turn, Some(2));
+        assert_eq!(ev.step, Some(3));
     }
 
     #[test]

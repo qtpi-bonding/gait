@@ -31,7 +31,9 @@ pub struct ProfileInputs {
 /// production/test caller; `Ephemeral` is the `gait -e` one-off, which serves the
 /// brain's input from memory and writes nothing to disk.
 pub enum TurnMode {
-    Persistent,
+    Persistent {
+        trigger: Vec<crate::proto::gait::log::v1::event::Body>,
+    },
     Ephemeral {
         input: Vec<crate::proto::gait::log::v1::Event>,
     },
@@ -222,7 +224,17 @@ pub(crate) fn emit_terminal_failure(
     // clearly names the timeout rather than mapping a diagnostic phase string.
     let body = crate::proto::events::error(format!("LLM timed out: {detail}"), "llm");
     let prev = log.last_event();
-    let evt = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
+    let scope = prev
+        .as_ref()
+        .and_then(|event| {
+            Some(crate::proto::envelope::EventScope::Step {
+                run: event.run?,
+                turn: event.turn?,
+                step: event.step.unwrap_or(0),
+            })
+        })
+        .unwrap_or(crate::proto::envelope::EventScope::Session);
+    let evt = crate::proto::envelope::mint(body, prev.as_ref(), scope);
     log.relay_event(&evt).ok();
     *brain_failed = true;
 
@@ -251,51 +263,6 @@ pub(crate) fn emit_terminal_failure(
 /// surfaces a typed terminal reason. The discriminator value is `"aborted"` —
 /// distinct from the in-finalize `"error"` / `"max_steps"` reasons emitted by
 /// `run_result_proto`, which the brain emits itself when it owns the turn.
-fn synthesize_aborted_if_missing(
-    run_result: Option<crate::turn::TurnResult>,
-    brain_failed: bool,
-) -> Option<crate::turn::TurnResult> {
-    run_result.or_else(|| {
-        brain_failed.then(|| crate::turn::TurnResult::Failed {
-            ended: "aborted".into(),
-            message: "brain exited without a Terminated signal".into(),
-        })
-    })
-}
-
-/// Builds the trace-commit message for a `teardown` exit, given the already-resolved
-/// `TurnResult` and the trailer inputs available at that point. Pure and unit-testable —
-/// factored out of `teardown` so the phase-to-subject/trailer mapping can be tested without
-/// spawning a real brain process.
-fn teardown_commit_message(
-    result: &crate::turn::TurnResult,
-    session_id: &str,
-    turn_n: u32,
-    codebase: &str,
-    codebase_hash: &str,
-) -> String {
-    let (subject_phase, phase) = match result {
-        crate::turn::TurnResult::Done { .. } => ("turn complete", "turn complete"),
-        crate::turn::TurnResult::Cancelled => ("cancelled", "cancelled"),
-        crate::turn::TurnResult::Permissions => ("permissions", "permissions"),
-        crate::turn::TurnResult::Clarify { .. } => ("clarify", "clarify"),
-        crate::turn::TurnResult::Inform { .. } => ("inform", "inform"),
-        crate::turn::TurnResult::SandboxUnlock { .. } => ("unlock", "unlock"),
-        crate::turn::TurnResult::Failed { .. } => ("failed", "failed"),
-    };
-    let turn = matches!(result, crate::turn::TurnResult::Done { .. }).then_some(turn_n);
-    crate::git::build_trace_message(
-        &format!("session({session_id}): {subject_phase}"),
-        &crate::git::TraceTrailers {
-            phase: phase.to_string(),
-            turn,
-            codebase: codebase.to_string(),
-            codebase_hash: codebase_hash.to_string(),
-            ..Default::default()
-        },
-    )
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn teardown(
     sink: &mut dyn crate::port::output::TurnSink,
@@ -308,15 +275,11 @@ pub(crate) async fn teardown(
     codebase: &Path,
     session_id: &str,
     log: &crate::turn::SessionLog,
-    run_result: Option<crate::turn::TurnResult>,
+    started: &crate::turn::run_lifecycle::StartedTurn,
+    finalized_turn: Option<crate::proto::gait::sandbox::v1::FinalizedTurn>,
     brain_failed: bool,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<crate::proto::gait::log::v1::RunResult> {
     sink.end_turn();
-    // Coalesce a missing result under brain death into a typed terminal
-    // outcome (Task 5). Applied once here so both the commit-keyed match
-    // below and the `sink.result` emission see the synthesized value, and
-    // the abort is committed and emitted consistently.
-    let run_result = synthesize_aborted_if_missing(run_result, brain_failed);
 
     // Bound how long an in-flight tool call (or spawn_agent handler) can keep
     // running after the read loop has already decided the
@@ -333,7 +296,16 @@ pub(crate) async fn teardown(
         let msg = format!("[LLM timed out before '{}' result was received]", tool_name);
         let body = crate::proto::events::tool_result(call_id, msg, None, None);
         let prev = log.last_event();
-        let ev = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
+        let step = prev.as_ref().and_then(|event| event.step).unwrap_or(0);
+        let ev = crate::proto::envelope::mint(
+            body,
+            prev.as_ref(),
+            crate::proto::envelope::EventScope::Step {
+                run: started.run.index,
+                turn: started.turn_index,
+                step,
+            },
+        );
         log.relay_event(&ev).ok();
     }
 
@@ -347,42 +319,278 @@ pub(crate) async fn teardown(
     // fatal on macOS (see `reap_brain`).
     reap_brain(group, child).await;
 
-    if let Some(result) = &run_result {
-        // The spine is the sole gait-dir writer. The brain skipped
-        // commit_session and checkpoint_codebase (writable: []) — the spine
-        // does both here, after the brain exits, so the session worktree and
-        // shadow checkpoint repo reflect the transcript at this exitable
-        // boundary.
+    let draft = finalized_turn.unwrap_or_else(|| crate::proto::gait::sandbox::v1::FinalizedTurn {
+        outcome: crate::proto::gait::sandbox::v1::FinalizedTurnOutcome::Failed as i32,
+        failure_reason: "aborted".into(),
+        message: "brain exited without a finalized turn".into(),
+        ..Default::default()
+    });
+    let turn = durable_turn_result(log, started, draft, brain_failed);
+    let turn_event = log.append_body(
+        crate::proto::events::turn_result(turn.clone()),
+        crate::proto::envelope::EventScope::Turn {
+            run: started.run.index,
+            turn: started.turn_index,
+        },
+    )?;
 
-        // Checkpoint the codebase (shadow repo in gait-dir). Best-effort — a
-        // failure means `gait rewind` won't have a snapshot for this turn,
-        // but the turn itself is complete.
-        let events = log.events();
-        let turn_n = crate::session::log::count_turn_complete(&events) as u32;
-        let _ = git.checkpoint(codebase, turn_n);
-
-        // Best-effort codebase identity for the Codebase-Hash trailer — a
-        // failed hash lookup must not block the commit itself.
-        let codebase_hash = crate::git::codebase::GitCodebaseRepo
-            .head_hash(codebase)
-            .unwrap_or_default();
-        let msg = teardown_commit_message(
-            result,
-            session_id,
-            turn_n,
-            &codebase.display().to_string(),
-            &codebase_hash,
-        );
-
-        // Commit the transcript to the session worktree.
-        let _ = git.commit(&msg);
+    use crate::proto::gait::log::v1 as pb;
+    use pb::turn_result::Outcome;
+    match turn
+        .outcome
+        .as_ref()
+        .expect("durable turn always has outcome")
+    {
+        Outcome::Pause(_) => {}
+        outcome => {
+            let checkpoint = git
+                .checkpoint(codebase, started.turn_index)
+                .ok()
+                .filter(|sha| !sha.is_empty());
+            let dirty_files = crate::git::codebase::GitCodebaseRepo.dirty_files(codebase);
+            let final_state = pb::RunEndState {
+                codebase: Some(pb::CodebaseState {
+                    hash: crate::git::codebase::GitCodebaseRepo
+                        .head_hash(codebase)
+                        .unwrap_or_default(),
+                    dirty: !dirty_files.is_empty(),
+                    dirty_files,
+                }),
+                checkpoint: checkpoint.clone(),
+            };
+            let scope = crate::proto::envelope::EventScope::Run {
+                run: started.run.index,
+            };
+            match outcome {
+                Outcome::Done(_) => {
+                    let changes = match (
+                        started.run.baseline_checkpoint.as_deref(),
+                        checkpoint.as_deref(),
+                    ) {
+                        (Some(baseline), Some(final_checkpoint)) => {
+                            git.diff_between(baseline, final_checkpoint).ok().flatten()
+                        }
+                        _ => None,
+                    };
+                    let summary = crate::turn::run_summary::build(
+                        &log.events(),
+                        started.run.index,
+                        started.run.start_seq,
+                        turn_event.seq,
+                        changes,
+                    );
+                    log.append_body(
+                        crate::proto::events::run_complete(pb::RunComplete {
+                            final_state: Some(final_state),
+                            summary: Some(summary),
+                        }),
+                        scope,
+                    )?;
+                }
+                Outcome::Cancelled(_) => {
+                    log.append_body(
+                        crate::proto::events::run_cancelled(pb::RunCancelled {
+                            final_state: Some(final_state),
+                        }),
+                        scope,
+                    )?;
+                }
+                Outcome::Failed(_) => {
+                    log.append_body(
+                        crate::proto::events::run_failed(pb::RunFailed {
+                            final_state: Some(final_state),
+                        }),
+                        scope,
+                    )?;
+                }
+                Outcome::Pause(_) => unreachable!(),
+            }
+        }
     }
 
-    if let Some(result) = run_result {
-        sink.result(&result);
-    }
+    let result = crate::turn::run_lifecycle::fold_run_result(&log.events(), started.run.index)?;
+    let _ = git.commit(&crate::git::build_trace_message(
+        &format!(
+            "session({session_id}): run {} turn {}",
+            started.run.index, started.turn_index
+        ),
+        &crate::git::TraceTrailers {
+            phase: if brain_failed { "failed" } else { "turn" }.into(),
+            turn: Some(started.turn_index),
+            codebase: codebase.display().to_string(),
+            codebase_hash: crate::git::codebase::GitCodebaseRepo
+                .head_hash(codebase)
+                .unwrap_or_default(),
+            ..Default::default()
+        },
+    ));
+    sink.result(&result);
+    Ok(result)
+}
 
-    Ok(brain_failed)
+fn durable_turn_result(
+    log: &crate::turn::SessionLog,
+    started: &crate::turn::run_lifecycle::StartedTurn,
+    draft: crate::proto::gait::sandbox::v1::FinalizedTurn,
+    brain_failed: bool,
+) -> crate::proto::gait::log::v1::TurnResult {
+    use crate::proto::gait::log::v1 as pb;
+    use crate::proto::gait::sandbox::v1::FinalizedTurnOutcome as DraftOutcome;
+    use std::collections::BTreeMap;
+
+    let events = log.events();
+    let mut grouped = BTreeMap::<u32, Vec<&pb::Event>>::new();
+    for event in events.iter().filter(|event| {
+        event.run == Some(started.run.index)
+            && event.turn == Some(started.turn_index)
+            && event.step.is_some()
+    }) {
+        grouped.entry(event.step.unwrap()).or_default().push(event);
+    }
+    let mut usage = pb::TurnTokenUsage::default();
+    let steps = grouped
+        .into_iter()
+        .map(|(index, events)| {
+            let mut step_usage = pb::StepTokenUsage::default();
+            for event in &events {
+                if let Some(pb::payload::Kind::LlmCallCompleted(done)) =
+                    crate::turn::event_kind(event)
+                {
+                    if let Some(delta) = &done.usage {
+                        step_usage.input += delta.input;
+                        step_usage.output += delta.output;
+                        step_usage.cache_read += delta.cache_read;
+                        step_usage.cache_write += delta.cache_write;
+                    }
+                }
+            }
+            usage.input += step_usage.input;
+            usage.output += step_usage.output;
+            usage.cache_read += step_usage.cache_read;
+            usage.cache_write += step_usage.cache_write;
+            let first = events.first().map_or(started.started_ms, |event| event.ts);
+            let last = events.last().map_or(first, |event| event.ts);
+            pb::StepResult {
+                index,
+                usage: Some(step_usage),
+                event_ids: events.iter().map(|event| event.id.clone()).collect(),
+                timing: Some(pb::ExecutionTiming {
+                    started_ms: first,
+                    ended_ms: Some(last),
+                    active_duration: Some(duration_ms(last.saturating_sub(first))),
+                }),
+            }
+        })
+        .collect();
+    let ended_ms = now_ms();
+    let raw = DraftOutcome::try_from(draft.outcome).unwrap_or(DraftOutcome::Failed);
+    let outcome = if brain_failed {
+        pb::turn_result::Outcome::Failed(pb::TurnFailed {
+            reason: if draft.failure_reason.is_empty() {
+                "brain_failed".into()
+            } else {
+                draft.failure_reason.clone()
+            },
+            message: draft.message.clone(),
+        })
+    } else {
+        match raw {
+            DraftOutcome::TextDone => pb::turn_result::Outcome::Done(pb::TurnDone {
+                output: Some(pb::turn_done::Output::Text(pb::TextDone {
+                    message: draft.message.clone(),
+                })),
+            }),
+            DraftOutcome::StructuredDone => pb::turn_result::Outcome::Done(pb::TurnDone {
+                output: Some(pb::turn_done::Output::Structured(pb::StructuredDone {
+                    message: draft.message.clone(),
+                    result: draft.result.clone(),
+                })),
+            }),
+            DraftOutcome::Cancelled => pb::turn_result::Outcome::Cancelled(pb::TurnCancelled {
+                signal_event_id: last_event_id(&events, |kind| {
+                    matches!(kind, pb::payload::Kind::CancellationSignal(_))
+                })
+                .unwrap_or_default(),
+            }),
+            DraftOutcome::Failed | DraftOutcome::Unspecified => {
+                pb::turn_result::Outcome::Failed(pb::TurnFailed {
+                    reason: draft.failure_reason.clone(),
+                    message: draft.message.clone(),
+                })
+            }
+            pause => pb::turn_result::Outcome::Pause(pb::TurnPause {
+                reason: match pause {
+                    DraftOutcome::Clarify => pb::PauseReason::Clarify as i32,
+                    DraftOutcome::Inform => pb::PauseReason::Inform as i32,
+                    DraftOutcome::Permissions => pb::PauseReason::Permissions as i32,
+                    DraftOutcome::SandboxUnlock => pb::PauseReason::SandboxUnlock as i32,
+                    _ => pb::PauseReason::Unspecified as i32,
+                },
+                request_event_id: last_event_id(&events, |kind| {
+                    matches!(
+                        kind,
+                        pb::payload::Kind::Clarify(_)
+                            | pb::payload::Kind::Inform(_)
+                            | pb::payload::Kind::Permissions(_)
+                            | pb::payload::Kind::SandboxUnlock(_)
+                    )
+                })
+                .unwrap_or_default(),
+            }),
+        }
+    };
+    let blocks = if draft.blocks.is_empty() {
+        events
+            .iter()
+            .filter_map(|event| match crate::turn::event_kind(event) {
+                Some(pb::payload::Kind::AssistantText(text))
+                    if event.run == Some(started.run.index)
+                        && event.turn == Some(started.turn_index) =>
+                {
+                    Some(text.content.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    } else {
+        draft.blocks
+    };
+    pb::TurnResult {
+        turn_id: started.turn_id.clone(),
+        index: started.turn_index,
+        steps,
+        usage: Some(usage),
+        blocks,
+        timing: Some(pb::ExecutionTiming {
+            started_ms: started.started_ms,
+            ended_ms: Some(ended_ms),
+            active_duration: Some(duration_ms(ended_ms.saturating_sub(started.started_ms))),
+        }),
+        outcome: Some(outcome),
+    }
+}
+
+fn last_event_id(
+    events: &[crate::proto::gait::log::v1::Event],
+    predicate: impl Fn(&crate::proto::gait::log::v1::payload::Kind) -> bool,
+) -> Option<String> {
+    events.iter().rev().find_map(|event| {
+        let kind = crate::turn::event_kind(event)?;
+        predicate(&kind).then(|| event.id.clone())
+    })
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis() as u64)
+}
+
+fn duration_ms(ms: u64) -> pbjson_types::Duration {
+    pbjson_types::Duration {
+        seconds: (ms / 1000) as i64,
+        nanos: ((ms % 1000) * 1_000_000) as i32,
+    }
 }
 
 #[cfg(test)]
@@ -579,7 +787,15 @@ mod tests {
             None,
         );
         let prev = crate::session::log::last_event(&log_path).ok().flatten();
-        let ev = envelope::mint(body, prev.as_ref(), 0, 0);
+        let ev = envelope::mint(
+            body,
+            prev.as_ref(),
+            envelope::EventScope::Step {
+                run: 0,
+                turn: 0,
+                step: 0,
+            },
+        );
         wire::append_with_id(&log_path, &ev).expect("append synthesized tool_result");
 
         // 3. Assert: the last event is a ToolResult with the correct call_id.
@@ -669,84 +885,5 @@ mod tests {
                 .unwrap();
         assert!(diag.contains("streaming") && diag.contains("absolute backstop"));
         std::env::remove_var("GAIT_DEBUG");
-    }
-
-    // ── aborted synthesis (Task 5) ─────────────────────────────────────────
-    //
-    // When the brain dies without ever reaching finalize, `run_result` is
-    // `None`. The spine must surface a typed terminal reason so the headless
-    // stdout path carries `ended=aborted` instead of nothing.
-    #[test]
-    fn synthesize_aborted_when_brain_failed_and_no_result() {
-        let synth = synthesize_aborted_if_missing(None, true);
-        match synth {
-            Some(crate::turn::TurnResult::Failed { ended, message }) => {
-                assert_eq!(ended, "aborted");
-                assert!(message.contains("Terminated"));
-            }
-            other => panic!("expected Some(Failed{{aborted}}), got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn synthesize_aborted_is_noop_when_brain_succeeded() {
-        // brain_failed=false + None → stays None (do not invent a reason for
-        // a healthy empty case).
-        assert!(synthesize_aborted_if_missing(None, false).is_none());
-    }
-
-    #[test]
-    fn synthesize_aborted_preserves_existing_result() {
-        // If the brain DID reach finalize, that result wins — abort is only
-        // a default, never an override.
-        let r = crate::turn::TurnResult::Done {
-            message: "ok".into(),
-            result: None,
-            changes: None,
-            implicit: true,
-        };
-        let synth = synthesize_aborted_if_missing(Some(r.clone()), true);
-        assert!(matches!(synth, Some(crate::turn::TurnResult::Done { .. })));
-    }
-
-    // ── teardown_commit_message (Task 3) ────────────────────────────────────
-
-    #[test]
-    fn teardown_commit_message_done_includes_turn_number() {
-        let result = crate::turn::TurnResult::Done {
-            message: "ok".into(),
-            result: None,
-            changes: None,
-            implicit: true,
-        };
-        let msg = teardown_commit_message(&result, "sabc1234", 5, "/tmp/ws", "deadbeef");
-        assert_eq!(
-            msg,
-            "session(sabc1234): turn complete\n\nPhase: turn complete\nTurn: 5\nCodebase: /tmp/ws\nCodebase-Hash: deadbeef"
-        );
-    }
-
-    #[test]
-    fn teardown_commit_message_non_done_omits_turn_number() {
-        let result = crate::turn::TurnResult::Permissions;
-        let msg = teardown_commit_message(&result, "sabc1234", 5, "/tmp/ws", "deadbeef");
-        assert_eq!(
-            msg,
-            "session(sabc1234): permissions\n\nPhase: permissions\nCodebase: /tmp/ws\nCodebase-Hash: deadbeef"
-        );
-        assert!(!msg.contains("Turn:"));
-    }
-
-    #[test]
-    fn teardown_commit_message_failed_uses_failed_phase() {
-        let result = crate::turn::TurnResult::Failed {
-            ended: "error".into(),
-            message: "boom".into(),
-        };
-        let msg = teardown_commit_message(&result, "sabc1234", 0, "/tmp/ws", "deadbeef");
-        assert_eq!(
-            msg,
-            "session(sabc1234): failed\n\nPhase: failed\nCodebase: /tmp/ws\nCodebase-Hash: deadbeef"
-        );
     }
 }

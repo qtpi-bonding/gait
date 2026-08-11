@@ -22,12 +22,13 @@ pub trait CheckpointRepo: Send + Sync {
         sha: &str,
     ) -> anyhow::Result<()>;
     fn remove(&self, gait_dir: &Path, session_id: &str) -> anyhow::Result<()>;
-    fn diff(
+    fn diff_between(
         &self,
         gait_dir: &Path,
         session_id: &str,
-        sha: &str,
-    ) -> anyhow::Result<Option<crate::proto::gait::log::v1::Changes>>;
+        baseline_sha: &str,
+        final_sha: &str,
+    ) -> anyhow::Result<Option<crate::proto::gait::log::v1::ChangeSummary>>;
 }
 
 pub struct GitCheckpointRepo;
@@ -167,50 +168,79 @@ impl CheckpointRepo for GitCheckpointRepo {
         }
         Ok(())
     }
-    fn diff(
+    fn diff_between(
         &self,
         gait_dir: &Path,
         session_id: &str,
-        sha: &str,
-    ) -> anyhow::Result<Option<crate::proto::gait::log::v1::Changes>> {
-        use crate::proto::gait::log::v1::Changes;
+        baseline_sha: &str,
+        final_sha: &str,
+    ) -> anyhow::Result<Option<crate::proto::gait::log::v1::ChangeSummary>> {
+        use crate::proto::gait::log::v1::{ChangeSummary, FileChange};
         let git_dir = checkpoint_git_dir(gait_dir, session_id);
         if !git_dir.join("HEAD").exists() {
             return Ok(None);
         }
         let shadow = Repository::open_bare(&git_dir)?;
-        let commit = shadow.find_commit(Oid::from_str(sha)?)?;
-        let new_tree = commit.tree()?;
-        let parent_tree = match commit.parent(0) {
-            Ok(p) => Some(p.tree()?),
-            Err(_) => None,
-        };
-        let diff = shadow.diff_tree_to_tree(parent_tree.as_ref(), Some(&new_tree), None)?;
-        let (mut added, mut modified, mut deleted) = (vec![], vec![], vec![]);
-        diff.foreach(
-            &mut |delta, _| {
-                if let Some(p) = delta
-                    .new_file()
-                    .path()
-                    .or_else(|| delta.old_file().path())
-                    .map(|p| p.to_string_lossy().into_owned())
-                {
-                    match delta.status() {
-                        git2::Delta::Added | git2::Delta::Copied => added.push(p),
-                        git2::Delta::Deleted => deleted.push(p),
-                        _ => modified.push(p),
-                    }
+        let baseline = shadow.find_commit(Oid::from_str(baseline_sha)?)?;
+        let final_commit = shadow.find_commit(Oid::from_str(final_sha)?)?;
+        let baseline_tree = baseline.tree()?;
+        let final_tree = final_commit.tree()?;
+        let mut diff = shadow.diff_tree_to_tree(Some(&baseline_tree), Some(&final_tree), None)?;
+        let mut find = git2::DiffFindOptions::new();
+        find.renames(true).copies(true).copies_from_unmodified(true);
+        diff.find_similar(Some(&mut find))?;
+
+        let (mut added, mut modified, mut removed) = (Vec::new(), Vec::new(), Vec::new());
+        let mut totals = Some((0u64, 0u64));
+        for (index, delta) in diff.deltas().enumerate() {
+            let path = match delta.status() {
+                git2::Delta::Deleted => delta.old_file().path(),
+                _ => delta.new_file().path().or_else(|| delta.old_file().path()),
+            }
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+
+            let counts = match git2::Patch::from_diff(&diff, index)? {
+                Some(patch) if !delta.flags().contains(git2::DiffFlags::BINARY) => {
+                    let (_, additions, deletions) = patch.line_stats()?;
+                    Some((additions as u64, deletions as u64))
                 }
-                true
-            },
-            None,
-            None,
-            None,
-        )?;
-        Ok(Some(Changes {
+                _ => None,
+            };
+            if let Some((file_added, file_removed)) = counts {
+                if let Some((total_added, total_removed)) = totals.as_mut() {
+                    *total_added += file_added;
+                    *total_removed += file_removed;
+                }
+            } else {
+                totals = None;
+            }
+
+            let change = FileChange {
+                path,
+                added_lines: counts.map(|value| value.0),
+                removed_lines: counts.map(|value| value.1),
+            };
+            match delta.status() {
+                git2::Delta::Added | git2::Delta::Copied => added.push(change),
+                git2::Delta::Deleted => removed.push(change),
+                _ => modified.push(change),
+            }
+        }
+        for changes in [&mut added, &mut modified, &mut removed] {
+            changes.sort_by(|left, right| left.path.cmp(&right.path));
+        }
+        let file_count = (added.len() + modified.len() + removed.len()) as u32;
+        let (added_lines, removed_lines) = totals
+            .map(|(added, removed)| (Some(added), Some(removed)))
+            .unwrap_or((None, None));
+        Ok(Some(ChangeSummary {
             added,
             modified,
-            deleted,
+            removed,
+            file_count,
+            added_lines,
+            removed_lines,
         }))
     }
 }
@@ -326,12 +356,13 @@ impl CheckpointRepo for MockCheckpointRepo {
             .push(session_id.to_string());
         Ok(())
     }
-    fn diff(
+    fn diff_between(
         &self,
         _ws: &Path,
         _session_id: &str,
-        _sha: &str,
-    ) -> anyhow::Result<Option<crate::proto::gait::log::v1::Changes>> {
+        _baseline_sha: &str,
+        _final_sha: &str,
+    ) -> anyhow::Result<Option<crate::proto::gait::log::v1::ChangeSummary>> {
         Ok(None)
     }
 }

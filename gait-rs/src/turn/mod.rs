@@ -1,5 +1,3 @@
-use std::path::Path;
-
 #[allow(unused_imports)] // `Tool` is used by `#[cfg(test)]` in tests.rs
 use crate::types::{
     AssistantContent, AssistantPart, ExecutionMode, ExecutionSignal, HookAction, HookContext,
@@ -13,8 +11,6 @@ use crate::session::retrace::{
     active_mode, active_mutations, active_unlock_state, apply_cascade, coalesce, run_projection,
     ActiveRawMessages,
 };
-
-use crate::git::checkpoint::CheckpointRepo;
 
 use crate::proto::gait::log::v1 as pb;
 use crate::proto::gait::log::v1::{event, payload, Event};
@@ -61,6 +57,8 @@ pub mod nerve;
 mod persist;
 mod prompt;
 mod resume;
+pub(crate) mod run_lifecycle;
+mod run_summary;
 mod setup;
 pub(crate) mod spine;
 mod state;
@@ -100,7 +98,7 @@ pub enum TurnResult {
     Done {
         message: String,
         result: Option<serde_json::Value>,
-        changes: Option<crate::proto::gait::log::v1::Changes>,
+        changes: Option<crate::proto::gait::log::v1::ChangeSummary>,
         /// `true` = implicit completion (model emitted no tool calls);
         /// `false` = explicit `structured_done`/`output()`.
         implicit: bool,
@@ -158,34 +156,6 @@ pub struct TurnInput {
 
 // `SessionLock` now lives in `crate::session::lock` (moved down into the state
 // layer); re-exported here for engine-internal callers via `crate::session`.
-
-/// Snapshot the codebase into the shadow db for this turn. Returns the
-/// checkpoint SHA, or None if the codebase is not a git repo or the checkpoint
-/// failed — a checkpoint failure must never fail the turn. Does NOT commit the
-/// transcript; the caller's existing commit_session runs after emit.
-fn checkpoint_codebase(
-    checkpoints: &dyn CheckpointRepo,
-    gait_dir: &Path,
-    session_id: &str,
-    codebase: &Path,
-    turn: u32,
-) -> Option<String> {
-    match checkpoints.checkpoint(gait_dir, session_id, codebase, turn) {
-        Ok(sha) if !sha.is_empty() => Some(sha),
-        Ok(_) => None, // non-git codebase
-        Err(e) => {
-            #[allow(clippy::print_stderr)]
-            // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
-            {
-                eprintln!(
-                    "checkpoint failed for session {}: {}; checkpoint unavailable for this turn",
-                    session_id, e
-                );
-            }
-            None
-        }
-    }
-}
 
 fn validate_against_schema(
     schema: &serde_json::Value,
@@ -288,6 +258,7 @@ pub async fn run_turn(
         effective_allow,
         deny,
         pre_events,
+        current_run,
         current_turn,
         daemons,
         initial_git: _initial_git,
@@ -372,7 +343,11 @@ pub async fn run_turn(
         state.final_step_index = step_index;
         // Stamp (turn, step) on the emitter so any event recorded this step
         // carries the correct position. Steps advance monotonically per turn.
-        emitter.set_position(current_turn, step_index as u32);
+        emitter.set_scope(crate::proto::envelope::EventScope::Step {
+            run: current_run,
+            turn: current_turn,
+            step: step_index as u32,
+        });
         if cancel.as_ref().map(|c| c.is_cancelled()).unwrap_or(false) {
             break 'turn finalize::StepOutcome::Cancelled;
         }
@@ -507,6 +482,7 @@ pub async fn run_turn(
         // of Temporal's ScheduleActivityTask/ActivityTaskCompleted): recorded
         // here, not in stream.rs, which is permission-free generation only.
         emitter.record(events::llm_call_started(env.model.to_string()))?;
+        let usage_before = state.total_usage.clone();
         let stream::StepYield {
             step_text,
             step_tool_calls,
@@ -517,11 +493,23 @@ pub async fn run_turn(
             Ok(y) => y,
             Err(e) => break 'turn finalize::StepOutcome::Fail(e),
         };
-        let usage = pb::TurnTokenUsage {
-            input: state.total_usage.input_tokens as u64,
-            output: state.total_usage.output_tokens as u64,
-            cache_read: state.total_usage.cache_read_tokens as u64,
-            cache_write: state.total_usage.cache_write_tokens as u64,
+        let usage = pb::StepTokenUsage {
+            input: state
+                .total_usage
+                .input_tokens
+                .saturating_sub(usage_before.input_tokens) as u64,
+            output: state
+                .total_usage
+                .output_tokens
+                .saturating_sub(usage_before.output_tokens) as u64,
+            cache_read: state
+                .total_usage
+                .cache_read_tokens
+                .saturating_sub(usage_before.cache_read_tokens) as u64,
+            cache_write: state
+                .total_usage
+                .cache_write_tokens
+                .saturating_sub(usage_before.cache_write_tokens) as u64,
         };
         emitter.record(events::llm_call_completed(
             usage,

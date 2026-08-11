@@ -20,7 +20,6 @@ use std::sync::{Arc, Mutex};
 
 use gait_core::embed::{Diag, TurnSink, TurnSource, TurnStart};
 use gait_core::proto::gait::log::v1::{stream_item, StreamItem, TextDelta};
-use gait_core::turn::TurnResult;
 use gait_proto::gait::sandbox::v1::{signal, Signal, StreamForward};
 
 use gait_workflow::convert;
@@ -79,7 +78,7 @@ impl TurnSink for WatchSink {
             self.saw_delta.store(true, Ordering::SeqCst);
         }
     }
-    fn result(&mut self, _r: &TurnResult) {}
+    fn result(&mut self, _r: &gait_core::proto::gait::log::v1::RunResult) {}
     fn session_id(&mut self, _id: &str) {}
     fn diagnostic(&mut self, _level: Diag, _msg: &str) {}
 }
@@ -144,7 +143,11 @@ async fn interactive_reply_renders_live_not_after_session_ends() {
     // Prebake the brain's single turn: stream one delta, then finish.
     common::write_frames(
         &gait_dir,
-        &[delta_signal(DELTA_TEXT), common::terminated_ok("done")],
+        &[
+            common::append_assistant("done"),
+            delta_signal(DELTA_TEXT),
+            common::terminated_ok("done"),
+        ],
     );
     std::env::set_var("GAIT_BRAIN_EXE", env!("CARGO_BIN_EXE_mock_brain"));
 

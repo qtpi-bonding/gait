@@ -18,13 +18,40 @@ use gait_core::proto::events;
 use gait_proto::envelope;
 use gait_proto::gait::sandbox::v1::{signal, Append, Signal};
 
+fn tool_result_checkpoints(log: &str, call_id: &str) -> Vec<Option<String>> {
+    use gait_core::proto::gait::log::v1::{event, payload, Event};
+
+    log.lines()
+        .filter_map(|line| serde_json::from_str::<Event>(line).ok())
+        .filter_map(|event| match event.body? {
+            event::Body::Payload(payload) => payload.kind,
+            event::Body::Replace(replace) => replace.replacement.and_then(|payload| payload.kind),
+            event::Body::Redact(_) => None,
+        })
+        .filter_map(|kind| match kind {
+            payload::Kind::ToolResult(result) if result.call_id == call_id => {
+                Some(result.checkpoint)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 fn append_tool_call(call_id: &str, name: &str) -> Signal {
     let body = events::tool_call(
         call_id.to_string(),
         name.to_string(),
         &serde_json::json!({}),
     );
-    let evt = envelope::mint(body, None, 0, 0);
+    let evt = envelope::mint(
+        body,
+        None,
+        envelope::EventScope::Step {
+            run: 0,
+            turn: 0,
+            step: 0,
+        },
+    );
     Signal {
         corr_id: 0,
         body: Some(signal::Body::Append(Append { event: Some(evt) })),
@@ -33,7 +60,15 @@ fn append_tool_call(call_id: &str, name: &str) -> Signal {
 
 fn append_tool_result(call_id: &str, output: &str) -> Signal {
     let body = events::tool_result(call_id.to_string(), output.to_string(), None, None);
-    let evt = envelope::mint(body, None, 0, 0);
+    let evt = envelope::mint(
+        body,
+        None,
+        envelope::EventScope::Step {
+            run: 0,
+            turn: 0,
+            step: 0,
+        },
+    );
     Signal {
         corr_id: 0,
         body: Some(signal::Body::Append(Append { event: Some(evt) })),
@@ -49,7 +84,15 @@ fn append_tool_result_then_replace(
     filtered: &str,
 ) -> (Signal, Signal) {
     let orig_body = events::tool_result(call_id.to_string(), output.to_string(), None, None);
-    let orig_evt = envelope::mint(orig_body, None, 0, 0);
+    let orig_evt = envelope::mint(
+        orig_body,
+        None,
+        envelope::EventScope::Step {
+            run: 0,
+            turn: 0,
+            step: 0,
+        },
+    );
     let orig_id = orig_evt.id.clone();
     let orig_signal = Signal {
         corr_id: 0,
@@ -64,7 +107,15 @@ fn append_tool_result_then_replace(
             _ => unreachable!("tool_result always produces a Payload body"),
         };
     let replace_body = events::replace(orig_id, replacement_kind, None);
-    let replace_evt = envelope::mint(replace_body, None, 0, 0);
+    let replace_evt = envelope::mint(
+        replace_body,
+        None,
+        envelope::EventScope::Step {
+            run: 0,
+            turn: 0,
+            step: 0,
+        },
+    );
     let replace_signal = Signal {
         corr_id: 0,
         body: Some(signal::Body::Append(Append {
@@ -90,10 +141,8 @@ async fn shell_tool_result_gets_checkpoint_stamped() {
 
     let log = std::fs::read_to_string(gait_core::session::live::log_path(tmp.path(), "ce1"))
         .expect("log.jsonl must exist after a completed turn");
-    assert!(
-        log.contains("\"checkpoint\""),
-        "a shell ToolResult must be stamped with a checkpoint field: {log}"
-    );
+    let checkpoints = tool_result_checkpoints(&log, "call-shell-1");
+    assert!(checkpoints.iter().any(Option::is_some), "{log}");
 }
 
 #[tokio::test]
@@ -112,10 +161,8 @@ async fn read_tool_result_is_not_stamped() {
 
     let log = std::fs::read_to_string(gait_core::session::live::log_path(tmp.path(), "ce2"))
         .expect("log.jsonl must exist after a completed turn");
-    assert!(
-        !log.contains("\"checkpoint\""),
-        "a read ToolResult must NOT be stamped with a checkpoint field: {log}"
-    );
+    let checkpoints = tool_result_checkpoints(&log, "call-read-1");
+    assert_eq!(checkpoints, vec![None], "{log}");
 }
 
 #[tokio::test]
@@ -141,10 +188,9 @@ async fn replace_wrapped_shell_tool_result_gets_checkpoint_stamped() {
     // have been through enrich_checkpoint (it runs on every Append,
     // unconditionally) — so at least one "checkpoint" field must be present,
     // and specifically the replace's replacement (last occurrence) must carry it.
-    assert!(
-        log.contains("\"checkpoint\""),
-        "the Replace-wrapped ToolResult must be stamped with a checkpoint field: {log}"
-    );
+    let checkpoints = tool_result_checkpoints(&log, "call-shell-2");
+    assert_eq!(checkpoints.len(), 2, "{log}");
+    assert!(checkpoints.iter().all(Option::is_some), "{log}");
     assert!(
         log.contains("parsed output"),
         "the replacement's filtered output must reach the log: {log}"

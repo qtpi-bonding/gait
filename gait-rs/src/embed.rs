@@ -13,9 +13,7 @@
 pub use crate::config::{load_config, GaitConfig};
 pub use crate::git::Repos;
 pub use crate::port::input::{TurnSource, TurnStart};
-pub use crate::port::output::{
-    run_result_proto, CliSink, Diag, RecordingSink, SinkFrame, TurnSink,
-};
+pub use crate::port::output::{CliSink, Diag, RecordingSink, SinkFrame, TurnSink};
 pub use crate::profile::ResolvedProfile;
 pub use crate::proto::gait::log::v1::{RunResult, StreamItem};
 pub use crate::session::Session;
@@ -148,7 +146,7 @@ pub trait TurnDriver {
     /// `auto`/`max_iter`/`preview` for this turn (used to build BrainInit).
     fn turn_config(&mut self) -> LoopConfig;
     /// After-turn policy (CLI: Scheduler/Harness; REPL: none). Runs on success only.
-    async fn after_turn(&mut self, _sink: &mut dyn TurnSink, _result: &TurnResult) {}
+    async fn after_turn(&mut self, _sink: &mut dyn TurnSink, _result: &RunResult) {}
     /// Turn error/panic policy. CLI → `diagnostic` + `Break` (the post-loop
     /// `if sink.failed { exit(1) }` then fires); REPL → `eprintln` + `Continue`
     /// (return to the prompt). On error, `result`/`after_turn` do NOT run.
@@ -274,16 +272,14 @@ pub async fn run_loop(
     cascade: Option<&CascadeKillHandle>,
 ) -> anyhow::Result<()> {
     while let Some(start) = source.next().await {
-        match start {
+        let trigger = match start {
             TurnStart::SessionUpdate(bodies) => {
                 record_session_update(&session.repos, gait_dir, session_id, bodies)?;
                 continue;
             }
-            TurnStart::Input(bodies) => {
-                record_session_update(&session.repos, gait_dir, session_id, bodies)?;
-            }
-            TurnStart::Resume => {}
-        }
+            TurnStart::Input(bodies) => bodies,
+            TurnStart::Resume => Vec::new(),
+        };
         let launch = driver.brain_launch(session_id);
         // Safety invariant (design §7): the gait-dir holds the agent's own config,
         // permissions, and audit log. If it is inside the codebase it is inside the
@@ -316,7 +312,7 @@ pub async fn run_loop(
             launch.cascade_group_arg,
             cascade.map(|h| &h.0),
             &session.repos,
-            &crate::turn::spine::TurnMode::Persistent,
+            &crate::turn::spine::TurnMode::Persistent { trigger },
             launch.fs_delegate.clone(),
         )
         .await;
@@ -325,8 +321,12 @@ pub async fn run_loop(
             *handle.0.lock().unwrap() = None;
         }
         match failed {
-            Ok(true) => {
-                // Brain signalled failure — surface as a turn error.
+            Ok(result)
+                if matches!(
+                    result.state,
+                    Some(crate::proto::gait::log::v1::run_result::State::Failed(_))
+                ) =>
+            {
                 if driver
                     .on_turn_error(sink, anyhow::anyhow!("brain turn failed"))
                     .is_break()
@@ -334,18 +334,8 @@ pub async fn run_loop(
                     break;
                 }
             }
-            Ok(false) => {
-                // Success: after_turn policy (Scheduler/Harness).
-                // Note: sink.result() was already called by relay_brain_turn (spine.rs:517).
-                // We pass a synthetic Done result to after_turn; the real result was
-                // captured by sink during relay.
-                let dummy = TurnResult::Done {
-                    message: String::new(),
-                    result: None,
-                    changes: None,
-                    implicit: true,
-                };
-                driver.after_turn(sink, &dummy).await;
+            Ok(result) => {
+                driver.after_turn(sink, &result).await;
             }
             Err(e) => {
                 if driver.on_turn_error(sink, e).is_break() {
@@ -515,8 +505,8 @@ impl<F: FnMut(JsonFrame)> TurnSink for JsonSink<F> {
             (self.f)(JsonFrame::Item(j));
         }
     }
-    fn result(&mut self, r: &TurnResult) {
-        if let Ok(j) = serde_json::to_string(&run_result_proto(r)) {
+    fn result(&mut self, r: &RunResult) {
+        if let Ok(j) = serde_json::to_string(r) {
             (self.f)(JsonFrame::Result(j));
         }
     }
@@ -542,14 +532,18 @@ pub async fn run_one_off_turn(
     inference: crate::proto::gait::log::v1::Inference,
     input_text: String,
     schema: serde_json::Value,
-) -> anyhow::Result<crate::turn::TurnResult> {
+) -> anyhow::Result<RunResult> {
     // The brain requires a --gait-dir; a scratch tempdir is never written to.
     let scratch = tempfile::tempdir()?;
     let session_id = "ephemeral";
 
     // Seed the in-memory transcript with the user input event.
     let body = crate::proto::events::user_text(input_text);
-    let input = vec![crate::proto::envelope::mint(body, None, 0, 0)];
+    let input = vec![crate::proto::envelope::mint(
+        body,
+        None,
+        crate::proto::envelope::EventScope::Session,
+    )];
 
     let profile_inputs = crate::turn::spine::ProfileInputs {
         agent_name: None,

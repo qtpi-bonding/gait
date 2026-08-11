@@ -3,6 +3,7 @@ syntax = "proto3";
 package gait.sandbox.v1;
 
 import "google/protobuf/struct.proto";
+import "google/protobuf/duration.proto";
 import "log.proto";
 
 // Sent brain→hand: one tool invocation request.
@@ -131,10 +132,35 @@ message Append {
   gait.log.v1.Event event = 1;
 }
 
-// Brain → spine: the turn is complete.
-// Spine writes run_result_json to stdout and exits with the appropriate code.
+enum FinalizedTurnOutcome {
+  FINALIZED_TURN_OUTCOME_UNSPECIFIED = 0;
+  FINALIZED_TURN_OUTCOME_TEXT_DONE = 1;
+  FINALIZED_TURN_OUTCOME_STRUCTURED_DONE = 2;
+  FINALIZED_TURN_OUTCOME_CLARIFY = 3;
+  FINALIZED_TURN_OUTCOME_INFORM = 4;
+  FINALIZED_TURN_OUTCOME_PERMISSIONS = 5;
+  FINALIZED_TURN_OUTCOME_SANDBOX_UNLOCK = 6;
+  FINALIZED_TURN_OUTCOME_CANCELLED = 7;
+  FINALIZED_TURN_OUTCOME_FAILED = 8;
+}
+
+// Brain → spine transient turn draft. It is never persisted or exposed as the
+// public aggregate; the spine completes event ids/timing after draining and
+// orphan repair, then writes the durable gait.log.v1.TurnResult.
+message FinalizedTurn {
+  FinalizedTurnOutcome outcome = 1;
+  string message = 2;
+  optional google.protobuf.Value result = 3;
+  string failure_reason = 4;
+  gait.log.v1.TurnTokenUsage usage = 5;
+  repeated string blocks = 6;
+  uint64 started_ms = 7;
+  google.protobuf.Duration active_duration = 8;
+}
+
+// Brain → spine: the current turn draft is ready for spine-side finalization.
 message Terminated {
-  string run_result_json = 1;
+  FinalizedTurn turn = 1;
   bool failed = 2;
 }
 

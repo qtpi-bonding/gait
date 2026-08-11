@@ -73,13 +73,17 @@ impl SessionLog {
 
     /// Mint and append a fresh spine-side event.
     #[allow(dead_code)] // used in tests; production writes go via wire::append directly
-    pub(crate) fn append_body(&self, body: event::Body) -> anyhow::Result<Event> {
+    pub(crate) fn append_body(
+        &self,
+        body: event::Body,
+        scope: crate::proto::envelope::EventScope,
+    ) -> anyhow::Result<Event> {
         match self {
-            Self::Persistent { log_path, .. } => wire::append(log_path, body),
+            Self::Persistent { log_path, .. } => wire::write_to_transcript(log_path, body, scope),
             Self::Ephemeral { events } => {
                 let mut guard = events.lock().unwrap();
                 let prev = guard.last();
-                let evt = crate::proto::envelope::mint(body, prev, 0, 0);
+                let evt = crate::proto::envelope::mint(body, prev, scope);
                 guard.push(evt.clone());
                 Ok(evt)
             }
@@ -87,7 +91,7 @@ impl SessionLog {
     }
 
     /// The full transcript, in order. The brain's `BrainInit.events` and the
-    /// post-turn `count_turn_complete` both source from here.
+    /// post-turn `count_run_complete` both source from here.
     pub(crate) fn events(&self) -> Vec<Event> {
         match self {
             Self::Persistent { log_path, .. } => {
@@ -129,7 +133,7 @@ mod tests {
     }
 
     fn envelope_mint(b: event::Body) -> Event {
-        crate::proto::envelope::mint(b, None, 0, 0)
+        crate::proto::envelope::mint(b, None, crate::proto::envelope::EventScope::Session)
     }
 
     #[test]
@@ -137,8 +141,10 @@ mod tests {
         let gait_dir = TempDir::new().unwrap();
         std::fs::create_dir_all(crate::session::live::worktree_dir(gait_dir.path(), "s")).unwrap();
         let log = SessionLog::open(gait_dir.path(), "s").unwrap();
-        log.append_body(body("first")).unwrap();
-        log.append_body(body("second")).unwrap();
+        log.append_body(body("first"), crate::proto::envelope::EventScope::Session)
+            .unwrap();
+        log.append_body(body("second"), crate::proto::envelope::EventScope::Session)
+            .unwrap();
         let raw =
             std::fs::read_to_string(crate::session::live::log_path(gait_dir.path(), "s")).unwrap();
         let a = raw.find("first").unwrap();
@@ -173,7 +179,8 @@ mod tests {
     #[test]
     fn ephemeral_accumulates_in_memory_and_writes_no_file() {
         let log = SessionLog::ephemeral(vec![]);
-        log.append_body(body("first")).unwrap();
+        log.append_body(body("first"), crate::proto::envelope::EventScope::Session)
+            .unwrap();
         log.relay_event(&envelope_mint(body("second"))).unwrap();
         let evs = log.events();
         assert_eq!(evs.len(), 2, "ephemeral log accumulates appends");

@@ -225,22 +225,29 @@ fn terminated(run_result_json: &str) -> Signal {
     Signal {
         corr_id: 0,
         body: Some(signal::Body::Terminated(Terminated {
-            run_result_json: run_result_json.to_string(),
+            turn: Some(gait_core::proto::gait::sandbox::v1::FinalizedTurn {
+                outcome: gait_core::proto::gait::sandbox::v1::FinalizedTurnOutcome::TextDone as i32,
+                message: run_result_json.to_string(),
+                ..Default::default()
+            }),
             failed: false,
         })),
     }
 }
 
-#[allow(dead_code)]
 fn append_event(body: gait_core::proto::gait::log::v1::event::Body) -> Signal {
-    use gait_core::proto::gait::log::v1::Event;
     Signal {
         corr_id: 0,
         body: Some(signal::Body::Append(Append {
-            event: Some(Event {
-                body: Some(body),
-                ..Default::default()
-            }),
+            event: Some(gait_core::proto::envelope::mint(
+                body,
+                None,
+                gait_core::proto::envelope::EventScope::Step {
+                    run: 0,
+                    turn: 0,
+                    step: 0,
+                },
+            )),
         })),
     }
 }
@@ -253,6 +260,7 @@ async fn prompt_with_caps(read: bool, write: bool) -> Result<StopReason, String>
     // constructed but never invoked — this proves the wiring, not delegation.
     let mut blob = Vec::new();
     for s in [
+        append_event(gait_core::proto::events::assistant_text("done".into())),
         forward_event(gait_core::proto::events::assistant_text("done".into())),
         terminated(r#"{"done":{"message":"ok"}}"#),
     ] {

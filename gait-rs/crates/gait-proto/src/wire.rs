@@ -13,7 +13,7 @@
 
 use std::path::Path;
 
-use crate::envelope::mint;
+use crate::envelope::{mint, EventScope, LOG_VERSION};
 use crate::gait::log::v1::{event, payload, Event, Payload, RawEvent};
 
 /// Wrap a substantive payload kind into an event body.
@@ -43,7 +43,22 @@ pub fn read_events(path: &Path) -> anyhow::Result<Vec<Event>> {
         if line.trim().is_empty() {
             continue;
         }
-        events.push(serde_json::from_str::<Event>(line)?);
+        let event = serde_json::from_str::<Event>(line)?;
+        if event.version != LOG_VERSION {
+            anyhow::bail!(
+                "unsupported event log version {} at line {}; expected {}",
+                event.version,
+                events.len() + 1,
+                LOG_VERSION
+            );
+        }
+        if !crate::envelope::has_valid_scope_prefix(&event) {
+            anyhow::bail!(
+                "invalid event hierarchy coordinates at line {}",
+                events.len() + 1
+            );
+        }
+        events.push(event);
     }
     Ok(events)
 }
@@ -84,9 +99,7 @@ fn write_event(path: &Path, ev: Event) -> anyhow::Result<Event> {
 /// line to the file, and return the minted event. Shared by [`append`] and
 /// [`emit`]; also called directly by the `Recorder` sink in gait-core.
 ///
-/// `turn` and `step` are stamped onto the envelope — call them with `0, 0`
-/// for session-level events (use [`append`]); the `Recorder` reads its
-/// per-turn position from its `set_position` slot.
+/// `scope` is stamped onto the envelope. Zero is never used to mean absent.
 ///
 /// Durability: the underlying write+flush is delegated to
 /// [`append_line_durable`] so a successful return guarantees the line is on
@@ -94,11 +107,10 @@ fn write_event(path: &Path, ev: Event) -> anyhow::Result<Event> {
 pub fn write_to_transcript(
     path: &Path,
     body: event::Body,
-    turn: u32,
-    step: u32,
+    scope: EventScope,
 ) -> anyhow::Result<Event> {
     let prev = last_event(path)?;
-    let ev = mint(body, prev.as_ref(), turn, step);
+    let ev = mint(body, prev.as_ref(), scope);
     write_event(path, ev)
 }
 
@@ -106,9 +118,9 @@ pub fn write_to_transcript(
 /// [`last_event`] as `prev`, so `seq`/`parents` chain correctly), append its
 /// JSON line to the file, and return the minted event.
 ///
-/// Session-level events use `turn=0, step=0` — these are not part of any turn.
+/// Session-level events carry no run/turn/step coordinates.
 pub fn append(path: &Path, body: event::Body) -> anyhow::Result<Event> {
-    write_to_transcript(path, body, 0, 0)
+    write_to_transcript(path, body, EventScope::Session)
 }
 
 /// Like [`append`], but stamps `provenance` onto the minted event before
@@ -126,9 +138,10 @@ pub fn append_with_provenance(
     path: &Path,
     body: event::Body,
     provenance: crate::gait::log::v1::Provenance,
+    scope: EventScope,
 ) -> anyhow::Result<Event> {
     let prev = last_event(path)?;
-    let mut ev = mint(body, prev.as_ref(), 0, 0);
+    let mut ev = mint(body, prev.as_ref(), scope);
     ev.provenance = Some(provenance);
     write_event(path, ev)
 }
@@ -262,9 +275,19 @@ mod tests {
     fn write_to_transcript_threads_turn_and_step() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("log.jsonl");
-        let ev = write_to_transcript(&path, simple_body(), 4, 7).unwrap();
-        assert_eq!(ev.turn, 4);
-        assert_eq!(ev.step, 7);
+        let ev = write_to_transcript(
+            &path,
+            simple_body(),
+            EventScope::Step {
+                run: 2,
+                turn: 4,
+                step: 7,
+            },
+        )
+        .unwrap();
+        assert_eq!(ev.run, Some(2));
+        assert_eq!(ev.turn, Some(4));
+        assert_eq!(ev.step, Some(7));
     }
 
     #[test]
@@ -273,7 +296,7 @@ mod tests {
         let path = dir.path().join("log.jsonl");
         let seeded = append(&path, simple_body()).unwrap();
 
-        let incoming = crate::envelope::mint(simple_body(), None, 0, 0);
+        let incoming = crate::envelope::mint(simple_body(), None, EventScope::Session);
         let written = append_with_id(&path, &incoming).unwrap();
 
         // append_with_id preserves the incoming id but re-chains seq/parents.
@@ -303,7 +326,31 @@ mod tests {
             context: String::new(),
             signature: vec![],
         };
-        let ev = append_with_provenance(&path, body, provenance.clone()).unwrap();
+        let ev = append_with_provenance(
+            &path,
+            body,
+            provenance.clone(),
+            EventScope::Turn { run: 1, turn: 2 },
+        )
+        .unwrap();
         assert_eq!(ev.provenance, Some(provenance));
+        assert_eq!((ev.run, ev.turn, ev.step), (Some(1), Some(2), None));
+    }
+
+    #[test]
+    fn read_events_rejects_stale_log_versions() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("log.jsonl");
+        let mut event = crate::envelope::mint(simple_body(), None, EventScope::Session);
+        event.version = LOG_VERSION - 1;
+        crate::envelope::stamp_hash(&mut event);
+        std::fs::write(
+            &path,
+            format!("{}\n", serde_json::to_string(&event).unwrap()),
+        )
+        .unwrap();
+
+        let error = read_events(&path).unwrap_err().to_string();
+        assert!(error.contains("unsupported event log version"), "{error}");
     }
 }

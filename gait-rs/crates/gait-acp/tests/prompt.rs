@@ -55,12 +55,23 @@ fn frame(sig: &gait_proto::gait::sandbox::v1::Signal) -> Vec<u8> {
 
 /// Bake mock_frames.bin: one settled AssistantText event, then Terminated(done).
 fn bake_say_hi(gait_dir: &Path) {
-    use gait_core::proto::gait::log::v1::{Event, StreamItem, stream_item};
-    use gait_proto::gait::sandbox::v1::{Signal, StreamForward, Terminated, signal};
+    use gait_core::proto::gait::log::v1::{StreamItem, stream_item};
+    use gait_proto::gait::sandbox::v1::{Append, Signal, StreamForward, Terminated, signal};
 
-    let assistant = Event {
-        body: Some(gait_core::proto::events::assistant_text("hi there".into())),
-        ..Default::default()
+    let assistant = gait_core::proto::envelope::mint(
+        gait_core::proto::events::assistant_text("hi there".into()),
+        None,
+        gait_core::proto::envelope::EventScope::Step {
+            run: 0,
+            turn: 0,
+            step: 0,
+        },
+    );
+    let append_sig = Signal {
+        corr_id: 0,
+        body: Some(signal::Body::Append(Append {
+            event: Some(assistant.clone()),
+        })),
     };
     let event_sig = Signal {
         corr_id: 0,
@@ -73,14 +84,16 @@ fn bake_say_hi(gait_dir: &Path) {
     let done = Signal {
         corr_id: 0,
         body: Some(signal::Body::Terminated(Terminated {
-            // proto fields are `run_result_json` + `failed` (NOT `reason`).
-            // The JSON shape matches gait-core tests/common::terminated_ok;
-            // the spine's turn_result_from_json parses it -> TurnResult::Done.
-            run_result_json: "{\"done\":{\"message\":\"ok\"}}".into(),
+            turn: Some(gait_core::proto::gait::sandbox::v1::FinalizedTurn {
+                outcome: gait_core::proto::gait::sandbox::v1::FinalizedTurnOutcome::TextDone as i32,
+                message: "ok".into(),
+                ..Default::default()
+            }),
             failed: false,
         })),
     };
     let mut blob = Vec::new();
+    blob.extend_from_slice(&frame(&append_sig));
     blob.extend_from_slice(&frame(&event_sig));
     blob.extend_from_slice(&frame(&done));
     std::fs::write(gait_dir.join("mock_frames.bin"), blob).unwrap();

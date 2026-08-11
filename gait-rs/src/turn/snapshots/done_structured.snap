@@ -1,6 +1,6 @@
 # done_structured
 # result: Done
-# events: 7
+# events: 6
 ---
 000: SessionStart
 001: Unknown
@@ -8,4 +8,3 @@
 003: Unknown
 004: ToolCall "tc1" "structured_done"
 005: ToolResult "tc1"
-006: Unknown

@@ -201,19 +201,36 @@ pub fn undo(params: UndoParams) -> Result<UndoOutcome, OpError> {
     let tx_path = gait_state::session::live::log_path(&params.gait_dir, &params.session_id);
     let events = read_events(&tx_path).map_err(anyhow::Error::from)?;
 
-    // Collect (turn_index, summary, checkpoint) from TurnComplete events.
+    // Join each completed run's terminal checkpoint with its final TurnResult.
     let mut turns: Vec<UndoTurn> = Vec::new();
     let mut full_shas: Vec<Option<String>> = Vec::new();
     for e in &events {
         if let Some(event::Body::Payload(p)) = &e.body {
-            if let Some(payload::Kind::TurnComplete(tc)) = &p.kind {
+            if let Some(payload::Kind::RunComplete(complete)) = &p.kind {
                 let idx = turns.len() as u32 + 1;
-                let message = tc
-                    .output
-                    .as_ref()
-                    .map(|o| o.message.clone())
+                let message = events
+                    .iter()
+                    .rev()
+                    .filter(|candidate| candidate.seq < e.seq && candidate.run == e.run)
+                    .find_map(|candidate| match &candidate.body {
+                        Some(event::Body::Payload(payload)) => match payload.kind.as_ref() {
+                            Some(payload::Kind::TurnResult(turn)) => match turn.outcome.as_ref() {
+                                Some(gait_state::proto::gait::log::v1::turn_result::Outcome::Done(done)) => match done.output.as_ref() {
+                                    Some(gait_state::proto::gait::log::v1::turn_done::Output::Text(text)) => Some(text.message.clone()),
+                                    Some(gait_state::proto::gait::log::v1::turn_done::Output::Structured(output)) => Some(output.message.clone()),
+                                    None => Some(String::new()),
+                                },
+                                _ => None,
+                            },
+                            _ => None,
+                        },
+                        _ => None,
+                    })
                     .unwrap_or_default();
-                let full = tc.checkpoint.clone();
+                let full = complete
+                    .final_state
+                    .as_ref()
+                    .and_then(|state| state.checkpoint.clone());
                 let checkpoint_short = full.as_deref().map(|s| s[..s.len().min(8)].to_string());
                 turns.push(UndoTurn {
                     turn: idx,
@@ -794,7 +811,7 @@ mod tests {
             list: true,
         })
         .unwrap();
-        // Empty log => no TurnComplete events => empty list.
+        // Empty log => no RunComplete events => empty list.
         assert!(out.turns.is_empty());
         assert!(!out.transcript_undone);
         assert!(!out.code_undone);

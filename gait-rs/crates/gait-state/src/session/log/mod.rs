@@ -28,7 +28,14 @@ pub fn read_events(path: &Path) -> Result<Vec<Event>, SessionError> {
         if line.trim().is_empty() {
             continue;
         }
-        events.push(serde_json::from_str::<Event>(line)?);
+        let event = serde_json::from_str::<Event>(line)?;
+        if event.version != crate::proto::envelope::LOG_VERSION {
+            return Err(SessionError::UnsupportedLogVersion {
+                found: event.version,
+                expected: crate::proto::envelope::LOG_VERSION,
+            });
+        }
+        events.push(event);
     }
     Ok(events)
 }
@@ -37,13 +44,13 @@ pub fn last_event(path: &Path) -> Result<Option<Event>, SessionError> {
     Ok(read_events(path)?.pop())
 }
 
-pub fn count_turn_complete(events: &[Event]) -> usize {
+pub fn count_completed_runs(events: &[Event]) -> usize {
     events
         .iter()
         .filter(|e| {
             matches!(
                 crate::proto::event_kind(e),
-                Some(payload::Kind::TurnComplete(_))
+                Some(payload::Kind::RunComplete(_))
             )
         })
         .count()
@@ -135,7 +142,9 @@ pub fn session_state(tx_path: &std::path::Path) -> Result<SessionState, SessionE
             Some(payload::Kind::SandboxUnlockReply(_)) => {
                 return Ok(SessionState::Idle);
             }
-            Some(payload::Kind::TurnComplete(_)) => {
+            Some(payload::Kind::RunComplete(_))
+            | Some(payload::Kind::RunCancelled(_))
+            | Some(payload::Kind::RunFailed(_)) => {
                 return Ok(SessionState::Idle);
             }
             _ => continue,
@@ -155,7 +164,11 @@ pub fn write_permissions_reply(
 ) -> Result<(), SessionError> {
     let body = crate::proto::events::permissions_reply(&items);
     let prev = last_event(tx_path)?;
-    let ev = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
+    let ev = crate::proto::envelope::mint(
+        body,
+        prev.as_ref(),
+        crate::proto::envelope::EventScope::Session,
+    );
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -173,7 +186,11 @@ pub fn write_clarify_reply(
 ) -> Result<(), SessionError> {
     let body = crate::proto::events::clarify_reply(&items);
     let prev = last_event(tx_path)?;
-    let ev = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
+    let ev = crate::proto::envelope::mint(
+        body,
+        prev.as_ref(),
+        crate::proto::envelope::EventScope::Session,
+    );
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -192,7 +209,11 @@ pub fn write_inform_reply(
 ) -> Result<(), SessionError> {
     let body = crate::proto::events::inform_reply(&items);
     let prev = last_event(tx_path)?;
-    let ev = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
+    let ev = crate::proto::envelope::mint(
+        body,
+        prev.as_ref(),
+        crate::proto::envelope::EventScope::Session,
+    );
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -225,7 +246,11 @@ pub fn write_registry(
     }
     let body = crate::proto::events::registry(kind, name, listed);
     let prev = last_event(tx_path)?;
-    let ev = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
+    let ev = crate::proto::envelope::mint(
+        body,
+        prev.as_ref(),
+        crate::proto::envelope::EventScope::Session,
+    );
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -255,7 +280,11 @@ pub fn write_toggle(
     }
     let body = crate::proto::events::toggle(kind, name, enabled);
     let prev = last_event(tx_path)?;
-    let ev = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
+    let ev = crate::proto::envelope::mint(
+        body,
+        prev.as_ref(),
+        crate::proto::envelope::EventScope::Session,
+    );
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -278,7 +307,11 @@ pub fn write_unlock_reply(
 ) -> Result<(), SessionError> {
     let body = crate::proto::events::sandbox_unlock_reply(&items);
     let prev = last_event(tx_path)?;
-    let ev = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
+    let ev = crate::proto::envelope::mint(
+        body,
+        prev.as_ref(),
+        crate::proto::envelope::EventScope::Session,
+    );
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -299,7 +332,11 @@ pub fn init_session(opts: InitSessionOpts) -> Result<(), SessionError> {
         opts.notify_done,
     );
     let prev = last_event(&opts.log_path)?;
-    let ev = crate::proto::envelope::mint(body, prev.as_ref(), 0, 0);
+    let ev = crate::proto::envelope::mint(
+        body,
+        prev.as_ref(),
+        crate::proto::envelope::EventScope::Session,
+    );
     // The nested sessions/<id>/ directory (see crate::session::live) does not
     // exist yet on a brand new session — create_session_worktree's orphan
     // tree starts empty, and nothing creates sessions/<id>/ before this,

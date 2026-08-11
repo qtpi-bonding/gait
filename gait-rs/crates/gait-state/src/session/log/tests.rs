@@ -49,30 +49,18 @@ fn init_session_writes_session_start() {
 }
 
 fn mint(body: event::Body) -> Event {
-    crate::proto::envelope::mint(body, None, 0, 0)
+    crate::proto::envelope::mint(body, None, crate::proto::envelope::EventScope::Session)
 }
 
 #[test]
-fn count_turn_complete_counts_correctly() {
-    let usage = pb::TurnTokenUsage {
-        input: 1,
-        output: 1,
-        cache_read: 0,
-        cache_write: 0,
-    };
+fn count_completed_runs_counts_correctly() {
     let events = vec![
         mint(events::user_text("x".into())),
-        mint(events::turn_complete(events::TurnCompleteParams {
-            usage,
-            ..Default::default()
-        })),
+        mint(events::run_complete(pb::RunComplete::default())),
         mint(events::user_text("y".into())),
-        mint(events::turn_complete(events::TurnCompleteParams {
-            usage,
-            ..Default::default()
-        })),
+        mint(events::run_complete(pb::RunComplete::default())),
     ];
-    assert_eq!(count_turn_complete(&events), 2);
+    assert_eq!(count_completed_runs(&events), 2);
 }
 
 #[test]
@@ -178,9 +166,9 @@ fn all_event_bodies_serialize_roundtrip() {
         events::error("e".into(), "llm"),
         events::permissions(&[]),
         events::permissions_reply(&[]),
-        events::turn_complete(events::TurnCompleteParams {
-            usage,
-            message: "s".into(),
+        events::turn_result(pb::TurnResult {
+            turn_id: "t1".into(),
+            usage: Some(usage),
             ..Default::default()
         }),
     ];
@@ -401,26 +389,13 @@ fn unlock_once_grant_round_trip_no_config_change() {
     );
     assert!(unlock_state.session.is_empty());
 
-    // Step 7: Assert that after a TurnComplete, the once grant is cleared
-    let usage = pb::TurnTokenUsage {
-        input: 1,
-        output: 1,
-        cache_read: 0,
-        cache_write: 0,
-    };
-    wire::append(
-        &tx_path,
-        events::turn_complete(events::TurnCompleteParams {
-            usage,
-            ..Default::default()
-        }),
-    )
-    .unwrap();
+    // Step 7: Assert that after a RunComplete, the once grant is cleared
+    wire::append(&tx_path, events::run_complete(pb::RunComplete::default())).unwrap();
     let evs_after = read_events(&tx_path).unwrap();
     let unlock_state_after = active_unlock_state(&evs_after);
     assert!(
         unlock_state_after.once.is_empty(),
-        "once grant should clear after TurnComplete"
+        "once grant should clear after RunComplete"
     );
 }
 

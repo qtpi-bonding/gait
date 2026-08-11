@@ -16,7 +16,12 @@ use common::*;
 #[tokio::test]
 async fn lock_released_after_turn() {
     let tmp = tempfile::tempdir().unwrap();
-    let _ = run_one(tmp.path(), "l1", &[terminated_ok("done")]).await;
+    let _ = run_one(
+        tmp.path(),
+        "l1",
+        &[append_assistant("done"), terminated_ok("done")],
+    )
+    .await;
 
     // After a completed turn the session lock must be free — the spine holds it for the
     // duration of the brain process only (RAII, dropped before run_loop returns), so a
@@ -64,7 +69,10 @@ async fn concurrent_turn_blocked_while_held() {
 
     // Set up a valid mock_frames.bin so the spine, if it ever reached the brain spawn, would
     // terminate cleanly. The point is it must NOT reach there.
-    write_frames(tmp.path(), &[terminated_ok("done")]);
+    write_frames(
+        tmp.path(),
+        &[append_assistant("done"), terminated_ok("done")],
+    );
 
     // Drive a second `run_loop` against the same session dir. We expect the spine to bail on
     // `SessionLock::acquire` (src/turn/spine.rs:273) and route to on_turn_error → Diag::Error.

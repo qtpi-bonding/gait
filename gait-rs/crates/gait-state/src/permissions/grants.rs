@@ -7,7 +7,7 @@
 //! - `seed` — the config baseline (global + agent grants, passed in by caller),
 //! - `session` grants — `PermissionsReply` events with `Scope::Session`,
 //! - `once` grants — `PermissionsReply` events with `Scope::Once` (cleared at
-//!   `TurnComplete` by the `ActivePermissions` projection).
+//!   `RunComplete` by the `ActivePermissions` projection).
 //!
 //! The underlying fold is the [`ActivePermissions`] projection in
 //! [`crate::session::retrace`]; this module re-exports the projection + state

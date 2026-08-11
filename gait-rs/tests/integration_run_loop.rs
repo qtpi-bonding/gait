@@ -125,9 +125,10 @@ async fn run_turn_prim_fresh_session_folds_after_user_turn_appended() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<StreamItem>();
     let emitter = gait_core::proto::Recorder::for_session(ws.path(), id, tx);
 
-    run_turn(&session, &emitter, caps, make_input(true))
+    let result = run_turn(&session, &emitter, caps, make_input(true))
         .await
         .expect("run_turn must succeed");
+    assert!(matches!(result, gait_core::turn::TurnResult::Done { .. }));
 
     let events = read_events(&log_path).unwrap();
     let user_turns = events
@@ -135,12 +136,10 @@ async fn run_turn_prim_fresh_session_folds_after_user_turn_appended() {
         .filter(|e| matches!(kind(e), Some(payload::Kind::UserText(_))))
         .count();
     assert_eq!(user_turns, 1, "exactly one user_turn");
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(kind(e), Some(payload::Kind::TurnComplete(_)))),
-        "turn ran (turn_complete present)"
-    );
+    assert!(!events.iter().any(|e| matches!(
+        kind(e),
+        Some(payload::Kind::TurnResult(_) | payload::Kind::RunComplete(_))
+    )));
     let raw = std::fs::read_to_string(&log_path).unwrap();
     assert!(
         raw.contains(&head),
@@ -149,7 +148,7 @@ async fn run_turn_prim_fresh_session_folds_after_user_turn_appended() {
 }
 
 /// Equivalent of the old `run_loop_resume_runs_one_turn_without_appending_user_turn` test.
-/// run_turn is called with no prior user_turn → bare fold → TurnComplete.
+/// run_turn is called with no prior user_turn → bare fold → RunComplete.
 #[tokio::test]
 async fn run_turn_prim_resume_runs_one_turn_without_user_turn() {
     let ws = TempDir::new().unwrap();
@@ -167,9 +166,10 @@ async fn run_turn_prim_resume_runs_one_turn_without_user_turn() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<StreamItem>();
     let emitter = gait_core::proto::Recorder::for_session(ws.path(), id, tx);
 
-    run_turn(&session, &emitter, caps, make_input(true))
+    let result = run_turn(&session, &emitter, caps, make_input(true))
         .await
         .expect("resume turn must run");
+    assert!(matches!(result, gait_core::turn::TurnResult::Done { .. }));
 
     let events = read_events(&log_path).unwrap();
     assert_eq!(
@@ -180,10 +180,8 @@ async fn run_turn_prim_resume_runs_one_turn_without_user_turn() {
         0,
         "Resume must not have a user_turn"
     );
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(kind(e), Some(payload::Kind::TurnComplete(_)))),
-        "the resume turn still ran"
-    );
+    assert!(!events.iter().any(|e| matches!(
+        kind(e),
+        Some(payload::Kind::TurnResult(_) | payload::Kind::RunComplete(_))
+    )));
 }

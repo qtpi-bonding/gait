@@ -90,13 +90,14 @@ impl CheckpointRepo for RecCheckpoint {
     fn remove(&self, _: &Path, _: &str) -> anyhow::Result<()> {
         unimplemented!("not used in turn path")
     }
-    fn diff(
+    fn diff_between(
         &self,
         _: &Path,
         _: &str,
         _: &str,
-    ) -> anyhow::Result<Option<gait_proto::gait::log::v1::Changes>> {
-        unimplemented!("not used in turn path")
+        _: &str,
+    ) -> anyhow::Result<Option<gait_proto::gait::log::v1::ChangeSummary>> {
+        Ok(Some(Default::default()))
     }
 }
 
@@ -128,28 +129,47 @@ pub fn frame(sig: &Signal) -> Vec<u8> {
 }
 
 pub fn terminated_ok(msg: &str) -> Signal {
-    let json = format!(
-        "{{\"done\":{{\"message\":{}}}}}",
-        serde_json::to_string(msg).unwrap()
-    );
     Signal {
         corr_id: 0,
         body: Some(signal::Body::Terminated(Terminated {
-            run_result_json: json,
+            turn: Some(gait_proto::gait::sandbox::v1::FinalizedTurn {
+                outcome: gait_proto::gait::sandbox::v1::FinalizedTurnOutcome::TextDone as i32,
+                message: msg.into(),
+                ..Default::default()
+            }),
             failed: false,
         })),
     }
 }
 
-pub fn terminated_fail(msg: &str) -> Signal {
-    let json = format!(
-        "{{\"done\":{{\"message\":{}}}}}",
-        serde_json::to_string(msg).unwrap()
+pub fn append_assistant(msg: &str) -> Signal {
+    let event = gait_proto::envelope::mint(
+        gait_core::proto::events::assistant_text(msg.into()),
+        None,
+        gait_proto::envelope::EventScope::Step {
+            run: 0,
+            turn: 0,
+            step: 0,
+        },
     );
     Signal {
         corr_id: 0,
+        body: Some(signal::Body::Append(
+            gait_proto::gait::sandbox::v1::Append { event: Some(event) },
+        )),
+    }
+}
+
+pub fn terminated_fail(msg: &str) -> Signal {
+    Signal {
+        corr_id: 0,
         body: Some(signal::Body::Terminated(Terminated {
-            run_result_json: json,
+            turn: Some(gait_proto::gait::sandbox::v1::FinalizedTurn {
+                outcome: gait_proto::gait::sandbox::v1::FinalizedTurnOutcome::Failed as i32,
+                failure_reason: "mock_failure".into(),
+                message: msg.into(),
+                ..Default::default()
+            }),
             failed: true,
         })),
     }

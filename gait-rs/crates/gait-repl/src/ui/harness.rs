@@ -14,7 +14,13 @@ fn builder() -> ReplBuilder {
 fn ev(body: pb::event::Body) -> pb::StreamItem {
     pb::StreamItem {
         item: Some(pb::stream_item::Item::Event(envelope::mint(
-            body, None, 0, 0,
+            body,
+            None,
+            envelope::EventScope::Step {
+                run: 0,
+                turn: 0,
+                step: 0,
+            },
         ))),
     }
 }
@@ -128,16 +134,15 @@ fn error_event_renders_error_item() {
 }
 
 #[test]
-fn turn_complete_renders_turn_summary() {
-    use gait_core::proto::gait::log::v1::TurnTokenUsage;
+fn turn_result_renders_turn_summary() {
     let mut b = builder();
-    let tc = events::turn_complete(events::TurnCompleteParams {
-        usage: TurnTokenUsage {
-            input: 0,
+    let tc = events::turn_result(pb::TurnResult {
+        turn_id: "ui-turn".into(),
+        usage: Some(pb::TurnTokenUsage {
             output: 42,
-            cache_read: 0,
-            cache_write: 0,
-        },
+            ..Default::default()
+        }),
+        outcome: Some(pb::turn_result::Outcome::Done(Default::default())),
         ..Default::default()
     });
     let painted = drive(&mut b, &[ev(tc)]);
@@ -145,7 +150,7 @@ fn turn_complete_renders_turn_summary() {
         painted.iter().any(
             |v| matches!(v, ReplViewItem::TurnSummary { output_tokens, .. } if *output_tokens == 42)
         ),
-        "turn_complete must render a TurnSummary: {painted:?}"
+        "turn_result must render a TurnSummary: {painted:?}"
     );
 }
 

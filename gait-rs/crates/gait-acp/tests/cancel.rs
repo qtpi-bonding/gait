@@ -49,14 +49,18 @@ fn init_git_repo(dir: &Path) {
 }
 
 fn append_event(body: gait_core::proto::gait::log::v1::event::Body) -> Signal {
-    use gait_core::proto::gait::log::v1::Event;
     Signal {
         corr_id: 0,
         body: Some(signal::Body::Append(Append {
-            event: Some(Event {
-                body: Some(body),
-                ..Default::default()
-            }),
+            event: Some(gait_core::proto::envelope::mint(
+                body,
+                None,
+                gait_core::proto::envelope::EventScope::Step {
+                    run: 0,
+                    turn: 0,
+                    step: 0,
+                },
+            )),
         })),
     }
 }
@@ -77,10 +81,19 @@ fn forward_event(body: gait_core::proto::gait::log::v1::event::Body) -> Signal {
 }
 
 fn terminated(run_result_json: &str) -> Signal {
+    let outcome = if run_result_json.contains("permissions") {
+        gait_core::proto::gait::sandbox::v1::FinalizedTurnOutcome::Permissions
+    } else {
+        gait_core::proto::gait::sandbox::v1::FinalizedTurnOutcome::TextDone
+    };
     Signal {
         corr_id: 0,
         body: Some(signal::Body::Terminated(Terminated {
-            run_result_json: run_result_json.to_string(),
+            turn: Some(gait_core::proto::gait::sandbox::v1::FinalizedTurn {
+                outcome: outcome as i32,
+                message: "ok".into(),
+                ..Default::default()
+            }),
             failed: false,
         })),
     }

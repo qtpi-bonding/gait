@@ -189,9 +189,9 @@ pub enum ToolPermission {
 pub enum ExecutionSignal {
     /// Execute normally, push result back to model, continue the inner agentic loop.
     Continue,
-    /// Calling this tool IS the exit signal — emit TurnComplete, return Done immediately.
+    /// Calling this tool IS the exit signal — emit FinishTurn, return Done immediately.
     /// No tool result sent back to the model.
-    TurnComplete,
+    FinishTurn,
     /// Capture items from args, emit Clarify event, return TurnResult::Clarify immediately.
     Clarify,
     /// Capture items from args, emit Inform event, return TurnResult::Inform immediately.

@@ -142,8 +142,9 @@ message Event {
 ```
 
 ### Append path (`proto/wire.rs`, `proto/envelope.rs`)
-`write_to_transcript(path, body)`: read last event → `mint()` (assign `seq = prev.seq + 1`,
-fresh UUID, parents) → `stamp_hash()` → serialize (pbjson canonical JSON) → append line.
+`write_to_transcript(path, body, scope)`: read last event → `mint()` (assign `seq = prev.seq + 1`,
+fresh UUID, parents and explicit run/turn/step coordinates) → `stamp_hash()` → serialize
+(pbjson canonical JSON) → append line.
 
 ### content_hash (`proto/hash.rs`)
 `SHA-256( "v" || version || "." || JCS(body_json) )`, lowercase hex. Covers the **body only**
@@ -151,9 +152,10 @@ fresh UUID, parents) → `stamp_hash()` → serialize (pbjson canonical JSON) �
 with for a given `version`. **Not** a Merkle chain — there is no prev-hash linkage yet.
 
 ### Event kinds (`Payload.kind` oneof — complete list)
-`SessionStart, Agent, UserTurn, AssistantText, ToolCall, ToolResult, Clarify, ClarifyReply,
+`SessionStart, RunStart, TurnStart, TurnResult, RunComplete, RunCancelled, RunFailed,
+Agent, UserText, AssistantText, ToolCall, ToolResult, Clarify, ClarifyReply,
 ClarifyConvergence, Inform, InformReply, InformConvergence, Permissions, PermissionsReply,
-AgentUpdate, TurnComplete, Summary, Error, RawEvent, SandboxApplied, HookRun, Cwd, Toggle,
+AgentUpdate, Summary, Error, RawEvent, SandboxApplied, HookRun, Cwd, Toggle,
 Inference`. Constructors live in `proto/events.rs` (e.g. `toggle()`, `tool_call()`, `summary()`).
 
 ### The Recorder (`proto/emitter.rs`)
@@ -367,7 +369,7 @@ to that baseline **positionally** (where the event sits in the stream — `throu
 | **ActiveMessages** | `Vec<Message>` (the transcript) | UserTurn, AssistantText, ToolCall, ToolResult, Clarify/Inform, Error | Consecutive ToolCalls coalesce into one assistant msg; Permissions excluded (audit only) |
 | **ActiveAgent** | instructions, tools/skills/mcp/plugins sets, deny | Toggle (OR-Set) | Seeded from config; `Agent` event is its checkpoint |
 | **ActiveInference** | named inference selection | Inference (LWW) | Seeded from config; independent of agent checkpoints |
-| **ActivePermissions** | `{ session: Set, once: Set }` | PermissionsReply (allow inserts, deny removes), TurnComplete (clears `once`) | Effective allow = session ∪ once |
+| **ActivePermissions** | `{ session: Set, once: Set }` | PermissionsReply (allow inserts, deny removes), RunComplete/RunCancelled/RunFailed (clear `once`) | Effective allow = session ∪ once |
 | **ActiveCwd** | `PathBuf` | Cwd (LWW) | Seeded to codebase root |
 | **LwwAgent** | `Option<Agent>` | Agent (LWW) | Internal drift-guard for run_turn |
 
@@ -419,13 +421,15 @@ gait_dir/
     └── [codebase working-tree files]
 ```
 
-### During a turn
-1. **CodebaseRepo** reads HEAD + dirty files → injected into the system prompt `<status>`.
-2. **TraceRepo** creates/attaches the session worktree (idempotent).
-3. **CheckpointRepo** inits the shadow DB (idempotent).
-4. Tools run, possibly mutating the codebase.
-5. **CheckpointRepo** snapshots the new tree → SHA recorded in the `TurnComplete` event.
-6. **TraceRepo** commits the turn's log changes.
+### During a run
+1. The spine creates the baseline checkpoint, then durably writes `RunStart` and `TurnStart`.
+2. **CodebaseRepo** state is injected into the model-facing `<status>` context.
+3. Tools run, possibly mutating the codebase, while step-scoped events are appended.
+4. The spine repairs orphan tool calls and writes the durable `TurnResult`.
+5. A pause keeps the run active; otherwise the spine creates the final checkpoint and writes
+   `RunComplete`, `RunCancelled`, or `RunFailed`.
+6. Successful completion diffs the exact baseline/final trees and stores `RunSummary` on
+   `RunComplete`; **TraceRepo** then commits the lifecycle atomically.
 
 ---
 
@@ -457,7 +461,7 @@ knowing its format (diff, file content, command, …).
 ### ✓ `session.json.token_totals` → `total_usage` projection
 **Resolved.** The dead, duplicated
 `token_totals` sidecar is gone; cumulative usage is now `retrace::total_usage(events)` — a
-projection summing every `TurnComplete.usage`. Exposed via `gait cost <session-id>`.
+projection summing every durable `TurnResult.usage`. Exposed via `gait cost <session-id>`.
 
 ### ✓ `session.json` folded into the log
 **Resolved.** The `session.json` sidecar is gone entirely. Session identity (`codebase_path`,

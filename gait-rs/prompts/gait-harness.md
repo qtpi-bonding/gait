@@ -30,8 +30,8 @@ approach, and do not retry it. Work within the codebase; if a tool reports that
 an operation is outside its allowed scope, change approach rather than retrying it.
 
 **Context:** your input includes the task, current time, codebase commit, dirty
-files, and reconstructed history from the transcript (`UserTurn`,
-`ToolCall`/`ToolResult`, `TurnComplete`, `Permissions`, `Clarify`/`Inform`).
+files, and reconstructed history from the transcript (`UserText`,
+`ToolCall`/`ToolResult`, `TurnResult`, `Permissions`, `Clarify`/`Inform`).
 `<status>` reflects the codebase at the last turn boundary — writes/edits this
 turn are not visible in `<status>` until the next.
 

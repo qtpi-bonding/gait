@@ -149,7 +149,9 @@ impl Tool for ListAgentsTool {
                 }
             };
             let status = match last_kind(last_evt) {
-                Some(payload::Kind::TurnComplete(_)) => "done",
+                Some(payload::Kind::RunComplete(_)) => "done",
+                Some(payload::Kind::RunCancelled(_)) => "cancelled",
+                Some(payload::Kind::RunFailed(_)) => "error",
                 Some(payload::Kind::Error(_)) => "error",
                 Some(payload::Kind::Clarify(_)) => "clarify",
                 Some(payload::Kind::Inform(_)) => "inform",
@@ -198,7 +200,6 @@ impl Tool for ListAgentsTool {
 mod tests {
     use super::*;
     use crate::git::trace::{GitTraceRepo, TraceRepo};
-    use crate::proto::gait::log::v1::TurnTokenUsage;
     use crate::proto::{events, wire};
     use crate::test_utils::init_git_repo;
     use tempfile::TempDir;
@@ -223,26 +224,7 @@ mod tests {
             .unwrap();
         let tx2 = crate::session::live::log_path(ws.path(), "sdone1");
         std::fs::create_dir_all(tx2.parent().unwrap()).unwrap();
-        let usage = TurnTokenUsage {
-            input: 1,
-            output: 1,
-            cache_read: 0,
-            cache_write: 0,
-        };
-        wire::append(
-            &tx2,
-            events::turn_complete(events::TurnCompleteParams {
-                usage,
-                codebase_hash: "abc".into(),
-                codebase_dirty: false,
-                checkpoint: None,
-                blocks: vec![],
-                message: "done".into(),
-                result: None,
-                changes: None,
-            }),
-        )
-        .unwrap();
+        wire::append(&tx2, events::run_complete(Default::default())).unwrap();
         GitTraceRepo
             .commit_session(ws.path(), "sdone1", "session(sdone1): done")
             .unwrap();

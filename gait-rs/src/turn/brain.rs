@@ -23,7 +23,7 @@ use crate::proto::Recorder;
 use crate::turn::nerve::{self, NerveWriter};
 
 use gait_proto::gait::sandbox::v1::{
-    signal, Append, Diagnostic, Notify, Signal, StreamForward, Terminated,
+    signal, Append, Diagnostic, Signal, StreamForward, Terminated,
 };
 
 // `brain_scope()` now lives in `gait-sandbox::sandbox` (re-exported at the crate
@@ -39,7 +39,6 @@ struct BrainRelaySenders {
     event_tx: mpsc::UnboundedSender<Event>,
     stream_fwd_tx: mpsc::UnboundedSender<StreamItem>,
     spawn_tx: mpsc::UnboundedSender<(Vec<String>, bool)>,
-    notify_tx: mpsc::UnboundedSender<crate::harness::NotifyPayload>,
 }
 
 struct BrainRelayTasks {
@@ -105,33 +104,14 @@ fn start_brain_relays(nerve_writer: &NerveWriter) -> (BrainRelaySenders, BrainRe
         }
     });
 
-    let (notify_tx, mut notify_rx) = mpsc::unbounded_channel::<crate::harness::NotifyPayload>();
-    let notify_relay_writer = nerve_writer.clone();
-    let notify_handle = tokio::spawn(async move {
-        while let Some(payload) = notify_rx.recv().await {
-            let sig = Signal {
-                corr_id: 0,
-                body: Some(signal::Body::Notify(Notify {
-                    target_session: payload.target_session,
-                    from_session: payload.from_session,
-                    status: payload.status,
-                    summary: payload.summary,
-                    idempotency_key: payload.idempotency_key,
-                })),
-            };
-            notify_relay_writer.send_one_way(&sig).await.ok();
-        }
-    });
-
     (
         BrainRelaySenders {
             event_tx,
             stream_fwd_tx,
             spawn_tx,
-            notify_tx,
         },
         BrainRelayTasks {
-            handles: vec![append_handle, stream_handle, spawn_handle, notify_handle],
+            handles: vec![append_handle, stream_handle, spawn_handle],
         },
     )
 }
@@ -211,7 +191,6 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
         event_tx,
         stream_fwd_tx,
         spawn_tx,
-        notify_tx,
     } = relay_senders;
 
     // Emit the brain-seal SandboxApplied event as the first Append signal.
@@ -221,7 +200,8 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
             _ => None,
         };
         let evt_body = crate::proto::events::sandbox_applied(_seal_enforcement, vec![], reason);
-        let evt = gait_proto::envelope::mint(evt_body, None, 0, 0);
+        let evt =
+            gait_proto::envelope::mint(evt_body, None, gait_proto::envelope::EventScope::Session);
         let _ = event_tx.send(evt);
     }
 
@@ -368,7 +348,6 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
         event_tx,
         stream_fwd_tx,
         spawn_tx,
-        notify_tx,
         log_mirror,
         initial_git,
         daemons,
@@ -395,7 +374,6 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
 
     let mut sink = BrainSink {
         inner: CliSink::new(std::io::stderr(), std::io::stderr(), false),
-        result_json: None,
     };
 
     // ── Brain rewire (Task 2 sub-step a): call run_turn directly ─────────────
@@ -418,7 +396,7 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
                 {
                     eprintln!("[brain] error resolving profile: {e}");
                 }
-                ("{}".to_string(), true)
+                (None, true)
             }
             Ok(profile) => {
                 // 2. Build TurnInput from turn_config (KEEP relay handle — required for world tools).
@@ -452,34 +430,29 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
                 sink.end_turn();
                 match handle.await {
                     Ok(Ok(result)) => {
-                        sink.result(&result);
                         // Failed turns skip the success epilogue (after_turn /
                         // Scheduler/Harness policy) — the previous Fail/MaxSteps
                         // paths returned Err and hit the Ok(Err) arm, which never
                         // ran after_turn. Preserve that invariant.
-                        let is_failed = matches!(result, crate::turn::TurnResult::Failed { .. });
                         if let crate::turn::TurnResult::Failed { message, .. } = &result {
                             sink.diagnostic(Diag::Error, &format!("error: {message}"));
                         }
-                        if !is_failed {
-                            driver.after_turn(&mut sink, &result).await;
-                        }
                         let failed = sink.inner.failed;
-                        let json = sink.result_json.take().unwrap_or_else(|| "{}".to_string());
+                        let draft = crate::turn::spine::finalized_turn(&result);
                         crate::diagnostic::set_phase(crate::diagnostic::Phase::TurnEnd);
                         // Brain runs a single turn; after TurnEnd it awaits the
                         // Terminated signal being consumed by the spine (AwaitFeedback
                         // is the closest brain-owned seam before that implicit wait).
                         crate::diagnostic::set_phase(crate::diagnostic::Phase::AwaitFeedback);
-                        (json, failed)
+                        (Some(draft), failed)
                     }
                     Ok(Err(e)) => {
                         sink.diagnostic(Diag::Error, &format!("error: {e}"));
-                        ("{}".to_string(), true)
+                        (None, true)
                     }
                     Err(panic) => {
                         sink.diagnostic(Diag::Error, &format!("turn task panicked: {panic}"));
-                        ("{}".to_string(), true)
+                        (None, true)
                     }
                 }
             }
@@ -494,7 +467,7 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
     let terminated = Signal {
         corr_id: 0,
         body: Some(signal::Body::Terminated(Terminated {
-            run_result_json,
+            turn: run_result_json,
             failed,
         })),
     };
@@ -516,21 +489,17 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
 // ── BrainSink ─────────────────────────────────────────────────────────────────
 
 /// A TurnSink that routes output to stderr (brain's stdout is the Nerve pipe)
-/// and captures the run_result JSON so `run_brain` can forward it in Terminated.
+/// Diagnostics-only sink for the sealed brain. The brain returns a transient
+/// FinalizedTurn directly; aggregate RunResult emission belongs to the spine.
 struct BrainSink {
     inner: CliSink<std::io::Stderr, std::io::Stderr>,
-    result_json: Option<String>,
 }
 
 impl TurnSink for BrainSink {
     fn item(&mut self, _item: &StreamItem) {
         // No-op: brain routes StreamItems via StreamForward Signals to the spine.
     }
-    fn result(&mut self, r: &crate::turn::TurnResult) {
-        if let Ok(j) = serde_json::to_string(&crate::port::output::run_result_proto(r)) {
-            self.result_json = Some(j);
-        }
-    }
+    fn result(&mut self, _r: &crate::proto::gait::log::v1::RunResult) {}
     fn session_id(&mut self, _id: &str) {
         // Spine handles session_id announcement.
     }
@@ -563,7 +532,6 @@ struct BrainDriver {
     event_tx: mpsc::UnboundedSender<Event>,
     stream_fwd_tx: mpsc::UnboundedSender<StreamItem>,
     spawn_tx: mpsc::UnboundedSender<(Vec<String>, bool)>,
-    notify_tx: mpsc::UnboundedSender<crate::harness::NotifyPayload>,
     log_mirror: std::sync::Arc<std::sync::Mutex<Vec<crate::proto::gait::log::v1::Event>>>,
     initial_git: crate::turn::GitSnapshot,
     daemons: Vec<(String, i32, bool, String)>,
@@ -619,43 +587,6 @@ impl BrainDriver {
             .with_spawn_tx(self.spawn_tx.clone())
             .with_log_mirror(self.log_mirror.clone())
     }
-
-    async fn after_turn(
-        &mut self,
-        sink: &mut dyn crate::port::output::TurnSink,
-        result: &crate::turn::TurnResult,
-    ) {
-        use crate::{HarnessBackend, Scheduler};
-        let meta = {
-            let events = self.log_mirror.lock().expect("log mirror poisoned").clone();
-            crate::session::session_meta_from_events(&events, &self.session_id)
-        };
-        let scheduler = crate::NativeScheduler;
-        let harness = crate::NativeHarnessBackend::new_with_spawn(
-            self.gait_dir.clone(),
-            self.spawn_tx.clone(),
-        )
-        .with_notify_tx(self.notify_tx.clone());
-        let last_event_id = {
-            let events = self.log_mirror.lock().expect("log mirror poisoned");
-            events.last().map(|e| e.id.clone())
-        };
-        let ended = crate::TurnEnded {
-            session_id: &self.session_id,
-            assigned_by: meta.assigned_by.as_deref(),
-            result,
-            notify_done: meta.notify_done,
-            last_event_id,
-        };
-        for action in scheduler.next(&ended) {
-            if let Err(e) = harness.execute(&action).await {
-                sink.diagnostic(
-                    crate::port::output::Diag::Info,
-                    &format!("warning: harness execute failed: {}", e),
-                );
-            }
-        }
-    }
 }
 
 fn parse_bootstrap_credential(
@@ -708,8 +639,7 @@ mod tests {
                 false,
             ),
             None,
-            0,
-            0,
+            gait_proto::envelope::EventScope::Session,
         );
         let meta = crate::session::session_meta_from_events(&[ev], "s1234567");
         assert_eq!(meta.codebase_path.as_deref(), Some("/code"));
@@ -728,7 +658,6 @@ mod tests {
         let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
         let (stream_fwd_tx, _stream_fwd_rx) = tokio::sync::mpsc::unbounded_channel();
         let (spawn_tx, _spawn_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (notify_tx, _notify_rx) = tokio::sync::mpsc::unbounded_channel();
         // `start_nerve` just needs *some* AsyncRead/AsyncWrite pair to build a
         // `NerveWriter` around — this test never sends/receives real Signals,
         // so an inert reader/sink is enough.
@@ -752,7 +681,6 @@ mod tests {
             event_tx,
             stream_fwd_tx,
             spawn_tx,
-            notify_tx,
             log_mirror: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             initial_git: crate::turn::GitSnapshot::default(),
             daemons: Vec::new(),
@@ -779,26 +707,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finite_relays_flush_turn_complete_before_terminated() {
+    async fn finite_relays_flush_events_before_terminated() {
         let (brain_write, mut spine_read) = tokio::io::duplex(64 * 1024);
         let (nerve_writer, _reader_handle) =
             crate::turn::nerve::start_nerve(tokio::io::empty(), brain_write);
         let (senders, relay_tasks) = super::start_brain_relays(&nerve_writer);
 
-        let turn_complete = gait_proto::envelope::mint(
-            crate::proto::events::turn_complete(crate::proto::events::TurnCompleteParams::default()),
+        let relayed = gait_proto::envelope::mint(
+            crate::proto::events::assistant_text("settled".into()),
             None,
-            0,
-            0,
+            gait_proto::envelope::EventScope::Step {
+                run: 0,
+                turn: 0,
+                step: 0,
+            },
         );
         senders
             .event_tx
-            .send(turn_complete.clone())
+            .send(relayed.clone())
             .expect("append relay must be open");
         senders
             .stream_fwd_tx
             .send(StreamItem {
-                item: Some(stream_item::Item::Event(turn_complete)),
+                item: Some(stream_item::Item::Event(relayed)),
             })
             .expect("stream relay must be open");
 
@@ -809,14 +740,14 @@ mod tests {
         let terminated = Signal {
             corr_id: 0,
             body: Some(signal::Body::Terminated(Terminated {
-                run_result_json: "{}".into(),
+                turn: Some(Default::default()),
                 failed: false,
             })),
         };
         super::send_terminated_after_relays(relay_tasks, &nerve_writer, &terminated).await;
 
-        let mut saw_turn_complete_append = false;
-        let mut saw_turn_complete_stream = false;
+        let mut saw_append = false;
+        let mut saw_stream = false;
         for _ in 0..3 {
             let signal = tokio::time::timeout(
                 std::time::Duration::from_secs(1),
@@ -827,29 +758,29 @@ mod tests {
             .expect("valid relayed signal");
             match signal.body {
                 Some(signal::Body::Append(append)) => {
-                    saw_turn_complete_append = append.event.is_some_and(|event| {
+                    saw_append = append.event.is_some_and(|event| {
                         matches!(
                             crate::proto::event_kind(&event),
-                            Some(payload::Kind::TurnComplete(_))
+                            Some(payload::Kind::AssistantText(_))
                         )
                     });
                 }
                 Some(signal::Body::StreamForward(forward)) => {
-                    saw_turn_complete_stream = forward.item.is_some_and(|item| {
+                    saw_stream = forward.item.is_some_and(|item| {
                         matches!(
                             item.item,
                             Some(stream_item::Item::Event(ref event))
                                 if matches!(
                                     crate::proto::event_kind(event),
-                                    Some(payload::Kind::TurnComplete(_))
+                                    Some(payload::Kind::AssistantText(_))
                                 )
                         )
                     });
                 }
                 Some(signal::Body::Terminated(_)) => {
                     assert!(
-                        saw_turn_complete_append && saw_turn_complete_stream,
-                        "Terminated must follow both durable and streamed TurnComplete relays"
+                        saw_append && saw_stream,
+                        "Terminated must follow both durable and streamed event relays"
                     );
                     return;
                 }

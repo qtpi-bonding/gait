@@ -6,7 +6,7 @@
 //! StepOutcome dispatch). The live code doesn't support that split cleanly:
 //! signal dispatch happens *inline*, per serial tool call, interleaved with
 //! that tool's own execution (a `LoadContext` call mutates `state.tools`
-//! *before* its own `execute_tool_call`; a `TurnComplete` call validates the
+//! *before* its own `execute_tool_call`; a `FinishTurn` call validates the
 //! schema *instead of* executing). There's no intermediate "already-executed
 //! results" value to hand from one function to the other without inventing
 //! one purely to satisfy the two-function shape. This file does both,
@@ -440,7 +440,7 @@ pub(crate) async fn run_tools(
                     }
                     all_results[*i] = Some((exec.part, exec.result));
                 }
-                ExecutionSignal::TurnComplete => {
+                ExecutionSignal::FinishTurn => {
                     let message = tc
                         .args
                         .get("message")

@@ -1,10 +1,7 @@
 //! Agnostic turn-output port: classify channel items + the TurnSink contract.
-use crate::proto::events;
 use crate::proto::gait::log::v1::{
-    event, payload, run_result, stream_item, Event, RunResult, SandboxUnlock, SessionStart,
-    StreamItem, StructuredDoneOutput,
+    event, payload, stream_item, Event, RunResult, SessionStart, StreamItem,
 };
-use crate::turn::TurnResult;
 use std::io::Write;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -42,7 +39,7 @@ pub enum Diag {
 
 pub trait TurnSink {
     fn item(&mut self, item: &StreamItem);
-    fn result(&mut self, r: &crate::turn::TurnResult);
+    fn result(&mut self, r: &RunResult);
     fn session_id(&mut self, id: &str);
     fn diagnostic(&mut self, level: Diag, msg: &str);
     /// Turn lifecycle hooks (default no-op). The unified `run_loop` calls these
@@ -59,7 +56,7 @@ impl TurnSink for &mut dyn TurnSink {
     fn item(&mut self, item: &StreamItem) {
         (**self).item(item);
     }
-    fn result(&mut self, r: &crate::turn::TurnResult) {
+    fn result(&mut self, r: &RunResult) {
         (**self).result(r);
     }
     fn session_id(&mut self, id: &str) {
@@ -86,7 +83,7 @@ pub enum SinkFrame {
     // large, even the zero-payload variants (clippy::large_enum_variant).
     Item(Box<StreamItem>),
     EndTurn,
-    Result(TurnResult),
+    Result(Box<RunResult>),
     SessionId(String),
     Diagnostic(Diag, String),
 }
@@ -110,78 +107,6 @@ pub async fn drive(
 ) {
     while let Some(item) = rx.recv().await {
         sink.item(&item);
-    }
-}
-
-fn extract_kind(body: event::Body) -> Option<payload::Kind> {
-    match body {
-        event::Body::Payload(p) => p.kind,
-        _ => None,
-    }
-}
-
-pub fn run_result_proto(r: &crate::turn::TurnResult) -> RunResult {
-    use crate::turn::TurnResult;
-    // Returns `(Option<oneof>, ended)` — failures legitimately carry no oneof,
-    // so the field is `None` for `TurnResult::Failed`. `ended` is always set
-    // (the wire field is the discriminant; `result` may be None).
-    let (result, ended): (
-        Option<crate::proto::gait::log::v1::run_result::Result>,
-        &str,
-    ) = match r {
-        TurnResult::Done {
-            message,
-            result,
-            changes,
-            implicit,
-        } => (
-            Some(run_result::Result::Done(StructuredDoneOutput {
-                message: message.clone(),
-                result: events::to_value_opt(result),
-                changes: changes.clone(),
-            })),
-            if *implicit {
-                "implicit_done"
-            } else {
-                "structured_done"
-            },
-        ),
-        TurnResult::Clarify { items } => (
-            Some(match extract_kind(events::clarify(items.as_slice())) {
-                Some(payload::Kind::Clarify(c)) => run_result::Result::Clarify(c),
-                _ => run_result::Result::Clarify(Default::default()),
-            }),
-            "clarify",
-        ),
-        TurnResult::Inform { items } => (
-            Some(match extract_kind(events::inform(items.as_slice())) {
-                Some(payload::Kind::Inform(i)) => run_result::Result::Inform(i),
-                _ => run_result::Result::Inform(Default::default()),
-            }),
-            "inform",
-        ),
-        TurnResult::Permissions => (
-            Some(run_result::Result::Permissions(Default::default())),
-            "permissions",
-        ),
-        TurnResult::SandboxUnlock { items } => (
-            Some(run_result::Result::SandboxUnlock(SandboxUnlock {
-                items: items.clone(),
-            })),
-            "unlock",
-        ),
-        TurnResult::Cancelled => (
-            Some(run_result::Result::Cancelled(Default::default())),
-            "cancelled",
-        ),
-        TurnResult::Failed { ended, .. } => {
-            // Failure carries no oneof — `ended` is the only reason signal.
-            (None, ended.as_str())
-        }
-    };
-    RunResult {
-        result,
-        ended: ended.to_string(),
     }
 }
 
@@ -227,8 +152,8 @@ impl<O: Write, E: Write> TurnSink for CliSink<O, E> {
         }
         // NOTE: Error items go to stderr but do NOT flip the exit code (hard-failures-only policy).
     }
-    fn result(&mut self, r: &TurnResult) {
-        if let Ok(j) = serde_json::to_string(&run_result_proto(r)) {
+    fn result(&mut self, r: &RunResult) {
+        if let Ok(j) = serde_json::to_string(r) {
             let _ = writeln!(self.out, "{j}");
         }
     }
@@ -258,7 +183,7 @@ impl<O: Write, E: Write> TurnSink for CliSink<O, E> {
 #[derive(Default)]
 pub struct RecordingSink {
     pub items: Vec<StreamItem>,
-    pub results: Vec<TurnResult>,
+    pub results: Vec<RunResult>,
     pub diagnostics: Vec<(Diag, String)>,
 }
 
@@ -266,7 +191,7 @@ impl TurnSink for RecordingSink {
     fn item(&mut self, item: &StreamItem) {
         self.items.push(item.clone());
     }
-    fn result(&mut self, r: &TurnResult) {
+    fn result(&mut self, r: &RunResult) {
         self.results.push(r.clone());
     }
     fn session_id(&mut self, _id: &str) {}
@@ -278,11 +203,14 @@ impl TurnSink for RecordingSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::envelope::EventScope;
     use crate::proto::events;
     fn ev(body: event::Body) -> StreamItem {
         StreamItem {
             item: Some(stream_item::Item::Event(crate::proto::envelope::mint(
-                body, None, 0, 0,
+                body,
+                None,
+                EventScope::Session,
             ))),
         }
     }
@@ -297,7 +225,13 @@ mod tests {
                 &serde_json::json!({}),
             )))),
             SinkFrame::Diagnostic(Diag::Error, "boom".into()),
-            SinkFrame::Result(crate::turn::TurnResult::Permissions),
+            SinkFrame::Result(Box::new(RunResult {
+                run_id: "r1".into(),
+                state: Some(crate::proto::gait::log::v1::run_result::State::Paused(
+                    Default::default(),
+                )),
+                ..Default::default()
+            })),
             SinkFrame::EndTurn,
         ];
         let mut rec = RecordingSink::default();
@@ -366,66 +300,18 @@ mod tests {
         }
     }
     #[test]
-    fn run_result_failed_carries_ended_and_no_oneof() {
-        use crate::turn::TurnResult;
-        let r = TurnResult::Failed {
-            ended: "max_steps".into(),
-            message: "reached max steps (100) without turn_complete".into(),
+    fn aggregate_run_result_serializes_directly() {
+        let r = RunResult {
+            run_id: "r1".into(),
+            state: Some(crate::proto::gait::log::v1::run_result::State::Complete(
+                Default::default(),
+            )),
+            ..Default::default()
         };
-        let p = run_result_proto(&r);
-        assert_eq!(p.ended, "max_steps");
-        assert!(p.result.is_none(), "failure carries no oneof result");
-    }
-
-    #[test]
-    fn run_result_sets_ended_for_done_split() {
-        use crate::turn::TurnResult;
-        let implicit = TurnResult::Done {
-            message: "".into(),
-            result: None,
-            changes: None,
-            implicit: true,
-        };
-        let structured = TurnResult::Done {
-            message: "ok".into(),
-            result: None,
-            changes: None,
-            implicit: false,
-        };
-        assert_eq!(run_result_proto(&implicit).ended, "implicit_done");
-        assert_eq!(run_result_proto(&structured).ended, "structured_done");
-        assert_eq!(
-            run_result_proto(&TurnResult::Permissions).ended,
-            "permissions"
-        );
-        assert_eq!(run_result_proto(&TurnResult::Cancelled).ended, "cancelled");
-    }
-
-    #[test]
-    fn run_result_permissions_maps() {
-        let v: serde_json::Value = serde_json::from_str(
-            &serde_json::to_string(&run_result_proto(&crate::turn::TurnResult::Permissions))
-                .unwrap(),
-        )
-        .unwrap();
-        assert!(v.get("permissions").is_some());
-    }
-    #[test]
-    fn run_result_done_serializes_with_changes() {
-        use crate::proto::gait::log::v1::Changes;
-        let r = crate::turn::TurnResult::Done {
-            message: "ok".into(),
-            result: None,
-            changes: Some(Changes {
-                added: vec!["a.rs".into()],
-                modified: vec![],
-                deleted: vec![],
-            }),
-            implicit: false,
-        };
-        let v: serde_json::Value =
-            serde_json::from_str(&serde_json::to_string(&run_result_proto(&r)).unwrap()).unwrap();
-        assert_eq!(v["done"]["changes"]["added"][0], "a.rs");
+        let value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(value["runId"], "r1");
+        assert!(value.get("complete").is_some());
     }
 
     #[test]
@@ -473,7 +359,13 @@ mod tests {
             "read".into(),
             &serde_json::json!({}),
         )));
-        s.result(&crate::turn::TurnResult::Permissions);
+        s.result(&RunResult {
+            run_id: "r1".into(),
+            state: Some(crate::proto::gait::log::v1::run_result::State::Paused(
+                Default::default(),
+            )),
+            ..Default::default()
+        });
         s.diagnostic(Diag::Error, "boom");
         assert_eq!(s.items.len(), 1);
         assert_eq!(s.results.len(), 1);

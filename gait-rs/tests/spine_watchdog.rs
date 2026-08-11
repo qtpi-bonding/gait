@@ -41,15 +41,20 @@ async fn silent_brain_runs_to_process_exit_not_watchdog_kill() {
     set_delay(tmp.path(), 500);
     // No frames → mock exits cleanly with no output.
     let (sink, _calls) = run_one(tmp.path(), "wd_silent", &[]).await;
-    // No error — brain exited 0 with no Terminated, so on_turn_error is NOT called.
-    // (run_loop treats missing Terminated as a normal empty turn, not an error.)
+    // The watchdog still gives the process cold-start grace, but once it exits
+    // without Terminated the coordinator closes the already-started lifecycle
+    // as failed.
     assert!(
         sink.diagnostics
             .iter()
-            .all(|(d, _)| !matches!(d, gait_core::embed::Diag::Error)),
-        "silent brain should not surface Diag::Error; got: {:?}",
+            .any(|(d, _)| matches!(d, gait_core::embed::Diag::Error)),
+        "silent exit must surface the failed lifecycle; got: {:?}",
         sink.diagnostics
     );
+    assert!(matches!(
+        sink.results[0].turns[0].outcome,
+        Some(gait_core::proto::gait::log::v1::turn_result::Outcome::Failed(_))
+    ));
 }
 
 /// PINS exit-over-hang: a brain that pings once then hangs is killed by the

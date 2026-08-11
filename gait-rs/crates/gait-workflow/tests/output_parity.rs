@@ -12,14 +12,21 @@
 //! precisely the round-trip Task 2.2's runner change introduced.
 
 use gait_core::embed::{Diag, RecordingSink, SinkFrame, TurnSink};
-use gait_core::proto::envelope::mint;
+use gait_core::proto::envelope::{mint, EventScope};
 use gait_core::proto::events;
-use gait_core::proto::gait::log::v1::{event, stream_item, StreamItem, TextDelta};
-use gait_core::turn::TurnResult;
+use gait_core::proto::gait::log::v1::{event, stream_item, RunResult, StreamItem, TextDelta};
 
 fn ev(body: event::Body) -> StreamItem {
     StreamItem {
-        item: Some(stream_item::Item::Event(mint(body, None, 0, 0))),
+        item: Some(stream_item::Item::Event(mint(
+            body,
+            None,
+            EventScope::Step {
+                run: 0,
+                turn: 0,
+                step: 0,
+            },
+        ))),
     }
 }
 
@@ -64,11 +71,30 @@ fn play_golden(sink: &mut dyn TurnSink) {
     )));
     sink.item(&ev(events::permissions(&[])));
     sink.diagnostic(Diag::Info, "structured_done pending");
-    sink.result(&TurnResult::Done {
-        message: "done".into(),
-        result: Some(serde_json::json!({"ok": true})),
-        changes: None,
-        implicit: false,
+    sink.result(&RunResult {
+        run_id: "r1".into(),
+        state: Some(
+            gait_core::proto::gait::log::v1::run_result::State::Complete(Default::default()),
+        ),
+        turns: vec![gait_core::proto::gait::log::v1::TurnResult {
+            turn_id: "t1".into(),
+            outcome: Some(gait_core::proto::gait::log::v1::turn_result::Outcome::Done(
+                gait_core::proto::gait::log::v1::TurnDone {
+                    output: Some(
+                        gait_core::proto::gait::log::v1::turn_done::Output::Structured(
+                            gait_core::proto::gait::log::v1::StructuredDone {
+                                message: "done".into(),
+                                result: gait_core::proto::events::to_value_opt(&Some(
+                                    serde_json::json!({"ok": true}),
+                                )),
+                            },
+                        ),
+                    ),
+                },
+            )),
+            ..Default::default()
+        }],
+        ..Default::default()
     });
     sink.end_turn();
 }
@@ -98,22 +124,9 @@ async fn channel_routed_output_matches_direct_output() {
         norm_items(&drained.items),
         "items must survive the channel round-trip verbatim (modulo minted event id)"
     );
-    // `TurnResult` has no `PartialEq`; normalize both sides to (message, result)
-    // pairs for the comparison — the only fields the golden scenario sets.
-    fn norm_results(rs: &[TurnResult]) -> Vec<(String, Option<serde_json::Value>)> {
-        rs.iter()
-            .map(|r| match r {
-                TurnResult::Done {
-                    message, result, ..
-                } => (message.clone(), result.clone()),
-                other => (format!("{other:?}"), None),
-            })
-            .collect()
-    }
     assert_eq!(
-        norm_results(&direct.results),
-        norm_results(&drained.results),
-        "the final TurnResult must survive the channel round-trip verbatim"
+        direct.results, drained.results,
+        "the aggregate RunResult must survive the channel round-trip verbatim"
     );
     assert_eq!(
         direct.diagnostics, drained.diagnostics,
@@ -136,8 +149,8 @@ impl TurnSink for ChannelSink {
     fn end_turn(&mut self) {
         let _ = self.tx.send(SinkFrame::EndTurn);
     }
-    fn result(&mut self, r: &TurnResult) {
-        let _ = self.tx.send(SinkFrame::Result(r.clone()));
+    fn result(&mut self, r: &RunResult) {
+        let _ = self.tx.send(SinkFrame::Result(Box::new(r.clone())));
     }
     fn session_id(&mut self, id: &str) {
         let _ = self.tx.send(SinkFrame::SessionId(id.to_string()));

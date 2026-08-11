@@ -4,9 +4,8 @@ use std::sync::Arc;
 use gait_core::embed::{
     self, BrainLaunch, Diag, LoopConfig, SinkFrame, TurnDriver, TurnSink, TurnSource, TurnStart,
 };
-use gait_core::proto::gait::log::v1::StreamItem;
+use gait_core::proto::gait::log::v1::{RunResult, StreamItem};
 use gait_core::proto::gait::workflow::v1::{Node, PromptNode, Workflow};
-use gait_core::turn::TurnResult;
 use gait_core::Session;
 
 use crate::exec_shell::NodeContext;
@@ -140,7 +139,7 @@ struct CapturingSink {
     /// Borrowed workflow channel sender. Forwards every call we receive so the
     /// workflow's drain consumer sees the sub-turn's full output, verbatim.
     workflow_tx: tokio::sync::mpsc::UnboundedSender<SinkFrame>,
-    result: Option<TurnResult>,
+    result: Option<RunResult>,
     failed: bool,
 }
 
@@ -168,9 +167,11 @@ impl TurnSink for CapturingSink {
     fn end_turn(&mut self) {
         let _ = self.workflow_tx.send(SinkFrame::EndTurn);
     }
-    fn result(&mut self, r: &TurnResult) {
+    fn result(&mut self, r: &RunResult) {
         self.result = Some(r.clone());
-        let _ = self.workflow_tx.send(SinkFrame::Result(r.clone()));
+        let _ = self
+            .workflow_tx
+            .send(SinkFrame::Result(Box::new(r.clone())));
     }
     fn session_id(&mut self, id: &str) {
         let _ = self.workflow_tx.send(SinkFrame::SessionId(id.to_string()));
@@ -412,59 +413,84 @@ pub async fn exec_prompt_node(
     }
 }
 
-fn map_turn_result(turn_result: TurnResult, session_id: &str) -> NodeOutput {
-    match turn_result {
-        TurnResult::Done {
-            message, result, ..
-        } => NodeOutput {
-            text: message,
-            exit_code: None,
-            json: result,
-            routed_to: None,
-            session_id: session_id.to_string(),
+fn map_turn_result(run_result: RunResult, session_id: &str) -> NodeOutput {
+    use gait_core::proto::gait::log::v1::{turn_done, turn_result, PauseReason};
+    let outcome = run_result
+        .turns
+        .last()
+        .and_then(|turn| turn.outcome.as_ref());
+    match outcome {
+        Some(turn_result::Outcome::Done(done)) => match done.output.as_ref() {
+            Some(turn_done::Output::Text(text)) => NodeOutput {
+                text: text.message.clone(),
+                exit_code: None,
+                json: None,
+                routed_to: None,
+                session_id: session_id.to_string(),
+            },
+            Some(turn_done::Output::Structured(output)) => NodeOutput {
+                text: output.message.clone(),
+                exit_code: None,
+                json: output
+                    .result
+                    .as_ref()
+                    .and_then(|value| serde_json::to_value(value).ok()),
+                routed_to: None,
+                session_id: session_id.to_string(),
+            },
+            None => NodeOutput::open(),
         },
-        TurnResult::Permissions => NodeOutput {
-            text: "(permissions required)".into(),
-            exit_code: None,
-            json: None,
-            routed_to: None,
-            session_id: session_id.to_string(),
-        },
-        TurnResult::Clarify { .. } => NodeOutput {
-            text: "(paused for clarification)".into(),
-            exit_code: None,
-            json: None,
-            routed_to: None,
-            session_id: session_id.to_string(),
-        },
-        TurnResult::Inform { .. } => NodeOutput {
-            text: "(paused to inform user)".into(),
-            exit_code: None,
-            json: None,
-            routed_to: None,
-            session_id: session_id.to_string(),
-        },
-        TurnResult::SandboxUnlock { .. } => NodeOutput {
+        Some(turn_result::Outcome::Pause(pause))
+            if pause.reason == PauseReason::Permissions as i32 =>
+        {
+            NodeOutput {
+                text: "(permissions required)".into(),
+                exit_code: None,
+                json: None,
+                routed_to: None,
+                session_id: session_id.to_string(),
+            }
+        }
+        Some(turn_result::Outcome::Pause(pause)) if pause.reason == PauseReason::Clarify as i32 => {
+            NodeOutput {
+                text: "(paused for clarification)".into(),
+                exit_code: None,
+                json: None,
+                routed_to: None,
+                session_id: session_id.to_string(),
+            }
+        }
+        Some(turn_result::Outcome::Pause(pause)) if pause.reason == PauseReason::Inform as i32 => {
+            NodeOutput {
+                text: "(paused to inform user)".into(),
+                exit_code: None,
+                json: None,
+                routed_to: None,
+                session_id: session_id.to_string(),
+            }
+        }
+        Some(turn_result::Outcome::Pause(_)) => NodeOutput {
             text: "(paused for sandbox unlock)".into(),
             exit_code: None,
             json: None,
             routed_to: None,
             session_id: session_id.to_string(),
         },
-        TurnResult::Cancelled => NodeOutput {
+        Some(turn_result::Outcome::Cancelled(_)) => NodeOutput {
             text: "(turn cancelled by user)".into(),
             exit_code: None,
             json: None,
             routed_to: None,
             session_id: session_id.to_string(),
         },
-        TurnResult::Failed { message, .. } => NodeOutput {
-            text: message,
+        Some(turn_result::Outcome::Failed(failed)) => NodeOutput {
+            text: failed.message.clone(),
             exit_code: Some(1),
             json: None,
             routed_to: None,
             session_id: session_id.to_string(),
         },
+        None => NodeOutput::open(),
     }
 }
 
@@ -487,7 +513,7 @@ mod tests {
         }
         impl TurnSink for CapturingDiagSink {
             fn item(&mut self, _item: &StreamItem) {}
-            fn result(&mut self, _r: &TurnResult) {}
+            fn result(&mut self, _r: &RunResult) {}
             fn session_id(&mut self, _id: &str) {}
             fn diagnostic(&mut self, level: Diag, msg: &str) {
                 self.diagnostics.push((level, msg.to_string()));
@@ -640,8 +666,8 @@ mod tests {
             fn end_turn(&mut self) {
                 self.0.push(SinkFrame::EndTurn);
             }
-            fn result(&mut self, r: &gait_core::turn::TurnResult) {
-                self.0.push(SinkFrame::Result(r.clone()));
+            fn result(&mut self, r: &RunResult) {
+                self.0.push(SinkFrame::Result(Box::new(r.clone())));
             }
             fn session_id(&mut self, id: &str) {
                 self.0.push(SinkFrame::SessionId(id.into()));
@@ -663,7 +689,22 @@ mod tests {
             sink.item(&delta("hel"));
             sink.item(&delta("lo"));
             sink.diagnostic(Diag::Error, "warn");
-            sink.result(&gait_core::turn::TurnResult::Permissions);
+            sink.result(&RunResult {
+                run_id: "r1".into(),
+                state: Some(gait_core::proto::gait::log::v1::run_result::State::Paused(
+                    Default::default(),
+                )),
+                turns: vec![gait_core::proto::gait::log::v1::TurnResult {
+                    turn_id: "t1".into(),
+                    outcome: Some(
+                        gait_core::proto::gait::log::v1::turn_result::Outcome::Pause(
+                            Default::default(),
+                        ),
+                    ),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
             sink.end_turn();
         };
 

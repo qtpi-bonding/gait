@@ -26,7 +26,15 @@ use gait_core::proto::events;
 /// re-stamps seq/parents on append (see `src/turn/spine.rs:496`).
 fn append_assistant(text: &str) -> Signal {
     let body = events::assistant_text(text.to_string());
-    let evt = envelope::mint(body, None, 0, 0);
+    let evt = envelope::mint(
+        body,
+        None,
+        envelope::EventScope::Step {
+            run: 0,
+            turn: 0,
+            step: 0,
+        },
+    );
     Signal {
         corr_id: 0,
         body: Some(signal::Body::Append(Append { event: Some(evt) })),
@@ -40,7 +48,15 @@ fn append_tool_call(call_id: &str, name: &str) -> Signal {
         name.to_string(),
         &serde_json::json!({}),
     );
-    let evt = envelope::mint(body, None, 0, 0);
+    let evt = envelope::mint(
+        body,
+        None,
+        envelope::EventScope::Step {
+            run: 0,
+            turn: 0,
+            step: 0,
+        },
+    );
     Signal {
         corr_id: 0,
         body: Some(signal::Body::Append(Append { event: Some(evt) })),
@@ -134,7 +150,12 @@ async fn appends_persist_in_order_with_session_start_first() {
 #[tokio::test]
 async fn persistence_call_sequence_is_pinned() {
     let tmp = tempfile::tempdir().unwrap();
-    let (_sink, calls) = run_one(tmp.path(), "p2", &[terminated_ok("done")]).await;
+    let (_sink, calls) = run_one(
+        tmp.path(),
+        "p2",
+        &[append_assistant("done"), terminated_ok("done")],
+    )
+    .await;
     let seq = calls.snapshot();
 
     // The spine's git interactions, characterized precisely via the mock

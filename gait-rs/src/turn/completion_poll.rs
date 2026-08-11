@@ -201,7 +201,15 @@ mod tests {
 
     /// Wrap a `Body` in a fresh `Event` (seq is irrelevant for these scans).
     fn ev(body: crate::proto::gait::log::v1::event::Body) -> Event {
-        mint(body, None, 0, 0)
+        mint(
+            body,
+            None,
+            crate::proto::envelope::EventScope::Step {
+                run: 0,
+                turn: 0,
+                step: 0,
+            },
+        )
     }
 
     /// Extract the payload kind out of a `Completion` for test assertions.

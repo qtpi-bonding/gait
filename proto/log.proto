@@ -32,8 +32,8 @@ message Event {
   string content_hash     = 5;  // hash(JCS(body)) — integrity; recorded at creation, recompute-to-verify.
   repeated string parents = 6;  // causal DAG: [] root · [prev] linear · [a,b] merge. Populated now; folded later.
 
-  uint32 turn               = 7;  // 0-indexed turn ordinal within the session; stamped by emitter
-  uint32 step               = 8;  // 0-indexed step ordinal within the current turn; stamped by emitter
+  optional uint32 run       = 7;  // 0-indexed run ordinal within the session
+  optional uint32 turn      = 8;  // 0-indexed turn ordinal within the run
   // Sender/recipient/thread metadata — required whenever an event crosses a
   // party boundary (subagent task injection, cross-session delivery, a
   // multi-writer room log) or lives in a room log; omitted in an ordinary
@@ -42,7 +42,8 @@ message Event {
   // comment — content_hash covers only the body arm, by construction) —
   // do not treat `signature` as tamper-evident.
   optional Provenance provenance = 9;
-  reserved 10 to 15;             // remaining envelope-field reservation
+  optional uint32 step      = 10; // 0-indexed step ordinal within the turn
+  reserved 11 to 15;             // remaining envelope-field reservation
 
   // NOTE: an unset `body` is a malformed event — the Retrace MUST reject body==None as a hard error
   // (proto3 cannot enforce "exactly one oneof arm set").
@@ -105,7 +106,6 @@ message Payload {
     Permissions        permissions         = 13;
     PermissionsReply   permissions_reply   = 14;
     AgentUpdate        agent_update        = 15;
-    TurnComplete       turn_complete       = 16;
     Summary            summary             = 17;
     Error              error               = 18;
     RawEvent           raw                 = 19;  // opaque holder: legacy / not-yet-modeled events (incl. workflow today)
@@ -131,7 +131,15 @@ CancellationSignal cancellation_signal = 55;
     LlmCallStarted     llm_call_started    = 69;
     LlmCallCompleted   llm_call_completed  = 70;
     MessageAccept      message_accept      = 71;
+    RunStart           run_start           = 72;
+    TurnStart          turn_start          = 73;
+    TurnResult         turn_result         = 74;
+    RunComplete        run_complete        = 75;
+    RunCancelled       run_cancelled       = 76;
+    RunFailed          run_failed          = 77;
   }
+  reserved 16;
+  reserved "turn_complete";
   reserved 20 to 49;  // workflow family (WorkflowHook* / WorkflowNode* / WorkflowStart …) — deferred to the workflow-subsystem redo
 }
 
@@ -216,9 +224,9 @@ message CodebaseState {               // environment-worldline stamp (working-tr
   repeated string dirty_files = 3;
 }
 message PermissionPolicy { repeated string allow = 1; repeated string deny = 2; }
+message StepTokenUsage  { uint64 input = 1; uint64 output = 2; uint64 cache_read = 3; uint64 cache_write = 4; }
 message TurnTokenUsage  { uint64 input = 1; uint64 output = 2; uint64 cache_read = 3; uint64 cache_write = 4; }
-message Changes { repeated string added = 1; repeated string modified = 2; repeated string deleted = 3; }
-message StructuredDoneOutput { string message = 1; google.protobuf.Value result = 2; Changes changes = 3; }
+message RunTokenUsage   { uint64 input = 1; uint64 output = 2; uint64 cache_read = 3; uint64 cache_write = 4; }
 message CompactionTokenUsage { uint64 input = 1; uint64 output = 2; }
 message ProcessResult   { int32 exit_code = 1; }
 message ConvergenceItem { string id = 1; string proposal = 2; optional string response = 3; bool consistent = 4; }
@@ -274,12 +282,113 @@ message ToolResult {
   optional string checkpoint        = 5;  // shadow-git SHA after this call, mutating tools only
 }
 
-message TurnComplete {
-  TurnTokenUsage     usage        = 1;
-  CodebaseState codebase     = 2;
-  optional string checkpoint = 3;      // shadow-git SHA (environment snapshot handle)
-  repeated string blocks     = 4;      // numbered render blocks (quote-reply UI)
-  StructuredDoneOutput    output       = 5;
+message ExecutionTiming {
+  uint64 started_ms = 1;
+  optional uint64 ended_ms = 2;
+  optional google.protobuf.Duration active_duration = 3;
+}
+
+message StepResult {
+  uint32 index = 1;
+  StepTokenUsage usage = 2;
+  repeated string event_ids = 3;
+  ExecutionTiming timing = 4;
+}
+
+message TextDone { string message = 1; }
+message StructuredDone { string message = 1; google.protobuf.Value result = 2; }
+
+enum PauseReason {
+  PAUSE_REASON_UNSPECIFIED = 0;
+  PAUSE_REASON_CLARIFY = 1;
+  PAUSE_REASON_INFORM = 2;
+  PAUSE_REASON_PERMISSIONS = 3;
+  PAUSE_REASON_SANDBOX_UNLOCK = 4;
+}
+
+message TurnPause {
+  PauseReason reason = 1;
+  string request_event_id = 2;
+}
+message TurnDone {
+  oneof output {
+    TextDone text = 1;
+    StructuredDone structured = 2;
+  }
+}
+message TurnCancelled { string signal_event_id = 1; }
+message TurnFailed { string reason = 1; string message = 2; }
+message TurnResult {
+  string turn_id = 1;
+  uint32 index = 2;
+  repeated StepResult steps = 3;
+  TurnTokenUsage usage = 4;
+  repeated string blocks = 5;
+  ExecutionTiming timing = 6;
+  oneof outcome {
+    TurnPause pause = 7;
+    TurnDone done = 8;
+    TurnCancelled cancelled = 9;
+    TurnFailed failed = 10;
+  }
+}
+
+message RunStart {
+  string run_id = 1;
+  uint32 index = 2;
+  optional string baseline_checkpoint = 3;
+}
+message TurnStart {
+  string turn_id = 1;
+  uint32 index = 2;
+  optional string trigger_event_id = 3;
+}
+message RunPaused {}
+message RunEndState {
+  CodebaseState codebase = 1;
+  optional string checkpoint = 2;
+}
+
+message FileChange {
+  string path = 1;
+  optional uint64 added_lines = 2;
+  optional uint64 removed_lines = 3;
+}
+message ChangeSummary {
+  repeated FileChange added = 1;
+  repeated FileChange modified = 2;
+  repeated FileChange removed = 3;
+  uint32 file_count = 4;
+  optional uint64 added_lines = 5;
+  optional uint64 removed_lines = 6;
+}
+message ToolCount { string name = 1; uint32 count = 2; }
+message ShellInvocation {
+  string call_id = 1;
+  optional string command = 2;
+  optional int32 exit_code = 3;
+}
+message RunSummary {
+  ChangeSummary changes = 1;
+  repeated ToolCount tools = 2;
+  repeated ShellInvocation shell = 3;
+}
+message RunComplete { RunEndState final_state = 1; RunSummary summary = 2; }
+message RunCancelled { RunEndState final_state = 1; }
+message RunFailed { RunEndState final_state = 1; }
+message RunResult {
+  string run_id = 1;
+  repeated TurnResult turns = 2;
+  RunTokenUsage usage = 3;
+  oneof state {
+    RunPaused paused = 4;
+    RunComplete complete = 5;
+    RunCancelled cancelled = 6;
+    RunFailed failed = 7;
+  }
+  ExecutionTiming timing = 8;
+  reserved 9;
+  reserved "ended";
 }
 
 message Summary {
@@ -376,21 +485,6 @@ message PermissionDenied {
   string resource  = 2;  // the command/pattern text that was checked
   string pattern   = 3;  // the deny[] entry that matched, e.g. "shell:rm -rf *"
 }
-message RunResult {
-  oneof result {
-    StructuredDoneOutput  done        = 1;
-    Clarify     clarify     = 2;
-    Permissions permissions = 3;
-    Inform      inform      = 4;
-    CancellationSignal cancelled = 5;
-    SandboxUnlock sandbox_unlock = 6;
-  }
-  string ended = 7;  // terminal-reason discriminant; set on every terminal path
-}
-
-
-
-
 // ── Sandbox ──────────────────────────────────────────────────────────────────
 message SandboxApplied {
   SandboxEnforcement enforcement = 1;  // active kernel enforcement or fallback
@@ -606,7 +700,7 @@ message LlmCallStarted {
   string model = 1;  // model id in use for this call
 }
 message LlmCallCompleted {
-  TurnTokenUsage usage           = 1;  // cumulative turn usage AFTER this step (same convention as TurnComplete.usage)
+  StepTokenUsage usage           = 1;  // usage delta for this model invocation
   uint32         tool_call_count = 2;  // number of tool calls the model requested this step
   bool           had_text        = 3;  // true if the model produced any text or thinking this step
 }

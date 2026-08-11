@@ -94,7 +94,7 @@ mod tests {
             Some("/code".to_string()),
             false,
         );
-        let ev = mint(body, None, 0, 0);
+        let ev = mint(body, None, crate::proto::envelope::EventScope::Session);
         let meta = super::from_events(&[ev], "s1234567");
         assert_eq!(meta.codebase_path.as_deref(), Some("/code"));
         assert_eq!(meta.assigned_by.as_deref(), Some("sparent0"));

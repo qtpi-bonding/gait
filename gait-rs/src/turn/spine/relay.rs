@@ -17,7 +17,6 @@ use super::checkpoint_enrich::enrich_checkpoint;
 use super::handlers::{self, tool::run_tool_as_spine, TurnCtx};
 use super::lifecycle::{self, brain_argv, ProfileInputs, TurnMode};
 use super::preview::enrich_permissions_preview;
-use super::util::turn_result_from_json;
 use super::watchdog::{SpinePhase, Watchdog};
 
 /// Encode credential material exclusively for the private first BrainInit
@@ -42,7 +41,7 @@ pub type SignalSlot =
 /// State owned exclusively by the relay loop. Handlers never touch it — they
 /// receive `TurnCtx` and return values; only `relay_brain_turn` mutates it.
 struct RelayState {
-    run_result: Option<crate::turn::TurnResult>,
+    finalized_turn: Option<crate::proto::gait::sandbox::v1::FinalizedTurn>,
     brain_failed: bool,
     /// In-flight ToolCall call_id → tool name, for orphan ToolResult synthesis.
     pending_calls: std::collections::HashMap<String, String>,
@@ -66,7 +65,7 @@ struct RelayState {
 impl RelayState {
     fn new() -> Self {
         Self {
-            run_result: None,
+            finalized_turn: None,
             brain_failed: false,
             pending_calls: std::collections::HashMap::new(),
             completed_mutations: std::collections::HashMap::new(),
@@ -112,7 +111,7 @@ pub async fn relay_brain_turn(
     repos: &crate::git::Repos,
     mode: &TurnMode,
     fs_delegate: Option<std::sync::Arc<dyn crate::embed::FsDelegate>>,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<crate::proto::gait::log::v1::RunResult> {
     // ── Establish (or inherit) the cascade group for this turn ─────────────
     let group = crate::process::establish(cascade_group_arg);
 
@@ -146,14 +145,16 @@ pub async fn relay_brain_turn(
     // repo), so codebase mixing is structurally impossible.
     // Session-scoped git handle — null in ephemeral mode (no worktree/checkpoint/commit).
     let git = match mode {
-        TurnMode::Persistent => crate::turn::SessionGit::for_session(repos, gait_dir, session_id),
+        TurnMode::Persistent { .. } => {
+            crate::turn::SessionGit::for_session(repos, gait_dir, session_id)
+        }
         TurnMode::Ephemeral { .. } => crate::turn::SessionGit::null(),
     };
 
     // Persistent: worktree + checkpoint init + lock + SessionStart, exactly as before.
     // Ephemeral: an in-memory log seeded with the one-off input; no FS writes at all.
     let log = match mode {
-        TurnMode::Persistent => {
+        TurnMode::Persistent { .. } => {
             git.ensure_worktree()?;
             git.checkpoint_init(codebase)?;
             let log = crate::turn::SessionLog::open(gait_dir, session_id)?;
@@ -192,16 +193,24 @@ pub async fn relay_brain_turn(
             }
             log
         }
-        TurnMode::Ephemeral { input } => crate::turn::SessionLog::ephemeral(input.clone()),
+        TurnMode::Ephemeral { .. } => crate::turn::SessionLog::ephemeral(Vec::new()),
     };
+    let trigger = match mode {
+        TurnMode::Persistent { trigger } => trigger.clone(),
+        TurnMode::Ephemeral { input } => input
+            .iter()
+            .filter_map(|event| event.body.clone())
+            .collect(),
+    };
+    let started = crate::turn::run_lifecycle::begin_turn(&log, &git, codebase, trigger)?;
     // Fold the durable selected inference before provider/credential binding.
     let events = log.events();
     // Same computation teardown (lifecycle.rs) does post-turn with its own
     // `events` snapshot — here it's pre-turn, so it names *this* turn's
-    // number. It cannot change mid-turn (no TurnComplete for this turn has
+    // number. It cannot change mid-turn (no RunComplete for this turn has
     // been logged yet), so compute it once and reuse it for every checkpoint
     // enrichment below rather than re-reading the log per ToolResult.
-    let turn_n = crate::session::log::count_turn_complete(&events) as u32;
+    let turn_n = started.turn_index;
     let mut profile = lifecycle::build_turn_profile(gait_dir, codebase, profile_inputs);
     {
         use crate::session::retrace::{active_inference, active_mutations, apply_cascade};
@@ -507,7 +516,7 @@ pub async fn relay_brain_turn(
                     );
                     diag.terminal(&rec.to_json_line());
                 }
-                state.run_result = Some(turn_result_from_json(&t.run_result_json));
+                state.finalized_turn = t.turn;
                 break;
             }
             Some(signal::Body::Spawn(sp)) => {
@@ -628,7 +637,8 @@ pub async fn relay_brain_turn(
         codebase,
         session_id,
         &log,
-        state.run_result,
+        &started,
+        state.finalized_turn,
         state.brain_failed,
     )
     .await

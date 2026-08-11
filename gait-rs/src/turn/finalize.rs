@@ -1,33 +1,10 @@
-//! `StepOutcome` + table-driven `finalize()` — Stage 3 / Task 6.
+//! Brain-side `StepOutcome` finalization.
 //!
-//! `finalize()` is THE epilogue: every one of `run_turn`'s 13 return sites
-//! (Tasks 7–13) will collapse into `return finalize(&env, &mut state, &persist,
-//! outcome).await` for the matching `StepOutcome`. This task only defines the
-//! type and proves the table against unit-mocked hooks/repos — nothing in
-//! `run_turn` calls `finalize()` yet.
-//!
-//! ## The table (verbatim from plan-01 §Stage 3 Task 6)
-//!
-//! | outcome | terminal event | checkpoint | commit | post_turn | drain |
-//! |---|---|---|---|---|---|
-//! | `Done` | `turn_complete` | ✓ | ✓ | "done" | — |
-//! | `Pause(Permissions)` | `permissions` | — | ✓ | "permissions" | — |
-//! | `Pause(Clarify)` | — | — | ✓ | "clarify" | — |
-//! | `Pause(Inform)` | — | — | ✓ | "inform" | — |
-//! | `Pause(SandboxUnlock)` | `sandbox_unlock` | — | ✓ | "unlock" | — |
-//! | `Cancelled` | `cancellation_signal` | — | ✓ | *(skipped today — inconsistency, preserved)* | — |
-//! | `MaxSteps` | — | — | *(drain-commit only, swallowed)* | — | ✓ |
-//! | `Fail(err)` | *(none)* | — | *(none)* | *(none)* | — |
-//!
-//! `MaxSteps` is a dedicated variant, not folded into `Fail` (plan review M2):
-//! the drain is a distinct 3-part sequence (record pending completions →
-//! `commit_swallow` → `spawn_wake`), not a `persist.commit`.
-//!
-//! **`Done` ordering (plan review M1):** checkpoint → diff → build `changes` →
-//! emit `turn_complete` (carrying `checkpoint`/`changes`) → `persist.commit` →
-//! `post_turn`. Getting this order wrong silently drops `checkpoint`/`changes`
-//! from the transcript — the table's column order is a policy summary, not
-//! the execution order.
+//! This module resolves one activation into the transient result sent in the
+//! Nerve `Terminated` signal. It may record supporting request/cancellation
+//! events and run hooks, but it never writes durable `TurnResult` or run
+//! lifecycle events. The spine owns orphan repair, checkpoints, summaries,
+//! durable terminal events, commits, and aggregate `RunResult` publication.
 //!
 //! **`step_count` provenance (plan review m4):** `Done` uses `step_index + 1`
 //! in `run_turn` today; `Permissions`/`Clarify`/`Inform` use
@@ -40,9 +17,6 @@
 use crate::git::{build_trace_message, TraceTrailers};
 use crate::proto::events;
 use crate::proto::gait::log::v1 as pb;
-use crate::proto::gait::log::v1::TurnTokenUsage;
-use crate::session::log::count_turn_complete;
-use crate::text::split_into_blocks;
 use crate::types::HookContext;
 
 use super::persist::Persistence;
@@ -108,46 +82,9 @@ pub(crate) async fn finalize(
             result,
             implicit,
         } => {
-            // M1: checkpoint → diff → changes → emit turn_complete → commit → post_turn.
-            let events_now = env.ingestor.events()?;
-            let turn_n = count_turn_complete(&events_now) as u32 + 1;
-            let code_checkpoint = persist.checkpoint(turn_n);
-            let changes = code_checkpoint.as_ref().and_then(|sha| {
-                env.repos
-                    .checkpoints
-                    .diff(env.gait_dir, env.session_id, sha)
-                    .ok()
-                    .flatten()
-            });
-            let usage = TurnTokenUsage {
-                input: state.total_usage.input_tokens as u64,
-                output: state.total_usage.output_tokens as u64,
-                cache_read: state.total_usage.cache_read_tokens as u64,
-                cache_write: state.total_usage.cache_write_tokens as u64,
-            };
-            env.emitter
-                .record(events::turn_complete(events::TurnCompleteParams {
-                    usage,
-                    codebase_hash: env.codebase_hash.to_string(),
-                    codebase_dirty: env.codebase_dirty,
-                    checkpoint: code_checkpoint,
-                    blocks: split_into_blocks(&state.all_turn_text),
-                    message: message.clone(),
-                    result: result.clone(),
-                    changes: changes.clone(),
-                }))?;
-            persist.commit(&build_trace_message(
-                &format!("session({}): turn {}", env.session_id, turn_n),
-                &TraceTrailers {
-                    phase: "turn".to_string(),
-                    turn: Some(turn_n),
-                    parent_session: None,
-                    subagent_session: None,
-                    status: None,
-                    codebase: env.codebase_path.display().to_string(),
-                    codebase_hash: env.codebase_hash.to_string(),
-                },
-            ))?;
+            // The brain produces only a transient outcome. The spine owns the
+            // durable TurnResult, final checkpoint/diff, terminal run event,
+            // and trace commit after it has drained and repaired the turn.
             post_turn(
                 env,
                 "done",
@@ -157,7 +94,7 @@ pub(crate) async fn finalize(
             Ok(TurnResult::Done {
                 message,
                 result,
-                changes,
+                changes: None,
                 implicit,
             })
         }
@@ -286,7 +223,7 @@ pub(crate) async fn finalize(
             }
             Ok(TurnResult::Failed {
                 ended: "max_steps".into(),
-                message: format!("reached max steps ({max_iter}) without turn_complete"),
+                message: format!("reached max steps ({max_iter}) without completion"),
             })
         }
     }
@@ -539,7 +476,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finalize_done_checkpoints_commits_emits_turn_complete_and_posts_done() {
+    async fn finalize_done_leaves_durable_epilogue_to_spine_and_posts_done() {
         let fx = fixture();
         let env = env_from(&fx);
         let persist = unsealed(&fx);
@@ -565,22 +502,14 @@ mod tests {
 
         assert!(matches!(result, TurnResult::Done { message, .. } if message == "all done"));
         assert_eq!(fx.spy_hook.outcomes(), vec!["done".to_string()]);
-        assert_eq!(
-            fx.trace.commits(),
-            vec![format!(
-                "session(sfin01): turn 1\n\nPhase: turn\nTurn: 1\nCodebase: {}\nCodebase-Hash: deadbeef",
-                fx.session.codebase_path.display()
-            )]
+        assert!(
+            fx.trace.commits().is_empty(),
+            "brain must not commit the durable epilogue"
         );
-
-        let events = fx.emitter.take_buffer();
-        assert_eq!(events.len(), 1, "exactly one turn_complete event");
-        let is_turn_complete = matches!(
-            events[0].body.as_ref(),
-            Some(crate::proto::gait::log::v1::event::Body::Payload(p))
-                if matches!(p.kind, Some(crate::proto::gait::log::v1::payload::Kind::TurnComplete(_)))
+        assert!(
+            fx.emitter.take_buffer().is_empty(),
+            "brain must not emit durable lifecycle events"
         );
-        assert!(is_turn_complete, "expected a TurnComplete body");
     }
 
     #[tokio::test]

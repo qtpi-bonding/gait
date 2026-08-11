@@ -14,14 +14,15 @@ use serde_json::json;
 
 fn sample_event() -> Event {
     Event {
-        version: 1,
+        version: super::envelope::LOG_VERSION,
         id: "00000000-0000-4000-8000-000000000001".into(),
         seq: 1,
         ts: 1_700_000_000_000,
         content_hash: String::new(),
         parents: vec![],
-        turn: 0,
-        step: 0,
+        run: Some(0),
+        turn: Some(0),
+        step: None,
         body: Some(event::Body::Payload(Payload {
             kind: Some(payload::Kind::UserText(UserText {
                 content: "hello".into(),

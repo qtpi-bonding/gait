@@ -136,12 +136,24 @@ pub async fn run_one_off(
         one_off_schema(),
     )
     .await?;
-    let result = match res {
-        gait_core::turn::TurnResult::Done {
-            result: Some(r), ..
-        } => r,
-        _ => anyhow::bail!("model returned no structured result"),
-    };
+    let result = res
+        .turns
+        .last()
+        .and_then(|turn| turn.outcome.as_ref())
+        .and_then(|outcome| match outcome {
+            gait_core::proto::gait::log::v1::turn_result::Outcome::Done(done) => {
+                done.output.as_ref()
+            }
+            _ => None,
+        })
+        .and_then(|output| match output {
+            gait_core::proto::gait::log::v1::turn_done::Output::Structured(output) => {
+                output.result.as_ref()
+            }
+            _ => None,
+        })
+        .and_then(|value| serde_json::to_value(value).ok())
+        .ok_or_else(|| anyhow::anyhow!("model returned no structured result"))?;
     parse_one_off(&result)
 }
 

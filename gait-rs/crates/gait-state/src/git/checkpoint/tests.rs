@@ -159,16 +159,90 @@ fn checkpoint_and_diff_work_for_non_git_codebase() {
     let cb = TempDir::new().unwrap(); // NOT a git repo
     GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
     assert!(checkpoint_git_dir(ws.path(), &id).join("HEAD").exists());
+    let baseline = GitCheckpointRepo
+        .checkpoint(ws.path(), &id, cb.path(), 0)
+        .unwrap();
     std::fs::write(cb.path().join("f.txt"), "v1\n").unwrap();
-    let sha = GitCheckpointRepo
+    let final_sha = GitCheckpointRepo
         .checkpoint(ws.path(), &id, cb.path(), 1)
         .unwrap();
-    assert_eq!(sha.len(), 40);
+    assert_eq!(final_sha.len(), 40);
     let ch = GitCheckpointRepo
-        .diff(ws.path(), &id, &sha)
+        .diff_between(ws.path(), &id, &baseline, &final_sha)
         .unwrap()
         .unwrap();
-    assert_eq!(ch.added, vec!["f.txt".to_string()]);
+    assert_eq!(ch.added[0].path, "f.txt");
+    assert_eq!(ch.added[0].added_lines, Some(1));
+    assert_eq!(ch.file_count, 1);
+}
+
+#[test]
+fn baseline_captures_dirty_start_and_unchanged_run_has_empty_diff() {
+    let (ws, cb, id) = fixture();
+    GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
+    std::fs::write(cb.path().join("a.txt"), "dirty before run\n").unwrap();
+    let baseline = GitCheckpointRepo
+        .checkpoint(ws.path(), &id, cb.path(), 0)
+        .unwrap();
+    let final_sha = GitCheckpointRepo
+        .checkpoint(ws.path(), &id, cb.path(), 1)
+        .unwrap();
+    assert_eq!(baseline, final_sha);
+    let summary = GitCheckpointRepo
+        .diff_between(ws.path(), &id, &baseline, &final_sha)
+        .unwrap()
+        .unwrap();
+    assert_eq!(summary.file_count, 0);
+    assert!(summary.added.is_empty() && summary.modified.is_empty() && summary.removed.is_empty());
+}
+
+#[test]
+fn baseline_to_final_reports_delete_and_rename_deterministically() {
+    let (ws, cb, id) = fixture();
+    GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
+    std::fs::write(cb.path().join("delete.txt"), "gone\n").unwrap();
+    std::fs::write(cb.path().join("rename-old.txt"), "same content\n").unwrap();
+    let baseline = GitCheckpointRepo
+        .checkpoint(ws.path(), &id, cb.path(), 0)
+        .unwrap();
+    std::fs::remove_file(cb.path().join("delete.txt")).unwrap();
+    std::fs::rename(
+        cb.path().join("rename-old.txt"),
+        cb.path().join("rename-new.txt"),
+    )
+    .unwrap();
+    let final_sha = GitCheckpointRepo
+        .checkpoint(ws.path(), &id, cb.path(), 1)
+        .unwrap();
+    let summary = GitCheckpointRepo
+        .diff_between(ws.path(), &id, &baseline, &final_sha)
+        .unwrap()
+        .unwrap();
+    assert_eq!(summary.file_count, 2);
+    assert_eq!(summary.removed[0].path, "delete.txt");
+    assert_eq!(summary.modified[0].path, "rename-new.txt");
+}
+
+#[test]
+fn binary_change_keeps_file_identity_but_omits_unreliable_line_totals() {
+    let (ws, cb, id) = fixture();
+    GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
+    std::fs::write(cb.path().join("blob.bin"), [0, 159, 146, 150]).unwrap();
+    let baseline = GitCheckpointRepo
+        .checkpoint(ws.path(), &id, cb.path(), 0)
+        .unwrap();
+    std::fs::write(cb.path().join("blob.bin"), [0, 159, 146, 151]).unwrap();
+    let final_sha = GitCheckpointRepo
+        .checkpoint(ws.path(), &id, cb.path(), 1)
+        .unwrap();
+    let summary = GitCheckpointRepo
+        .diff_between(ws.path(), &id, &baseline, &final_sha)
+        .unwrap()
+        .unwrap();
+    assert_eq!(summary.modified[0].path, "blob.bin");
+    assert_eq!(summary.modified[0].added_lines, None);
+    assert_eq!(summary.added_lines, None);
+    assert_eq!(summary.removed_lines, None);
 }
 
 #[test]
@@ -273,18 +347,24 @@ fn remove_safe_when_absent() {
 fn diff_reports_added_modified_deleted() {
     let (ws, cb, id) = fixture();
     GitCheckpointRepo.init(ws.path(), &id, cb.path()).unwrap();
+    let baseline = GitCheckpointRepo
+        .checkpoint(ws.path(), &id, cb.path(), 0)
+        .unwrap();
     std::fs::write(cb.path().join("a.txt"), "two\n").unwrap();
     std::fs::write(cb.path().join("new.txt"), "x\n").unwrap();
-    let sha = GitCheckpointRepo
+    let final_sha = GitCheckpointRepo
         .checkpoint(ws.path(), &id, cb.path(), 1)
         .unwrap();
     let ch = GitCheckpointRepo
-        .diff(ws.path(), &id, &sha)
+        .diff_between(ws.path(), &id, &baseline, &final_sha)
         .unwrap()
         .unwrap();
-    assert_eq!(ch.modified, vec!["a.txt".to_string()]);
-    assert_eq!(ch.added, vec!["new.txt".to_string()]);
-    assert!(ch.deleted.is_empty());
+    assert_eq!(ch.modified[0].path, "a.txt");
+    assert_eq!(ch.added[0].path, "new.txt");
+    assert!(ch.removed.is_empty());
+    assert_eq!(ch.file_count, 2);
+    assert_eq!(ch.added_lines, Some(2));
+    assert_eq!(ch.removed_lines, Some(1));
 }
 
 #[test]

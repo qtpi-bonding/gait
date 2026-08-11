@@ -1,10 +1,9 @@
 # done_implicit
 # result: Done
-# events: 6
+# events: 5
 ---
 000: SessionStart
 001: Unknown
 002: Unknown
 003: Unknown
 004: AssistantText "hello world"
-005: Unknown

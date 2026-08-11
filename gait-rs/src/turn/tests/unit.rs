@@ -146,31 +146,6 @@ fn apply_parse_filter_empty_ops_returns_raw() {
 }
 
 #[test]
-fn checkpoint_codebase_returns_sha_and_records_call() {
-    use crate::git::checkpoint::MockCheckpointRepo;
-    let ws = tempfile::TempDir::new().unwrap();
-    let codebase = ws.path().to_path_buf();
-    let checkpoints = MockCheckpointRepo::new();
-    let sha = checkpoint_codebase(&checkpoints, ws.path(), "scp1", &codebase, 1);
-    assert_eq!(sha.as_deref(), Some("mock-sha-1"));
-    assert_eq!(
-        checkpoints.checkpoint_calls(),
-        vec![("scp1".to_string(), 1u32)]
-    );
-}
-
-#[test]
-fn checkpoint_codebase_tolerates_error() {
-    use crate::git::checkpoint::MockCheckpointRepo;
-    let ws = tempfile::TempDir::new().unwrap();
-    let codebase = ws.path().to_path_buf();
-    let checkpoints = MockCheckpointRepo::new();
-    checkpoints.inject_checkpoint_error("disk full");
-    let sha = checkpoint_codebase(&checkpoints, ws.path(), "scp2", &codebase, 1);
-    assert!(sha.is_none());
-}
-
-#[test]
 fn tool_gating_filters_when_tools_nonempty() {
     use std::collections::HashSet;
 

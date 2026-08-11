@@ -63,7 +63,7 @@ pub(crate) struct TurnState {
     pub inform_signal: Option<Vec<pb::InformItem>>,
 
     /// Concatenation of all step text. Read by the implicit-done and
-    /// structured-done `turn_complete` branches via `split_into_blocks`.
+    /// structured-done completion branches via `split_into_blocks`.
     pub all_turn_text: String,
 
     /// Index of the most recent step (the loop body's `step_index`). Read by
@@ -84,7 +84,7 @@ pub(crate) struct TurnState {
     pub turn_ctx: Option<String>,
 
     /// Remaining retries for `result_schema` validation failures (the
-    /// `schema_retries_remaining` budget on `ExecutionSignal::TurnComplete`).
+    /// `schema_retries_remaining` budget on `ExecutionSignal::FinishTurn`).
     /// Seeded from `caps.output_schema_retries`.
     pub schema_retries_remaining: u8,
 
@@ -148,7 +148,7 @@ pub(crate) struct TurnEnv<'a> {
     pub ingestor: &'a crate::session::Ingestor,
     /// Needed by `finalize()`'s `post_turn` `HookContext` (Task 6).
     pub system_prompt: &'a str,
-    /// Needed by `finalize()`'s `Done` arm to build the `turn_complete` event (Task 6).
+    /// Git hash supplied to the model-facing status context.
     pub codebase_hash: &'a str,
     pub codebase_dirty: bool,
     /// Needed by `stream::run_step` (Task 16) to build the provider.stream() call.

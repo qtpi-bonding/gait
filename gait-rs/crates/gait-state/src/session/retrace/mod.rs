@@ -730,7 +730,7 @@ impl Projection for ActiveMessages {
             payload::Kind::CancellationSignal(_) => {
                 st.push_user("[turn interrupted by user]".to_string(), &ev.id);
             }
-            // SessionStart, TurnComplete, Raw, InformConvergence, Manifest,
+            // SessionStart, RunComplete, Raw, InformConvergence, Manifest,
             // Permissions/PermissionsReply — not model context; break any tool run.
             _ => {
                 st.phase = MsgPhase::Other;
@@ -1125,7 +1125,7 @@ pub fn coalesce(raw: Vec<Message>) -> Vec<Message> {
 
 /// Effective allow-list state: config baseline + log-derived grants, split by
 /// lifetime. `session` persists for the whole session; `once` is cleared on every
-/// `TurnComplete` (active only within the turn it was granted).
+/// `RunComplete` (active for the whole run in which it was granted).
 #[derive(Default)]
 pub struct AllowState {
     pub session: std::collections::HashSet<String>,
@@ -1136,7 +1136,7 @@ pub struct AllowState {
 /// (global+agent grants, already loaded). Folds `PermissionsReply` as an
 /// append-only ledger: a `session` approve inserts and a `session` deny REMOVES
 /// the pattern (the honest forward revoke — both events stay in the Log; only the
-/// derived set changes); a `once` approve is active until the next `TurnComplete`.
+/// derived set changes); a `once` approve is active until the next `RunComplete`.
 /// `agent`/`global` scopes are config-file backed and ignored here. Because it
 /// folds the mutation-applied stream, undo/redact of a grant also drops it — but
 /// redact is for mistakes, not normal revocation.
@@ -1153,7 +1153,7 @@ impl Projection for ActivePermissions {
     }
     fn apply(&self, state: &mut Self::State, _ev: &Event, kind: &payload::Kind) {
         match kind {
-            payload::Kind::TurnComplete(_) => state.once.clear(), // once grants expire per turn
+            payload::Kind::RunComplete(_) => state.once.clear(),
             payload::Kind::PermissionsReply(r) => {
                 for item in &r.items {
                     let Some(pat) = item.text.clone() else {
@@ -1185,15 +1185,15 @@ impl Projection for ActivePermissions {
 /// State for active sandbox unlock grants: paths granted this session or once.
 #[derive(Default)]
 pub struct ActiveUnlockState {
-    /// Paths granted for the entire session (survive `TurnComplete`).
+    /// Paths granted for the entire session (survive `RunComplete`).
     pub session: std::collections::HashSet<std::path::PathBuf>,
-    /// Paths granted for a single turn (cleared on `TurnComplete`).
+    /// Paths granted for a single run (cleared on `RunComplete`).
     pub once: std::collections::HashSet<std::path::PathBuf>,
 }
 
 /// Fold all `SandboxUnlockReply` events, cross-referencing `SandboxUnlock`
 /// events to resolve resource paths, into an `ActiveUnlockState`. `once`
-/// grants are cleared on each `TurnComplete`; `session` grants persist for
+/// grants are cleared on each `RunComplete`; `session` grants persist for
 /// the session. `global`/`agent` grants are config-backed and not tracked here.
 pub fn active_unlock_state(events: &[Event]) -> ActiveUnlockState {
     // Build a map: unlock_item_id → resource from SandboxUnlock events
@@ -1209,7 +1209,7 @@ pub fn active_unlock_state(events: &[Event]) -> ActiveUnlockState {
     let mut state = ActiveUnlockState::default();
     for e in events {
         match crate::proto::event_kind(e) {
-            Some(payload::Kind::TurnComplete(_)) => {
+            Some(payload::Kind::RunComplete(_)) => {
                 state.once.clear();
             }
             Some(payload::Kind::SandboxUnlockReply(r)) => {
@@ -1354,7 +1354,7 @@ pub struct RetraceResult {
     /// with ToolCall↔ToolResult cascade applied.
     pub mutations: HashMap<String, MutationState>,
     /// Runtime-only sandbox unlock grants (once/session scope). `once` paths
-    /// expire each TurnComplete; `session` paths persist for the session.
+    /// expire each RunComplete; `session` paths persist for the session.
     /// `global`/`agent` grants are in gait.jsonc / agent files and not here.
     pub active_unlock: ActiveUnlockState,
 }
@@ -1438,7 +1438,7 @@ pub fn active_agent(events: &[Event], seed: AgentState) -> AgentState {
     run_projection(&ActiveAgent { seed }, events, &HashMap::new())
 }
 
-/// Sum of every `TurnComplete.usage` over the log — the session's cumulative
+/// Sum of every durable `TurnResult.usage` over the log — the session's cumulative
 /// token usage. Replaces the dead `session.json.token_totals` sidecar; usage is
 /// derived from the log, never stored twice. Folds the whole session (ignores
 /// compaction — total cost includes compacted turns).
@@ -1456,7 +1456,7 @@ pub fn total_usage(events: &[Event]) -> crate::proto::gait::log::v1::TurnTokenUs
             }
         }
         fn apply(&self, state: &mut Self::State, _ev: &Event, kind: &payload::Kind) {
-            if let payload::Kind::TurnComplete(tc) = kind {
+            if let payload::Kind::TurnResult(tc) = kind {
                 if let Some(u) = &tc.usage {
                     state.input += u.input;
                     state.output += u.output;
@@ -1469,14 +1469,14 @@ pub fn total_usage(events: &[Event]) -> crate::proto::gait::log::v1::TurnTokenUs
     run_projection(&Usage, events, &HashMap::new())
 }
 
-/// Blocks from the LAST `TurnComplete` event in the log, in source order.
-/// Returns an empty Vec if there is no TurnComplete. Used by the CLI
+/// Blocks from the LAST `TurnResult` event in the log, in source order.
+/// Returns an empty Vec if there is no TurnResult. Used by the CLI
 /// `>(N)` quote-reply expander, which needs the prior turn's blocks to
 /// reference them by index.
 pub fn last_turn_blocks(events: &[Event]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for e in events {
-        if let Some(payload::Kind::TurnComplete(tc)) = crate::proto::event_kind(e) {
+        if let Some(payload::Kind::TurnResult(tc)) = crate::proto::event_kind(e) {
             out = tc.blocks.clone();
         }
     }
@@ -1500,11 +1500,18 @@ mod cancel_tests {
             envelope::mint(
                 events::session_start("s1".into(), None, None, false),
                 None,
-                0,
-                0,
+                envelope::EventScope::Session,
             ),
-            envelope::mint(events::user_text("hello".into()), None, 0, 0),
-            envelope::mint(events::cancellation_signal(), None, 0, 0),
+            envelope::mint(
+                events::user_text("hello".into()),
+                None,
+                envelope::EventScope::Turn { run: 0, turn: 0 },
+            ),
+            envelope::mint(
+                events::cancellation_signal(),
+                None,
+                envelope::EventScope::Turn { run: 0, turn: 0 },
+            ),
         ];
 
         let msgs = super::messages(&log).expect("fold ok");

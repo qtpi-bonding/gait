@@ -65,7 +65,7 @@ pub struct ReplState {
     /// inside a block.
     pub(crate) paint_lock: Option<std::sync::Arc<std::sync::Mutex<()>>>,
     pub(crate) turn_start: Option<Instant>,
-    /// Set when a `structured_done` ToolCall event is seen — lets `TurnComplete`
+    /// Set when a `structured_done` ToolCall event is seen — lets `TurnResult`
     /// know to emit a `StructuredResult` pending item for the renderer.
     pub(crate) saw_structured_done: bool,
 }
@@ -220,7 +220,7 @@ impl ReplState {
                 self.interaction_pending = Pending::Inform(inf.items.clone());
                 ViewSignal::Continue
             }
-            Some(pb::payload::Kind::TurnComplete(tc)) => {
+            Some(pb::payload::Kind::TurnResult(tc)) => {
                 self.flush_buf();
                 // Stop the status line and emit the final turn summary.
                 if let Some(mut t) = self.timer.take() {
@@ -237,24 +237,26 @@ impl ReplState {
                 });
                 // If structured_done was called this turn, emit the result for rendering.
                 if self.saw_structured_done {
-                    if let Some(out) = &tc.output {
-                        // Render the human-readable message with a ✓│ gutter (DoneMessage),
-                        // visually distinct from numbered streamed blocks. If the model also
-                        // streamed the same text as deltas, it will appear twice — that's
-                        // acceptable given the different visual treatment.
-                        if !out.message.is_empty() {
-                            self.pending.push(ReplItem::DoneMessage {
-                                content: out.message.clone(),
-                            });
-                        }
-                        // JSON result → non-numbered box.
-                        if let Some(json) = out
-                            .result
-                            .as_ref()
-                            .and_then(|v| serde_json::to_value(v).ok())
-                            .and_then(|v| serde_json::to_string_pretty(&v).ok())
-                        {
-                            self.pending.push(ReplItem::StructuredResult { json });
+                    if let Some(pb::turn_result::Outcome::Done(done)) = &tc.outcome {
+                        if let Some(pb::turn_done::Output::Structured(out)) = &done.output {
+                            // Render the human-readable message with a ✓│ gutter (DoneMessage),
+                            // visually distinct from numbered streamed blocks. If the model also
+                            // streamed the same text as deltas, it will appear twice — that's
+                            // acceptable given the different visual treatment.
+                            if !out.message.is_empty() {
+                                self.pending.push(ReplItem::DoneMessage {
+                                    content: out.message.clone(),
+                                });
+                            }
+                            // JSON result → non-numbered box.
+                            if let Some(json) = out
+                                .result
+                                .as_ref()
+                                .and_then(|v| serde_json::to_value(v).ok())
+                                .and_then(|v| serde_json::to_string_pretty(&v).ok())
+                            {
+                                self.pending.push(ReplItem::StructuredResult { json });
+                            }
                         }
                     }
                 }
@@ -293,6 +295,30 @@ impl ReplState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gait_core::proto::events;
+
+    fn turn_result_body(
+        message: &str,
+        result: Option<serde_json::Value>,
+        blocks: Vec<String>,
+        output_tokens: u64,
+    ) -> pb::event::Body {
+        events::turn_result(pb::TurnResult {
+            turn_id: "ui-turn".into(),
+            usage: Some(pb::TurnTokenUsage {
+                output: output_tokens,
+                ..Default::default()
+            }),
+            blocks,
+            outcome: Some(pb::turn_result::Outcome::Done(pb::TurnDone {
+                output: Some(pb::turn_done::Output::Structured(pb::StructuredDone {
+                    message: message.into(),
+                    result: events::to_value_opt(&result),
+                })),
+            })),
+            ..Default::default()
+        })
+    }
 
     #[test]
     fn view_signal_variants_are_distinct() {
@@ -378,7 +404,15 @@ mod tests {
                 options: vec![],
             },
         ]);
-        let ev = envelope::mint(body, None, 0, 0);
+        let ev = envelope::mint(
+            body,
+            None,
+            envelope::EventScope::Step {
+                run: 0,
+                turn: 0,
+                step: 0,
+            },
+        );
         state.apply_event(&ev);
         if let Pending::Clarify(items) = &state.interaction_pending {
             assert_eq!(items[0].kind, pb::ClarifyKind::Is as i32);
@@ -390,21 +424,11 @@ mod tests {
 
     #[test]
     fn structured_done_message_emitted_as_done_message() {
-        use gait_core::proto::gait::log::v1::TurnTokenUsage;
-        use gait_core::proto::{envelope, events};
+        use gait_core::proto::envelope;
         let mut state = ReplState::new();
         state.saw_structured_done = true;
-        let body = events::turn_complete(events::TurnCompleteParams {
-            usage: TurnTokenUsage {
-                input: 0,
-                output: 0,
-                cache_read: 0,
-                cache_write: 0,
-            },
-            message: "task complete".into(),
-            ..Default::default()
-        });
-        let ev = envelope::mint(body, None, 0, 0);
+        let body = turn_result_body("task complete", None, vec![], 0);
+        let ev = envelope::mint(body, None, envelope::EventScope::Turn { run: 0, turn: 0 });
         state.apply_event(&ev);
         assert!(
             state
@@ -424,22 +448,12 @@ mod tests {
 
     #[test]
     fn structured_done_result_emitted_as_json_only_box() {
-        use gait_core::proto::gait::log::v1::TurnTokenUsage;
-        use gait_core::proto::{envelope, events};
+        use gait_core::proto::envelope;
         let mut state = ReplState::new();
         state.saw_structured_done = true;
         let result_value = serde_json::json!({ "count": 3 });
-        let body = events::turn_complete(events::TurnCompleteParams {
-            usage: TurnTokenUsage {
-                input: 0,
-                output: 0,
-                cache_read: 0,
-                cache_write: 0,
-            },
-            result: Some(result_value),
-            ..Default::default()
-        });
-        let ev = envelope::mint(body, None, 0, 0);
+        let body = turn_result_body("", Some(result_value), vec![], 0);
+        let ev = envelope::mint(body, None, envelope::EventScope::Turn { run: 0, turn: 0 });
         state.apply_event(&ev);
         let has_sr = state
             .pending
@@ -468,22 +482,14 @@ mod tests {
     }
 
     #[test]
-    fn apply_event_turn_complete_returns_done() {
-        use gait_core::proto::events;
-        use gait_core::proto::gait::log::v1::TurnTokenUsage;
+    fn apply_event_turn_result_returns_done() {
         let mut state = ReplState::new();
-        let body = events::turn_complete(events::TurnCompleteParams {
-            usage: TurnTokenUsage {
-                input: 0,
-                output: 0,
-                cache_read: 0,
-                cache_write: 0,
-            },
-            blocks: vec!["block one".into()],
-            message: "done".into(),
-            ..Default::default()
-        });
-        let ev = gait_core::proto::envelope::mint(body, None, 0, 0);
+        let body = turn_result_body("done", None, vec!["block one".into()], 0);
+        let ev = gait_core::proto::envelope::mint(
+            body,
+            None,
+            gait_core::proto::envelope::EventScope::Turn { run: 0, turn: 0 },
+        );
         match state.apply_event(&ev) {
             ViewSignal::TurnDone(blocks) => assert_eq!(blocks, vec!["block one".to_string()]),
             _ => panic!("expected TurnDone"),
@@ -499,7 +505,15 @@ mod tests {
             "read".into(),
             &serde_json::json!({"file_path": "a.rs"}),
         );
-        let ev = gait_core::proto::envelope::mint(body, None, 0, 0);
+        let ev = gait_core::proto::envelope::mint(
+            body,
+            None,
+            gait_core::proto::envelope::EventScope::Step {
+                run: 0,
+                turn: 0,
+                step: 0,
+            },
+        );
         let signal = state.apply_event(&ev);
         assert!(matches!(signal, ViewSignal::Continue));
         // Tool indication is via the timer status line, not a pending item.
@@ -522,7 +536,15 @@ mod tests {
             Some(duration),
             None,
         );
-        let ev = gait_core::proto::envelope::mint(body, None, 0, 0);
+        let ev = gait_core::proto::envelope::mint(
+            body,
+            None,
+            gait_core::proto::envelope::EventScope::Step {
+                run: 0,
+                turn: 0,
+                step: 0,
+            },
+        );
         let signal = state.apply_event(&ev);
         assert!(matches!(signal, ViewSignal::Continue));
         assert!(state
@@ -542,7 +564,15 @@ mod tests {
         state.all_blocks.push("prior".into());
         let before_blocks = state.all_blocks.clone();
         let body = events::assistant_text("full accumulated text".into());
-        let ev = gait_core::proto::envelope::mint(body, None, 0, 0);
+        let ev = gait_core::proto::envelope::mint(
+            body,
+            None,
+            gait_core::proto::envelope::EventScope::Step {
+                run: 0,
+                turn: 0,
+                step: 0,
+            },
+        );
         let signal = state.apply_event(&ev);
         assert!(matches!(signal, ViewSignal::Continue));
         assert_eq!(state.line_buf, "");

@@ -34,7 +34,7 @@
 //! | `Global` | config (`gait.jsonc` `allow[]`)                         | the `seed` passed to [`grants::effective_allow`]              | until removed from config                                      |
 //! | `Agent`  | agent frontmatter (`allow[]`)                           | the `seed` passed to [`grants::effective_allow`]              | while the agent file is active / until removed from frontmatter |
 //! | `Session`| log (`PermissionsReply` events)                         | `retrace::ActivePermissions` fold (session bucket)            | the current session                                            |
-//! | `Once`   | log (`PermissionsReply` events)                         | `retrace::ActivePermissions` fold (once bucket)               | one turn — cleared at `TurnComplete`                           |
+//! | `Once`   | log (`PermissionsReply` events)                         | `retrace::ActivePermissions` fold (once bucket)               | one turn — cleared at `RunComplete`                           |
 //!
 //! Session-scoped `Deny` forward-revokes a prior session-granted allow via the
 //! `retrace::ActivePermissions` fold; once-scoped `Deny` is a no-op and does

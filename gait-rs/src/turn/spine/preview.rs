@@ -91,8 +91,11 @@ mod tests {
                 kind: Some(payload::Kind::Permissions(Permissions { items })),
             }),
             None,
-            0,
-            0,
+            gait_proto::envelope::EventScope::Step {
+                run: 0,
+                turn: 0,
+                step: 0,
+            },
         )
     }
 

@@ -148,33 +148,6 @@ impl<'a> Persistence<'a> {
         }
     }
 
-    /// Snapshot the codebase into the shadow db. Returns the checkpoint SHA
-    /// on `Unsealed`, `None` when `Sealed` (the spine checkpoints after the
-    /// brain exits).
-    ///
-    /// Mirrors the guarded `checkpoint_codebase` calls at the former
-    /// `:1080` and `:1628` — and crucially the `Note: do NOT commit the
-    /// transcript; the caller's existing commit_session runs after emit`
-    /// policy, which Task 11 enforces by ordering `finalize` to
-    /// checkpoint-then-emit-then-`persist.commit`.
-    pub(crate) fn checkpoint(&self, turn: u32) -> Option<String> {
-        match self {
-            Persistence::Sealed => None,
-            Persistence::Unsealed {
-                repos,
-                gait_dir,
-                session_id,
-                codebase_path,
-            } => crate::turn::checkpoint_codebase(
-                repos.checkpoints.as_ref(),
-                gait_dir,
-                session_id,
-                codebase_path,
-                turn,
-            ),
-        }
-    }
-
     /// Whether the per-step completion poll (daemon + child-agent
     /// completions) is allowed this turn. `false` when `Sealed`.
     ///
@@ -283,9 +256,6 @@ mod tests {
     #[test]
     fn sealed_persistence_performs_no_disk_effects() {
         let p = Persistence::Sealed;
-
-        // checkpoint: must be a no-op (returns None)
-        assert_eq!(p.checkpoint(1), None);
 
         // poll/preview gates: must be false on the Sealed path
         assert!(!p.poll_completions_allowed());
@@ -479,6 +449,5 @@ mod tests {
         let p = Persistence::Sealed;
         assert!(!p.poll_completions_allowed());
         assert!(!p.preview_allowed());
-        assert_eq!(p.checkpoint(1), None);
     }
 }

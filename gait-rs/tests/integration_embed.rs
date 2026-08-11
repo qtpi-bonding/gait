@@ -122,12 +122,25 @@ async fn embed_drives_a_turn_and_emits_pbjson() {
         );
     gait_core::port::output::drive(rx, &mut sink).await;
 
-    let result_turn = handle.await.unwrap().expect("run_turn must succeed");
-    sink.result(&result_turn);
+    let _brain_outcome = handle.await.unwrap().expect("run_turn must succeed");
+    sink.result(&gait_core::proto::gait::log::v1::RunResult {
+        run_id: "embed-run".into(),
+        state: Some(
+            gait_core::proto::gait::log::v1::run_result::State::Complete(Default::default()),
+        ),
+        turns: vec![gait_core::proto::gait::log::v1::TurnResult {
+            turn_id: "embed-turn".into(),
+            outcome: Some(gait_core::proto::gait::log::v1::turn_result::Outcome::Done(
+                Default::default(),
+            )),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
 
     // Parse the pbjson back (what a Dart/Serverpod consumer does): at least
     // one item decodes as a `StreamItem`, and the result decodes as a
-    // `RunResult` with the expected `done` key.
+    // `RunResult` with a complete state and a final done turn.
     let items_borrowed = items.borrow();
     assert!(
         !items_borrowed.is_empty(),
@@ -146,11 +159,15 @@ async fn embed_drives_a_turn_and_emits_pbjson() {
     let v: serde_json::Value =
         serde_json::from_str(&result_str).expect("the captured result string must parse as JSON");
     assert!(
-        v.get("done").is_some(),
-        "result pbjson must contain key \"done\" (got: {v})"
+        v.get("complete").is_some()
+            && v.get("turns")
+                .and_then(|turns| turns.get(0))
+                .and_then(|turn| turn.get("done"))
+                .is_some(),
+        "aggregate result pbjson must contain complete and turns[0].done (got: {v})"
     );
 
-    // Session transcript must have the user_turn and the turn_complete.
+    // Session transcript must have the user_turn and the run_complete.
     let events = gait_core::proto::wire::read_events(&log).expect("session log must parse");
     use gait_core::proto::gait::log::v1::{event, payload, Event};
     fn kind(e: &Event) -> Option<&payload::Kind> {
@@ -167,10 +184,9 @@ async fn embed_drives_a_turn_and_emits_pbjson() {
         events.len()
     );
     assert!(
-        events
+        !events
             .iter()
-            .any(|e| matches!(kind(e), Some(payload::Kind::TurnComplete(_)))),
-        "log must contain a turn_complete event (got {} events)",
-        events.len(),
+            .any(|e| matches!(kind(e), Some(payload::Kind::TurnResult(_)))),
+        "brain-only run_turn must not write the spine-owned TurnResult",
     );
 }

@@ -26,7 +26,7 @@ use crate::proto::events;
 use crate::proto::gait::log::v1 as pb;
 use crate::proto::gait::log::v1::{payload, Event};
 use crate::proto::Recorder;
-use crate::session::log::{count_turn_complete, init_session, InitSessionOpts};
+use crate::session::log::{init_session, InitSessionOpts};
 use crate::session::retrace::{self, AgentState};
 use crate::session::{Ingestor, Session};
 use crate::types::{Hook, HookContext, LoadableEntry, LoadableKind};
@@ -71,6 +71,7 @@ pub(crate) struct SetupData {
     pub effective_allow: Vec<String>,
     pub deny: Vec<String>,
     pub pre_events: Vec<Event>,
+    pub current_run: u32,
     pub current_turn: u32,
     pub daemons: Vec<(String, i32, bool, String)>,
     pub initial_git: Option<super::GitSnapshot>,
@@ -260,11 +261,21 @@ pub(crate) fn init(
     // Permissions → PermissionsReply — the caller (run_turn) checks this via
     // resume::apply_if_pending immediately after setup::init returns.
     let pre_events = ingestor.events()?;
-    // Stamp emitter position so every event recorded from this point on carries
-    // the correct (turn, step). The current turn is the count of already-completed
-    // turns in the log; the step starts at 0 and advances inside the loop.
-    let current_turn = count_turn_complete(&pre_events) as u32;
-    emitter.set_position(current_turn, 0);
+    // The spine writes TurnStart before launching the sealed brain. Its scoped
+    // coordinate is therefore the authoritative position for every step event.
+    let (current_run, current_turn) = pre_events
+        .iter()
+        .rev()
+        .find_map(|event| match crate::proto::event_kind(event) {
+            Some(payload::Kind::TurnStart(_)) => Some((event.run?, event.turn?)),
+            _ => None,
+        })
+        .unwrap_or((0, 0));
+    emitter.set_scope(crate::proto::envelope::EventScope::Step {
+        run: current_run,
+        turn: current_turn,
+        step: 0,
+    });
     // Thread the same turn number + model that `log.jsonl` stamps into the
     // brain's always-on diagnostic ping (no-op outside the brain process, where
     // the identity cell is never installed). Without this the per-phase
@@ -304,6 +315,7 @@ pub(crate) fn init(
         effective_allow,
         deny,
         pre_events,
+        current_run,
         current_turn,
         daemons: input.daemons,
         initial_git: input.initial_git,

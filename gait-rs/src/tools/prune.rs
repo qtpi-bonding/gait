@@ -76,19 +76,19 @@ fn resolve_call_id(call_id: &str, events: &[Event]) -> Option<(String, String, S
     }
 }
 
-/// Returns the seq of the second-to-last TurnComplete, or 0 if fewer than 2 exist.
+/// Returns the seq of the second-to-last completed run, or 0 if fewer than 2 exist.
 fn recency_boundary(events: &[Event]) -> u64 {
-    let turn_complete_seqs: Vec<u64> = events
+    let run_complete_seqs: Vec<u64> = events
         .iter()
-        .filter(|e| matches!(event_kind(e), Some(payload::Kind::TurnComplete(_))))
+        .filter(|e| matches!(event_kind(e), Some(payload::Kind::RunComplete(_))))
         .map(|e| e.seq)
         .collect();
 
-    let len = turn_complete_seqs.len();
+    let len = run_complete_seqs.len();
     if len < 2 {
         0
     } else {
-        turn_complete_seqs[len - 2]
+        run_complete_seqs[len - 2]
     }
 }
 
@@ -210,14 +210,14 @@ impl Tool for PruneTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::events::TurnCompleteParams;
     use crate::proto::gait::log::v1 as pb;
     use crate::proto::{events as ev, wire};
     use tempfile::TempDir;
 
     // Helper: write an event with given body to a log file, returning the Event
     fn append_event(path: &std::path::Path, body: pb::event::Body) -> Event {
-        wire::write_to_transcript(path, body, 0, 0).expect("write event")
+        wire::write_to_transcript(path, body, crate::proto::envelope::EventScope::Session)
+            .expect("write event")
     }
 
     fn make_log_with_events() -> (TempDir, std::path::PathBuf) {
@@ -265,20 +265,20 @@ mod tests {
     // ── window check ─────────────────────────────────────────────────────────
 
     #[test]
-    fn recency_boundary_zero_when_fewer_than_two_turn_completes() {
+    fn recency_boundary_zero_when_fewer_than_two_run_completes() {
         let (_dir, path) = make_log_with_events();
         append_event(
             &path,
             ev::tool_call("c1".into(), "grep".into(), &serde_json::json!({})),
         );
-        // One TurnComplete
-        append_event(&path, ev::turn_complete(TurnCompleteParams::default()));
+        // One RunComplete
+        append_event(&path, ev::run_complete(pb::RunComplete::default()));
         let events = read_events(&path).unwrap();
         assert_eq!(recency_boundary(&events), 0);
     }
 
     #[test]
-    fn recency_boundary_returns_second_to_last_turn_complete_seq() {
+    fn recency_boundary_returns_second_to_last_run_complete_seq() {
         let (_dir, path) = make_log_with_events();
 
         // Turn 1 result
@@ -290,7 +290,7 @@ mod tests {
             &path,
             ev::tool_result("c1".into(), "old".into(), None, None),
         );
-        let tc1 = append_event(&path, ev::turn_complete(TurnCompleteParams::default()));
+        let tc1 = append_event(&path, ev::run_complete(pb::RunComplete::default()));
 
         // Turn 2 result
         append_event(
@@ -301,11 +301,11 @@ mod tests {
             &path,
             ev::tool_result("c2".into(), "new".into(), None, None),
         );
-        append_event(&path, ev::turn_complete(TurnCompleteParams::default()));
+        append_event(&path, ev::run_complete(pb::RunComplete::default()));
 
         let events = read_events(&path).unwrap();
         let boundary = recency_boundary(&events);
-        // boundary = seq of first TurnComplete (second-to-last)
+        // boundary = seq of first RunComplete (second-to-last)
         assert_eq!(boundary, tc1.seq);
 
         // tr2 is AFTER boundary → in-window
@@ -319,7 +319,7 @@ mod tests {
 
         let (_dir, log_path) = make_log_with_events();
 
-        // Old result (before second-to-last TurnComplete)
+        // Old result (before second-to-last RunComplete)
         append_event(
             &log_path,
             ev::tool_call("c_old".into(), "grep".into(), &serde_json::json!({})),
@@ -328,9 +328,9 @@ mod tests {
             &log_path,
             ev::tool_result("c_old".into(), "stale data".into(), None, None),
         );
-        let tc1 = append_event(&log_path, ev::turn_complete(TurnCompleteParams::default()));
+        let tc1 = append_event(&log_path, ev::run_complete(pb::RunComplete::default()));
 
-        // New result (after last TurnComplete)
+        // New result (after last RunComplete)
         append_event(
             &log_path,
             ev::tool_call("c_new".into(), "read".into(), &serde_json::json!({})),
@@ -339,7 +339,7 @@ mod tests {
             &log_path,
             ev::tool_result("c_new".into(), "fresh".into(), None, None),
         );
-        append_event(&log_path, ev::turn_complete(TurnCompleteParams::default()));
+        append_event(&log_path, ev::run_complete(pb::RunComplete::default()));
 
         // Verify old_tr is before boundary
         let events = read_events(&log_path).unwrap();
@@ -416,7 +416,7 @@ mod tests {
             &log_path,
             ev::tool_result("c_old".into(), "stale".into(), None, None),
         );
-        append_event(&log_path, ev::turn_complete(TurnCompleteParams::default()));
+        append_event(&log_path, ev::run_complete(pb::RunComplete::default()));
 
         // Recent result
         append_event(
@@ -427,7 +427,7 @@ mod tests {
             &log_path,
             ev::tool_result("c_new".into(), "fresh".into(), None, None),
         );
-        append_event(&log_path, ev::turn_complete(TurnCompleteParams::default()));
+        append_event(&log_path, ev::run_complete(pb::RunComplete::default()));
 
         let tool = PruneTool::new();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();

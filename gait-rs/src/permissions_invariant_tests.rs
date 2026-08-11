@@ -93,12 +93,12 @@ fn single_matcher_invariant_across_grant_sources() {
 }
 
 #[test]
-fn once_grant_expires_at_turn_complete() {
+fn once_grant_expires_at_run_complete() {
     // The once-expiry fold is fully covered by
-    // `permissions_session_persists_once_expires_on_turn_complete` at
+    // `permissions_session_persists_once_expires_on_run_complete` at
     // `src/session/retrace/tests.rs:686`. That existing test pins the property:
     // after a `PermissionsReply{scope: Once}`, the pattern lives in
-    // `state.once` until a `TurnComplete` event fires — then `state.once` is
+    // `state.once` until a `RunComplete` event fires — then `state.once` is
     // cleared while `state.session` keeps its grants.
     //
     // Rather than duplicate the construct-from-scratch path, this test
@@ -107,8 +107,8 @@ fn once_grant_expires_at_turn_complete() {
     // continues to resolve during plan-07's move work. It uses the
     // existing `events::permissions_reply` constructor (the same one the
     // retrace test uses) and exercises both directions:
-    //   - once grant live BEFORE the TurnComplete
-    //   - once grant GONE after the TurnComplete
+    //   - once grant live BEFORE the RunComplete
+    //   - once grant GONE after the RunComplete
     //
     // `ActivePermissions` / `AllowState` are `pub(crate)`; we can't reach
     // them from a top-level test module. Skip the direct field assertions
@@ -120,7 +120,7 @@ fn once_grant_expires_at_turn_complete() {
     // refactors, this comment is the audit trail.
     let _invariants_are_covered_by = concat!(
         "src/session/retrace/tests.rs::",
-        "permissions_session_persists_once_expires_on_turn_complete (line ~686)"
+        "permissions_session_persists_once_expires_on_run_complete (line ~686)"
     );
 
     // Lightweight smoke: the constructors we depend on are reachable and
@@ -137,13 +137,15 @@ fn once_grant_expires_at_turn_complete() {
     ]);
     let mut bodies = vec![reply];
     bodies.push(crate::proto::wire::body(
-        crate::proto::gait::log::v1::payload::Kind::TurnComplete(
-            crate::proto::gait::log::v1::TurnComplete::default(),
+        crate::proto::gait::log::v1::payload::Kind::RunComplete(
+            crate::proto::gait::log::v1::RunComplete::default(),
         ),
     ));
     let _evs: Vec<_> = bodies
         .into_iter()
-        .map(|b| crate::proto::envelope::mint(b, None, 0, 0))
+        .map(|body| {
+            crate::proto::envelope::mint(body, None, crate::proto::envelope::EventScope::Session)
+        })
         .collect();
     // The retrace test at `src/session/retrace/tests.rs:686` is the source
     // of truth. Nothing to assert here beyond keeping the name green.

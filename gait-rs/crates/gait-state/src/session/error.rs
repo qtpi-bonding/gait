@@ -8,6 +8,8 @@ pub enum SessionError {
     Parse(#[from] serde_json::Error),
     #[error("proto error: {0}")]
     Proto(#[from] ProtoError),
+    #[error("unsupported event log version {found}; expected {expected}")]
+    UnsupportedLogVersion { found: u32, expected: u32 },
     #[error("session is live; cannot append a registry event while a turn is running")]
     SessionRunning,
 }

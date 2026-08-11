@@ -119,10 +119,26 @@ fn fresh_session_update_creates_a_real_idempotent_git_worktree() {
 #[tokio::test]
 async fn mock_terminated_reaches_sink_and_records_persistence() {
     let tmp = tempfile::tempdir().unwrap(); // bare temp dir — NO git init
-    let (sink, calls) = run_one(tmp.path(), "smoke1", &[terminated_ok("done")]).await;
+    let (sink, calls) = run_one(
+        tmp.path(),
+        "smoke1",
+        &[append_assistant("done"), terminated_ok("done")],
+    )
+    .await;
     assert_eq!(sink.results.len(), 1, "expected one TurnResult");
-    match &sink.results[0] {
-        gait_core::turn::TurnResult::Done { message, .. } => assert_eq!(message, "done"),
+    let outcome = sink.results[0]
+        .turns
+        .last()
+        .and_then(|turn| turn.outcome.as_ref());
+    match outcome {
+        Some(gait_core::proto::gait::log::v1::turn_result::Outcome::Done(done)) => {
+            match done.output.as_ref() {
+                Some(gait_core::proto::gait::log::v1::turn_done::Output::Text(text)) => {
+                    assert_eq!(text.message, "done")
+                }
+                other => panic!("expected text done, got {other:?}"),
+            }
+        }
         other => panic!("expected Done, got {other:?}"),
     }
     let seq = calls.snapshot();
@@ -163,24 +179,26 @@ async fn brain_pipe_closed_mid_turn_surfaces_as_failure() {
         "brain crashing mid-turn must still surface a TurnResult, got {:?}",
         sink.results
     );
-    match &sink.results[0] {
-        gait_core::turn::TurnResult::Failed { .. } => {}
+    match sink.results[0]
+        .turns
+        .last()
+        .and_then(|turn| turn.outcome.as_ref())
+    {
+        Some(gait_core::proto::gait::log::v1::turn_result::Outcome::Failed(_)) => {}
         other => panic!("expected Failed, got {other:?}"),
     }
 }
 
-/// The exact case `brain_pipe_closed_mid_turn_surfaces_as_failure` must NOT
-/// regress: a brain that never sends anything at all (cold start) is not a
-/// failure — see `silent_brain_runs_to_process_exit_not_watchdog_kill` in
-/// spine_watchdog.rs for the canonical version of this; duplicated here in
-/// miniature so the two behaviors sit side by side and can't drift apart.
+/// Once RunStart and TurnStart are durable, even a cold brain exit must close
+/// the lifecycle with a typed failed turn and run.
 #[tokio::test]
-async fn brain_pipe_closed_before_ever_starting_is_not_a_failure() {
+async fn brain_pipe_closed_before_ever_starting_closes_as_failed() {
     let tmp = tempfile::tempdir().unwrap();
     let (sink, _calls) = run_one(tmp.path(), "smoke3", &[]).await;
-    assert!(
-        sink.results.is_empty(),
-        "a brain that never got going should not synthesize a TurnResult, got {:?}",
-        sink.results
-    );
+    let outcome = sink.results[0].turns[0].outcome.as_ref();
+    assert!(matches!(
+        outcome,
+        Some(gait_core::proto::gait::log::v1::turn_result::Outcome::Failed(failed))
+            if failed.reason == "aborted"
+    ));
 }

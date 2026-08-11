@@ -14,10 +14,9 @@ use agent_client_protocol::{Client, ConnectionTo};
 use gait_core::embed::{Diag, TurnSink, TurnSource, TurnStart, user_turn_events};
 use gait_core::git::Repos;
 use gait_core::proto::gait::log::v1::{
-    Decision, Event, PermissionItem, StreamItem, event, payload, stream_item,
+    Decision, Event, PermissionItem, RunResult, StreamItem, event, payload, stream_item,
 };
 use gait_core::session::log::{SessionState, session_state};
-use gait_core::turn::TurnResult;
 use gait_ops::permission::{GrantScope, ItemChoice};
 
 /// Wrap ACP text into an `AgentMessageChunk` / `AgentThoughtChunk` body.
@@ -100,21 +99,22 @@ pub fn content_blocks_to_text(blocks: &[ContentBlock]) -> String {
 /// Map a finished turn to an ACP `StopReason`. `Err(msg)` means the prompt must
 /// be resolved as a JSON-RPC error (an internal failure is not a `Refusal`, and
 /// an interaction-required result is unsupported until Phase 3).
-pub fn turn_result_to_stop_reason(r: &TurnResult) -> Result<StopReason, String> {
-    match r {
-        TurnResult::Done { .. } => Ok(StopReason::EndTurn),
-        TurnResult::Cancelled => Ok(StopReason::Cancelled),
-        TurnResult::Failed { ended, .. } if ended == "max_steps" => Ok(StopReason::MaxTurnRequests),
-        TurnResult::Failed { message, .. } => Err(message.clone()),
-        TurnResult::Permissions
-        | TurnResult::Clarify { .. }
-        | TurnResult::Inform { .. }
-        | TurnResult::SandboxUnlock { .. } => {
+pub fn turn_result_to_stop_reason(r: &RunResult) -> Result<StopReason, String> {
+    use gait_core::proto::gait::log::v1::turn_result::Outcome;
+    match r.turns.last().and_then(|turn| turn.outcome.as_ref()) {
+        Some(Outcome::Done(_)) => Ok(StopReason::EndTurn),
+        Some(Outcome::Cancelled(_)) => Ok(StopReason::Cancelled),
+        Some(Outcome::Failed(failed)) if failed.reason == "max_steps" => {
+            Ok(StopReason::MaxTurnRequests)
+        }
+        Some(Outcome::Failed(failed)) => Err(failed.message.clone()),
+        Some(Outcome::Pause(_)) => {
             // A turn that ends genuinely awaiting interaction with no cancellation is
             // still unsupported. The cancel path never reaches here: the completion
             // block short-circuits on was_cancelled() before mapping.
             Err("turn ended awaiting interaction, which is unsupported here".into())
         }
+        None => Err("run produced no final turn outcome".into()),
     }
 }
 
@@ -340,7 +340,7 @@ impl TurnSource for AcpTurnSource {
 pub struct AcpTurnSink {
     cx: ConnectionTo<Client>,
     session_id: SessionId,
-    result: Option<TurnResult>,
+    result: Option<RunResult>,
 }
 
 impl AcpTurnSink {
@@ -351,7 +351,7 @@ impl AcpTurnSink {
             result: None,
         }
     }
-    pub fn take_result(&mut self) -> Option<TurnResult> {
+    pub fn take_result(&mut self) -> Option<RunResult> {
         self.result.take()
     }
 }
@@ -369,7 +369,7 @@ impl TurnSink for AcpTurnSink {
                 .send_notification(SessionNotification::new(self.session_id.clone(), update));
         }
     }
-    fn result(&mut self, r: &TurnResult) {
+    fn result(&mut self, r: &RunResult) {
         self.result = Some(r.clone());
     }
     fn session_id(&mut self, _id: &str) {}
@@ -383,9 +383,20 @@ mod tests {
         ContentBlock, PermissionOptionKind, SessionUpdate, StopReason, TextContent, ToolCallId,
     };
     use gait_core::proto::events;
-    use gait_core::proto::gait::log::v1::Event;
-    use gait_core::turn::TurnResult;
+    use gait_core::proto::gait::log::v1::{Event, PauseReason};
     use gait_ops::permission::GrantScope;
+
+    fn run_with(outcome: gait_core::proto::gait::log::v1::turn_result::Outcome) -> RunResult {
+        RunResult {
+            run_id: "r1".into(),
+            turns: vec![gait_core::proto::gait::log::v1::TurnResult {
+                turn_id: "t1".into(),
+                outcome: Some(outcome),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
 
     fn event(body: gait_core::proto::gait::log::v1::event::Body) -> Event {
         Event {
@@ -481,29 +492,32 @@ mod tests {
 
     #[test]
     fn done_maps_to_end_turn() {
-        let r = TurnResult::Done {
-            message: "ok".into(),
-            result: None,
-            changes: None,
-            implicit: true,
-        };
+        let r = run_with(gait_core::proto::gait::log::v1::turn_result::Outcome::Done(
+            Default::default(),
+        ));
         assert_eq!(turn_result_to_stop_reason(&r), Ok(StopReason::EndTurn));
     }
 
     #[test]
     fn cancelled_maps_to_cancelled() {
         assert_eq!(
-            turn_result_to_stop_reason(&TurnResult::Cancelled),
+            turn_result_to_stop_reason(&run_with(
+                gait_core::proto::gait::log::v1::turn_result::Outcome::Cancelled(Default::default())
+            )),
             Ok(StopReason::Cancelled)
         );
     }
 
     #[test]
     fn max_steps_maps_to_max_turn_requests() {
-        let r = TurnResult::Failed {
-            ended: "max_steps".into(),
-            message: "hit cap".into(),
-        };
+        let r = run_with(
+            gait_core::proto::gait::log::v1::turn_result::Outcome::Failed(
+                gait_core::proto::gait::log::v1::TurnFailed {
+                    reason: "max_steps".into(),
+                    message: "hit cap".into(),
+                },
+            ),
+        );
         assert_eq!(
             turn_result_to_stop_reason(&r),
             Ok(StopReason::MaxTurnRequests)
@@ -512,10 +526,14 @@ mod tests {
 
     #[test]
     fn error_maps_to_jsonrpc_error() {
-        let r = TurnResult::Failed {
-            ended: "error".into(),
-            message: "boom".into(),
-        };
+        let r = run_with(
+            gait_core::proto::gait::log::v1::turn_result::Outcome::Failed(
+                gait_core::proto::gait::log::v1::TurnFailed {
+                    reason: "error".into(),
+                    message: "boom".into(),
+                },
+            ),
+        );
         assert_eq!(turn_result_to_stop_reason(&r), Err("boom".into()));
     }
 
@@ -523,10 +541,22 @@ mod tests {
     fn interaction_required_maps_to_jsonrpc_error() {
         // Permissions/Clarify/Inform/Unlock are the Phase-3 seam: no interactive
         // support yet, so surface a loud error rather than a fake completion.
-        assert!(turn_result_to_stop_reason(&TurnResult::Permissions).is_err());
-        assert!(turn_result_to_stop_reason(&TurnResult::Clarify { items: vec![] }).is_err());
-        assert!(turn_result_to_stop_reason(&TurnResult::Inform { items: vec![] }).is_err());
-        assert!(turn_result_to_stop_reason(&TurnResult::SandboxUnlock { items: vec![] }).is_err());
+        for reason in [
+            PauseReason::Permissions,
+            PauseReason::Clarify,
+            PauseReason::Inform,
+            PauseReason::SandboxUnlock,
+        ] {
+            let run = run_with(
+                gait_core::proto::gait::log::v1::turn_result::Outcome::Pause(
+                    gait_core::proto::gait::log::v1::TurnPause {
+                        reason: reason as i32,
+                        ..Default::default()
+                    },
+                ),
+            );
+            assert!(turn_result_to_stop_reason(&run).is_err());
+        }
     }
 
     fn item(id: &str, cmd: &str, patterns: &[&str]) -> PermissionItem {

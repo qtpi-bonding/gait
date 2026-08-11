@@ -20,7 +20,37 @@ use super::hash::content_hash;
 
 /// Current log format generation. Part of the `content_hash` contract — bump
 /// on any breaking change to the body encoding or hash scheme.
-pub const LOG_VERSION: u32 = 1;
+pub const LOG_VERSION: u32 = 2;
+
+/// Hierarchy coordinates for an event. Presence is semantic: zero is a valid
+/// index, so an absent parent can never be represented by a zero sentinel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventScope {
+    Session,
+    Run { run: u32 },
+    Turn { run: u32, turn: u32 },
+    Step { run: u32, turn: u32, step: u32 },
+}
+
+/// Whether the optional hierarchy coordinates form a complete prefix.
+/// A turn cannot exist without a run, and a step cannot exist without both.
+pub fn has_valid_scope_prefix(event: &Event) -> bool {
+    !matches!(
+        (event.run, event.turn, event.step),
+        (None, Some(_), _) | (None, None, Some(_)) | (Some(_), None, Some(_))
+    )
+}
+
+impl EventScope {
+    fn coordinates(self) -> (Option<u32>, Option<u32>, Option<u32>) {
+        match self {
+            Self::Session => (None, None, None),
+            Self::Run { run } => (Some(run), None, None),
+            Self::Turn { run, turn } => (Some(run), Some(turn), None),
+            Self::Step { run, turn, step } => (Some(run), Some(turn), Some(step)),
+        }
+    }
+}
 
 /// The externally-tagged body object `{"<arm>":{…}}` that `content_hash`
 /// covers.
@@ -59,6 +89,9 @@ pub fn verify_hash(event: &Event) -> bool {
     if event.body.is_none() {
         return false;
     }
+    if event.version != LOG_VERSION {
+        return false;
+    }
     let version = event.version;
     content_hash(version, &body_json(event)) == event.content_hash
 }
@@ -71,14 +104,14 @@ pub fn verify_hash(event: &Event) -> bool {
 ///   * `ts` is wall-clock ms since UNIX epoch (`0` on clock error).
 ///   * `version == LOG_VERSION`.
 ///   * `parents` = `[]` for a root, `[prev.id.clone()]` for a child.
-///   * `turn` / `step` are stamped from the caller's args — the wire is
-///     positionless otherwise, so this is the only way these fields get set.
+///   * hierarchy coordinates are stamped from an explicit [`EventScope`].
 ///   * `content_hash` is stamped LAST (attests the body as finally encoded).
-pub fn mint(body: event::Body, prev: Option<&Event>, turn: u32, step: u32) -> Event {
+pub fn mint(body: event::Body, prev: Option<&Event>, scope: EventScope) -> Event {
     let (seq, parents) = match prev {
         None => (1u64, Vec::new()),
         Some(p) => (p.seq + 1, vec![p.id.clone()]),
     };
+    let (run, turn, step) = scope.coordinates();
     let mut ev = Event {
         version: LOG_VERSION,
         id: uuid::Uuid::new_v4().to_string(),
@@ -89,13 +122,12 @@ pub fn mint(body: event::Body, prev: Option<&Event>, turn: u32, step: u32) -> Ev
             .unwrap_or(0),
         content_hash: String::new(),
         parents,
-        turn: 0,
-        step: 0,
+        run,
+        turn,
+        step,
         body: Some(body),
         provenance: None,
     };
-    ev.turn = turn;
-    ev.step = step;
     stamp_hash(&mut ev);
     ev
 }
@@ -115,12 +147,12 @@ mod tests {
 
     #[test]
     fn mint_root_then_child() {
-        let root = mint(simple_payload(), None, 0, 0);
+        let root = mint(simple_payload(), None, EventScope::Session);
         assert_eq!(root.seq, 1, "root seq must be 1");
         assert!(root.parents.is_empty(), "root must have no parents");
         assert!(verify_hash(&root), "root must verify");
 
-        let child = mint(simple_payload(), Some(&root), 0, 0);
+        let child = mint(simple_payload(), Some(&root), EventScope::Session);
         assert_eq!(child.seq, 2, "child seq must be prev+1");
         assert_eq!(
             child.parents,
@@ -132,7 +164,7 @@ mod tests {
 
     #[test]
     fn verify_detects_tamper() {
-        let mut ev = mint(simple_payload(), None, 0, 0);
+        let mut ev = mint(simple_payload(), None, EventScope::Session);
         assert!(verify_hash(&ev), "freshly-minted event must verify");
 
         // Mutate a field inside the body payload directly.
@@ -153,17 +185,75 @@ mod tests {
 
     #[test]
     fn verify_survives_json_round_trip() {
-        let ev = mint(simple_payload(), None, 0, 0);
+        let ev = mint(simple_payload(), None, EventScope::Session);
         let s = serde_json::to_string(&ev).expect("serialize");
         let back: Event = serde_json::from_str(&s).expect("deserialize");
         assert!(verify_hash(&back), "round-tripped event must still verify");
     }
 
     #[test]
-    fn mint_stamps_turn_and_step() {
-        let ev = mint(simple_payload(), None, 2, 3);
-        assert_eq!(ev.turn, 2);
-        assert_eq!(ev.step, 3);
-        assert!(verify_hash(&ev), "turn/step must be included in hash");
+    fn hierarchy_coordinates_must_form_a_prefix() {
+        let session = mint(simple_payload(), None, EventScope::Session);
+        let run = mint(simple_payload(), None, EventScope::Run { run: 0 });
+        let turn = mint(simple_payload(), None, EventScope::Turn { run: 0, turn: 0 });
+        let step = mint(
+            simple_payload(),
+            None,
+            EventScope::Step {
+                run: 0,
+                turn: 0,
+                step: 0,
+            },
+        );
+        assert!(has_valid_scope_prefix(&session));
+        assert!(has_valid_scope_prefix(&run));
+        assert!(has_valid_scope_prefix(&turn));
+        assert!(has_valid_scope_prefix(&step));
+
+        let mut missing_run = turn;
+        missing_run.run = None;
+        assert!(!has_valid_scope_prefix(&missing_run));
+
+        let mut missing_turn = step;
+        missing_turn.turn = None;
+        assert!(!has_valid_scope_prefix(&missing_turn));
+    }
+
+    #[test]
+    fn mint_stamps_prefix_complete_scopes() {
+        let session = mint(simple_payload(), None, EventScope::Session);
+        assert_eq!(
+            (session.run, session.turn, session.step),
+            (None, None, None)
+        );
+
+        let run = mint(simple_payload(), None, EventScope::Run { run: 0 });
+        assert_eq!((run.run, run.turn, run.step), (Some(0), None, None));
+
+        let turn = mint(simple_payload(), None, EventScope::Turn { run: 0, turn: 0 });
+        assert_eq!((turn.run, turn.turn, turn.step), (Some(0), Some(0), None));
+
+        let step = mint(
+            simple_payload(),
+            None,
+            EventScope::Step {
+                run: 2,
+                turn: 3,
+                step: 4,
+            },
+        );
+        assert_eq!(
+            (step.run, step.turn, step.step),
+            (Some(2), Some(3), Some(4))
+        );
+        assert!(verify_hash(&step));
+    }
+
+    #[test]
+    fn verify_rejects_stale_log_version_even_with_matching_hash() {
+        let mut event = mint(simple_payload(), None, EventScope::Session);
+        event.version = LOG_VERSION - 1;
+        stamp_hash(&mut event);
+        assert!(!verify_hash(&event));
     }
 }

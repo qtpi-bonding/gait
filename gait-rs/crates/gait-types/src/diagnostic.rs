@@ -149,7 +149,7 @@ pub fn install_brain_phase_cell() -> PhaseCell {
 // The always-on ping task is spawned at brain startup, BEFORE the turn's
 // `setup::init` computes the current turn number and resolves the model. Those
 // two values are the SAME ones stamped into `log.jsonl` (see `setup::init`:
-// `current_turn` from `count_turn_complete`, `model` from `caps.model`). This
+// `current_turn` from `count_run_complete`, `model` from `caps.model`). This
 // process-global cell threads them to the ping so heartbeat frames carry the
 // real turn/model instead of `0`/`""`. Mirrors the `BRAIN_PHASE` install/set/read
 // discipline: a no-op in the spine process and tests (cell never installed).

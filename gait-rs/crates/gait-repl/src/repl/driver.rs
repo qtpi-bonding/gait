@@ -12,9 +12,12 @@ use crate::theme::RESET;
 use crate::ui::{ReplBuilder, ViewSignal};
 use gait_core::embed::{user_turn_events, Diag, TurnSink, TurnSource, TurnStart};
 use gait_core::expand::{expand_input, ExpandCtx};
-use gait_core::proto::{events, gait::log::v1::StreamItem, wire};
+use gait_core::proto::{
+    events,
+    gait::log::v1::{RunResult, StreamItem},
+    wire,
+};
 use gait_core::pty::{run_and_capture_pty_raw, CaptureResult};
-use gait_core::turn::TurnResult;
 
 /// A session-control signal the source raises to end the current `run_loop`.
 pub enum Control {
@@ -26,7 +29,7 @@ pub enum Control {
 pub struct ReplShared {
     pub builder: ReplBuilder,
     /// Blocks captured from the just-finished turn's `TurnDone` signal (preferred
-    /// over `take_turn_blocks()` — they may differ when `turn_complete` carries
+    /// over `take_turn_blocks()` — they may differ when `turn_result` carries
     /// its own blocks).
     pub turn_done_blocks: Option<Vec<String>>,
     pub control: Option<Control>,
@@ -52,29 +55,22 @@ impl TurnSink for ReplSink {
         }
     }
 
-    fn result(&mut self, r: &TurnResult) {
-        match r {
-            TurnResult::Cancelled => {
+    fn result(&mut self, r: &RunResult) {
+        use gait_core::proto::gait::log::v1::{turn_result::Outcome, PauseReason};
+        match r.turns.last().and_then(|turn| turn.outcome.as_ref()) {
+            Some(Outcome::Cancelled(_)) => {
                 self.shared
                     .borrow_mut()
                     .builder
                     .write_raw("\u{2298} interrupted\r\n");
             }
-            TurnResult::SandboxUnlock { items } => {
+            Some(Outcome::Pause(pause)) if pause.reason == PauseReason::SandboxUnlock as i32 => {
                 let warning_fg = self.shared.borrow().builder.theme().warning.fg();
                 self.shared.borrow_mut().builder.write_raw(&format!(
                     "\r\n{}sandbox: {} item(s) need unlock{}\r\n",
-                    warning_fg,
-                    items.len(),
-                    RESET
+                    warning_fg, 1, RESET
                 ));
                 let muted = self.shared.borrow().builder.theme().muted.fg();
-                for item in items {
-                    self.shared.borrow_mut().builder.write_raw(&format!(
-                        "  {}[{}] {}{}\r\n",
-                        muted, item.dimension, item.resource, RESET
-                    ));
-                }
                 self.shared.borrow_mut().builder.write_raw(&format!(
                     "  {}run: /unlock [once|session|global|agent]{}\r\n",
                     muted, RESET
@@ -1235,9 +1231,44 @@ async fn run_sh_one_off(
     )
     .await?;
     match res {
-        gait_core::turn::TurnResult::Done {
-            result: Some(r), ..
-        } => {
+        result
+            if result
+                .turns
+                .last()
+                .and_then(|turn| turn.outcome.as_ref())
+                .and_then(|outcome| match outcome {
+                    gait_core::proto::gait::log::v1::turn_result::Outcome::Done(done) => {
+                        done.output.as_ref()
+                    }
+                    _ => None,
+                })
+                .and_then(|output| match output {
+                    gait_core::proto::gait::log::v1::turn_done::Output::Structured(output) => {
+                        output.result.as_ref()
+                    }
+                    _ => None,
+                })
+                .and_then(|value| serde_json::to_value(value).ok())
+                .is_some() =>
+        {
+            let r = result
+                .turns
+                .last()
+                .and_then(|turn| turn.outcome.as_ref())
+                .and_then(|outcome| match outcome {
+                    gait_core::proto::gait::log::v1::turn_result::Outcome::Done(done) => {
+                        done.output.as_ref()
+                    }
+                    _ => None,
+                })
+                .and_then(|output| match output {
+                    gait_core::proto::gait::log::v1::turn_done::Output::Structured(output) => {
+                        output.result.as_ref()
+                    }
+                    _ => None,
+                })
+                .and_then(|value| serde_json::to_value(value).ok())
+                .unwrap();
             let cmd = r.get("cmd").and_then(|v| v.as_str());
             let out = r.get("output").and_then(|v| v.as_str());
             match (cmd, out) {
@@ -1483,14 +1514,14 @@ mod repl_sink_tests {
             })),
         };
         // Consuming a bare delta must not panic and must NOT yet record blocks —
-        // turn_done_blocks only populates on TurnComplete (next test).
+        // turn_done_blocks only populates on TurnResult (next test).
         sink.item(&item);
         sink.end_turn();
         assert!(s.borrow().turn_done_blocks.is_none());
     }
 
     #[test]
-    fn turn_complete_records_blocks_into_shared() {
+    fn turn_result_records_blocks_into_shared() {
         let s = shared();
         let mut sink = ReplSink { shared: s.clone() };
         sink.begin_turn();
@@ -1502,14 +1533,20 @@ mod repl_sink_tests {
                 })),
             });
         }
-        let body = gait_core::proto::events::turn_complete(
-            gait_core::proto::events::TurnCompleteParams::default(),
+        let body = gait_core::proto::events::turn_result(pb::TurnResult {
+            turn_id: "repl-turn".into(),
+            outcome: Some(pb::turn_result::Outcome::Done(Default::default())),
+            ..Default::default()
+        });
+        let ev = gait_core::proto::envelope::mint(
+            body,
+            None,
+            gait_core::proto::envelope::EventScope::Turn { run: 0, turn: 0 },
         );
-        let ev = gait_core::proto::envelope::mint(body, None, 0, 0);
         sink.item(&pb::StreamItem {
             item: Some(pb::stream_item::Item::Event(ev)),
         });
-        // `TurnComplete` with empty `blocks` returns the accumulated `all_blocks`
+        // `TurnResult` with empty `blocks` returns the accumulated `all_blocks`
         // (see ui/state.rs:261), i.e. the streamed-delta blocks above.
         assert_eq!(
             s.borrow().turn_done_blocks.as_deref(),

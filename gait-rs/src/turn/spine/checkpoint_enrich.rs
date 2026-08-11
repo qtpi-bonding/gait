@@ -128,12 +128,13 @@ mod tests {
         fn remove(&self, _: &Path, _: &str) -> anyhow::Result<()> {
             unimplemented!()
         }
-        fn diff(
+        fn diff_between(
             &self,
             _: &Path,
             _: &str,
             _: &str,
-        ) -> anyhow::Result<Option<crate::proto::gait::log::v1::Changes>> {
+            _: &str,
+        ) -> anyhow::Result<Option<crate::proto::gait::log::v1::ChangeSummary>> {
             unimplemented!()
         }
     }

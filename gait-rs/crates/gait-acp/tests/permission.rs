@@ -68,23 +68,40 @@ fn forward_event(body: gait_core::proto::gait::log::v1::event::Body) -> Signal {
 
 /// An event appended to the on-disk session log (persisted; drives session_state).
 fn append_event(body: gait_core::proto::gait::log::v1::event::Body) -> Signal {
-    use gait_core::proto::gait::log::v1::Event;
+    append_event_for_turn(body, 0)
+}
+
+fn append_event_for_turn(body: gait_core::proto::gait::log::v1::event::Body, turn: u32) -> Signal {
     Signal {
         corr_id: 0,
         body: Some(signal::Body::Append(Append {
-            event: Some(Event {
-                body: Some(body),
-                ..Default::default()
-            }),
+            event: Some(gait_core::proto::envelope::mint(
+                body,
+                None,
+                gait_core::proto::envelope::EventScope::Step {
+                    run: 0,
+                    turn,
+                    step: 0,
+                },
+            )),
         })),
     }
 }
 
 fn terminated(run_result_json: &str) -> Signal {
+    let outcome = if run_result_json.contains("permissions") {
+        gait_core::proto::gait::sandbox::v1::FinalizedTurnOutcome::Permissions
+    } else {
+        gait_core::proto::gait::sandbox::v1::FinalizedTurnOutcome::TextDone
+    };
     Signal {
         corr_id: 0,
         body: Some(signal::Body::Terminated(Terminated {
-            run_result_json: run_result_json.to_string(),
+            turn: Some(gait_core::proto::gait::sandbox::v1::FinalizedTurn {
+                outcome: outcome as i32,
+                message: "ok".into(),
+                ..Default::default()
+            }),
             failed: false,
         })),
     }
@@ -222,6 +239,7 @@ async fn permission_allow_once_resumes_and_completes() {
         &gait_dir,
         1,
         &[
+            append_event_for_turn(gait_core::proto::events::assistant_text("done".into()), 1),
             forward_event(gait_core::proto::events::assistant_text("done".into())),
             terminated(r#"{"done":{"message":"ok"}}"#),
         ],
@@ -317,6 +335,7 @@ async fn permission_two_distinct_calls_two_requests() {
         &gait_dir,
         1,
         &[
+            append_event_for_turn(gait_core::proto::events::assistant_text("done".into()), 1),
             forward_event(gait_core::proto::events::assistant_text("done".into())),
             terminated(r#"{"done":{"message":"ok"}}"#),
         ],

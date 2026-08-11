@@ -114,25 +114,29 @@ pub(crate) fn launch_child(
     }
 }
 
-/// Reads the child's session log and returns the last `TurnComplete`'s
-/// `(message, result)`. Returns `None` if no `TurnComplete` event is found.
+/// Reads the child's session log and returns the final durable done output.
 pub(crate) fn read_terminal_result(
     log_path: &std::path::Path,
 ) -> Option<(String, Option<serde_json::Value>)> {
     use crate::proto::gait::log::v1::payload;
     let events = crate::session::log::read_events(log_path).ok()?;
-    // Walk backwards to find the last TurnComplete.
+    use crate::proto::gait::log::v1::{turn_done, turn_result};
     for event in events.iter().rev() {
-        if let Some(payload::Kind::TurnComplete(tc)) = crate::proto::event_kind(event) {
-            let output = tc.output.as_ref()?;
-            let message = output.message.clone();
-            // Convert pbjson_types::Value → serde_json::Value via serde round-trip.
-            let result: Option<serde_json::Value> = output
-                .result
-                .as_ref()
-                .and_then(|v| serde_json::to_value(v).ok())
-                .filter(|v| !v.is_null());
-            return Some((message, result));
+        if let Some(payload::Kind::TurnResult(turn)) = crate::proto::event_kind(event) {
+            let turn_result::Outcome::Done(done) = turn.outcome.as_ref()? else {
+                continue;
+            };
+            return match done.output.as_ref()? {
+                turn_done::Output::Text(text) => Some((text.message.clone(), None)),
+                turn_done::Output::Structured(output) => Some((
+                    output.message.clone(),
+                    output
+                        .result
+                        .as_ref()
+                        .and_then(|value| serde_json::to_value(value).ok())
+                        .filter(|value| !value.is_null()),
+                )),
+            };
         }
     }
     None
@@ -253,7 +257,7 @@ pub(crate) async fn handle_spawn_agent(args: SpawnAgentArgs, ctx: TurnCtx) -> Fe
 
 /// Assemble a `Feedback` after the blocking subagent exits.
 ///
-/// Reads the child's session log for a `TurnComplete` event. Extracted as a
+/// Reads the child's session log for a `TurnResult` event. Extracted as a
 /// separate function so it can be unit-tested independently of process launching.
 pub(crate) fn build_subagent_feedback(
     session_id: &str,
@@ -279,6 +283,26 @@ pub(crate) fn build_subagent_feedback(
 mod tests {
     use super::*;
     use crate::turn::spine::handlers::test_ctx;
+
+    fn done_body(
+        message: &str,
+        result: Option<serde_json::Value>,
+    ) -> crate::proto::gait::log::v1::event::Body {
+        crate::proto::events::turn_result(crate::proto::gait::log::v1::TurnResult {
+            turn_id: uuid::Uuid::new_v4().to_string(),
+            outcome: Some(crate::proto::gait::log::v1::turn_result::Outcome::Done(
+                crate::proto::gait::log::v1::TurnDone {
+                    output: Some(crate::proto::gait::log::v1::turn_done::Output::Structured(
+                        crate::proto::gait::log::v1::StructuredDone {
+                            message: message.into(),
+                            result: crate::proto::events::to_value_opt(&result),
+                        },
+                    )),
+                },
+            )),
+            ..Default::default()
+        })
+    }
 
     #[tokio::test]
     async fn handle_spawn_agent_creates_session_and_returns_id() {
@@ -335,7 +359,7 @@ mod tests {
     /// `gait` binary in PATH; that is not feasible in unit/integration tests. Instead we
     /// exercise the two independently-testable halves:
     ///   1. `handle_spawn_agent` writes `result_schema.json` (this test).
-    ///   2. `build_subagent_feedback` reads a pre-written `TurnComplete` carrying
+    ///   2. `build_subagent_feedback` reads a pre-written `TurnResult` carrying
     ///      `result:{answer:1}` and returns it in the Feedback (next test).
     #[tokio::test]
     async fn handle_spawn_agent_with_schema_writes_result_schema_json() {
@@ -392,14 +416,13 @@ mod tests {
     }
 
     /// Asserts that `build_subagent_feedback` correctly surfaces `result:{answer:1}`
-    /// from a child log that contains a `TurnComplete` written by `structured_done`.
+    /// from a child log that contains a `TurnResult` written by `structured_done`.
     ///
     /// This covers the Task-4 requirement: "assert the parent's `spawn_agent` result
     /// carries `{answer:1}`".  The live end-to-end path (real LLM → real child process)
     /// is not feasible without a live API key and a compiled `gait` binary on PATH.
     #[test]
     fn build_subagent_feedback_result_answer_1() {
-        use crate::proto::events::{turn_complete, TurnCompleteParams};
         use crate::proto::wire;
 
         let dir = tempfile::TempDir::new().unwrap();
@@ -408,11 +431,7 @@ mod tests {
         // Simulate the child calling `structured_done(result:{answer:1})`.
         wire::append(
             &log_path,
-            turn_complete(TurnCompleteParams {
-                message: "done".into(),
-                result: Some(serde_json::json!({"answer": 1})),
-                ..Default::default()
-            }),
+            done_body("done", Some(serde_json::json!({"answer": 1}))),
         )
         .unwrap();
 
@@ -454,24 +473,19 @@ mod tests {
 
     // ── read_terminal_result tests ───────────────────────────────────────────
 
-    /// Log with a TurnComplete event → returns (message, result).
+    /// Log with a TurnResult event → returns (message, result).
     #[test]
-    fn read_terminal_result_finds_turn_complete() {
-        use crate::proto::events::{turn_complete, TurnCompleteParams};
+    fn read_terminal_result_finds_turn_result() {
         use crate::proto::wire;
 
         let dir = tempfile::TempDir::new().unwrap();
         let log_path = dir.path().join("log.jsonl");
 
-        let body = turn_complete(TurnCompleteParams {
-            message: "hello from child".into(),
-            result: Some(serde_json::json!({"score": 42})),
-            ..Default::default()
-        });
+        let body = done_body("hello from child", Some(serde_json::json!({"score": 42})));
         wire::append(&log_path, body).unwrap();
 
         let result = read_terminal_result(&log_path);
-        assert!(result.is_some(), "should find turn_complete");
+        assert!(result.is_some(), "should find turn_result");
         let (msg, val) = result.unwrap();
         assert_eq!(msg, "hello from child");
         let val = val.expect("result should be Some");
@@ -493,9 +507,9 @@ mod tests {
         assert!(result.is_none(), "empty log should return None");
     }
 
-    /// Log with events but no TurnComplete → None.
+    /// Log with events but no TurnResult → None.
     #[test]
-    fn read_terminal_result_no_turn_complete_returns_none() {
+    fn read_terminal_result_no_turn_result_returns_none() {
         use crate::proto::wire;
 
         let dir = tempfile::TempDir::new().unwrap();
@@ -505,37 +519,25 @@ mod tests {
         wire::append(&log_path, body).unwrap();
 
         let result = read_terminal_result(&log_path);
-        assert!(result.is_none(), "no turn_complete should return None");
+        assert!(result.is_none(), "no turn_result should return None");
     }
 
     /// handle_spawn_agent with detached=false but child cannot be launched (bad exe) →
     /// no process but session exists. We can't easily test child.wait() path without a
-    /// real gait binary, so test the log-read fallback: write a session with no TurnComplete
+    /// real gait binary, so test the log-read fallback: write a session with no TurnResult
     /// and verify a hypothetical `read_terminal_result` returns None (status == "failed").
     #[test]
-    fn read_terminal_result_last_turn_complete_wins() {
-        use crate::proto::events::{turn_complete, TurnCompleteParams};
+    fn read_terminal_result_last_turn_result_wins() {
         use crate::proto::wire;
 
         let dir = tempfile::TempDir::new().unwrap();
         let log_path = dir.path().join("log.jsonl");
 
-        // Write two TurnComplete events; the second should win.
+        // Write two TurnResult events; the second should win.
+        wire::append(&log_path, done_body("first", None)).unwrap();
         wire::append(
             &log_path,
-            turn_complete(TurnCompleteParams {
-                message: "first".into(),
-                ..Default::default()
-            }),
-        )
-        .unwrap();
-        wire::append(
-            &log_path,
-            turn_complete(TurnCompleteParams {
-                message: "second".into(),
-                result: Some(serde_json::json!("final")),
-                ..Default::default()
-            }),
+            done_body("second", Some(serde_json::json!("final"))),
         )
         .unwrap();
 
@@ -625,25 +627,20 @@ mod tests {
 
     // ── build_subagent_feedback integration tests ────────────────────────────
 
-    /// Pre-write a `turn_complete` with `result = {"answer": 42}` to the child log,
+    /// Pre-write a `turn_result` with `result = {"answer": 42}` to the child log,
     /// then call `build_subagent_feedback` and assert the returned Feedback carries
     /// the expected result value.
     #[test]
-    fn build_subagent_feedback_reads_turn_complete_result() {
-        use crate::proto::events::{turn_complete, TurnCompleteParams};
+    fn build_subagent_feedback_reads_turn_result_result() {
         use crate::proto::wire;
 
         let dir = tempfile::TempDir::new().unwrap();
         let log_path = dir.path().join("log.jsonl");
 
-        // Pre-write the turn_complete event (as the child process would).
+        // Pre-write the turn_result event (as the child process would).
         wire::append(
             &log_path,
-            turn_complete(TurnCompleteParams {
-                message: "task done".into(),
-                result: Some(serde_json::json!({"answer": 42})),
-                ..Default::default()
-            }),
+            done_body("task done", Some(serde_json::json!({"answer": 42}))),
         )
         .unwrap();
 
@@ -688,10 +685,10 @@ mod tests {
         );
     }
 
-    /// When the child log has no `TurnComplete`, `build_subagent_feedback` should
+    /// When the child log has no `TurnResult`, `build_subagent_feedback` should
     /// return a Feedback with `status == "failed"`.
     #[test]
-    fn build_subagent_feedback_no_turn_complete_returns_failed() {
+    fn build_subagent_feedback_no_turn_result_returns_failed() {
         let dir = tempfile::TempDir::new().unwrap();
         let log_path = dir.path().join("log.jsonl");
         // Do NOT write any events — simulates child that exited without completing.

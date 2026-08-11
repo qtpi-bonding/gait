@@ -80,6 +80,22 @@ impl SessionGit {
         }
     }
 
+    pub(crate) fn diff_between(
+        &self,
+        baseline: &str,
+        final_checkpoint: &str,
+    ) -> anyhow::Result<Option<crate::proto::gait::log::v1::ChangeSummary>> {
+        match self {
+            Self::Persistent {
+                checkpoints,
+                gait_dir,
+                session_id,
+                ..
+            } => checkpoints.diff_between(gait_dir, session_id, baseline, final_checkpoint),
+            Self::Null => Ok(None),
+        }
+    }
+
     pub(crate) fn commit(&self, message: &str) -> anyhow::Result<()> {
         match self {
             Self::Persistent {
@@ -155,12 +171,13 @@ mod tests {
         fn remove(&self, _: &Path, _: &str) -> anyhow::Result<()> {
             unimplemented!()
         }
-        fn diff(
+        fn diff_between(
             &self,
             _: &Path,
             _: &str,
             _: &str,
-        ) -> anyhow::Result<Option<crate::proto::gait::log::v1::Changes>> {
+            _: &str,
+        ) -> anyhow::Result<Option<crate::proto::gait::log::v1::ChangeSummary>> {
             unimplemented!()
         }
     }

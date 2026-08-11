@@ -134,7 +134,7 @@ async fn full_turn_creates_transcript_and_git_commit() {
     for body in gait_core::embed::user_turn_events(&repos, ws.path(), "list the files".into()) {
         emitter.record(body).unwrap();
     }
-    run_turn(
+    let result = run_turn(
         &session,
         &emitter,
         gait_core::profile::ResolvedProfile::for_test(
@@ -157,6 +157,7 @@ async fn full_turn_creates_transcript_and_git_commit() {
     )
     .await
     .unwrap();
+    assert!(matches!(result, gait_core::turn::TurnResult::Done { .. }));
     // Verify transcript
     let tx = gait_core::session::live::log_path(ws.path(), "sint001");
     let events = read_events(&tx).unwrap();
@@ -169,7 +170,7 @@ async fn full_turn_creates_transcript_and_git_commit() {
                 Some(payload::Kind::ToolCall(_)) => "tool_call",
                 Some(payload::Kind::ToolResult(_)) => "tool_result",
                 Some(payload::Kind::AssistantText(_)) => "assistant_text",
-                Some(payload::Kind::TurnComplete(_)) => "turn_complete",
+                Some(payload::Kind::RunComplete(_)) => "run_complete",
                 _ => "other",
             }
             .to_string()
@@ -201,34 +202,13 @@ async fn full_turn_creates_transcript_and_git_commit() {
         "missing assistant_text: {:?}",
         event_types
     );
-    assert!(
-        event_types.contains(&"turn_complete".to_string()),
-        "missing turn_complete: {:?}",
-        event_types
-    );
+    assert!(!event_types.contains(&"run_complete".to_string()));
 
     // Transcript is valid JSONL
     let raw = std::fs::read_to_string(&tx).unwrap();
     for line in raw.lines().filter(|l| !l.is_empty()) {
         serde_json::from_str::<serde_json::Value>(line).expect("invalid JSON line");
     }
-
-    // Verify git commit in session branch
-    let session_repo =
-        git2::Repository::open(gait_core::session::live::worktree_dir(ws.path(), "sint001"))
-            .unwrap();
-    let commit_msg = session_repo
-        .head()
-        .unwrap()
-        .peel_to_commit()
-        .unwrap()
-        .message()
-        .unwrap()
-        .to_string();
-    assert!(
-        commit_msg.contains("turn 1"),
-        "unexpected commit message: {commit_msg}"
-    );
 }
 
 /// Phase 2 end-to-end: a `cwd`-emitting tool call inside a real `run_turn` must
@@ -327,7 +307,7 @@ async fn second_turn_resumes_session() {
         idx: Arc::new(AtomicUsize::new(0)),
     });
 
-    run_turn(
+    let first = run_turn(
         &gait_core::session::Session {
             id: "sint002".into(),
             gait_dir: ws.path().to_path_buf(),
@@ -351,8 +331,9 @@ async fn second_turn_resumes_session() {
     )
     .await
     .unwrap();
+    assert!(matches!(first, gait_core::turn::TurnResult::Done { .. }));
 
-    run_turn(
+    let second = run_turn(
         &gait_core::session::Session {
             id: "sint002".into(),
             gait_dir: ws.path().to_path_buf(),
@@ -376,14 +357,22 @@ async fn second_turn_resumes_session() {
     )
     .await
     .unwrap();
+    assert!(matches!(second, gait_core::turn::TurnResult::Done { .. }));
 
     let tx = gait_core::session::live::log_path(ws.path(), "sint002");
     let events = read_events(&tx).unwrap();
-    let turn_count = events
+    let answer_count = events
         .iter()
-        .filter(|e| matches!(event_kind(e), Some(payload::Kind::TurnComplete(_))))
+        .filter(|e| matches!(event_kind(e), Some(payload::Kind::AssistantText(_))))
         .count();
-    assert_eq!(turn_count, 2, "expected 2 turn_complete events");
+    assert_eq!(
+        answer_count, 2,
+        "expected one durable answer per brain turn"
+    );
+    assert!(!events.iter().any(|event| matches!(
+        event_kind(event),
+        Some(payload::Kind::TurnResult(_) | payload::Kind::RunComplete(_))
+    )));
 
     let session_start_count = events
         .iter()

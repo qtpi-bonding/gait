@@ -15,8 +15,26 @@ fn write_events(dir: &std::path::Path, bodies: Vec<event::Body>) -> std::path::P
 fn mint_events(bodies: Vec<event::Body>) -> Vec<Event> {
     bodies
         .into_iter()
-        .map(|b| crate::proto::envelope::mint(b, None, 0, 0))
+        .map(|body| scoped_mint(body, None, 0, 0))
         .collect()
+}
+
+fn scoped_mint(body: event::Body, prev: Option<&Event>, turn: u32, step: u32) -> Event {
+    crate::proto::envelope::mint(
+        body,
+        prev,
+        crate::proto::envelope::EventScope::Step { run: 0, turn, step },
+    )
+}
+
+fn durable_turn(usage: pb::TurnTokenUsage, blocks: Vec<String>) -> event::Body {
+    events::turn_result(pb::TurnResult {
+        turn_id: uuid::Uuid::new_v4().to_string(),
+        usage: Some(usage),
+        blocks,
+        outcome: Some(pb::turn_result::Outcome::Pause(pb::TurnPause::default())),
+        ..Default::default()
+    })
 }
 
 #[test]
@@ -143,7 +161,7 @@ fn llm_call_events_are_transparent_to_tool_run_coalescing() {
             ),
             events::llm_call_started("test-model".into()),
             events::llm_call_completed(
-                crate::proto::gait::log::v1::TurnTokenUsage::default(),
+                crate::proto::gait::log::v1::StepTokenUsage::default(),
                 0,
                 false,
             ),
@@ -258,11 +276,7 @@ fn compaction_breakpoint_discards_earlier_events() {
         vec![
             events::user_text("old".into()),
             events::assistant_text("old response".into()),
-            events::turn_complete(events::TurnCompleteParams {
-                usage,
-                message: "s".into(),
-                ..Default::default()
-            }),
+            durable_turn(usage, vec![]),
             events::summary("summary of old stuff".into(), 1, cu),
             events::user_text("new".into()),
         ],
@@ -774,7 +788,7 @@ fn active_messages_two_compactions_second_wins() {
 }
 
 #[test]
-fn permissions_session_persists_once_expires_on_turn_complete() {
+fn permissions_session_persists_once_expires_on_run_complete() {
     use std::collections::{HashMap, HashSet};
     let evs = mint_events(vec![
         events::permissions_reply(&[pb::PermissionsReplyItem {
@@ -789,7 +803,7 @@ fn permissions_session_persists_once_expires_on_turn_complete() {
             text: Some("shell:ls".into()),
             scope: pb::Scope::Once as i32,
         }]),
-        wire::body(payload::Kind::TurnComplete(pb::TurnComplete::default())),
+        events::run_complete(pb::RunComplete::default()),
     ]);
     let st = run_projection(
         &ActivePermissions {
@@ -800,11 +814,11 @@ fn permissions_session_persists_once_expires_on_turn_complete() {
     );
     assert!(
         st.session.contains("shell:cargo test"),
-        "session grant persists past TurnComplete"
+        "session grant persists past RunComplete"
     );
     assert!(
         !st.once.contains("shell:ls"),
-        "once grant expires at TurnComplete"
+        "once grant expires at RunComplete"
     );
 }
 
@@ -1107,7 +1121,7 @@ fn loadables_projection_full_session_and_mutation_aware() {
 }
 #[test]
 fn last_turn_blocks_returns_last_complete() {
-    // Two TurnComplete events with different blocks; the helper must return
+    // Two durable TurnResult events with different blocks; the helper returns
     // the second (last) one's blocks, in order.
     let usage = pb::TurnTokenUsage {
         input: 1,
@@ -1122,26 +1136,16 @@ fn last_turn_blocks_returns_last_complete() {
         "epsilon".to_string(),
     ];
     let evs = mint_events(vec![
-        events::turn_complete(events::TurnCompleteParams {
-            usage,
-            blocks: first.clone(),
-            message: "ok".into(),
-            ..Default::default()
-        }),
-        events::turn_complete(events::TurnCompleteParams {
-            usage,
-            blocks: second.clone(),
-            message: "ok".into(),
-            ..Default::default()
-        }),
+        durable_turn(usage, first.clone()),
+        durable_turn(usage, second.clone()),
     ]);
     let got = last_turn_blocks(&evs);
-    assert_eq!(got, second, "last TurnComplete wins");
+    assert_eq!(got, second, "last TurnResult wins");
 }
 
 #[test]
 fn last_turn_blocks_empty_when_none() {
-    // No TurnComplete events in the log → empty Vec.
+    // No TurnResult events in the log → empty Vec.
     let evs = mint_events(vec![
         events::user_text("hi".into()),
         events::assistant_text("hello".into()),
@@ -1393,7 +1397,7 @@ fn plugin_enabled_appears_in_enabled_loadables() {
 }
 
 #[test]
-fn total_usage_sums_turn_complete_events() {
+fn total_usage_sums_turn_result_events() {
     let usage1 = pb::TurnTokenUsage {
         input: 100,
         output: 20,
@@ -1407,16 +1411,8 @@ fn total_usage_sums_turn_complete_events() {
         cache_write: 1,
     };
     let evs = mint_events(vec![
-        events::turn_complete(events::TurnCompleteParams {
-            usage: usage1,
-            message: "ok".into(),
-            ..Default::default()
-        }),
-        events::turn_complete(events::TurnCompleteParams {
-            usage: usage2,
-            message: "ok".into(),
-            ..Default::default()
-        }),
+        durable_turn(usage1, vec![]),
+        durable_turn(usage2, vec![]),
     ]);
     let total = total_usage(&evs);
     assert_eq!(total.input, 150, "input should sum to 150");
@@ -1583,11 +1579,10 @@ fn cascade_replace_tool_result_then_redact_call_hides_both() {
 
 #[test]
 fn raw_messages_carry_event_ids() {
-    use crate::proto::envelope::mint;
     use std::collections::HashMap;
     let evs = vec![
-        mint(events::user_text("hello".into()), None, 0, 0),
-        mint(events::assistant_text("hi".into()), None, 0, 0),
+        scoped_mint(events::user_text("hello".into()), None, 0, 0),
+        scoped_mint(events::assistant_text("hi".into()), None, 0, 0),
     ];
     let raw = run_projection(&ActiveRawMessages, &evs, &HashMap::new());
     assert_eq!(raw.base.len(), 2);
@@ -1597,10 +1592,9 @@ fn raw_messages_carry_event_ids() {
 
 #[test]
 fn active_raw_messages_populates_attribution_from_provenance() {
-    use crate::proto::envelope::mint;
     use std::collections::HashMap;
 
-    let mut ev = mint(events::user_text("do the thing".into()), None, 0, 0);
+    let mut ev = scoped_mint(events::user_text("do the thing".into()), None, 0, 0);
     ev.provenance = Some(crate::proto::gait::log::v1::Provenance {
         from: b"agent:s1234abcd".to_vec(),
         to: vec![],
@@ -1635,28 +1629,27 @@ fn active_raw_messages_populates_attribution_from_provenance() {
 
 #[test]
 fn coalesce_merges_consecutive_tool_calls() {
-    use crate::proto::envelope::mint;
     use std::collections::HashMap;
     let evs = vec![
-        mint(
+        scoped_mint(
             events::tool_call("c1".into(), "read".into(), &serde_json::json!({})),
             None,
             0,
             0,
         ),
-        mint(
+        scoped_mint(
             events::tool_call("c2".into(), "write".into(), &serde_json::json!({})),
             None,
             0,
             0,
         ),
-        mint(
+        scoped_mint(
             events::tool_result("c1".into(), "r1".into(), None, None),
             None,
             0,
             0,
         ),
-        mint(
+        scoped_mint(
             events::tool_result("c2".into(), "r2".into(), None, None),
             None,
             0,
@@ -1689,9 +1682,8 @@ fn coalesce_merges_consecutive_tool_calls() {
 #[test]
 fn inject_appears_in_base() {
     // Design A: Inject goes to base, not a per-turn HashMap
-    use crate::proto::envelope::mint;
     use std::collections::HashMap;
-    let ev = mint(events::inject("user", "injected".into()), None, 1, 0);
+    let ev = scoped_mint(events::inject("user", "injected".into()), None, 1, 0);
     let raw = run_projection(
         &ActiveRawMessages,
         std::slice::from_ref(&ev),
@@ -1703,9 +1695,8 @@ fn inject_appears_in_base() {
 
 #[test]
 fn outgoing_for_step_includes_injected_messages() {
-    use crate::proto::envelope::mint;
-    let user_ev = mint(events::user_text("hello".into()), None, 0, 0);
-    let inject_ev = mint(
+    let user_ev = scoped_mint(events::user_text("hello".into()), None, 0, 0);
+    let inject_ev = scoped_mint(
         events::inject("user", "context from RAG".into()),
         None,
         0,
@@ -1729,7 +1720,7 @@ fn outgoing_for_step_includes_injected_messages() {
 }
 
 #[test]
-fn active_unlock_folds_once_grants_and_clears_on_turn_complete() {
+fn active_unlock_folds_once_grants_and_clears_on_run_complete() {
     use std::path::PathBuf;
 
     let unlock_item = pb::SandboxUnlockItem {
@@ -1761,7 +1752,7 @@ fn active_unlock_folds_once_grants_and_clears_on_turn_complete() {
 }
 
 #[test]
-fn active_unlock_session_grant_survives_turn_complete() {
+fn active_unlock_session_grant_survives_run_complete() {
     use std::path::PathBuf;
 
     let unlock_item = pb::SandboxUnlockItem {
@@ -1776,26 +1767,16 @@ fn active_unlock_session_grant_survives_turn_complete() {
         decision: pb::Decision::Allow as i32,
         scope: pb::Scope::Session as i32,
     };
-    let usage = pb::TurnTokenUsage {
-        input: 1,
-        output: 1,
-        cache_read: 0,
-        cache_write: 0,
-    };
-
     let evs = mint_events(vec![
         events::sandbox_unlock(&[unlock_item]),
         events::sandbox_unlock_reply(&[reply_item]),
-        events::turn_complete(events::TurnCompleteParams {
-            usage,
-            ..Default::default()
-        }),
+        events::run_complete(pb::RunComplete::default()),
     ]);
 
     let result = active_unlock_state(&evs);
-    // session grant survives TurnComplete
+    // session grant survives RunComplete
     assert!(result.session.contains(&PathBuf::from("/external/dir")));
-    // once was cleared by TurnComplete
+    // once was cleared by RunComplete
     assert!(result.once.is_empty());
 }
 
@@ -1864,9 +1845,8 @@ fn full_tool_history_survives_a_resumed_turn() {
     // anywhere in the fold path — `transcript()` always folds the ENTIRE
     // on-disk log — so this pins that: a large first turn's tool calls/results
     // must all still be present in the transcript built for the resumed turn,
-    // across the TurnComplete + new UserText boundary a fresh CLI dispatch
+    // across the RunComplete + new UserText boundary a fresh CLI dispatch
     // produces.
-    use crate::proto::events::TurnCompleteParams;
     const STEPS: usize = 73;
     let dir = TempDir::new().unwrap();
     let mut bodies = vec![events::user_text("Implement Task 2 ONLY: ...".into())];
@@ -1883,21 +1863,15 @@ fn full_tool_history_survives_a_resumed_turn() {
             None,
         ));
     }
-    bodies.push(events::turn_complete(TurnCompleteParams {
-        usage: pb::TurnTokenUsage {
+    bodies.push(durable_turn(
+        pb::TurnTokenUsage {
             input: 790_939,
             output: 11_067,
             cache_read: 7_463_100,
             cache_write: 0,
         },
-        codebase_hash: "abc123".into(),
-        codebase_dirty: true,
-        checkpoint: None,
-        blocks: vec![],
-        message: "paused mid-task".into(),
-        result: None,
-        changes: None,
-    }));
+        vec![],
+    ));
     // The resumed dispatch: a brand-new process attaches to the same session
     // and appends the user's reply as plain UserText (this is the
     // `--task <reply>` "literal one-shot node" path, not a PermissionsReply
@@ -1946,7 +1920,6 @@ fn full_tool_history_survives_a_resumed_turn() {
 
 #[test]
 fn active_raw_messages_agent_update_uses_provenance_not_session_id() {
-    use crate::proto::envelope::mint;
     use std::collections::HashMap;
 
     let body =
@@ -1961,7 +1934,7 @@ fn active_raw_messages_agent_update_uses_provenance_not_session_id() {
                 },
             )),
         });
-    let mut ev = mint(body, None, 0, 0);
+    let mut ev = scoped_mint(body, None, 0, 0);
     ev.provenance = Some(crate::proto::gait::log::v1::Provenance {
         from: b"agent:s1234abcd".to_vec(),
         to: vec![],

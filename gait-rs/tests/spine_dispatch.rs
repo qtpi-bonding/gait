@@ -13,7 +13,6 @@ use common::*;
 use gait_core::embed::{
     BrainLaunch, CascadeKillHandle, LoopConfig, RecordingSink, TurnDriver, TurnSink,
 };
-use gait_core::turn::TurnResult;
 use std::cell::RefCell;
 use std::ops::ControlFlow;
 use std::path::PathBuf;
@@ -34,7 +33,11 @@ impl TurnDriver for SpyDriver {
     fn turn_config(&mut self) -> LoopConfig {
         self.inner.turn_config()
     }
-    async fn after_turn(&mut self, sink: &mut dyn TurnSink, result: &TurnResult) {
+    async fn after_turn(
+        &mut self,
+        sink: &mut dyn TurnSink,
+        result: &gait_core::proto::gait::log::v1::RunResult,
+    ) {
         *self.after_called.borrow_mut() = true;
         // Mirror the default impl: do nothing observable. Don't return Continue/Break;
         // `after_turn` returns `()` in the trait.
@@ -100,7 +103,7 @@ async fn success_calls_after_turn_not_on_error() {
     run_with_spy(
         tmp.path(),
         "d1",
-        &[terminated_ok("done")],
+        &[append_assistant("done"), terminated_ok("done")],
         after_called.clone(),
         error_called.clone(),
     )

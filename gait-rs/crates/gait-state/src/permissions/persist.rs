@@ -241,27 +241,23 @@ mod tests {
         let reply = compute_allow_decisions(&items, &params, Path::new("/tmp"), "s", None).unwrap();
 
         // Fold the produced reply through the same projection a turn uses, with a
-        // TurnComplete after it — a Session grant must persist past the turn boundary.
+        // RunComplete after it — a Session grant persists past the run boundary.
         let evs = vec![
             crate::proto::envelope::mint(
                 crate::proto::events::permissions_reply(&reply),
                 None,
-                0,
-                0,
+                crate::proto::envelope::EventScope::Turn { run: 0, turn: 0 },
             ),
             crate::proto::envelope::mint(
-                crate::proto::events::turn_complete(
-                    crate::proto::events::TurnCompleteParams::default(),
-                ),
+                crate::proto::events::run_complete(Default::default()),
                 None,
-                0,
-                0,
+                crate::proto::envelope::EventScope::Run { run: 0 },
             ),
         ];
         let ea = effective_allow(HashSet::new(), &evs, &HashMap::new());
         assert!(
             ea.contains(&"shell:cargo *".to_string()),
-            "session grant must survive TurnComplete; got {ea:?}"
+            "session grant must survive RunComplete; got {ea:?}"
         );
     }
 }

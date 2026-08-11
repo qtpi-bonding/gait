@@ -44,7 +44,7 @@ async fn structured_only_completion_renders_the_done_message() {
                     ok: true,
                     name: "structured_done".into(),
                 },
-                Frame::TurnComplete {
+                Frame::TurnDone {
                     message: message.into(),
                     result: None,
                 },

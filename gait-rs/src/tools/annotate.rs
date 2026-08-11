@@ -47,7 +47,7 @@ impl Tool for AnnotateTool {
     }
 
     fn execution_signal(&self) -> ExecutionSignal {
-        ExecutionSignal::TurnComplete
+        ExecutionSignal::FinishTurn
     }
 
     async fn execute(
@@ -78,9 +78,9 @@ mod tests {
     }
 
     #[test]
-    fn signal_is_turn_complete() {
+    fn signal_finishes_turn() {
         let t = AnnotateTool::new();
-        assert_eq!(t.execution_signal(), ExecutionSignal::TurnComplete);
+        assert_eq!(t.execution_signal(), ExecutionSignal::FinishTurn);
     }
 
     #[test]

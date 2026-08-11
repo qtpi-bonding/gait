@@ -76,7 +76,7 @@ impl Tool for StructuredDoneTool {
         ToolPermission::Passthrough
     }
     fn execution_signal(&self) -> ExecutionSignal {
-        ExecutionSignal::TurnComplete
+        ExecutionSignal::FinishTurn
     }
 
     async fn execute(
@@ -150,11 +150,11 @@ mod tests {
     }
 
     #[test]
-    fn output_execution_signal_is_turn_complete() {
+    fn output_execution_signal_finishes_turn() {
         let tool = StructuredDoneTool::new();
         assert_eq!(
             tool.execution_signal(),
-            crate::types::ExecutionSignal::TurnComplete
+            crate::types::ExecutionSignal::FinishTurn
         );
     }
 
