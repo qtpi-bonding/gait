@@ -109,6 +109,51 @@ pub struct RelaySynapse {
     pub writer: crate::turn::nerve::NerveWriter,
 }
 
+impl RelaySynapse {
+    /// Send an in-process tool result to the spine for full archival and shared
+    /// model-facing bounding. This keeps the sealed brain free of disk access.
+    pub async fn archive_output(
+        &self,
+        tool_name: &str,
+        result: serde_json::Value,
+    ) -> Result<serde_json::Value, ToolError> {
+        let result = serde_json::from_value(result).map_err(|error| {
+            ToolError::Internal(anyhow::anyhow!("archive result conversion: {error}"))
+        })?;
+        let corr_id = self.writer.alloc_corr_id();
+        let signal = gait_proto::gait::sandbox::v1::Signal {
+            corr_id,
+            body: Some(gait_proto::gait::sandbox::v1::signal::Body::ArchiveOutput(
+                gait_proto::gait::sandbox::v1::ArchiveOutput {
+                    tool: tool_name.to_string(),
+                    result: Some(result),
+                },
+            )),
+        };
+        let rx = self
+            .writer
+            .send_and_register(&signal)
+            .await
+            .map_err(|error| ToolError::Internal(anyhow::anyhow!("nerve send: {error}")))?;
+        let response = rx
+            .await
+            .map_err(|_| ToolError::Internal(anyhow::anyhow!("nerve: spine dropped reply")))?;
+        let feedback = match response.body {
+            Some(gait_proto::gait::sandbox::v1::signal::Body::Feedback(feedback)) => feedback,
+            other => {
+                return Err(ToolError::Internal(anyhow::anyhow!(
+                    "nerve: expected archive Feedback, got {other:?}"
+                )))
+            }
+        };
+        Ok(feedback
+            .result
+            .as_ref()
+            .and_then(|value| serde_json::to_value(value).ok())
+            .unwrap_or(serde_json::Value::Null))
+    }
+}
+
 #[async_trait::async_trait]
 impl Synapse for RelaySynapse {
     async fn fire(
@@ -298,6 +343,55 @@ mod tests {
         assert!(events.is_empty());
         assert!(denied.is_none());
         assert!(whitelist_items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn relay_archive_output_round_trips_bounded_artifact_result() {
+        use crate::turn::nerve;
+        use gait_proto::gait::sandbox::v1::{signal, Feedback};
+
+        let (brain_read, spine_write_half) = tokio::io::duplex(4096);
+        let (spine_read_half, brain_write) = tokio::io::duplex(4096);
+        let (writer, _handle) = nerve::start_nerve(brain_read, brain_write);
+
+        tokio::spawn(async move {
+            let mut r = spine_read_half;
+            let mut w = spine_write_half;
+            let sig = nerve::read_signal(&mut r).await.unwrap();
+            let signal::Body::ArchiveOutput(request) = sig.body.unwrap() else {
+                panic!("expected ArchiveOutput request");
+            };
+            assert_eq!(request.tool, "load");
+            let original: serde_json::Value =
+                serde_json::to_value(request.result.unwrap()).unwrap();
+            assert_eq!(original, serde_json::json!({"large": "value"}));
+
+            let bounded = "preview\n\n[full output: /tmp/output.txt (17 bytes)]";
+            let canned = gait_proto::gait::sandbox::v1::Signal {
+                corr_id: sig.corr_id,
+                body: Some(signal::Body::Feedback(Feedback {
+                    result: Some(pbjson_types::Value {
+                        kind: Some(pbjson_types::value::Kind::StringValue(bounded.into())),
+                    }),
+                    events: vec![],
+                    denied: None,
+                    daemon: None,
+                    final_content: None,
+                    whitelist_match_items: vec![],
+                    sandbox_denied: None,
+                })),
+            };
+            nerve::write_signal(&mut w, &canned).await.unwrap();
+        });
+
+        let result = RelaySynapse { writer }
+            .archive_output("load", serde_json::json!({"large": "value"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            result.as_str(),
+            Some("preview\n\n[full output: /tmp/output.txt (17 bytes)]")
+        );
     }
 
     #[test]

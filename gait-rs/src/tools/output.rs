@@ -77,9 +77,7 @@ pub(crate) fn artifact_marker(artifact: &ToolOutputArtifact) -> String {
     )
 }
 
-/// Recover an artifact emitted by this module from model-facing text. Only an
-/// existing file inside the current session's output root is trusted.
-pub(crate) fn artifact_from_text(
+fn artifact_reference_from_text(
     text: &str,
     gait_dir: &Path,
     session_id: &str,
@@ -90,10 +88,32 @@ pub(crate) fn artifact_from_text(
     let bytes = suffix.strip_suffix(" bytes)]")?.parse::<u64>().ok()?;
     let path = PathBuf::from(path);
     let root = crate::session::live::outputs_dir(gait_dir, session_id);
-    if !path.starts_with(&root) || std::fs::metadata(&path).ok()?.len() != bytes {
+    if !path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+        || !path.starts_with(&root)
+    {
         return None;
     }
     Some(ToolOutputArtifact { path, bytes })
+}
+
+/// Recover an artifact emitted by this module from model-facing text. Only an
+/// existing file inside the current session's output root is trusted.
+pub(crate) fn artifact_from_text(
+    text: &str,
+    gait_dir: &Path,
+    session_id: &str,
+) -> Option<ToolOutputArtifact> {
+    let artifact = artifact_reference_from_text(text, gait_dir, session_id)?;
+    if std::fs::metadata(&artifact.path).ok()?.len() != artifact.bytes {
+        return None;
+    }
+    Some(artifact)
 }
 
 pub(crate) fn artifact_from_value(
@@ -106,6 +126,21 @@ pub(crate) fn artifact_from_value(
         .and_then(serde_json::Value::as_str)
         .or_else(|| value.as_str())?;
     artifact_from_text(text, gait_dir, session_id)
+}
+
+/// Recover the hand-finalized artifact reference without touching the
+/// filesystem. The sealed brain uses this only after a RelaySynapse response;
+/// the hand generated the last marker after archiving the complete output.
+pub(crate) fn artifact_reference_from_value(
+    value: &serde_json::Value,
+    gait_dir: &Path,
+    session_id: &str,
+) -> Option<ToolOutputArtifact> {
+    let text = value
+        .get("output")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| value.as_str())?;
+    artifact_reference_from_text(text, gait_dir, session_id)
 }
 
 fn read_artifact_preview(artifact: &ToolOutputArtifact, budget: usize) -> std::io::Result<String> {
@@ -182,6 +217,17 @@ pub(crate) fn model_text_for_inline(text: &str, artifact: &ToolOutputArtifact) -
         .saturating_sub(warning.len() + footer.len() + SECTION_SEPARATOR_BYTES * 2);
     let preview = text_head_tail(text, preview_budget);
     format!("{warning}\n\n{preview}\n\n{footer}")
+}
+
+pub(crate) fn model_text_for_inline_with_note(
+    text: &str,
+    note: &str,
+    artifact: &ToolOutputArtifact,
+) -> String {
+    let footer = artifact_marker(artifact);
+    let suffix = format!("\n\n{footer}");
+    let body = text.strip_suffix(&suffix).unwrap_or(text);
+    model_text_for_inline(&format!("{note}\n{body}"), artifact)
 }
 
 pub(crate) fn model_text_for_artifact(artifact: &ToolOutputArtifact) -> std::io::Result<String> {
@@ -278,6 +324,53 @@ mod tests {
         assert!(model.contains("TAIL"));
         assert!(model.contains("bytes omitted"));
         assert!(model.contains(&artifact.path.display().to_string()));
+        assert!(model.len() <= MODEL_TOOL_OUTPUT_MAX_BYTES);
+    }
+
+    #[test]
+    fn sealed_consumer_can_validate_hand_reference_without_reading_artifact() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = crate::session::live::outputs_dir(dir.path(), "s-test")
+            .join("tools/a1b2c3d4/shell.txt");
+        let value = serde_json::Value::String(format!(
+            "preview\n\n[full output: {} (42 bytes)]",
+            path.display()
+        ));
+
+        let reference = artifact_reference_from_value(&value, dir.path(), "s-test").unwrap();
+        assert_eq!(reference, ToolOutputArtifact { path, bytes: 42 });
+        assert!(artifact_from_value(&value, dir.path(), "s-test").is_none());
+    }
+
+    #[test]
+    fn artifact_reference_rejects_lexical_escape() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::session::live::outputs_dir(dir.path(), "s-test");
+        let escaped = root.join("../s-other/outputs/tools/a1b2c3d4/shell.txt");
+        let value =
+            serde_json::Value::String(format!("[full output: {} (42 bytes)]", escaped.display()));
+
+        assert!(artifact_reference_from_value(&value, dir.path(), "s-test").is_none());
+    }
+
+    #[test]
+    fn approval_note_rebounds_inline_preview_without_reading_artifact() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifact = ToolOutputArtifact {
+            path: crate::session::live::outputs_dir(dir.path(), "s-test")
+                .join("tools/a1b2c3d4/shell.txt"),
+            bytes: (MODEL_TOOL_OUTPUT_MAX_BYTES * 2) as u64,
+        };
+        let input = format!(
+            "{}\n\n{}",
+            "x".repeat(MODEL_TOOL_OUTPUT_MAX_BYTES),
+            artifact_marker(&artifact)
+        );
+
+        let model = model_text_for_inline_with_note(&input, "[User approved.]", &artifact);
+        assert!(model.starts_with("[Tool output transformed and truncated by Gait:"));
+        assert!(model.contains("[User approved.]"));
+        assert!(model.ends_with(&artifact_marker(&artifact)));
         assert!(model.len() <= MODEL_TOOL_OUTPUT_MAX_BYTES);
     }
 }

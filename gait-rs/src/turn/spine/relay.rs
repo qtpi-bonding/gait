@@ -80,6 +80,7 @@ impl RelayState {
 /// Spawn `gait __brain` for one turn and relay its Nerve signals.
 ///
 /// * `Impulse`       → `run_tool_as_spine` (spawned task) → `Feedback`
+/// * `ArchiveOutput` → persist/bound an in-process tool result → `Feedback`
 /// * `Append`        → `wire::append_with_id` (spine is sole log writer)
 /// * `StreamForward` → `sink.item()` (REPL TUI rendering)
 /// * `Terminated`    → parse `TurnResult`, `sink.end_turn()`, `sink.result()`, return
@@ -157,12 +158,6 @@ pub async fn relay_brain_turn(
         TurnMode::Persistent { .. } => {
             git.ensure_worktree()?;
             git.checkpoint_init(codebase)?;
-            // The sealed brain never writes the transcript or codebase, but it
-            // does finalize synthetic/bounded tool results into this one
-            // session-owned, gitignored runtime directory. Create it spine-side
-            // before the brain applies its irreversible sandbox so the brain can
-            // receive a canonical, narrowly scoped path.
-            std::fs::create_dir_all(crate::session::live::outputs_dir(gait_dir, session_id))?;
             let log = crate::turn::SessionLog::open(gait_dir, session_id)?;
             // SessionStart — write once per session (idempotent via event check).
             {
@@ -428,6 +423,15 @@ pub async fn relay_brain_turn(
                         handlers::reply_feedback(stdin_writer, corr_id, feedback).await;
                     });
                 }
+            }
+            Some(signal::Body::ArchiveOutput(request)) => {
+                let stdin_writer = Arc::clone(&child_stdin);
+                let gd = gait_dir.to_path_buf();
+                let sid = session_id.to_string();
+                state.inflight.spawn(async move {
+                    let feedback = handlers::archive_output_feedback(request, &gd, &sid);
+                    handlers::reply_feedback(stdin_writer, corr_id, feedback).await;
+                });
             }
             Some(signal::Body::Append(append)) => {
                 if let Some(mut evt) = append.event {

@@ -37,6 +37,15 @@ message Feedback {
   optional gait.log.v1.SandboxDenied sandbox_denied = 8;
 }
 
+// Brain → spine: archive the complete result of a tool that intentionally ran
+// in-process in the brain (control, transcript, or already-connected MCP).
+// The spine returns the same Value after applying the shared model-output bound
+// and appending the session-scoped full-output artifact reference.
+message ArchiveOutput {
+  string tool = 1;
+  google.protobuf.Value result = 2;
+}
+
 // Metadata for a daemon spawned by the shell tool (detached=true).
 // Carried from hand → spine via Feedback so the spine (sole gait-dir writer)
 // can append a DaemonStart entry to daemons.jsonl.
@@ -117,6 +126,7 @@ message Signal {
     Notify notify = 8;
     BrainInit brain_init = 9;          // spine→brain: first frame, replaces startup+log+git disk reads
     Diagnostic diagnostic = 10;        // brain→spine: a diagnostic.jsonl record (JSON string)
+    ArchiveOutput archive_output = 11; // brain→spine: persist/bound an in-process tool result
   }
 }
 

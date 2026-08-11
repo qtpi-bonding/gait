@@ -3,11 +3,11 @@
 //! The brain is spawned by the spine (`gait __brain`), self-seals to
 //! `{read_all: false, readable: [], writable: [], network: All}`, and runs one turn via
 //! `embed::run_loop`. All disk writes go through the spine via Nerve signals
-//! (Append for events, Spawn for process launches, StreamForward for streaming).
+//! (Append for events, ArchiveOutput for in-process tool results, Spawn for
+//! process launches, StreamForward for streaming).
 //!
 //! This module owns:
-//! - `brain_scope()` — the base seal spec; a persistent brain additionally gets
-//!   narrow read/write access to its own ephemeral tool-output directory
+//! - `brain_scope()` — seal spec: compute + network only, with no disk access
 //! - `BrainSink` — a TurnSink that routes output to stderr (stdout is the Nerve)
 //! - `BrainDriver` — a TurnDriver that wires the Nerve + remote-sink Recorder
 //! - `run_brain()` — the brain's entry point (seal → nerve → run_turn → Terminated)
@@ -133,22 +133,6 @@ pub struct BrainConfig {
     pub sandbox: bool,
 }
 
-fn brain_scope_for_session(
-    gait_dir: &std::path::Path,
-    session_id: Option<&str>,
-) -> crate::sandbox::SandboxScope {
-    let mut scope = brain_scope();
-    let Some(session_id) = session_id else {
-        return scope;
-    };
-    let outputs = crate::session::live::outputs_dir(gait_dir, session_id);
-    if let Ok(outputs) = outputs.canonicalize() {
-        scope.readable.push(outputs.clone());
-        scope.writable.push(outputs);
-    }
-    scope
-}
-
 // ── run_brain ─────────────────────────────────────────────────────────────────
 
 /// The brain's entry point. Called by `cmd_brain` in gait-cli after arg parsing.
@@ -161,9 +145,8 @@ fn brain_scope_for_session(
 /// 6. Send Terminated signal to the spine.
 pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: PathBuf) {
     // ── Apply brain seal ──────────────────────────────────────────────────────
-    let seal_scope = brain_scope_for_session(&gait_dir, config.session_id.as_deref());
     let seal_status = crate::sandbox::platform_sandbox()
-        .apply(&seal_scope)
+        .apply(&brain_scope())
         .unwrap_or(crate::sandbox::SandboxStatus::Unavailable {
             reason: "apply() returned Err".to_string(),
         });
@@ -661,27 +644,6 @@ mod tests {
         );
         let meta = crate::session::session_meta_from_events(&[ev], "s1234567");
         assert_eq!(meta.codebase_path.as_deref(), Some("/code"));
-    }
-
-    #[test]
-    fn brain_scope_only_grants_its_own_session_outputs() {
-        let gait_dir = tempfile::tempdir().unwrap();
-        let own = crate::session::live::outputs_dir(gait_dir.path(), "s-own");
-        let sibling = crate::session::live::outputs_dir(gait_dir.path(), "s-sibling");
-        std::fs::create_dir_all(&own).unwrap();
-        std::fs::create_dir_all(&sibling).unwrap();
-        let own = own.canonicalize().unwrap();
-        let sibling = sibling.canonicalize().unwrap();
-
-        let scope = super::brain_scope_for_session(gait_dir.path(), Some("s-own"));
-        assert!(scope.readable.contains(&own));
-        assert!(scope.writable.contains(&own));
-        assert!(!scope.readable.contains(&sibling));
-        assert!(!scope.writable.contains(&sibling));
-
-        let ephemeral = super::brain_scope_for_session(gait_dir.path(), None);
-        assert!(ephemeral.readable.is_empty());
-        assert!(ephemeral.writable.is_empty());
     }
 
     /// Wire turn cancellation (2026-07-06 plan): `BrainDriver::turn_config()`

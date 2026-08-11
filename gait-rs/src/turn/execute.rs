@@ -38,21 +38,6 @@ use super::state::{TurnEnv, TurnState};
 use super::{validate_against_schema, ClarifyArg, InformArg};
 use crate::permissions::find_matched_deny_pattern;
 
-fn archive_synthetic_result(
-    output: String,
-    tool_name: &str,
-    gait_dir: &std::path::Path,
-    session_id: &str,
-) -> anyhow::Result<String> {
-    let (value, _artifact) = crate::tools::ensure_archived_model_value(
-        serde_json::Value::String(output),
-        gait_dir,
-        session_id,
-        tool_name,
-    )?;
-    Ok(value.as_str().unwrap_or_default().to_string())
-}
-
 /// Classifies this step's tool calls under the permission gate, executes the
 /// allowed ones (parallel batch + serial, dispatching on `ExecutionSignal`),
 /// and folds the results into `state.messages`. Returns the `StepOutcome` for
@@ -145,12 +130,7 @@ pub(crate) async fn run_tools(
         } else {
             tc.tool_name.clone()
         };
-        let output = archive_synthetic_result(
-            "permission denied".to_string(),
-            &tc.tool_name,
-            env.gait_dir,
-            env.session_id,
-        )?;
+        let output = "permission denied".to_string();
         env.emitter.record(events::tool_call(
             tc.tool_call_id.clone(),
             tc.tool_name.clone(),
@@ -317,12 +297,7 @@ pub(crate) async fn run_tools(
                     None
                 }
             }) {
-                let output = archive_synthetic_result(
-                    format!("[Blocked by hook] {reason}"),
-                    &tc.tool_name,
-                    env.gait_dir,
-                    env.session_id,
-                )?;
+                let output = format!("[Blocked by hook] {reason}");
                 env.emitter.record(events::tool_call(
                     tc.tool_call_id.clone(),
                     tc.tool_name.clone(),
@@ -491,15 +466,10 @@ pub(crate) async fn run_tools(
                                     tc.tool_name.clone(),
                                     &tc.args,
                                 ))?;
-                                let error_msg = archive_synthetic_result(
-                                    format!(
-                                        "result schema validation failed ({} retries remaining):\n{}",
-                                        state.schema_retries_remaining, errors
-                                    ),
-                                    &tc.tool_name,
-                                    env.gait_dir,
-                                    env.session_id,
-                                )?;
+                                let error_msg = format!(
+                                    "result schema validation failed ({} retries remaining):\n{}",
+                                    state.schema_retries_remaining, errors
+                                );
                                 env.emitter.record(events::tool_result(
                                     tc.tool_call_id.clone(),
                                     error_msg,
@@ -522,12 +492,7 @@ pub(crate) async fn run_tools(
                         tc.tool_name.clone(),
                         &tc.args,
                     ))?;
-                    let recorded = archive_synthetic_result(
-                        "recorded".to_string(),
-                        &tc.tool_name,
-                        env.gait_dir,
-                        env.session_id,
-                    )?;
+                    let recorded = "recorded".to_string();
                     env.emitter.record(events::tool_result(
                         tc.tool_call_id.clone(),
                         recorded,

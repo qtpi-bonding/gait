@@ -165,18 +165,7 @@ pub(crate) async fn apply_if_pending(
                     .await
                     {
                         // Emit error as tool result so model sees it
-                        let output = crate::tools::ensure_archived_model_value(
-                            serde_json::Value::String(format!(
-                                "error executing approved tool: {e}"
-                            )),
-                            gait_dir,
-                            session_id,
-                            &items[0].tool_name,
-                        )?
-                        .0
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string();
+                        let output = format!("error executing approved tool: {e}");
                         emitter.record(events::tool_result(id.clone(), output, None, None))?;
                     }
                 } else {
@@ -188,16 +177,7 @@ pub(crate) async fn apply_if_pending(
                         items[0].tool_name.clone(),
                         &input_value(&items[0].tool_args),
                     ))?;
-                    let output = crate::tools::ensure_archived_model_value(
-                        serde_json::Value::String("permission denied by user".into()),
-                        gait_dir,
-                        session_id,
-                        &items[0].tool_name,
-                    )?
-                    .0
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string();
+                    let output = "permission denied by user".to_string();
                     emitter.record(events::tool_result(id.clone(), output, None, None))?;
                 }
             }
@@ -218,19 +198,8 @@ pub(crate) async fn apply_if_pending(
         // doc comment above). Synthesize a failure result for each so the
         // model never sees a dangling tool_use with no result.
         for call_id in dangling_ids {
-            let output = crate::tools::ensure_archived_model_value(
-                serde_json::Value::String(
-                    "interrupted: gait exited before this tool call finished — the result is unknown; retry if the task still needs it."
-                        .to_string(),
-                ),
-                gait_dir,
-                session_id,
-                "interrupted",
-            )?
-            .0
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
+            let output = "interrupted: gait exited before this tool call finished — the result is unknown; retry if the task still needs it."
+                .to_string();
             emitter.record(events::tool_result(call_id, output, None, None))?;
         }
         let events_after = ingestor.events()?;
