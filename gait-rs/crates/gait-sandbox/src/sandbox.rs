@@ -184,13 +184,15 @@ pub fn platform_sandbox() -> Box<dyn Sandbox> {
 
 // ── brain_scope ───────────────────────────────────────────────────────────────
 
-/// Build the brain's self-seal scope: compute + network only; all disk data arrives
-/// via `BrainInit` / spine relay.
+/// Build the brain's base self-seal scope: compute + network only; all disk data
+/// arrives via `BrainInit` / spine relay. Persistent turns extend this base in
+/// `run_brain` with only that session's gitignored tool-output directory so the
+/// brain can validate and finalize artifact-backed results.
 ///
-/// The brain is a pure compute process — it holds no codebase paths, reads no files,
-/// and writes nothing to disk. All context (session log, file previews, permissions)
-/// is delivered in-memory by the spine before the seal is applied. Outbound network
-/// is required for LLM API calls (api.anthropic.com:443 via reqwest+rustls).
+/// The base is a pure compute process. All context (session log, file previews,
+/// permissions) is delivered in-memory by the spine; only ephemeral tool-output
+/// artifacts are added by the persistent-turn extension. Outbound network is
+/// required for LLM API calls (api.anthropic.com:443 via reqwest+rustls).
 ///
 /// Validated spike (macOS 15 / Darwin 24.5.0): platform-default read paths
 /// (dyld, /usr, /System, /Library, /private, /bin, /sbin, /var, /etc, /dev)

@@ -157,6 +157,12 @@ pub async fn relay_brain_turn(
         TurnMode::Persistent { .. } => {
             git.ensure_worktree()?;
             git.checkpoint_init(codebase)?;
+            // The sealed brain never writes the transcript or codebase, but it
+            // does finalize synthetic/bounded tool results into this one
+            // session-owned, gitignored runtime directory. Create it spine-side
+            // before the brain applies its irreversible sandbox so the brain can
+            // receive a canonical, narrowly scoped path.
+            std::fs::create_dir_all(crate::session::live::outputs_dir(gait_dir, session_id))?;
             let log = crate::turn::SessionLog::open(gait_dir, session_id)?;
             // SessionStart — write once per session (idempotent via event check).
             {
