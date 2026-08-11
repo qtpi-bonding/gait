@@ -429,7 +429,7 @@ pub async fn relay_brain_turn(
                 let gd = gait_dir.to_path_buf();
                 let sid = session_id.to_string();
                 state.inflight.spawn(async move {
-                    let feedback = handlers::archive_output_feedback(request, &gd, &sid);
+                    let feedback = handlers::output::archive_output_feedback(request, &gd, &sid);
                     handlers::reply_feedback(stdin_writer, corr_id, feedback).await;
                 });
             }

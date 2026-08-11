@@ -214,8 +214,9 @@ pub async fn run_tool_as_spine(
             }
         };
 
-    // Give every hand one narrow, Gait-owned destination for its complete
-    // output. The model only receives a bounded preview plus this path.
+    // Give every hand one narrow, Gait-owned destination for raw streaming
+    // output. After the hand exits, the spine finalizes this path through the
+    // same boundary used by in-process tools.
     let output_path =
         match crate::tools::prepare_tool_output_path(gait_dir, session_id, &impulse.tool) {
             Ok(path) => path,
@@ -436,7 +437,13 @@ pub async fn run_tool_as_spine(
     let mut feedback = match HandResponse::decode(out.stdout.as_slice()) {
         Ok(HandResponse {
             outcome: Some(hand_response::Outcome::Feedback(f)),
-        }) => f,
+        }) => super::output::finalize_feedback(
+            f,
+            gait_dir,
+            session_id,
+            &impulse.tool,
+            Some(output_path),
+        ),
         Ok(HandResponse {
             outcome: Some(hand_response::Outcome::Error(e)),
         }) => error_feedback(&format!("hand error: {}", e.message)),

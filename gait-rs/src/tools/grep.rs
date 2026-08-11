@@ -135,11 +135,7 @@ fn grep_error_result(
     output
         .flush()
         .map_err(|write_error| ToolError::Internal(write_error.into()))?;
-    let artifact = crate::tools::artifact_for_existing(output_path.to_path_buf())
-        .map_err(|read_error| ToolError::Internal(read_error.into()))?;
-    crate::tools::model_text_for_artifact(&artifact)
-        .map(Value::String)
-        .map_err(|read_error| ToolError::Internal(read_error.into()))
+    Ok(Value::String(format!("[grep error: {error}]")))
 }
 
 #[async_trait::async_trait]
@@ -201,18 +197,17 @@ impl Tool for GrepTool {
         };
 
         if !found {
-            let artifact = crate::tools::archive_text(output_path, "No files found")
+            crate::tools::archive_text(output_path, "No files found")
                 .map_err(|error| crate::tools::ToolError::Internal(error.into()))?;
-            let model = crate::tools::model_text_for_artifact(&artifact)
-                .map_err(|error| crate::tools::ToolError::Internal(error.into()))?;
-            return Ok(Value::String(model));
+            return Ok(Value::String("No files found".into()));
         }
 
-        let artifact = crate::tools::artifact_for_existing(output_path)
+        crate::tools::artifact_for_existing(output_path.clone())
             .map_err(|error| crate::tools::ToolError::Internal(error.into()))?;
-        let model = crate::tools::model_text_for_artifact(&artifact)
-            .map_err(|error| crate::tools::ToolError::Internal(error.into()))?;
-        Ok(Value::String(model))
+        Ok(Value::String(format!(
+            "[grep output captured at {}]",
+            output_path.display()
+        )))
     }
 
     fn access(&self) -> crate::types::ToolAccess {
@@ -249,6 +244,20 @@ mod tests {
         )
     }
 
+    async fn execute_finalized(dir: &TempDir, args: serde_json::Value) -> serde_json::Value {
+        let output_path =
+            crate::session::live::outputs_dir(dir.path(), "test").join("tools/test/grep.txt");
+        std::fs::create_dir_all(output_path.parent().unwrap()).unwrap();
+        let tool = GrepTool::new(make_ctx(dir).with_output_path(output_path.clone()));
+        let raw = tool
+            .execute(args, &crate::Recorder::detached())
+            .await
+            .unwrap();
+        crate::tools::archive_and_prepare_model_value(raw, output_path)
+            .unwrap()
+            .0
+    }
+
     #[tokio::test]
     async fn finds_pattern_in_files() {
         let dir = TempDir::new().unwrap();
@@ -258,14 +267,7 @@ mod tests {
         )
         .unwrap();
 
-        let tool = GrepTool::new(make_ctx(&dir));
-        let result = tool
-            .execute(
-                serde_json::json!({ "pattern": "println" }),
-                &crate::Recorder::detached(),
-            )
-            .await
-            .unwrap();
+        let result = execute_finalized(&dir, serde_json::json!({ "pattern": "println" })).await;
         let text = result.as_str().unwrap();
         assert!(text.contains("foo.rs"), "got: {text}");
         assert!(text.contains("println"), "got: {text}");
@@ -275,14 +277,8 @@ mod tests {
     async fn returns_no_files_found_when_no_match() {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
-        let tool = GrepTool::new(make_ctx(&dir));
-        let result = tool
-            .execute(
-                serde_json::json!({ "pattern": "zzz_not_present" }),
-                &crate::Recorder::detached(),
-            )
-            .await
-            .unwrap();
+        let result =
+            execute_finalized(&dir, serde_json::json!({ "pattern": "zzz_not_present" })).await;
         let text = result.as_str().unwrap();
         assert!(text.contains("No files found"));
         assert!(text.contains("[full output:"));
@@ -298,14 +294,11 @@ mod tests {
             .join("\n");
         std::fs::write(dir.path().join("many.txt"), content).unwrap();
 
-        let tool = GrepTool::new(make_ctx(&dir));
-        let result = tool
-            .execute(
-                serde_json::json!({ "pattern": "", "include": "*.txt" }),
-                &crate::Recorder::detached(),
-            )
-            .await
-            .unwrap();
+        let result = execute_finalized(
+            &dir,
+            serde_json::json!({ "pattern": "", "include": "*.txt" }),
+        )
+        .await;
         let text = result.as_str().unwrap();
         assert!(text.contains("Tool output truncated by Gait"));
         assert!(text.len() <= crate::tools::MODEL_TOOL_OUTPUT_MAX_BYTES);
@@ -323,17 +316,14 @@ mod tests {
         std::fs::write(dir.path().join("sub/a.txt"), "needle").unwrap();
         std::fs::write(dir.path().join("b.txt"), "needle").unwrap();
 
-        let tool = GrepTool::new(make_ctx(&dir));
-        let result = tool
-            .execute(
-                serde_json::json!({
-                    "pattern": "needle",
-                    "path": "sub"
-                }),
-                &crate::Recorder::detached(),
-            )
-            .await
-            .unwrap();
+        let result = execute_finalized(
+            &dir,
+            serde_json::json!({
+                "pattern": "needle",
+                "path": "sub"
+            }),
+        )
+        .await;
         let text = result.as_str().unwrap();
         assert!(text.contains("a.txt"), "got: {text}");
         assert!(!text.contains("b.txt"), "got: {text}");

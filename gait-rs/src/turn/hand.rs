@@ -370,27 +370,10 @@ pub async fn run_hand(config: HandConfig) {
         None
     };
 
-    // Preserve the complete result before the model-facing preview crosses IPC.
-    // Streaming tools may already have written this exact path; ordinary tools
-    // are archived here after execution. Either way, the result sent onward
-    // includes the artifact path and stays within the one shared preview budget.
-    let output_path = match config.output_path.clone() {
-        Some(path) => path,
-        None => match crate::tools::prepare_tool_output_path(
-            &config.gait_dir,
-            &config.session,
-            &config.tool,
-        ) {
-            Ok(path) => path,
-            Err(error) => respond_err(format!("failed to prepare tool output artifact: {error}")),
-        },
-    };
-    result_json = match crate::tools::archive_and_prepare_model_value(result_json, output_path) {
-        Ok((model_value, _artifact)) => model_value,
-        Err(error) => respond_err(format!("failed to archive tool output: {error}")),
-    };
-
-    // Convert serde_json::Value → pbjson_types::Value.
+    // Return the raw tool value. The spine owns the single output-finalization
+    // boundary: it archives ordinary values or validates the preallocated file
+    // populated by streaming tools, then builds the bounded model preview.
+    // Convert serde_json::Value → pbjson_types::Value for that hand→spine hop.
     let result_proto: pbjson_types::Value = serde_json::from_value(result_json.clone())
         .unwrap_or_else(|e| {
             #[allow(clippy::print_stderr)] // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md

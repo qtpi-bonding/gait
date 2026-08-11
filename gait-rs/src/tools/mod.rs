@@ -40,9 +40,9 @@ pub use ls::LsTool;
 pub(crate) use output::artifact_from_text;
 pub(crate) use output::{
     archive_and_prepare_model_value, archive_text, artifact_for_existing,
-    artifact_reference_from_value, ensure_archived_model_value, model_text_for_artifact,
-    model_text_for_inline, model_text_for_inline_with_note, prepare_tool_output_path,
-    ToolOutputArtifact, MODEL_TOOL_OUTPUT_MAX_BYTES,
+    artifact_reference_from_value, ensure_archived_model_value, model_text_for_inline,
+    model_text_for_inline_with_note, prepare_tool_output_path, ToolOutputArtifact,
+    MODEL_TOOL_OUTPUT_MAX_BYTES,
 };
 pub use prune::PruneTool;
 pub use read::ReadTool;
