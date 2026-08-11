@@ -276,7 +276,8 @@ pub async fn relay_brain_turn(
     let _group_handle = group.handle(); // Future: pass to blocking subagents (Plan 4).
 
     let child_stdin = Arc::new(Mutex::new(child.stdin.take().expect("piped stdin")));
-    let mut child_stdout = child.stdout.take().expect("piped stdout");
+    let child_stdout = child.stdout.take().expect("piped stdout");
+    let mut nerve_reader = nerve::NerveReader::new(child_stdout);
 
     // ── BrainInit: push config + full log + git so the brain reads zero disk. ──
     // The caller appended this turn's user input before relay_brain_turn, and the
@@ -330,7 +331,7 @@ pub async fn relay_brain_turn(
 
     sink.begin_turn();
     loop {
-        let read = nerve::read_signal(&mut child_stdout);
+        let read = nerve_reader.read_signal();
         let timed = tokio::time::timeout(
             std::time::Duration::from_millis(state.watchdog.ping_ms()),
             read,

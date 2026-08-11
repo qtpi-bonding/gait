@@ -175,10 +175,10 @@ pub(super) async fn execute_tool_call(
         }
         None => (format!("unknown tool: {}", tc.tool_name), None, None, None),
     };
-    let output = match approval_prefix {
+    let output = crate::tools::bound_tool_output(match approval_prefix {
         Some(prefix) => format!("{}\n{}", prefix, raw),
         None => raw,
-    };
+    });
     let tr_event = emitter.record(events::tool_result(
         id.clone(),
         output.clone(),
@@ -350,6 +350,14 @@ pub(super) async fn apply_output_filter(
         .await;
     }
 
+    let filtered = exec
+        .result
+        .result
+        .as_str()
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| exec.result.result.to_string());
+    exec.result.result = serde_json::Value::String(crate::tools::bound_tool_output(filtered));
+
     // If any transform changed the result vs the original raw, emit a Replace so
     // retrace uses the filtered output on replay. Skip if log_event_id is empty
     // (error path) or the result is unchanged.
@@ -412,6 +420,30 @@ mod synapse_routing_tests {
         }
     }
 
+    struct HugeOutputTool;
+    #[async_trait::async_trait]
+    impl Tool for HugeOutputTool {
+        fn name(&self) -> &str {
+            "huge_output"
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn parameters(&self) -> &serde_json::Value {
+            static P: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+            P.get_or_init(|| serde_json::json!({"type":"object"}))
+        }
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _rec: &dyn crate::types::Rec,
+        ) -> Result<serde_json::Value, crate::tools::ToolError> {
+            Ok(serde_json::Value::String(
+                "line\n".repeat(crate::tools::MAX_TOOL_OUTPUT_LINES + 1),
+            ))
+        }
+    }
+
     #[tokio::test]
     async fn world_tool_events_are_recorded_by_caller() {
         let dir = tempdir().unwrap();
@@ -452,5 +484,45 @@ mod synapse_routing_tests {
             log.contains("/from-tool"),
             "tool-emitted event must be replayed into the log"
         );
+    }
+
+    #[tokio::test]
+    async fn shared_output_boundary_applies_before_model_and_log() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(
+            crate::session::live::log_path(dir.path(), "sbound1")
+                .parent()
+                .unwrap(),
+        )
+        .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let rec = crate::proto::Recorder::for_session(dir.path(), "sbound1", tx);
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(HugeOutputTool)];
+        let tc = ToolCall {
+            tool_call_id: "c-bound".into(),
+            tool_name: "huge_output".into(),
+            args: serde_json::json!({}),
+        };
+
+        let out = execute_tool_call(
+            &tc,
+            &tools,
+            &rec,
+            None,
+            dir.path(),
+            dir.path(),
+            "sbound1",
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        let model_output = out.result.result.as_str().unwrap();
+        assert!(model_output.contains("Tool output truncated by Gait"));
+        assert!(model_output.len() <= crate::tools::MAX_TOOL_OUTPUT_BYTES);
+
+        let log = std::fs::read_to_string(&rec.tx_path).unwrap();
+        assert!(log.contains("Tool output truncated by Gait"));
+        assert!(!log.contains(&"line\\n".repeat(crate::tools::MAX_TOOL_OUTPUT_LINES + 1)));
     }
 }

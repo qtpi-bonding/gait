@@ -46,6 +46,88 @@ pub use write::WriteTool;
 use crate::config::{McpToolDef, SkillDef};
 use crate::types::Tool;
 
+/// One shared ceiling for every tool result that crosses IPC, is persisted, or
+/// is included in a provider request. Tools may stop producing early at these
+/// values, but they do not define separate result-size policies.
+pub(crate) const MAX_TOOL_OUTPUT_LINES: usize = 2000;
+pub(crate) const MAX_TOOL_OUTPUT_BYTES: usize = 256 * 1024;
+
+/// Truncate oversized text while preserving a useful prefix and appending an
+/// explicit warning. Calls that fit are returned byte-for-byte unchanged.
+pub(crate) fn bound_tool_output(raw: String) -> String {
+    let exceeds_bytes = raw.len() > MAX_TOOL_OUTPUT_BYTES;
+    let exceeds_lines = raw.lines().nth(MAX_TOOL_OUTPUT_LINES).is_some();
+    if !exceeds_bytes && !exceeds_lines {
+        return raw;
+    }
+
+    let original_bytes = raw.len();
+    let original_lines = raw.lines().count();
+    let footer = format!(
+        "[Tool output truncated by Gait: original was {original_lines} lines / {original_bytes} bytes; limit is {MAX_TOOL_OUTPUT_LINES} lines / {MAX_TOOL_OUTPUT_BYTES} bytes]"
+    );
+    let content_budget = MAX_TOOL_OUTPUT_BYTES.saturating_sub(footer.len() + 2);
+    // Reserve one blank separator line and one warning line so the complete
+    // returned value, not only its retained prefix, stays within the ceiling.
+    let content_line_budget = MAX_TOOL_OUTPUT_LINES.saturating_sub(2);
+    let mut bounded = String::with_capacity(MAX_TOOL_OUTPUT_BYTES);
+    let mut kept_lines = 0usize;
+
+    for segment in raw.split_inclusive('\n') {
+        if kept_lines >= content_line_budget || bounded.len() >= content_budget {
+            break;
+        }
+        let remaining = content_budget - bounded.len();
+        if segment.len() <= remaining {
+            bounded.push_str(segment);
+            kept_lines += 1;
+            continue;
+        }
+
+        let mut boundary = remaining;
+        while boundary > 0 && !segment.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        bounded.push_str(&segment[..boundary]);
+        break;
+    }
+
+    if !bounded.ends_with('\n') {
+        bounded.push('\n');
+    }
+    bounded.push('\n');
+    bounded.push_str(&footer);
+    bounded
+}
+
+/// Apply the shared ceiling before a hand serializes its result over IPC while
+/// retaining small structured values and shell process metadata.
+pub(crate) fn bound_tool_result_value(mut value: serde_json::Value) -> serde_json::Value {
+    match &mut value {
+        serde_json::Value::String(text) => {
+            *text = bound_tool_output(std::mem::take(text));
+            return value;
+        }
+        serde_json::Value::Object(object) => {
+            if let Some(serde_json::Value::String(output)) = object.get_mut("output") {
+                *output = bound_tool_output(std::mem::take(output));
+                // The process-result object has only small metadata alongside
+                // `output`; keep that structure so exit status is not lost.
+                return value;
+            }
+        }
+        _ => {}
+    }
+
+    let rendered = value.to_string();
+    let bounded = bound_tool_output(rendered.clone());
+    if bounded == rendered {
+        value
+    } else {
+        serde_json::Value::String(bounded)
+    }
+}
+
 /// Generate a JSON Schema for type T and strip the `$schema` and `title` meta-keys
 /// that schemars adds by default. Anthropic's `input_schema` field accepts a plain
 /// JSON Schema object — the extra meta-keys cause 400 errors against the live API.
@@ -273,6 +355,66 @@ mod tests {
     use super::*;
     use crate::tools::ToolCtx;
     use std::path::PathBuf;
+
+    #[test]
+    fn shared_boundary_truncates_and_warns_instead_of_rejecting() {
+        let raw = (0..(MAX_TOOL_OUTPUT_LINES + 10))
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let bounded = bound_tool_output(raw);
+
+        assert!(bounded.contains(&format!("line {}", MAX_TOOL_OUTPUT_LINES - 3)));
+        assert!(!bounded.contains(&format!("line {}\n", MAX_TOOL_OUTPUT_LINES - 2)));
+        assert!(bounded.contains("Tool output truncated by Gait"));
+        assert!(bounded.len() <= MAX_TOOL_OUTPUT_BYTES);
+        assert!(bounded.lines().count() <= MAX_TOOL_OUTPUT_LINES);
+    }
+
+    #[test]
+    fn shared_boundary_handles_one_huge_utf8_line() {
+        let raw = "é".repeat(MAX_TOOL_OUTPUT_BYTES);
+        let bounded = bound_tool_output(raw);
+
+        assert!(bounded.contains("Tool output truncated by Gait"));
+        assert!(bounded.len() <= MAX_TOOL_OUTPUT_BYTES);
+        assert!(std::str::from_utf8(bounded.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn shared_boundary_preserves_small_shell_metadata() {
+        let value = serde_json::json!({"output": "small\nresult", "exit_code": 7});
+        assert_eq!(bound_tool_result_value(value.clone()), value);
+    }
+
+    #[test]
+    fn shared_boundary_truncates_shell_output_and_preserves_exit_code() {
+        let value = serde_json::json!({
+            "output": "line\n".repeat(MAX_TOOL_OUTPUT_LINES + 1),
+            "exit_code": 7
+        });
+        let bounded = bound_tool_result_value(value);
+
+        assert_eq!(bounded["exit_code"], 7);
+        assert!(bounded["output"]
+            .as_str()
+            .unwrap()
+            .contains("Tool output truncated by Gait"));
+    }
+
+    #[test]
+    fn shared_byte_boundary_preserves_exit_code_for_huge_single_line() {
+        let value = serde_json::json!({
+            "output": "é".repeat(MAX_TOOL_OUTPUT_BYTES),
+            "exit_code": 7
+        });
+        let bounded = bound_tool_result_value(value);
+
+        assert_eq!(bounded["exit_code"], 7);
+        let output = bounded["output"].as_str().unwrap();
+        assert!(output.contains("Tool output truncated by Gait"));
+        assert!(output.len() <= MAX_TOOL_OUTPUT_BYTES);
+    }
 
     #[test]
     fn builtin_tools_returns_sixteen() {

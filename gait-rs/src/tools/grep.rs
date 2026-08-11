@@ -5,8 +5,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::PathBuf;
-
-const MAX_LINE_LENGTH: usize = 2000;
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[derive(Deserialize, JsonSchema)]
 struct GrepParams {
@@ -24,6 +23,23 @@ struct MatchEntry {
     line_num: usize,
     line_text: String,
     mod_time: Option<std::time::SystemTime>,
+}
+
+#[derive(Debug)]
+struct SearchMatches {
+    entries: Vec<MatchEntry>,
+    truncated: bool,
+}
+
+fn prefix_within_bytes(text: &str, max_bytes: usize) -> (&str, bool) {
+    if text.len() <= max_bytes {
+        return (text, false);
+    }
+    let mut boundary = max_bytes;
+    while boundary > 0 && !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    (&text[..boundary], true)
 }
 
 pub struct GrepTool {
@@ -49,7 +65,7 @@ async fn rg_search(
     search_path: &str,
     include: Option<&str>,
     timeout_secs: u64,
-) -> anyhow::Result<Option<Vec<MatchEntry>>> {
+) -> anyhow::Result<Option<SearchMatches>> {
     let mut cmd = tokio::process::Command::new("rg");
     cmd.args([
         "-nH",
@@ -69,58 +85,73 @@ async fn rg_search(
     // leaves rg running as an orphan reaped whenever it eventually exits on
     // its own. That's the exact process-escape class this plan exists to fix.
     cmd.kill_on_drop(true);
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
 
-    let output = match tokio::time::timeout(
-        std::time::Duration::from_secs(timeout_secs),
-        cmd.output(),
-    )
-    .await
-    {
-        Ok(Ok(o)) => o,
-        Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None), // rg not installed
-        Ok(Err(e)) => return Err(e.into()),
-        Err(_) => anyhow::bail!("ripgrep search timed out after {timeout_secs}s"),
+    let search = async move {
+        let mut child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let stdout = child.stdout.take().expect("ripgrep stdout is piped");
+        let mut lines = BufReader::new(stdout).lines();
+        let mut matches = Vec::new();
+        let mut truncated = false;
+        let mut captured_bytes = 0usize;
+
+        while let Some(line) = lines.next_line().await? {
+            if line.is_empty() {
+                continue;
+            }
+            // Format from -nH --no-heading: /path/to/file.rs:42:line text here.
+            let parts: Vec<&str> = line.splitn(3, ':').collect();
+            if parts.len() < 3 {
+                continue;
+            }
+            let file_path = parts[0].to_string();
+            let Ok(line_num) = parts[1].parse::<usize>() else {
+                continue;
+            };
+            let mod_time = std::fs::metadata(&file_path)
+                .ok()
+                .and_then(|metadata| metadata.modified().ok());
+            let remaining = crate::tools::MAX_TOOL_OUTPUT_BYTES.saturating_sub(captured_bytes);
+            let (line_text, byte_truncated) = prefix_within_bytes(parts[2], remaining);
+            captured_bytes += line_text.len();
+            matches.push(MatchEntry {
+                path: file_path,
+                line_num,
+                line_text: line_text.to_string(),
+                mod_time,
+            });
+            if byte_truncated
+                || captured_bytes >= crate::tools::MAX_TOOL_OUTPUT_BYTES
+                || matches.len() >= crate::tools::MAX_TOOL_OUTPUT_LINES
+            {
+                truncated = true;
+                let _ = child.kill().await;
+                break;
+            }
+        }
+
+        let status = child.wait().await?;
+        if !truncated && !matches!(status.code(), Some(0) | Some(1)) {
+            return Ok(None);
+        }
+        Ok(Some(SearchMatches {
+            entries: matches,
+            truncated,
+        }))
     };
 
-    match output.status.code() {
-        Some(0) | Some(1) => {} // 0 = matches, 1 = no matches — both authoritative, don't re-scan
-        _ => return Ok(None),   // exit 2 or signal: rg error, fall back to regex_search
+    match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), search).await {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!("ripgrep search timed out after {timeout_secs}s"),
     }
-
-    if output.stdout.is_empty() {
-        return Ok(Some(vec![]));
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut matches = vec![];
-    for line in text.lines() {
-        if line.is_empty() {
-            continue;
-        }
-        // Format from -nH --no-heading: /path/to/file.rs:42:line text here
-        // splitn(3, ':') handles paths that contain ':' (the text portion may also contain ':')
-        let parts: Vec<&str> = line.splitn(3, ':').collect();
-        if parts.len() < 3 {
-            continue;
-        }
-        let file_path = parts[0].to_string();
-        let Ok(line_num) = parts[1].parse::<usize>() else {
-            continue;
-        };
-        let line_text = parts[2].to_string();
-        let mod_time = std::fs::metadata(&file_path)
-            .ok()
-            .and_then(|m| m.modified().ok());
-        matches.push(MatchEntry {
-            path: file_path,
-            line_num,
-            line_text,
-            mod_time,
-        });
-    }
-    Ok(Some(matches))
 }
 
-fn regex_search(pattern: &str, search_path: &std::path::Path) -> anyhow::Result<Vec<MatchEntry>> {
+fn regex_search(pattern: &str, search_path: &std::path::Path) -> anyhow::Result<SearchMatches> {
     let re =
         regex::Regex::new(pattern).map_err(|e| anyhow::anyhow!("Invalid regex pattern: {e}"))?;
     let mut matches = vec![];
@@ -138,6 +169,7 @@ fn regex_search(pattern: &str, search_path: &std::path::Path) -> anyhow::Result<
                 .filter(|e| e.file_type().is_file()),
         )
     };
+    let mut captured_bytes = 0usize;
     for entry in files {
         let path = entry.path();
         let Ok(content) = std::fs::read_to_string(path) else {
@@ -146,16 +178,31 @@ fn regex_search(pattern: &str, search_path: &std::path::Path) -> anyhow::Result<
         let mod_time = path.metadata().ok().and_then(|m| m.modified().ok());
         for (i, line) in content.lines().enumerate() {
             if re.is_match(line) {
+                let remaining = crate::tools::MAX_TOOL_OUTPUT_BYTES.saturating_sub(captured_bytes);
+                let (line_text, byte_truncated) = prefix_within_bytes(line, remaining);
+                captured_bytes += line_text.len();
                 matches.push(MatchEntry {
                     path: path.display().to_string(),
                     line_num: i + 1,
-                    line_text: line.to_string(),
+                    line_text: line_text.to_string(),
                     mod_time,
                 });
+                if byte_truncated
+                    || captured_bytes >= crate::tools::MAX_TOOL_OUTPUT_BYTES
+                    || matches.len() >= crate::tools::MAX_TOOL_OUTPUT_LINES
+                {
+                    return Ok(SearchMatches {
+                        entries: matches,
+                        truncated: true,
+                    });
+                }
             }
         }
     }
-    Ok(matches)
+    Ok(SearchMatches {
+        entries: matches,
+        truncated: false,
+    })
 }
 
 #[async_trait::async_trait]
@@ -188,7 +235,7 @@ impl Tool for GrepTool {
         };
 
         let timeout_secs = crate::config::load_config(&self.ctx.gait_dir).tool_timeout_secs;
-        let mut matches = match rg_search(
+        let mut search = match rg_search(
             &params.pattern,
             &resolved.display().to_string(),
             params.include.as_deref(),
@@ -197,20 +244,27 @@ impl Tool for GrepTool {
         .await
         .map_err(crate::tools::ToolError::Internal)?
         {
-            Some(m) => m, // rg ran — authoritative (even if empty)
+            Some(matches) => matches, // rg ran — authoritative (even if empty)
             None => regex_search(&params.pattern, &resolved)
                 .map_err(crate::tools::ToolError::Internal)?, // rg unavailable/errored — fall back
         };
 
-        if matches.is_empty() {
+        if search.entries.is_empty() {
             return Ok(Value::String("No files found".into()));
         }
 
-        matches.sort_by(|a, b| b.mod_time.cmp(&a.mod_time));
+        search.entries.sort_by(|a, b| b.mod_time.cmp(&a.mod_time));
 
-        let mut lines = vec![format!("Found {} matches", matches.len())];
+        let mut lines = vec![if search.truncated {
+            format!(
+                "Showing first {} matches (results truncated)",
+                search.entries.len()
+            )
+        } else {
+            format!("Found {} matches", search.entries.len())
+        }];
         let mut current_file = String::new();
-        for m in &matches {
+        for m in &search.entries {
             if current_file != m.path {
                 if !current_file.is_empty() {
                     lines.push(String::new());
@@ -218,12 +272,7 @@ impl Tool for GrepTool {
                 current_file = m.path.clone();
                 lines.push(format!("{}:", m.path));
             }
-            let text = if m.line_text.len() > MAX_LINE_LENGTH {
-                format!("{}...", &m.line_text[..MAX_LINE_LENGTH])
-            } else {
-                m.line_text.clone()
-            };
-            lines.push(format!("  Line {}: {}", m.line_num, text));
+            lines.push(format!("  Line {}: {}", m.line_num, m.line_text));
         }
 
         Ok(Value::String(lines.join("\n")))
@@ -298,6 +347,38 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.as_str().unwrap(), "No files found");
+    }
+
+    #[tokio::test]
+    async fn empty_pattern_is_allowed_but_globally_bounded() {
+        let dir = TempDir::new().unwrap();
+        let content = (0..(crate::tools::MAX_TOOL_OUTPUT_LINES + 100))
+            .map(|index| format!("line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(dir.path().join("many.txt"), content).unwrap();
+
+        let tool = GrepTool::new(make_ctx(&dir));
+        let result = tool
+            .execute(
+                serde_json::json!({ "pattern": "", "include": "*.txt" }),
+                &crate::Recorder::detached(),
+            )
+            .await
+            .unwrap();
+        let text = result.as_str().unwrap();
+        assert!(
+            text.starts_with(&format!(
+                "Showing first {} matches (results truncated)",
+                crate::tools::MAX_TOOL_OUTPUT_LINES
+            )),
+            "got: {}",
+            &text[..text.len().min(200)]
+        );
+        assert_eq!(
+            text.matches("  Line ").count(),
+            crate::tools::MAX_TOOL_OUTPUT_LINES
+        );
     }
 
     #[tokio::test]

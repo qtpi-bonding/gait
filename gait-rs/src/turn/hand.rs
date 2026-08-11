@@ -366,6 +366,11 @@ pub async fn run_hand(config: HandConfig) {
         None
     };
 
+    // Enforce the shared result ceiling before serialization so an oversized
+    // hand result never enters the Nerve or event log. The retained prefix ends
+    // with an explicit truncation warning; the call still succeeds normally.
+    result_json = crate::tools::bound_tool_result_value(result_json);
+
     // Convert serde_json::Value → pbjson_types::Value.
     let result_proto: pbjson_types::Value = serde_json::from_value(result_json.clone())
         .unwrap_or_else(|e| {

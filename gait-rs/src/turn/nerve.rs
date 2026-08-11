@@ -20,6 +20,10 @@ use gait_proto::gait::sandbox::v1::Signal;
 /// Version byte prefix on every frame — cheap wire versioning.
 const NERVE_VERSION: u8 = 1;
 
+/// Defensive ceiling for a single IPC frame. Tool output is bounded before it
+/// reaches the Nerve, but keep malformed lengths from allocating without limit.
+const MAX_NERVE_FRAME_BYTES: usize = 256 * 1024 * 1024;
+
 /// Write one `Signal` as a length-prefixed binary protobuf frame.
 ///
 /// Format: `[NERVE_VERSION: u8][len: u32 BE][Signal bytes]`.
@@ -45,6 +49,85 @@ pub async fn read_signal<R: AsyncReadExt + Unpin>(r: &mut R) -> anyhow::Result<S
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf).await.context("read signal bytes")?;
     Signal::decode(buf.as_slice()).context("decode Signal")
+}
+
+/// Cancellation-safe framed reader for call sites that put a watchdog timeout
+/// around reads.
+///
+/// `AsyncReadExt::read_exact` is not cancellation-safe: dropping it after it
+/// consumed only part of a frame loses the framing boundary. This reader keeps
+/// every completed `read` in an owned buffer, so a later `read_signal` call can
+/// resume the same frame after a timeout.
+pub struct NerveReader<R> {
+    inner: R,
+    buffer: Vec<u8>,
+}
+
+impl<R> NerveReader<R>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    pub fn new(inner: R) -> Self {
+        Self {
+            inner,
+            buffer: Vec::new(),
+        }
+    }
+
+    pub async fn read_signal(&mut self) -> anyhow::Result<Signal> {
+        loop {
+            if let Some(signal) = self.try_decode()? {
+                return Ok(signal);
+            }
+
+            let mut chunk = [0u8; 16 * 1024];
+            let read = self
+                .inner
+                .read(&mut chunk)
+                .await
+                .context("read signal bytes")?;
+            if read == 0 {
+                if self.buffer.is_empty() {
+                    anyhow::bail!("read version: early eof");
+                }
+                anyhow::bail!(
+                    "read signal bytes: early eof with {} buffered bytes",
+                    self.buffer.len()
+                );
+            }
+            self.buffer.extend_from_slice(&chunk[..read]);
+        }
+    }
+
+    fn try_decode(&mut self) -> anyhow::Result<Option<Signal>> {
+        let Some(&version) = self.buffer.first() else {
+            return Ok(None);
+        };
+        if version != NERVE_VERSION {
+            anyhow::bail!("nerve: unsupported version {version} (expected {NERVE_VERSION})");
+        }
+        if self.buffer.len() < 5 {
+            return Ok(None);
+        }
+
+        let len = u32::from_be_bytes([
+            self.buffer[1],
+            self.buffer[2],
+            self.buffer[3],
+            self.buffer[4],
+        ]) as usize;
+        if len > MAX_NERVE_FRAME_BYTES {
+            anyhow::bail!("nerve: frame length {len} exceeds limit {MAX_NERVE_FRAME_BYTES}");
+        }
+        let frame_len = 5 + len;
+        if self.buffer.len() < frame_len {
+            return Ok(None);
+        }
+
+        let signal = Signal::decode(&self.buffer[5..frame_len]).context("decode Signal")?;
+        self.buffer.drain(..frame_len);
+        Ok(Some(signal))
+    }
 }
 
 // ── Demux reader ─────────────────────────────────────────────────────────────
@@ -173,6 +256,43 @@ mod tests {
             signal::Body::Impulse(i) => assert_eq!(i.tool, "write"),
             _ => panic!("wrong body"),
         }
+    }
+
+    #[tokio::test]
+    async fn framed_reader_resumes_partial_frame_after_timeout() {
+        let (mut writer, reader) = tokio::io::duplex(4096);
+        let expected = Signal {
+            corr_id: 42,
+            body: Some(signal::Body::Impulse(Impulse {
+                tool: "x".repeat(1024),
+                ..Default::default()
+            })),
+        };
+        let payload = expected.encode_to_vec();
+        let mut frame = Vec::with_capacity(5 + payload.len());
+        frame.push(NERVE_VERSION);
+        frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&payload);
+
+        tokio::spawn(async move {
+            writer.write_all(&frame[..2]).await.unwrap();
+            writer.flush().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            writer.write_all(&frame[2..]).await.unwrap();
+            writer.flush().await.unwrap();
+        });
+
+        let mut reader = NerveReader::new(reader);
+        let timed_out =
+            tokio::time::timeout(std::time::Duration::from_millis(10), reader.read_signal()).await;
+        assert!(timed_out.is_err(), "first partial read should time out");
+
+        let resumed =
+            tokio::time::timeout(std::time::Duration::from_millis(100), reader.read_signal())
+                .await
+                .expect("resumed read should finish")
+                .expect("frame should decode");
+        assert_eq!(resumed, expected);
     }
 
     /// Verify that two responses arriving OUT of order are correctly demuxed by

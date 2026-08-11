@@ -225,11 +225,33 @@ fn response_stream(
                     terminal = true;
                     break;
                 }
-                "response.failed" => Err(ProviderError::Other("Codex Responses request failed".into()))?,
+                "response.failed" => Err(ProviderError::Other(codex_failure_message(&value)))?,
                 _ => {}
             }
         }
         if !terminal { Err(ProviderError::StreamIncomplete { received_bytes })?; }
+    }
+}
+
+fn codex_failure_message(value: &Value) -> String {
+    let error = value
+        .get("response")
+        .and_then(|response| response.get("error"))
+        .or_else(|| value.get("error"));
+    let code = error
+        .and_then(|error| error.get("code"))
+        .and_then(Value::as_str);
+    let message = error
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str);
+
+    match (code, message) {
+        (Some(code), Some(message)) => {
+            format!("Codex Responses request failed ({code}): {message}")
+        }
+        (Some(code), None) => format!("Codex Responses request failed ({code})"),
+        (None, Some(message)) => format!("Codex Responses request failed: {message}"),
+        (None, None) => "Codex Responses request failed".into(),
     }
 }
 
@@ -269,6 +291,23 @@ mod tests {
             crate::transport::SseTransport::new(Default::default()).expect("transport"),
         );
         assert!(matches!(result, Err(error) if error.contains("different provider")));
+    }
+
+    #[test]
+    fn response_failure_preserves_provider_code_and_message() {
+        let event = json!({
+            "response": {
+                "status": "failed",
+                "error": {
+                    "code": "server_error",
+                    "message": "model backend unavailable"
+                }
+            }
+        });
+        assert_eq!(
+            codex_failure_message(&event),
+            "Codex Responses request failed (server_error): model backend unavailable"
+        );
     }
 
     #[tokio::test]
