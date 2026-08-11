@@ -353,6 +353,18 @@ impl ToolAccess {
     }
 }
 
+/// How a tool delivers its complete output to the spine finalizer.
+///
+/// `Returned` is the default for small or structured values. `Spool` is for
+/// potentially unbounded textual output that must be written incrementally to
+/// a spine-supplied target rather than buffered in a hand response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutputCaptureMode {
+    #[default]
+    Returned,
+    Spool,
+}
+
 /// Errors a tool can surface. Public so the trait boundary stays in the foundation
 /// while `tools::ToolError` keeps resolving via a re-export.
 #[derive(Debug, thiserror::Error)]
@@ -395,6 +407,13 @@ pub trait Tool: Send + Sync {
     /// in later phases, the per-call seal. Default: brain-side (no world access).
     fn access(&self) -> ToolAccess {
         ToolAccess::brain_side()
+    }
+
+    /// How this tool delivers complete output. This is independent of live UI
+    /// deltas: a spooled tool may publish progress, but the model still receives
+    /// one finalized, bounded result after execution.
+    fn output_capture_mode(&self) -> OutputCaptureMode {
+        OutputCaptureMode::Returned
     }
 
     /// Whether this tool is safe to run concurrently alongside other parallel-mode tools.

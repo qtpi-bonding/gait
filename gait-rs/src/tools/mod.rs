@@ -312,6 +312,33 @@ mod tests {
     }
 
     #[test]
+    fn only_unbounded_builtin_outputs_opt_into_spooling() {
+        use crate::types::OutputCaptureMode;
+
+        let tools = builtin_tools(
+            ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "stest".into()),
+            vec![],
+            vec![],
+            vec![],
+            crate::git::Repos::production(),
+        );
+
+        for tool in tools {
+            let expected = if matches!(tool.name(), "shell" | "grep") {
+                OutputCaptureMode::Spool
+            } else {
+                OutputCaptureMode::Returned
+            };
+            assert_eq!(
+                tool.output_capture_mode(),
+                expected,
+                "unexpected output capture declaration for {}",
+                tool.name()
+            );
+        }
+    }
+
+    #[test]
     fn spawn_agent_and_list_agents_present() {
         let tools = builtin_tools(
             ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "stest".into()),

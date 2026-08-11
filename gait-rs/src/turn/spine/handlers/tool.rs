@@ -6,9 +6,11 @@ use prost::Message as _;
 
 use crate::config::SandboxConfig;
 use crate::proto::gait::sandbox::v1::{
-    network_scope::Mode, DenyPolicy as ProtoDenyPolicy, Feedback, Impulse, NetworkScope, Scope,
+    network_scope::Mode, DenyPolicy as ProtoDenyPolicy, Feedback, Impulse, NetworkScope,
+    OutputCaptureMode as ProtoOutputCaptureMode, Scope,
 };
 use crate::sandbox::{NetworkPolicy, SandboxScope};
+use crate::types::OutputCaptureMode;
 
 use super::error_feedback;
 
@@ -111,10 +113,10 @@ fn grant_session_runtime_paths(
             ),
         ));
     }
+    // Every hand may inspect artifacts from earlier calls in this session.
+    // Write access is capability-driven and added separately for one spool
+    // invocation directory by `grant_output_capture_target`.
     scope.readable.push(outputs.clone());
-    if tool == "shell" {
-        scope.writable.push(outputs.clone());
-    }
 
     // Daemon logs predate session outputs and remain in their existing
     // location. Keep the same current-session-only access rule.
@@ -125,6 +127,36 @@ fn grant_session_runtime_paths(
     }
 
     Ok(outputs)
+}
+
+fn grant_output_capture_target(
+    scope: &mut SandboxScope,
+    mode: OutputCaptureMode,
+    output_path: &Path,
+    session_outputs: &Path,
+) -> std::io::Result<()> {
+    if mode == OutputCaptureMode::Returned {
+        return Ok(());
+    }
+    let parent = output_path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("tool output path has no parent: {}", output_path.display()),
+        )
+    })?;
+    let parent = parent.canonicalize()?;
+    if !parent.starts_with(session_outputs) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "tool output target escapes session outputs: {}",
+                parent.display()
+            ),
+        ));
+    }
+    scope.readable.push(parent.clone());
+    scope.writable.push(parent);
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -143,6 +175,13 @@ pub async fn run_tool_as_spine(
 
     let diag = crate::turn::DiagnosticSink::new(gait_dir, session_id);
     let mut sandbox_free = false;
+    let output_capture_mode = match ProtoOutputCaptureMode::try_from(impulse.output_capture_mode) {
+        Ok(ProtoOutputCaptureMode::Returned) => OutputCaptureMode::Returned,
+        Ok(ProtoOutputCaptureMode::Spool) => OutputCaptureMode::Spool,
+        Ok(ProtoOutputCaptureMode::Unspecified) | Err(_) => {
+            return error_feedback("invalid or unspecified output capture mode")
+        }
+    };
 
     let jail_raw = std::env::temp_dir().join(format!(
         "gait-hand-{}",
@@ -214,9 +253,9 @@ pub async fn run_tool_as_spine(
             }
         };
 
-    // Give every hand one narrow, Gait-owned destination for raw streaming
-    // output. After the hand exits, the spine finalizes this path through the
-    // same boundary used by in-process tools.
+    // Reserve every hand one Gait-owned artifact path for the shared finalizer.
+    // Only a tool declaring `Spool` receives this path or write access to its
+    // parent; returned-value tools never see it.
     let output_path =
         match crate::tools::prepare_tool_output_path(gait_dir, session_id, &impulse.tool) {
             Ok(path) => path,
@@ -225,17 +264,15 @@ pub async fn run_tool_as_spine(
                 return error_feedback(&format!("failed to prepare tool output: {error}"));
             }
         };
-    let output_parent = output_path
-        .parent()
-        .and_then(|parent| parent.canonicalize().ok())
-        .unwrap_or_else(|| {
-            output_path
-                .parent()
-                .unwrap_or(&session_outputs)
-                .to_path_buf()
-        });
-    scope.readable.push(output_parent.clone());
-    scope.writable.push(output_parent);
+    if let Err(error) = grant_output_capture_target(
+        &mut scope,
+        output_capture_mode,
+        &output_path,
+        &session_outputs,
+    ) {
+        let _ = std::fs::remove_dir_all(&jail);
+        return error_feedback(&format!("failed to grant tool output target: {error}"));
+    }
 
     // Shell subprocesses may outlive the hand (detached mode), so their
     // inherited TMPDIR must share the active session's lifetime rather than
@@ -247,6 +284,8 @@ pub async fn run_tool_as_spine(
             let _ = std::fs::remove_dir_all(&jail);
             return error_feedback(&format!("failed to prepare shell process output: {error}"));
         }
+        scope.readable.push(path.clone());
+        scope.writable.push(path.clone());
         Some(path)
     } else {
         None
@@ -311,6 +350,7 @@ pub async fn run_tool_as_spine(
         requested: Some(requested),
         prefetch,
         shell_whitelist_patterns,
+        output_capture_mode: impulse.output_capture_mode,
     };
     let bytes = impulse_with_scope.encode_to_vec();
 
@@ -336,9 +376,11 @@ pub async fn run_tool_as_spine(
             .arg("--session")
             .arg(session_id)
             .arg("--tool")
-            .arg(&impulse.tool)
-            .arg("--output-path")
-            .arg(&output_path)
+            .arg(&impulse.tool);
+        if output_capture_mode == OutputCaptureMode::Spool {
+            std_cmd.arg("--output-spool").arg(&output_path);
+        }
+        std_cmd
             .arg("--seal")
             .arg(if sandbox_on && !sandbox_free {
                 "true"
@@ -605,7 +647,10 @@ mod tests {
 
         assert!(own.is_dir(), "auto-granted output root must exist");
         assert!(shell_scope.readable.contains(&own));
-        assert!(shell_scope.writable.contains(&own));
+        assert!(
+            !shell_scope.writable.contains(&own),
+            "the session output root is read-only even for shell"
+        );
         assert!(!shell_scope.readable.contains(&sibling));
         assert!(!shell_scope.writable.contains(&sibling));
 
@@ -616,8 +661,53 @@ mod tests {
         assert!(read_scope.readable.contains(&own_for_read));
         assert!(
             !read_scope.writable.contains(&own_for_read),
-            "non-shell tools must not receive automatic output write access"
+            "returned-value tools must not receive automatic output write access"
         );
+    }
+
+    #[test]
+    fn only_spool_capture_grants_its_invocation_directory() {
+        let gait_dir = tempfile::TempDir::new().unwrap();
+        let session_id = "session-a";
+        std::fs::create_dir_all(crate::session::live::worktree_dir(
+            gait_dir.path(),
+            session_id,
+        ))
+        .unwrap();
+
+        let mut returned_scope = SandboxScope::default();
+        let outputs =
+            grant_session_runtime_paths(&mut returned_scope, gait_dir.path(), session_id, "read")
+                .unwrap();
+        let returned_path =
+            crate::tools::prepare_tool_output_path(gait_dir.path(), session_id, "read").unwrap();
+        grant_output_capture_target(
+            &mut returned_scope,
+            OutputCaptureMode::Returned,
+            &returned_path,
+            &outputs,
+        )
+        .unwrap();
+        assert!(returned_scope.writable.is_empty());
+
+        let mut spool_scope = SandboxScope::default();
+        let outputs =
+            grant_session_runtime_paths(&mut spool_scope, gait_dir.path(), session_id, "grep")
+                .unwrap();
+        let spool_path =
+            crate::tools::prepare_tool_output_path(gait_dir.path(), session_id, "grep").unwrap();
+        let spool_parent = spool_path.parent().unwrap().canonicalize().unwrap();
+        grant_output_capture_target(
+            &mut spool_scope,
+            OutputCaptureMode::Spool,
+            &spool_path,
+            &outputs,
+        )
+        .unwrap();
+
+        assert!(spool_scope.readable.contains(&spool_parent));
+        assert!(spool_scope.writable.contains(&spool_parent));
+        assert!(!spool_scope.writable.contains(&outputs));
     }
 
     #[test]
@@ -826,6 +916,7 @@ mod tests {
             requested: None,
             prefetch: None,
             shell_whitelist_patterns: vec![],
+            output_capture_mode: ProtoOutputCaptureMode::Returned as i32,
         };
         let group = crate::process::establish(None);
         let feedback = run_tool_as_spine(

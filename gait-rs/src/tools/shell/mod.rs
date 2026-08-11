@@ -243,8 +243,8 @@ impl Tool for ShellTool {
             }));
         }
 
-        let out_path = if let Some(path) = &self.ctx.output_path {
-            path.clone()
+        let out_path = if let Some(path) = self.ctx.output_capture.spool_path() {
+            path.to_path_buf()
         } else {
             let output_dir =
                 crate::session::live::outputs_dir(&self.ctx.gait_dir, &self.ctx.session_id)
@@ -389,7 +389,7 @@ impl Tool for ShellTool {
         // Structured process-tool shape: turn.rs reads `output` for the model-facing text,
         // and lifts `exit_code` into the proto `ProcessResult`. The "exit N (Xms)"
         // prefix is gone — timing lives in the generic `ToolResult.duration`, exit in `process`.
-        let model_output = if self.ctx.output_path.is_some() {
+        let model_output = if self.ctx.output_capture.spool_path().is_some() {
             format!("[cwd: {}]", cwd.display())
         } else {
             format!("{}\n{}", tail_str.trim_end(), note)
@@ -407,6 +407,10 @@ impl Tool for ShellTool {
             spawns: true,
             ..Default::default()
         }
+    }
+
+    fn output_capture_mode(&self) -> crate::types::OutputCaptureMode {
+        crate::types::OutputCaptureMode::Spool
     }
 }
 

@@ -226,6 +226,7 @@ fn impulse_round_trips_via_binary_prost() {
         requested: None,
         prefetch: None,
         shell_whitelist_patterns: vec![],
+        output_capture_mode: crate::gait::sandbox::v1::OutputCaptureMode::Returned as i32,
     };
 
     let bytes = prost::Message::encode_to_vec(&impulse);
@@ -397,6 +398,7 @@ fn impulse_prefetch_and_feedback_final_content_roundtrip() {
             content: Some("buf".into()),
         }),
         shell_whitelist_patterns: vec![],
+        output_capture_mode: crate::gait::sandbox::v1::OutputCaptureMode::Returned as i32,
     };
     let round = Impulse::decode(imp.encode_to_vec().as_slice()).unwrap();
     assert_eq!(round.prefetch.unwrap().content.as_deref(), Some("buf"));

@@ -189,6 +189,14 @@ impl Synapse for RelaySynapse {
                     requested: None, // spine re-derives scope via bound_request
                     prefetch: None,  // no delegation from this code path
                     shell_whitelist_patterns: vec![], // spine re-derives via sandbox_cfg
+                    output_capture_mode: match tool.output_capture_mode() {
+                        crate::types::OutputCaptureMode::Returned => {
+                            gait_proto::gait::sandbox::v1::OutputCaptureMode::Returned as i32
+                        }
+                        crate::types::OutputCaptureMode::Spool => {
+                            gait_proto::gait::sandbox::v1::OutputCaptureMode::Spool as i32
+                        }
+                    },
                 },
             )),
         };
@@ -308,6 +316,14 @@ mod tests {
             let mut r = spine_read_half;
             let mut w = spine_write_half;
             let sig = nerve::read_signal(&mut r).await.unwrap();
+            let Some(signal::Body::Impulse(impulse)) = sig.body.as_ref() else {
+                panic!("expected Impulse request");
+            };
+            assert_eq!(
+                impulse.output_capture_mode,
+                gait_proto::gait::sandbox::v1::OutputCaptureMode::Returned as i32,
+                "the tool's typed output capability must cross the nerve"
+            );
             let canned = gait_proto::gait::sandbox::v1::Signal {
                 corr_id: sig.corr_id,
                 body: Some(signal::Body::Feedback(Feedback {

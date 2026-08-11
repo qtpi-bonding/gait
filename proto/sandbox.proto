@@ -12,6 +12,13 @@ message Prefetch {
   string path = 1;
   optional string content = 2;  // absent = new file (delegate returned Ok(None))
 }
+
+enum OutputCaptureMode {
+  OUTPUT_CAPTURE_MODE_UNSPECIFIED = 0;
+  OUTPUT_CAPTURE_MODE_RETURNED = 1;
+  OUTPUT_CAPTURE_MODE_SPOOL = 2;
+}
+
 message Impulse {
   reserved 3; // was `cwd` — removed; each `shell` call resolves its own cwd,
               // nothing folds a session-wide "active cwd" into this IPC anymore.
@@ -24,6 +31,10 @@ message Impulse {
   // without needing the full SandboxConfig (which it deliberately never
   // sees). Empty for non-shell tools.
   repeated string shell_whitelist_patterns = 6;
+  // Declared by the Tool implementation. The spine uses this to decide whether
+  // the hand receives a writable spool target; the hand verifies the declaration
+  // against its own locally constructed tool before execution.
+  OutputCaptureMode output_capture_mode = 7;
 }
 
 // Sent hand→brain: one tool invocation response.

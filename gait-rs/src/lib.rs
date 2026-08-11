@@ -48,8 +48,8 @@ mod test_utils;
 pub(crate) mod wasm_plugins;
 pub use types::{
     AssistantContent, AssistantPart, ContentPart, ExecutionMode, ExecutionSignal, Hook, HookAction,
-    HookContext, Message, MessageContent, OutputFilter, PermissionRequest, StepFinish, Tool,
-    ToolCall, ToolDef, ToolPermission, ToolResult, ToolResultKind, Usage,
+    HookContext, Message, MessageContent, OutputCaptureMode, OutputFilter, PermissionRequest,
+    StepFinish, Tool, ToolCall, ToolDef, ToolPermission, ToolResult, ToolResultKind, Usage,
 };
 
 pub use crate::factory::load_provider;
@@ -189,7 +189,7 @@ pub async fn __dispatch_role(argv: &[String]) {
                 #[arg(long)]
                 tool: String,
                 #[arg(long)]
-                output_path: Option<std::path::PathBuf>,
+                output_spool: Option<std::path::PathBuf>,
                 #[arg(long, default_value = "true")]
                 seal: String,
             }
@@ -199,7 +199,7 @@ pub async fn __dispatch_role(argv: &[String]) {
                 codebase: a.codebase,
                 session: a.session,
                 tool: a.tool,
-                output_path: a.output_path,
+                output_spool: a.output_spool,
                 seal: a.seal != "false",
             };
             run_hand(config).await;

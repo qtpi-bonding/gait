@@ -5,6 +5,29 @@ use std::sync::Arc;
 use crate::sandbox::SandboxScope;
 use crate::tools::fs_backend::{FsBackend, LocalFs};
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum OutputCaptureTarget {
+    #[default]
+    Returned,
+    Spool(PathBuf),
+}
+
+impl OutputCaptureTarget {
+    pub fn mode(&self) -> crate::types::OutputCaptureMode {
+        match self {
+            Self::Returned => crate::types::OutputCaptureMode::Returned,
+            Self::Spool(_) => crate::types::OutputCaptureMode::Spool,
+        }
+    }
+
+    pub fn spool_path(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::Returned => None,
+            Self::Spool(path) => Some(path),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ToolCtx {
     pub codebase_path: PathBuf,
@@ -20,10 +43,9 @@ pub struct ToolCtx {
     /// sandboxed subprocess later fails. `None` means no scope was supplied
     /// (e.g. most unit tests) — callers should skip the containment check.
     pub scope: Option<SandboxScope>,
-    /// Per-invocation artifact path supplied by the spine. Streaming tools write
-    /// directly here; the hand archives ordinary returned values here before
-    /// sending their bounded preview over IPC.
-    pub output_path: Option<PathBuf>,
+    /// Typed output-delivery target. Only tools declaring `Spool` receive a
+    /// writable path; ordinary tools return their value to the spine.
+    pub output_capture: OutputCaptureTarget,
     /// Filesystem backend: [`LocalFs`] (disk, default) or [`BufferedFs`]
     /// (spine-supplied buffer, set by the hand for delegated ops).
     pub fs: Arc<dyn FsBackend>,
@@ -39,7 +61,7 @@ impl fmt::Debug for ToolCtx {
             .field("session_id", &self.session_id)
             .field("network_allowlist", &self.network_allowlist)
             .field("scope", &self.scope)
-            .field("output_path", &self.output_path)
+            .field("output_capture", &self.output_capture)
             .field("fs", &"<dyn FsBackend>")
             .finish()
     }
@@ -53,7 +75,7 @@ impl ToolCtx {
             session_id,
             network_allowlist: None,
             scope: None,
-            output_path: None,
+            output_capture: OutputCaptureTarget::Returned,
             fs: Arc::new(LocalFs),
         }
     }
@@ -68,8 +90,8 @@ impl ToolCtx {
         self
     }
 
-    pub fn with_output_path(mut self, output_path: PathBuf) -> Self {
-        self.output_path = Some(output_path);
+    pub fn with_output_spool(mut self, output_path: PathBuf) -> Self {
+        self.output_capture = OutputCaptureTarget::Spool(output_path);
         self
     }
 }

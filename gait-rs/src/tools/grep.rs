@@ -168,8 +168,8 @@ impl Tool for GrepTool {
         };
 
         let timeout_secs = crate::config::load_config(&self.ctx.gait_dir).tool_timeout_secs;
-        let output_path = match &self.ctx.output_path {
-            Some(path) => path.clone(),
+        let output_path = match self.ctx.output_capture.spool_path() {
+            Some(path) => path.to_path_buf(),
             None => crate::tools::prepare_tool_output_path(
                 &self.ctx.gait_dir,
                 &self.ctx.session_id,
@@ -217,6 +217,10 @@ impl Tool for GrepTool {
         }
     }
 
+    fn output_capture_mode(&self) -> crate::types::OutputCaptureMode {
+        crate::types::OutputCaptureMode::Spool
+    }
+
     fn scope_targets(&self, args: &serde_json::Value) -> Vec<(PathBuf, crate::types::Dimension)> {
         // `path` constrains the search root. No explicit path = codebase root (in ceiling).
         // `pattern` is a regex pattern, not a concrete path — not checked here.
@@ -248,7 +252,7 @@ mod tests {
         let output_path =
             crate::session::live::outputs_dir(dir.path(), "test").join("tools/test/grep.txt");
         std::fs::create_dir_all(output_path.parent().unwrap()).unwrap();
-        let tool = GrepTool::new(make_ctx(dir).with_output_path(output_path.clone()));
+        let tool = GrepTool::new(make_ctx(dir).with_output_spool(output_path.clone()));
         let raw = tool
             .execute(args, &crate::Recorder::detached())
             .await

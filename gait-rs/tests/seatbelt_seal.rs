@@ -58,7 +58,8 @@ mod tests {
 #[cfg(target_os = "macos")]
 mod confined_read_tests {
     use gait_core::proto::gait::sandbox::v1::{
-        network_scope::Mode, Feedback, Impulse, NetworkScope, Scope,
+        hand_response, network_scope::Mode, Feedback, HandResponse, Impulse, NetworkScope,
+        OutputCaptureMode, Scope,
     };
     use pbjson_types::value::Kind;
     use prost::Message as _;
@@ -96,24 +97,30 @@ mod confined_read_tests {
         std::path::PathBuf::from("gait")
     }
 
-    /// Spawn `gait __run-tool` with the given Impulse, return decoded Feedback.
-    /// Panics if the process exits non-zero or stdout is not a valid Feedback.
-    fn run_hand(codebase: &str, tool: &str, impulse: Impulse) -> Feedback {
+    /// Spawn `gait __run-tool` with the given Impulse and return both Feedback
+    /// and complete output, regardless of whether the tool returns or spools it.
+    fn run_hand(codebase: &str, tool: &str, impulse: Impulse) -> (Feedback, String) {
         let exe = gait_bin();
         let impulse_bytes = impulse.encode_to_vec();
+        let spool = (impulse.output_capture_mode == OutputCaptureMode::Spool as i32)
+            .then(|| tempfile::NamedTempFile::new_in(codebase).unwrap());
 
-        let mut child = Command::new(&exe)
-            .args([
-                "__run-tool",
-                "--gait-dir",
-                codebase,
-                "--codebase",
-                codebase,
-                "--session",
-                "seatbelt-enforce-test",
-                "--tool",
-                tool,
-            ])
+        let mut command = Command::new(&exe);
+        command.args([
+            "__run-tool",
+            "--gait-dir",
+            codebase,
+            "--codebase",
+            codebase,
+            "--session",
+            "seatbelt-enforce-test",
+            "--tool",
+            tool,
+        ]);
+        if let Some(spool) = spool.as_ref() {
+            command.arg("--output-spool").arg(spool.path());
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -132,7 +139,16 @@ mod confined_read_tests {
                 String::from_utf8_lossy(&out.stderr)
             );
         }
-        Feedback::decode(out.stdout.as_slice()).expect("valid Feedback from hand")
+        let response = HandResponse::decode(out.stdout.as_slice()).expect("valid hand response");
+        let feedback = match response.outcome {
+            Some(hand_response::Outcome::Feedback(feedback)) => feedback,
+            other => panic!("expected hand Feedback, got {other:?}"),
+        };
+        let output = match spool.as_ref() {
+            Some(spool) => std::fs::read_to_string(spool.path()).unwrap(),
+            None => feedback_string(&feedback),
+        };
+        (feedback, output)
     }
 
     /// Build an Impulse for `shell` with confined reads (read_all=false).
@@ -160,6 +176,7 @@ mod confined_read_tests {
             }),
             prefetch: None,
             shell_whitelist_patterns: vec![],
+            output_capture_mode: OutputCaptureMode::Spool as i32,
         }
     }
 
@@ -193,8 +210,7 @@ mod confined_read_tests {
     fn confined_exec_succeeds() {
         let cb = codebase();
         let impulse = shell_impulse(&cb, "echo hi", Mode::Deny);
-        let fb = run_hand(&cb, "shell", impulse);
-        let result = feedback_string(&fb);
+        let (_fb, result) = run_hand(&cb, "shell", impulse);
         // The shell tool returns a JSON object; the output field should contain "hi"
         assert!(
             result.contains("hi"),
@@ -231,9 +247,9 @@ mod confined_read_tests {
             }),
             prefetch: None,
             shell_whitelist_patterns: vec![],
+            output_capture_mode: OutputCaptureMode::Returned as i32,
         };
-        let fb = run_hand(&cb, "read", impulse);
-        let result = feedback_string(&fb);
+        let (_fb, result) = run_hand(&cb, "read", impulse);
         assert!(
             result.contains("gait-core"),
             "in-scope read must return file content — got: {result}"
@@ -263,12 +279,11 @@ mod confined_read_tests {
         let cb = codebase();
         // Use `shell cat` so we also exercise the denied-detection in run_tool.rs
         let impulse = shell_impulse(&cb, &format!("cat {secret_path}"), Mode::Deny);
-        let fb = run_hand(&cb, "shell", impulse);
+        let (fb, result) = run_hand(&cb, "shell", impulse);
 
         // Clean up AFTER the hand exits (the hand can't write here but we can)
         let _ = std::fs::remove_file(&secret_path);
 
-        let result = feedback_string(&fb);
         assert!(
             !result.contains("s3cr3t"),
             "out-of-scope read must NOT return the secret content — got: {result}"
@@ -298,8 +313,7 @@ mod confined_read_tests {
         let cb = codebase();
         // nslookup will exit 0 and print the resolved IP when DNS works
         let impulse = shell_impulse(&cb, "nslookup example.com", Mode::All);
-        let fb = run_hand(&cb, "shell", impulse);
-        let result = feedback_string(&fb);
+        let (_fb, result) = run_hand(&cb, "shell", impulse);
         assert!(
             result.contains("example.com") || result.contains("93.184"),
             "DNS resolution must succeed under confined reads + network-all — got: {result}"

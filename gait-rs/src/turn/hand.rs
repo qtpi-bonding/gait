@@ -22,7 +22,7 @@ use crate::tools::fs_backend::{BufferedFs, FsBackend, LocalFs};
 use crate::tools::{builtin_tools, ToolCtx};
 use gait_proto::gait::sandbox::v1::{
     hand_response, network_scope::Mode, DaemonRecordProto, Feedback, HandError, HandResponse,
-    Impulse,
+    Impulse, OutputCaptureMode as ProtoOutputCaptureMode,
 };
 
 // ── respond helpers ───────────────────────────────────────────────────────────
@@ -80,7 +80,7 @@ pub struct HandConfig {
     pub codebase: PathBuf,
     pub session: String,
     pub tool: String,
-    pub output_path: Option<PathBuf>,
+    pub output_spool: Option<PathBuf>,
     /// When false, skip platform_sandbox().apply() and use NoopSandbox instead.
     /// Set by the spine based on the per-turn sandbox engagement flag.
     pub seal: bool,
@@ -106,6 +106,13 @@ pub async fn run_hand(config: HandConfig) {
     let impulse = match Impulse::decode(buf.as_slice()) {
         Ok(r) => r,
         Err(e) => respond_err(format!("bad Impulse: {e}")),
+    };
+    let declared_output_mode = match ProtoOutputCaptureMode::try_from(impulse.output_capture_mode) {
+        Ok(ProtoOutputCaptureMode::Returned) => crate::types::OutputCaptureMode::Returned,
+        Ok(ProtoOutputCaptureMode::Spool) => crate::types::OutputCaptureMode::Spool,
+        Ok(ProtoOutputCaptureMode::Unspecified) | Err(_) => {
+            respond_err("invalid or unspecified output capture mode")
+        }
     };
 
     // Convert Impulse.args (Option<pbjson_types::Struct>) → serde_json::Value.
@@ -137,8 +144,8 @@ pub async fn run_hand(config: HandConfig) {
             config.session.clone(),
         )
         .with_scope(seal_scope.clone());
-        if let Some(path) = config.output_path.clone() {
-            ctx = ctx.with_output_path(path);
+        if let Some(path) = config.output_spool.clone() {
+            ctx = ctx.with_output_spool(path);
         }
         ctx.fs = select_fs(&impulse); // BufferedFs (delegated) or LocalFs (disk)
                                       // Extract the network allowlist from the Impulse scope so webfetch
@@ -156,11 +163,23 @@ pub async fn run_hand(config: HandConfig) {
         ctx
     };
     let fs_handle = std::sync::Arc::clone(&ctx.fs);
+    let supplied_output_mode = ctx.output_capture.mode();
     let tools = builtin_tools(ctx, vec![], vec![], vec![], Repos::production());
     let tool = match tools.iter().find(|t| t.name() == config.tool) {
         Some(t) => t,
         None => respond_err(format!("unknown tool: {}", config.tool)),
     };
+    if tool.output_capture_mode() != declared_output_mode
+        || declared_output_mode != supplied_output_mode
+    {
+        respond_err(format!(
+            "output capture mismatch for {}: tool declares {:?}, impulse declares {:?}, hand received {:?}",
+            config.tool,
+            tool.output_capture_mode(),
+            declared_output_mode,
+            supplied_output_mode
+        ));
+    }
 
     // Schema-guided coercion (string -> scalar, float -> int) needs the tool's
     // parameters schema, so it lives here, after the tool is resolved.
@@ -632,6 +651,7 @@ mod tests {
             requested: None,
             prefetch: None,
             shell_whitelist_patterns: vec![],
+            output_capture_mode: gait_proto::gait::sandbox::v1::OutputCaptureMode::Returned as i32,
         };
         let codebase = Path::new("/ws/repo");
         let scope = SandboxScope {
@@ -666,6 +686,7 @@ mod tests {
             requested: None,
             prefetch: None,
             shell_whitelist_patterns: vec![],
+            output_capture_mode: gait_proto::gait::sandbox::v1::OutputCaptureMode::Returned as i32,
         };
         let codebase = Path::new("/ws/repo");
         let scope = SandboxScope {
@@ -696,6 +717,7 @@ mod tests {
             requested: None,
             prefetch: None,
             shell_whitelist_patterns: vec![],
+            output_capture_mode: gait_proto::gait::sandbox::v1::OutputCaptureMode::Spool as i32,
         };
         let codebase = Path::new("/ws/repo");
         let scope = SandboxScope {
@@ -740,6 +762,7 @@ mod tests {
             requested: Some(malicious_scope),
             prefetch: None,
             shell_whitelist_patterns: vec![],
+            output_capture_mode: gait_proto::gait::sandbox::v1::OutputCaptureMode::Returned as i32,
         };
 
         // Use a tempdir with a scaffolded gait.jsonc so local_deny_policy has a
@@ -772,6 +795,7 @@ mod tests {
                 content: Some("buf".into()),
             }),
             shell_whitelist_patterns: vec![],
+            output_capture_mode: gait_proto::gait::sandbox::v1::OutputCaptureMode::Returned as i32,
         };
         assert_eq!(
             select_fs(&with)

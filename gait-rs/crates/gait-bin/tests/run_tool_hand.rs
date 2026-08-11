@@ -11,7 +11,8 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 use gait_proto::gait::sandbox::v1::{
-    hand_response, network_scope::Mode, HandResponse, Impulse, NetworkScope, Scope,
+    hand_response, network_scope::Mode, HandResponse, Impulse, NetworkScope, OutputCaptureMode,
+    Scope,
 };
 use prost::Message;
 
@@ -29,6 +30,15 @@ fn feedback_from_output(out: std::process::Output) -> gait_proto::gait::sandbox:
     }
 }
 
+fn hand_response_from_output(out: std::process::Output) -> HandResponse {
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    HandResponse::decode(out.stdout.as_slice()).expect("valid HandResponse from hand")
+}
+
 fn structured_output(feedback: gait_proto::gait::sandbox::v1::Feedback) -> String {
     let result = feedback.result.expect("Feedback.result must be set");
     let object = match result.kind {
@@ -39,18 +49,6 @@ fn structured_output(feedback: gait_proto::gait::sandbox::v1::Feedback) -> Strin
         Some(pbjson_types::value::Kind::StringValue(s)) => s.clone(),
         other => panic!("expected output string, got {other:?}"),
     }
-}
-
-fn full_output_path(output: &str) -> std::path::PathBuf {
-    let rest = output
-        .split_once("[full output: ")
-        .unwrap_or_else(|| panic!("missing full-output note: {output}"))
-        .1;
-    std::path::PathBuf::from(
-        rest.split_once(" (")
-            .unwrap_or_else(|| panic!("malformed full-output note: {output}"))
-            .0,
-    )
 }
 
 #[test]
@@ -84,6 +82,7 @@ fn run_tool_executes_read_in_subprocess() {
         }),
         prefetch: None,
         shell_whitelist_patterns: vec![],
+        output_capture_mode: OutputCaptureMode::Returned as i32,
     };
     let impulse_bytes = impulse.encode_to_vec();
 
@@ -127,12 +126,72 @@ fn run_tool_executes_read_in_subprocess() {
 }
 
 #[test]
+fn returned_tool_rejects_a_supplied_spool_target() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("hello.txt"), "hi from hand").unwrap();
+    let spool = dir.path().join("unexpected-spool/output.txt");
+    std::fs::create_dir_all(spool.parent().unwrap()).unwrap();
+    let impulse = Impulse {
+        tool: "read".into(),
+        args: Some(serde_json::from_value(serde_json::json!({"file_path": "hello.txt"})).unwrap()),
+        requested: None,
+        prefetch: None,
+        shell_whitelist_patterns: vec![],
+        output_capture_mode: OutputCaptureMode::Returned as i32,
+    };
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_gait"))
+        .args([
+            "__run-tool",
+            "--gait-dir",
+            dir.path().to_str().unwrap(),
+            "--codebase",
+            dir.path().to_str().unwrap(),
+            "--session",
+            "sreturned-mismatch",
+            "--tool",
+            "read",
+            "--output-spool",
+            spool.to_str().unwrap(),
+            "--seal",
+            "false",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&impulse.encode_to_vec())
+        .unwrap();
+
+    let response = hand_response_from_output(child.wait_with_output().unwrap());
+    match response.outcome {
+        Some(hand_response::Outcome::Error(error)) => assert!(
+            error.message.contains("output capture mismatch"),
+            "unexpected hand error: {}",
+            error.message
+        ),
+        other => panic!("expected output-capture rejection, got {other:?}"),
+    }
+    assert!(
+        !spool.exists(),
+        "rejected tool must not touch the spool target"
+    );
+}
+
+#[test]
 fn shell_output_and_tmpdir_survive_the_hand_subprocess() {
     let dir = tempfile::tempdir().unwrap();
     let session_id = "sshell-output";
     let outputs = gait_state::session::live::outputs_dir(dir.path(), session_id);
     let process_tmp = outputs.join("process/integration");
+    let output_spool = outputs.join("shell/integration/output.txt");
     std::fs::create_dir_all(&process_tmp).unwrap();
+    std::fs::create_dir_all(output_spool.parent().unwrap()).unwrap();
 
     let args_struct: pbjson_types::Struct = serde_json::from_value(serde_json::json!({
         "cmd": "printf 'tmp=%s\\nfull-marker\\n' \"$TMPDIR\"",
@@ -162,6 +221,7 @@ fn shell_output_and_tmpdir_survive_the_hand_subprocess() {
         }),
         prefetch: None,
         shell_whitelist_patterns: vec![],
+        output_capture_mode: OutputCaptureMode::Spool as i32,
     };
 
     let exe = env!("CARGO_BIN_EXE_gait");
@@ -176,6 +236,8 @@ fn shell_output_and_tmpdir_survive_the_hand_subprocess() {
             session_id,
             "--tool",
             "shell",
+            "--output-spool",
+            output_spool.to_str().unwrap(),
         ])
         .env("TMPDIR", &process_tmp)
         .stdin(Stdio::piped())
@@ -191,16 +253,15 @@ fn shell_output_and_tmpdir_survive_the_hand_subprocess() {
         .unwrap();
 
     let output = structured_output(feedback_from_output(child.wait_with_output().unwrap()));
-    assert!(
-        output.contains(&format!("tmp={}", process_tmp.display())),
-        "shell subprocess must inherit its session-lived TMPDIR: {output}"
-    );
-    let full_path = full_output_path(&output);
-    assert!(full_path.starts_with(outputs.join("shell")));
     assert_eq!(
-        std::fs::read_to_string(full_path).unwrap(),
+        output,
+        format!("[cwd: {}]", dir.path().display()),
+        "a spooling hand returns metadata while the spine owns finalization"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&output_spool).unwrap(),
         format!("tmp={}\nfull-marker\n", process_tmp.display()),
-        "the reported output must remain readable after the hand exits"
+        "complete process output must remain in the supplied spool after hand exit"
     );
 }
 
@@ -211,7 +272,9 @@ fn detached_shell_keeps_its_inherited_session_tmpdir_after_hand_exit() {
     let outputs = gait_state::session::live::outputs_dir(dir.path(), session_id);
     let process_tmp = outputs.join("process/detached-integration");
     let marker = process_tmp.join("after-hand.txt");
+    let output_spool = outputs.join("shell/detached-integration/output.txt");
     std::fs::create_dir_all(&process_tmp).unwrap();
+    std::fs::create_dir_all(output_spool.parent().unwrap()).unwrap();
 
     let args_struct: pbjson_types::Struct = serde_json::from_value(serde_json::json!({
         "cmd": "sleep 0.1; printf detached-ok > \"$TMPDIR/after-hand.txt\"",
@@ -243,6 +306,7 @@ fn detached_shell_keeps_its_inherited_session_tmpdir_after_hand_exit() {
         }),
         prefetch: None,
         shell_whitelist_patterns: vec![],
+        output_capture_mode: OutputCaptureMode::Spool as i32,
     };
 
     let exe = env!("CARGO_BIN_EXE_gait");
@@ -257,6 +321,8 @@ fn detached_shell_keeps_its_inherited_session_tmpdir_after_hand_exit() {
             session_id,
             "--tool",
             "shell",
+            "--output-spool",
+            output_spool.to_str().unwrap(),
         ])
         .env("TMPDIR", &process_tmp)
         .stdin(Stdio::piped())
