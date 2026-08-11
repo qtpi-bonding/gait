@@ -20,6 +20,10 @@ pub struct ToolCtx {
     /// sandboxed subprocess later fails. `None` means no scope was supplied
     /// (e.g. most unit tests) — callers should skip the containment check.
     pub scope: Option<SandboxScope>,
+    /// Per-invocation artifact path supplied by the spine. Streaming tools write
+    /// directly here; the hand archives ordinary returned values here before
+    /// sending their bounded preview over IPC.
+    pub output_path: Option<PathBuf>,
     /// Filesystem backend: [`LocalFs`] (disk, default) or [`BufferedFs`]
     /// (spine-supplied buffer, set by the hand for delegated ops).
     pub fs: Arc<dyn FsBackend>,
@@ -35,6 +39,7 @@ impl fmt::Debug for ToolCtx {
             .field("session_id", &self.session_id)
             .field("network_allowlist", &self.network_allowlist)
             .field("scope", &self.scope)
+            .field("output_path", &self.output_path)
             .field("fs", &"<dyn FsBackend>")
             .finish()
     }
@@ -48,6 +53,7 @@ impl ToolCtx {
             session_id,
             network_allowlist: None,
             scope: None,
+            output_path: None,
             fs: Arc::new(LocalFs),
         }
     }
@@ -59,6 +65,11 @@ impl ToolCtx {
 
     pub fn with_scope(mut self, scope: SandboxScope) -> Self {
         self.scope = Some(scope);
+        self
+    }
+
+    pub fn with_output_path(mut self, output_path: PathBuf) -> Self {
+        self.output_path = Some(output_path);
         self
     }
 }

@@ -80,6 +80,7 @@ pub struct HandConfig {
     pub codebase: PathBuf,
     pub session: String,
     pub tool: String,
+    pub output_path: Option<PathBuf>,
     /// When false, skip platform_sandbox().apply() and use NoopSandbox instead.
     /// Set by the spine based on the per-turn sandbox engagement flag.
     pub seal: bool,
@@ -136,6 +137,9 @@ pub async fn run_hand(config: HandConfig) {
             config.session.clone(),
         )
         .with_scope(seal_scope.clone());
+        if let Some(path) = config.output_path.clone() {
+            ctx = ctx.with_output_path(path);
+        }
         ctx.fs = select_fs(&impulse); // BufferedFs (delegated) or LocalFs (disk)
                                       // Extract the network allowlist from the Impulse scope so webfetch
                                       // can enforce host-level filtering (the kernel SBPL allows all outbound
@@ -366,10 +370,25 @@ pub async fn run_hand(config: HandConfig) {
         None
     };
 
-    // Enforce the shared result ceiling before serialization so an oversized
-    // hand result never enters the Nerve or event log. The retained prefix ends
-    // with an explicit truncation warning; the call still succeeds normally.
-    result_json = crate::tools::bound_tool_result_value(result_json);
+    // Preserve the complete result before the model-facing preview crosses IPC.
+    // Streaming tools may already have written this exact path; ordinary tools
+    // are archived here after execution. Either way, the result sent onward
+    // includes the artifact path and stays within the one shared preview budget.
+    let output_path = match config.output_path.clone() {
+        Some(path) => path,
+        None => match crate::tools::prepare_tool_output_path(
+            &config.gait_dir,
+            &config.session,
+            &config.tool,
+        ) {
+            Ok(path) => path,
+            Err(error) => respond_err(format!("failed to prepare tool output artifact: {error}")),
+        },
+    };
+    result_json = match crate::tools::archive_and_prepare_model_value(result_json, output_path) {
+        Ok((model_value, _artifact)) => model_value,
+        Err(error) => respond_err(format!("failed to archive tool output: {error}")),
+    };
 
     // Convert serde_json::Value → pbjson_types::Value.
     let result_proto: pbjson_types::Value = serde_json::from_value(result_json.clone())

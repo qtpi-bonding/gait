@@ -9,8 +9,6 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 const DEFAULT_READ_LIMIT: u64 = 2000;
-const MAX_LINE_LENGTH: usize = 2000;
-const MAX_BYTES: usize = 50 * 1024;
 
 static BINARY_EXTENSIONS: &[&str] = &[
     "zip", "tar", "gz", "exe", "dll", "so", "class", "jar", "war", "7z", "doc", "docx", "xls",
@@ -152,41 +150,12 @@ impl Tool for ReadTool {
             .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
         let lines: Vec<&str> = text.split('\n').collect();
 
-        let mut output_lines: Vec<String> = Vec::new();
-        let mut bytes = 0usize;
-        let mut truncated_by_bytes = false;
         let end = lines.len().min(offset + limit);
-
-        for line in lines.iter().take(end).skip(offset) {
-            let line = if line.len() > MAX_LINE_LENGTH {
-                let cut = line
-                    .char_indices()
-                    .nth(MAX_LINE_LENGTH)
-                    .map(|(i, _)| i)
-                    .unwrap_or(line.len());
-                format!("{}...", &line[..cut])
-            } else {
-                line.to_string()
-            };
-            let size = line.len() + if output_lines.is_empty() { 0 } else { 1 };
-            if bytes + size > MAX_BYTES {
-                truncated_by_bytes = true;
-                break;
-            }
-            output_lines.push(line);
-            bytes += size;
-        }
-
-        let content = output_lines.join("\n");
+        let content = lines[offset.min(lines.len())..end].join("\n");
         let total_lines = lines.len();
-        let last_read = offset + output_lines.len();
+        let last_read = end;
 
-        let footer = if truncated_by_bytes {
-            format!(
-                "\n\n(Output truncated at {} bytes. Use 'offset' to read beyond line {})",
-                MAX_BYTES, last_read
-            )
-        } else if total_lines > last_read {
+        let footer = if total_lines > last_read {
             format!(
                 "\n\n(File has more lines. Use 'offset' to read beyond line {})",
                 last_read

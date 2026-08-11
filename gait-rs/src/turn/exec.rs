@@ -23,6 +23,8 @@ pub(super) struct ToolExecResult {
     /// UUID of the `ToolResult` event written to the log. Empty if no event
     /// was written (error path via `error_tool_result`).
     pub log_event_id: String,
+    /// Complete, unfiltered tool output retained outside the prompt/event log.
+    pub artifact: crate::tools::ToolOutputArtifact,
     /// Set when the hand detected a kernel-level permission denial (EACCES /
     /// EPERM) from a sealed `shell` command. The turn loop checks this in
     /// supervised mode and calls `pause_for_unlock`; in auto mode it is ignored
@@ -44,8 +46,8 @@ pub(super) async fn execute_tool_call(
     emitter: &Recorder,
     approval_prefix: Option<String>,
     _codebase: &std::path::Path,
-    _gait_dir: &std::path::Path,
-    _session_id: &str,
+    gait_dir: &std::path::Path,
+    session_id: &str,
     _sandbox_on: bool,
     relay: Option<&crate::turn::nerve::NerveWriter>,
 ) -> anyhow::Result<ToolExecResult> {
@@ -69,7 +71,7 @@ pub(super) async fn execute_tool_call(
     // set when the hand detects EACCES/EPERM in a `shell` command's output while
     // running under Seatbelt. The turn loop inspects it after execute_tool_call returns.
 
-    let (raw, duration, process, synapse_denied) = match tools
+    let (raw, duration, process, synapse_denied, artifact) = match tools
         .iter()
         .find(|t| t.name() == tc.tool_name)
     {
@@ -145,6 +147,12 @@ pub(super) async fn execute_tool_call(
             });
             match res {
                 Ok(v) => {
+                    let (v, artifact) = crate::tools::ensure_archived_model_value(
+                        v,
+                        gait_dir,
+                        session_id,
+                        &tc.tool_name,
+                    )?;
                     // Process-tool shape (set by shell today): unwrap to model-facing
                     // text and lift process metadata. The model never sees the JSON
                     // wrapper — turn.rs is the single place that bridges Value → ToolResult.
@@ -156,6 +164,7 @@ pub(super) async fn execute_tool_call(
                             duration,
                             Some(pb::ProcessResult { exit_code }),
                             denied,
+                            artifact,
                         )
                     } else if v.is_string() {
                         (
@@ -165,20 +174,51 @@ pub(super) async fn execute_tool_call(
                             duration,
                             None,
                             denied,
+                            artifact,
                         )
                     } else {
-                        (v.to_string(), duration, None, denied)
+                        (v.to_string(), duration, None, denied, artifact)
                     }
                 }
-                Err(e) => (format!("error: {e}"), duration, None, denied),
+                Err(e) => {
+                    let value = serde_json::Value::String(format!("error: {e}"));
+                    let (value, artifact) = crate::tools::ensure_archived_model_value(
+                        value,
+                        gait_dir,
+                        session_id,
+                        &tc.tool_name,
+                    )?;
+                    (
+                        value.as_str().unwrap_or_default().to_string(),
+                        duration,
+                        None,
+                        denied,
+                        artifact,
+                    )
+                }
             }
         }
-        None => (format!("unknown tool: {}", tc.tool_name), None, None, None),
+        None => {
+            let value = serde_json::Value::String(format!("unknown tool: {}", tc.tool_name));
+            let (value, artifact) = crate::tools::ensure_archived_model_value(
+                value,
+                gait_dir,
+                session_id,
+                &tc.tool_name,
+            )?;
+            (
+                value.as_str().unwrap_or_default().to_string(),
+                None,
+                None,
+                None,
+                artifact,
+            )
+        }
     };
-    let output = crate::tools::bound_tool_output(match approval_prefix {
-        Some(prefix) => format!("{}\n{}", prefix, raw),
+    let output = match approval_prefix {
+        Some(prefix) => crate::tools::model_text_for_artifact_with_note(&artifact, Some(&prefix))?,
         None => raw,
-    });
+    };
     let tr_event = emitter.record(events::tool_result(
         id.clone(),
         output.clone(),
@@ -194,6 +234,7 @@ pub(super) async fn execute_tool_call(
         part: assistant_part,
         result: tool_result,
         log_event_id: tr_event.id,
+        artifact,
         denied: synapse_denied,
     })
 }
@@ -219,18 +260,26 @@ pub(super) fn stream_preview_if_always(
 /// Use when `execute_tool_call` fails — the model still gets a result back so the
 /// turn can continue. `log_event_id` is empty because no event was written; the
 /// filter will skip the Replace on the empty ID.
-pub(super) fn error_tool_result(tc: &ToolCall, e: anyhow::Error) -> ToolExecResult {
-    let output = format!("error: {e}");
-    ToolExecResult {
+pub(super) fn error_tool_result(
+    tc: &ToolCall,
+    e: anyhow::Error,
+    gait_dir: &std::path::Path,
+    session_id: &str,
+) -> anyhow::Result<ToolExecResult> {
+    let value = serde_json::Value::String(format!("error: {e}"));
+    let (value, artifact) =
+        crate::tools::ensure_archived_model_value(value, gait_dir, session_id, &tc.tool_name)?;
+    Ok(ToolExecResult {
         part: AssistantPart::ToolCall(tc.clone()),
         result: ToolResult {
             kind: ToolResultKind::ToolResult,
             tool_call_id: tc.tool_call_id.clone(),
-            result: serde_json::Value::String(output),
+            result: value,
         },
         log_event_id: String::new(),
+        artifact,
         denied: None,
-    }
+    })
 }
 
 /// Run a pipeline of rg (grep) and sd-style (find/replace) operations on `raw` in-process.
@@ -356,7 +405,13 @@ pub(super) async fn apply_output_filter(
         .as_str()
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| exec.result.result.to_string());
-    exec.result.result = serde_json::Value::String(crate::tools::bound_tool_output(filtered));
+    if filtered == ctx.tool_result {
+        return;
+    }
+    exec.result.result = serde_json::Value::String(crate::tools::model_text_for_inline(
+        &filtered,
+        &exec.artifact,
+    ));
 
     // If any transform changed the result vs the original raw, emit a Replace so
     // retrace uses the filtered output on replay. Skip if log_event_id is empty
@@ -368,20 +423,18 @@ pub(super) async fn apply_output_filter(
             .as_str()
             .map(|s| s.to_string())
             .unwrap_or_else(|| exec.result.result.to_string());
-        if new_output != ctx.tool_result {
-            let replacement = pb::Payload {
-                kind: Some(pb::payload::Kind::ToolResult(pb::ToolResult {
-                    call_id: exec.result.tool_call_id.clone(),
-                    output: new_output,
-                    ..Default::default()
-                })),
-            };
-            let _ = emitter.record(crate::proto::events::replace(
-                exec.log_event_id.clone(),
-                replacement,
-                None,
-            ));
-        }
+        let replacement = pb::Payload {
+            kind: Some(pb::payload::Kind::ToolResult(pb::ToolResult {
+                call_id: exec.result.tool_call_id.clone(),
+                output: new_output,
+                ..Default::default()
+            })),
+        };
+        let _ = emitter.record(crate::proto::events::replace(
+            exec.log_event_id.clone(),
+            replacement,
+            None,
+        ));
     }
 }
 
@@ -439,7 +492,7 @@ mod synapse_routing_tests {
             _rec: &dyn crate::types::Rec,
         ) -> Result<serde_json::Value, crate::tools::ToolError> {
             Ok(serde_json::Value::String(
-                "line\n".repeat(crate::tools::MAX_TOOL_OUTPUT_LINES + 1),
+                "line\n".repeat(crate::tools::MODEL_TOOL_OUTPUT_MAX_BYTES),
             ))
         }
     }
@@ -476,7 +529,9 @@ mod synapse_routing_tests {
         )
         .await
         .unwrap();
-        assert_eq!(out.result.result, serde_json::Value::String("ok".into()));
+        let result = out.result.result.as_str().unwrap();
+        assert!(result.starts_with("ok\n\n[full output:"));
+        assert_eq!(std::fs::read_to_string(out.artifact.path).unwrap(), "ok");
 
         // The cwd event the tool emitted must be present in the real log.
         let log = std::fs::read_to_string(&rec.tx_path).unwrap();
@@ -519,10 +574,15 @@ mod synapse_routing_tests {
         .unwrap();
         let model_output = out.result.result.as_str().unwrap();
         assert!(model_output.contains("Tool output truncated by Gait"));
-        assert!(model_output.len() <= crate::tools::MAX_TOOL_OUTPUT_BYTES);
+        assert!(model_output.contains("[full output:"));
+        assert!(model_output.len() <= crate::tools::MODEL_TOOL_OUTPUT_MAX_BYTES);
+        assert_eq!(
+            std::fs::read_to_string(&out.artifact.path).unwrap(),
+            "line\n".repeat(crate::tools::MODEL_TOOL_OUTPUT_MAX_BYTES)
+        );
 
         let log = std::fs::read_to_string(&rec.tx_path).unwrap();
         assert!(log.contains("Tool output truncated by Gait"));
-        assert!(!log.contains(&"line\\n".repeat(crate::tools::MAX_TOOL_OUTPUT_LINES + 1)));
+        assert!(!log.contains(&"line\\n".repeat(crate::tools::MODEL_TOOL_OUTPUT_MAX_BYTES)));
     }
 }

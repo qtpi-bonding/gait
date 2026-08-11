@@ -35,7 +35,6 @@ pub(crate) struct TurnCtx {
 
 /// Build a `Feedback` carrying a JSON value result.
 pub(super) fn feedback_result(value: serde_json::Value) -> Feedback {
-    let value = crate::tools::bound_tool_result_value(value);
     // Convert serde_json::Value → pbjson_types::Value via serde_json round-trip.
     // This correctly handles objects/arrays as proto Struct/ListValue rather than
     // stringifying them, so the brain receives a structured proto Value.

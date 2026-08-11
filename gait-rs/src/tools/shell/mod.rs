@@ -243,17 +243,20 @@ impl Tool for ShellTool {
             }));
         }
 
-        let output_dir =
-            crate::session::live::outputs_dir(&self.ctx.gait_dir, &self.ctx.session_id)
-                .join("shell");
-        std::fs::create_dir_all(&output_dir)
-            .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
-
-        let run_id = {
-            let s = uuid::Uuid::new_v4().to_string().replace('-', "");
-            s[..8].to_string()
+        let out_path = if let Some(path) = &self.ctx.output_path {
+            path.clone()
+        } else {
+            let output_dir =
+                crate::session::live::outputs_dir(&self.ctx.gait_dir, &self.ctx.session_id)
+                    .join("shell");
+            std::fs::create_dir_all(&output_dir)
+                .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
+            let run_id = {
+                let s = uuid::Uuid::new_v4().to_string().replace('-', "");
+                s[..8].to_string()
+            };
+            output_dir.join(format!("shell-{run_id}.txt"))
         };
-        let out_path = output_dir.join(format!("shell-{}.txt", run_id));
 
         let timeout_secs = crate::config::load_config(&self.ctx.gait_dir).shell_timeout_secs;
 
@@ -332,7 +335,7 @@ impl Tool for ShellTool {
                 total += chunk.len() as u64;
                 rec.publish_delta(String::from_utf8_lossy(&chunk).into_owned());
                 tail.extend(&chunk);
-                while tail.len() > 64 * 1024 {
+                while tail.len() > crate::tools::MODEL_TOOL_OUTPUT_MAX_BYTES {
                     tail.pop_front();
                 }
             }
@@ -386,8 +389,13 @@ impl Tool for ShellTool {
         // Structured process-tool shape: turn.rs reads `output` for the model-facing text,
         // and lifts `exit_code` into the proto `ProcessResult`. The "exit N (Xms)"
         // prefix is gone — timing lives in the generic `ToolResult.duration`, exit in `process`.
+        let model_output = if self.ctx.output_path.is_some() {
+            format!("[cwd: {}]", cwd.display())
+        } else {
+            format!("{}\n{}", tail_str.trim_end(), note)
+        };
         Ok(serde_json::json!({
-            "output": format!("{}\n{}", tail_str.trim_end(), note),
+            "output": model_output,
             "exit_code": exit_code,
         }))
     }

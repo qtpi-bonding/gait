@@ -214,6 +214,28 @@ pub async fn run_tool_as_spine(
             }
         };
 
+    // Give every hand one narrow, Gait-owned destination for its complete
+    // output. The model only receives a bounded preview plus this path.
+    let output_path =
+        match crate::tools::prepare_tool_output_path(gait_dir, session_id, &impulse.tool) {
+            Ok(path) => path,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&jail);
+                return error_feedback(&format!("failed to prepare tool output: {error}"));
+            }
+        };
+    let output_parent = output_path
+        .parent()
+        .and_then(|parent| parent.canonicalize().ok())
+        .unwrap_or_else(|| {
+            output_path
+                .parent()
+                .unwrap_or(&session_outputs)
+                .to_path_buf()
+        });
+    scope.readable.push(output_parent.clone());
+    scope.writable.push(output_parent);
+
     // Shell subprocesses may outlive the hand (detached mode), so their
     // inherited TMPDIR must share the active session's lifetime rather than
     // the per-hand jail's lifetime.
@@ -314,6 +336,8 @@ pub async fn run_tool_as_spine(
             .arg(session_id)
             .arg("--tool")
             .arg(&impulse.tool)
+            .arg("--output-path")
+            .arg(&output_path)
             .arg("--seal")
             .arg(if sandbox_on && !sandbox_free {
                 "true"

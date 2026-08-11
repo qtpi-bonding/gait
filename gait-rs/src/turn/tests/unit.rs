@@ -270,6 +270,11 @@ mod exec_replace_tests {
         // Real Recorder writing to the same log file.
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let rec = Recorder::new(log_path.clone(), tx);
+        let artifact = crate::tools::archive_text(
+            dir.path().join("raw-tool-output.txt"),
+            "line1\nline2\nline3",
+        )
+        .unwrap();
 
         let mut exec = ToolExecResult {
             part: AssistantPart::ToolCall(ToolCall {
@@ -283,6 +288,7 @@ mod exec_replace_tests {
                 result: serde_json::Value::String("line1\nline2\nline3".into()),
             },
             log_event_id: raw_event.id.clone(),
+            artifact,
             denied: None,
         };
         let tc = ToolCall {
@@ -300,7 +306,8 @@ mod exec_replace_tests {
         apply_output_filter(&mut exec, &tc, &[], &rec, &ctx, "dummy", prov).await;
 
         // In-memory result is filtered.
-        assert_eq!(exec.result.result.as_str().unwrap(), "line2");
+        let filtered = exec.result.result.as_str().unwrap();
+        assert!(filtered.starts_with("line2\n\n[full output:"));
 
         // A Replace event must be in the log, targeting the original ToolResult.
         let events_after = wire::read_events(&log_path).unwrap();
@@ -313,9 +320,10 @@ mod exec_replace_tests {
                 );
                 let rep = r.replacement.as_ref().expect("replacement set");
                 if let Some(payload::Kind::ToolResult(tr)) = &rep.kind {
-                    assert_eq!(
-                        tr.output, "line2",
-                        "Replace payload must carry the filtered output"
+                    assert!(
+                        tr.output.starts_with("line2\n\n[full output:"),
+                        "Replace payload must carry the filtered output and raw artifact path: {}",
+                        tr.output
                     );
                     assert_eq!(tr.call_id, "cid-1");
                     saw_replace = true;

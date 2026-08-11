@@ -5,8 +5,6 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
 
-const MAX_RESULTS: usize = 50;
-
 #[derive(Deserialize, JsonSchema)]
 struct CodesearchParams {
     /// Symbol name, function name, or regex pattern to search for
@@ -45,9 +43,6 @@ pub fn walk_and_search(dir: &std::path::Path, pattern: &regex::Regex, results: &
         })
         .filter_map(|e| e.ok())
     {
-        if results.len() >= MAX_RESULTS {
-            break;
-        }
         if !entry.path().is_file() {
             continue;
         }
@@ -56,9 +51,6 @@ pub fn walk_and_search(dir: &std::path::Path, pattern: &regex::Regex, results: &
             Err(_) => continue,
         };
         for (i, line) in content.lines().enumerate() {
-            if results.len() >= MAX_RESULTS {
-                break;
-            }
             if pattern.is_match(line) {
                 results.push(format!("{}:{}: {}", entry.path().display(), i + 1, line));
             }
@@ -126,14 +118,7 @@ impl Tool for CodesearchTool {
                     if lines.is_empty() {
                         return Ok(Value::String("No matches found.".into()));
                     }
-                    let truncated = lines.len() > MAX_RESULTS;
-                    let body = lines[..lines.len().min(MAX_RESULTS)].join("\n");
-                    let output = if truncated {
-                        format!("(first {} results)\n{}", MAX_RESULTS, body)
-                    } else {
-                        body
-                    };
-                    return Ok(Value::String(output));
+                    return Ok(Value::String(lines.join("\n")));
                 }
                 Some(1) => return Ok(Value::String("No matches found.".into())),
                 _ => {} // rg not installed or error — fall through to Rust fallback
@@ -191,7 +176,7 @@ mod tests {
     // Direct unit tests for walk_and_search (exercises fallback path independently of rg)
 
     #[test]
-    fn walk_and_search_caps_at_max_results() {
+    fn walk_and_search_keeps_all_results() {
         let dir = TempDir::new().unwrap();
         for i in 0..60 {
             std::fs::write(dir.path().join(format!("f{}.txt", i)), "match_me\n").unwrap();
@@ -199,12 +184,7 @@ mod tests {
         let pat = regex::Regex::new("match_me").unwrap();
         let mut results = vec![];
         walk_and_search(dir.path(), &pat, &mut results);
-        assert!(
-            results.len() <= MAX_RESULTS,
-            "got {} > {}",
-            results.len(),
-            MAX_RESULTS
-        );
+        assert_eq!(results.len(), 60);
     }
 
     #[test]
@@ -311,7 +291,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn caps_at_max_results_via_tool() {
+    async fn keeps_all_results_via_tool() {
         let dir = TempDir::new().unwrap();
         for i in 0..60 {
             std::fs::write(dir.path().join(format!("file_{}.txt", i)), "target_match").unwrap();
@@ -327,12 +307,7 @@ mod tests {
             .unwrap();
         let text = result.as_str().unwrap();
         let match_lines = text.lines().filter(|l| l.contains("target_match")).count();
-        assert!(
-            match_lines <= MAX_RESULTS,
-            "got {} results, expected ≤ {}",
-            match_lines,
-            MAX_RESULTS
-        );
+        assert_eq!(match_lines, 60);
     }
 
     #[tokio::test]

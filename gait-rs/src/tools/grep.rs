@@ -4,8 +4,8 @@ use crate::types::{ExecutionMode, Tool};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
+use std::io::Write as _;
 use std::path::PathBuf;
-use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[derive(Deserialize, JsonSchema)]
 struct GrepParams {
@@ -15,31 +15,6 @@ struct GrepParams {
     path: Option<String>,
     /// File glob pattern to include (e.g. "*.rs", "*.{ts,tsx}")
     include: Option<String>,
-}
-
-#[derive(Debug)]
-struct MatchEntry {
-    path: String,
-    line_num: usize,
-    line_text: String,
-    mod_time: Option<std::time::SystemTime>,
-}
-
-#[derive(Debug)]
-struct SearchMatches {
-    entries: Vec<MatchEntry>,
-    truncated: bool,
-}
-
-fn prefix_within_bytes(text: &str, max_bytes: usize) -> (&str, bool) {
-    if text.len() <= max_bytes {
-        return (text, false);
-    }
-    let mut boundary = max_bytes;
-    while boundary > 0 && !text.is_char_boundary(boundary) {
-        boundary -= 1;
-    }
-    (&text[..boundary], true)
 }
 
 pub struct GrepTool {
@@ -65,7 +40,8 @@ async fn rg_search(
     search_path: &str,
     include: Option<&str>,
     timeout_secs: u64,
-) -> anyhow::Result<Option<SearchMatches>> {
+    output_path: &std::path::Path,
+) -> anyhow::Result<Option<bool>> {
     let mut cmd = tokio::process::Command::new("rg");
     cmd.args([
         "-nH",
@@ -79,82 +55,42 @@ async fn rg_search(
         cmd.args(["--glob", inc]);
     }
     cmd.arg(search_path);
-    cmd.current_dir(std::path::Path::new(search_path));
+    let search_path_obj = std::path::Path::new(search_path);
+    cmd.current_dir(if search_path_obj.is_dir() {
+        search_path_obj
+    } else {
+        search_path_obj.parent().unwrap_or(search_path_obj)
+    });
     // Without this, a timeout only bounds the *wait* — tokio's default is to
     // NOT kill the child on drop, so dropping the timed-out output() future
     // leaves rg running as an orphan reaped whenever it eventually exits on
     // its own. That's the exact process-escape class this plan exists to fix.
     cmd.kill_on_drop(true);
-    cmd.stdout(std::process::Stdio::piped())
+    let output_file = std::fs::File::create(output_path)?;
+    cmd.stdout(std::process::Stdio::from(output_file))
         .stderr(std::process::Stdio::null());
 
-    let search = async move {
-        let mut child = match cmd.spawn() {
-            Ok(child) => child,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e.into()),
-        };
-        let stdout = child.stdout.take().expect("ripgrep stdout is piped");
-        let mut lines = BufReader::new(stdout).lines();
-        let mut matches = Vec::new();
-        let mut truncated = false;
-        let mut captured_bytes = 0usize;
-
-        while let Some(line) = lines.next_line().await? {
-            if line.is_empty() {
-                continue;
-            }
-            // Format from -nH --no-heading: /path/to/file.rs:42:line text here.
-            let parts: Vec<&str> = line.splitn(3, ':').collect();
-            if parts.len() < 3 {
-                continue;
-            }
-            let file_path = parts[0].to_string();
-            let Ok(line_num) = parts[1].parse::<usize>() else {
-                continue;
-            };
-            let mod_time = std::fs::metadata(&file_path)
-                .ok()
-                .and_then(|metadata| metadata.modified().ok());
-            let remaining = crate::tools::MAX_TOOL_OUTPUT_BYTES.saturating_sub(captured_bytes);
-            let (line_text, byte_truncated) = prefix_within_bytes(parts[2], remaining);
-            captured_bytes += line_text.len();
-            matches.push(MatchEntry {
-                path: file_path,
-                line_num,
-                line_text: line_text.to_string(),
-                mod_time,
-            });
-            if byte_truncated
-                || captured_bytes >= crate::tools::MAX_TOOL_OUTPUT_BYTES
-                || matches.len() >= crate::tools::MAX_TOOL_OUTPUT_LINES
-            {
-                truncated = true;
-                let _ = child.kill().await;
-                break;
-            }
-        }
-
-        let status = child.wait().await?;
-        if !truncated && !matches!(status.code(), Some(0) | Some(1)) {
-            return Ok(None);
-        }
-        Ok(Some(SearchMatches {
-            entries: matches,
-            truncated,
-        }))
-    };
-
-    match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), search).await {
-        Ok(result) => result,
+    match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.status()).await {
+        Ok(Ok(status)) => match status.code() {
+            Some(0) => Ok(Some(true)),
+            Some(1) => Ok(Some(false)),
+            _ => Ok(None),
+        },
+        Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Ok(Err(error)) => Err(error.into()),
         Err(_) => anyhow::bail!("ripgrep search timed out after {timeout_secs}s"),
     }
 }
 
-fn regex_search(pattern: &str, search_path: &std::path::Path) -> anyhow::Result<SearchMatches> {
+fn regex_search(
+    pattern: &str,
+    search_path: &std::path::Path,
+    output_path: &std::path::Path,
+) -> anyhow::Result<bool> {
     let re =
         regex::Regex::new(pattern).map_err(|e| anyhow::anyhow!("Invalid regex pattern: {e}"))?;
-    let mut matches = vec![];
+    let mut output = std::io::BufWriter::new(std::fs::File::create(output_path)?);
+    let mut found = false;
     let files: Box<dyn Iterator<Item = walkdir::DirEntry>> = if search_path.is_file() {
         Box::new(
             walkdir::WalkDir::new(search_path)
@@ -169,40 +105,41 @@ fn regex_search(pattern: &str, search_path: &std::path::Path) -> anyhow::Result<
                 .filter(|e| e.file_type().is_file()),
         )
     };
-    let mut captured_bytes = 0usize;
     for entry in files {
         let path = entry.path();
         let Ok(content) = std::fs::read_to_string(path) else {
             continue;
         };
-        let mod_time = path.metadata().ok().and_then(|m| m.modified().ok());
         for (i, line) in content.lines().enumerate() {
             if re.is_match(line) {
-                let remaining = crate::tools::MAX_TOOL_OUTPUT_BYTES.saturating_sub(captured_bytes);
-                let (line_text, byte_truncated) = prefix_within_bytes(line, remaining);
-                captured_bytes += line_text.len();
-                matches.push(MatchEntry {
-                    path: path.display().to_string(),
-                    line_num: i + 1,
-                    line_text: line_text.to_string(),
-                    mod_time,
-                });
-                if byte_truncated
-                    || captured_bytes >= crate::tools::MAX_TOOL_OUTPUT_BYTES
-                    || matches.len() >= crate::tools::MAX_TOOL_OUTPUT_LINES
-                {
-                    return Ok(SearchMatches {
-                        entries: matches,
-                        truncated: true,
-                    });
-                }
+                found = true;
+                writeln!(output, "{}:{}:{}", path.display(), i + 1, line)?;
             }
         }
     }
-    Ok(SearchMatches {
-        entries: matches,
-        truncated: false,
-    })
+    output.flush()?;
+    Ok(found)
+}
+
+fn grep_error_result(
+    output_path: &std::path::Path,
+    error: &anyhow::Error,
+) -> Result<Value, ToolError> {
+    let mut output = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(output_path)
+        .map_err(|write_error| ToolError::Internal(write_error.into()))?;
+    writeln!(output, "\n[grep error: {error}]")
+        .map_err(|write_error| ToolError::Internal(write_error.into()))?;
+    output
+        .flush()
+        .map_err(|write_error| ToolError::Internal(write_error.into()))?;
+    let artifact = crate::tools::artifact_for_existing(output_path.to_path_buf())
+        .map_err(|read_error| ToolError::Internal(read_error.into()))?;
+    crate::tools::model_text_for_artifact(&artifact)
+        .map(Value::String)
+        .map_err(|read_error| ToolError::Internal(read_error.into()))
 }
 
 #[async_trait::async_trait]
@@ -235,47 +172,47 @@ impl Tool for GrepTool {
         };
 
         let timeout_secs = crate::config::load_config(&self.ctx.gait_dir).tool_timeout_secs;
-        let mut search = match rg_search(
+        let output_path = match &self.ctx.output_path {
+            Some(path) => path.clone(),
+            None => crate::tools::prepare_tool_output_path(
+                &self.ctx.gait_dir,
+                &self.ctx.session_id,
+                self.name(),
+            )
+            .map_err(|error| crate::tools::ToolError::Internal(error.into()))?,
+        };
+        let rg_result = rg_search(
             &params.pattern,
             &resolved.display().to_string(),
             params.include.as_deref(),
             timeout_secs,
+            &output_path,
         )
-        .await
-        .map_err(crate::tools::ToolError::Internal)?
-        {
-            Some(matches) => matches, // rg ran — authoritative (even if empty)
-            None => regex_search(&params.pattern, &resolved)
-                .map_err(crate::tools::ToolError::Internal)?, // rg unavailable/errored — fall back
+        .await;
+        let found = match rg_result {
+            Err(error) => return grep_error_result(&output_path, &error),
+            Ok(result) => match result {
+                Some(found) => found, // rg ran — authoritative (even if empty)
+                None => match regex_search(&params.pattern, &resolved, &output_path) {
+                    Ok(found) => found,
+                    Err(error) => return grep_error_result(&output_path, &error),
+                }, // rg unavailable/errored — fall back
+            },
         };
 
-        if search.entries.is_empty() {
-            return Ok(Value::String("No files found".into()));
+        if !found {
+            let artifact = crate::tools::archive_text(output_path, "No files found")
+                .map_err(|error| crate::tools::ToolError::Internal(error.into()))?;
+            let model = crate::tools::model_text_for_artifact(&artifact)
+                .map_err(|error| crate::tools::ToolError::Internal(error.into()))?;
+            return Ok(Value::String(model));
         }
 
-        search.entries.sort_by(|a, b| b.mod_time.cmp(&a.mod_time));
-
-        let mut lines = vec![if search.truncated {
-            format!(
-                "Showing first {} matches (results truncated)",
-                search.entries.len()
-            )
-        } else {
-            format!("Found {} matches", search.entries.len())
-        }];
-        let mut current_file = String::new();
-        for m in &search.entries {
-            if current_file != m.path {
-                if !current_file.is_empty() {
-                    lines.push(String::new());
-                }
-                current_file = m.path.clone();
-                lines.push(format!("{}:", m.path));
-            }
-            lines.push(format!("  Line {}: {}", m.line_num, m.line_text));
-        }
-
-        Ok(Value::String(lines.join("\n")))
+        let artifact = crate::tools::artifact_for_existing(output_path)
+            .map_err(|error| crate::tools::ToolError::Internal(error.into()))?;
+        let model = crate::tools::model_text_for_artifact(&artifact)
+            .map_err(|error| crate::tools::ToolError::Internal(error.into()))?;
+        Ok(Value::String(model))
     }
 
     fn access(&self) -> crate::types::ToolAccess {
@@ -346,13 +283,16 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(result.as_str().unwrap(), "No files found");
+        let text = result.as_str().unwrap();
+        assert!(text.contains("No files found"));
+        assert!(text.contains("[full output:"));
     }
 
     #[tokio::test]
-    async fn empty_pattern_is_allowed_but_globally_bounded() {
+    async fn empty_pattern_archives_every_match_but_bounds_model_preview() {
         let dir = TempDir::new().unwrap();
-        let content = (0..(crate::tools::MAX_TOOL_OUTPUT_LINES + 100))
+        let match_count = 5_000;
+        let content = (0..match_count)
             .map(|index| format!("line {index}"))
             .collect::<Vec<_>>()
             .join("\n");
@@ -367,18 +307,13 @@ mod tests {
             .await
             .unwrap();
         let text = result.as_str().unwrap();
-        assert!(
-            text.starts_with(&format!(
-                "Showing first {} matches (results truncated)",
-                crate::tools::MAX_TOOL_OUTPUT_LINES
-            )),
-            "got: {}",
-            &text[..text.len().min(200)]
-        );
-        assert_eq!(
-            text.matches("  Line ").count(),
-            crate::tools::MAX_TOOL_OUTPUT_LINES
-        );
+        assert!(text.contains("Tool output truncated by Gait"));
+        assert!(text.len() <= crate::tools::MODEL_TOOL_OUTPUT_MAX_BYTES);
+        let artifact = crate::tools::artifact_from_text(text, dir.path(), "test")
+            .expect("model preview should expose the complete output artifact");
+        let full = std::fs::read_to_string(artifact.path).unwrap();
+        assert_eq!(full.lines().count(), match_count);
+        assert!(full.contains("line 4999"));
     }
 
     #[tokio::test]
@@ -440,7 +375,14 @@ mod tests {
         }
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("a.txt"), "needle").unwrap();
-        let result = rg_search("needle", &dir.path().display().to_string(), None, 0).await;
+        let result = rg_search(
+            "needle",
+            &dir.path().display().to_string(),
+            None,
+            0,
+            &dir.path().join("grep-output.txt"),
+        )
+        .await;
         assert!(result.is_err(), "expected timeout error, got: {result:?}");
         assert!(
             result.unwrap_err().to_string().contains("timed out"),

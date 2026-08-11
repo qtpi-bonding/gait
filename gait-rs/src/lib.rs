@@ -188,6 +188,8 @@ pub async fn __dispatch_role(argv: &[String]) {
                 session: String,
                 #[arg(long)]
                 tool: String,
+                #[arg(long)]
+                output_path: Option<std::path::PathBuf>,
                 #[arg(long, default_value = "true")]
                 seal: String,
             }
@@ -197,6 +199,7 @@ pub async fn __dispatch_role(argv: &[String]) {
                 codebase: a.codebase,
                 session: a.session,
                 tool: a.tool,
+                output_path: a.output_path,
                 seal: a.seal != "false",
             };
             run_hand(config).await;

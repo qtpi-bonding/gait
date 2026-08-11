@@ -2522,7 +2522,7 @@ async fn session_shell_output_is_readable_after_the_hand_exits() {
     );
     assert!(
         output_path.starts_with(
-            crate::session::live::outputs_dir(gait_dir.path(), session_id).join("shell")
+            crate::session::live::outputs_dir(gait_dir.path(), session_id).join("tools")
         ),
         "shell output must be session-scoped: {}",
         output_path.display()
