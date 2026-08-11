@@ -236,7 +236,7 @@ pub(crate) async fn run_tools(
         for ((i, tc), raw) in parallel_items.iter().zip(par_raw) {
             let mut exec = match raw {
                 Ok(exec) => exec,
-                Err(error) => error_tool_result(tc, error, env.gait_dir, env.session_id)?,
+                Err(error) => error_tool_result(tc, error, env.emitter)?,
             };
             {
                 let raw_result = exec.result.result.as_str().unwrap_or("").to_string();
@@ -410,7 +410,7 @@ pub(crate) async fn run_tools(
                     .await
                     {
                         Ok(exec) => exec,
-                        Err(error) => error_tool_result(tc, error, env.gait_dir, env.session_id)?,
+                        Err(error) => error_tool_result(tc, error, env.emitter)?,
                     };
                     {
                         let raw_result = exec.result.result.as_str().unwrap_or("").to_string();
@@ -562,7 +562,7 @@ pub(crate) async fn run_tools(
                     .await
                     {
                         Ok(exec) => exec,
-                        Err(error) => error_tool_result(tc, error, env.gait_dir, env.session_id)?,
+                        Err(error) => error_tool_result(tc, error, env.emitter)?,
                     };
                     {
                         let raw_result = exec.result.result.as_str().unwrap_or("").to_string();

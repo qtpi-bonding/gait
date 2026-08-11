@@ -20,8 +20,7 @@ use super::curate::apply_curate_filter;
 pub(super) struct ToolExecResult {
     pub part: AssistantPart,
     pub result: ToolResult,
-    /// UUID of the `ToolResult` event written to the log. Empty if no event
-    /// was written (error path via `error_tool_result`).
+    /// UUID of the `ToolResult` event written to the log.
     pub log_event_id: String,
     /// Complete, unfiltered tool output retained outside the prompt/event log.
     /// Synthetic results have no artifact because no tool output was produced.
@@ -302,25 +301,31 @@ pub(super) fn stream_preview_if_always(
     }
 }
 
-/// Build a `ToolExecResult` representing a tool-call error WITHOUT emitting events.
-/// Use when `execute_tool_call` fails — the model still gets a result back so the
-/// turn can continue. `log_event_id` is empty because no event was written; the
-/// filter will skip the Replace on the empty ID.
+/// Build and durably record a `ToolExecResult` for a tool-call error.
+///
+/// `execute_tool_call` records the `ToolCall` before work begins. The next model
+/// request is reconstructed from the durable log, so every later failure must
+/// record the matching `ToolResult` here or the provider sees an orphaned call.
 pub(super) fn error_tool_result(
     tc: &ToolCall,
     e: anyhow::Error,
-    _gait_dir: &std::path::Path,
-    _session_id: &str,
+    emitter: &Recorder,
 ) -> anyhow::Result<ToolExecResult> {
-    let value = serde_json::Value::String(format!("error: {e}"));
+    let output = format!("error: {e}");
+    let event = emitter.record(events::tool_result(
+        tc.tool_call_id.clone(),
+        output.clone(),
+        None,
+        None,
+    ))?;
     Ok(ToolExecResult {
         part: AssistantPart::ToolCall(tc.clone()),
         result: ToolResult {
             kind: ToolResultKind::ToolResult,
             tool_call_id: tc.tool_call_id.clone(),
-            result: value,
+            result: serde_json::Value::String(output),
         },
-        log_event_id: String::new(),
+        log_event_id: event.id,
         artifact: None,
         denied: None,
     })
@@ -631,5 +636,70 @@ mod synapse_routing_tests {
         let log = std::fs::read_to_string(&rec.tx_path).unwrap();
         assert!(log.contains("Tool output truncated by Gait"));
         assert!(!log.contains(&"line\\n".repeat(crate::tools::MODEL_TOOL_OUTPUT_MAX_BYTES)));
+    }
+
+    #[test]
+    fn failed_execution_is_durable_and_retraces_as_a_pair() {
+        let dir = tempdir().unwrap();
+        let session_id = "serror1";
+        std::fs::create_dir_all(
+            crate::session::live::log_path(dir.path(), session_id)
+                .parent()
+                .unwrap(),
+        )
+        .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let rec = crate::proto::Recorder::for_session(dir.path(), session_id, tx);
+        let tc = ToolCall {
+            tool_call_id: "c-error".into(),
+            tool_name: "spawn_agent".into(),
+            args: serde_json::json!({"task": "check"}),
+        };
+        rec.record(events::tool_call(
+            tc.tool_call_id.clone(),
+            tc.tool_name.clone(),
+            &tc.args,
+        ))
+        .unwrap();
+
+        let result = error_tool_result(
+            &tc,
+            anyhow::anyhow!("relayed result missing its archive reference"),
+            &rec,
+        )
+        .unwrap();
+        assert!(!result.log_event_id.is_empty());
+
+        let events = crate::session::log::read_events(&rec.tx_path).unwrap();
+        let messages = crate::session::retrace::messages(&events).unwrap();
+        let call_is_present = messages.iter().any(|message| {
+            matches!(
+                message,
+                crate::types::Message::Assistant {
+                    content: crate::types::AssistantContent::Parts(parts),
+                    ..
+                } if parts.iter().any(|part| matches!(
+                    part,
+                    crate::types::AssistantPart::ToolCall(call)
+                        if call.tool_call_id == tc.tool_call_id
+                ))
+            )
+        });
+        let result_is_present = messages.iter().any(|message| {
+            matches!(
+                message,
+                crate::types::Message::ToolResult { content, .. }
+                    if content.iter().any(|item|
+                        item.tool_call_id == tc.tool_call_id
+                            && item.result.as_str().is_some_and(|text|
+                                text.contains("relayed result missing its archive reference")
+                            )
+                    )
+            )
+        });
+        assert!(
+            call_is_present && result_is_present,
+            "messages: {messages:?}"
+        );
     }
 }

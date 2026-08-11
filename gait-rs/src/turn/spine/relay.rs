@@ -402,9 +402,18 @@ pub async fn relay_brain_turn(
                 let stdin_writer = Arc::clone(&child_stdin);
                 if impulse.tool == "spawn_agent" {
                     let ctx = ctx.clone();
+                    let gd = gait_dir.to_path_buf();
+                    let sid = session_id.to_string();
                     state.inflight.spawn(async move {
                         let args = handlers::agent::parse_spawn_args(&impulse);
                         let feedback = handlers::agent::handle_spawn_agent(args, ctx).await;
+                        let feedback = handlers::output::finalize_feedback(
+                            feedback,
+                            &gd,
+                            &sid,
+                            "spawn_agent",
+                            None,
+                        );
                         handlers::reply_feedback(stdin_writer, corr_id, feedback).await;
                     });
                 } else {

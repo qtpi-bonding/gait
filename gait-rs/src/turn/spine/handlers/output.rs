@@ -14,7 +14,7 @@ use super::{error_feedback, feedback_result};
 /// Finalize a successful tool result while preserving all Feedback sidebands.
 /// `preallocated_path` is supplied for a hand invocation; `None` allocates a
 /// fresh session-scoped artifact for an in-process result.
-pub(super) fn finalize_feedback(
+pub(in crate::turn::spine) fn finalize_feedback(
     mut feedback: Feedback,
     gait_dir: &std::path::Path,
     session_id: &str,
@@ -122,5 +122,26 @@ mod tests {
         assert!(output.contains("[cwd: /tmp]"));
         assert!(output.contains(&path.display().to_string()));
         assert_eq!(std::fs::read_to_string(path).unwrap(), raw);
+    }
+
+    #[test]
+    fn spine_routed_structured_result_is_archived_before_reply() {
+        let gait_dir = tempfile::tempdir().unwrap();
+        let original = serde_json::json!({
+            "session_id": "schild",
+            "status": "done"
+        });
+        let feedback = feedback_result(original.clone());
+
+        let finalized =
+            finalize_feedback(feedback, gait_dir.path(), "s-parent", "spawn_agent", None);
+        let model: serde_json::Value = serde_json::to_value(finalized.result.unwrap()).unwrap();
+        let artifact =
+            crate::tools::artifact_reference_from_value(&model, gait_dir.path(), "s-parent")
+                .expect("special spine-routed output must return a valid artifact reference");
+        assert_eq!(
+            std::fs::read_to_string(artifact.path).unwrap(),
+            original.to_string()
+        );
     }
 }
