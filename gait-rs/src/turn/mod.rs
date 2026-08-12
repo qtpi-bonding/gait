@@ -533,7 +533,7 @@ pub async fn run_turn(
                 break 'turn finalize::StepOutcome::Fail(anyhow::anyhow!(
                     compaction::Error::StillTooLarge {
                         predicted: rebuilt.predicted_tokens(),
-                        threshold: env.context_policy.threshold_tokens(),
+                        threshold: env.context_policy.compaction_threshold_tokens,
                     }
                 ));
             }

@@ -394,8 +394,6 @@ pub struct GaitConfig {
     pub deny: Vec<String>,
     #[serde(default)]
     pub tools: Vec<ConfigTool>,
-    #[serde(default = "default_compaction_threshold")]
-    pub compaction_threshold: f64,
     #[serde(default)]
     pub mcp_servers: Vec<McpServerDef>,
     #[serde(default)]
@@ -450,10 +448,6 @@ pub struct GaitConfig {
     pub sandbox: SandboxConfig,
 }
 
-fn default_compaction_threshold() -> f64 {
-    defaults::default_compaction_threshold()
-}
-
 fn default_output_schema_retries() -> u8 {
     defaults::default_output_schema_retries()
 }
@@ -473,7 +467,6 @@ impl Default for GaitConfig {
             allow: defaults::default_allow(),
             deny: defaults::default_deny(),
             tools: vec![],
-            compaction_threshold: defaults::default_compaction_threshold(),
             mcp_servers: vec![],
             skills: vec![],
             wasm_plugins: vec![],

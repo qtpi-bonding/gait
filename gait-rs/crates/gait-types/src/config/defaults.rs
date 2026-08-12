@@ -15,10 +15,6 @@ pub fn default_deny() -> Vec<String> {
     Vec::new()
 }
 
-pub fn default_compaction_threshold() -> f64 {
-    0.8
-}
-
 pub fn default_output_schema_retries() -> u8 {
     3
 }

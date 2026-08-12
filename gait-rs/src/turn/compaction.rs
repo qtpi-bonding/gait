@@ -13,8 +13,10 @@ use gait_provider::provider::StreamChunk;
 /// Conservative replacement for a provider tokenizer.  Kept here so it can
 /// be replaced in one place when a provider-neutral tokenizer becomes viable.
 pub const ESTIMATED_CHARS_PER_TOKEN: u64 = 3;
-/// Total output budget for one compaction checkpoint.
-pub const SUMMARY_OUTPUT_BUDGET_TOKENS: u64 = 2_048;
+/// Total output budget for one compaction checkpoint. This deliberately leaves
+/// room for reasoning tokens on providers whose generation limit includes
+/// hidden reasoning as well as visible text.
+pub const SUMMARY_OUTPUT_BUDGET_TOKENS: u64 = 8_192;
 /// Harness-owned full-output references are allocated independently so they
 /// can never make an otherwise valid model response fail validation.
 pub const FULL_OUTPUT_INDEX_BUDGET_TOKENS: u64 = 256;
@@ -41,7 +43,7 @@ impl ContextEstimate {
     }
 
     pub fn crosses(self, policy: ContextPolicy) -> bool {
-        self.predicted_tokens() >= policy.threshold_tokens()
+        self.predicted_tokens() >= policy.compaction_threshold_tokens
     }
 }
 
@@ -299,8 +301,7 @@ mod tests {
     #[test]
     fn threshold_equality_compacts_and_one_token_below_does_not() {
         let policy = ContextPolicy {
-            compaction_threshold_tokens: 100,
-            compaction_threshold: 0.8,
+            compaction_threshold_tokens: 80,
         };
         assert!(ContextEstimate {
             observed_tokens: 80,
