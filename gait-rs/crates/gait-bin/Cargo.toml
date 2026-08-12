@@ -15,7 +15,6 @@ name = "gait_bin"
 path = "src/lib.rs"
 
 [features]
-default = ["local"]
 local = ["gait-core/local"]
 
 [dependencies]
