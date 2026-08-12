@@ -497,7 +497,7 @@ pub async fn run_turn(
                 ));
             }
             let through_seq = events_before_request.last().map(|event| event.seq);
-            let summary = match compaction::summarize(&env, &outgoing).await {
+            let summary = match compaction::summarize_with_retry(&env, &outgoing).await {
                 Ok(summary) => summary,
                 Err(compaction::Error::Cancelled) => break 'turn finalize::StepOutcome::Cancelled,
                 Err(error) => break 'turn finalize::StepOutcome::Fail(anyhow::anyhow!(error)),
@@ -508,6 +508,8 @@ pub async fn run_turn(
                 pb::CompactionTokenUsage {
                     input: summary.usage.input_tokens as u64,
                     output: summary.usage.output_tokens as u64,
+                    cache_read: summary.usage.cache_read_tokens as u64,
+                    cache_write: summary.usage.cache_write_tokens as u64,
                 },
                 through_seq,
             ))?;

@@ -277,6 +277,20 @@ pub async fn summarize(
     Ok(SummaryResponse { summary, usage })
 }
 
+/// A single retry prevents a transient provider overload from discarding a
+/// long-lived turn at the exact boundary where compaction is most valuable.
+pub async fn summarize_with_retry(
+    env: &super::state::TurnEnv<'_>,
+    messages: &[Message],
+) -> Result<SummaryResponse, Error> {
+    match summarize(env, messages).await {
+        Err(Error::Provider(_)) if !env.cancel.is_some_and(|cancel| cancel.is_cancelled()) => {
+            summarize(env, messages).await
+        }
+        result => result,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -302,6 +302,8 @@ fn compaction_breakpoint_discards_earlier_events() {
     let cu = pb::CompactionTokenUsage {
         input: 10,
         output: 5,
+        cache_read: 0,
+        cache_write: 0,
     };
     let path = write_events(
         dir.path(),
@@ -774,6 +776,8 @@ fn active_messages_resets_on_compaction() {
     let cu = pb::CompactionTokenUsage {
         input: 1,
         output: 1,
+        cache_read: 0,
+        cache_write: 0,
     };
     let evs = mint_events(vec![
         events::user_text("before".into()),
@@ -800,6 +804,8 @@ fn active_messages_two_compactions_second_wins() {
     let cu = pb::CompactionTokenUsage {
         input: 1,
         output: 1,
+        cache_read: 0,
+        cache_write: 0,
     };
     let evs = mint_events(vec![
         events::user_text("before-first".into()),
@@ -832,6 +838,8 @@ fn active_raw_messages_checkpoint_keeps_only_latest_summary_and_later_pairs() {
     let usage = pb::CompactionTokenUsage {
         input: 1,
         output: 1,
+        cache_read: 0,
+        cache_write: 0,
     };
     let evs = mint_events(vec![
         events::user_text("old".into()),
@@ -1158,6 +1166,8 @@ fn loadables_projection_full_session_and_mutation_aware() {
     let cu = pb::CompactionTokenUsage {
         input: 1,
         output: 1,
+        cache_read: 0,
+        cache_write: 0,
     };
     let with_comp = mint_events(vec![
         events::toggle("mcp", "slack", true),

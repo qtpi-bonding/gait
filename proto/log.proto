@@ -228,7 +228,7 @@ message PermissionPolicy { repeated string allow = 1; repeated string deny = 2; 
 message StepTokenUsage  { uint64 input = 1; uint64 output = 2; uint64 cache_read = 3; uint64 cache_write = 4; }
 message TurnTokenUsage  { uint64 input = 1; uint64 output = 2; uint64 cache_read = 3; uint64 cache_write = 4; }
 message RunTokenUsage   { uint64 input = 1; uint64 output = 2; uint64 cache_read = 3; uint64 cache_write = 4; }
-message CompactionTokenUsage { uint64 input = 1; uint64 output = 2; }
+message CompactionTokenUsage { uint64 input = 1; uint64 output = 2; uint64 cache_read = 3; uint64 cache_write = 4; }
 message ProcessResult   { int32 exit_code = 1; }
 message ConvergenceItem { string id = 1; string proposal = 2; optional string response = 3; bool consistent = 4; }
 

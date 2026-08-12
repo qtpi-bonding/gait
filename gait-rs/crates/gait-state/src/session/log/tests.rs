@@ -68,6 +68,8 @@ fn last_compaction_index_finds_last() {
     let cu = pb::CompactionTokenUsage {
         input: 10,
         output: 5,
+        cache_read: 0,
+        cache_write: 0,
     };
     let events = vec![
         mint(events::user_text("x".into())),

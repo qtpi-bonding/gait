@@ -50,7 +50,13 @@ impl CodexResponsesProvider {
         })
     }
 
-    fn request_body(&self, system: &str, messages: &[Message], tools: &[Box<dyn Tool>]) -> Value {
+    fn request_body(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[Box<dyn Tool>],
+        params: &gait_types::config::LlmParamsConfig,
+    ) -> Value {
         let mut input = Vec::new();
         for message in messages {
             match message {
@@ -105,6 +111,9 @@ impl CodexResponsesProvider {
         if !functions.is_empty() {
             body["tools"] = Value::Array(functions);
         }
+        if let Some(max_tokens) = params.max_tokens {
+            body["max_output_tokens"] = Value::from(max_tokens);
+        }
         body
     }
 }
@@ -129,7 +138,7 @@ impl Provider for CodexResponsesProvider {
         system: &str,
         messages: &[Message],
         tools: &[Box<dyn Tool>],
-        _params: &gait_types::config::LlmParamsConfig,
+        params: &gait_types::config::LlmParamsConfig,
         tail_context: Option<&str>,
     ) -> Result<ChunkStream, ProviderError> {
         let mut effective_messages = messages.to_vec();
@@ -140,7 +149,7 @@ impl Provider for CodexResponsesProvider {
                 attribution: None,
             });
         }
-        let body = self.request_body(system, &effective_messages, tools);
+        let body = self.request_body(system, &effective_messages, tools, params);
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             reqwest::header::AUTHORIZATION,
