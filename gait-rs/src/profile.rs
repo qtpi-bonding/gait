@@ -387,10 +387,11 @@ impl Profile {
         self.context_policy.validate()?;
         // Provider (no network until .stream()).
         let provider: std::sync::Arc<dyn gait_provider::provider::Provider> = std::sync::Arc::from(
-            gait_provider::factory::load_provider_with_credential_and_params(
+            gait_provider::factory::load_provider_with_credential_params_and_gait_dir(
                 &self.model,
                 credential,
                 &self.llm_params,
+                Some(gait_dir.clone()),
             )
             .map_err(|e| anyhow::anyhow!("provider: {e}"))?,
         );

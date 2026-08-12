@@ -66,9 +66,18 @@ pub fn load_provider_with_credential_and_params(
     credential: Option<ResolvedCredential>,
     params: &gait_types::config::LlmParamsConfig,
 ) -> Result<Box<dyn Provider>, FactoryError> {
+    load_provider_with_credential_params_and_gait_dir(model_str, credential, params, None)
+}
+
+pub fn load_provider_with_credential_params_and_gait_dir(
+    model_str: &str,
+    credential: Option<ResolvedCredential>,
+    params: &gait_types::config::LlmParamsConfig,
+    gait_dir: Option<std::path::PathBuf>,
+) -> Result<Box<dyn Provider>, FactoryError> {
     let (provider_id, model_id) = parse_model_string(model_str)?;
     if provider_id == "local" {
-        return load_local_provider(model_id, params);
+        return load_local_provider(model_id, params, gait_dir);
     }
     let spec = crate::providers::lookup(&provider_id)
         .ok_or_else(|| FactoryError::UnknownProvider(provider_id.clone()))?;
@@ -118,6 +127,7 @@ pub fn load_provider_with_credential_and_params(
 fn load_local_provider(
     model_id: String,
     params: &gait_types::config::LlmParamsConfig,
+    gait_dir: Option<std::path::PathBuf>,
 ) -> Result<Box<dyn Provider>, FactoryError> {
     let local = params
         .local
@@ -126,15 +136,20 @@ fn load_local_provider(
     if local.model_path.trim().is_empty() {
         return Err(FactoryError::LocalModelPathMissing);
     }
-    let generator = gait_llama_cpp::LlamaGenerator::new(gait_llama_cpp::LlamaConfig {
-        model_path: std::path::PathBuf::from(&local.model_path),
-        context_tokens: local.context_tokens.unwrap_or(32_768),
-        gpu_layers: local.gpu_layers,
-        tool_protocol: match model_id.as_str() {
-            "qwen2.5-coder-7b-instruct-q4-k-m" => gait_llama_cpp::ToolProtocol::Qwen25Coder,
-            _ => gait_llama_cpp::ToolProtocol::Unsupported,
+    let gait_dir = gait_dir
+        .ok_or_else(|| FactoryError::LocalInit("local runner requires a gait directory".into()))?;
+    let generator = gait_llama_cpp::RunnerGenerator::new(
+        gait_llama_cpp::LlamaConfig {
+            model_path: std::path::PathBuf::from(&local.model_path),
+            context_tokens: local.context_tokens.unwrap_or(32_768),
+            gpu_layers: local.gpu_layers.or(Some(0)),
+            tool_protocol: match model_id.as_str() {
+                "qwen2.5-coder-7b-instruct-q4-k-m" => gait_llama_cpp::ToolProtocol::Qwen25Coder,
+                _ => gait_llama_cpp::ToolProtocol::Unsupported,
+            },
         },
-    })
+        gait_dir,
+    )
     .map_err(|error| FactoryError::LocalInit(error.to_string()))?;
     Ok(Box::new(crate::local::LocalProvider::new(
         model_id,
@@ -146,6 +161,7 @@ fn load_local_provider(
 fn load_local_provider(
     _model_id: String,
     _params: &gait_types::config::LlmParamsConfig,
+    _gait_dir: Option<std::path::PathBuf>,
 ) -> Result<Box<dyn Provider>, FactoryError> {
     Err(FactoryError::LocalNotBuilt)
 }

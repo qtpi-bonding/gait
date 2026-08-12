@@ -12,6 +12,21 @@ async fn main() {
     // These are spawned by the spine and must bypass the Commands enum to avoid
     // a crate DAG inversion (gait-core can't import from gait-bin).
     let raw: Vec<String> = std::env::args().collect();
+    if raw.get(1).map(String::as_str) == Some("__local-runner") {
+        #[cfg(feature = "local")]
+        {
+            if let Err(error) = gait_llama_cpp::run_local_runner(&raw[2..]).await {
+                eprintln!("[gait] local runner: {error}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        #[cfg(not(feature = "local"))]
+        {
+            eprintln!("[gait] local runner requires a Gait build with the 'local' feature");
+            std::process::exit(1);
+        }
+    }
     if raw.len() >= 2 && gait_core::is_role_argv(&raw[1..]) {
         // Sealed re-entry is fully owned by core: __dispatch_role parses its
         // own argv and runs run_brain/run_hand/cmd_daemon_exit. main() is a
@@ -168,7 +183,7 @@ async fn main() {
         Commands::Disable(args) => gait_cli::cli::admin::cmd_disable(args),
         Commands::Auth(args) => gait_cli::cli::admin::cmd_auth(args).await,
         Commands::Models(args) => gait_cli::cli::admin::cmd_models(args).await,
-        Commands::Local(args) => gait_cli::cli::admin::cmd_local(args),
+        Commands::Local(args) => gait_cli::cli::admin::cmd_local(args).await,
         Commands::Inference(args) => gait_cli::cli::admin::cmd_inference(args),
         Commands::Workflow(args) => gait_cli::cli::workflow::cmd_workflow(args).await,
         Commands::Daemons(args) => gait_cli::cli::daemons::cmd_daemons(args),

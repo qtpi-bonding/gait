@@ -172,6 +172,38 @@ pub enum ToolProtocol {
     Unsupported,
 }
 
+impl ToolProtocol {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Qwen25Coder => "qwen25-coder",
+            Self::Unsupported => "unsupported",
+        }
+    }
+
+    #[cfg(feature = "native")]
+    fn parse(value: &str) -> Result<Self, GenerationError> {
+        match value {
+            "qwen25-coder" => Ok(Self::Qwen25Coder),
+            "unsupported" => Ok(Self::Unsupported),
+            _ => Err(GenerationError::InvalidRequest(format!(
+                "unknown local tool protocol '{value}'"
+            ))),
+        }
+    }
+}
+
+impl LlamaConfig {
+    pub fn runner_key(&self) -> String {
+        gait_local::runner_key(&format!(
+            "model={};ctx={};gpu={:?};tool={}",
+            self.model_path.display(),
+            self.context_tokens,
+            self.gpu_layers,
+            self.tool_protocol.as_str()
+        ))
+    }
+}
+
 #[cfg(feature = "native")]
 mod native {
     use super::*;
@@ -535,6 +567,243 @@ pub struct LlamaGenerator {
     inner: native::NativeGenerator,
     #[cfg(not(feature = "native"))]
     config: LlamaConfig,
+}
+
+/// Client for the deliberately narrow warm-model sidecar. It owns no model
+/// itself: every Gait brain can die while the runner retains only GGUF weights.
+#[cfg(feature = "native")]
+pub struct RunnerGenerator {
+    config: LlamaConfig,
+    socket: PathBuf,
+}
+
+#[cfg(feature = "native")]
+impl RunnerGenerator {
+    pub fn new(config: LlamaConfig, gait_dir: PathBuf) -> Result<Self, GenerationError> {
+        if !config.model_path.is_file() {
+            return Err(GenerationError::Unavailable(format!(
+                "GGUF model does not exist: {}",
+                config.model_path.display()
+            )));
+        }
+        Ok(Self {
+            socket: gait_dir
+                .join("local-runners")
+                .join(format!("{}.sock", config.runner_key())),
+            config,
+        })
+    }
+
+    async fn connect_or_start(&self) -> Result<tokio::net::UnixStream, GenerationError> {
+        if let Ok(stream) = tokio::net::UnixStream::connect(&self.socket).await {
+            return Ok(stream);
+        }
+        let executable = std::env::current_exe()
+            .map_err(|e| GenerationError::Engine(format!("find gait executable: {e}")))?;
+        let parent = self
+            .socket
+            .parent()
+            .expect("socket has local-runners parent");
+        std::fs::create_dir_all(parent)
+            .map_err(|e| GenerationError::Engine(format!("create runner directory: {e}")))?;
+        let _ = std::process::Command::new(executable)
+            .arg("__local-runner")
+            .arg("--socket")
+            .arg(&self.socket)
+            .arg("--model-path")
+            .arg(&self.config.model_path)
+            .arg("--context-tokens")
+            .arg(self.config.context_tokens.to_string())
+            .arg("--tool-protocol")
+            .arg(self.config.tool_protocol.as_str())
+            .arg("--gpu-layers")
+            .arg(self.config.gpu_layers.unwrap_or(0).to_string())
+            .spawn()
+            .map_err(|e| GenerationError::Engine(format!("start local runner: {e}")))?;
+        for _ in 0..100 {
+            if let Ok(stream) = tokio::net::UnixStream::connect(&self.socket).await {
+                return Ok(stream);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        Err(GenerationError::Unavailable(
+            "local runner did not become ready within 5 seconds".into(),
+        ))
+    }
+}
+
+#[cfg(feature = "native")]
+#[async_trait]
+impl TextGenerator for RunnerGenerator {
+    async fn generate(
+        &self,
+        request: GenerationRequest,
+    ) -> Result<GenerationStream, GenerationError> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let mut stream = self.connect_or_start().await?;
+        let request = gait_local::RunnerRequest::Generate { request };
+        let encoded = serde_json::to_string(&request)
+            .map_err(|e| GenerationError::Engine(format!("encode runner request: {e}")))?;
+        stream
+            .write_all(encoded.as_bytes())
+            .await
+            .map_err(|e| GenerationError::Engine(format!("write runner request: {e}")))?;
+        stream
+            .write_all(b"\n")
+            .await
+            .map_err(|e| GenerationError::Engine(format!("finish runner request: {e}")))?;
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stream).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                match serde_json::from_str::<gait_local::RunnerResponse>(&line) {
+                    Ok(gait_local::RunnerResponse::Ready { .. }) => {}
+                    Ok(gait_local::RunnerResponse::Chunk(chunk)) => {
+                        let done = matches!(chunk, Ok(gait_local::GenerationChunk::Done));
+                        if tx.send(chunk).await.is_err() || done {
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        let _ = tx
+                            .send(Err(GenerationError::Engine(format!(
+                                "decode runner response: {error}"
+                            ))))
+                            .await;
+                        break;
+                    }
+                }
+            }
+        });
+        Ok(Box::pin(futures_util::stream::unfold(
+            rx,
+            |mut rx| async move { rx.recv().await.map(|item| (item, rx)) },
+        )))
+    }
+}
+
+/// Hidden role implementation. The process may retain only a model/context and
+/// private socket; it receives no session id, worktree, tools, or log paths.
+#[cfg(feature = "native")]
+pub async fn run_local_runner(argv: &[String]) -> Result<(), GenerationError> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let value = |flag: &str| {
+        argv.windows(2)
+            .find(|pair| pair[0] == flag)
+            .map(|pair| pair[1].clone())
+    };
+    let socket = PathBuf::from(
+        value("--socket")
+            .ok_or_else(|| GenerationError::InvalidRequest("runner missing --socket".into()))?,
+    );
+    let context_tokens = value("--context-tokens")
+        .and_then(|v| v.parse().ok())
+        .ok_or_else(|| GenerationError::InvalidRequest("runner invalid --context-tokens".into()))?;
+    let gpu_layers = value("--gpu-layers").and_then(|v| v.parse().ok());
+    let config = LlamaConfig {
+        model_path: PathBuf::from(value("--model-path").ok_or_else(|| {
+            GenerationError::InvalidRequest("runner missing --model-path".into())
+        })?),
+        context_tokens,
+        gpu_layers,
+        tool_protocol: ToolProtocol::parse(
+            &value("--tool-protocol").unwrap_or_else(|| "unsupported".into()),
+        )?,
+    };
+    let key = config.runner_key();
+    if let Some(parent) = socket.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| GenerationError::Engine(format!("create runner directory: {e}")))?;
+    }
+    if socket.exists() {
+        let _ = std::fs::remove_file(&socket);
+    }
+    let listener = tokio::net::UnixListener::bind(&socket)
+        .map_err(|e| GenerationError::Engine(format!("bind runner socket: {e}")))?;
+    let generator = LlamaGenerator::new(config)?;
+    loop {
+        let accepted =
+            tokio::time::timeout(std::time::Duration::from_secs(20 * 60), listener.accept()).await;
+        let Ok(Ok((stream, _))) = accepted else {
+            break;
+        };
+        let (read, mut write) = stream.into_split();
+        let mut lines = BufReader::new(read).lines();
+        let Some(line) = lines
+            .next_line()
+            .await
+            .map_err(|e| GenerationError::Engine(format!("read runner request: {e}")))?
+        else {
+            continue;
+        };
+        let request: gait_local::RunnerRequest = serde_json::from_str(&line)
+            .map_err(|e| GenerationError::InvalidRequest(format!("decode runner request: {e}")))?;
+        match request {
+            gait_local::RunnerRequest::Status => {
+                write_response(
+                    &mut write,
+                    gait_local::RunnerResponse::Status {
+                        model_key: key.clone(),
+                    },
+                )
+                .await?
+            }
+            gait_local::RunnerRequest::Stop => {
+                write_response(&mut write, gait_local::RunnerResponse::Stopped).await?;
+                break;
+            }
+            gait_local::RunnerRequest::Generate { request } => {
+                if write_response(
+                    &mut write,
+                    gait_local::RunnerResponse::Ready {
+                        protocol: gait_local::RUNNER_PROTOCOL,
+                    },
+                )
+                .await
+                .is_err()
+                {
+                    continue;
+                }
+                let mut chunks = generator.generate(request).await?;
+                use futures_util::StreamExt;
+                while let Some(chunk) = chunks.next().await {
+                    let done = matches!(chunk, Ok(gait_local::GenerationChunk::Done));
+                    // A disconnected brain cancels this generation only. It
+                    // must not take the warm model process down with it.
+                    if write_response(&mut write, gait_local::RunnerResponse::Chunk(chunk))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    if done {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let _ = std::fs::remove_file(socket);
+    Ok(())
+}
+
+#[cfg(feature = "native")]
+async fn write_response(
+    write: &mut tokio::net::unix::OwnedWriteHalf,
+    response: gait_local::RunnerResponse,
+) -> Result<(), GenerationError> {
+    use tokio::io::AsyncWriteExt;
+    let value = serde_json::to_string(&response)
+        .map_err(|e| GenerationError::Engine(format!("encode runner response: {e}")))?;
+    write
+        .write_all(value.as_bytes())
+        .await
+        .map_err(|e| GenerationError::Engine(format!("write runner response: {e}")))?;
+    write
+        .write_all(b"\n")
+        .await
+        .map_err(|e| GenerationError::Engine(format!("finish runner response: {e}")))
 }
 
 impl LlamaGenerator {

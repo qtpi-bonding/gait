@@ -1292,6 +1292,7 @@ dependencies = [
  "clap",
  "gait-cli",
  "gait-core",
+ "gait-llama-cpp",
  "gait-proto",
  "gait-repl",
  "gait-state",
@@ -1318,6 +1319,7 @@ dependencies = [
  "clap",
  "gait-auth",
  "gait-core",
+ "gait-local",
  "gait-ops",
  "gait-proto",
  "gait-state",
@@ -1406,7 +1408,9 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "futures-util",
+ "serde",
  "serde_json",
+ "sha2",
  "thiserror 1.0.69",
 ]
 

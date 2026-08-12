@@ -69,7 +69,7 @@ pub struct LocalArgs {
     pub compaction_threshold_tokens: u64,
 }
 
-pub fn cmd_local(args: LocalArgs) {
+pub async fn cmd_local(args: LocalArgs) {
     match args.action.as_deref().unwrap_or("setup") {
         "setup" => {
             let model_path = args.model_path.as_deref().unwrap_or_else(|| {
@@ -96,11 +96,96 @@ pub fn cmd_local(args: LocalArgs) {
                 }
             }
         }
+        "status" | "stop" => {
+            let inference = match gait_core::inferences::load_inference(&args.gait_dir, &args.name)
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!("[gait] {error}");
+                    std::process::exit(1)
+                }
+            };
+            let params = match inference
+                .llm_params
+                .as_ref()
+                .map(gait_core::proto::events::llm_params_from_proto)
+                .transpose()
+            {
+                Ok(Some(value)) => value,
+                _ => {
+                    eprintln!(
+                        "[gait] inference '{}' is not a configured local profile",
+                        args.name
+                    );
+                    std::process::exit(1)
+                }
+            };
+            let Some(local) = params.local else {
+                eprintln!(
+                    "[gait] inference '{}' is not a configured local profile",
+                    args.name
+                );
+                std::process::exit(1)
+            };
+            let protocol = if inference.model == "local/qwen2.5-coder-7b-instruct-q4-k-m" {
+                "qwen25-coder"
+            } else {
+                "unsupported"
+            };
+            let key = gait_local::runner_key(&format!(
+                "model={};ctx={};gpu={:?};tool={protocol}",
+                local.model_path,
+                local.context_tokens.unwrap_or(32_768),
+                local.gpu_layers.or(Some(0))
+            ));
+            let socket = args
+                .gait_dir
+                .join("local-runners")
+                .join(format!("{key}.sock"));
+            match local_runner_command(&socket, args.action.as_deref().unwrap()).await {
+                Ok(Some(gait_local::RunnerResponse::Status { model_key })) => {
+                    println!("running\t{model_key}")
+                }
+                Ok(Some(gait_local::RunnerResponse::Stopped)) => println!("stopped"),
+                Ok(_) => println!("not running"),
+                Err(error) if args.action.as_deref() == Some("status") => println!("not running"),
+                Err(error) => {
+                    eprintln!("[gait] local runner: {error}");
+                    std::process::exit(1)
+                }
+            }
+        }
         _ => {
-            eprintln!("[gait] local action must be setup");
+            eprintln!("[gait] local action must be setup, status, or stop");
             std::process::exit(2)
         }
     }
+}
+
+async fn local_runner_command(
+    socket: &std::path::Path,
+    action: &str,
+) -> Result<Option<gait_local::RunnerResponse>, std::io::Error> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::UnixStream::connect(socket).await?;
+    let request = if action == "stop" {
+        gait_local::RunnerRequest::Stop
+    } else {
+        gait_local::RunnerRequest::Status
+    };
+    stream
+        .write_all(
+            serde_json::to_string(&request)
+                .expect("runner request serializes")
+                .as_bytes(),
+        )
+        .await?;
+    stream.write_all(b"\n").await?;
+    let mut lines = tokio::io::BufReader::new(stream).lines();
+    let Some(line) = lines.next_line().await? else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_str(&line).ok())
 }
 
 pub fn cmd_inference(args: InferenceArgs) {

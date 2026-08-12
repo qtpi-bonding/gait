@@ -15,10 +15,11 @@ name = "gait_bin"
 path = "src/lib.rs"
 
 [features]
-local = ["gait-core/local"]
+local = ["gait-core/local", "dep:gait-llama-cpp", "gait-llama-cpp/native"]
 
 [dependencies]
 gait-core = { path = "../.." }
+gait-llama-cpp = { path = "../gait-llama-cpp", optional = true }
 gait-repl = { path = "../gait-repl" }
 gait-cli = { path = "../gait-cli" }
 clap = { version = "4", features = ["derive", "env"] }
