@@ -14,6 +14,10 @@ path = "src/main.rs"
 name = "gait_bin"
 path = "src/lib.rs"
 
+[features]
+default = ["local"]
+local = ["gait-core/local"]
+
 [dependencies]
 gait-core = { path = "../.." }
 gait-repl = { path = "../gait-repl" }

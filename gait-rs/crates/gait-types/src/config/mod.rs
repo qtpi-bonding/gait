@@ -339,6 +339,18 @@ pub struct GeminiLlmParamsConfig {
     pub thinking: Option<GeminiThinkingConfig>,
 }
 
+/// Settings for Gait's in-process GGUF provider. The path is deliberately an
+/// authored inference setting rather than an environment variable: it becomes
+/// part of the selected inference snapshot and therefore of the session log.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LocalLlmParamsConfig {
+    pub model_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_layers: Option<u32>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LlmParamsConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -355,6 +367,8 @@ pub struct LlmParamsConfig {
     pub openai: Option<OpenAILlmParamsConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gemini: Option<GeminiLlmParamsConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local: Option<LocalLlmParamsConfig>,
 }
 
 impl LlmParamsConfig {
@@ -368,6 +382,7 @@ impl LlmParamsConfig {
             anthropic: agent.anthropic.or(self.anthropic),
             openai: agent.openai.or(self.openai),
             gemini: agent.gemini.or(self.gemini),
+            local: agent.local.or(self.local),
         }
     }
 }

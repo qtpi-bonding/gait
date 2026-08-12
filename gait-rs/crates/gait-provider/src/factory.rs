@@ -19,6 +19,12 @@ pub enum FactoryError {
     InvalidCredential(String),
     #[error("transport setup failed: {0}")]
     Transport(#[source] crate::provider::ProviderError),
+    #[error("local inference is not included in this gait build; install a build with the 'local' feature")]
+    LocalNotBuilt,
+    #[error("local inference requires llm_params.local.model_path")]
+    LocalModelPathMissing,
+    #[error("local inference initialization failed: {0}")]
+    LocalInit(String),
 }
 
 /// Per-provider base URL override, e.g. `OLLAMA_BASE_URL=http://192.168.1.50:11500/v1`
@@ -44,7 +50,26 @@ pub fn load_provider_with_credential(
     model_str: &str,
     credential: Option<ResolvedCredential>,
 ) -> Result<Box<dyn Provider>, FactoryError> {
+    load_provider_with_credential_and_params(
+        model_str,
+        credential,
+        &gait_types::config::LlmParamsConfig::default(),
+    )
+}
+
+/// Factory boundary with the selected inference's provider-specific settings.
+/// Cloud providers only consume their own fields in `params`; the local branch
+/// uses its typed `local` block to receive a model path from the durable
+/// inference snapshot rather than from process-global environment state.
+pub fn load_provider_with_credential_and_params(
+    model_str: &str,
+    credential: Option<ResolvedCredential>,
+    params: &gait_types::config::LlmParamsConfig,
+) -> Result<Box<dyn Provider>, FactoryError> {
     let (provider_id, model_id) = parse_model_string(model_str)?;
+    if provider_id == "local" {
+        return load_local_provider(model_id, params);
+    }
     let spec = crate::providers::lookup(&provider_id)
         .ok_or_else(|| FactoryError::UnknownProvider(provider_id.clone()))?;
     let base = base_url_override(&provider_id).or_else(|| spec.base_url.map(String::from));
@@ -87,6 +112,42 @@ pub fn load_provider_with_credential(
             }
         }
     }
+}
+
+#[cfg(feature = "local-native")]
+fn load_local_provider(
+    model_id: String,
+    params: &gait_types::config::LlmParamsConfig,
+) -> Result<Box<dyn Provider>, FactoryError> {
+    let local = params
+        .local
+        .as_ref()
+        .ok_or(FactoryError::LocalModelPathMissing)?;
+    if local.model_path.trim().is_empty() {
+        return Err(FactoryError::LocalModelPathMissing);
+    }
+    let generator = gait_llama_cpp::LlamaGenerator::new(gait_llama_cpp::LlamaConfig {
+        model_path: std::path::PathBuf::from(&local.model_path),
+        context_tokens: local.context_tokens.unwrap_or(32_768),
+        gpu_layers: local.gpu_layers,
+        tool_protocol: match model_id.as_str() {
+            "qwen2.5-coder-7b-instruct-q4-k-m" => gait_llama_cpp::ToolProtocol::Qwen25Coder,
+            _ => gait_llama_cpp::ToolProtocol::Unsupported,
+        },
+    })
+    .map_err(|error| FactoryError::LocalInit(error.to_string()))?;
+    Ok(Box::new(crate::local::LocalProvider::new(
+        model_id,
+        std::sync::Arc::new(generator),
+    )))
+}
+
+#[cfg(not(feature = "local-native"))]
+fn load_local_provider(
+    _model_id: String,
+    _params: &gait_types::config::LlmParamsConfig,
+) -> Result<Box<dyn Provider>, FactoryError> {
+    Err(FactoryError::LocalNotBuilt)
 }
 
 /// Resolve a Bearer API key for an `ApiKey` provider. Order: explicit

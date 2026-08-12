@@ -75,6 +75,30 @@ pub fn add(
     })
 }
 
+/// Author Gait's first built-in profile, Qwen2.5 Coder 7B Q4_K_M. This is a
+/// setup operation only; model ownership and downloading stay with the user.
+pub fn add_local_qwen(
+    gait_dir: &Path,
+    name: &str,
+    model_path: &Path,
+    context_tokens: u32,
+    gpu_layers: u32,
+    compaction_threshold_tokens: u64,
+) -> Result<InferenceInfo, OpError> {
+    gait_state::inferences::write_local_qwen_inference(
+        gait_dir,
+        name,
+        model_path,
+        context_tokens,
+        gpu_layers,
+        compaction_threshold_tokens,
+    )?;
+    Ok(InferenceInfo {
+        name: name.to_owned(),
+        model: "local/qwen2.5-coder-7b-instruct-q4-k-m".into(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,5 +146,21 @@ mod tests {
         };
         assert!(inference.name.is_empty());
         assert!(inference.model.is_empty());
+    }
+
+    #[test]
+    fn add_local_qwen_authors_a_selectable_local_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let model = dir.path().join("qwen.gguf");
+        let added = add_local_qwen(dir.path(), "local-qwen", &model, 8192, 0, 6000).unwrap();
+        assert_eq!(added.model, "local/qwen2.5-coder-7b-instruct-q4-k-m");
+        let selected = resolve_selection(dir.path(), "local-qwen").unwrap();
+        let params = gait_state::proto::events::llm_params_from_proto(
+            selected.inference.llm_params.as_ref().unwrap(),
+        )
+        .unwrap();
+        let local = params.local.unwrap();
+        assert_eq!(local.model_path, model.to_string_lossy());
+        assert_eq!(local.gpu_layers, Some(0));
     }
 }

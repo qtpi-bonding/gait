@@ -4,7 +4,7 @@ use crate::config::LlmParamsConfig;
 use crate::proto::gait::log::v1 as pb;
 use std::path::Path;
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 struct InferenceFile {
     model: String,
     compaction_threshold_tokens: u64,
@@ -32,10 +32,26 @@ fn validate(
     if let Some(p) = params {
         let mismatch = (p.anthropic.is_some() && provider != "anthropic")
             || (p.openai.is_some() && provider != "openai" && provider != "openai-codex")
-            || (p.gemini.is_some() && provider != "gemini");
+            || (p.gemini.is_some() && provider != "gemini")
+            || (p.local.is_some() && provider != "local");
         if mismatch {
             anyhow::bail!(
                 "inference '{name}' has llm_params for a different provider than '{provider}'"
+            );
+        }
+    }
+    if provider == "local" {
+        let local = params
+            .as_ref()
+            .and_then(|p| p.local.as_ref())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                "inference '{name}' uses local/<model> but is missing llm_params.local.model_path"
+            )
+            })?;
+        if local.model_path.trim().is_empty() {
+            anyhow::bail!(
+                "inference '{name}' uses local/<model> but llm_params.local.model_path is empty"
             );
         }
     }
@@ -102,6 +118,56 @@ pub fn write_inference(
         format!("model: {model}\ncompaction_threshold_tokens: {compaction_threshold_tokens}\n"),
     )
     .map_err(|e| anyhow::anyhow!("write {}: {e}", inf_file.display()))?;
+    Ok(())
+}
+
+/// Write the explicitly configured starter local profile. The GGUF remains
+/// developer-owned: this records a path but never downloads, moves, or
+/// modifies that file.
+pub fn write_local_qwen_inference(
+    gait_dir: &Path,
+    name: &str,
+    model_path: &Path,
+    context_tokens: u32,
+    gpu_layers: u32,
+    compaction_threshold_tokens: u64,
+) -> anyhow::Result<()> {
+    let model = "local/qwen2.5-coder-7b-instruct-q4-k-m";
+    let params = LlmParamsConfig {
+        max_tokens: Some(1024),
+        local: Some(crate::config::LocalLlmParamsConfig {
+            model_path: model_path.to_string_lossy().into_owned(),
+            context_tokens: Some(context_tokens),
+            gpu_layers: Some(gpu_layers),
+        }),
+        ..Default::default()
+    };
+    validate(
+        name,
+        model,
+        compaction_threshold_tokens,
+        &Some(params.clone()),
+    )?;
+    if name.is_empty() || name == "default" {
+        anyhow::bail!("'{name}' is not a valid inference name (reserved)");
+    }
+    let inf_dir = gait_dir.join("inferences").join(name);
+    let inf_file = inf_dir.join("INFERENCE.yaml");
+    if inf_file.exists() {
+        anyhow::bail!(
+            "inference '{name}' already exists at {}; pick a new name or `rm -rf {}` first",
+            inf_file.display(),
+            inf_dir.display()
+        );
+    }
+    std::fs::create_dir_all(&inf_dir)?;
+    let rendered = serde_yaml::to_string(&InferenceFile {
+        model: model.into(),
+        compaction_threshold_tokens,
+        llm_params: Some(params),
+    })?;
+    std::fs::write(&inf_file, rendered)
+        .map_err(|e| anyhow::anyhow!("write {}: {e}", inf_file.display()))?;
     Ok(())
 }
 
@@ -210,5 +276,67 @@ mod tests {
         // Provider/id has a '/' in the id half — invalid per `validate`.
         let err = write_inference(dir.path(), "p", "openai/gpt-4o/extra", 128_000).unwrap_err();
         assert!(format!("{err}").contains("invalid model"), "got: {err}");
+    }
+
+    #[test]
+    fn local_inference_requires_and_persists_typed_model_path() {
+        let dir = ws();
+        let path = dir.path().join("models/qwen.gguf");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let inf_dir = dir.path().join("inferences/local");
+        std::fs::create_dir_all(&inf_dir).unwrap();
+        std::fs::write(
+            inf_dir.join("INFERENCE.yaml"),
+            format!(
+                "model: local/qwen2.5-coder-7b-instruct-q4-k-m\ncompaction_threshold_tokens: 6000\nllm_params:\n  max_tokens: 1024\n  local:\n    model_path: {}\n    context_tokens: 8192\n    gpu_layers: 0\n",
+                path.display()
+            ),
+        )
+        .unwrap();
+
+        let loaded = load_inference(dir.path(), "local").unwrap();
+        let params =
+            crate::proto::events::llm_params_from_proto(loaded.llm_params.as_ref().unwrap())
+                .unwrap();
+        let local = params.local.expect("local settings survive the snapshot");
+        assert_eq!(local.model_path, path.to_string_lossy());
+        assert_eq!(local.context_tokens, Some(8192));
+        assert_eq!(local.gpu_layers, Some(0));
+    }
+
+    #[test]
+    fn local_inference_without_a_path_is_rejected_at_load_time() {
+        let dir = ws();
+        let inf_dir = dir.path().join("inferences/local");
+        std::fs::create_dir_all(&inf_dir).unwrap();
+        std::fs::write(
+            inf_dir.join("INFERENCE.yaml"),
+            "model: local/qwen\ncompaction_threshold_tokens: 6000\n",
+        )
+        .unwrap();
+        let err = load_inference(dir.path(), "local").unwrap_err();
+        assert!(
+            format!("{err}").contains("llm_params.local.model_path"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn write_local_qwen_inference_writes_cpu_safe_typed_settings() {
+        let dir = ws();
+        let model = dir.path().join("models/qwen.gguf");
+        write_local_qwen_inference(dir.path(), "local", &model, 8192, 0, 6000).unwrap();
+        let yaml =
+            std::fs::read_to_string(dir.path().join("inferences/local/INFERENCE.yaml")).unwrap();
+        assert!(yaml.contains("model: local/qwen2.5-coder-7b-instruct-q4-k-m"));
+        assert!(yaml.contains("model_path:"));
+        let loaded = load_inference(dir.path(), "local").unwrap();
+        let params =
+            crate::proto::events::llm_params_from_proto(loaded.llm_params.as_ref().unwrap())
+                .unwrap();
+        let local = params.local.unwrap();
+        assert_eq!(local.context_tokens, Some(8192));
+        assert_eq!(local.gpu_layers, Some(0));
+        assert_eq!(params.max_tokens, Some(1024));
     }
 }

@@ -1,6 +1,8 @@
 pub mod anthropic;
 pub mod codex;
 pub mod factory;
+#[cfg(feature = "local")]
+pub mod local;
 pub mod openai;
 pub mod provider;
 pub mod providers;

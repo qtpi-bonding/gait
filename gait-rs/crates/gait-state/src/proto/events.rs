@@ -521,10 +521,16 @@ pub fn llm_params_to_proto(p: &crate::config::LlmParamsConfig) -> pb::LlmParams 
         Some(ProviderParams::Anthropic(anthropic_llm_params_to_proto(a)))
     } else if let Some(o) = &p.openai {
         Some(ProviderParams::Openai(openai_llm_params_to_proto(o)))
+    } else if let Some(g) = &p.gemini {
+        Some(ProviderParams::Gemini(gemini_llm_params_to_proto(g)))
     } else {
-        p.gemini
-            .as_ref()
-            .map(|g| ProviderParams::Gemini(gemini_llm_params_to_proto(g)))
+        p.local.as_ref().map(|local| {
+            ProviderParams::Local(pb::LocalLlmParams {
+                model_path: local.model_path.clone(),
+                context_tokens: local.context_tokens,
+                gpu_layers: local.gpu_layers,
+            })
+        })
     };
 
     pb::LlmParams {
@@ -613,6 +619,13 @@ pub fn llm_params_from_proto(p: &pb::LlmParams) -> anyhow::Result<crate::config:
                         _ => None,
                     },
                 }),
+            });
+        }
+        Some(ProviderParams::Local(local)) => {
+            out.local = Some(cfg::LocalLlmParamsConfig {
+                model_path: local.model_path.clone(),
+                context_tokens: local.context_tokens,
+                gpu_layers: local.gpu_layers,
             });
         }
     }

@@ -628,7 +628,17 @@ message LlmParams {
     AnthropicLlmParams anthropic = 10;
     OpenAILlmParams    openai    = 11;
     GeminiLlmParams    gemini    = 12;
+    LocalLlmParams     local     = 13;
   }
+}
+
+// In-process local model settings.  `model_path` is authored explicitly: Gait
+// never infers, downloads, or mutates a developer-owned GGUF merely because a
+// local inference was selected.
+message LocalLlmParams {
+  string model_path = 1;
+  optional uint32 context_tokens = 2;
+  optional uint32 gpu_layers = 3;
 }
 
 message AnthropicLlmParams {

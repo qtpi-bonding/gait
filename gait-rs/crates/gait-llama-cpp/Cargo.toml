@@ -1,0 +1,22 @@
+[package]
+name = "gait-llama-cpp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+native = ["dep:llama-cpp-2", "dep:llama-cpp-sys-2"]
+
+[dependencies]
+gait-local = { path = "../gait-local" }
+async-trait = "0.1"
+futures-util = "0.3"
+serde_json = "1"
+tokio = { version = "1", features = ["sync"] }
+uuid = { version = "1", features = ["v4"] }
+llama-cpp-2 = { version = "=0.1.150", default-features = false, optional = true }
+# `llama-cpp-2` 0.1.150 accesses fields removed by newer `llama-cpp-sys-2`.
+# Keep the wrapper/sys pair locked together, as EpiSutra does.
+llama-cpp-sys-2 = { version = "=0.1.150", default-features = false, optional = true }

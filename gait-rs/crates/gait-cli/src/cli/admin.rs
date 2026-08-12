@@ -43,6 +43,66 @@ pub struct InferenceArgs {
     pub session: Option<String>,
 }
 
+/// `gait local setup --model-path /path/to/model.gguf`
+#[derive(Parser, Debug)]
+pub struct LocalArgs {
+    #[arg(long, env = "GAIT_DIR")]
+    pub gait_dir: PathBuf,
+    /// Action: setup (default). More local profiles can be added without
+    /// changing the top-level command later.
+    pub action: Option<String>,
+    /// Named inference to create. Refuses to overwrite an existing profile.
+    #[arg(long, default_value = "local-qwen")]
+    pub name: String,
+    /// Developer-owned GGUF for Qwen2.5-Coder-7B-Instruct Q4_K_M.
+    #[arg(long)]
+    pub model_path: Option<PathBuf>,
+    /// Context window to give llama.cpp. 8192 is a conservative Intel-safe
+    /// starter; the model itself supports more when memory permits.
+    #[arg(long, default_value_t = 8192)]
+    pub context_tokens: u32,
+    /// llama.cpp layers to offload. 0 is CPU-only and works on Intel Macs.
+    #[arg(long, default_value_t = 0)]
+    pub gpu_layers: u32,
+    /// Begin compaction before the context is full.
+    #[arg(long, default_value_t = 6000)]
+    pub compaction_threshold_tokens: u64,
+}
+
+pub fn cmd_local(args: LocalArgs) {
+    match args.action.as_deref().unwrap_or("setup") {
+        "setup" => {
+            let model_path = args.model_path.as_deref().unwrap_or_else(|| {
+                eprintln!("[gait] usage: gait local setup --model-path /path/to/model.gguf");
+                std::process::exit(2)
+            });
+            match gait_ops::inference::add_local_qwen(
+                &args.gait_dir,
+                &args.name,
+                model_path,
+                args.context_tokens,
+                args.gpu_layers,
+                args.compaction_threshold_tokens,
+            ) {
+                Ok(inference) => println!(
+                    "added inference '{}' → {}\nGGUF: {}",
+                    inference.name,
+                    inference.model,
+                    model_path.display()
+                ),
+                Err(error) => {
+                    eprintln!("[gait] {error}");
+                    std::process::exit(1)
+                }
+            }
+        }
+        _ => {
+            eprintln!("[gait] local action must be setup");
+            std::process::exit(2)
+        }
+    }
+}
+
 pub fn cmd_inference(args: InferenceArgs) {
     match args.action.as_deref().unwrap_or("list") {
         "list" => {

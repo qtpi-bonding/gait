@@ -387,8 +387,12 @@ impl Profile {
         self.context_policy.validate()?;
         // Provider (no network until .stream()).
         let provider: std::sync::Arc<dyn gait_provider::provider::Provider> = std::sync::Arc::from(
-            gait_provider::factory::load_provider_with_credential(&self.model, credential)
-                .map_err(|e| anyhow::anyhow!("provider: {e}"))?,
+            gait_provider::factory::load_provider_with_credential_and_params(
+                &self.model,
+                credential,
+                &self.llm_params,
+            )
+            .map_err(|e| anyhow::anyhow!("provider: {e}"))?,
         );
 
         // MCP connect + discover. Errors are silently swallowed: a failed server

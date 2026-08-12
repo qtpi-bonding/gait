@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+local = ["dep:gait-local"]
+local-native = ["local", "dep:gait-llama-cpp", "gait-llama-cpp/native"]
+
 [dependencies]
 gait-types        = { path = "../gait-types" }
 gait-auth         = { path = "../gait-auth" }
@@ -20,6 +24,8 @@ thiserror         = "1"
 async-trait       = "0.1"
 async-stream      = "0.3"
 rand              = "0.8"
+gait-local        = { path = "../gait-local", optional = true }
+gait-llama-cpp    = { path = "../gait-llama-cpp", optional = true }
 
 [dev-dependencies]
 tokio             = { version = "1", features = ["test-util"] }
