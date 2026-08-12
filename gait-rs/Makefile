@@ -6,7 +6,10 @@ INSTALL_DIR ?= /usr/local/bin
 .PHONY: build install fmt lint test check hooks
 
 build:
-	cargo build --release -p gait-bin
+	# Keep the installed single binary capable of running Gait's in-process
+	# local GGUF provider. Developers can still make a lean cloud-only build
+	# directly with `cargo build --no-default-features` when they need one.
+	cargo build --release -p gait-bin --features local
 
 TARGET_DIR := $(shell cargo metadata --no-deps --format-version 1 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['target_directory'])")
 
