@@ -67,7 +67,8 @@ pub struct OnErrorConfig {
     pub backoff: String,
     #[serde(default = "default_context")]
     pub context: String,
-    pub goto: Option<String>,
+    #[serde(rename = "continue", default)]
+    pub continue_on_error: bool,
 }
 
 fn default_delay() -> u64 {
@@ -87,22 +88,8 @@ impl Default for OnErrorConfig {
             delay: 1000,
             backoff: "linear".into(),
             context: "carry".into(),
-            goto: None,
+            continue_on_error: false,
         }
-    }
-}
-
-impl OnErrorConfig {
-    pub fn is_abort(&self) -> bool {
-        self.goto.as_deref().is_none_or(|g| g == "abort")
-    }
-    pub fn is_continue(&self) -> bool {
-        self.goto.as_deref() == Some("continue")
-    }
-    pub fn goto_node(&self) -> Option<&str> {
-        self.goto
-            .as_deref()
-            .filter(|&g| g != "abort" && g != "continue")
     }
 }
 
@@ -113,8 +100,6 @@ pub struct NodeDef {
     pub depends_on: Vec<String>,
     #[serde(default)]
     pub on_error: Option<OnErrorConfig>,
-    #[serde(default)]
-    pub goto: Option<String>,
     #[serde(default)]
     pub hooks: Option<HooksConfig>,
     #[serde(default)]
@@ -296,9 +281,9 @@ nodes:
 
     #[test]
     fn test_on_error_config_defaults() {
-        let yaml = r#"goto: recover-node"#;
+        let yaml = r#"continue: true"#;
         let cfg: OnErrorConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(cfg.goto.as_deref(), Some("recover-node"));
+        assert!(cfg.continue_on_error);
         assert_eq!(cfg.retry_times, 0);
         assert_eq!(cfg.delay, 1000);
         assert_eq!(cfg.backoff, "linear");
@@ -312,39 +297,14 @@ retry_times: 3
 delay: 500
 backoff: exponential
 context: fresh
-goto: error-handler
+continue: true
 "#;
         let cfg: OnErrorConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.retry_times, 3);
         assert_eq!(cfg.delay, 500);
         assert_eq!(cfg.backoff, "exponential");
         assert_eq!(cfg.context, "fresh");
-        assert_eq!(cfg.goto.as_deref(), Some("error-handler"));
-    }
-
-    #[test]
-    fn test_node_def_goto_field() {
-        let yaml = r#"
-id: my-node
-depends_on: []
-prompt: "do the thing"
-goto: next-node
-"#;
-        let node: NodeDef = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(node.goto.as_deref(), Some("next-node"));
-        assert!(node.on_error.is_none());
-    }
-
-    #[test]
-    fn test_node_def_terminal_has_no_goto() {
-        let yaml = r#"
-id: last-node
-depends_on: [prev]
-shell: "echo done"
-"#;
-        let node: NodeDef = serde_yaml::from_str(yaml).unwrap();
-        assert!(node.goto.is_none());
-        assert!(node.branch.is_none());
+        assert!(cfg.continue_on_error);
     }
 
     #[test]

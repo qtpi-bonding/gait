@@ -54,7 +54,7 @@ nodes:
       delay: 1000
       backoff: linear            # linear | exponential
       context: carry             # carry (keep context) | fresh (new session)
-      goto: test                 # loop back to re-run tests after fixing
+      continue: true             # continue only after retries are exhausted
     depends_on: [route]
 
   - id: review-gate
@@ -198,28 +198,31 @@ Every node supports:
 ```yaml
 - id: my-node
   depends_on: [other-node]    # wait for these nodes first
-  goto: next-node             # explicit next node after success
   on_error:                   # failure handling
-    retry_times: 3            # retry up to N times before the goto/abort applies
+      retry_times: 3            # retry up to N times before continue/abort applies
     delay: 1000               # ms between retries
     backoff: linear           # linear | exponential
     context: carry            # carry (keep context) | fresh (new session)
-    goto: error-handler       # abort (default) | continue | <node-id>
+    continue: true             # otherwise abort after retries are exhausted
   hooks:
     before: "echo starting $NODE_ID"
     after:  "echo done"
     error:  "echo failed"
 ```
 
-`on_error.goto` accepts three shapes:
+`on_error.continue` is the only non-aborting error policy. It marks the failed
+node terminal after retries are exhausted, allowing nodes whose prerequisites
+are otherwise satisfied to continue. Recovery is expressed with forward branch
+nodes; retries never re-enqueue a completed node.
 
-- `abort` — fail the workflow (default).
-- `continue` — fail this node but let downstream nodes (which don't depend on it) continue.
-- `<node-id>` — recover by routing to a named node; together with `retry_times`, this is how loops work.
+## DAG semantics
 
-## Loops
-
-There is no separate loop node type. Loops are graph cycles — point a node's `goto` (or `on_error.goto`) back to an earlier node. The graph validator does not reject `goto`/`branch` cycles (those are intentional), but it does reject `depends_on` cycles — those would deadlock the scheduler.
+`depends_on` edges are unconditional prerequisites. A branch node contributes
+conditional edges to its `then`, `else`, or `cases` targets; exactly one
+conditional path is selected. Unselected descendants are skipped transitively
+and each skip is recorded in the run log. The union of prerequisite and
+conditional edges must be acyclic, and the scheduler never re-enqueues a
+terminal node.
 
 ## Resume after gate or crash
 
@@ -241,14 +244,16 @@ gait workflow continue <run-id> --force-rerun <node-id> --gait-dir <path>  # acc
 gait workflow validate <name> --gait-dir <path>
 ```
 
-Runs the graph validator (duplicate node ids, dangling `depends_on`/`goto`/`branch`/`on_error.goto` references, `depends_on` cycles) without creating a run, touching the worktree, or writing to the run log. Exits 0 on a valid graph, 1 with a list of every problem found on an invalid one.
+Runs the graph validator (duplicate node ids, dangling `depends_on`/`branch`
+references, and cycles across the complete edge union) without creating a run,
+touching the worktree, or writing to the run log. Exits 0 on a valid graph, 1
+with a list of every problem found on an invalid one.
 
 Source: `crates/gait-workflow/src/validate.rs`.
 
 ## What graphs are NOT validated
 
 - **Branch-condition semantics.** Branch conditions are evaluated at runtime, not at load time. An unresolvable `$node.*` reference in a branch `on:` expression fails the branch node at runtime (not a silent truthy fall-through — that was the historical bug).
-- **`goto`/`branch` cycles.** These are intentional — the scheduler supports them (`runner.rs` has explicit comments to that effect). Only `depends_on` cycles are rejected.
 - **Per-tool floor / sandbox config compatibility.** The sandbox check happens at hand execution time, not graph-load time.
 
 ## Subagents

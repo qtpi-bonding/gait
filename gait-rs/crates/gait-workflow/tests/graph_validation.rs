@@ -73,7 +73,7 @@ async fn cyclic_depends_on_graph_is_rejected_before_any_run_log_is_created() {
 }
 
 #[tokio::test]
-async fn dangling_on_error_goto_is_rejected() {
+async fn invalid_branch_edge_is_rejected() {
     let dir = TempDir::new().unwrap();
     let gait_dir = dir.path().to_path_buf();
     std::fs::create_dir_all(gait_dir.join("workflow-runs")).unwrap();
@@ -82,10 +82,12 @@ async fn dangling_on_error_goto_is_rejected() {
         name: "dangling-recovery".to_string(),
         nodes: vec![Node {
             id: "a".to_string(),
-            on_error: Some(gait_core::proto::gait::workflow::v1::OnError {
-                goto: Some("nonexistent-recovery-node".to_string()),
-                ..Default::default()
-            }),
+            body: Some(gait_core::proto::gait::workflow::v1::node::Body::Branch(
+                gait_core::proto::gait::workflow::v1::BranchNode {
+                    then: Some("nonexistent-recovery-node".to_string()),
+                    ..Default::default()
+                },
+            )),
             ..Default::default()
         }],
         ..Default::default()
@@ -113,7 +115,7 @@ async fn dangling_on_error_goto_is_rejected() {
 
     assert!(
         result.is_err(),
-        "dangling on_error.goto must be rejected, got: {result:?}"
+        "dangling branch edge must be rejected, got: {result:?}"
     );
-    assert!(result.unwrap_err().to_string().contains("on_error.goto"));
+    assert!(result.unwrap_err().to_string().contains("branch.then"));
 }

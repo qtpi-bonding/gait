@@ -12,6 +12,7 @@ pub enum NodeStatus {
     Paused,
 }
 
+#[derive(Debug, Clone, Default)]
 pub struct WorkflowState {
     pub workflow_id: String,
     pub workflow_name: String,
@@ -22,7 +23,7 @@ pub struct WorkflowState {
     workflow_status: String,
     /// Per-node effective session id (item 13b/13c), keyed by node id. Recorded
     /// at a node's first `NodeStart` (live or replayed) and reused on every
-    /// later re-entry (goto/branch loop) or resume — see `resolve_node_session`.
+    /// later resume — see `resolve_node_session`.
     pub node_sessions: HashMap<String, String>,
 }
 

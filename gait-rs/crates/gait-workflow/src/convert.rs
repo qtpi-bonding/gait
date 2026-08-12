@@ -116,7 +116,7 @@ fn on_error(o: &Option<OnErrorConfig>) -> Option<OnError> {
         delay: o.delay,
         backoff: o.backoff.clone(),
         context: o.context.clone(),
-        goto: o.goto.clone(),
+        r#continue: o.continue_on_error,
     })
 }
 
@@ -161,7 +161,6 @@ fn node_to_proto(n: &NodeDef) -> Node {
             .map(|v| v.to_string())
             .unwrap_or_default(),
         on_error: on_error(&n.on_error),
-        goto: n.goto.clone(),
         hooks: hooks(&n.hooks),
         body,
     }
@@ -252,7 +251,7 @@ auto: true
 nodes:
   - id: scan
     prompt: "do {{ args.dir }}"
-    on_error: { retry_times: 2, goto: fix }
+    on_error: { retry_times: 2, continue: true }
     hooks: { after: "echo done" }
   - id: br
     depends_on: [scan]
@@ -267,7 +266,7 @@ nodes:
         assert_eq!(p.version_label, "1");
         let scan = &p.nodes[0];
         assert_eq!(scan.on_error.as_ref().unwrap().retry_times, 2);
-        assert_eq!(scan.on_error.as_ref().unwrap().goto.as_deref(), Some("fix"));
+        assert!(scan.on_error.as_ref().unwrap().r#continue);
         assert_eq!(
             scan.hooks.as_ref().unwrap().after.as_deref(),
             Some("echo done")

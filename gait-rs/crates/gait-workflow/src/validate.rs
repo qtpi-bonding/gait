@@ -29,12 +29,10 @@ impl std::fmt::Display for ValidationError {
     }
 }
 
-/// Validate a workflow graph's shape: duplicate ids, dangling references, and
-/// depends_on cycles. Does NOT validate branch-condition semantics or reject
-/// goto/branch cycles (those are intentional — see
-/// docs/superpowers/specs/2026-07-18-workflow-graph-validation-design.md
-/// Non-goals). Pure function, no I/O. Returns every problem found, not just
-/// the first.
+/// Validate the single workflow graph: duplicate ids, dangling references,
+/// and cycles across prerequisite and conditional branch edges. Prerequisite
+/// edges point from each dependency to its node; branch edges point from the
+/// branch node to each possible target.
 pub fn validate_graph(wf: &Workflow) -> Vec<ValidationError> {
     let mut errors = Vec::new();
     let mut seen_ids: HashSet<&str> = HashSet::new();
@@ -58,26 +56,6 @@ pub fn validate_graph(wf: &Workflow) -> Vec<ValidationError> {
                     reference_kind: "depends_on",
                     target: dep.clone(),
                 });
-            }
-        }
-        if let Some(goto) = &n.goto {
-            if !known_ids.contains(goto.as_str()) {
-                errors.push(ValidationError::DanglingReference {
-                    from_node: n.id.clone(),
-                    reference_kind: "goto",
-                    target: goto.clone(),
-                });
-            }
-        }
-        if let Some(oe) = &n.on_error {
-            if let Some(goto) = &oe.goto {
-                if goto != "abort" && goto != "continue" && !known_ids.contains(goto.as_str()) {
-                    errors.push(ValidationError::DanglingReference {
-                        from_node: n.id.clone(),
-                        reference_kind: "on_error.goto",
-                        target: goto.clone(),
-                    });
-                }
             }
         }
         if let Some(node::Body::Branch(b)) = &n.body {
@@ -111,14 +89,14 @@ pub fn validate_graph(wf: &Workflow) -> Vec<ValidationError> {
         }
     }
 
-    // Cycle detection on depends_on only — NOT goto/branch (see Non-goals).
+    // Cycle detection on the union of prerequisite and conditional edges.
     // Skip entirely if duplicate ids exist: the adjacency map below is keyed
     // by id, so a duplicate would silently merge two distinct nodes' edges
     // and could misreport a cycle that doesn't structurally exist (or hide a
     // real one). The duplicate-id error above already tells the user what to
     // fix first.
     if duplicate_ids.is_empty() {
-        if let Some(cycle) = find_depends_on_cycle(wf) {
+        if let Some(cycle) = find_graph_cycle(wf) {
             errors.push(ValidationError::DependencyCycle(cycle));
         }
     }
@@ -131,7 +109,7 @@ pub fn validate_graph(wf: &Workflow) -> Vec<ValidationError> {
 /// None if the graph is acyclic. Dangling depends_on entries (checked above)
 /// are simply skipped here — they can't participate in a cycle back to a
 /// real node.
-fn find_depends_on_cycle(wf: &Workflow) -> Option<Vec<String>> {
+fn find_graph_cycle(wf: &Workflow) -> Option<Vec<String>> {
     #[derive(Clone, Copy, PartialEq)]
     enum Color {
         White,
@@ -139,27 +117,41 @@ fn find_depends_on_cycle(wf: &Workflow) -> Option<Vec<String>> {
         Black,
     }
 
-    let adjacency: HashMap<&str, &[String]> = wf
+    let mut adjacency: HashMap<String, Vec<String>> = wf
         .nodes
         .iter()
-        .map(|n| (n.id.as_str(), n.depends_on.as_slice()))
+        .map(|n| (n.id.clone(), Vec::new()))
         .collect();
-    let mut color: HashMap<&str, Color> = wf
+    for n in &wf.nodes {
+        for dep in &n.depends_on {
+            if known(wf, dep) {
+                adjacency.get_mut(dep).unwrap().push(n.id.clone());
+            }
+        }
+        if let Some(node::Body::Branch(b)) = &n.body {
+            for target in b.then.iter().chain(b.r#else.iter()).chain(b.cases.values()) {
+                if known(wf, target) {
+                    adjacency.get_mut(&n.id).unwrap().push(target.clone());
+                }
+            }
+        }
+    }
+    let mut color: HashMap<String, Color> = wf
         .nodes
         .iter()
-        .map(|n| (n.id.as_str(), Color::White))
+        .map(|n| (n.id.clone(), Color::White))
         .collect();
 
-    fn visit<'a>(
-        id: &'a str,
-        adjacency: &HashMap<&'a str, &'a [String]>,
-        color: &mut HashMap<&'a str, Color>,
+    fn visit(
+        id: &str,
+        adjacency: &HashMap<String, Vec<String>>,
+        color: &mut HashMap<String, Color>,
         path: &mut Vec<String>,
     ) -> Option<Vec<String>> {
-        color.insert(id, Color::Gray);
+        color.insert(id.to_string(), Color::Gray);
         path.push(id.to_string());
         if let Some(deps) = adjacency.get(id) {
-            for dep in deps.iter() {
+            for dep in deps {
                 let dep = dep.as_str();
                 match color.get(dep).copied() {
                     Some(Color::Gray) => {
@@ -178,12 +170,12 @@ fn find_depends_on_cycle(wf: &Workflow) -> Option<Vec<String>> {
             }
         }
         path.pop();
-        color.insert(id, Color::Black);
+        color.insert(id.to_string(), Color::Black);
         None
     }
 
     for n in &wf.nodes {
-        if color.get(n.id.as_str()) == Some(&Color::White) {
+        if color.get(&n.id) == Some(&Color::White) {
             let mut path = Vec::new();
             if let Some(cycle) = visit(n.id.as_str(), &adjacency, &mut color, &mut path) {
                 return Some(cycle);
@@ -193,10 +185,14 @@ fn find_depends_on_cycle(wf: &Workflow) -> Option<Vec<String>> {
     None
 }
 
+fn known(wf: &Workflow, id: &str) -> bool {
+    wf.nodes.iter().any(|n| n.id == id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gait_core::proto::gait::workflow::v1::{BranchNode, Node, OnError};
+    use gait_core::proto::gait::workflow::v1::{BranchNode, Node};
 
     fn node(id: &str) -> Node {
         Node {
@@ -252,58 +248,6 @@ mod tests {
             reference_kind: "depends_on",
             target: "nonexistent".to_string(),
         }));
-    }
-
-    #[test]
-    fn detects_dangling_goto() {
-        let w = wf(vec![Node {
-            id: "a".to_string(),
-            goto: Some("nonexistent".to_string()),
-            ..Default::default()
-        }]);
-        let errors = validate_graph(&w);
-        assert!(errors.contains(&ValidationError::DanglingReference {
-            from_node: "a".to_string(),
-            reference_kind: "goto",
-            target: "nonexistent".to_string(),
-        }));
-    }
-
-    #[test]
-    fn detects_dangling_on_error_goto() {
-        let w = wf(vec![Node {
-            id: "a".to_string(),
-            on_error: Some(OnError {
-                goto: Some("nonexistent".to_string()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }]);
-        let errors = validate_graph(&w);
-        assert!(errors.contains(&ValidationError::DanglingReference {
-            from_node: "a".to_string(),
-            reference_kind: "on_error.goto",
-            target: "nonexistent".to_string(),
-        }));
-    }
-
-    #[test]
-    fn on_error_goto_abort_and_continue_are_not_dangling() {
-        for keyword in ["abort", "continue"] {
-            let w = wf(vec![Node {
-                id: "a".to_string(),
-                on_error: Some(OnError {
-                    goto: Some(keyword.to_string()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }]);
-            let errors = validate_graph(&w);
-            assert!(
-                errors.is_empty(),
-                "'{keyword}' must not be flagged as dangling, got: {errors:?}"
-            );
-        }
     }
 
     #[test]
@@ -376,32 +320,31 @@ mod tests {
     }
 
     #[test]
-    fn goto_only_cycle_does_not_trigger_dependency_cycle() {
-        // a and b goto each other — no depends_on at all. This is an
-        // intentional, supported control-flow loop (see design spec
-        // Non-goals) and must NOT be reported as a DependencyCycle.
+    fn branch_cycle_is_rejected_across_conditional_edges() {
         let w = wf(vec![
             Node {
                 id: "a".to_string(),
-                goto: Some("b".to_string()),
+                body: Some(node::Body::Branch(BranchNode {
+                    then: Some("b".into()),
+                    ..Default::default()
+                })),
                 ..Default::default()
             },
             Node {
                 id: "b".to_string(),
-                goto: Some("a".to_string()),
+                body: Some(node::Body::Branch(BranchNode {
+                    then: Some("a".into()),
+                    ..Default::default()
+                })),
                 ..Default::default()
             },
         ]);
         let errors = validate_graph(&w);
         assert!(
-            !errors
+            errors
                 .iter()
                 .any(|e| matches!(e, ValidationError::DependencyCycle(_))),
-            "goto-only cycle must not be reported as a depends_on cycle, got: {errors:?}"
-        );
-        assert!(
-            errors.is_empty(),
-            "goto targets exist and form a valid loop, got: {errors:?}"
+            "branch cycle must be rejected, got: {errors:?}"
         );
     }
 

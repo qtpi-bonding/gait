@@ -81,7 +81,6 @@ message Node {
   repeated string files              = 8;
   string          output_schema_json = 9;   // JSON; empty if none
   optional OnError on_error          = 10;
-  optional string goto               = 11;
   optional Hooks  hooks              = 12;
   oneof body {
     PromptNode prompt = 13;
@@ -104,7 +103,7 @@ message BranchNode {
   map<string,string> cases = 4;
 }
 message GateNode   { string message = 1; }
-message OnError    { uint32 retry_times = 1; uint64 delay = 2; string backoff = 3; string context = 4; optional string goto = 5; }
+message OnError    { uint32 retry_times = 1; uint64 delay = 2; string backoff = 3; string context = 4; bool continue = 5; }
 message Hooks      { optional string before = 1; optional string after = 2; optional string error = 3; optional uint64 timeout_ms = 4; }
 
 message NodeStart {

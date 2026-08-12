@@ -99,7 +99,8 @@ enum NodeTaskOutcome {
     Open,                   // absent-prompt node, no input -> run exits, node left open
     Error(String),          // abort after retries exhausted
     ErrorContinue,          // on_error: continue — treat as skipped
-    ErrorGoto(String),      // on_error: goto <node_id>
+                            // A failed node either aborts or is explicitly continued; it never routes
+                            // execution back into the graph.
 }
 
 struct NodeRunParams {
@@ -120,7 +121,7 @@ struct NodeRunParams {
 /// CLI-only degenerate-run overrides (spec-06 §3 Task 3.2, the C1 fix), bundled
 /// so `enqueue_node_task`'s many call sites take one param. `Default` (all
 /// `None`/empty) is correct for every enqueue site EXCEPT the run's initial
-/// ready-node seeding and `handle_open_node` — a branch/goto/newly-ready
+/// ready-node seeding and `handle_open_node` — a branch/newly-ready
 /// enqueue only ever fires inside a real multi-node `gait workflow run` graph,
 /// which never carries CLI overrides in the first place (only
 /// `single_prompt_run`'s single node does, and a single node has no
@@ -175,8 +176,8 @@ fn node_session_id(node: &Node) -> String {
 }
 
 /// Idempotent per-node session resolution. Reuses a session already recorded for
-/// this node (resume via `reconstruct_state`, or goto/branch re-entry within the
-/// live run); mints a fresh one only on the node's FIRST enqueue. This is what
+/// this node (resume via `reconstruct_state`); mints a fresh one only on the
+/// node's FIRST enqueue. This is what
 /// keeps an open/interactive node's transcript intact across pause/resume.
 fn resolve_node_session(state: &mut WorkflowState, node: &Node) -> String {
     if let Some(prev) = state.node_sessions.get(&node.id) {
@@ -190,8 +191,7 @@ fn resolve_node_session(state: &mut WorkflowState, node: &Node) -> String {
 }
 
 /// Returns *automated* ready node indices only — deps satisfied, not completed,
-/// not in-flight, not excluded (`exclude` skips goto-only targets — they should
-/// only be enqueued via ErrorGoto), and NOT interactive. Interactive
+/// not in-flight, not excluded, and NOT interactive. Interactive
 /// (absent-prompt) nodes never enter the `FuturesUnordered` pool; they are
 /// handled exclusively by `ready_interactive_nodes` + `handle_open_node` once
 /// the automated frontier (this function's output) drains to empty.
@@ -200,6 +200,7 @@ fn compute_ready_nodes(
     completed: &HashSet<String>,
     in_flight: &HashSet<String>,
     exclude: &HashSet<String>,
+    state: &WorkflowState,
 ) -> Vec<usize> {
     nodes
         .iter()
@@ -210,6 +211,7 @@ fn compute_ready_nodes(
                 && !exclude.contains(&n.id)
                 && !is_interactive_node(n)
                 && n.depends_on.iter().all(|dep| completed.contains(dep))
+                && conditional_reachability(nodes, &n.id, state) == Some(true)
         })
         .map(|(i, _)| i)
         .collect()
@@ -224,6 +226,7 @@ fn ready_interactive_nodes(
     nodes: &[Node],
     completed: &HashSet<String>,
     in_flight: &HashSet<String>,
+    state: &WorkflowState,
 ) -> Vec<usize> {
     nodes
         .iter()
@@ -233,38 +236,83 @@ fn ready_interactive_nodes(
                 && !in_flight.contains(&n.id)
                 && is_interactive_node(n)
                 && n.depends_on.iter().all(|dep| completed.contains(dep))
+                && conditional_reachability(nodes, &n.id, state) == Some(true)
         })
         .map(|(i, _)| i)
         .collect()
 }
 
-/// Returns the set of node IDs that are exclusively reachable via `on_error.goto`
-/// and have no `depends_on` entries (i.e., they would otherwise be picked up as
-/// initial ready nodes but should only be enqueued on error).
-fn goto_only_nodes(nodes: &[Node]) -> HashSet<String> {
-    // Collect all node IDs referenced as on_error.goto targets.
-    let goto_targets: HashSet<String> = nodes
+fn is_terminal(status: &NodeStatus) -> bool {
+    matches!(
+        status,
+        NodeStatus::Done | NodeStatus::Skipped | NodeStatus::Error(_)
+    )
+}
+
+/// Resolve a node's conditional incoming edges. `None` means at least one
+/// branch source has not completed; `Some(false)` means all conditional
+/// sources resolved and none selected this node.
+fn conditional_reachability(nodes: &[Node], target: &str, state: &WorkflowState) -> Option<bool> {
+    let sources: Vec<&Node> = nodes
         .iter()
-        .filter_map(|n| {
-            n.on_error
-                .as_ref()
-                .and_then(|oe| oe.goto.as_ref())
-                .filter(|g| g.as_str() != "abort" && g.as_str() != "continue")
-                .cloned()
+        .filter(|n| {
+            matches!(n.body.as_ref(), Some(node::Body::Branch(b))
+            if b.then.as_deref() == Some(target)
+                || b.r#else.as_deref() == Some(target)
+                || b.cases.values().any(|v| v == target))
         })
         .collect();
-    // A node is "goto-only" if it appears as a goto target and has no depends_on
-    // (nodes with depends_on are already blocked from the initial ready set).
-    goto_targets
-        .into_iter()
-        .filter(|id| {
-            nodes
+    if sources.is_empty() {
+        return Some(true);
+    }
+    if sources
+        .iter()
+        .any(|n| !is_terminal(&state.node_status(&n.id)))
+    {
+        return None;
+    }
+    Some(sources.iter().any(|n| {
+        state
+            .node_outputs
+            .get(&n.id)
+            .and_then(|o| o.routed_to.as_deref())
+            == Some(target)
+    }))
+}
+
+/// Record every node that has become unreachable, including descendants of an
+/// inactive branch. Repeating this until stable makes skip propagation
+/// transitive while preserving a single NodeSkip event per node.
+fn propagate_unreachable(
+    nodes: &[Node],
+    state: &mut WorkflowState,
+    run_log: &WorkflowRunLog,
+    observer: &mut dyn WorkflowObserver,
+) -> anyhow::Result<()> {
+    loop {
+        let mut changed = false;
+        for n in nodes {
+            if state.node_status(&n.id) != NodeStatus::Pending {
+                continue;
+            }
+            if n.depends_on
                 .iter()
-                .find(|n| &n.id == id)
-                .map(|n| n.depends_on.is_empty())
-                .unwrap_or(false)
-        })
-        .collect()
+                .any(|d| state.node_status(d) == NodeStatus::Skipped)
+            {
+                state.set_status(&n.id, NodeStatus::Skipped);
+                observer.on_event(&run_log.node_skip(&n.id, "prerequisite was skipped")?);
+                changed = true;
+            } else if conditional_reachability(nodes, &n.id, state) == Some(false) {
+                state.set_status(&n.id, NodeStatus::Skipped);
+                observer.on_event(&run_log.node_skip(&n.id, "inactive branch path")?);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// Sync the completed set with state — any Done/Skipped/Error/Paused node is "complete"
@@ -385,19 +433,8 @@ async fn run_single_node(
                         });
                     }
                 }
-                if on_error.goto.as_deref() == Some("continue") {
+                if on_error.r#continue {
                     return Ok((node_id, NodeTaskOutcome::ErrorContinue, hook_results));
-                }
-                if let Some(goto_id) = on_error
-                    .goto
-                    .as_deref()
-                    .filter(|&g| g != "abort" && g != "continue")
-                {
-                    return Ok((
-                        node_id,
-                        NodeTaskOutcome::ErrorGoto(goto_id.to_string()),
-                        hook_results,
-                    ));
                 }
                 return Ok((node_id, NodeTaskOutcome::Error(e.to_string()), hook_results));
             }
@@ -778,20 +815,17 @@ pub async fn run_workflow(
         let mut completed: HashSet<String> = HashSet::new();
         let mut in_flight: HashSet<String> = HashSet::new();
         let mut tasks: FuturesUnordered<NodeFuture> = FuturesUnordered::new();
-        let mut goto_hops: HashMap<String, u32> = HashMap::new();
-        const MAX_GOTO_HOPS: u32 = 1000;
 
         // Seed completed from prior (resumed) run
         sync_completed(&mut completed, &state, &wf.nodes);
-
-        // Compute nodes that are exclusively reachable via on_error.goto — these
-        // must not be enqueued at startup; they are only triggered on error.
-        let goto_only = goto_only_nodes(&wf.nodes);
+        propagate_unreachable(&wf.nodes, &mut state, &run_log, observer)?;
+        sync_completed(&mut completed, &state, &wf.nodes);
 
         // Enqueue all initially ready (automated) nodes. Interactive nodes are
         // excluded from `compute_ready_nodes` and handled after the pool drains
         // (see the `tasks.is_empty()` branch below via `handle_open_node`).
-        let initially_ready = compute_ready_nodes(&wf.nodes, &completed, &in_flight, &goto_only);
+        let initially_ready =
+            compute_ready_nodes(&wf.nodes, &completed, &in_flight, &HashSet::new(), &state);
         for idx in initially_ready {
             let node = wf.nodes[idx].clone();
             enqueue_node_task(
@@ -818,8 +852,22 @@ pub async fn run_workflow(
             if tasks.is_empty() {
                 // Automated frontier exhausted. Suspend at the first ready
                 // interactive node, if any; otherwise the workflow is complete.
-                let open = ready_interactive_nodes(&wf.nodes, &completed, &in_flight);
+                let open = ready_interactive_nodes(&wf.nodes, &completed, &in_flight, &state);
                 let Some(&idx) = open.first() else {
+                    propagate_unreachable(&wf.nodes, &mut state, &run_log, observer)?;
+                    sync_completed(&mut completed, &state, &wf.nodes);
+                    let pending: Vec<&str> = wf
+                        .nodes
+                        .iter()
+                        .filter(|n| !is_terminal(&state.node_status(&n.id)))
+                        .map(|n| n.id.as_str())
+                        .collect();
+                    if !pending.is_empty() {
+                        anyhow::bail!(
+                            "workflow frontier drained with nonterminal nodes: {}",
+                            pending.join(", ")
+                        );
+                    }
                     break;
                 };
                 let node = wf.nodes[idx].clone();
@@ -932,9 +980,7 @@ pub async fn run_workflow(
                     // Branch routing: mark non-taken paths as skipped, enqueue taken path
                     if let Some(node::Body::Branch(_)) = node.body.as_ref() {
                         if let Some(routed_to) = &out.routed_to {
-                            propagate_branch_skips(
-                                &node, routed_to, &mut state, &run_log, observer,
-                            )?;
+                            let _ = routed_to;
                             sync_completed(&mut completed, &state, &wf.nodes);
                             // Enqueue the branch target (supports cycles: re-enqueue even if completed)
                             if let Some(target_idx) =
@@ -966,46 +1012,16 @@ pub async fn run_workflow(
                         // No routed_to = terminal branch path, nothing to enqueue
                     }
 
-                    // Unconditional goto (supports cycles: re-enqueue even if completed)
-                    if let Some(goto_id) = &node.goto {
-                        let hops = goto_hops.entry(node_id.clone()).or_insert(0);
-                        *hops += 1;
-                        if *hops > MAX_GOTO_HOPS {
-                            anyhow::bail!(
-                                "goto cycle limit exceeded at node '{}' after {} hops",
-                                node_id,
-                                hops
-                            );
-                        }
-                        if !in_flight.contains(goto_id.as_str()) {
-                            if let Some(target_idx) = wf.nodes.iter().position(|n| &n.id == goto_id)
-                            {
-                                let target = wf.nodes[target_idx].clone();
-                                enqueue_node_task(
-                                    target,
-                                    &wf,
-                                    &workflow_id,
-                                    &session_id,
-                                    &gait_dir,
-                                    &codebase,
-                                    &run_worktree,
-                                    &args_str,
-                                    &mut state,
-                                    &mut in_flight,
-                                    &mut tasks,
-                                    &frame_tx,
-                                    &RunOverrides::default(),
-                                    &run_log,
-                                    observer,
-                                )
-                                .await?;
-                            }
-                        }
-                    }
-
                     // Newly ready nodes (depends_on satisfied)
-                    let new_ready =
-                        compute_ready_nodes(&wf.nodes, &completed, &in_flight, &HashSet::new());
+                    propagate_unreachable(&wf.nodes, &mut state, &run_log, observer)?;
+                    sync_completed(&mut completed, &state, &wf.nodes);
+                    let new_ready = compute_ready_nodes(
+                        &wf.nodes,
+                        &completed,
+                        &in_flight,
+                        &HashSet::new(),
+                        &state,
+                    );
                     for idx in new_ready {
                         let target = wf.nodes[idx].clone();
                         enqueue_node_task(
@@ -1053,10 +1069,21 @@ pub async fn run_workflow(
                 NodeTaskOutcome::ErrorContinue => {
                     state.set_status(&node_id, NodeStatus::Skipped);
                     completed.insert(node_id.clone());
+                    observer.on_event(&run_log.node_skip(
+                        &node_id,
+                        "node failed after retries and on_error.continue was selected",
+                    )?);
 
                     // Check for newly unblocked nodes
-                    let new_ready =
-                        compute_ready_nodes(&wf.nodes, &completed, &in_flight, &HashSet::new());
+                    propagate_unreachable(&wf.nodes, &mut state, &run_log, observer)?;
+                    sync_completed(&mut completed, &state, &wf.nodes);
+                    let new_ready = compute_ready_nodes(
+                        &wf.nodes,
+                        &completed,
+                        &in_flight,
+                        &HashSet::new(),
+                        &state,
+                    );
                     for idx in new_ready {
                         let target = wf.nodes[idx].clone();
                         enqueue_node_task(
@@ -1077,46 +1104,6 @@ pub async fn run_workflow(
                             observer,
                         )
                         .await?;
-                    }
-                }
-
-                NodeTaskOutcome::ErrorGoto(ref goto_id) => {
-                    state.set_status(
-                        &node_id,
-                        NodeStatus::Error(format!("routed to {}", goto_id)),
-                    );
-                    state.failed_node = Some(node_id.clone());
-                    completed.insert(node_id.clone());
-
-                    observer.on_event(&run_log.node_error(
-                        &node_id,
-                        &format!("on_error goto: {}", goto_id),
-                        1,
-                    )?);
-
-                    // Enqueue the error-recovery node
-                    if let Some(target_idx) = wf.nodes.iter().position(|n| &n.id == goto_id) {
-                        if !in_flight.contains(goto_id.as_str()) {
-                            let target = wf.nodes[target_idx].clone();
-                            enqueue_node_task(
-                                target,
-                                &wf,
-                                &workflow_id,
-                                &session_id,
-                                &gait_dir,
-                                &codebase,
-                                &run_worktree,
-                                &args_str,
-                                &mut state,
-                                &mut in_flight,
-                                &mut tasks,
-                                &frame_tx,
-                                &RunOverrides::default(),
-                                &run_log,
-                                observer,
-                            )
-                            .await?;
-                        }
                     }
                 }
             }
@@ -1247,44 +1234,6 @@ async fn execute_node(
     }?;
 
     validate_node_output(node, &output)
-}
-
-fn propagate_branch_skips(
-    branch_node: &Node,
-    routed_to: &str,
-    state: &mut WorkflowState,
-    run_log: &WorkflowRunLog,
-    observer: &mut dyn WorkflowObserver,
-) -> anyhow::Result<()> {
-    let branch_cfg = match branch_node.body.as_ref() {
-        Some(node::Body::Branch(b)) => b,
-        _ => return Ok(()),
-    };
-    let mut inactive = vec![];
-    if let Some(then) = &branch_cfg.then {
-        if then != routed_to {
-            inactive.push(then.clone());
-        }
-    }
-    if let Some(else_) = &branch_cfg.r#else {
-        if else_ != routed_to {
-            inactive.push(else_.clone());
-        }
-    }
-    for target in branch_cfg.cases.values() {
-        if target != routed_to {
-            inactive.push(target.clone());
-        }
-    }
-    for id in &inactive {
-        if !state.is_done(id) && !state.is_skipped(id) {
-            state.set_status(id, NodeStatus::Skipped);
-            observer.on_event(
-                &run_log.node_skip(id, &format!("inactive branch (routed to {})", routed_to))?,
-            );
-        }
-    }
-    Ok(())
 }
 
 fn make_env_vars(
@@ -1421,7 +1370,7 @@ mod tests {
                 delay: 0,
                 backoff: String::new(),
                 context: String::new(),
-                goto: None,
+                r#continue: false,
             }),
             hooks: Some(Hooks {
                 before: Some("true".into()),
@@ -1515,7 +1464,7 @@ mod tests {
     #[test]
     fn node_session_is_reused_on_re_entry_and_resume() {
         use gait_core::proto::gait::workflow::v1::{workflow_event, NodeStart, WorkflowEvent};
-        // Within one run (goto/branch re-entry): second resolve reuses the first.
+        // Within one run, a repeated resolution reuses the first session.
         let mut state = crate::state::reconstruct_state(&[]);
         let n = prompt_node("a", "");
         let first = resolve_node_session(&mut state, &n);
@@ -1551,7 +1500,13 @@ mod tests {
         let nodes = vec![node("a", &[]), node("b", &[]), node("c", &["a"])];
         let completed = HashSet::new();
         let in_flight: HashSet<String> = HashSet::new();
-        let ready = compute_ready_nodes(&nodes, &completed, &in_flight, &HashSet::new());
+        let ready = compute_ready_nodes(
+            &nodes,
+            &completed,
+            &in_flight,
+            &HashSet::new(),
+            &WorkflowState::default(),
+        );
         let ids: HashSet<&str> = ready.iter().map(|&i| nodes[i].id.as_str()).collect();
         assert!(ids.contains("a"));
         assert!(ids.contains("b"));
@@ -1563,7 +1518,13 @@ mod tests {
         let nodes = vec![node("a", &[]), node("b", &[]), node("c", &["a", "b"])];
         let completed: HashSet<String> = ["a".into(), "b".into()].into();
         let in_flight: HashSet<String> = HashSet::new();
-        let ready = compute_ready_nodes(&nodes, &completed, &in_flight, &HashSet::new());
+        let ready = compute_ready_nodes(
+            &nodes,
+            &completed,
+            &in_flight,
+            &HashSet::new(),
+            &WorkflowState::default(),
+        );
         let ids: Vec<&str> = ready.iter().map(|&i| nodes[i].id.as_str()).collect();
         assert!(ids.contains(&"c"));
     }
@@ -1573,7 +1534,13 @@ mod tests {
         let nodes = vec![node("a", &[]), node("b", &[])];
         let completed: HashSet<String> = HashSet::new();
         let in_flight: HashSet<String> = ["a".into()].into();
-        let ready = compute_ready_nodes(&nodes, &completed, &in_flight, &HashSet::new());
+        let ready = compute_ready_nodes(
+            &nodes,
+            &completed,
+            &in_flight,
+            &HashSet::new(),
+            &WorkflowState::default(),
+        );
         let ids: Vec<&str> = ready.iter().map(|&i| nodes[i].id.as_str()).collect();
         assert!(!ids.contains(&"a"));
         assert!(ids.contains(&"b"));
@@ -1612,9 +1579,85 @@ mod tests {
         ];
         let completed: HashSet<String> = ["d".to_string()].into_iter().collect();
         let in_flight = HashSet::new();
-        let got = ready_interactive_nodes(&nodes, &completed, &in_flight);
+        let got =
+            ready_interactive_nodes(&nodes, &completed, &in_flight, &WorkflowState::default());
         // Only "a" (index 0): b blocked, c automated, d completed.
         assert_eq!(got, vec![0]);
+    }
+
+    #[test]
+    fn branch_selection_is_a_conditional_readiness_edge() {
+        let nodes = vec![
+            Node {
+                id: "route".into(),
+                body: Some(node::Body::Branch(
+                    gait_core::proto::gait::workflow::v1::BranchNode {
+                        then: Some("then".into()),
+                        r#else: Some("else".into()),
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+            shell_node("then"),
+            shell_node("else"),
+        ];
+        let mut state = WorkflowState::default();
+        state.set_status("route", NodeStatus::Done);
+        state.node_outputs.insert(
+            "route".into(),
+            NodeOutput {
+                text: "then".into(),
+                exit_code: None,
+                json: None,
+                routed_to: Some("then".into()),
+                session_id: String::new(),
+            },
+        );
+        assert_eq!(conditional_reachability(&nodes, "then", &state), Some(true));
+        assert_eq!(
+            conditional_reachability(&nodes, "else", &state),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn inactive_branch_descendants_are_skipped_transitively() {
+        let nodes = vec![
+            Node {
+                id: "route".into(),
+                body: Some(node::Body::Branch(
+                    gait_core::proto::gait::workflow::v1::BranchNode {
+                        then: Some("then".into()),
+                        r#else: Some("else".into()),
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+            node("then", &["route"]),
+            node("then-child", &["then"]),
+            node("else", &["route"]),
+        ];
+        let mut state = WorkflowState::default();
+        state.set_status("route", NodeStatus::Done);
+        state.node_outputs.insert(
+            "route".into(),
+            NodeOutput {
+                text: "else".into(),
+                exit_code: None,
+                json: None,
+                routed_to: Some("else".into()),
+                session_id: String::new(),
+            },
+        );
+        let dir = tempfile::TempDir::new().unwrap();
+        let log = WorkflowRunLog::create(dir.path(), "skip-test").unwrap();
+        let mut observer = crate::observer::NullObserver;
+        propagate_unreachable(&nodes, &mut state, &log, &mut observer).unwrap();
+        assert_eq!(state.node_status("then"), NodeStatus::Skipped);
+        assert_eq!(state.node_status("then-child"), NodeStatus::Skipped);
+        assert_eq!(state.node_status("else"), NodeStatus::Pending);
     }
 
     #[test]
