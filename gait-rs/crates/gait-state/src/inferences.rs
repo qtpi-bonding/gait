@@ -7,7 +7,7 @@ use std::path::Path;
 #[derive(Debug, Clone, serde::Deserialize)]
 struct InferenceFile {
     model: String,
-    context_window_tokens: u64,
+    compaction_threshold_tokens: u64,
     #[serde(default)]
     llm_params: Option<LlmParamsConfig>,
 }
@@ -15,7 +15,7 @@ struct InferenceFile {
 fn validate(
     name: &str,
     model: &str,
-    context_window_tokens: u64,
+    compaction_threshold_tokens: u64,
     params: &Option<LlmParamsConfig>,
 ) -> anyhow::Result<()> {
     let (provider, id) = model.split_once('/').ok_or_else(|| {
@@ -26,8 +26,8 @@ fn validate(
     if provider.is_empty() || id.is_empty() || id.contains('/') {
         anyhow::bail!("inference '{name}' has invalid model '{model}': expected provider/model-id");
     }
-    if context_window_tokens == 0 {
-        anyhow::bail!("inference '{name}' must declare a non-zero context_window_tokens");
+    if compaction_threshold_tokens == 0 {
+        anyhow::bail!("inference '{name}' must declare a non-zero compaction_threshold_tokens");
     }
     if let Some(p) = params {
         let mismatch = (p.anthropic.is_some() && provider != "anthropic")
@@ -54,11 +54,11 @@ pub fn load_inference(gait_dir: &Path, name: &str) -> anyhow::Result<pb::Inferen
         .map_err(|e| anyhow::anyhow!("no such inference '{name}' ({}): {e}", path.display()))?;
     let f: InferenceFile = serde_yaml::from_str(&text)
         .map_err(|e| anyhow::anyhow!("inference '{name}' is malformed: {e}"))?;
-    validate(name, &f.model, f.context_window_tokens, &f.llm_params)?;
+    validate(name, &f.model, f.compaction_threshold_tokens, &f.llm_params)?;
     Ok(pb::Inference {
         name: name.into(),
         model: f.model,
-        context_window_tokens: f.context_window_tokens,
+        compaction_threshold_tokens: f.compaction_threshold_tokens,
         llm_params: f
             .llm_params
             .as_ref()
@@ -80,13 +80,13 @@ pub fn write_inference(
     gait_dir: &Path,
     name: &str,
     model: &str,
-    context_window_tokens: u64,
+    compaction_threshold_tokens: u64,
 ) -> anyhow::Result<()> {
     if name.is_empty() || name == "default" {
         anyhow::bail!("'{name}' is not a valid inference name (reserved)");
     }
     // Validate the model shape up front (no llm_params to mismatch-check here).
-    validate(name, model, context_window_tokens, &None)?;
+    validate(name, model, compaction_threshold_tokens, &None)?;
     let inf_dir = gait_dir.join("inferences").join(name);
     let inf_file = inf_dir.join("INFERENCE.yaml");
     if inf_file.exists() {
@@ -99,7 +99,7 @@ pub fn write_inference(
     std::fs::create_dir_all(&inf_dir)?;
     std::fs::write(
         &inf_file,
-        format!("model: {model}\ncontext_window_tokens: {context_window_tokens}\n"),
+        format!("model: {model}\ncompaction_threshold_tokens: {compaction_threshold_tokens}\n"),
     )
     .map_err(|e| anyhow::anyhow!("write {}: {e}", inf_file.display()))?;
     Ok(())
@@ -123,7 +123,7 @@ pub fn clear_inference() -> pb::Inference {
     pb::Inference {
         name: String::new(),
         model: String::new(),
-        context_window_tokens: 0,
+        compaction_threshold_tokens: 0,
         llm_params: None,
     }
 }
@@ -154,7 +154,7 @@ mod tests {
             std::fs::read_to_string(dir.path().join("inferences/opencode/INFERENCE.yaml")).unwrap();
         assert_eq!(
             text,
-            "model: opencode/kimi-k2.6\ncontext_window_tokens: 128000\n"
+            "model: opencode/kimi-k2.6\ncompaction_threshold_tokens: 128000\n"
         );
     }
 
@@ -174,7 +174,7 @@ mod tests {
         let text = std::fs::read_to_string(dir.path().join("inferences/p/INFERENCE.yaml")).unwrap();
         assert_eq!(
             text,
-            "model: anthropic/claude-3-5-sonnet\ncontext_window_tokens: 128000\n"
+            "model: anthropic/claude-3-5-sonnet\ncompaction_threshold_tokens: 128000\n"
         );
     }
 

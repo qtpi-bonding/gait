@@ -66,9 +66,9 @@ pub fn add(
     gait_dir: &Path,
     name: &str,
     model: &str,
-    context_window_tokens: u64,
+    compaction_threshold_tokens: u64,
 ) -> Result<InferenceInfo, OpError> {
-    gait_state::inferences::write_inference(gait_dir, name, model, context_window_tokens)?;
+    gait_state::inferences::write_inference(gait_dir, name, model, compaction_threshold_tokens)?;
     Ok(InferenceInfo {
         name: name.to_string(),
         model: model.to_string(),
@@ -86,7 +86,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("inferences/codex")).unwrap();
         std::fs::write(
             dir.path().join("inferences/codex/INFERENCE.yaml"),
-            "model: openai-codex/gpt-test\ncontext_window_tokens: 128000\nllm_params:\n  openai:\n    reasoning_effort: high\n",
+            "model: openai-codex/gpt-test\ncompaction_threshold_tokens: 128000\nllm_params:\n  openai:\n    reasoning_effort: high\n",
         )
         .unwrap();
 

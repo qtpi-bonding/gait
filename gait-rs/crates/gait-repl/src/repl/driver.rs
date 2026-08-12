@@ -508,7 +508,7 @@ impl TurnSource for ReplSource {
                             .write_raw("[gait] /inference add <name> <provider/id> <context-window-tokens>\r\n");
                         continue;
                     }
-                    let Ok(context_window_tokens) = parts[2].parse() else {
+                    let Ok(compaction_threshold_tokens) = parts[2].parse() else {
                         self.shared.borrow_mut().builder.write_raw(
                             "[gait] context-window-tokens must be a positive integer\r\n",
                         );
@@ -518,7 +518,7 @@ impl TurnSource for ReplSource {
                         &self.gait_dir,
                         parts[0],
                         parts[1],
-                        context_window_tokens,
+                        compaction_threshold_tokens,
                     ) {
                         Ok(i) => self.shared.borrow_mut().builder.write_raw(&format!(
                             "  added inference '{}' → model {}\r\n",
@@ -1711,7 +1711,7 @@ mod command_tests {
         std::fs::create_dir_all(d.path().join("inferences/deep")).unwrap();
         std::fs::write(
             d.path().join("inferences/deep/INFERENCE.yaml"),
-            "model: prov/mdl\ncontext_window_tokens: 128000\n",
+            "model: prov/mdl\ncompaction_threshold_tokens: 128000\n",
         )
         .unwrap();
         let (mut src, _s) = source_with(d.path(), &["/inference deep", "/q"]);
@@ -1744,7 +1744,7 @@ mod command_tests {
         let content = std::fs::read_to_string(&inf_file)
             .expect("/inference add must write inferences/<name>/INFERENCE.yaml");
         assert_eq!(
-            content, "model: opencode/kimi-k2.6\ncontext_window_tokens: 128000\n",
+            content, "model: opencode/kimi-k2.6\ncompaction_threshold_tokens: 128000\n",
             "REPL /inference add must produce the same explicit-policy YAML as the CLI op"
         );
     }
@@ -1768,7 +1768,7 @@ mod command_tests {
         let content =
             std::fs::read_to_string(d.path().join("inferences/p/INFERENCE.yaml")).unwrap();
         assert_eq!(
-            content, "model: anthropic/claude-3-5-sonnet\ncontext_window_tokens: 128000\n",
+            content, "model: anthropic/claude-3-5-sonnet\ncompaction_threshold_tokens: 128000\n",
             "second /inference add must NOT clobber the first file"
         );
     }
@@ -1788,7 +1788,7 @@ mod command_tests {
         std::fs::create_dir_all(d.path().join("inferences/deep")).unwrap();
         std::fs::write(
             d.path().join("inferences/deep/INFERENCE.yaml"),
-            "model: prov/mdl\ncontext_window_tokens: 128000\n",
+            "model: prov/mdl\ncompaction_threshold_tokens: 128000\n",
         )
         .unwrap();
         let (mut src, shared) = source_with(d.path(), &["/inference show deep", "/q"]);

@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn threshold_equality_compacts_and_one_token_below_does_not() {
         let policy = ContextPolicy {
-            context_window_tokens: 100,
+            compaction_threshold_tokens: 100,
             compaction_threshold: 0.8,
         };
         assert!(ContextEstimate {

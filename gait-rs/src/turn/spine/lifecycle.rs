@@ -727,7 +727,7 @@ mod tests {
         std::fs::create_dir_all(ws.path().join("inferences/mock")).unwrap();
         std::fs::write(
             ws.path().join("inferences/mock/INFERENCE.yaml"),
-            "model: mock/model\ncontext_window_tokens: 128000\n",
+            "model: mock/model\ncompaction_threshold_tokens: 128000\n",
         )
         .unwrap();
         std::fs::write(ws.path().join("gait.jsonc"), r#"{"inference":"mock"}"#).unwrap();
@@ -753,7 +753,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("inferences/mock")).unwrap();
         std::fs::write(
             dir.path().join("inferences/mock/INFERENCE.yaml"),
-            "model: anthropic/x\ncontext_window_tokens: 128000\n",
+            "model: anthropic/x\ncompaction_threshold_tokens: 128000\n",
         )
         .unwrap();
         std::fs::write(dir.path().join("gait.jsonc"), r#"{"inference":"mock"}"#).unwrap();

@@ -216,7 +216,7 @@ async fn prompt_streams_agent_message_and_ends_turn() {
     std::fs::create_dir_all(gait_dir.join("inferences/mock")).unwrap();
     std::fs::write(
         gait_dir.join("inferences/mock/INFERENCE.yaml"),
-        "model: mock/model\ncontext_window_tokens: 128000\n",
+        "model: mock/model\ncompaction_threshold_tokens: 128000\n",
     )
     .unwrap();
     std::fs::write(gait_dir.join("gait.jsonc"), r#"{ "inference": "mock" }"#).unwrap();
@@ -304,7 +304,7 @@ fn make_workspace(root: &Path, name: &str) -> (std::path::PathBuf, std::path::Pa
     std::fs::create_dir_all(gait_dir.join("inferences/mock")).unwrap();
     std::fs::write(
         gait_dir.join("inferences/mock/INFERENCE.yaml"),
-        "model: mock/model\ncontext_window_tokens: 128000\n",
+        "model: mock/model\ncompaction_threshold_tokens: 128000\n",
     )
     .unwrap();
     std::fs::write(gait_dir.join("gait.jsonc"), r#"{ "inference": "mock" }"#).unwrap();

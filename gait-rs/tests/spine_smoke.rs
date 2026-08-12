@@ -34,7 +34,7 @@ async fn session_update_persists_without_launching_a_brain_turn() {
         name: "deep".into(),
         model: "openai/gpt-test".into(),
         llm_params: None,
-        context_window_tokens: 128_000,
+        compaction_threshold_tokens: 128_000,
     });
     let source = UpdateOnlySource { body: Some(body) };
     let mut sink = gait_core::embed::RecordingSink::default();
@@ -103,7 +103,7 @@ fn fresh_session_update_creates_a_real_idempotent_git_worktree() {
         name: "codex".into(),
         model: "openai-codex/gpt-test".into(),
         llm_params: None,
-        context_window_tokens: 128_000,
+        compaction_threshold_tokens: 128_000,
     });
     gait_core::embed::record_session_update(&repos, tmp.path(), session_id, vec![body]).unwrap();
 

@@ -182,7 +182,7 @@ message Inference {
   string name = 1;
   string model = 2;
   optional LlmParams llm_params = 3;
-  uint64 context_window_tokens = 4;
+  uint64 compaction_threshold_tokens = 4;
 }
 message Mode {                          // active mode from this seq forward; "" name = default/none
   string name        = 1;

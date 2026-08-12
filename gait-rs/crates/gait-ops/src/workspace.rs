@@ -161,7 +161,7 @@ pub(crate) fn scaffold_gait_dir(gait_dir: &Path) -> std::io::Result<()> {
     if !inf_file.exists() {
         std::fs::write(
             &inf_file,
-            "model: minimax/MiniMax-M3\ncontext_window_tokens: 128000\n",
+            "model: minimax/MiniMax-M3\ncompaction_threshold_tokens: 128000\n",
         )?;
     }
 

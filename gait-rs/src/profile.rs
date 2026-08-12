@@ -5,19 +5,19 @@ use std::path::Path;
 /// The one resolved context boundary used by a live turn.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ContextPolicy {
-    pub context_window_tokens: u64,
+    pub compaction_threshold_tokens: u64,
     pub compaction_threshold: f64,
 }
 
 impl ContextPolicy {
     pub const TEST: Self = Self {
-        context_window_tokens: 16_384,
+        compaction_threshold_tokens: 16_384,
         compaction_threshold: 0.8,
     };
 
     pub fn validate(self) -> anyhow::Result<Self> {
-        if self.context_window_tokens == 0 {
-            anyhow::bail!("context window must be non-zero");
+        if self.compaction_threshold_tokens == 0 {
+            anyhow::bail!("compaction threshold must be non-zero");
         }
         if !(0.0 < self.compaction_threshold && self.compaction_threshold < 1.0) {
             anyhow::bail!("compaction_threshold must be strictly between 0 and 1");
@@ -26,7 +26,7 @@ impl ContextPolicy {
     }
 
     pub fn threshold_tokens(self) -> u64 {
-        (self.context_window_tokens as f64 * self.compaction_threshold).floor() as u64
+        (self.compaction_threshold_tokens as f64 * self.compaction_threshold).floor() as u64
     }
 }
 
@@ -119,7 +119,7 @@ pub fn resolve_inference_checked(
             model: name.clone(),
             name,
             llm_params: None,
-            context_window_tokens: ContextPolicy::TEST.context_window_tokens,
+            compaction_threshold_tokens: ContextPolicy::TEST.compaction_threshold_tokens,
         }),
         Err(error) => Err(error),
     }
@@ -267,7 +267,7 @@ impl Profile {
     ) -> Self {
         let model = inference.model.clone();
         let context_policy = ContextPolicy {
-            context_window_tokens: inference.context_window_tokens,
+            compaction_threshold_tokens: inference.compaction_threshold_tokens,
             compaction_threshold: config.compaction_threshold,
         };
 
@@ -700,7 +700,7 @@ mod tests {
                 name: "x".into(),
                 model: "anthropic/x".into(),
                 llm_params: None,
-                context_window_tokens: ContextPolicy::TEST.context_window_tokens,
+                compaction_threshold_tokens: ContextPolicy::TEST.compaction_threshold_tokens,
             })
             .unwrap();
         assert_eq!(profile.model, "anthropic/x");

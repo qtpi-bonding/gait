@@ -229,7 +229,7 @@ mod tests {
         std::fs::create_dir_all(gait_dir.path().join("inferences/codex")).unwrap();
         std::fs::write(
             gait_dir.path().join("inferences/codex/INFERENCE.yaml"),
-            "model: openai-codex/gpt-test\ncontext_window_tokens: 128000\nllm_params:\n  openai:\n    reasoning_effort: high\n",
+            "model: openai-codex/gpt-test\ncompaction_threshold_tokens: 128000\nllm_params:\n  openai:\n    reasoning_effort: high\n",
         )
         .unwrap();
         std::fs::write(

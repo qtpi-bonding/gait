@@ -12,7 +12,7 @@ async fn run_one_off_resolves_named_inference_from_gait_dir() {
     std::fs::create_dir_all(gait_dir.path().join("inferences/test")).unwrap();
     std::fs::write(
         gait_dir.path().join("inferences/test/INFERENCE.yaml"),
-        "model: anthropic/claude-haiku-4-5-20251001\ncontext_window_tokens: 128000\n",
+        "model: anthropic/claude-haiku-4-5-20251001\ncompaction_threshold_tokens: 128000\n",
     )
     .unwrap();
     let r =

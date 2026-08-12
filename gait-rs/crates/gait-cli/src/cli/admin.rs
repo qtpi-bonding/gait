@@ -36,9 +36,9 @@ pub struct InferenceArgs {
     /// Ignored by other actions.
     #[arg(long)]
     pub model: Option<String>,
-    /// Required context window for the `add` action.
+    /// Required compaction threshold for the `add` action.
     #[arg(long)]
-    pub context_window_tokens: Option<u64>,
+    pub compaction_threshold_tokens: Option<u64>,
     #[arg(long)]
     pub session: Option<String>,
 }
@@ -122,11 +122,13 @@ pub fn cmd_inference(args: InferenceArgs) {
                 eprintln!("[gait] usage: gait inference add <name> --model <provider/id>");
                 std::process::exit(2)
             });
-            let context_window_tokens = args.context_window_tokens.unwrap_or_else(|| {
-                eprintln!("[gait] --context-window-tokens is required for inference add");
-                std::process::exit(2)
-            });
-            match gait_ops::inference::add(&args.gait_dir, name, model, context_window_tokens) {
+            let compaction_threshold_tokens =
+                args.compaction_threshold_tokens.unwrap_or_else(|| {
+                    eprintln!("[gait] --context-window-tokens is required for inference add");
+                    std::process::exit(2)
+                });
+            match gait_ops::inference::add(&args.gait_dir, name, model, compaction_threshold_tokens)
+            {
                 Ok(i) => println!("added inference '{}' → model {}", i.name, i.model),
                 Err(e) => {
                     eprintln!("[gait] {e}");
