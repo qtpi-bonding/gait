@@ -362,7 +362,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn relay_archive_output_round_trips_bounded_artifact_result() {
+    async fn relay_archive_output_round_trips_bounded_full_output_result() {
         use crate::turn::nerve;
         use gait_proto::gait::sandbox::v1::{signal, Feedback};
 

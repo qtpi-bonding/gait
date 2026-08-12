@@ -51,6 +51,7 @@ pub(super) async fn apply_curate_filter(
         result_schema: None,
         hooks: vec![],
         llm_params: crate::config::LlmParamsConfig::default(),
+        context_policy: crate::profile::ContextPolicy::TEST,
         // Synthetic (non-agent-file) profile -- curate only ever uses
         // AnnotateTool, never touches skills/mcp/plugins, so this value is
         // behaviorally moot; wildcard for consistency with

@@ -2,6 +2,34 @@ use crate::config::GaitConfig;
 use std::collections::HashSet;
 use std::path::Path;
 
+/// The one resolved context boundary used by a live turn.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ContextPolicy {
+    pub context_window_tokens: u64,
+    pub compaction_threshold: f64,
+}
+
+impl ContextPolicy {
+    pub const TEST: Self = Self {
+        context_window_tokens: 16_384,
+        compaction_threshold: 0.8,
+    };
+
+    pub fn validate(self) -> anyhow::Result<Self> {
+        if self.context_window_tokens == 0 {
+            anyhow::bail!("context window must be non-zero");
+        }
+        if !(0.0 < self.compaction_threshold && self.compaction_threshold < 1.0) {
+            anyhow::bail!("compaction_threshold must be strictly between 0 and 1");
+        }
+        Ok(self)
+    }
+
+    pub fn threshold_tokens(self) -> u64 {
+        (self.context_window_tokens as f64 * self.compaction_threshold).floor() as u64
+    }
+}
+
 /// The declarative description of an agent: 9 inputs the runner consumes,
 /// built from gait_dir `GaitConfig` and (optionally) an agent `.md` file.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -19,6 +47,7 @@ pub struct Profile {
     pub hooks: Vec<crate::config::HookDef>,
     pub wasm_plugins: Vec<crate::config::WasmPluginDef>,
     pub llm_params: crate::config::LlmParamsConfig,
+    pub context_policy: ContextPolicy,
     /// Ephemeral one-off: register only `structured_done` (schema), no hands.
     #[serde(default)]
     pub hands_free: bool,
@@ -47,6 +76,7 @@ pub struct ResolvedProfile {
     pub result_schema: Option<serde_json::Value>,
     pub(crate) hooks: Vec<Box<dyn crate::types::Hook>>,
     pub llm_params: crate::config::LlmParamsConfig,
+    pub context_policy: ContextPolicy,
     /// Phase 3 (scoped registry): threaded through from `Profile`, on into
     /// `SetupData`'s genesis-seed gate and catalog gate. See `crate::registry`.
     pub agent_whitelist: crate::registry::AgentWhitelist,
@@ -89,6 +119,7 @@ pub fn resolve_inference_checked(
             model: name.clone(),
             name,
             llm_params: None,
+            context_window_tokens: ContextPolicy::TEST.context_window_tokens,
         }),
         Err(error) => Err(error),
     }
@@ -235,6 +266,10 @@ impl Profile {
         inference: &crate::proto::gait::log::v1::Inference,
     ) -> Self {
         let model = inference.model.clone();
+        let context_policy = ContextPolicy {
+            context_window_tokens: inference.context_window_tokens,
+            compaction_threshold: config.compaction_threshold,
+        };
 
         let mut instructions = crate::prompt::compose_system_prompt(
             gait_dir,
@@ -321,6 +356,7 @@ impl Profile {
             hooks: config.hooks.clone(),
             wasm_plugins: disk_plugins,
             llm_params,
+            context_policy,
             hands_free: false,
             agent_whitelist,
         }
@@ -356,6 +392,7 @@ impl Profile {
         repos: crate::git::Repos,
         credential: Option<gait_auth::ResolvedCredential>,
     ) -> anyhow::Result<ResolvedProfile> {
+        self.context_policy.validate()?;
         // Provider (no network until .stream()).
         let provider: std::sync::Arc<dyn gait_provider::provider::Provider> = std::sync::Arc::from(
             gait_provider::factory::load_provider_with_credential(&self.model, credential)
@@ -455,6 +492,7 @@ impl Profile {
             result_schema: self.result_schema,
             hooks,
             llm_params: self.llm_params,
+            context_policy: self.context_policy,
             agent_whitelist: self.agent_whitelist,
         })
     }
@@ -496,6 +534,7 @@ impl ResolvedProfile {
             result_schema,
             hooks: vec![],
             llm_params: crate::config::LlmParamsConfig::default(),
+            context_policy: ContextPolicy::TEST,
             // Test helper: no agent-file concept here, and existing tests
             // assume unfiltered visibility -- default to wildcard rather than
             // silently breaking every test that exercises loadables.
@@ -607,6 +646,7 @@ mod tests {
             hooks: vec![],
             wasm_plugins: vec![],
             llm_params: crate::config::LlmParamsConfig::default(),
+            context_policy: ContextPolicy::TEST,
             hands_free: false,
             agent_whitelist: crate::registry::AgentWhitelist::wildcard(),
         };
@@ -651,6 +691,7 @@ mod tests {
             hooks: vec![],
             wasm_plugins: vec![],
             llm_params: Default::default(),
+            context_policy: ContextPolicy::TEST,
             hands_free: false,
             agent_whitelist: Default::default(),
         };
@@ -659,6 +700,7 @@ mod tests {
                 name: "x".into(),
                 model: "anthropic/x".into(),
                 llm_params: None,
+                context_window_tokens: ContextPolicy::TEST.context_window_tokens,
             })
             .unwrap();
         assert_eq!(profile.model, "anthropic/x");
@@ -868,6 +910,7 @@ mod tests {
             hooks: vec![],
             wasm_plugins: vec![],
             llm_params: crate::config::LlmParamsConfig::default(),
+            context_policy: ContextPolicy::TEST,
             hands_free: false,
             agent_whitelist: crate::registry::AgentWhitelist::wildcard(),
         };
@@ -895,6 +938,7 @@ mod tests {
             hooks: vec![],
             wasm_plugins: vec![],
             llm_params: crate::config::LlmParamsConfig::default(),
+            context_policy: ContextPolicy::TEST,
             hands_free: true,
             agent_whitelist: crate::registry::AgentWhitelist::wildcard(),
         };

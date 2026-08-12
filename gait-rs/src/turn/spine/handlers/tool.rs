@@ -113,7 +113,7 @@ fn grant_session_runtime_paths(
             ),
         ));
     }
-    // Every hand may inspect artifacts from earlier calls in this session.
+    // Every hand may inspect complete outputs from earlier calls in this session.
     // Write access is capability-driven and added separately for one spool
     // invocation directory by `grant_output_capture_target`.
     scope.readable.push(outputs.clone());
@@ -253,7 +253,7 @@ pub async fn run_tool_as_spine(
             }
         };
 
-    // Reserve every hand one Gait-owned artifact path for the shared finalizer.
+    // Reserve every hand one Gait-owned full-output path for the shared finalizer.
     // Only a tool declaring `Spool` receives this path or write access to its
     // parent; returned-value tools never see it.
     let output_path =

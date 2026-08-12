@@ -45,6 +45,7 @@ pub fn agent_msg(resolved: &ResolvedProfile) -> pb::Agent {
             llm_params: Some(crate::proto::events::llm_params_to_proto(
                 &resolved.llm_params,
             )),
+            context_window_tokens: resolved.context_policy.context_window_tokens,
         }),
     }
 }

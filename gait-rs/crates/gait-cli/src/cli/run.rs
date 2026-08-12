@@ -427,6 +427,7 @@ mod tests {
                 name: "codex".into(),
                 model: "openai-codex/gpt-test".into(),
                 llm_params: None,
+                context_window_tokens: 128_000,
             });
         let mut source = CliSource {
             session_updates: Some(vec![body]),

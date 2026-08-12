@@ -136,7 +136,7 @@ fn workspace() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
     std::fs::create_dir_all(gait_dir.join("inferences/mock")).unwrap();
     std::fs::write(
         gait_dir.join("inferences/mock/INFERENCE.yaml"),
-        "model: mock/model\n",
+        "model: mock/model\ncontext_window_tokens: 128000\n",
     )
     .unwrap();
     std::fs::write(gait_dir.join("gait.jsonc"), r#"{ "inference": "mock" }"#).unwrap();

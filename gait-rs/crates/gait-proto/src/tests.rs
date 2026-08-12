@@ -191,6 +191,7 @@ fn agent_carries_inference_field() {
                 max_tokens: Some(512),
                 ..Default::default()
             }),
+            context_window_tokens: 128_000,
         }),
         ..Default::default()
     };

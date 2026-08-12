@@ -23,8 +23,8 @@ pub(super) struct ToolExecResult {
     /// UUID of the `ToolResult` event written to the log.
     pub log_event_id: String,
     /// Complete, unfiltered tool output retained outside the prompt/event log.
-    /// Synthetic results have no artifact because no tool output was produced.
-    pub artifact: Option<crate::tools::ToolOutputArtifact>,
+    /// Synthetic results have no full output because no tool output was produced.
+    pub full_output: Option<crate::tools::FullOutput>,
     /// Set when the hand detected a kernel-level permission denial (EACCES /
     /// EPERM) from a sealed `shell` command. The turn loop checks this in
     /// supervised mode and calls `pause_for_unlock`; in auto mode it is ignored
@@ -71,7 +71,7 @@ pub(super) async fn execute_tool_call(
     // set when the hand detects EACCES/EPERM in a `shell` command's output while
     // running under Seatbelt. The turn loop inspects it after execute_tool_call returns.
 
-    let (raw, duration, process, synapse_denied, artifact) = match tools
+    let (raw, duration, process, synapse_denied, full_output) = match tools
         .iter()
         .find(|t| t.name() == tc.tool_name)
     {
@@ -148,23 +148,23 @@ pub(super) async fn execute_tool_call(
             });
             match res {
                 Ok(v) => {
-                    let (v, artifact) = if via_hand && relay.is_some() {
-                        let artifact =
-                            crate::tools::artifact_reference_from_value(&v, gait_dir, session_id)
+                    let (v, full_output) = if via_hand && relay.is_some() {
+                        let full_output =
+                            crate::tools::full_output_ref_from_value(&v, gait_dir, session_id)
                                 .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "relayed tool result missing a valid artifact reference"
-                                )
-                            })?;
-                        (v, Some(artifact))
+                                    anyhow::anyhow!(
+                                        "relayed tool result missing a valid full-output reference"
+                                    )
+                                })?;
+                        (v, Some(full_output))
                     } else if relay.is_none() {
-                        let (v, artifact) = crate::tools::ensure_archived_model_value(
+                        let (v, full_output) = crate::tools::ensure_archived_model_value(
                             v,
                             gait_dir,
                             session_id,
                             &tc.tool_name,
                         )?;
-                        (v, Some(artifact))
+                        (v, Some(full_output))
                     } else {
                         // Control/transcript/MCP tools intentionally execute in
                         // the brain. Send their completed value to the spine so
@@ -175,14 +175,14 @@ pub(super) async fn execute_tool_call(
                         }
                         .archive_output(&tc.tool_name, v)
                         .await?;
-                        let artifact =
-                            crate::tools::artifact_reference_from_value(&v, gait_dir, session_id)
+                        let full_output =
+                            crate::tools::full_output_ref_from_value(&v, gait_dir, session_id)
                                 .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "archived tool result missing a valid artifact reference"
+                                    anyhow::anyhow!(
+                                    "archived tool result missing a valid full-output reference"
                                 )
-                            })?;
-                        (v, Some(artifact))
+                                })?;
+                        (v, Some(full_output))
                     };
                     // Process-tool shape (set by shell today): unwrap to model-facing
                     // text and lift process metadata. The model never sees the JSON
@@ -195,7 +195,7 @@ pub(super) async fn execute_tool_call(
                             duration,
                             Some(pb::ProcessResult { exit_code }),
                             denied,
-                            artifact,
+                            full_output,
                         )
                     } else if v.is_string() {
                         (
@@ -205,22 +205,22 @@ pub(super) async fn execute_tool_call(
                             duration,
                             None,
                             denied,
-                            artifact,
+                            full_output,
                         )
                     } else {
-                        (v.to_string(), duration, None, denied, artifact)
+                        (v.to_string(), duration, None, denied, full_output)
                     }
                 }
                 Err(e) => {
                     let value = serde_json::Value::String(format!("error: {e}"));
-                    let (value, artifact) = if relay.is_none() {
-                        let (value, artifact) = crate::tools::ensure_archived_model_value(
+                    let (value, full_output) = if relay.is_none() {
+                        let (value, full_output) = crate::tools::ensure_archived_model_value(
                             value,
                             gait_dir,
                             session_id,
                             &tc.tool_name,
                         )?;
-                        (value, Some(artifact))
+                        (value, Some(full_output))
                     } else {
                         // Relay failures are transport failures, not tool output.
                         (value, None)
@@ -230,21 +230,21 @@ pub(super) async fn execute_tool_call(
                         duration,
                         None,
                         denied,
-                        artifact,
+                        full_output,
                     )
                 }
             }
         }
         None => {
             let value = serde_json::Value::String(format!("unknown tool: {}", tc.tool_name));
-            let (value, artifact) = if relay.is_none() {
-                let (value, artifact) = crate::tools::ensure_archived_model_value(
+            let (value, full_output) = if relay.is_none() {
+                let (value, full_output) = crate::tools::ensure_archived_model_value(
                     value,
                     gait_dir,
                     session_id,
                     &tc.tool_name,
                 )?;
-                (value, Some(artifact))
+                (value, Some(full_output))
             } else {
                 (value, None)
             };
@@ -253,13 +253,13 @@ pub(super) async fn execute_tool_call(
                 None,
                 None,
                 None,
-                artifact,
+                full_output,
             )
         }
     };
-    let output = match (approval_prefix, artifact.as_ref()) {
-        (Some(prefix), Some(artifact)) => {
-            crate::tools::model_text_for_inline_with_note(&raw, &prefix, artifact)
+    let output = match (approval_prefix, full_output.as_ref()) {
+        (Some(prefix), Some(full_output)) => {
+            crate::tools::model_text_for_inline_with_note(&raw, &prefix, full_output)
         }
         (Some(prefix), None) => format!("{prefix}\n{raw}"),
         (None, _) => raw,
@@ -279,7 +279,7 @@ pub(super) async fn execute_tool_call(
         part: assistant_part,
         result: tool_result,
         log_event_id: tr_event.id,
-        artifact,
+        full_output,
         denied: synapse_denied,
     })
 }
@@ -326,7 +326,7 @@ pub(super) fn error_tool_result(
             result: serde_json::Value::String(output),
         },
         log_event_id: event.id,
-        artifact: None,
+        full_output: None,
         denied: None,
     })
 }
@@ -457,8 +457,8 @@ pub(super) async fn apply_output_filter(
     if filtered == ctx.tool_result {
         return;
     }
-    exec.result.result = serde_json::Value::String(match exec.artifact.as_ref() {
-        Some(artifact) => crate::tools::model_text_for_inline(&filtered, artifact),
+    exec.result.result = serde_json::Value::String(match exec.full_output.as_ref() {
+        Some(full_output) => crate::tools::model_text_for_inline(&filtered, full_output),
         None => filtered,
     });
 
@@ -581,7 +581,7 @@ mod synapse_routing_tests {
         let result = out.result.result.as_str().unwrap();
         assert!(result.starts_with("ok\n\n[full output:"));
         assert_eq!(
-            std::fs::read_to_string(out.artifact.as_ref().unwrap().path.clone()).unwrap(),
+            std::fs::read_to_string(out.full_output.as_ref().unwrap().path.clone()).unwrap(),
             "ok"
         );
 
@@ -629,7 +629,7 @@ mod synapse_routing_tests {
         assert!(model_output.contains("[full output:"));
         assert!(model_output.len() <= crate::tools::MODEL_TOOL_OUTPUT_MAX_BYTES);
         assert_eq!(
-            std::fs::read_to_string(&out.artifact.as_ref().unwrap().path).unwrap(),
+            std::fs::read_to_string(&out.full_output.as_ref().unwrap().path).unwrap(),
             "line\n".repeat(crate::tools::MODEL_TOOL_OUTPUT_MAX_BYTES)
         );
 

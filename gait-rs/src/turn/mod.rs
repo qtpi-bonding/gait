@@ -47,6 +47,7 @@ struct InformArg {
 
 pub(crate) mod agent_event;
 pub(crate) mod brain;
+mod compaction;
 mod completion_poll;
 mod curate;
 mod exec;
@@ -242,6 +243,7 @@ pub async fn run_turn(
         hooks,
         result_schema,
         llm_params,
+        context_policy,
         agent_seed,
         auto,
         max_iter,
@@ -323,6 +325,7 @@ pub async fn run_turn(
         codebase_hash: &codebase_hash,
         codebase_dirty,
         llm_params: &llm_params,
+        context_policy,
         effective_allow: &effective_allow,
         relay: relay.as_ref(),
         model: &model,
@@ -449,7 +452,7 @@ pub async fn run_turn(
         }
 
         // 3. Coalesce for LLM
-        let outgoing = coalesce(outgoing_raw);
+        let mut outgoing = coalesce(outgoing_raw);
 
         // 4. Build the session-state tail message (cache-safe). The status
         // (`<status>`) was previously prepended as a synthetic message at index
@@ -475,6 +478,64 @@ pub async fn run_turn(
             &enabled_state,
             &mode_steer,
         );
+        // This is the final quiescent boundary before the normal provider
+        // request.  A Summary is session-scoped and only changes the
+        // model-facing fold; the immutable event history stays intact.
+        let events_before_request = ingestor.events()?;
+        let observed = compaction::observed_usage_after_latest_summary(&events_before_request);
+        let estimate = compaction::estimate(
+            &outgoing,
+            &system_prompt,
+            &state.tools,
+            &session_state_body,
+            observed,
+        );
+        if estimate.crosses(env.context_policy) {
+            if compaction::has_unmatched_tool_call(&outgoing) {
+                break 'turn finalize::StepOutcome::Fail(anyhow::anyhow!(
+                    compaction::Error::UnsafePendingToolCall
+                ));
+            }
+            let through_seq = events_before_request.last().map(|event| event.seq);
+            let summary = match compaction::summarize(&env, &outgoing).await {
+                Ok(summary) => summary,
+                Err(compaction::Error::Cancelled) => break 'turn finalize::StepOutcome::Cancelled,
+                Err(error) => break 'turn finalize::StepOutcome::Fail(anyhow::anyhow!(error)),
+            };
+            emitter.set_scope(crate::proto::envelope::EventScope::Session);
+            emitter.record(events::summary(
+                summary.summary,
+                pb::CompactionTokenUsage {
+                    input: summary.usage.input_tokens as u64,
+                    output: summary.usage.output_tokens as u64,
+                },
+                through_seq,
+            ))?;
+            emitter.set_scope(crate::proto::envelope::EventScope::Step {
+                run: current_run,
+                turn: current_turn,
+                step: step_index as u32,
+            });
+            let all_events = ingestor.events()?;
+            let mut step_muts = active_mutations(&all_events);
+            apply_cascade(&mut step_muts, &all_events);
+            outgoing = coalesce(run_projection(&ActiveRawMessages, &all_events, &step_muts).base);
+            let rebuilt = compaction::estimate(
+                &outgoing,
+                &system_prompt,
+                &state.tools,
+                &session_state_body,
+                0,
+            );
+            if rebuilt.crosses(env.context_policy) {
+                break 'turn finalize::StepOutcome::Fail(anyhow::anyhow!(
+                    compaction::Error::StillTooLarge {
+                        predicted: rebuilt.predicted_tokens(),
+                        threshold: env.context_policy.threshold_tokens(),
+                    }
+                ));
+            }
+        }
         // `outgoing` is the per-step message list sent to the LLM (rebuilt from
         // the log every step under the log-first design).
         //

@@ -222,7 +222,7 @@ fn write_numbered_frames(gait_dir: &Path, turns: &[Turn]) -> anyhow::Result<()> 
     std::fs::create_dir_all(gait_dir.join("inferences/mock"))?;
     std::fs::write(
         gait_dir.join("inferences/mock/INFERENCE.yaml"),
-        "model: mock/model\n",
+        "model: mock/model\ncontext_window_tokens: 128000\n",
     )?;
     // Slash-command turns (those whose `input` starts with `/`) are
     // short-circuited inside `ReplSource::next()` BEFORE the brain is

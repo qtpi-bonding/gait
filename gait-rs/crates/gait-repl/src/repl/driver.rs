@@ -498,17 +498,28 @@ impl TurnSource for ReplSource {
                     }
                     continue;
                 }
-                // /inference add <name> <provider/id> — author a new INFERENCE.yaml.
+                // /inference add <name> <provider/id> <context-window-tokens>.
                 if let Some(args) = arg.strip_prefix("add ") {
-                    let parts: Vec<&str> = args.splitn(2, char::is_whitespace).collect();
-                    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+                    let parts: Vec<&str> = args.splitn(3, char::is_whitespace).collect();
+                    if parts.len() != 3 || parts.iter().any(|part| part.is_empty()) {
                         self.shared
                             .borrow_mut()
                             .builder
-                            .write_raw("[gait] /inference add <name> <provider/id>\r\n");
+                            .write_raw("[gait] /inference add <name> <provider/id> <context-window-tokens>\r\n");
                         continue;
                     }
-                    match gait_ops::inference::add(&self.gait_dir, parts[0], parts[1]) {
+                    let Ok(context_window_tokens) = parts[2].parse() else {
+                        self.shared.borrow_mut().builder.write_raw(
+                            "[gait] context-window-tokens must be a positive integer\r\n",
+                        );
+                        continue;
+                    };
+                    match gait_ops::inference::add(
+                        &self.gait_dir,
+                        parts[0],
+                        parts[1],
+                        context_window_tokens,
+                    ) {
                         Ok(i) => self.shared.borrow_mut().builder.write_raw(&format!(
                             "  added inference '{}' → model {}\r\n",
                             i.name, i.model
@@ -1700,7 +1711,7 @@ mod command_tests {
         std::fs::create_dir_all(d.path().join("inferences/deep")).unwrap();
         std::fs::write(
             d.path().join("inferences/deep/INFERENCE.yaml"),
-            "model: prov/mdl\n",
+            "model: prov/mdl\ncontext_window_tokens: 128000\n",
         )
         .unwrap();
         let (mut src, _s) = source_with(d.path(), &["/inference deep", "/q"]);
@@ -1717,9 +1728,8 @@ mod command_tests {
         );
     }
 
-    /// `/inference add <name> <provider/id>` must write a fresh
-    /// `inferences/<name>/INFERENCE.yaml` containing only the bare `model:`
-    /// line — same shape `gait inference add` writes from the CLI. Mirrors
+    /// `/inference add <name> <provider/id> <context-window-tokens>` must
+    /// write a fresh explicit inference policy, matching the CLI. Mirrors
     /// the CLI/REPL symmetry contract: both paths route through
     /// `gait_ops::inference::add`, which calls `gait_state::inferences::write_inference`.
     #[tokio::test]
@@ -1727,15 +1737,15 @@ mod command_tests {
         let d = temp_gait_dir();
         let (mut src, _s) = source_with(
             d.path(),
-            &["/inference add opencode opencode/kimi-k2.6", "/q"],
+            &["/inference add opencode opencode/kimi-k2.6 128000", "/q"],
         );
         let _ = src.next().await; // processes /inference add; /q ends
         let inf_file = d.path().join("inferences/opencode/INFERENCE.yaml");
         let content = std::fs::read_to_string(&inf_file)
             .expect("/inference add must write inferences/<name>/INFERENCE.yaml");
         assert_eq!(
-            content, "model: opencode/kimi-k2.6\n",
-            "REPL /inference add must produce the same bare-model YAML as the CLI op"
+            content, "model: opencode/kimi-k2.6\ncontext_window_tokens: 128000\n",
+            "REPL /inference add must produce the same explicit-policy YAML as the CLI op"
         );
     }
 
@@ -1749,8 +1759,8 @@ mod command_tests {
     async fn slash_inference_add_refuses_overwrite() {
         let d = temp_gait_dir();
         let lines = [
-            "/inference add p anthropic/claude-3-5-sonnet",
-            "/inference add p openai/gpt-4o",
+            "/inference add p anthropic/claude-3-5-sonnet 128000",
+            "/inference add p openai/gpt-4o 128000",
             "/q",
         ];
         let (mut src, _s) = source_with(d.path(), &lines);
@@ -1758,7 +1768,7 @@ mod command_tests {
         let content =
             std::fs::read_to_string(d.path().join("inferences/p/INFERENCE.yaml")).unwrap();
         assert_eq!(
-            content, "model: anthropic/claude-3-5-sonnet\n",
+            content, "model: anthropic/claude-3-5-sonnet\ncontext_window_tokens: 128000\n",
             "second /inference add must NOT clobber the first file"
         );
     }
@@ -1778,7 +1788,7 @@ mod command_tests {
         std::fs::create_dir_all(d.path().join("inferences/deep")).unwrap();
         std::fs::write(
             d.path().join("inferences/deep/INFERENCE.yaml"),
-            "model: prov/mdl\n",
+            "model: prov/mdl\ncontext_window_tokens: 128000\n",
         )
         .unwrap();
         let (mut src, shared) = source_with(d.path(), &["/inference show deep", "/q"]);

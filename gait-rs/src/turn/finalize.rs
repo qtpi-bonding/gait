@@ -456,6 +456,7 @@ mod tests {
             codebase_hash: &fx.codebase_hash,
             codebase_dirty: false,
             llm_params: &fx.llm_params,
+            context_policy: crate::profile::ContextPolicy::TEST,
             effective_allow: &fx.effective_allow,
             relay: None,
             model: &fx.model,

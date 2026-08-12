@@ -270,7 +270,7 @@ mod exec_replace_tests {
         // Real Recorder writing to the same log file.
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let rec = Recorder::new(log_path.clone(), tx);
-        let artifact = crate::tools::archive_text(
+        let full_output = crate::tools::archive_text(
             dir.path().join("raw-tool-output.txt"),
             "line1\nline2\nline3",
         )
@@ -288,7 +288,7 @@ mod exec_replace_tests {
                 result: serde_json::Value::String("line1\nline2\nline3".into()),
             },
             log_event_id: raw_event.id.clone(),
-            artifact: Some(artifact),
+            full_output: Some(full_output),
             denied: None,
         };
         let tc = ToolCall {
@@ -322,7 +322,7 @@ mod exec_replace_tests {
                 if let Some(payload::Kind::ToolResult(tr)) = &rep.kind {
                     assert!(
                         tr.output.starts_with("line2\n\n[full output:"),
-                        "Replace payload must carry the filtered output and raw artifact path: {}",
+                        "Replace payload must carry the filtered output and raw full-output path: {}",
                         tr.output
                     );
                     assert_eq!(tr.call_id, "cid-1");

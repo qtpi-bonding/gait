@@ -289,9 +289,8 @@ fn permissions_excluded_from_context_reconstruction() {
 fn compaction_breakpoint_discards_earlier_events() {
     // This test exercises the `ActiveMessages` Summary-checkpoint behaviour:
     // a Summary event resets the message context to the synthesized summary
-    // baseline. `transcript()` / `messages_from_path()` use `ActiveRawMessages`
-    // (no Summary checkpoint — see Task 4), so we drive `ActiveMessages`
-    // directly to assert the projection's own semantics.
+    // baseline. `ActiveRawMessages` has the same positional checkpoint
+    // semantics; this asserts the normalized projection directly.
     use std::collections::HashMap;
     let dir = TempDir::new().unwrap();
     let usage = pb::TurnTokenUsage {
@@ -310,7 +309,7 @@ fn compaction_breakpoint_discards_earlier_events() {
             events::user_text("old".into()),
             events::assistant_text("old response".into()),
             durable_turn(usage, vec![]),
-            events::summary("summary of old stuff".into(), 1, cu),
+            events::summary("summary of old stuff".into(), cu, Some(1)),
             events::user_text("new".into()),
         ],
     );
@@ -379,6 +378,7 @@ fn active_agent_checkpoint_returns_last_agent() {
                 name: "a".into(),
                 model: "model-a".into(),
                 llm_params: None,
+                context_window_tokens: 128_000,
             }),
             tools: vec![],
             mcp_servers: vec![],
@@ -400,6 +400,7 @@ fn active_agent_checkpoint_returns_last_agent() {
                 name: "b".into(),
                 model: "model-b".into(),
                 llm_params: None,
+                context_window_tokens: 128_000,
             }),
             tools: vec![],
             mcp_servers: vec![],
@@ -471,6 +472,7 @@ fn agent_state_from_pb_agent_maps_enabled_sets() {
             name: "x".into(),
             model: "x/y".into(),
             llm_params: None,
+            context_window_tokens: 128_000,
         }),
         instructions: "sys".into(),
         tools: vec!["read".into(), "edit".into()],
@@ -584,6 +586,7 @@ fn active_agent_checkpoint_resets_baseline() {
                 name: "m2".into(),
                 model: "m2".into(),
                 llm_params: None,
+                context_window_tokens: 128_000,
             }),
             instructions: "sys2".into(),
             tools: vec![],
@@ -639,6 +642,7 @@ fn active_agent_projection_checkpoint_is_last_write_wins() {
                 name: "m1".into(),
                 model: "m1".into(),
                 llm_params: None,
+                context_window_tokens: 128_000,
             }),
             ..Default::default()
         })),
@@ -647,6 +651,7 @@ fn active_agent_projection_checkpoint_is_last_write_wins() {
                 name: "m2".into(),
                 model: "m2".into(),
                 llm_params: None,
+                context_window_tokens: 128_000,
             }),
             ..Default::default()
         })),
@@ -666,6 +671,7 @@ fn fold_returns_all_three_projections() {
                     name: "gpt".into(),
                     model: "gpt-fold".into(),
                     llm_params: None,
+                    context_window_tokens: 128_000,
                 }),
                 tools: vec![],
                 mcp_servers: vec![],
@@ -771,7 +777,7 @@ fn active_messages_resets_on_compaction() {
     };
     let evs = mint_events(vec![
         events::user_text("before".into()),
-        events::summary("the summary".into(), 1, cu),
+        events::summary("the summary".into(), cu, Some(1)),
         events::user_text("after".into()),
     ]);
     let msgs = run_projection(&ActiveMessages, &evs, &HashMap::new()).msgs;
@@ -797,9 +803,9 @@ fn active_messages_two_compactions_second_wins() {
     };
     let evs = mint_events(vec![
         events::user_text("before-first".into()),
-        events::summary("first summary".into(), 1, cu),
+        events::summary("first summary".into(), cu.clone(), Some(1)),
         events::user_text("between".into()),
-        events::summary("second summary".into(), 1, cu),
+        events::summary("second summary".into(), cu, Some(2)),
         events::user_text("after-second".into()),
     ]);
     let msgs = run_projection(&ActiveMessages, &evs, &HashMap::new()).msgs;
@@ -818,6 +824,30 @@ fn active_messages_two_compactions_second_wins() {
     );
     assert!(matches!(&msgs[1],
         Message::User { content: MessageContent::Text(t), .. } if t == "after-second"));
+}
+
+#[test]
+fn active_raw_messages_checkpoint_keeps_only_latest_summary_and_later_pairs() {
+    use std::collections::HashMap;
+    let usage = pb::CompactionTokenUsage {
+        input: 1,
+        output: 1,
+    };
+    let evs = mint_events(vec![
+        events::user_text("old".into()),
+        events::tool_call("old-call".into(), "read".into(), &serde_json::Value::Null),
+        events::tool_result("old-call".into(), "old result".into(), None, None),
+        events::summary("checkpoint".into(), usage, Some(3)),
+        events::tool_call("new-call".into(), "read".into(), &serde_json::Value::Null),
+        events::tool_result("new-call".into(), "new result".into(), None, None),
+    ]);
+    let raw = run_projection(&ActiveRawMessages, &evs, &HashMap::new());
+    assert_eq!(raw.base.len(), 3, "summary plus the later complete pair");
+    assert!(
+        matches!(&raw.base[0], Message::User { content: MessageContent::Text(text), .. } if text.contains("checkpoint"))
+    );
+    assert!(matches!(&raw.base[1], Message::Assistant { .. }));
+    assert!(matches!(&raw.base[2], Message::ToolResult { .. }));
 }
 
 #[test]
@@ -1131,7 +1161,7 @@ fn loadables_projection_full_session_and_mutation_aware() {
     };
     let with_comp = mint_events(vec![
         events::toggle("mcp", "slack", true),
-        events::summary("summary".into(), 1, cu),
+        events::summary("summary".into(), cu, Some(1)),
     ]);
     let p = ActiveAgent {
         seed: AgentState::default(),
@@ -1358,6 +1388,7 @@ fn rebaseline_agent_overlays_skills_and_mcp_from_state() {
             name: "m1".into(),
             model: "m1".into(),
             llm_params: None,
+            context_window_tokens: 128_000,
         }),
         instructions: "sys".into(),
         tools: vec!["read".into()],

@@ -2,16 +2,16 @@ use std::io::{Read as _, Seek as _, Write as _};
 use std::path::{Path, PathBuf};
 
 /// The single model-facing budget for every textual tool result. Complete
-/// output is always retained in a session artifact; this only bounds what is
+/// output is always retained in a session full-output file; this only bounds what is
 /// copied into the event log and the next provider request.
 pub(crate) const MODEL_TOOL_OUTPUT_MAX_BYTES: usize = 40 * 1024;
 
-const ARTIFACT_MARKER_PREFIX: &str = "[full output: ";
-const ARTIFACT_ID_PREFIX_CHARS: usize = 8;
+const FULL_OUTPUT_MARKER_PREFIX: &str = "[full output: ";
+const FULL_OUTPUT_ID_PREFIX_CHARS: usize = 8;
 const SECTION_SEPARATOR_BYTES: usize = "\n\n".len();
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ToolOutputArtifact {
+pub(crate) struct FullOutput {
     pub path: PathBuf,
     pub bytes: u64,
 }
@@ -24,7 +24,7 @@ pub(crate) fn prepare_tool_output_path(
     let call_id = uuid::Uuid::new_v4().simple().to_string();
     let dir = crate::session::live::outputs_dir(gait_dir, session_id)
         .join("tools")
-        .join(&call_id[..ARTIFACT_ID_PREFIX_CHARS]);
+        .join(&call_id[..FULL_OUTPUT_ID_PREFIX_CHARS]);
     std::fs::create_dir_all(&dir)?;
     let safe_name: String = tool_name
         .chars()
@@ -44,25 +44,25 @@ pub(crate) fn prepare_tool_output_path(
     Ok(dir.join(format!("{safe_name}.txt")))
 }
 
-pub(crate) fn artifact_for_existing(path: PathBuf) -> std::io::Result<ToolOutputArtifact> {
+pub(crate) fn full_output_for_existing(path: PathBuf) -> std::io::Result<FullOutput> {
     let bytes = std::fs::metadata(&path)?.len();
-    Ok(ToolOutputArtifact { path, bytes })
+    Ok(FullOutput { path, bytes })
 }
 
-pub(crate) fn archive_text(path: PathBuf, text: &str) -> std::io::Result<ToolOutputArtifact> {
+pub(crate) fn archive_text(path: PathBuf, text: &str) -> std::io::Result<FullOutput> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let mut file = std::fs::File::create(&path)?;
     file.write_all(text.as_bytes())?;
     file.flush()?;
-    artifact_for_existing(path)
+    full_output_for_existing(path)
 }
 
 pub(crate) fn archive_value(
     path: PathBuf,
     value: &serde_json::Value,
-) -> std::io::Result<ToolOutputArtifact> {
+) -> std::io::Result<FullOutput> {
     match value {
         serde_json::Value::String(text) => archive_text(path, text),
         value => archive_text(path, &canonical_json(value).to_string()),
@@ -91,20 +91,20 @@ fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
     }
 }
 
-pub(crate) fn artifact_marker(artifact: &ToolOutputArtifact) -> String {
+pub(crate) fn full_output_marker(full_output: &FullOutput) -> String {
     format!(
         "[full output: {} ({} bytes)]",
-        artifact.path.display(),
-        artifact.bytes
+        full_output.path.display(),
+        full_output.bytes
     )
 }
 
-fn artifact_reference_from_text(
+pub(crate) fn full_output_ref_from_text(
     text: &str,
     gait_dir: &Path,
     session_id: &str,
-) -> Option<ToolOutputArtifact> {
-    let start = text.rfind(ARTIFACT_MARKER_PREFIX)? + ARTIFACT_MARKER_PREFIX.len();
+) -> Option<FullOutput> {
+    let start = text.rfind(FULL_OUTPUT_MARKER_PREFIX)? + FULL_OUTPUT_MARKER_PREFIX.len();
     let remainder = &text[start..];
     let (path, suffix) = remainder.rsplit_once(" (")?;
     let bytes = suffix.strip_suffix(" bytes)]")?.parse::<u64>().ok()?;
@@ -121,58 +121,58 @@ fn artifact_reference_from_text(
     {
         return None;
     }
-    Some(ToolOutputArtifact { path, bytes })
+    Some(FullOutput { path, bytes })
 }
 
-/// Recover an artifact emitted by this module from model-facing text. Only an
+/// Recover a full-output file emitted by this module from model-facing text. Only an
 /// existing file inside the current session's output root is trusted.
-pub(crate) fn artifact_from_text(
+pub(crate) fn full_output_from_text(
     text: &str,
     gait_dir: &Path,
     session_id: &str,
-) -> Option<ToolOutputArtifact> {
-    let artifact = artifact_reference_from_text(text, gait_dir, session_id)?;
-    if std::fs::metadata(&artifact.path).ok()?.len() != artifact.bytes {
+) -> Option<FullOutput> {
+    let full_output = full_output_ref_from_text(text, gait_dir, session_id)?;
+    if std::fs::metadata(&full_output.path).ok()?.len() != full_output.bytes {
         return None;
     }
-    Some(artifact)
+    Some(full_output)
 }
 
-pub(crate) fn artifact_from_value(
+pub(crate) fn full_output_from_value(
     value: &serde_json::Value,
     gait_dir: &Path,
     session_id: &str,
-) -> Option<ToolOutputArtifact> {
+) -> Option<FullOutput> {
     let text = value
         .get("output")
         .and_then(serde_json::Value::as_str)
         .or_else(|| value.as_str())?;
-    artifact_from_text(text, gait_dir, session_id)
+    full_output_from_text(text, gait_dir, session_id)
 }
 
-/// Recover the hand-finalized artifact reference without touching the
+/// Recover the hand-finalized full-output reference without touching the
 /// filesystem. The sealed brain uses this only after a RelaySynapse response;
 /// the hand generated the last marker after archiving the complete output.
-pub(crate) fn artifact_reference_from_value(
+pub(crate) fn full_output_ref_from_value(
     value: &serde_json::Value,
     gait_dir: &Path,
     session_id: &str,
-) -> Option<ToolOutputArtifact> {
+) -> Option<FullOutput> {
     let text = value
         .get("output")
         .and_then(serde_json::Value::as_str)
         .or_else(|| value.as_str())?;
-    artifact_reference_from_text(text, gait_dir, session_id)
+    full_output_ref_from_text(text, gait_dir, session_id)
 }
 
-fn read_artifact_preview(artifact: &ToolOutputArtifact, budget: usize) -> std::io::Result<String> {
-    if artifact.bytes as usize <= budget {
-        return Ok(String::from_utf8_lossy(&std::fs::read(&artifact.path)?).into_owned());
+fn read_full_output_preview(full_output: &FullOutput, budget: usize) -> std::io::Result<String> {
+    if full_output.bytes as usize <= budget {
+        return Ok(String::from_utf8_lossy(&std::fs::read(&full_output.path)?).into_owned());
     }
 
     let mut retained_budget = budget;
     loop {
-        let omitted = artifact.bytes.saturating_sub(retained_budget as u64);
+        let omitted = full_output.bytes.saturating_sub(retained_budget as u64);
         let marker_len = format!("\n... {omitted} bytes omitted ...\n").len();
         let adjusted = budget.saturating_sub(marker_len);
         if adjusted == retained_budget {
@@ -182,11 +182,11 @@ fn read_artifact_preview(artifact: &ToolOutputArtifact, budget: usize) -> std::i
     }
     let head_budget = retained_budget / 2;
     let tail_budget = retained_budget.saturating_sub(head_budget);
-    let omitted = artifact
+    let omitted = full_output
         .bytes
         .saturating_sub((head_budget + tail_budget) as u64);
     let marker = format!("\n... {omitted} bytes omitted ...\n");
-    let mut file = std::fs::File::open(&artifact.path)?;
+    let mut file = std::fs::File::open(&full_output.path)?;
     let mut head = vec![0; head_budget];
     file.read_exact(&mut head)?;
     file.seek(std::io::SeekFrom::End(-(tail_budget as i64)))?;
@@ -224,8 +224,8 @@ fn text_head_tail(text: &str, budget: usize) -> String {
     format!("{}{}{}", &text[..head_end], marker, &text[tail_start..])
 }
 
-pub(crate) fn model_text_for_inline(text: &str, artifact: &ToolOutputArtifact) -> String {
-    let footer = artifact_marker(artifact);
+pub(crate) fn model_text_for_inline(text: &str, full_output: &FullOutput) -> String {
+    let footer = full_output_marker(full_output);
     let available =
         MODEL_TOOL_OUTPUT_MAX_BYTES.saturating_sub(footer.len() + SECTION_SEPARATOR_BYTES);
     if text.len() <= available {
@@ -244,26 +244,26 @@ pub(crate) fn model_text_for_inline(text: &str, artifact: &ToolOutputArtifact) -
 pub(crate) fn model_text_for_inline_with_note(
     text: &str,
     note: &str,
-    artifact: &ToolOutputArtifact,
+    full_output: &FullOutput,
 ) -> String {
-    let footer = artifact_marker(artifact);
+    let footer = full_output_marker(full_output);
     let suffix = format!("\n\n{footer}");
     let body = text.strip_suffix(&suffix).unwrap_or(text);
-    model_text_for_inline(&format!("{note}\n{body}"), artifact)
+    model_text_for_inline(&format!("{note}\n{body}"), full_output)
 }
 
-pub(crate) fn model_text_for_artifact(artifact: &ToolOutputArtifact) -> std::io::Result<String> {
-    model_text_for_artifact_with_note(artifact, None)
+pub(crate) fn model_text_for_full_output(full_output: &FullOutput) -> std::io::Result<String> {
+    model_text_for_full_output_with_note(full_output, None)
 }
 
-pub(crate) fn model_text_for_artifact_with_note(
-    artifact: &ToolOutputArtifact,
+pub(crate) fn model_text_for_full_output_with_note(
+    full_output: &FullOutput,
     note: Option<&str>,
 ) -> std::io::Result<String> {
-    let footer = artifact_marker(artifact);
+    let footer = full_output_marker(full_output);
     let warning = format!(
         "[Tool output truncated by Gait: original was {} bytes; showing head and tail]",
-        artifact.bytes
+        full_output.bytes
     );
     let note = note.unwrap_or("");
     let note_prefix = if note.is_empty() {
@@ -273,44 +273,44 @@ pub(crate) fn model_text_for_artifact_with_note(
     };
     let small_budget = MODEL_TOOL_OUTPUT_MAX_BYTES
         .saturating_sub(note_prefix.len() + footer.len() + SECTION_SEPARATOR_BYTES);
-    if artifact.bytes as usize <= small_budget {
-        let body = read_artifact_preview(artifact, small_budget)?;
+    if full_output.bytes as usize <= small_budget {
+        let body = read_full_output_preview(full_output, small_budget)?;
         return Ok(format!("{note_prefix}{body}\n\n{footer}"));
     }
 
     let preview_budget = MODEL_TOOL_OUTPUT_MAX_BYTES.saturating_sub(
         note_prefix.len() + warning.len() + footer.len() + SECTION_SEPARATOR_BYTES * 2,
     );
-    let body = read_artifact_preview(artifact, preview_budget)?;
+    let body = read_full_output_preview(full_output, preview_budget)?;
     Ok(format!("{note_prefix}{warning}\n\n{body}\n\n{footer}"))
 }
 
-pub(crate) fn model_value_for_artifact(
+pub(crate) fn model_value_for_full_output(
     mut original: serde_json::Value,
-    artifact: &ToolOutputArtifact,
+    full_output: &FullOutput,
 ) -> std::io::Result<serde_json::Value> {
     if let serde_json::Value::Object(object) = &mut original {
         if let Some(note) = object.get("output").and_then(serde_json::Value::as_str) {
-            let preview = model_text_for_artifact_with_note(artifact, Some(note))?;
+            let preview = model_text_for_full_output_with_note(full_output, Some(note))?;
             object.insert("output".into(), serde_json::Value::String(preview));
             return Ok(original);
         }
     }
-    let preview = model_text_for_artifact(artifact)?;
+    let preview = model_text_for_full_output(full_output)?;
     Ok(serde_json::Value::String(preview))
 }
 
 pub(crate) fn archive_and_prepare_model_value(
     original: serde_json::Value,
     path: PathBuf,
-) -> std::io::Result<(serde_json::Value, ToolOutputArtifact)> {
-    let artifact = if path.exists() {
-        artifact_for_existing(path)?
+) -> std::io::Result<(serde_json::Value, FullOutput)> {
+    let full_output = if path.exists() {
+        full_output_for_existing(path)?
     } else {
         archive_value(path, &original)?
     };
-    let model = model_value_for_artifact(original, &artifact)?;
-    Ok((model, artifact))
+    let model = model_value_for_full_output(original, &full_output)?;
+    Ok((model, full_output))
 }
 
 pub(crate) fn ensure_archived_model_value(
@@ -318,9 +318,9 @@ pub(crate) fn ensure_archived_model_value(
     gait_dir: &Path,
     session_id: &str,
     tool_name: &str,
-) -> std::io::Result<(serde_json::Value, ToolOutputArtifact)> {
-    if let Some(artifact) = artifact_from_value(&original, gait_dir, session_id) {
-        return Ok((original, artifact));
+) -> std::io::Result<(serde_json::Value, FullOutput)> {
+    if let Some(full_output) = full_output_from_value(&original, gait_dir, session_id) {
+        return Ok((original, full_output));
     }
     let path = prepare_tool_output_path(gait_dir, session_id, tool_name)?;
     archive_and_prepare_model_value(original, path)
@@ -331,7 +331,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn structured_artifacts_have_canonical_key_order() {
+    fn structured_full_outputs_have_canonical_key_order() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("structured.json");
         let value = serde_json::json!({
@@ -348,26 +348,26 @@ mod tests {
     }
 
     #[test]
-    fn artifact_keeps_full_text_while_model_gets_head_tail_and_path() {
+    fn full_output_keeps_full_text_while_model_gets_head_tail_and_path() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("large.txt");
         let raw = format!(
             "HEAD\n{}\nTAIL",
             "middle".repeat(MODEL_TOOL_OUTPUT_MAX_BYTES)
         );
-        let artifact = archive_text(path, &raw).unwrap();
-        let model = model_text_for_artifact(&artifact).unwrap();
+        let full_output = archive_text(path, &raw).unwrap();
+        let model = model_text_for_full_output(&full_output).unwrap();
 
-        assert_eq!(std::fs::read_to_string(&artifact.path).unwrap(), raw);
+        assert_eq!(std::fs::read_to_string(&full_output.path).unwrap(), raw);
         assert!(model.contains("HEAD"));
         assert!(model.contains("TAIL"));
         assert!(model.contains("bytes omitted"));
-        assert!(model.contains(&artifact.path.display().to_string()));
+        assert!(model.contains(&full_output.path.display().to_string()));
         assert!(model.len() <= MODEL_TOOL_OUTPUT_MAX_BYTES);
     }
 
     #[test]
-    fn sealed_consumer_can_validate_hand_reference_without_reading_artifact() {
+    fn sealed_consumer_can_validate_hand_reference_without_reading_full_output() {
         let dir = tempfile::tempdir().unwrap();
         let path = crate::session::live::outputs_dir(dir.path(), "s-test")
             .join("tools/a1b2c3d4/shell.txt");
@@ -376,26 +376,26 @@ mod tests {
             path.display()
         ));
 
-        let reference = artifact_reference_from_value(&value, dir.path(), "s-test").unwrap();
-        assert_eq!(reference, ToolOutputArtifact { path, bytes: 42 });
-        assert!(artifact_from_value(&value, dir.path(), "s-test").is_none());
+        let reference = full_output_ref_from_value(&value, dir.path(), "s-test").unwrap();
+        assert_eq!(reference, FullOutput { path, bytes: 42 });
+        assert!(full_output_from_value(&value, dir.path(), "s-test").is_none());
     }
 
     #[test]
-    fn artifact_reference_rejects_lexical_escape() {
+    fn full_output_reference_rejects_lexical_escape() {
         let dir = tempfile::tempdir().unwrap();
         let root = crate::session::live::outputs_dir(dir.path(), "s-test");
         let escaped = root.join("../s-other/outputs/tools/a1b2c3d4/shell.txt");
         let value =
             serde_json::Value::String(format!("[full output: {} (42 bytes)]", escaped.display()));
 
-        assert!(artifact_reference_from_value(&value, dir.path(), "s-test").is_none());
+        assert!(full_output_ref_from_value(&value, dir.path(), "s-test").is_none());
     }
 
     #[test]
-    fn approval_note_rebounds_inline_preview_without_reading_artifact() {
+    fn approval_note_rebounds_inline_preview_without_reading_full_output() {
         let dir = tempfile::tempdir().unwrap();
-        let artifact = ToolOutputArtifact {
+        let full_output = FullOutput {
             path: crate::session::live::outputs_dir(dir.path(), "s-test")
                 .join("tools/a1b2c3d4/shell.txt"),
             bytes: (MODEL_TOOL_OUTPUT_MAX_BYTES * 2) as u64,
@@ -403,13 +403,13 @@ mod tests {
         let input = format!(
             "{}\n\n{}",
             "x".repeat(MODEL_TOOL_OUTPUT_MAX_BYTES),
-            artifact_marker(&artifact)
+            full_output_marker(&full_output)
         );
 
-        let model = model_text_for_inline_with_note(&input, "[User approved.]", &artifact);
+        let model = model_text_for_inline_with_note(&input, "[User approved.]", &full_output);
         assert!(model.starts_with("[Tool output transformed and truncated by Gait:"));
         assert!(model.contains("[User approved.]"));
-        assert!(model.ends_with(&artifact_marker(&artifact)));
+        assert!(model.ends_with(&full_output_marker(&full_output)));
         assert!(model.len() <= MODEL_TOOL_OUTPUT_MAX_BYTES);
     }
 }

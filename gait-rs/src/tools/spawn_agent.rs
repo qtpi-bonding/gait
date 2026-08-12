@@ -235,13 +235,13 @@ mod tests {
         std::fs::create_dir_all(ws.path().join("inferences/parent")).unwrap();
         std::fs::write(
             ws.path().join("inferences/parent/INFERENCE.yaml"),
-            "model: minimax/MiniMax-M3\n",
+            "model: minimax/MiniMax-M3\ncontext_window_tokens: 128000\n",
         )
         .unwrap();
         std::fs::create_dir_all(ws.path().join("inferences/child")).unwrap();
         std::fs::write(
             ws.path().join("inferences/child/INFERENCE.yaml"),
-            "model: anthropic/child\n",
+            "model: anthropic/child\ncontext_window_tokens: 128000\n",
         )
         .unwrap();
         std::fs::write(
@@ -319,7 +319,7 @@ mod tests {
         std::fs::create_dir_all(ws.path().join("inferences/parent")).unwrap();
         std::fs::write(
             ws.path().join("inferences/parent/INFERENCE.yaml"),
-            "model: minimax/MiniMax-M3\n",
+            "model: minimax/MiniMax-M3\ncontext_window_tokens: 128000\n",
         )
         .unwrap();
         std::fs::write(
@@ -354,7 +354,7 @@ mod tests {
         std::fs::create_dir_all(ws.path().join("inferences/parent")).unwrap();
         std::fs::write(
             ws.path().join("inferences/parent/INFERENCE.yaml"),
-            "model: minimax/MiniMax-M3\n",
+            "model: minimax/MiniMax-M3\ncontext_window_tokens: 128000\n",
         )
         .unwrap();
         std::fs::write(
@@ -408,13 +408,13 @@ mod tests {
         std::fs::create_dir_all(ws.path().join("inferences/parent")).unwrap();
         std::fs::write(
             ws.path().join("inferences/parent/INFERENCE.yaml"),
-            "model: minimax/MiniMax-M3\n",
+            "model: minimax/MiniMax-M3\ncontext_window_tokens: 128000\n",
         )
         .unwrap();
         std::fs::create_dir_all(ws.path().join("inferences/child")).unwrap();
         std::fs::write(
             ws.path().join("inferences/child/INFERENCE.yaml"),
-            "model: anthropic/child\n",
+            "model: anthropic/child\ncontext_window_tokens: 128000\n",
         )
         .unwrap();
         std::fs::write(

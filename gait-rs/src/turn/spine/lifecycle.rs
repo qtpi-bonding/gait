@@ -283,10 +283,11 @@ fn append_orphan_tool_result(
 ///   0. sink.end_turn().
 ///   1. drain in-flight tasks (grace, then abort) — must precede reap so a
 ///      task abort never races the cascade kill.
-///   2. synthesize orphan ToolResults for pending call_ids.
-///   3. drop child_stdin (EOF to the brain's Nerve reader).
-///   4. reap: group.kill_all(), drop Child WITHOUT awaiting (macOS kqueue
+///   2. drop child_stdin (EOF to the brain's Nerve reader).
+///   3. reap: group.kill_all(), drop Child WITHOUT awaiting (macOS kqueue
 ///      workaround — awaiting child.wait() hangs; see reap_brain).
+///   4. synthesize orphan ToolResults for pending call_ids, collecting every
+///      repair error before returning one.
 ///   5. git.checkpoint(codebase, ..) (best-effort).
 ///   6. git.commit(&msg) (message keyed on run_result kind).
 ///   7. sink.result(&result).
@@ -324,14 +325,6 @@ pub(crate) async fn teardown(
     // OS-process-group kill.
     drain_inflight(inflight, std::time::Duration::from_secs(3)).await;
 
-    // Synthesize a ToolResult for each orphaned ToolCall (brain was killed before
-    // it could emit results). Tools that completed already have real results in the
-    // log; only call_ids still in pending_calls are orphans. Must run before
-    // commit_session so the repair lands in the same commit as the transcript.
-    for (call_id, pending) in pending_calls.drain() {
-        append_orphan_tool_result(log, started.run.index, started.turn_index, call_id, pending)?;
-    }
-
     // Drop the brain's stdin writer to signal EOF — the brain's Nerve reader
     // task is blocking on read_signal from stdin and will exit on EOF, which
     // lets the brain's tokio runtime shut down and the process exit.
@@ -341,6 +334,23 @@ pub(crate) async fn teardown(
     // Reaps via kill_all() + Child drop — never tokio's child.wait(), which is
     // fatal on macOS (see `reap_brain`).
     reap_brain(group, child).await;
+
+    // Synthesize a ToolResult for each orphaned ToolCall (brain was killed before
+    // it could emit results). Tools that completed already have real results in the
+    // log; only call_ids still in pending_calls are orphans. Reap first: a failed
+    // log append must never let the brain subprocess outlive its turn. Attempt all
+    // repairs so one bad append cannot abandon the remaining call IDs.
+    let mut repair_errors = Vec::new();
+    for (call_id, pending) in pending_calls.drain() {
+        if let Err(error) =
+            append_orphan_tool_result(log, started.run.index, started.turn_index, call_id, pending)
+        {
+            repair_errors.push(error);
+        }
+    }
+    if !repair_errors.is_empty() {
+        anyhow::bail!("orphan repair failed: {repair_errors:?}");
+    }
 
     let draft = finalized_turn.unwrap_or_else(|| crate::proto::gait::sandbox::v1::FinalizedTurn {
         outcome: crate::proto::gait::sandbox::v1::FinalizedTurnOutcome::Failed as i32,
@@ -717,7 +727,7 @@ mod tests {
         std::fs::create_dir_all(ws.path().join("inferences/mock")).unwrap();
         std::fs::write(
             ws.path().join("inferences/mock/INFERENCE.yaml"),
-            "model: mock/model\n",
+            "model: mock/model\ncontext_window_tokens: 128000\n",
         )
         .unwrap();
         std::fs::write(ws.path().join("gait.jsonc"), r#"{"inference":"mock"}"#).unwrap();
@@ -743,7 +753,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("inferences/mock")).unwrap();
         std::fs::write(
             dir.path().join("inferences/mock/INFERENCE.yaml"),
-            "model: anthropic/x\n",
+            "model: anthropic/x\ncontext_window_tokens: 128000\n",
         )
         .unwrap();
         std::fs::write(dir.path().join("gait.jsonc"), r#"{"inference":"mock"}"#).unwrap();

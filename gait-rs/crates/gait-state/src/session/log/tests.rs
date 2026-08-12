@@ -71,7 +71,7 @@ fn last_compaction_index_finds_last() {
     };
     let events = vec![
         mint(events::user_text("x".into())),
-        mint(events::summary("s1".into(), 1, cu)),
+        mint(events::summary("s1".into(), cu, Some(1))),
         mint(events::user_text("y".into())),
     ];
     assert_eq!(last_compaction_index(&events), Some(1));

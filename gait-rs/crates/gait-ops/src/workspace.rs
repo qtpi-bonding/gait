@@ -159,7 +159,10 @@ pub(crate) fn scaffold_gait_dir(gait_dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(&inf_dir)?;
     let inf_file = inf_dir.join("INFERENCE.yaml");
     if !inf_file.exists() {
-        std::fs::write(&inf_file, "model: minimax/MiniMax-M3\n")?;
+        std::fs::write(
+            &inf_file,
+            "model: minimax/MiniMax-M3\ncontext_window_tokens: 128000\n",
+        )?;
     }
 
     // .gitignore — merge required entries, no duplicates

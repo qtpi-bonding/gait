@@ -412,6 +412,8 @@ pub fn cmd_stats(args: StatsArgs) {
                 println!("  output       {}", u.output);
                 println!("  cache read   {}", u.cache_read);
                 println!("  cache write  {}", u.cache_write);
+                println!("  compaction input  {}", u.compaction_input);
+                println!("  compaction output {}", u.compaction_output);
                 println!("  total tokens {}", u.total);
             }
         }

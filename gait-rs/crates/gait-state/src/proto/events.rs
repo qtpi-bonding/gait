@@ -459,17 +459,16 @@ fn hook_phase(s: &str) -> i32 {
     p as i32
 }
 
-/// `Summary` — through_seq unset (no seq in legacy data).
+/// `Summary` — a session-scoped, positional model-context checkpoint.
 pub fn summary(
     summary: String,
-    turns_covered: u32,
     usage: pb::CompactionTokenUsage,
+    through_seq: Option<u64>,
 ) -> pb::event::Body {
     wire::body(pb::payload::Kind::Summary(pb::Summary {
         summary,
-        turns_covered,
         usage: Some(usage),
-        through_seq: None,
+        through_seq,
     }))
 }
 

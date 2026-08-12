@@ -120,7 +120,7 @@ pub trait Projection {
     /// baseline state it establishes — the fold resets to it (positionally,
     /// where the event sits in the stream; `through_seq` is NOT consulted).
     /// Default: not a checkpoint for any projection.
-    fn checkpoint(&self, _kind: &payload::Kind) -> Option<Self::State> {
+    fn checkpoint(&self, _event: &Event, _kind: &payload::Kind) -> Option<Self::State> {
         None
     }
     /// Fold one event's effective payload kind into the state.
@@ -139,7 +139,7 @@ pub fn run_projection<P: Projection>(
     let mut state = p.seed();
 
     for (ev, kind) in effective_kinds(all_events, mutations) {
-        match p.checkpoint(kind) {
+        match p.checkpoint(ev, kind) {
             // A checkpoint resets the fold baseline positionally (C1: where the
 
             // event sits in the stream; `through_seq` is never consulted).
@@ -301,7 +301,7 @@ impl Projection for ActiveAgent {
     fn seed(&self) -> AgentState {
         self.seed.clone()
     }
-    fn checkpoint(&self, kind: &payload::Kind) -> Option<AgentState> {
+    fn checkpoint(&self, _event: &Event, kind: &payload::Kind) -> Option<AgentState> {
         if let payload::Kind::Agent(a) = kind {
             Some(AgentState::from(a))
         } else {
@@ -439,6 +439,17 @@ enum MsgPhase {
 pub struct RawMessagesState {
     pub base: Vec<Message>,
 }
+impl RawMessagesState {
+    fn with_summary(summary: &str, id: &str) -> Self {
+        Self {
+            base: vec![Message::User {
+                content: MessageContent::Text(format!("[Session history summary: {summary}]")),
+                id: id.to_string(),
+                attribution: None,
+            }],
+        }
+    }
+}
 /// Accumulator for the `ActiveMessages` projection.
 pub struct MessagesState {
     msgs: Vec<Message>,
@@ -448,11 +459,11 @@ pub struct MessagesState {
 impl MessagesState {
     /// The post-compaction baseline: a context restarted from the synthesized
     /// summary user message. Reproduces the historical clear()-then-push reset.
-    fn with_summary(summary: &str) -> Self {
+    fn with_summary(summary: &str, id: &str) -> Self {
         MessagesState {
             msgs: vec![Message::User {
                 content: MessageContent::Text(format!("[Session history summary: {}]", summary)),
-                id: uuid::Uuid::new_v4().to_string(),
+                id: id.to_string(),
                 attribution: None,
             }],
             deferred: vec![],
@@ -694,9 +705,9 @@ impl Projection for ActiveMessages {
     /// `Summary` is the message dimension's checkpoint: reset the context to a
     /// baseline restarted from the synthesized summary (C2 — a fold-from-payload,
     /// not empty). Reset is positional (C1): `through_seq` is never read.
-    fn checkpoint(&self, kind: &payload::Kind) -> Option<Self::State> {
+    fn checkpoint(&self, event: &Event, kind: &payload::Kind) -> Option<Self::State> {
         if let payload::Kind::Summary(c) = kind {
-            Some(MessagesState::with_summary(&c.summary))
+            Some(MessagesState::with_summary(&c.summary, &event.id))
         } else {
             None
         }
@@ -757,10 +768,8 @@ impl Projection for ActiveMessages {
 /// [`coalesce`] function after the fold). `Inject` events land in `base` (Design
 /// A: a hook's injection is permanent in the transcript; the next fold yields
 /// the injected message to the LLM). `ContextStatus` is metadata-only and
-/// ignored. Unlike `ActiveMessages`, there is NO `Summary` checkpoint reset —
-/// the transcript preserves all events; compaction's effect on the LLM is the
-/// synthesized summary user message itself (the `Summary` event folds via
-/// `active_messages_into_log` in task 5), not a fold reset. The downstream
+/// ignored. `Summary` is a positional checkpoint: it preserves the immutable
+/// log while restarting only this model-facing projection. The downstream
 /// `coalesce()` merges consecutive `ToolCall` assistant messages and consecutive
 /// `ToolResult` messages before they hit the provider.
 pub struct ActiveRawMessages;
@@ -769,6 +778,14 @@ impl Projection for ActiveRawMessages {
 
     fn seed(&self) -> Self::State {
         RawMessagesState { base: Vec::new() }
+    }
+
+    fn checkpoint(&self, event: &Event, kind: &payload::Kind) -> Option<Self::State> {
+        if let payload::Kind::Summary(summary) = kind {
+            Some(RawMessagesState::with_summary(&summary.summary, &event.id))
+        } else {
+            None
+        }
     }
 
     fn apply(&self, st: &mut Self::State, ev: &Event, kind: &payload::Kind) {

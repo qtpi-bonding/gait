@@ -55,6 +55,7 @@ pub(crate) struct SetupData {
     pub hooks: Vec<Box<dyn Hook>>,
     pub result_schema: Option<serde_json::Value>,
     pub llm_params: crate::config::LlmParamsConfig,
+    pub context_policy: crate::profile::ContextPolicy,
     pub agent_seed: AgentState,
     pub auto: bool,
     pub max_iter: Option<usize>,
@@ -114,6 +115,7 @@ pub(crate) fn init(
     let hooks = caps.hooks;
     let result_schema = caps.result_schema;
     let llm_params = caps.llm_params.clone();
+    let context_policy = caps.context_policy;
     let agent_whitelist = caps.agent_whitelist;
 
     // Build the agent-dimension seed (M3): config-derived genesis for ActiveAgent.
@@ -299,6 +301,7 @@ pub(crate) fn init(
         hooks,
         result_schema,
         llm_params,
+        context_policy,
         agent_seed,
         auto,
         max_iter,

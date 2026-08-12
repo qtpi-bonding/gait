@@ -119,17 +119,18 @@ pub struct StatsOutcome {
     pub output: u64,
     pub cache_read: u64,
     pub cache_write: u64,
+    pub compaction_input: u64,
+    pub compaction_output: u64,
     pub total: u64,
 }
 
 impl StatsOutcome {
-    /// The `--json` shape: a single compact object (no `total` field, matching
-    /// the pre-existing CLI output byte-for-byte). Single source of truth for
-    /// the `stats --json` contract.
+    /// The `--json` shape distinguishes harness compaction from normal agent
+    /// work while retaining one total for cost accounting.
     pub fn to_json(&self) -> String {
         format!(
-            "{{\"input\":{},\"output\":{},\"cache_read\":{},\"cache_write\":{}}}",
-            self.input, self.output, self.cache_read, self.cache_write
+            "{{\"input\":{},\"output\":{},\"cache_read\":{},\"cache_write\":{},\"compaction_input\":{},\"compaction_output\":{}}}",
+            self.input, self.output, self.cache_read, self.cache_write, self.compaction_input, self.compaction_output
         )
     }
 }
@@ -141,12 +142,32 @@ pub fn stats(gait_dir: &Path, session_id: &str) -> Result<StatsOutcome, OpError>
     let tx_path = gait_state::session::live::log_path(gait_dir, session_id);
     let events = read_events(&tx_path).map_err(anyhow::Error::from)?;
     let u = total_usage(&events);
-    let total = u.input + u.output + u.cache_read + u.cache_write;
+    let (compaction_input, compaction_output) = events.iter().fold((0u64, 0u64), |total, event| {
+        let Some(gait_state::proto::gait::log::v1::event::Body::Payload(payload)) = &event.body
+        else {
+            return total;
+        };
+        let Some(gait_state::proto::gait::log::v1::payload::Kind::Summary(summary)) = &payload.kind
+        else {
+            return total;
+        };
+        let Some(usage) = &summary.usage else {
+            return total;
+        };
+        (
+            total.0.saturating_add(usage.input),
+            total.1.saturating_add(usage.output),
+        )
+    });
+    let total =
+        u.input + u.output + u.cache_read + u.cache_write + compaction_input + compaction_output;
     Ok(StatsOutcome {
         input: u.input,
         output: u.output,
         cache_read: u.cache_read,
         cache_write: u.cache_write,
+        compaction_input,
+        compaction_output,
         total,
     })
 }
@@ -883,11 +904,13 @@ mod tests {
             output: 20,
             cache_read: 3,
             cache_write: 4,
+            compaction_input: 0,
+            compaction_output: 0,
             total: 37,
         };
         assert_eq!(
             out.to_json(),
-            "{\"input\":10,\"output\":20,\"cache_read\":3,\"cache_write\":4}"
+            "{\"input\":10,\"output\":20,\"cache_read\":3,\"cache_write\":4,\"compaction_input\":0,\"compaction_output\":0}"
         );
     }
 

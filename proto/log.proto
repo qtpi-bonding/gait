@@ -182,6 +182,7 @@ message Inference {
   string name = 1;
   string model = 2;
   optional LlmParams llm_params = 3;
+  uint64 context_window_tokens = 4;
 }
 message Mode {                          // active mode from this seq forward; "" name = default/none
   string name        = 1;
@@ -393,7 +394,8 @@ message RunResult {
 
 message Summary {
   string summary        = 1;
-  uint32 turns_covered  = 2;
+  reserved 2;
+  reserved "turns_covered";
   CompactionTokenUsage usage = 3;
   optional uint64 through_seq = 4;      // seq boundary it compacts through (the fold coordinate); unset = none
 }

@@ -13,7 +13,7 @@ use super::{error_feedback, feedback_result};
 
 /// Finalize a successful tool result while preserving all Feedback sidebands.
 /// `preallocated_path` is supplied for a hand invocation; `None` allocates a
-/// fresh session-scoped artifact for an in-process result.
+/// fresh session-scoped full output for an in-process result.
 pub(in crate::turn::spine) fn finalize_feedback(
     mut feedback: Feedback,
     gait_dir: &std::path::Path,
@@ -33,7 +33,7 @@ pub(in crate::turn::spine) fn finalize_feedback(
         }
     };
     match finalized {
-        Ok((model_value, _artifact)) => {
+        Ok((model_value, _full_output)) => {
             feedback.result = feedback_result(model_value).result;
             feedback
         }
@@ -42,7 +42,7 @@ pub(in crate::turn::spine) fn finalize_feedback(
 }
 
 /// Adapt an in-process brain result to the same finalizer used for hand
-/// results. The spine allocates the artifact because no hand path exists.
+/// results. The spine allocates the full output because no hand path exists.
 pub(in crate::turn::spine) fn archive_output_feedback(
     request: ArchiveOutput,
     gait_dir: &std::path::Path,
@@ -80,9 +80,9 @@ mod tests {
         ));
         assert!(model.contains("Tool output truncated by Gait"));
         assert!(model.len() <= crate::tools::MODEL_TOOL_OUTPUT_MAX_BYTES);
-        let artifact = crate::tools::artifact_from_text(&model, gait_dir.path(), "s-archive")
+        let full_output = crate::tools::full_output_from_text(&model, gait_dir.path(), "s-archive")
             .expect("spine should return a valid full-output reference");
-        assert_eq!(std::fs::read_to_string(artifact.path).unwrap(), raw);
+        assert_eq!(std::fs::read_to_string(full_output.path).unwrap(), raw);
     }
 
     #[test]
@@ -136,11 +136,11 @@ mod tests {
         let finalized =
             finalize_feedback(feedback, gait_dir.path(), "s-parent", "spawn_agent", None);
         let model: serde_json::Value = serde_json::to_value(finalized.result.unwrap()).unwrap();
-        let artifact =
-            crate::tools::artifact_reference_from_value(&model, gait_dir.path(), "s-parent")
-                .expect("special spine-routed output must return a valid artifact reference");
+        let full_output =
+            crate::tools::full_output_ref_from_value(&model, gait_dir.path(), "s-parent")
+                .expect("special spine-routed output must return a valid full-output reference");
         let archived: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(artifact.path).unwrap()).unwrap();
+            serde_json::from_str(&std::fs::read_to_string(full_output.path).unwrap()).unwrap();
         assert_eq!(archived, original);
     }
 }

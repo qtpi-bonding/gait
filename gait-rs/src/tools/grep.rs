@@ -295,7 +295,7 @@ impl Tool for GrepTool {
             return Ok(Value::String("No files found".into()));
         }
 
-        crate::tools::artifact_for_existing(output_path.clone())
+        crate::tools::full_output_for_existing(output_path.clone())
             .map_err(|error| crate::tools::ToolError::Internal(error.into()))?;
         Ok(Value::String(format!(
             "[grep output captured at {}]",
@@ -399,9 +399,9 @@ mod tests {
         let text = result.as_str().unwrap();
         assert!(text.contains("Tool output truncated by Gait"));
         assert!(text.len() <= crate::tools::MODEL_TOOL_OUTPUT_MAX_BYTES);
-        let artifact = crate::tools::artifact_from_text(text, dir.path(), "test")
-            .expect("model preview should expose the complete output artifact");
-        let full = std::fs::read_to_string(artifact.path).unwrap();
+        let full_output = crate::tools::full_output_from_text(text, dir.path(), "test")
+            .expect("model preview should expose the complete output file");
+        let full = std::fs::read_to_string(full_output.path).unwrap();
         assert_eq!(full.lines().count(), match_count);
         assert!(full.contains("line 4999"));
     }
