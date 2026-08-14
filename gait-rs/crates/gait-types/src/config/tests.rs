@@ -499,6 +499,7 @@ fn llm_params_merged_with_agent_wins() {
         }),
         openai: None,
         gemini: None,
+        local: None,
     };
     let agent_params = LlmParamsConfig {
         max_tokens: Some(2048),
@@ -507,6 +508,7 @@ fn llm_params_merged_with_agent_wins() {
         anthropic: None, // agent doesn't set → config's anthropic survives
         openai: None,
         gemini: None,
+        local: None,
     };
     let merged = config_params.merged_with(agent_params);
     assert_eq!(merged.max_tokens, Some(2048)); // agent wins

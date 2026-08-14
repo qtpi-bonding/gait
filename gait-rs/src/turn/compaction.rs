@@ -8,7 +8,7 @@ use futures_util::StreamExt;
 
 use crate::profile::ContextPolicy;
 use crate::types::{AssistantContent, AssistantPart, Message, Usage};
-use gait_provider::provider::StreamChunk;
+use gait_provider::provider::{RequestKind, StreamChunk};
 
 /// Conservative replacement for a provider tokenizer.  Kept here so it can
 /// be replaced in one place when a provider-neutral tokenizer becomes viable.
@@ -238,7 +238,14 @@ pub async fn summarize(
     );
     let stream = env
         .provider
-        .stream(env.system_prompt, &request, no_tools, &params, None)
+        .stream_with_kind(
+            env.system_prompt,
+            &request,
+            no_tools,
+            &params,
+            None,
+            RequestKind::Compaction,
+        )
         .await
         .map_err(|error| Error::Provider(anyhow::anyhow!(error)))?;
     futures_util::pin_mut!(stream);

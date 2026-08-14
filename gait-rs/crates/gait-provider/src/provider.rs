@@ -27,6 +27,15 @@ pub enum StreamChunk {
 
 pub type ChunkStream = Pin<Box<dyn Stream<Item = Result<StreamChunk, ProviderError>> + Send>>;
 
+/// Semantic purpose of a provider request. Providers may need this context
+/// because a backend can accept different parameters for ordinary generation
+/// and for a compaction checkpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestKind {
+    Turn,
+    Compaction,
+}
+
 /// A tool call's arguments are *always* a JSON object in both the Anthropic and
 /// OpenAI wire formats. Coerce anything else (string, number, null, array) to an
 /// empty object so it can never poison message history. See [`parse_tool_args`].
@@ -137,6 +146,22 @@ pub trait Provider: Send + Sync {
         params: &gait_types::config::LlmParamsConfig,
         tail_context: Option<&str>,
     ) -> Result<ChunkStream, ProviderError>;
+
+    /// Stream a request with semantic purpose. Existing providers retain the
+    /// ordinary stream behavior by default; providers with request-specific
+    /// wire constraints can override this method.
+    async fn stream_with_kind(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[Box<dyn Tool>],
+        params: &gait_types::config::LlmParamsConfig,
+        tail_context: Option<&str>,
+        _kind: RequestKind,
+    ) -> Result<ChunkStream, ProviderError> {
+        self.stream(system, messages, tools, params, tail_context)
+            .await
+    }
 
     fn model_id(&self) -> &str;
 }

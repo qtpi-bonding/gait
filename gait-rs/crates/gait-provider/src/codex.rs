@@ -6,7 +6,7 @@
 //! `codex-rs/model-provider/src/bearer_auth_provider.rs`. See
 //! `THIRD_PARTY_NOTICES.md` for the complete attribution.
 
-use crate::provider::{ChunkStream, Provider, ProviderError, StreamChunk};
+use crate::provider::{ChunkStream, Provider, ProviderError, RequestKind, StreamChunk};
 use futures_util::StreamExt;
 use gait_auth::codex::{credential_details, CODEX_PROVIDER_ID};
 use gait_auth::{ResolvedCredential, SubscriptionCredential};
@@ -56,6 +56,7 @@ impl CodexResponsesProvider {
         messages: &[Message],
         tools: &[Box<dyn Tool>],
         params: &gait_types::config::LlmParamsConfig,
+        kind: RequestKind,
     ) -> Value {
         let mut input = Vec::new();
         for message in messages {
@@ -111,8 +112,14 @@ impl CodexResponsesProvider {
         if !functions.is_empty() {
             body["tools"] = Value::Array(functions);
         }
-        if let Some(max_tokens) = params.max_tokens {
-            body["max_output_tokens"] = Value::from(max_tokens);
+        // The ChatGPT subscription backend currently rejects
+        // `max_output_tokens` for Spark compaction requests. Ordinary turns
+        // retain the existing mapping; compaction's semantic request kind
+        // lets this adapter omit the unsupported wire parameter.
+        if kind == RequestKind::Turn {
+            if let Some(max_tokens) = params.max_tokens {
+                body["max_output_tokens"] = Value::from(max_tokens);
+            }
         }
         body
     }
@@ -141,6 +148,26 @@ impl Provider for CodexResponsesProvider {
         params: &gait_types::config::LlmParamsConfig,
         tail_context: Option<&str>,
     ) -> Result<ChunkStream, ProviderError> {
+        self.stream_with_kind(
+            system,
+            messages,
+            tools,
+            params,
+            tail_context,
+            RequestKind::Turn,
+        )
+        .await
+    }
+
+    async fn stream_with_kind(
+        &self,
+        system: &str,
+        messages: &[Message],
+        tools: &[Box<dyn Tool>],
+        params: &gait_types::config::LlmParamsConfig,
+        tail_context: Option<&str>,
+        kind: RequestKind,
+    ) -> Result<ChunkStream, ProviderError> {
         let mut effective_messages = messages.to_vec();
         if let Some(tail) = tail_context {
             effective_messages.push(Message::User {
@@ -149,7 +176,7 @@ impl Provider for CodexResponsesProvider {
                 attribution: None,
             });
         }
-        let body = self.request_body(system, &effective_messages, tools, params);
+        let body = self.request_body(system, &effective_messages, tools, params, kind);
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             reqwest::header::AUTHORIZATION,
@@ -300,6 +327,27 @@ mod tests {
             crate::transport::SseTransport::new(Default::default()).expect("transport"),
         );
         assert!(matches!(result, Err(error) if error.contains("different provider")));
+    }
+
+    #[test]
+    fn compaction_omits_unsupported_output_token_limit() {
+        let provider = CodexResponsesProvider::new(
+            test_credential("access-test"),
+            "gpt-5.3-codex-spark".into(),
+            None,
+            crate::transport::SseTransport::new(Default::default()).expect("transport"),
+        )
+        .expect("provider");
+        let params = gait_types::config::LlmParamsConfig {
+            max_tokens: Some(7936),
+            ..Default::default()
+        };
+
+        let turn = provider.request_body("", &[], &[], &params, RequestKind::Turn);
+        assert_eq!(turn.get("max_output_tokens"), Some(&json!(7936)));
+
+        let compaction = provider.request_body("", &[], &[], &params, RequestKind::Compaction);
+        assert!(compaction.get("max_output_tokens").is_none());
     }
 
     #[test]
