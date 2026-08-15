@@ -123,26 +123,44 @@ pub fn append(path: &Path, body: event::Body) -> anyhow::Result<Event> {
     write_to_transcript(path, body, EventScope::Session)
 }
 
-/// Like [`append`], but stamps `provenance` onto the minted event before
-/// it's written to disk. Provenance is set BEFORE the durable append (never
-/// after — the append is one-shot) so the on-disk line already carries the
-/// sender/thread metadata; a subsequent in-memory patch would silently leave
-/// the disk out of sync.
+/// Like [`append`], but signs and stamps `provenance` onto the minted event
+/// before it's written to disk. Provenance is set BEFORE the durable append
+/// (never after — the append is one-shot) so the on-disk line already
+/// carries the sender/thread metadata; a subsequent in-memory patch would
+/// silently leave the disk out of sync.
+///
+/// `sign` is called with the event's freshly-stamped `content_hash` bytes
+/// (i.e. `content_hash.as_bytes()`, the hex string's UTF-8 bytes) AFTER
+/// `mint()` runs — that's the whole reason this takes signing material
+/// (`from`/`scheme`/`sign`) instead of a pre-built `Provenance`: the caller
+/// cannot know `content_hash` before `mint()` executes.
+///
+/// Takes signing as a closure, not a `Signer` trait object: `gait-proto`
+/// stays free of any `gait-*` dependency (`gait-identity` depends on
+/// `gait-proto`, so the reverse would cycle).
 ///
 /// Used by the few call sites that cross a party boundary (subagent task
-/// injection, generalized `notify_parent` delivery); the existing
-/// [`append`]/[`write_to_transcript`] signatures are intentionally left
-/// untouched so their ~49 existing callers don't need to thread a
-/// `Provenance` they don't have.
+/// injection, generalized `notify_parent` delivery).
 pub fn append_with_provenance(
     path: &Path,
     body: event::Body,
-    provenance: crate::gait::log::v1::Provenance,
+    from: Vec<u8>,
+    scheme: i32,
+    sign: impl FnOnce(&[u8]) -> Vec<u8>,
+    to: Vec<String>,
+    context: String,
     scope: EventScope,
 ) -> anyhow::Result<Event> {
     let prev = last_event(path)?;
     let mut ev = mint(body, prev.as_ref(), scope);
-    ev.provenance = Some(provenance);
+    let signature = sign(ev.content_hash.as_bytes());
+    ev.provenance = Some(crate::gait::log::v1::Provenance {
+        from,
+        to,
+        context,
+        signature,
+        scheme,
+    });
     write_event(path, ev)
 }
 
@@ -320,20 +338,25 @@ mod tests {
                 },
             )),
         });
-        let provenance = crate::gait::log::v1::Provenance {
-            from: b"agent:s1234abcd".to_vec(),
-            to: vec![],
-            context: String::new(),
-            signature: vec![],
-        };
+        let from = b"pretend-pubkey".to_vec();
         let ev = append_with_provenance(
             &path,
             body,
-            provenance.clone(),
+            from.clone(),
+            crate::gait::log::v1::KeyScheme::Ed25519 as i32,
+            |msg| msg.to_vec(),
+            vec![],
+            String::new(),
             EventScope::Turn { run: 1, turn: 2 },
         )
         .unwrap();
-        assert_eq!(ev.provenance, Some(provenance));
+        let provenance = ev.provenance.as_ref().expect("provenance set");
+        assert_eq!(provenance.from, from);
+        assert_eq!(
+            provenance.scheme,
+            crate::gait::log::v1::KeyScheme::Ed25519 as i32
+        );
+        assert_eq!(provenance.signature, ev.content_hash.as_bytes());
         assert_eq!((ev.run, ev.turn, ev.step), (Some(1), Some(2), None));
     }
 
