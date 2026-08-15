@@ -61,8 +61,8 @@ impl CodexResponsesProvider {
         let mut input = Vec::new();
         for message in messages {
             match message {
-                Message::User { content, .. } => input.push(json!({
-                    "role": "user", "content": [{"type": "input_text", "text": text_content(content)}]
+                Message::User { content, attribution, .. } => input.push(json!({
+                    "role": "user", "content": [{"type": "input_text", "text": format!("{}{}", gait_types::types::render_attribution_prefix(attribution), text_content(content))}]
                 })),
                 Message::Assistant { content, .. } => {
                     let mut content_items = Vec::new();
@@ -464,5 +464,47 @@ mod tests {
         }
         assert!(saw_done, "successful retry should deliver Done");
         assert_eq!(requests.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn prepends_attribution_marker_to_user_message() {
+        let provider = CodexResponsesProvider::new(
+            test_credential("access-test"),
+            "gpt-5.3-codex".into(),
+            None,
+            crate::transport::SseTransport::new(Default::default()).expect("transport"),
+        )
+        .expect("provider");
+
+        let message = Message::User {
+            content: MessageContent::Text("hello world".to_string()),
+            id: "msg-123".to_string(),
+            attribution: Some(gait_types::types::Attribution {
+                sender: "ed25519:deadbeef".into(),
+                verified: false,
+            }),
+        };
+
+        let body =
+            provider.request_body("", &[message], &[], &Default::default(), RequestKind::Turn);
+        let input_content = body
+            .get("input")
+            .and_then(|input| input.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|msg| msg.get("content"))
+            .and_then(|content| content.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|item| item.get("text"))
+            .and_then(|text| text.as_str())
+            .expect("text field in message");
+
+        assert!(
+            input_content.starts_with("[from: ed25519:deadbeef, unverified]\n"),
+            "attribution marker should be prepended to message; got: {input_content:?}"
+        );
+        assert!(
+            input_content.ends_with("hello world"),
+            "original message content should remain at the end; got: {input_content:?}"
+        );
     }
 }

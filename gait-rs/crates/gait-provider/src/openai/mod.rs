@@ -163,7 +163,11 @@ fn to_chat_messages(system: &str, messages: &[Message]) -> Vec<ChatMessage> {
     }
     for m in messages {
         match m {
-            Message::User { content, .. } => {
+            Message::User {
+                content,
+                attribution,
+                ..
+            } => {
                 let text = match content {
                     MessageContent::Text(t) => t.clone(),
                     MessageContent::Parts(parts) => parts
@@ -174,6 +178,11 @@ fn to_chat_messages(system: &str, messages: &[Message]) -> Vec<ChatMessage> {
                         .collect::<Vec<_>>()
                         .join(""),
                 };
+                let text = format!(
+                    "{}{}",
+                    gait_types::types::render_attribution_prefix(attribution),
+                    text
+                );
                 out.push(ChatMessage {
                     role: "user".into(),
                     content: Some(Value::String(text)),
@@ -556,5 +565,22 @@ mod tests {
         assert!(json.get("max_completion_tokens").is_none());
         assert!(json.get("reasoning_effort").is_none());
         assert!(json.get("stop").is_none());
+    }
+
+    #[test]
+    fn to_chat_messages_prepends_attribution_prefix() {
+        let msg = Message::User {
+            id: "test-msg-1".into(),
+            content: MessageContent::Text("Hello, world!".into()),
+            attribution: Some(gait_types::types::Attribution {
+                sender: "ed25519:deadbeef".into(),
+                verified: false,
+            }),
+        };
+        let chat_msgs = to_chat_messages("", &[msg]);
+        assert_eq!(chat_msgs.len(), 1);
+        let content_str = chat_msgs[0].content.as_ref().unwrap().as_str().unwrap();
+        assert!(content_str.starts_with("[from: ed25519:deadbeef, unverified]\n"));
+        assert!(content_str.contains("Hello, world!"));
     }
 }

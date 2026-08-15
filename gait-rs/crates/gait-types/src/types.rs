@@ -15,6 +15,21 @@ pub struct Attribution {
     pub verified: bool,
 }
 
+/// Renders the model-facing marker for a `Message::User`'s `attribution`, if
+/// any. Returns `""` when `attribution` is `None` — the common case for a
+/// message the human operator typed directly, which has no `Provenance` and
+/// so renders byte-identical to today. Provider backends should prepend this
+/// to the message's text content.
+pub fn render_attribution_prefix(attribution: &Option<Attribution>) -> String {
+    match attribution {
+        Some(Attribution { sender, verified }) => {
+            let trust = if *verified { "verified" } else { "unverified" };
+            format!("[from: {sender}, {trust}]\n")
+        }
+        None => String::new(),
+    }
+}
+
 // Mirrors Vercel AI SDK's CoreMessage union
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "lowercase")]

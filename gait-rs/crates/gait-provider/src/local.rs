@@ -70,8 +70,16 @@ pub fn build_request(
     let mut out = Vec::new();
     for message in messages {
         match message {
-            Message::User { content, .. } => out.push(GenerationMessage::User {
-                content: text_content(content),
+            Message::User {
+                content,
+                attribution,
+                ..
+            } => out.push(GenerationMessage::User {
+                content: format!(
+                    "{}{}",
+                    gait_types::types::render_attribution_prefix(attribution),
+                    text_content(content)
+                ),
             }),
             Message::Assistant { content, .. } => {
                 let (content, tool_calls) = assistant_content(content);
@@ -255,5 +263,33 @@ mod tests {
             }))
         ));
         assert!(matches!(&chunks[3], Ok(StreamChunk::Done)));
+    }
+
+    #[test]
+    fn request_prepends_attribution_prefix_to_user_message() {
+        let messages = vec![Message::User {
+            content: MessageContent::Text("hello".into()),
+            id: "u".into(),
+            attribution: Some(gait_types::types::Attribution {
+                sender: "ed25519:deadbeef".into(),
+                verified: false,
+            }),
+        }];
+        let request = build_request("system", &messages, &[], &Default::default(), None);
+        assert_eq!(request.messages.len(), 1);
+        let content = match &request.messages[0] {
+            GenerationMessage::User { content } => content,
+            _ => panic!("Expected User message"),
+        };
+        assert!(
+            content.starts_with("[from: ed25519:deadbeef, unverified]\n"),
+            "Content should start with attribution prefix, got: {}",
+            content
+        );
+        assert!(
+            content.ends_with("hello"),
+            "Content should end with original message, got: {}",
+            content
+        );
     }
 }

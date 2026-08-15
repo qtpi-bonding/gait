@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 // ── Cache control ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct CacheControl {
     #[serde(rename = "type")]
     pub kind: String,
@@ -275,25 +275,37 @@ pub fn to_anthropic_messages(messages: &[Message]) -> Vec<AnthropicMessage> {
     let collected: Vec<AnthropicMessage> = messages
         .iter()
         .map(|m| match m {
-            Message::User { content, .. } => AnthropicMessage {
-                role: "user".into(),
-                content: match content {
-                    MessageContent::Text(t) => AnthropicContent::Text(t.clone()),
-                    MessageContent::Parts(parts) => AnthropicContent::Blocks(
-                        parts
-                            .iter()
-                            .map(|p| match p {
+            Message::User {
+                content,
+                attribution,
+                ..
+            } => {
+                let prefix = gait_types::types::render_attribution_prefix(attribution);
+                AnthropicMessage {
+                    role: "user".into(),
+                    content: match content {
+                        MessageContent::Text(t) => AnthropicContent::Text(format!("{prefix}{t}")),
+                        MessageContent::Parts(parts) => {
+                            let mut blocks: Vec<AnthropicBlock> = Vec::new();
+                            if !prefix.is_empty() {
+                                blocks.push(AnthropicBlock::Text {
+                                    text: prefix.clone(),
+                                    cache_control: None,
+                                });
+                            }
+                            blocks.extend(parts.iter().map(|p| match p {
                                 gait_types::types::ContentPart::Text { text } => {
                                     AnthropicBlock::Text {
                                         text: text.clone(),
                                         cache_control: None,
                                     }
                                 }
-                            })
-                            .collect(),
-                    ),
-                },
-            },
+                            }));
+                            AnthropicContent::Blocks(blocks)
+                        }
+                    },
+                }
+            }
             Message::Assistant { content, .. } => AnthropicMessage {
                 role: "assistant".into(),
                 content: match content {
@@ -696,5 +708,95 @@ mod tests {
             "second block should be Text, got {:?}",
             blocks[1]
         );
+    }
+
+    #[test]
+    fn user_message_with_attribution_prepends_prefix_to_text() {
+        let attribution = Some(gait_types::types::Attribution {
+            sender: "ed25519:deadbeef".into(),
+            verified: false,
+        });
+        let messages = vec![Message::User {
+            id: String::new(),
+            content: MessageContent::Text("Hello from peer".into()),
+            attribution: attribution.clone(),
+        }];
+        let converted = to_anthropic_messages(&messages);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].role, "user");
+        if let AnthropicContent::Text(text) = &converted[0].content {
+            assert!(
+                text.starts_with("[from: ed25519:deadbeef, unverified]\n"),
+                "text should start with attribution prefix, got: {text:?}"
+            );
+            assert!(
+                text.contains("Hello from peer"),
+                "text should contain original message, got: {text:?}"
+            );
+        } else {
+            panic!("expected Text content, got {:?}", converted[0].content);
+        }
+    }
+
+    #[test]
+    fn user_message_with_attribution_inserts_prefix_block_in_parts() {
+        let attribution = Some(gait_types::types::Attribution {
+            sender: "ed25519:deadbeef".into(),
+            verified: false,
+        });
+        let messages = vec![Message::User {
+            id: String::new(),
+            content: MessageContent::Parts(vec![
+                gait_types::types::ContentPart::Text {
+                    text: "First part".into(),
+                },
+                gait_types::types::ContentPart::Text {
+                    text: "Second part".into(),
+                },
+            ]),
+            attribution: attribution.clone(),
+        }];
+        let converted = to_anthropic_messages(&messages);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].role, "user");
+        if let AnthropicContent::Blocks(blocks) = &converted[0].content {
+            assert_eq!(
+                blocks.len(),
+                3,
+                "expected 3 blocks (attribution + 2 parts), got {}",
+                blocks.len()
+            );
+            // First block should be the attribution prefix
+            if let AnthropicBlock::Text {
+                text,
+                cache_control,
+            } = &blocks[0]
+            {
+                assert!(
+                    text.contains("[from: ed25519:deadbeef, unverified]"),
+                    "first block should contain attribution prefix, got: {text:?}"
+                );
+                assert!(
+                    cache_control.is_none(),
+                    "cache_control should be None, got {:?}",
+                    cache_control
+                );
+            } else {
+                panic!("first block should be Text, got {:?}", blocks[0]);
+            }
+            // Second and third blocks should be the original parts
+            if let AnthropicBlock::Text { text, .. } = &blocks[1] {
+                assert_eq!(text, "First part");
+            } else {
+                panic!("second block should be Text, got {:?}", blocks[1]);
+            }
+            if let AnthropicBlock::Text { text, .. } = &blocks[2] {
+                assert_eq!(text, "Second part");
+            } else {
+                panic!("third block should be Text, got {:?}", blocks[2]);
+            }
+        } else {
+            panic!("expected Blocks content, got {:?}", converted[0].content);
+        }
     }
 }
