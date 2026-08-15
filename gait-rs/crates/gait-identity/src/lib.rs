@@ -1,5 +1,8 @@
 //! Agent identity: pluggable signing schemes for `Provenance.from`/`signature`.
 
+pub mod keyring;
+pub use keyring::{Keyring, KeyringEntry};
+
 pub use gait_proto::gait::log::v1::KeyScheme;
 
 /// Anything that can sign on behalf of one agent identity.
