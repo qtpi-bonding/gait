@@ -3,10 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// The model-facing summary of an `Event.provenance` — computed once, at
-/// fold time, from the durable `Provenance` on the log. NOT itself
-/// persisted; recomputed from the log on every fold. `verified` is `false`
-/// for every placeholder identity in this plan (no keypair system exists
-/// yet) — see the sandbox/message-attribution spec's Global Constraints.
+/// fold time, from the durable `Provenance` on the log via
+/// `gait_identity::verify_provenance`. NOT itself persisted; recomputed from
+/// the log on every fold. `verified: false` covers both "no provenance" and
+/// "signature present but does not verify" — callers must treat it as
+/// untrusted, not as corrupt (see
+/// docs/plans/2026-08-14-swappable-identity-scheme-design.md §7).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Attribution {
     pub sender: String,

@@ -1667,10 +1667,11 @@ fn raw_messages_carry_event_ids() {
 #[test]
 fn active_raw_messages_populates_attribution_from_provenance() {
     use std::collections::HashMap;
+    let pubkey = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04];
 
     let mut ev = scoped_mint(events::user_text("do the thing".into()), None, 0, 0);
     ev.provenance = Some(crate::proto::gait::log::v1::Provenance {
-        from: b"agent:s1234abcd".to_vec(),
+        from: pubkey,
         to: vec![],
         context: String::new(),
         signature: vec![],
@@ -1688,7 +1689,7 @@ fn active_raw_messages_populates_attribution_from_provenance() {
             let a = attribution
                 .as_ref()
                 .expect("provenance-bearing event must carry attribution");
-            assert_eq!(a.sender, "agent:s1234abcd");
+            assert_eq!(a.sender, "ed25519:deadbeef01020304");
             assert!(
                 !a.verified,
                 "placeholder identity must never be marked verified"
@@ -1996,6 +1997,7 @@ fn full_tool_history_survives_a_resumed_turn() {
 #[test]
 fn active_raw_messages_agent_update_uses_provenance_not_session_id() {
     use std::collections::HashMap;
+    let pubkey = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04];
 
     let body =
         crate::proto::gait::log::v1::event::Body::Payload(crate::proto::gait::log::v1::Payload {
@@ -2011,7 +2013,7 @@ fn active_raw_messages_agent_update_uses_provenance_not_session_id() {
         });
     let mut ev = scoped_mint(body, None, 0, 0);
     ev.provenance = Some(crate::proto::gait::log::v1::Provenance {
-        from: b"agent:s1234abcd".to_vec(),
+        from: pubkey.clone(),
         to: vec![],
         context: String::new(),
         signature: vec![],
@@ -2026,7 +2028,7 @@ fn active_raw_messages_agent_update_uses_provenance_not_session_id() {
             ..
         } => {
             assert!(
-                t.contains("s1234abcd"),
+                t.contains("ed25519:deadbeef01020304"),
                 "rendered text must use Provenance.from, got: {t}"
             );
         }

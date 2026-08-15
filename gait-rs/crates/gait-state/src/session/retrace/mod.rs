@@ -35,6 +35,16 @@ fn clarify_kind_str(k: i32) -> &'static str {
     }
 }
 
+/// Render `Provenance.from` as a scheme-labeled hexadecimal public key.
+fn render_sender(p: &pb::Provenance) -> String {
+    let scheme_label = match pb::KeyScheme::try_from(p.scheme) {
+        Ok(pb::KeyScheme::Ed25519) => "ed25519",
+        Ok(pb::KeyScheme::Secp256k1Schnorr) => "secp256k1-schnorr",
+        Ok(pb::KeyScheme::Unspecified) | Err(_) => "unspecified",
+    };
+    format!("{scheme_label}:{}", hex::encode(&p.from))
+}
+
 /// The converged mutation state for a single target event (LWW winner).
 #[derive(Debug, Clone)]
 pub enum MutationState {
@@ -565,12 +575,13 @@ impl MessagesState {
         // sender from Event.provenance when present (the new durable identity
         // field), falling back to the (now-vestigial, slated for removal in
         // Task 9) au.session_id only when no provenance is attached. The
-        // Provenance.from bytes are UTF-8 placeholder identity today
+        // Provenance.from is raw public-key bytes; render_sender() hex-encodes it
+        // with a scheme label.
         // (e.g. "agent:s1234abcd"); see the plan's Global Constraints.
         let sender = ev
             .provenance
             .as_ref()
-            .map(|p| String::from_utf8_lossy(&p.from).into_owned())
+            .map(render_sender)
             .unwrap_or_else(|| au.session_id.clone());
         let mut content = format!(
             "[agent:{}] status: {}\nsummary: {}",
@@ -792,11 +803,8 @@ impl Projection for ActiveRawMessages {
         match kind {
             payload::Kind::UserText(u) => {
                 let attribution = ev.provenance.as_ref().map(|p| Attribution {
-                    sender: String::from_utf8_lossy(&p.from).into_owned(),
-                    // placeholder-identity events always have an empty signature per
-                    // the plan's Global Constraints, so this is always false today;
-                    // becomes real once a keypair system exists
-                    verified: !p.signature.is_empty(),
+                    sender: render_sender(p),
+                    verified: gait_identity::verify_provenance(ev),
                 });
                 st.base.push(Message::User {
                     content: MessageContent::Text(u.content.clone()),
@@ -860,17 +868,15 @@ impl Projection for ActiveRawMessages {
                         pb::AgentStatus::Unspecified => "unspecified",
                     })
                     .unwrap_or("unspecified");
-                // Task 6 (cross-session message attribution): source the
-                // rendered sender from Event.provenance when present (the new
-                // durable identity field), falling back to the (now-vestigial,
-                // slated for removal in Task 9) au.session_id only when no
-                // provenance is attached. The Provenance.from bytes are UTF-8
-                // placeholder identity today (e.g. "agent:s1234abcd"); see
-                // the plan's Global Constraints.
+                // Cross-session message attribution: source the rendered sender from
+                // Event.provenance when present (the durable identity field),
+                // falling back to the (now-vestigial, slated for removal) au.session_id
+                // only when no provenance is attached. Provenance.from is raw
+                // public-key bytes; render_sender() hex-encodes it with a scheme label.
                 let sender = ev
                     .provenance
                     .as_ref()
-                    .map(|p| String::from_utf8_lossy(&p.from).into_owned())
+                    .map(render_sender)
                     .unwrap_or_else(|| au.session_id.clone());
                 let mut content = format!(
                     "[agent:{}] status: {}\nsummary: {}",

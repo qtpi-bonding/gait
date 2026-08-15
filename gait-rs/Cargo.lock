@@ -1642,6 +1642,7 @@ dependencies = [
  "gait-sandbox",
  "gait-types",
  "git2",
+ "hex",
  "libc",
  "pbjson-types",
  "prost",
