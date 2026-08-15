@@ -38,9 +38,9 @@ message Event {
   // party boundary (subagent task injection, cross-session delivery, a
   // multi-writer room log) or lives in a room log; omitted in an ordinary
   // single-writer session log, where authorship is implicit in the log's
-  // owner. NOT integrity-covered by content_hash (see envelope.rs's doc
-  // comment — content_hash covers only the body arm, by construction) —
-  // do not treat `signature` as tamper-evident.
+  // owner. `content_hash` covers only the body arm, by construction — see
+  // envelope.rs's doc comment — so `provenance.signature` instead signs
+  // `content_hash` itself (see Provenance's doc comment).
   optional Provenance provenance = 9;
   optional uint32 step      = 10; // 0-indexed step ordinal within the turn
   reserved 11 to 15;             // remaining envelope-field reservation
@@ -56,15 +56,23 @@ message Event {
 
 
 // Sender/recipient/thread metadata carried on Event.provenance. `from` is a
-// placeholder (non-cryptographic) identity until a real keypair system exists;
-// `signature` is NOT integrity-covered by content_hash (see field 9's comment
-// on Event.provenance) — do not treat it as tamper-evident.
+// public key, self-certifying — `scheme` says which curve produced it, so
+// verification never needs a separate keyring lookup. `signature` is NOT
+// integrity-covered by content_hash (see field 9's comment on
+// Event.provenance) — it covers content_hash itself (signed independently,
+// after content_hash is stamped).
+enum KeyScheme {
+  KEY_SCHEME_UNSPECIFIED = 0;
+  KEY_SCHEME_ED25519 = 1;
+  KEY_SCHEME_SECP256K1_SCHNORR = 2;  // reserved slot — no implementation yet
+}
+
 message Provenance {
-  bytes           from      = 1;  // sender identity — placeholder (non-cryptographic) until a
-                                    // real keypair system exists; see plan Global Constraints
+  bytes           from      = 1;  // public key bytes
   repeated string to        = 2;  // specific recipients; empty = the room/log at large
   string          context   = 3;  // room/thread reference — freeform, no enforced vocabulary
-  bytes           signature = 4;  // NOT integrity-covered by content_hash — see field comment above
+  bytes           signature = 4;  // signs content_hash; NOT integrity-covered by content_hash itself
+  KeyScheme       scheme    = 5;  // discriminant for `from`/`signature`
 }
 
 
