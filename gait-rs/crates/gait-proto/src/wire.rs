@@ -141,6 +141,7 @@ pub fn append(path: &Path, body: event::Body) -> anyhow::Result<Event> {
 ///
 /// Used by the few call sites that cross a party boundary (subagent task
 /// injection, generalized `notify_parent` delivery).
+#[allow(clippy::too_many_arguments)] // from/scheme/sign/to/context are the closure-based Provenance shape (see doc comment above) — bundling them into a struct would just move the same 5 fields, not reduce them.
 pub fn append_with_provenance(
     path: &Path,
     body: event::Body,
