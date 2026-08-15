@@ -87,6 +87,16 @@ pub(crate) fn scaffold_gait_dir(gait_dir: &Path) -> std::io::Result<()> {
     // checkout the first time a session is persisted into main.
     std::fs::create_dir_all(gait_dir.join(".active"))?;
 
+    // keyring.json — this agent identity's signing key(s). Idempotent — never
+    // regenerates an existing key. NOT staged into git (see `to_stage` below)
+    // and explicitly gitignored (it holds a private key).
+    let keyring_path = gait_dir.join("keyring.json");
+    if !keyring_path.exists() {
+        gait_identity::Keyring::generate()
+            .save(gait_dir)
+            .map_err(std::io::Error::other)?;
+    }
+
     // gait.jsonc — default config (never clobber).
     // allow must match gait_state::config::defaults::default_allow().
     // sandbox.on matches default_sandbox().on; readable/writable use $CODEBASE
@@ -168,7 +178,7 @@ pub(crate) fn scaffold_gait_dir(gait_dir: &Path) -> std::io::Result<()> {
     // .gitignore — merge required entries, no duplicates
     let gi_path = gait_dir.join(".gitignore");
     let mut gi = std::fs::read_to_string(&gi_path).unwrap_or_default();
-    let required = [".active/", "USER.md", ".gait-ws.lock"];
+    let required = [".active/", "USER.md", ".gait-ws.lock", "keyring.json"];
     let mut changed = false;
     for entry in &required {
         if !gi.lines().any(|l| l.trim() == *entry) {
@@ -515,6 +525,46 @@ mod tests {
 
     mod init_tests {
         use super::*;
+
+        #[test]
+        fn scaffold_generates_keyring_with_one_active_ed25519_key() {
+            let dir = tempfile::TempDir::new().unwrap();
+            scaffold_gait_dir(dir.path()).unwrap();
+
+            let keyring_path = dir.path().join("keyring.json");
+            assert!(keyring_path.exists(), "keyring.json must be created");
+
+            let kr = gait_identity::Keyring::load(dir.path()).unwrap();
+            assert_eq!(kr.keys.len(), 1);
+            assert_eq!(kr.keys[0].scheme, gait_identity::KeyScheme::Ed25519);
+            assert!(kr.keys[0].revoked_at.is_none());
+        }
+
+        #[test]
+        fn scaffold_does_not_regenerate_existing_keyring() {
+            let dir = tempfile::TempDir::new().unwrap();
+            scaffold_gait_dir(dir.path()).unwrap();
+            let first = gait_identity::Keyring::load(dir.path()).unwrap();
+
+            scaffold_gait_dir(dir.path()).unwrap();
+            let second = gait_identity::Keyring::load(dir.path()).unwrap();
+
+            assert_eq!(
+                first.keys[0].public_key, second.keys[0].public_key,
+                "re-running scaffold must not rotate the key"
+            );
+        }
+
+        #[test]
+        fn keyring_json_is_gitignored_not_staged() {
+            let dir = tempfile::TempDir::new().unwrap();
+            scaffold_gait_dir(dir.path()).unwrap();
+            let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+            assert!(
+                gi.lines().any(|l| l.trim() == "keyring.json"),
+                "keyring.json must be gitignored — it holds a private key: {gi}"
+            );
+        }
 
         #[test]
         fn scaffold_creates_new_dir_layout() {
