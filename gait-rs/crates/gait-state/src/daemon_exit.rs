@@ -66,7 +66,6 @@ pub fn cmd_daemon_exit(args: DaemonExitArgs) -> anyhow::Result<Option<WakeReques
         .unwrap_or(0);
     let idempotency_key = format!("{}@{}", args.name, started_at);
     let c = Completion {
-        provenance: None,
         payload: crate::proto::events::daemon_update(
             args.name.clone(),
             args.exit,

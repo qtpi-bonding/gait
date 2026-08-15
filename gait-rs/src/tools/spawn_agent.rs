@@ -306,9 +306,17 @@ mod tests {
             _ => unreachable!(),
         };
         assert_eq!(user_turn.content, "implement feature X");
+        let signer = gait_identity::Keyring::load(ws.path())
+            .unwrap()
+            .signer()
+            .unwrap();
         assert_eq!(
             user_turn_event.provenance.as_ref().map(|p| p.from.clone()),
-            Some(b"agent:scaller001".to_vec()),
+            Some(signer.public_key().to_vec()),
+        );
+        assert!(
+            gait_identity::verify_provenance(user_turn_event),
+            "spawn_agent must sign with a real, verifiable signature"
         );
 
         let meta = read_session_meta(ws.path(), new_id).unwrap();
@@ -463,6 +471,14 @@ mod tests {
             .provenance
             .as_ref()
             .expect("task injection must carry provenance");
-        assert_eq!(prov.from, b"agent:scaller001".to_vec());
+        let signer = gait_identity::Keyring::load(ws.path())
+            .unwrap()
+            .signer()
+            .unwrap();
+        assert_eq!(prov.from, signer.public_key().to_vec());
+        assert!(
+            gait_identity::verify_provenance(user_text_event),
+            "spawn_agent must sign with a real, verifiable signature"
+        );
     }
 }

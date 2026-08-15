@@ -596,12 +596,6 @@ pub async fn relay_brain_turn(
                 // dedup, write, commit, spawn_wake). Replaces the 20-retry open_retrying
                 // path. ParentBusy → the live turn's per-step poll surfaces it next step.
                 let c = crate::session::completion::Completion {
-                    provenance: Some(crate::proto::gait::log::v1::Provenance {
-                        from: format!("agent:{from_session}").into_bytes(),
-                        to: vec![],
-                        context: String::new(),
-                        signature: vec![], // placeholder identity — see plan Global Constraints
-                    }),
                     payload: crate::proto::events::agent_update(
                         from_session.clone(),
                         &status,

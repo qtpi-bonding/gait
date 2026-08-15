@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 gait-proto    = { path = "../gait-proto" }
+gait-identity = { path = "../gait-identity" }
 gait-types    = { path = "../gait-types" }
 gait-sandbox  = { path = "../gait-sandbox" }   # session/daemons.rs: process::proc_start_time
 gait-provider = { path = "../gait-provider" }  # auth.rs / models_meta.rs: providers::lookup

@@ -80,7 +80,6 @@ pub fn pending_daemon_completions(
         let started_at = started_at_for(gait_dir, &name);
         let idempotency_key = format!("{name}@{started_at}");
         out.push(Completion {
-            provenance: None,
             payload: crate::proto::events::daemon_update(
                 name,
                 exit_code,
@@ -104,7 +103,6 @@ pub fn pending_daemon_completions(
             if !crate::session::daemons::is_alive(&rec) {
                 let idempotency_key = format!("{}@{}", rec.name, rec.started_at);
                 out.push(Completion {
-                    provenance: None,
                     payload: crate::proto::events::daemon_update(
                         rec.name.clone(),
                         -9,
@@ -170,12 +168,6 @@ pub fn pending_agent_completions(
         if child.is_done {
             let idempotency_key = child.last_event_id.clone();
             out.push(Completion {
-                provenance: Some(crate::proto::gait::log::v1::Provenance {
-                    from: format!("agent:{}", child.id).into_bytes(),
-                    to: vec![],
-                    context: String::new(),
-                    signature: vec![], // placeholder identity — see plan Global Constraints
-                }),
                 payload: crate::proto::events::agent_update(
                     child.id.clone(),
                     "done",

@@ -1635,6 +1635,7 @@ dependencies = [
  "fs2",
  "futures-util",
  "gait-auth",
+ "gait-identity",
  "gait-platform",
  "gait-proto",
  "gait-provider",

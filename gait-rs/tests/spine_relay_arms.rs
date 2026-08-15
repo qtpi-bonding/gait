@@ -126,6 +126,7 @@ async fn notify_writes_agent_update_to_parent_session() {
     // That gives us a real session dir + log.jsonl (sole writer = spine) for
     // the Notify target to append into.
     let tmp = tempfile::tempdir().unwrap();
+    gait_identity::Keyring::generate().save(tmp.path()).unwrap();
     let _ = run_one(
         tmp.path(),
         "parent",
@@ -179,6 +180,7 @@ async fn notify_commits_target_session_through_injected_repos() {
     // show only the child's own `commit_session:child:...`. After it, the same
     // mock observes a SECOND commit, this time against the *parent* target.
     let tmp = tempfile::tempdir().unwrap();
+    gait_identity::Keyring::generate().save(tmp.path()).unwrap();
     let _ = run_one(
         tmp.path(),
         "parent3",

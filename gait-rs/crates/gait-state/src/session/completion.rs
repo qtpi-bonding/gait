@@ -40,7 +40,6 @@ pub struct WakeRequest {
 /// and must never be deduped against each other; see `matches()` below.
 #[derive(Debug, Clone)]
 pub struct Completion {
-    pub provenance: Option<crate::proto::gait::log::v1::Provenance>,
     /// Matches what `events::agent_update`/`events::daemon_update` already
     /// return — no extraction/wrapping needed.
     pub payload: crate::proto::gait::log::v1::event::Body,
@@ -127,7 +126,27 @@ pub fn notify_parent(
     // Append the *_update event + commit. We hold the lock, so writing
     // directly via `wire::append` is the legal path (NOT SessionLog::open,
     // which would re-acquire and deadlock). Mirrors harness.rs:118-128.
-    if let Err(e) = crate::proto::wire::append(&tx_path, c.body()) {
+    let signer = match gait_identity::Keyring::load(gait_dir).and_then(|kr| kr.signer()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "[gait] notify_parent: loading keyring at {}: {e}",
+                gait_dir.display()
+            );
+            return NotifyOutcome::NoParent;
+        }
+    };
+    use gait_identity::Signer as _;
+    if let Err(e) = crate::proto::wire::append_with_provenance(
+        &tx_path,
+        c.body(),
+        signer.public_key().to_vec(),
+        signer.scheme() as i32,
+        |msg| signer.sign(msg),
+        vec![],
+        String::new(),
+        crate::proto::envelope::EventScope::Session,
+    ) {
         // Log the append failure as a diagnostic warn — silently dropping
         // would leave the caller with no signal that the completion was lost.
         eprintln!("[gait] notify_parent: append to {tx_path:?} failed: {e}");
@@ -184,7 +203,6 @@ mod tests {
     #[test]
     fn completion_carries_idempotency_key_not_derived_from_payload_values() {
         let c1 = Completion {
-            provenance: None,
             payload: crate::proto::events::daemon_update(
                 "build".into(),
                 0,
@@ -206,13 +224,47 @@ mod tests {
     }
 
     fn init_parent(gait_dir: &std::path::Path, id: &str) {
+        gait_identity::Keyring::generate().save(gait_dir).unwrap();
         let dir = crate::session::live::worktree_dir(gait_dir, id);
         std::fs::create_dir_all(&dir).unwrap();
     }
 
+    #[test]
+    fn notify_parent_signs_the_appended_event() {
+        let dir = TempDir::new().unwrap();
+        let gait_dir = dir.path();
+        init_parent(gait_dir, "parent1");
+
+        let c = Completion {
+            payload: crate::proto::events::agent_update(
+                "child1".to_string(),
+                "done",
+                "did the thing".to_string(),
+                None,
+                "child1-evt1".to_string(),
+            ),
+            idempotency_key: "child1-evt1".to_string(),
+        };
+        let repos = crate::git::Repos::production();
+        let outcome = notify_parent(gait_dir, &repos, "parent1", &c);
+        assert!(matches!(outcome, NotifyOutcome::Woke(_)));
+
+        let tx_path = crate::session::live::log_path(gait_dir, "parent1");
+        let events = crate::proto::wire::read_events(&tx_path).unwrap();
+        let appended = events.last().unwrap();
+        let provenance = appended
+            .provenance
+            .as_ref()
+            .expect("notify_parent must stamp provenance");
+        assert!(gait_identity::verify_provenance(appended));
+        assert_eq!(
+            provenance.scheme,
+            gait_proto::gait::log::v1::KeyScheme::Ed25519 as i32
+        );
+    }
+
     fn daemon_completion(name: &str, exit_code: i32, status: &str, log_path: &str) -> Completion {
         Completion {
-            provenance: None,
             payload: crate::proto::events::daemon_update(
                 name.to_string(),
                 exit_code,
@@ -226,12 +278,6 @@ mod tests {
 
     fn agent_completion(from: &str, status: &str, summary: &str) -> Completion {
         Completion {
-            provenance: Some(crate::proto::gait::log::v1::Provenance {
-                from: format!("agent:{from}").into_bytes(),
-                to: vec![],
-                context: String::new(),
-                signature: vec![],
-            }),
             payload: crate::proto::events::agent_update(
                 from.to_string(),
                 status,
@@ -317,6 +363,7 @@ mod tests {
     #[test]
     fn agent_completion_commit_has_subagent_session_and_status_trailers() {
         let gd = TempDir::new().unwrap();
+        gait_identity::Keyring::generate().save(gd.path()).unwrap();
         crate::git::Repos::production()
             .traces
             .init_workspace(gd.path())
@@ -348,6 +395,7 @@ mod tests {
     #[test]
     fn daemon_completion_commit_has_no_subagent_session_trailer() {
         let gd = TempDir::new().unwrap();
+        gait_identity::Keyring::generate().save(gd.path()).unwrap();
         crate::git::Repos::production()
             .traces
             .init_workspace(gd.path())

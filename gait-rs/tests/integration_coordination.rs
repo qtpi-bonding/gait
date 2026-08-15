@@ -5,6 +5,7 @@ use gait_core::{
     tools::builtin_tools,
     turn::{run_turn, TurnResult},
 };
+use gait_identity::Signer;
 
 /// The substantive payload kind for a proto event, if it carries one.
 fn event_kind(e: &Event) -> Option<&payload::Kind> {
@@ -79,6 +80,7 @@ impl Provider for ScriptedProvider {
 #[tokio::test]
 async fn spawn_agent_via_run_turn_creates_child_session() {
     let ws = TempDir::new().unwrap();
+    gait_identity::Keyring::generate().save(ws.path()).unwrap();
     init_git_repo(ws.path());
     std::fs::create_dir_all(ws.path().join("inferences/mock")).unwrap();
     std::fs::write(
@@ -181,7 +183,7 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
         "child SessionStart must have assigned_by"
     );
 
-    // Verify child transcript has user_turn with from = agent:sparent001
+    // Verify child transcript has user_turn signed by the parent's keyring.
     let tx = gait_core::session::live::log_path(ws.path(), &child_id);
     let events = read_events(&tx).unwrap();
     let user_turn_event = events
@@ -193,10 +195,18 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
         _ => unreachable!(),
     };
     assert_eq!(user_turn.content, "fix the failing tests");
+    let signer = gait_identity::Keyring::load(ws.path())
+        .unwrap()
+        .signer()
+        .unwrap();
     assert_eq!(
         user_turn_event.provenance.as_ref().map(|p| p.from.clone()),
-        Some(b"agent:sparent001".to_vec()),
-        "child user_turn must have provenance.from=agent:sparent001"
+        Some(signer.public_key().to_vec()),
+        "child user_turn must be signed by the parent's keyring"
+    );
+    assert!(
+        gait_identity::verify_provenance(user_turn_event),
+        "spawn_agent must sign with a real, verifiable signature"
     );
 }
 

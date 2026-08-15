@@ -307,6 +307,7 @@ mod tests {
     #[tokio::test]
     async fn handle_spawn_agent_creates_session_and_returns_id() {
         let ws = tempfile::TempDir::new().unwrap();
+        gait_identity::Keyring::generate().save(ws.path()).unwrap();
         crate::test_utils::init_git_repo(ws.path());
         std::fs::create_dir_all(ws.path().join("inferences/mock")).unwrap();
         std::fs::write(
@@ -364,6 +365,7 @@ mod tests {
     #[tokio::test]
     async fn handle_spawn_agent_with_schema_writes_result_schema_json() {
         let ws = tempfile::TempDir::new().unwrap();
+        gait_identity::Keyring::generate().save(ws.path()).unwrap();
         crate::test_utils::init_git_repo(ws.path());
         std::fs::create_dir_all(ws.path().join("inferences/mock")).unwrap();
         std::fs::write(
