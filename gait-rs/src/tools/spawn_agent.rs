@@ -5,6 +5,7 @@ use crate::session::log::{init_session, InitSessionOpts};
 use crate::tools::ToolError;
 use crate::tools::{make_schema, ToolCtx};
 use crate::types::Tool;
+use gait_identity::Signer;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -63,16 +64,17 @@ pub fn write_child_session(opts: WriteChildSessionOpts<'_>) -> anyhow::Result<()
     })?;
     wire::append(&tx_path, events::inference(inference))?;
 
-    let provenance = gait_proto::gait::log::v1::Provenance {
-        from: format!("agent:{}", opts.parent_session_id).into_bytes(),
-        to: vec![],
-        context: String::new(),
-        signature: vec![], // placeholder identity — see plan Global Constraints
-    };
+    let signer = gait_identity::Keyring::load(opts.gait_dir)
+        .map_err(|e| anyhow::anyhow!("loading keyring at {}: {e}", opts.gait_dir.display()))?
+        .signer()?;
     wire::append_with_provenance(
         &tx_path,
         events::user_text(opts.task),
-        provenance,
+        signer.public_key().to_vec(),
+        signer.scheme() as i32,
+        |msg| signer.sign(msg),
+        vec![],
+        String::new(),
         crate::proto::envelope::EventScope::Session,
     )?;
 
@@ -231,6 +233,7 @@ mod tests {
     #[tokio::test]
     async fn spawn_agent_creates_session_transcript() {
         let ws = TempDir::new().unwrap();
+        gait_identity::Keyring::generate().save(ws.path()).unwrap();
         init_git_repo(ws.path());
         std::fs::create_dir_all(ws.path().join("inferences/parent")).unwrap();
         std::fs::write(
@@ -315,6 +318,7 @@ mod tests {
     #[tokio::test]
     async fn spawn_agent_returns_session_id() {
         let ws = TempDir::new().unwrap();
+        gait_identity::Keyring::generate().save(ws.path()).unwrap();
         init_git_repo(ws.path());
         std::fs::create_dir_all(ws.path().join("inferences/parent")).unwrap();
         std::fs::write(
@@ -350,6 +354,7 @@ mod tests {
     #[tokio::test]
     async fn spawn_agent_commit_has_parent_session_trailer() {
         let ws = TempDir::new().unwrap();
+        gait_identity::Keyring::generate().save(ws.path()).unwrap();
         init_git_repo(ws.path());
         std::fs::create_dir_all(ws.path().join("inferences/parent")).unwrap();
         std::fs::write(
@@ -404,6 +409,7 @@ mod tests {
     #[tokio::test]
     async fn spawn_agent_task_injection_carries_provenance() {
         let ws = TempDir::new().unwrap();
+        gait_identity::Keyring::generate().save(ws.path()).unwrap();
         init_git_repo(ws.path());
         std::fs::create_dir_all(ws.path().join("inferences/parent")).unwrap();
         std::fs::write(

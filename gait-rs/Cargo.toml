@@ -63,6 +63,7 @@ gait-provider   = { path = "crates/gait-provider" }
 gait-auth       = { path = "crates/gait-auth" }
 gait-sandbox    = { path = "crates/gait-sandbox" }
 gait-proto      = { path = "crates/gait-proto" }
+gait-identity   = { path = "crates/gait-identity" }
 gait-state      = { path = "crates/gait-state" }
 prost          = "0.13"
 pbjson-types   = "0.7"
