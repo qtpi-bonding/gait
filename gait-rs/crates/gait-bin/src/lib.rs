@@ -1,9 +1,11 @@
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
 use std::path::PathBuf;
 
+#[cfg(feature = "local")]
+use gait_cli::cli::admin::LocalArgs;
 use gait_cli::cli::admin::{
-    AuthArgs, ConfigArgs, DisableArgs, EnableArgs, InferenceArgs, LocalArgs, ModelsArgs,
-    RegisterArgs, UnregisterArgs,
+    AuthArgs, ConfigArgs, DisableArgs, EnableArgs, InferenceArgs, ModelsArgs, RegisterArgs,
+    UnregisterArgs,
 };
 use gait_cli::cli::daemons::DaemonsArgs;
 use gait_cli::cli::init::InitArgs;
@@ -102,6 +104,7 @@ pub enum Commands {
     Disable(DisableArgs),
     Auth(AuthArgs),
     Models(ModelsArgs),
+    #[cfg(feature = "local")]
     Local(LocalArgs),
     Inference(InferenceArgs),
     Workflow(WorkflowArgs),

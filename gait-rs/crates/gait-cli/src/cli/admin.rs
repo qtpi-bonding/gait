@@ -44,6 +44,7 @@ pub struct InferenceArgs {
 }
 
 /// `gait local setup --model-path /path/to/model.gguf`
+#[cfg(feature = "local")]
 #[derive(Parser, Debug)]
 pub struct LocalArgs {
     #[arg(long, env = "GAIT_DIR")]
@@ -69,6 +70,7 @@ pub struct LocalArgs {
     pub compaction_threshold_tokens: u64,
 }
 
+#[cfg(feature = "local")]
 pub async fn cmd_local(args: LocalArgs) {
     match args.action.as_deref().unwrap_or("setup") {
         "setup" => {
@@ -162,6 +164,7 @@ pub async fn cmd_local(args: LocalArgs) {
     }
 }
 
+#[cfg(feature = "local")]
 async fn local_runner_command(
     socket: &std::path::Path,
     action: &str,

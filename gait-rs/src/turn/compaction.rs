@@ -335,7 +335,7 @@ mod tests {
             content: AssistantContent::Parts(vec![AssistantPart::ToolCall(call.clone())]),
             id: "1".into(),
         };
-        assert!(has_unmatched_tool_call(&[call_message.clone()]));
+        assert!(has_unmatched_tool_call(std::slice::from_ref(&call_message)));
         let result = ToolResult {
             kind: ToolResultKind::ToolResult,
             tool_call_id: call.tool_call_id,

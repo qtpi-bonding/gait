@@ -65,6 +65,10 @@ gait models anthropic       # filter by substring on provider or model id
 
 ## Local models (Ollama / LM Studio)
 
+This is the recommended local-model path. Ollama and LM Studio use Gait's
+normal OpenAI-compatible provider boundary and do not require an experimental
+Gait build.
+
 ```bash
 # 1. Start the local server
 ollama serve                # default: http://localhost:11434/v1
@@ -88,6 +92,25 @@ export LMSTUDIO_BASE_URL=http://my-gpu-box:1234/v1
 ```
 
 The env var is read at provider-construction time, so changes take effect on the next turn.
+
+## Embedded GGUF inference (experimental)
+
+Gait also contains an experimental, opt-in llama.cpp/GGUF provider. It is not
+compiled into the default binary, is not part of the stable provider contract,
+and currently supports only a narrow set of model/tool-call conventions.
+
+To build it explicitly:
+
+```bash
+cd gait-rs
+cargo build -p gait --features local
+```
+
+The `gait local setup`, `gait local status`, and `gait local stop` commands are
+available only in that feature build. GGUF paths and local inference metadata
+are retained in the configuration schema for forward compatibility, but this
+experimental implementation may change or be removed without a migration
+promise. For normal local use, prefer Ollama or LM Studio above.
 
 ## Named inference profiles
 

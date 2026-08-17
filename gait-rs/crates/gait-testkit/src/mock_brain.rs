@@ -45,12 +45,10 @@ pub fn run() {
     let dir = std::path::PathBuf::from(dir);
 
     let mut stdin = std::io::stdin();
-    let init = match read_one_frame(&mut stdin).and_then(|signal| match signal.body {
+    let init = read_one_frame(&mut stdin).and_then(|signal| match signal.body {
         Some(signal::Body::BrainInit(init)) => Some(init),
         _ => None,
-    }) {
-        init => init,
-    }; // consume BrainInit so the spine's write completes
+    }); // consume BrainInit so the spine's write completes
     let (run, turn) = current_scope(init);
 
     // mock_delay_ms: sleep BEFORE sending frames (brain appears silent during delay).

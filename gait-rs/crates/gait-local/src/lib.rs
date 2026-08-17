@@ -105,27 +105,6 @@ pub fn runner_key(config: &str) -> String {
         .collect()
 }
 
-#[cfg(test)]
-mod runner_protocol_tests {
-    use super::*;
-
-    #[test]
-    fn runner_key_changes_for_every_model_resource_setting() {
-        assert_ne!(
-            runner_key("model=a;ctx=8192;gpu=0"),
-            runner_key("model=a;ctx=16384;gpu=0")
-        );
-        assert_ne!(
-            runner_key("model=a;ctx=8192;gpu=0"),
-            runner_key("model=a;ctx=8192;gpu=1")
-        );
-        assert_eq!(
-            runner_key("model=a;ctx=8192;gpu=0"),
-            runner_key("model=a;ctx=8192;gpu=0")
-        );
-    }
-}
-
 #[async_trait]
 pub trait TextGenerator: Send + Sync {
     async fn generate(
@@ -146,5 +125,26 @@ impl TextGenerator for FakeGenerator {
         _request: GenerationRequest,
     ) -> Result<GenerationStream, GenerationError> {
         Ok(Box::pin(futures_util::stream::iter(self.chunks.clone())))
+    }
+}
+
+#[cfg(test)]
+mod runner_protocol_tests {
+    use super::*;
+
+    #[test]
+    fn runner_key_changes_for_every_model_resource_setting() {
+        assert_ne!(
+            runner_key("model=a;ctx=8192;gpu=0"),
+            runner_key("model=a;ctx=16384;gpu=0")
+        );
+        assert_ne!(
+            runner_key("model=a;ctx=8192;gpu=0"),
+            runner_key("model=a;ctx=8192;gpu=1")
+        );
+        assert_eq!(
+            runner_key("model=a;ctx=8192;gpu=0"),
+            runner_key("model=a;ctx=8192;gpu=0")
+        );
     }
 }

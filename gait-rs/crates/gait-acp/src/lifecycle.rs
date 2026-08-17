@@ -156,10 +156,10 @@ pub fn gait_dir_for_session(map: &SessionMap, id: &str) -> Option<PathBuf> {
         return Some(gait_dir);
     }
     for gd in map.known_gait_dirs() {
-        if let Ok(ps) = gait_ops::session::ps(&gd) {
-            if ps.rows.iter().any(|r| r.session_id == id) {
-                return Some(gd);
-            }
+        if let Ok(ps) = gait_ops::session::ps(&gd)
+            && ps.rows.iter().any(|r| r.session_id == id)
+        {
+            return Some(gd);
         }
     }
     None
@@ -191,10 +191,10 @@ pub fn list_sessions(
             let Some(cwd) = meta.ok().and_then(|m| m.codebase_path) else {
                 continue;
             };
-            if let Some(want) = &req.cwd {
-                if Path::new(&cwd) != want.as_path() {
-                    continue;
-                }
+            if let Some(want) = &req.cwd
+                && Path::new(&cwd) != want.as_path()
+            {
+                continue;
             }
             infos.push(SessionInfo::new(row.session_id, PathBuf::from(cwd)));
         }

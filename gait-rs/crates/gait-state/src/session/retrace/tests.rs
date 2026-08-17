@@ -809,7 +809,7 @@ fn active_messages_two_compactions_second_wins() {
     };
     let evs = mint_events(vec![
         events::user_text("before-first".into()),
-        events::summary("first summary".into(), cu.clone(), Some(1)),
+        events::summary("first summary".into(), cu, Some(1)),
         events::user_text("between".into()),
         events::summary("second summary".into(), cu, Some(2)),
         events::user_text("after-second".into()),

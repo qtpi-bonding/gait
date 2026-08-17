@@ -48,6 +48,10 @@ fn build_line_editor(
         ]),
     );
     Reedline::create()
+        // Keep a pasted multiline prompt in one editable buffer. Without
+        // bracketed paste, terminals commonly submit each pasted line as its
+        // own prompt before the user can review or edit the whole request.
+        .use_bracketed_paste(true)
         .with_history(history)
         .with_hinter(Box::new(crate::repl::GaitHinter {
             shell_history_path: shell_history_path.clone(),
@@ -310,9 +314,13 @@ pub async fn run_chat(
     #[allow(clippy::print_stderr)]
     // post-loop, `shared`'s builder is going out of scope; nothing left to synchronize against
     {
-        eprint!("{}{}{}\r\n", theme.muted.fg(), resume, RESET);
-        eprint!("{}{}{}\r\n", theme.muted.fg(), persist, RESET);
-        eprint!("{}{}{}\r\n", theme.muted.fg(), discard, RESET);
+        // These are intended to be copied, but remain part of the REPL's
+        // muted command palette. Reset before and after every line so a
+        // preceding streamed/rendered fragment cannot affect the command.
+        let muted = theme.muted.fg();
+        eprint!("{RESET}{muted}{resume}{RESET}\r\n");
+        eprint!("{RESET}{muted}{persist}{RESET}\r\n");
+        eprint!("{RESET}{muted}{discard}{RESET}\r\n{RESET}");
     }
 
     Ok(())

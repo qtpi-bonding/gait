@@ -44,6 +44,16 @@ pub(crate) fn tool_target(name: &str, args: &serde_json::Value) -> Option<String
         "codesearch" => s("query").map(|q| trunc(q, 50)),
         "webfetch" => s("url").map(|u| trunc(u, 80)),
         "spawn_agent" => s("task").map(|t| trunc(t, 50)),
+        "apply_patch" => {
+            let patch = s("patch")?;
+            patch.lines().find_map(|line| {
+                line.strip_prefix("*** Update File: ")
+                    .or_else(|| line.strip_prefix("*** Add File: "))
+                    .map(str::trim)
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_string)
+            })
+        }
         _ => None,
     }
 }
@@ -483,6 +493,14 @@ mod tests {
         assert_eq!(
             tool_target("webfetch", &args).as_deref(),
             Some("https://example.com/page")
+        );
+
+        let args = serde_json::json!({
+            "patch": "*** Begin Patch\n*** Update File: crates/gait-repl/src/ui/renderer.rs\n@@\n-old\n+new\n*** End Patch"
+        });
+        assert_eq!(
+            tool_target("apply_patch", &args).as_deref(),
+            Some("crates/gait-repl/src/ui/renderer.rs")
         );
 
         assert_eq!(

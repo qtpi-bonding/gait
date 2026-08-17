@@ -7,7 +7,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-gait-local = { path = "../gait-local" }
 gait-core    = { path = "../.." }
 gait-ops     = { path = "../gait-ops" }
 gait-auth    = { path = "../gait-auth" }
@@ -27,6 +26,14 @@ uuid = { version = "1", features = ["v4"] }
 git2 = "0.19"
 serde_yaml = "0.9"
 libc = "0.2"
+
+[features]
+default = []
+local = ["dep:gait-local"]
+
+[dependencies.gait-local]
+path = "../gait-local"
+optional = true
 
 [dev-dependencies]
 serial_test = "3"

@@ -183,6 +183,7 @@ async fn main() {
         Commands::Disable(args) => gait_cli::cli::admin::cmd_disable(args),
         Commands::Auth(args) => gait_cli::cli::admin::cmd_auth(args).await,
         Commands::Models(args) => gait_cli::cli::admin::cmd_models(args).await,
+        #[cfg(feature = "local")]
         Commands::Local(args) => gait_cli::cli::admin::cmd_local(args).await,
         Commands::Inference(args) => gait_cli::cli::admin::cmd_inference(args),
         Commands::Workflow(args) => gait_cli::cli::workflow::cmd_workflow(args).await,
