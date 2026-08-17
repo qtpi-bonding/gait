@@ -42,6 +42,14 @@ impl ReplBuilder {
         self.state.begin_turn();
     }
 
+    /// Start a turn while preserving the context row underneath the spinner.
+    /// The timer itself still owns the live spinner row; the context is printed
+    /// once below it and is not part of Reedline's input prompt.
+    pub fn begin_turn_with_status(&mut self, status: &str) {
+        self.state.begin_turn_with_status(status);
+        let _ = std::io::stderr().flush();
+    }
+
     pub fn handle_stream_item(&mut self, item: pb::StreamItem) -> StreamRender {
         use pb::stream_item::Item;
         let signal = match item.item {
@@ -88,7 +96,18 @@ impl ReplBuilder {
     /// status line.
     pub fn write_raw(&mut self, text: &str) {
         let _guard = self.state.paint_lock.as_ref().and_then(|l| l.lock().ok());
+        self.state.erase_overlay();
         eprint!("\r\x1b[2K{text}");
+        self.state.redraw_overlay();
+        let _ = std::io::stderr().flush();
+    }
+
+    /// Write the non-editable context row immediately above the next editor
+    /// row. It is intentionally separate from Reedline's right prompt: a long
+    /// edit buffer must never be able to consume this information.
+    pub fn write_status(&mut self, status: &str) {
+        let _guard = self.state.paint_lock.as_ref().and_then(|l| l.lock().ok());
+        eprint!("\r\x1b[2K  {}\r\n", status);
         let _ = std::io::stderr().flush();
     }
 

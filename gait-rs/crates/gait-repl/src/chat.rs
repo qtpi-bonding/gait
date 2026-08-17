@@ -174,6 +174,7 @@ pub async fn run_chat(
     let shared: crate::repl::Shared =
         std::rc::Rc::new(std::cell::RefCell::new(crate::repl::ReplShared {
             builder,
+            status_text: String::new(),
             turn_done_blocks: None,
             control: None,
             // Entry point: surface gait.jsonc parse errors instead of silently

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/gait-bin", "crates/gait-repl", "crates/gait-cli", "crates/gait-proto", "crates/gait-types", "crates/gait-platform", "crates/gait-auth", "crates/gait-provider", "crates/gait-local", "crates/gait-llama-cpp", "crates/gait-workflow", "crates/gait-ops", "crates/gait-sandbox", "crates/gait-state", "crates/gait-acp", "crates/gait-identity"]
+members = ["crates/gait-bin", "crates/gait-repl", "crates/gait-cli", "crates/gait-proto", "crates/gait-types", "crates/gait-platform", "crates/gait-auth", "crates/gait-provider", "crates/gait-local", "crates/gait-llama-cpp", "crates/gait-workflow", "crates/gait-ops", "crates/gait-sandbox", "crates/gait-state", "crates/gait-acp", "crates/gait-identity", "crates/gait-testkit"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
@@ -89,12 +89,3 @@ gait-repl = { path = "crates/gait-repl", features = ["dev-harness"] }
 [[bin]]
 name = "mock_brain"
 path = "src/bin/mock_brain.rs"
-
-# `harness = false`: this test drives `ui::capture::Capture` (a raw fd-2 dup2),
-# which is fundamentally incompatible with the default libtest harness's own
-# process-wide print!/eprint! capture — see the comment at the top of
-# tests/repl_drive_e2e.rs for the full explanation.
-[[test]]
-name = "repl_drive_e2e"
-path = "tests/repl_drive_e2e.rs"
-harness = false

@@ -199,6 +199,10 @@ async fn prompt_streams_agent_message_and_ends_turn() {
     let t = tempfile::TempDir::new().unwrap();
     let gait_dir = t.path().join("home");
     std::fs::create_dir_all(&gait_dir).unwrap();
+    // Keep credential discovery inside the hermetic test workspace. The mock
+    // provider does not need credentials, but the normal resolver still
+    // probes its configured home before concluding that none are present.
+    unsafe { std::env::set_var("GAIT_HOME", &gait_dir) };
     // The gait-dir is itself a git repo (GitTraceRepo::create_session_worktree
     // opens it with Repository::open and manages session branches/worktrees
     // inside it) — `gait init` does this for real workspaces; the test must
@@ -292,6 +296,9 @@ fn set_brain_exe() {
 fn make_workspace(root: &Path, name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     let gait_dir = root.join(format!("{name}-home"));
     std::fs::create_dir_all(&gait_dir).unwrap();
+    // See the inline workspace above: never let this integration test discover
+    // credentials through the developer's real home directory.
+    unsafe { std::env::set_var("GAIT_HOME", &gait_dir) };
     init_git_repo(&gait_dir);
     let repo = root.join(format!("{name}-repo"));
     std::fs::create_dir_all(&repo).unwrap();

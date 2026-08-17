@@ -4,9 +4,11 @@
 //! times, so the cell never double-borrows. The loop is awaited (not spawned),
 //! so the non-`Send` `Rc` is fine.
 use std::cell::RefCell;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use crate::repl::status::{reasoning_label, short_model as status_short_model, ReplStatus};
 use crate::repl::{bang_command_str, commands as cmd, is_bang_command};
 use crate::theme::RESET;
 use crate::ui::{ReplBuilder, ViewSignal};
@@ -28,6 +30,9 @@ pub enum Control {
 /// Single-threaded REPL state shared by the sink path and `ReplSource`.
 pub struct ReplShared {
     pub builder: ReplBuilder,
+    /// Context row captured before the input line is read and reused by the
+    /// turn overlay while the next request is running.
+    pub status_text: String,
     /// Blocks captured from the just-finished turn's `TurnDone` signal (preferred
     /// over `take_turn_blocks()` — they may differ when `turn_result` carries
     /// its own blocks).
@@ -92,7 +97,9 @@ impl TurnSink for ReplSink {
     }
 
     fn begin_turn(&mut self) {
-        self.shared.borrow_mut().builder.begin_turn();
+        let mut shared = self.shared.borrow_mut();
+        let status = shared.status_text.clone();
+        shared.builder.begin_turn_with_status(&status);
     }
 
     fn end_turn(&mut self) {
@@ -133,16 +140,36 @@ impl ReplSource {
 
     /// Short model name: the part after the first `/` in the resolved model string,
     /// e.g. `"anthropic/claude-haiku-..."` → `"claude-haiku-..."`, `"minimax/m3"` → `"m3"`.
-    fn model_short(&self) -> String {
-        if let Some(model) = &self.model_override {
-            return short_model(model);
-        }
+    fn active_inference(&self) -> Option<gait_core::proto::gait::log::v1::Inference> {
         let cfg = gait_core::config::load_config(&self.gait_dir);
         let base = cfg.inference.unwrap_or_default();
-        let effective = gait_core::inferences::load_inference(&self.gait_dir, &base)
-            .map(|i| i.model)
-            .unwrap_or(base);
-        short_model(&effective)
+        gait_core::inferences::load_inference(&self.gait_dir, &base).ok()
+    }
+
+    fn model_short(&self) -> String {
+        if let Some(model) = &self.model_override {
+            return status_short_model(model);
+        }
+        self.active_inference()
+            .map(|i| status_short_model(&i.model))
+            .unwrap_or_else(|| "?".into())
+    }
+
+    fn status(&self) -> ReplStatus {
+        let inference = self.active_inference();
+        let mode = if std::io::stderr().is_terminal() {
+            active_mode_name(&self.gait_dir, &self.session_id)
+        } else {
+            None
+        };
+        ReplStatus {
+            agent: Some(self.agent_label()),
+            model: inference.as_ref().map(|i| status_short_model(&i.model)),
+            reasoning: inference.as_ref().and_then(reasoning_label),
+            mode,
+            codebase: Some(short_codebase(&self.codebase)),
+            branch: git_branch(&self.codebase),
+        }
     }
 
     fn cycle_mode(&mut self) {
@@ -175,12 +202,22 @@ impl ReplSource {
     }
 }
 
-fn short_model(model: &str) -> String {
-    model
-        .split_once('/')
-        .map(|(_, s)| s)
-        .unwrap_or("?")
-        .to_string()
+fn short_codebase(path: &std::path::Path) -> String {
+    let raw = path.to_string_lossy().to_string();
+    if let Ok(home) = std::env::var("HOME") {
+        if let Some(rest) = raw.strip_prefix(&home) {
+            return format!("~{rest}");
+        }
+    }
+    raw
+}
+
+fn git_branch(path: &std::path::Path) -> Option<String> {
+    // Branch lookup will be added through the Repos API. Do not shell out from
+    // the prompt path: the REPL harness and embedded callers must not acquire
+    // an ambient subprocess merely to draw UI chrome.
+    let _ = path;
+    None
 }
 
 fn active_mode_name(gait_dir: &std::path::Path, session_id: &str) -> Option<String> {
@@ -276,10 +313,9 @@ impl TurnSource for ReplSource {
 
         // ---- read + dispatch lines until a task line (or a control signal) ----
         loop {
-            // GaitPrompt with session, model, and branch info in the right edge.
-            // `gait_core::git::Repos` does not expose a `current_branch` method;
-            // leave empty until the method is added to the Repos API.
-            let branch = String::new();
+            let status = self.status().render();
+            self.shared.borrow_mut().status_text = status.clone();
+            self.shared.borrow_mut().builder.write_status(&status);
             let open_node = None; // chat's degenerate node; non-chat workflows set this later.
             let indicator = {
                 let accent = self.shared.borrow().builder.theme().accent.fg();
@@ -288,7 +324,7 @@ impl TurnSource for ReplSource {
             let prompt = crate::repl::GaitPrompt {
                 agent: self.agent_label(),
                 model: self.model_short(),
-                branch,
+                branch: String::new(),
                 open_node,
                 indicator,
             };
@@ -1508,6 +1544,7 @@ mod repl_sink_tests {
         );
         std::rc::Rc::new(std::cell::RefCell::new(crate::repl::ReplShared {
             builder,
+            status_text: String::new(),
             turn_done_blocks: None,
             control: None,
             sandbox_on: false,
@@ -1590,6 +1627,7 @@ mod command_tests {
         let shared: crate::repl::Shared =
             std::rc::Rc::new(std::cell::RefCell::new(crate::repl::ReplShared {
                 builder,
+                status_text: String::new(),
                 turn_done_blocks: None,
                 control: None,
                 sandbox_on: true,

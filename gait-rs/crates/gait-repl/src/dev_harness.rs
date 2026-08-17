@@ -154,6 +154,25 @@ fn event_signal(body: pb::event::Body) -> Signal {
     }
 }
 
+fn append_event_signal(body: pb::event::Body, turn: u32) -> Signal {
+    Signal {
+        corr_id: 0,
+        body: Some(signal::Body::Append(
+            gait_core::proto::gait::sandbox::v1::Append {
+                event: Some(envelope::mint(
+                    body,
+                    None,
+                    envelope::EventScope::Step {
+                        run: 0,
+                        turn,
+                        step: 0,
+                    },
+                )),
+            },
+        )),
+    }
+}
+
 fn delta_signal(text: &str) -> Signal {
     Signal {
         corr_id: 0,
@@ -240,6 +259,16 @@ fn write_numbered_frames(gait_dir: &Path, turns: &[Turn]) -> anyhow::Result<()> 
     {
         let mut blob = Vec::new();
         for frame in &turn.frames {
+            // A real brain records at least one step-scoped event before its
+            // terminal signal.  The tiny mock has no model loop, so provide
+            // the same lifecycle marker; otherwise the spine quite correctly
+            // rejects a Done result with zero steps.
+            if matches!(frame, Frame::TerminatedOk(_) | Frame::TerminatedFail(_)) {
+                blob.extend_from_slice(&frame_bytes(&append_event_signal(
+                    events::assistant_text("mock step".into()),
+                    n as u32,
+                )));
+            }
             blob.extend_from_slice(&frame_bytes(&frame_to_signal(frame)));
         }
         std::fs::write(gait_dir.join(format!("mock_frames.{n}.bin")), blob)?;
@@ -277,6 +306,7 @@ pub async fn run_script(
     let shared: crate::repl::Shared =
         std::rc::Rc::new(std::cell::RefCell::new(crate::repl::ReplShared {
             builder,
+            status_text: String::new(),
             turn_done_blocks: None,
             control: None,
             sandbox_on: false,
@@ -318,7 +348,26 @@ pub async fn run_script(
     )
     .await;
     let bytes = capture.end();
-    outcome?;
+    if let Err(e) = outcome {
+        anyhow::bail!(
+            "single_prompt_run failed: {e}; capture={}",
+            String::from_utf8_lossy(&bytes)
+        );
+    }
+    if String::from_utf8_lossy(&bytes).contains("turn failed") {
+        let events = gait_core::session::Ingestor::from_session(gait_dir, session_id)
+            .events()
+            .unwrap_or_default();
+        let coords: Vec<_> = events
+            .iter()
+            .filter(|e| e.step.is_some())
+            .map(|e| (e.run, e.turn, e.step))
+            .collect();
+        anyhow::bail!(
+            "single_prompt_run reported a turn failure; coords={coords:?}; capture={}",
+            String::from_utf8_lossy(&bytes),
+        );
+    }
 
     Ok(crate::ui::annotate::annotate(&bytes, &theme))
 }
@@ -349,6 +398,12 @@ pub async fn run_script_fresh(
     std::fs::create_dir_all(gait_dir.join("workflow-runs"))?;
     std::fs::write(gait_dir.join("gait.jsonc"), r#"{ "inference": "mock" }"#)?;
 
+    // Keep credential discovery hermetic. The mock still follows the normal
+    // auth-resolution path, but it must not inspect the developer's global
+    // auth store (which may be unavailable in a restricted test runner).
+    let auth_home = ws.path().join("gait-home");
+    std::fs::create_dir_all(&auth_home)?;
+    std::env::set_var("GAIT_HOME", &auth_home);
     std::env::set_var("GAIT_BRAIN_EXE", mock_brain_exe);
 
     let session_id = gait_core::session::new_session_id();

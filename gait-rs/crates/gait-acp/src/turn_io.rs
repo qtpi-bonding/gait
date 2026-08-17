@@ -260,6 +260,22 @@ impl AcpTurnSource {
     }
 }
 
+/// A paused turn can leave terminal bookkeeping after its interaction event.
+/// Inspect the request/reply sequence directly so that bookkeeping does not
+/// hide an unanswered permission request from the next ACP source round.
+fn pending_permissions(path: &std::path::Path) -> Option<Vec<PermissionItem>> {
+    let events = gait_core::session::log::read_events(path).ok()?;
+    let mut pending = None;
+    for event in events {
+        match gait_core::proto::event_kind(&event) {
+            Some(payload::Kind::Permissions(request)) => pending = Some(request.items.clone()),
+            Some(payload::Kind::PermissionsReply(_)) => pending = None,
+            _ => {}
+        }
+    }
+    pending.filter(|items| !items.is_empty())
+}
+
 #[async_trait::async_trait(?Send)]
 impl TurnSource for AcpTurnSource {
     async fn next(&mut self) -> Option<TurnStart> {
@@ -270,11 +286,24 @@ impl TurnSource for AcpTurnSource {
 
         // Post-turn: is the turn waiting for permission?
         let log_path = gait_core::session::live::log_path(&self.gait_dir, &self.sid);
-        let items = match session_state(&log_path) {
-            Ok(SessionState::AwaitingPermission { items }) => items,
-            _ => return None, // terminal / idle -> the run loop finalizes.
-        };
-
+        // The relay returns after the brain's terminal frame, while the
+        // append-only log writer can flush the preceding permission event a
+        // few scheduler ticks later. Do not interpret that tiny publication
+        // window as an exhausted source: doing so finalizes the pause before
+        // ACP has had a chance to answer it. Once the log is quiescent this is
+        // a short, bounded wait and the normal no-permission path is unchanged.
+        let mut items = None;
+        for _ in 0..20 {
+            items = pending_permissions(&log_path).or_else(|| match session_state(&log_path) {
+                Ok(SessionState::AwaitingPermission { items }) => Some(items),
+                _ => None,
+            });
+            if items.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let items = items?;
         // Ask round: one request per distinct tool_call_id; accumulate choices.
         let mut choices: Vec<ItemChoice> = Vec::new();
         // Preserve first-seen order of ids (grouping is by shared tool_call_id).
@@ -327,7 +356,13 @@ impl TurnSource for AcpTurnSource {
         // Write the reply (a log append — never a turn) and resume. Completeness is
         // guaranteed by construction (choices cover every pending id). A reply error
         // is an internal bug; abandon rather than half-answer.
-        match gait_ops::permission::reply(&self.gait_dir, &self.sid, choices) {
+        // The brain may append terminal bookkeeping immediately after the
+        // permission event. Use the request snapshot we just presented rather
+        // than re-deriving state from that now-advanced tail.
+        if self.cancel.is_cancelled() {
+            return None;
+        }
+        match gait_ops::permission::reply_for_items(&self.gait_dir, &self.sid, items, choices) {
             Ok(_) => Some(TurnStart::Resume),
             Err(_) => None,
         }

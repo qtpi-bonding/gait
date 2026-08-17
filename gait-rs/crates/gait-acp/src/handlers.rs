@@ -155,7 +155,6 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                         map.set_cascade(&sid, handle.clone());
                         let cancel = tokio_util::sync::CancellationToken::new();
                         map.set_cancel(&sid, cancel.clone());
-
                         let map_thread = map.clone();
                         let sid_thread = sid.clone();
                         let caps_thread = caps.clone();
@@ -187,7 +186,7 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                                 None
                             };
                             let source = AcpTurnSource::new(
-                                text,
+                                text.clone(),
                                 gait_core::git::Repos::production(),
                                 codebase.clone(),
                                 cx,
@@ -198,10 +197,9 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                             let opts = gait_workflow::SinglePromptOpts {
                                 run_id: format!("acp-{sid_thread}"),
                                 continue_session: sid_thread.clone(),
+                                prompt: Some(text),
                                 gait_dir,
                                 codebase,
-                                sandbox_on: None,
-                                cascade: Some(handle),
                                 fs_delegate,
                                 allow_intree: false,
                                 ..Default::default()
@@ -223,6 +221,9 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                                 Ok(StopReason::Cancelled)
                             } else {
                                 match outcome {
+                                    Err(e) if map_thread.was_cancelled(&sid_thread) => {
+                                        Ok(StopReason::Cancelled)
+                                    }
                                     Err(e) => Err(e.to_string()),
                                     Ok(_) => match sink.take_result() {
                                         Some(tr) => turn_result_to_stop_reason(&tr),

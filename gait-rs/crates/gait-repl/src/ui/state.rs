@@ -2,6 +2,7 @@
 
 use crate::ui::timer::Timer;
 use gait_core::proto::gait::log::v1 as pb;
+use std::io::{IsTerminal, Write};
 use std::time::Instant;
 
 // Dirty-queue item — the setState->build analog
@@ -101,6 +102,45 @@ impl ReplState {
         let t = Timer::start(now);
         self.paint_lock = Some(t.paint_lock());
         self.timer = Some(t);
+    }
+
+    /// Start a turn with the stable context row attached to the spinner
+    /// overlay. The overlay is drawn once here; subsequent renderer/timer
+    /// redraws use the same centralized Timer state.
+    pub fn begin_turn_with_status(&mut self, status: &str) {
+        self.begin_turn();
+        // The fd-capture REPL harness is intentionally non-terminal. Keep its
+        // output linear so ANSI cursor movement cannot hide captured content;
+        // the real terminal gets the managed two-line overlay below.
+        if !std::io::stderr().is_terminal() {
+            return;
+        }
+        if let Some(t) = &self.timer {
+            t.set_context(status);
+            let _guard = self.paint_lock.as_ref().and_then(|l| l.lock().ok());
+            if let Some(start) = self.turn_start {
+                t.draw_overlay(start);
+                let _ = std::io::stderr().flush();
+            }
+        }
+    }
+
+    pub(crate) fn erase_overlay(&self) {
+        if !std::io::stderr().is_terminal() {
+            return;
+        }
+        if let Some(t) = &self.timer {
+            t.erase_overlay();
+        }
+    }
+
+    pub(crate) fn redraw_overlay(&self) {
+        if !std::io::stderr().is_terminal() {
+            return;
+        }
+        if let (Some(t), Some(start)) = (&self.timer, self.turn_start) {
+            t.draw_overlay(start);
+        }
     }
 
     pub fn push_text(&mut self, content: &str) {

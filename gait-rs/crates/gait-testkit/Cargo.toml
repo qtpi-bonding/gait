@@ -1,0 +1,20 @@
+[package]
+name = "gait-testkit"
+description = "Shared subprocess test fixtures for gait protocol consumers."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gait-core = { path = "../.." }
+prost = "0.13"
+
+[features]
+default = []
+mock-brain = []
+
+[[bin]]
+name = "mock_brain"
+path = "src/bin/mock_brain.rs"
+required-features = ["mock-brain"]

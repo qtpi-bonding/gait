@@ -173,12 +173,17 @@ impl ReplRenderer {
             return Vec::new();
         }
         let _guard = state.paint_lock.as_ref().and_then(|l| l.lock().ok());
+        // The timer owns a two-line transient overlay while a turn is active.
+        // Move it out of the way before appending permanent output, then put
+        // it back below the newly rendered items.
+        state.erase_overlay();
         eprint!("\r\x1b[2K");
         let pending = std::mem::take(&mut state.pending);
         let view_items: Vec<ReplViewItem> = pending.into_iter().flat_map(clean_repl_item).collect();
         for v in &view_items {
             self.paint_view_item(v);
         }
+        state.redraw_overlay();
         let _ = std::io::stderr().flush();
         view_items
     }

@@ -1337,6 +1337,7 @@ dependencies = [
  "gait-ops",
  "gait-proto",
  "gait-state",
+ "gait-testkit",
  "gait-workflow",
  "git2",
  "prost",
@@ -1588,6 +1589,7 @@ dependencies = [
  "crossterm 0.29.0",
  "gait-core",
  "gait-ops",
+ "gait-testkit",
  "gait-workflow",
  "git2",
  "glob",
@@ -1655,6 +1657,14 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "gait-testkit"
+version = "0.1.0"
+dependencies = [
+ "gait-core",
+ "prost",
 ]
 
 [[package]]

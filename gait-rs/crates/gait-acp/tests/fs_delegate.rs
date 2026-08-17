@@ -187,6 +187,10 @@ fn workspace() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
     let t = tempfile::TempDir::new().unwrap();
     let gait_dir = t.path().join("home");
     std::fs::create_dir_all(&gait_dir).unwrap();
+    // Credential discovery must remain inside the hermetic test workspace;
+    // otherwise the provider resolver probes the developer's real home and is
+    // rejected by restricted test runners.
+    unsafe { std::env::set_var("GAIT_HOME", &gait_dir) };
     init_git_repo(&gait_dir);
     let repo = t.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();

@@ -207,9 +207,7 @@ pub fn reply(
     session_id: &str,
     choices: Vec<ItemChoice>,
 ) -> Result<ReplyOutcome, OpError> {
-    use gait_state::agent_frontmatter::{resolve_markdown_context_path, MarkdownKind};
-    use gait_state::permissions::{save_choice, PermissionChoice};
-    use gait_state::session::log::{session_state, write_permissions_reply, SessionState};
+    use gait_state::session::log::{session_state, SessionState};
 
     let tx_path = gait_state::session::live::log_path(gait_dir, session_id);
     let state = session_state(&tx_path).map_err(anyhow::Error::from)?;
@@ -221,6 +219,27 @@ pub fn reply(
             )));
         }
     };
+    reply_for_items(gait_dir, session_id, items, choices)
+}
+
+/// Write a permission reply for a request which is known by the caller to be
+/// pending. This is the adapter seam for runners that observe a permission
+/// event in a live brain stream before terminal bookkeeping is appended to the
+/// log. `reply` deliberately keeps its stricter `session_state` check for the
+/// ordinary CLI/API path; ACP supplies the request it just presented to its
+/// client and therefore must not lose it merely because a `RunComplete` event
+/// followed the pause event.
+pub fn reply_for_items(
+    gait_dir: &Path,
+    session_id: &str,
+    items: Vec<pb::PermissionItem>,
+    choices: Vec<ItemChoice>,
+) -> Result<ReplyOutcome, OpError> {
+    use gait_state::agent_frontmatter::{resolve_markdown_context_path, MarkdownKind};
+    use gait_state::permissions::{save_choice, PermissionChoice};
+    use gait_state::session::log::write_permissions_reply;
+
+    let tx_path = gait_state::session::live::log_path(gait_dir, session_id);
     let pending: std::collections::HashSet<&str> = items.iter().map(|it| it.id.as_str()).collect();
     let answered: std::collections::HashSet<&str> = choices.iter().map(|c| c.id.as_str()).collect();
 

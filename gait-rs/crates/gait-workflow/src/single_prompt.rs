@@ -102,10 +102,19 @@ pub async fn single_prompt_run(
         fs_delegate,
         allow_intree,
     } = opts;
+    // A live source owns the prompt lifecycle (including permission/resume
+    // turns). Mark the synthetic node interactive so the runner keeps the
+    // source for its open-node path instead of scheduling a literal prompt
+    // into the automated task pool, where the source cannot be passed.
+    let node_prompt = if input.is_some() {
+        String::new()
+    } else {
+        prompt.unwrap_or_default()
+    };
     let node = Node {
         id: "chat".into(),
         body: Some(node::Body::Prompt(PromptNode {
-            prompt: prompt.unwrap_or_default(),
+            prompt: node_prompt,
             continue_session,
             codebase: None,
         })),

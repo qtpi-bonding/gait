@@ -18,11 +18,9 @@ impl Prompt for GaitPrompt {
         Cow::Borrowed("")
     }
     fn render_prompt_right(&self) -> Cow<'_, str> {
-        if self.branch.is_empty() {
-            Cow::Owned(format!("{} · {}", self.agent, self.model))
-        } else {
-            Cow::Owned(format!("{} · {} · {}", self.agent, self.model, self.branch))
-        }
+        // Stable context is rendered on its own row above the editor. A right
+        // prompt shares the edit row and disappears when the buffer is long.
+        Cow::Borrowed("")
     }
     fn render_prompt_indicator(&self, _mode: PromptEditMode) -> Cow<'_, str> {
         match &self.open_node {
@@ -78,12 +76,9 @@ mod tests {
     }
 
     #[test]
-    fn right_prompt_shows_agent_model_and_branch() {
+    fn right_prompt_is_empty_so_long_input_cannot_overwrite_status() {
         let prompt = p(None);
         let got = prompt.render_prompt_right();
-        assert!(
-            got.contains("default") && got.contains("m3") && got.contains("main"),
-            "got {got:?}"
-        );
+        assert_eq!(got.as_ref(), "");
     }
 }

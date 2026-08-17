@@ -9,6 +9,8 @@ pub struct Timer {
     /// Current status text shown after the spinner frame (e.g. "thinking…" or "read src/main.rs").
     /// Updated from the main thread; read by the background thread.
     pub(crate) activity: Arc<Mutex<String>>,
+    /// Stable context rendered on the row below the live spinner.
+    pub(crate) context: Arc<Mutex<String>>,
     pub(crate) handle: Option<JoinHandle<()>>,
     /// Shared with `ReplRenderer` — `paint` holds the lock for the full drain
     /// loop; the timer's tick uses `try_lock` and skips if paint owns it.
@@ -32,15 +34,22 @@ impl Timer {
     pub fn start(turn_start: Instant) -> Self {
         let stop_flag = Arc::new(AtomicBool::new(false));
         let activity = Arc::new(Mutex::new("thinking…".to_string()));
+        let context = Arc::new(Mutex::new(String::new()));
         let paint_lock = Arc::new(Mutex::new(()));
         let flag = stop_flag.clone();
         let act = activity.clone();
+        let ctx = context.clone();
         let lock = paint_lock.clone();
         let handle = thread::spawn(move || {
             let mut frame = 0usize;
             loop {
                 if flag.load(Ordering::Relaxed) {
-                    eprint!("\r\x1b[2K");
+                    if !ctx.lock().unwrap().is_empty() {
+                        // The cursor is below the two-line overlay.
+                        eprint!("\x1b[1A\r\x1b[2K\x1b[1A\r\x1b[2K");
+                    } else {
+                        eprint!("\r\x1b[2K");
+                    }
                     let _ = std::io::stderr().flush();
                     return;
                 }
@@ -52,12 +61,24 @@ impl Timer {
                     continue;
                 }
                 let current = act.lock().unwrap().clone();
-                eprint!(
-                    "\r  {} {} ({})",
-                    FRAMES[frame % FRAMES.len()],
-                    current,
-                    format_secs(turn_start.elapsed())
-                );
+                let context = ctx.lock().unwrap().clone();
+                if context.is_empty() {
+                    eprint!(
+                        "\r  {} {} ({})",
+                        FRAMES[frame % FRAMES.len()],
+                        current,
+                        format_secs(turn_start.elapsed())
+                    );
+                } else {
+                    // Redraw both managed rows, leaving the cursor beneath them.
+                    eprint!(
+                        "\x1b[1A\r\x1b[2K  {} {} ({})\r\n\x1b[2K  {}\r\n",
+                        FRAMES[frame % FRAMES.len()],
+                        current,
+                        format_secs(turn_start.elapsed()),
+                        context
+                    );
+                }
                 let _ = std::io::stderr().flush();
                 frame += 1;
                 thread::sleep(Duration::from_millis(100));
@@ -66,6 +87,7 @@ impl Timer {
         Self {
             stop_flag,
             activity,
+            context,
             handle: Some(handle),
             paint_lock,
         }
@@ -74,6 +96,36 @@ impl Timer {
     /// Update the displayed activity text (e.g. switch to tool name or back to "thinking…").
     pub fn set_activity(&self, text: &str) {
         *self.activity.lock().unwrap() = text.to_string();
+    }
+
+    pub fn set_context(&self, text: &str) {
+        *self.context.lock().unwrap() = text.to_string();
+    }
+
+    /// Erase the overlay while the caller owns `paint_lock`. The cursor ends
+    /// at the row where the spinner began, ready for permanent output.
+    pub(crate) fn erase_overlay(&self) {
+        if self.context.lock().unwrap().is_empty() {
+            eprint!("\r\x1b[2K");
+        } else {
+            eprint!("\x1b[1A\r\x1b[2K\x1b[1A\r\x1b[2K");
+        }
+    }
+
+    /// Draw the overlay from its starting row, leaving the cursor below it.
+    pub(crate) fn draw_overlay(&self, turn_start: Instant) {
+        let context = self.context.lock().unwrap().clone();
+        let activity = self.activity.lock().unwrap().clone();
+        eprint!(
+            "  {} {} ({})",
+            FRAMES[0],
+            activity,
+            format_secs(turn_start.elapsed())
+        );
+        if !context.is_empty() {
+            eprint!("\r\n  {}", context);
+        }
+        eprint!("\r\n");
     }
 
     /// Access the lock shared with `ReplRenderer` so `paint` can hold it.

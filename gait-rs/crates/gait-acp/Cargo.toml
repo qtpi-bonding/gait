@@ -17,19 +17,11 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
+gait-testkit = { path = "../gait-testkit" }
 
 [[bin]]
 name = "mock_brain_acp"
-path = "../../src/bin/mock_brain.rs"
-
-# `mock_brain.rs` is gait-core's shared test fixture, reused here by path
-# (see Task 6 of the Phase 2 plan) without touching its source. It's clippy-
-# clean under gait-core's own edition (2021), but this package is edition
-# 2024, under which clippy's collapsible_if lint additionally suggests
-# let-chains -- a false positive purely from the edition mismatch, not a
-# real issue in the shared file. Scoped to this package only.
-[lints.clippy]
-collapsible_if = "allow"
+path = "src/bin/mock_brain_acp.rs"
 
 [dev-dependencies]
 tempfile = "3"

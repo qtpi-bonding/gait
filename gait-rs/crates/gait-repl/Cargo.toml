@@ -29,6 +29,7 @@ prost = { version = "0.13", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 tempfile = { version = "3", optional = true }
 git2 = { version = "0.19", optional = true }
+gait-testkit = { path = "../gait-testkit", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -36,4 +37,16 @@ pbjson-types = "0.7"
 serial_test = "3"
 
 [features]
-dev-harness = ["dep:libc", "dep:prost", "dep:serde", "dep:tempfile", "dep:git2"]
+dev-harness = ["dep:libc", "dep:prost", "dep:serde", "dep:tempfile", "dep:git2", "dep:gait-testkit"]
+
+[[bin]]
+name = "mock_brain"
+path = "src/bin/mock_brain.rs"
+required-features = ["dev-harness"]
+
+# This test captures the real stderr file descriptor, so the default libtest
+# output capture must be disabled.
+[[test]]
+name = "repl_drive_e2e"
+path = "tests/repl_drive_e2e.rs"
+harness = false

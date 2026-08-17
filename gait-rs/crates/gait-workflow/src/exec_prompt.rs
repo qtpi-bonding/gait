@@ -353,15 +353,22 @@ pub async fn exec_prompt_node(
         last_error: None,
     };
 
-    if !p.prompt.is_empty() {
-        // Literal prompt: substitute vars, create one-shot source, run.
-        let task = substitute(&p.prompt, &ctx.vars);
-        let repos = gait_core::git::Repos::production();
-        let user_bodies = embed::user_turn_events(&repos, &codebase, task);
-        let source = NodeSource::Literal(OneTurnSource {
-            session_updates: Some(session_updates),
-            bodies: Some(user_bodies),
-        });
+    if !p.prompt.is_empty() || input.is_some() {
+        // A caller may provide a live source even for a prompt-bearing node.
+        // ACP uses this to keep its permission/resume protocol in the source;
+        // ordinary CLI/workflow callers have no source and use the literal
+        // one-shot source below.
+        let source = if let Some(live) = input {
+            NodeSource::Live(live)
+        } else {
+            let task = substitute(&p.prompt, &ctx.vars);
+            let repos = gait_core::git::Repos::production();
+            let user_bodies = embed::user_turn_events(&repos, &codebase, task);
+            NodeSource::Literal(OneTurnSource {
+                session_updates: Some(session_updates),
+                bodies: Some(user_bodies),
+            })
+        };
 
         let mut sink = CapturingSink::new(ctx.workflow_tx.clone());
         embed::run_loop(

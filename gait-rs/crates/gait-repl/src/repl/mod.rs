@@ -6,6 +6,7 @@ pub mod highlight;
 pub mod hinter;
 pub mod input;
 pub mod prompt;
+pub(crate) mod status;
 
 pub use complete::GaitCompleter;
 pub use driver::ReplSink;

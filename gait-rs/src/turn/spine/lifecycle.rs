@@ -486,7 +486,7 @@ fn durable_turn_result(
         grouped.entry(event.step.unwrap()).or_default().push(event);
     }
     let mut usage = pb::TurnTokenUsage::default();
-    let steps = grouped
+    let steps: Vec<pb::StepResult> = grouped
         .into_iter()
         .map(|(index, events)| {
             let mut step_usage = pb::StepTokenUsage::default();
