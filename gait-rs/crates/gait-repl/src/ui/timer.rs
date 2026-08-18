@@ -28,6 +28,17 @@ fn format_secs(d: Duration) -> String {
 
 const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+fn try_paint_tick<F>(lock: &Mutex<()>, paint: F) -> bool
+where
+    F: FnOnce(),
+{
+    let Ok(_guard) = lock.try_lock() else {
+        return false;
+    };
+    paint();
+    true
+}
+
 impl Timer {
     /// Start the status indicator.  `turn_start` is the absolute start of the
     /// turn so the displayed time always reflects total turn elapsed.
@@ -55,31 +66,32 @@ impl Timer {
                 }
                 // Skip the tick if `paint` is mid-drain — otherwise the
                 // status-line erase (`\r\x1b[2K`) lands inside a block.
-                if lock.try_lock().is_err() {
+                if !try_paint_tick(&lock, || {
+                    let current = act.lock().unwrap().clone();
+                    let context = ctx.lock().unwrap().clone();
+                    if context.is_empty() {
+                        eprint!(
+                            "\r  {} {} ({})",
+                            FRAMES[frame % FRAMES.len()],
+                            current,
+                            format_secs(turn_start.elapsed())
+                        );
+                    } else {
+                        // Redraw both managed rows, leaving the cursor beneath them.
+                        eprint!(
+                            "\x1b[1A\r\x1b[2K  {} {} ({})\r\n\x1b[2K  {}\r\n",
+                            FRAMES[frame % FRAMES.len()],
+                            current,
+                            format_secs(turn_start.elapsed()),
+                            context
+                        );
+                    }
+                    let _ = std::io::stderr().flush();
+                }) {
                     thread::sleep(Duration::from_millis(100));
                     frame += 1;
                     continue;
                 }
-                let current = act.lock().unwrap().clone();
-                let context = ctx.lock().unwrap().clone();
-                if context.is_empty() {
-                    eprint!(
-                        "\r  {} {} ({})",
-                        FRAMES[frame % FRAMES.len()],
-                        current,
-                        format_secs(turn_start.elapsed())
-                    );
-                } else {
-                    // Redraw both managed rows, leaving the cursor beneath them.
-                    eprint!(
-                        "\x1b[1A\r\x1b[2K  {} {} ({})\r\n\x1b[2K  {}\r\n",
-                        FRAMES[frame % FRAMES.len()],
-                        current,
-                        format_secs(turn_start.elapsed()),
-                        context
-                    );
-                }
-                let _ = std::io::stderr().flush();
                 frame += 1;
                 thread::sleep(Duration::from_millis(100));
             }
@@ -131,6 +143,14 @@ impl Timer {
     /// Access the lock shared with `ReplRenderer` so `paint` can hold it.
     pub fn paint_lock(&self) -> Arc<Mutex<()>> {
         self.paint_lock.clone()
+    }
+
+    #[cfg(test)]
+    fn try_tick<F>(&self, paint: F) -> bool
+    where
+        F: FnOnce(),
+    {
+        try_paint_tick(&self.paint_lock, paint)
     }
 
     pub fn stop(&mut self) {
@@ -205,6 +225,22 @@ mod tests {
         let lock = t.paint_lock();
         // Holding the lock here proves `paint_lock()` returns a usable handle.
         let _guard = lock.lock().unwrap();
+        t.stop();
+    }
+
+    #[test]
+    fn timer_holds_paint_lock_during_tick_write() {
+        let mut t = Timer::start(Instant::now());
+        let lock = t.paint_lock();
+        let mut observed_locked = false;
+
+        assert!(t.try_tick(|| {
+            observed_locked = lock.try_lock().is_err();
+        }));
+        assert!(
+            observed_locked,
+            "the timer must hold paint_lock while emitting a tick"
+        );
         t.stop();
     }
 }

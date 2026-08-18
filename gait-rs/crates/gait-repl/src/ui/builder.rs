@@ -145,6 +145,12 @@ impl ReplBuilder {
         session_id: &str,
         agent_path: Option<&std::path::Path>,
     ) -> anyhow::Result<InteractionOutcome> {
+        // Interactive prompts own stderr while waiting for input. Stop the
+        // live turn timer first so its redraw cannot interleave with the
+        // multi-line permission/clarify/inform UI or Reedline's prompt.
+        if let Some(mut timer) = self.state.timer.take() {
+            timer.stop();
+        }
         match self.state.take_pending() {
             Pending::Clarify(items) => self.run_clarify(items),
             Pending::Inform(items) => self.run_inform(items),
@@ -632,5 +638,28 @@ mod tests {
         // if/when this file adopts it. Assert the reply carries a Deny.
         // "r" is a live deny, not a cancel — respawn still folds the reply.
         assert!(outcome.respawn);
+    }
+
+    #[test]
+    fn run_interaction_stops_timer_before_permission_prompt() {
+        let reader = Box::new(crate::repl::ScriptedReader::lines(&["r"]));
+        let mut builder = ReplBuilder::new(reader, crate::theme::Theme::dark());
+        builder.begin_turn();
+        builder.state.interaction_pending = Pending::Permission(vec![pb::PermissionItem {
+            id: "p1".into(),
+            cmd: "rm *".into(),
+            patterns: vec!["shell:rm *".into()],
+            tool_name: "shell".into(),
+            ..Default::default()
+        }]);
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        builder
+            .run_interaction(tmp.path(), "sess1", None)
+            .expect("permission prompt must complete");
+        assert!(
+            builder.state.timer.is_none(),
+            "interactive prompts must not leave the live timer writing to stderr"
+        );
     }
 }
