@@ -1796,6 +1796,31 @@ fn outgoing_for_step_includes_injected_messages() {
 }
 
 #[test]
+fn outgoing_for_step_appends_newly_folded_message_in_log_order() {
+    let evs = vec![
+        scoped_mint(events::user_text("first".into()), None, 0, 0),
+        scoped_mint(events::assistant_text("answer".into()), None, 0, 0),
+        scoped_mint(events::inject("user", "new context".into()), None, 0, 1),
+    ];
+    let out = outgoing_for_step(&evs, 0).unwrap();
+    let texts: Vec<&str> = out
+        .iter()
+        .filter_map(|m| match m {
+            Message::User {
+                content: MessageContent::Text(text),
+                ..
+            }
+            | Message::Assistant {
+                content: AssistantContent::Text(text),
+                ..
+            } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, vec!["first", "answer", "new context"]);
+}
+
+#[test]
 fn active_unlock_folds_once_grants_and_clears_on_run_complete() {
     use std::path::PathBuf;
 

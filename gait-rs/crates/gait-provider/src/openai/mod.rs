@@ -146,6 +146,12 @@ struct FunctionDelta {
 struct StreamUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
+    prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+#[derive(Deserialize)]
+struct PromptTokensDetails {
+    cached_tokens: Option<u32>,
 }
 
 // ── Message conversion ────────────────────────────────────────────────────────
@@ -397,7 +403,10 @@ fn body_stream(
                 yield StreamChunk::StepUsage(Usage {
                     input_tokens: usage.prompt_tokens,
                     output_tokens: usage.completion_tokens,
-                    cache_read_tokens: 0,
+                    cache_read_tokens: usage
+                        .prompt_tokens_details
+                        .and_then(|details| details.cached_tokens)
+                        .unwrap_or(0),
                     cache_write_tokens: 0,
                 });
             }
@@ -491,6 +500,59 @@ mod tests {
         assert_eq!(json["presence_penalty"].as_f64().unwrap() as f32, 0.2_f32);
         assert_eq!(json["seed"], 42);
         assert_eq!(json["stop"][0], "<|end|>");
+    }
+
+    #[test]
+    fn openai_usage_deserializes_cached_prompt_tokens() {
+        let chunk: StreamChunkData = serde_json::from_value(serde_json::json!({
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 1200,
+                "completion_tokens": 30,
+                "prompt_tokens_details": {"cached_tokens": 900}
+            }
+        }))
+        .unwrap();
+        let usage = chunk.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, 1200);
+        assert_eq!(usage.completion_tokens, 30);
+        assert_eq!(
+            usage
+                .prompt_tokens_details
+                .and_then(|details| details.cached_tokens),
+            Some(900)
+        );
+    }
+
+    #[test]
+    fn appending_messages_preserves_serialized_prefix() {
+        let first = vec![
+            Message::User {
+                id: "u1".into(),
+                content: MessageContent::Text("first".into()),
+                attribution: None,
+            },
+            Message::Assistant {
+                id: "a1".into(),
+                content: AssistantContent::Text("answer".into()),
+            },
+        ];
+        let mut second = first.clone();
+        second.push(Message::User {
+            id: "u2".into(),
+            content: MessageContent::Text("new event".into()),
+            attribution: None,
+        });
+
+        let first_wire = to_chat_messages("stable system", &first);
+        let second_wire = to_chat_messages("stable system", &second);
+        let first_json = serde_json::to_value(&first_wire).unwrap();
+        let second_json = serde_json::to_value(&second_wire).unwrap();
+        assert_eq!(
+            &second_json.as_array().unwrap()[..first_json.as_array().unwrap().len()],
+            first_json.as_array().unwrap().as_slice(),
+            "ordinary log append must preserve the request prefix"
+        );
     }
 
     #[test]

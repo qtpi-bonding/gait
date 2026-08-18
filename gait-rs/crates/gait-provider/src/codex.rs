@@ -255,7 +255,7 @@ fn response_stream(
                 }
                 "response.completed" => {
                     if let Some(usage) = value.get("response").and_then(|r| r.get("usage")) {
-                        yield StreamChunk::StepUsage(Usage { input_tokens: usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0) as u32, output_tokens: usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(0) as u32, cache_read_tokens: 0, cache_write_tokens: 0 });
+                        yield StreamChunk::StepUsage(Usage { input_tokens: usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0) as u32, output_tokens: usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(0) as u32, cache_read_tokens: cached_input_tokens(usage), cache_write_tokens: 0 });
                     }
                     yield StreamChunk::Done;
                     terminal = true;
@@ -289,6 +289,14 @@ fn codex_failure_message(value: &Value) -> String {
         (None, Some(message)) => format!("Codex Responses request failed: {message}"),
         (None, None) => "Codex Responses request failed".into(),
     }
+}
+
+fn cached_input_tokens(usage: &Value) -> u32 {
+    usage
+        .get("input_tokens_details")
+        .and_then(|details| details.get("cached_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as u32
 }
 
 #[cfg(test)]
@@ -327,6 +335,16 @@ mod tests {
             crate::transport::SseTransport::new(Default::default()).expect("transport"),
         );
         assert!(matches!(result, Err(error) if error.contains("different provider")));
+    }
+
+    #[test]
+    fn reads_cached_input_tokens_from_response_usage() {
+        let usage = json!({
+            "input_tokens": 1200,
+            "output_tokens": 30,
+            "input_tokens_details": {"cached_tokens": 900}
+        });
+        assert_eq!(cached_input_tokens(&usage), 900);
     }
 
     #[test]
