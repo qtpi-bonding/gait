@@ -274,6 +274,47 @@ impl AcpTurnSource {
             cancel,
         }
     }
+    /// Sends one `elicitation/create` request (a single free-text field) and
+    /// decodes the reply. `why_or_context` folds `ClarifyItem.why` /
+    /// `InformItem.context` into the message body — elicitation has no
+    /// separate rationale field. Returns `None` on decline/cancel/any
+    /// non-Accept outcome; the caller is responsible for treating `None`
+    /// the same way the existing `Permissions` path treats
+    /// `RequestPermissionOutcome::Cancelled` (trip `self.cancel`, abandon the
+    /// turn). This method itself does not touch `self.cancel`.
+    async fn resume_clarify_or_inform(
+        &self,
+        content: &str,
+        why_or_context: Option<&str>,
+    ) -> Option<String> {
+        use agent_client_protocol::schema::v1::{
+            CreateElicitationRequest, ElicitationAction, ElicitationFormMode, ElicitationMode,
+            ElicitationSchema, ElicitationScope, ElicitationSessionScope, StringPropertySchema,
+        };
+        let message = match why_or_context {
+            Some(extra) if !extra.is_empty() => format!("{content}\n\n{extra}"),
+            _ => content.to_string(),
+        };
+        let schema = ElicitationSchema::new().property("answer", StringPropertySchema::new(), true);
+        let mode = ElicitationMode::Form(ElicitationFormMode::new(
+            ElicitationScope::Session(ElicitationSessionScope::new(self.session_id.clone())),
+            schema,
+        ));
+        let req = CreateElicitationRequest::new(mode, message);
+        let resp = self.cx.send_request(req).block_task().await.ok()?;
+        match resp.action {
+            ElicitationAction::Accept(accept) => {
+                let content = accept.content?;
+                match content.get("answer")? {
+                    agent_client_protocol::schema::v1::ElicitationContentValue::String(s) => {
+                        Some(s.clone())
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
 }
 
 /// A durable pause a session is currently awaiting a reply for, read
@@ -938,5 +979,135 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("session.jsonl");
         assert!(pending_interaction(&path).is_none());
+    }
+
+    #[tokio::test]
+    async fn resume_clarify_sends_elicitation_and_returns_accepted_text() {
+        use agent_client_protocol::schema::ProtocolVersion;
+        use agent_client_protocol::schema::v1::{
+            CreateElicitationRequest, CreateElicitationResponse, ElicitationAcceptAction,
+            ElicitationAction, ElicitationContentValue, InitializeRequest, InitializeResponse,
+        };
+        use agent_client_protocol::{Agent, Client, ConnectTo, Responder};
+        let (cx_tx, cx_rx) = tokio::sync::oneshot::channel();
+        let cx_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(cx_tx)));
+        let server = Agent.builder().on_receive_request(
+            move |_req: InitializeRequest,
+                  responder: Responder<InitializeResponse>,
+                  cx: agent_client_protocol::ConnectionTo<Client>| {
+                let cx_tx = cx_tx.clone();
+                async move {
+                    cx_tx.lock().unwrap().take().unwrap().send(cx).unwrap();
+                    responder.respond(InitializeResponse::new(ProtocolVersion::V1))
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+        let (channel, server_future) = server.into_channel_and_future();
+        tokio::spawn(server_future);
+        tokio::spawn(
+            Client
+                .builder()
+                .on_receive_request(
+                    |_req: CreateElicitationRequest,
+                     responder: Responder<CreateElicitationResponse>,
+                     _cx| async move {
+                        let mut content = std::collections::BTreeMap::new();
+                        content.insert(
+                            "answer".to_string(),
+                            ElicitationContentValue::String("postgres".into()),
+                        );
+                        responder.respond(CreateElicitationResponse::new(
+                            ElicitationAction::Accept(
+                                ElicitationAcceptAction::new().content(Some(content)),
+                            ),
+                        ))
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .connect_with(channel, async |cx| {
+                    cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
+                        .block_task()
+                        .await?;
+                    std::future::pending::<Result<(), agent_client_protocol::Error>>().await
+                }),
+        );
+        let cx = cx_rx.await.unwrap();
+        let source = AcpTurnSource::new(
+            "hello".into(),
+            Repos::production(),
+            PathBuf::from("."),
+            cx,
+            SessionId::new("s1"),
+            PathBuf::from("."),
+            tokio_util::sync::CancellationToken::new(),
+            None,
+        );
+        let answer = source
+            .resume_clarify_or_inform("which db?", Some("ambiguous config"))
+            .await;
+        assert_eq!(answer.as_deref(), Some("postgres"));
+    }
+
+    #[tokio::test]
+    async fn resume_clarify_decline_returns_none() {
+        use agent_client_protocol::schema::ProtocolVersion;
+        use agent_client_protocol::schema::v1::{
+            CreateElicitationRequest, CreateElicitationResponse, ElicitationAction,
+            InitializeRequest, InitializeResponse,
+        };
+        use agent_client_protocol::{Agent, Client, ConnectTo, Responder};
+        let (cx_tx, cx_rx) = tokio::sync::oneshot::channel();
+        let cx_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(cx_tx)));
+        let server = Agent.builder().on_receive_request(
+            move |_req: InitializeRequest,
+                  responder: Responder<InitializeResponse>,
+                  cx: agent_client_protocol::ConnectionTo<Client>| {
+                let cx_tx = cx_tx.clone();
+                async move {
+                    cx_tx.lock().unwrap().take().unwrap().send(cx).unwrap();
+                    responder.respond(InitializeResponse::new(ProtocolVersion::V1))
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+        let (channel, server_future) = server.into_channel_and_future();
+        tokio::spawn(server_future);
+        tokio::spawn(
+            Client
+                .builder()
+                .on_receive_request(
+                    |_req: CreateElicitationRequest,
+                     responder: Responder<CreateElicitationResponse>,
+                     _cx| async move {
+                        responder
+                            .respond(CreateElicitationResponse::new(ElicitationAction::Decline))
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .connect_with(channel, async |cx| {
+                    cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
+                        .block_task()
+                        .await?;
+                    std::future::pending::<Result<(), agent_client_protocol::Error>>().await
+                }),
+        );
+        let cx = cx_rx.await.unwrap();
+        let source = AcpTurnSource::new(
+            "hello".into(),
+            Repos::production(),
+            PathBuf::from("."),
+            cx,
+            SessionId::new("s1"),
+            PathBuf::from("."),
+            tokio_util::sync::CancellationToken::new(),
+            None,
+        );
+        assert!(
+            source
+                .resume_clarify_or_inform("which db?", None)
+                .await
+                .is_none()
+        );
     }
 }
