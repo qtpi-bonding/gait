@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use agent_client_protocol::schema::v1::{
-    ContentBlock, ContentChunk, MessageId, PermissionOption, PermissionOptionId,
+    ContentBlock, ContentChunk, CurrentModeUpdate, MessageId, PermissionOption, PermissionOptionId,
     PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
     SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate, StopReason,
     TextContent, ToolCall as AcpToolCall, ToolCallId, ToolCallStatus, ToolCallUpdate,
@@ -66,6 +66,9 @@ pub fn kind_to_session_update(kind: &payload::Kind) -> Option<SessionUpdate> {
             let upd = ToolCallUpdate::new(ToolCallId::new(tr.call_id.clone()), fields);
             Some(SessionUpdate::ToolCallUpdate(upd))
         }
+        payload::Kind::Mode(m) => Some(SessionUpdate::CurrentModeUpdate(CurrentModeUpdate::new(
+            m.name.clone(),
+        ))),
         _ => None,
     }
 }
@@ -506,6 +509,25 @@ mod tests {
                 SessionUpdate::AgentMessageChunk(_)
             ]
         ));
+    }
+
+    #[test]
+    fn mode_maps_to_current_mode_update() {
+        let ev = event(events::mode(
+            "plan",
+            vec!["shell".to_string()],
+            "steer text".into(),
+            "Plan mode".into(),
+        ));
+        match event_to_session_update(&ev) {
+            Some(SessionUpdate::CurrentModeUpdate(upd)) => {
+                assert_eq!(
+                    upd.current_mode_id,
+                    agent_client_protocol::schema::v1::SessionModeId::new("plan")
+                );
+            }
+            other => panic!("expected CurrentModeUpdate, got {other:?}"),
+        }
     }
 
     #[test]
