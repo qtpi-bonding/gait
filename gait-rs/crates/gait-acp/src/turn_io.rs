@@ -120,9 +120,13 @@ pub fn turn_result_to_stop_reason(r: &RunResult) -> Result<StopReason, String> {
         }
         Some(Outcome::Failed(failed)) => Err(failed.message.clone()),
         Some(Outcome::Pause(_)) => {
-            // A turn that ends genuinely awaiting interaction with no cancellation is
-            // still unsupported. The cancel path never reaches here: the completion
-            // block short-circuits on was_cancelled() before mapping.
+            // Permissions/Clarify/Inform/SandboxUnlock all resume via
+            // AcpTurnSource::next() before a run ever finalizes into this arm for
+            // the single-pending-item case. This arm is now reached only for:
+            // multi-item Clarify/Inform batches (unsupported — see
+            // pending_interaction's caller in next()), or any pause next()
+            // couldn't resolve (transport error, protocol violation, cancellation
+            // after the fact).
             Err("turn ended awaiting interaction, which is unsupported here".into())
         }
         None => Err("run produced no final turn outcome".into()),
@@ -410,7 +414,7 @@ impl TurnSource for AcpTurnSource {
             return Some(start);
         }
 
-        // Post-turn: is the turn waiting for permission?
+        // Post-turn: is the turn waiting for an interaction?
         let log_path = gait_core::session::live::log_path(&self.gait_dir, &self.sid);
         // The relay returns after the brain's terminal frame, while the
         // append-only log writer can flush the preceding permission event a
@@ -418,79 +422,159 @@ impl TurnSource for AcpTurnSource {
         // window as an exhausted source: doing so finalizes the pause before
         // ACP has had a chance to answer it. Once the log is quiescent this is
         // a short, bounded wait and the normal no-permission path is unchanged.
-        let mut items: Option<Vec<PermissionItem>> = None;
+        let mut interaction: Option<PendingInteraction> = None;
         for _ in 0..20 {
-            items = pending_permissions(&log_path).or_else(|| match session_state(&log_path) {
-                Ok(SessionState::AwaitingPermission { items }) => Some(items),
-                _ => None,
-            });
-            if items.is_some() {
+            interaction =
+                pending_interaction(&log_path).or_else(|| match session_state(&log_path) {
+                    Ok(SessionState::AwaitingPermission { items }) => {
+                        Some(PendingInteraction::Permission(items))
+                    }
+                    Ok(SessionState::AwaitingClarify { items }) => {
+                        Some(PendingInteraction::Clarify(items))
+                    }
+                    Ok(SessionState::AwaitingInform { items }) => {
+                        Some(PendingInteraction::Inform(items))
+                    }
+                    Ok(SessionState::AwaitingSandboxUnlock { items }) => {
+                        Some(PendingInteraction::SandboxUnlock(items))
+                    }
+                    _ => None,
+                });
+            if interaction.is_some() {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        let items = items?;
-        // Ask round: one request per distinct tool_call_id; accumulate choices.
-        let mut choices: Vec<ItemChoice> = Vec::new();
-        // Preserve first-seen order of ids (grouping is by shared tool_call_id).
-        let mut seen: Vec<String> = Vec::new();
-        for it in &items {
-            if !seen.iter().any(|s| s == &it.id) {
-                seen.push(it.id.clone());
-            }
-        }
-        for id in &seen {
-            let segs: Vec<_> = items.iter().filter(|it| &it.id == id).cloned().collect();
-            let (options, map) = build_permission_options(&segs);
-            let tool_call = tool_call_update(&segs[0]);
-            let req = RequestPermissionRequest::new(self.session_id.clone(), tool_call, options);
-            let resp = tokio::select! {
-                biased;
-                // Our own session/cancel tripped the token: abandon. The completion
-                // path sees was_cancelled() and resolves StopReason::Cancelled.
-                _ = self.cancel.cancelled() => return None,
-                r = self.cx.send_request(req).block_task() => match r {
-                    Ok(r) => r,
-                    // Transport/connection error: abandon the turn (drain reaps it).
-                    Err(_) => return None,
-                },
-            };
-            match resp.outcome {
-                RequestPermissionOutcome::Selected(SelectedPermissionOutcome {
-                    option_id, ..
-                }) => match map.get(&option_id) {
-                    Some(cs) => choices.extend(cs.iter().cloned()),
-                    // Client echoed an option we never offered -> protocol violation.
-                    // Bail; the run loop finalizes and the prompt resolves as an error
-                    // (no reply written). NOT a cancellation — leave the token alone.
-                    None => return None,
-                },
-                // The client cancelled while we awaited: trip the shared token so the
-                // completion path reports StopReason::Cancelled, then finalize (no reply).
-                RequestPermissionOutcome::Cancelled => {
-                    self.cancel.cancel();
-                    return None;
+        match interaction? {
+            PendingInteraction::Permission(items) => {
+                // Ask round: one request per distinct tool_call_id; accumulate choices.
+                let mut choices: Vec<ItemChoice> = Vec::new();
+                // Preserve first-seen order of ids (grouping is by shared tool_call_id).
+                let mut seen: Vec<String> = Vec::new();
+                for it in &items {
+                    if !seen.iter().any(|s| s == &it.id) {
+                        seen.push(it.id.clone());
+                    }
                 }
-                // Future-proof: any new outcome is treated like cancelled.
-                _ => {
-                    self.cancel.cancel();
-                    return None;
+                for id in &seen {
+                    let segs: Vec<_> = items.iter().filter(|it| &it.id == id).cloned().collect();
+                    let (options, map) = build_permission_options(&segs);
+                    let tool_call = tool_call_update(&segs[0]);
+                    let req =
+                        RequestPermissionRequest::new(self.session_id.clone(), tool_call, options);
+                    let resp = tokio::select! {
+                        biased;
+                        // Our own session/cancel tripped the token: abandon. The completion
+                        // path sees was_cancelled() and resolves StopReason::Cancelled.
+                        _ = self.cancel.cancelled() => return None,
+                        r = self.cx.send_request(req).block_task() => match r {
+                            Ok(r) => r,
+                            // Transport/connection error: abandon the turn (drain reaps it).
+                            Err(_) => return None,
+                        },
+                    };
+                    match resp.outcome {
+                        RequestPermissionOutcome::Selected(SelectedPermissionOutcome {
+                            option_id,
+                            ..
+                        }) => match map.get(&option_id) {
+                            Some(cs) => choices.extend(cs.iter().cloned()),
+                            // Client echoed an option we never offered -> protocol violation.
+                            // Bail; the run loop finalizes and the prompt resolves as an error
+                            // (no reply written). NOT a cancellation — leave the token alone.
+                            None => return None,
+                        },
+                        // The client cancelled while we awaited: trip the shared token so the
+                        // completion path reports StopReason::Cancelled, then finalize (no reply).
+                        RequestPermissionOutcome::Cancelled => {
+                            self.cancel.cancel();
+                            return None;
+                        }
+                        // Future-proof: any new outcome is treated like cancelled.
+                        _ => {
+                            self.cancel.cancel();
+                            return None;
+                        }
+                    }
                 }
-            }
-        }
 
-        // Write the reply (a log append — never a turn) and resume. Completeness is
-        // guaranteed by construction (choices cover every pending id). A reply error
-        // is an internal bug; abandon rather than half-answer.
-        // The brain may append terminal bookkeeping immediately after the
-        // permission event. Use the request snapshot we just presented rather
-        // than re-deriving state from that now-advanced tail.
-        if self.cancel.is_cancelled() {
-            return None;
-        }
-        match gait_ops::permission::reply_for_items(&self.gait_dir, &self.sid, items, choices) {
-            Ok(_) => Some(TurnStart::Resume),
-            Err(_) => None,
+                // Write the reply (a log append — never a turn) and resume. Completeness is
+                // guaranteed by construction (choices cover every pending id). A reply error
+                // is an internal bug; abandon rather than half-answer.
+                // The brain may append terminal bookkeeping immediately after the
+                // permission event. Use the request snapshot we just presented rather
+                // than re-deriving state from that now-advanced tail.
+                if self.cancel.is_cancelled() {
+                    return None;
+                }
+                match gait_ops::permission::reply_for_items(
+                    &self.gait_dir,
+                    &self.sid,
+                    items,
+                    choices,
+                ) {
+                    Ok(_) => Some(TurnStart::Resume),
+                    Err(_) => None,
+                }
+            }
+            PendingInteraction::Clarify(items) => {
+                if items.len() != 1 {
+                    return None;
+                }
+                let item = &items[0];
+                let answer = tokio::select! {
+                    biased;
+                    _ = self.cancel.cancelled() => return None,
+                    a = self.resume_clarify_or_inform(&item.content, Some(&item.why)) => a,
+                };
+                let Some(answer) = answer else {
+                    self.cancel.cancel();
+                    return None;
+                };
+                match gait_ops::interaction::reply(&self.gait_dir, &self.sid, answer) {
+                    Ok(_) => Some(TurnStart::Resume),
+                    Err(_) => None,
+                }
+            }
+            PendingInteraction::Inform(items) => {
+                if items.len() != 1 {
+                    return None;
+                }
+                let item = &items[0];
+                let answer = tokio::select! {
+                    biased;
+                    _ = self.cancel.cancelled() => return None,
+                    a = self.resume_clarify_or_inform(&item.content, item.context.as_deref()) => a,
+                };
+                let Some(answer) = answer else {
+                    self.cancel.cancel();
+                    return None;
+                };
+                match gait_ops::interaction::reply(&self.gait_dir, &self.sid, answer) {
+                    Ok(_) => Some(TurnStart::Resume),
+                    Err(_) => None,
+                }
+            }
+            PendingInteraction::SandboxUnlock(_items) => {
+                let scope = tokio::select! {
+                    biased;
+                    _ = self.cancel.cancelled() => return None,
+                    s = self.resume_sandbox_unlock() => s,
+                };
+                let Some(scope) = scope else {
+                    self.cancel.cancel();
+                    return None;
+                };
+                match gait_ops::permission::unlock(gait_ops::permission::UnlockParams {
+                    gait_dir: self.gait_dir.clone(),
+                    session_id: self.sid.clone(),
+                    scope,
+                    agent: None,
+                }) {
+                    Ok(_) => Some(TurnStart::Resume),
+                    Err(_) => None,
+                }
+            }
         }
     }
 }
