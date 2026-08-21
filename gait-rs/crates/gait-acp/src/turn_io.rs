@@ -239,6 +239,7 @@ pub struct AcpTurnSource {
 }
 
 impl AcpTurnSource {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         text: String,
         repos: Repos,
