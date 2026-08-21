@@ -7,7 +7,10 @@ use crate::proto::gait::log::v1::event;
 /// runs a turn that folds the existing log with no new input. `None` from
 /// [`TurnSource::next`] means no more work.
 pub enum TurnStart {
-    Input(Vec<event::Body>),
+    Input {
+        bodies: Vec<event::Body>,
+        provenance: Option<crate::proto::gait::log::v1::Provenance>,
+    },
     SessionUpdate(Vec<event::Body>),
     Resume,
 }
@@ -36,8 +39,11 @@ impl ArgSource {
     pub fn new(body: Option<event::Body>) -> Self {
         Self {
             start: Some(
-                body.map(|b| TurnStart::Input(vec![b]))
-                    .unwrap_or(TurnStart::Resume),
+                body.map(|b| TurnStart::Input {
+                    bodies: vec![b],
+                    provenance: None,
+                })
+                .unwrap_or(TurnStart::Resume),
             ),
         }
     }
@@ -59,7 +65,7 @@ mod tests {
         let body = crate::proto::events::user_text("hi".into());
         let mut s = ArgSource::new(Some(body));
         match s.next().await.expect("first yield") {
-            TurnStart::Input(ref bodies) => match &bodies[0] {
+            TurnStart::Input { ref bodies, .. } => match &bodies[0] {
                 event::Body::Payload(p) => {
                     assert!(matches!(p.kind, Some(payload::Kind::UserText(_))))
                 }

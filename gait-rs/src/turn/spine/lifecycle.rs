@@ -33,6 +33,7 @@ pub struct ProfileInputs {
 pub enum TurnMode {
     Persistent {
         trigger: Vec<crate::proto::gait::log::v1::event::Body>,
+        trigger_provenance: Option<crate::proto::gait::log::v1::Provenance>,
     },
     Ephemeral {
         input: Vec<crate::proto::gait::log::v1::Event>,

@@ -165,6 +165,20 @@ pub fn append_with_provenance(
     write_event(path, ev)
 }
 
+/// Like [`append_with_provenance`], but relays a provenance already signed by
+/// someone else. It attaches the value verbatim without signing or verifying.
+pub fn append_with_given_provenance(
+    path: &Path,
+    body: event::Body,
+    provenance: crate::gait::log::v1::Provenance,
+    scope: EventScope,
+) -> anyhow::Result<Event> {
+    let prev = last_event(path)?;
+    let mut ev = mint(body, prev.as_ref(), scope);
+    ev.provenance = Some(provenance);
+    write_event(path, ev)
+}
+
 /// Append a brain-minted event preserving its `id`, `body`, `turn`, `step`,
 /// and `content_hash`, but updating `seq`/`parents` from the log's current
 /// tail. Used by the spine in Phase 3: the brain mints a UUID for the event

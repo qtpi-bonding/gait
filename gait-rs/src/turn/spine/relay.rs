@@ -197,14 +197,21 @@ pub async fn relay_brain_turn(
         }
         TurnMode::Ephemeral { .. } => crate::turn::SessionLog::ephemeral(Vec::new()),
     };
-    let trigger = match mode {
-        TurnMode::Persistent { trigger } => trigger.clone(),
-        TurnMode::Ephemeral { input } => input
-            .iter()
-            .filter_map(|event| event.body.clone())
-            .collect(),
+    let (trigger, trigger_provenance) = match mode {
+        TurnMode::Persistent {
+            trigger,
+            trigger_provenance,
+        } => (trigger.clone(), trigger_provenance.clone()),
+        TurnMode::Ephemeral { input } => (
+            input
+                .iter()
+                .filter_map(|event| event.body.clone())
+                .collect(),
+            None,
+        ),
     };
-    let started = crate::turn::run_lifecycle::begin_turn(&log, &git, codebase, trigger)?;
+    let started =
+        crate::turn::run_lifecycle::begin_turn(&log, &git, codebase, trigger, trigger_provenance)?;
     // Fold the durable selected inference before provider/credential binding.
     let events = log.events();
     // Same computation teardown (lifecycle.rs) does post-turn with its own

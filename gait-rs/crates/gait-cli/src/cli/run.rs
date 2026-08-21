@@ -121,7 +121,10 @@ impl TurnSource for CliSource {
         }
         self.done = true;
         match self.bodies.take() {
-            Some(b) if !b.is_empty() => Some(TurnStart::Input(b)),
+            Some(b) if !b.is_empty() => Some(TurnStart::Input {
+                bodies: b,
+                provenance: None,
+            }),
             _ => Some(TurnStart::Resume),
         }
     }

@@ -1029,7 +1029,10 @@ impl TurnSource for ReplSource {
             );
             let bodies = user_turn_events(&self.repos, &self.codebase, expanded);
             self.ran_turn = true;
-            return Some(TurnStart::Input(bodies));
+            return Some(TurnStart::Input {
+                bodies,
+                provenance: None,
+            });
         }
     }
 }

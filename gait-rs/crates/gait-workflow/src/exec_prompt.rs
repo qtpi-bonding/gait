@@ -198,7 +198,10 @@ impl TurnSource for OneTurnSource {
         if let Some(updates) = self.session_updates.take().filter(|v| !v.is_empty()) {
             return Some(TurnStart::SessionUpdate(updates));
         }
-        self.bodies.take().map(TurnStart::Input)
+        self.bodies.take().map(|bodies| TurnStart::Input {
+            bodies,
+            provenance: None,
+        })
     }
 }
 

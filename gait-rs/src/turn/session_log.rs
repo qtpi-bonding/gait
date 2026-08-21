@@ -89,6 +89,27 @@ impl SessionLog {
         }
     }
 
+    pub(crate) fn append_body_with_provenance(
+        &self,
+        body: event::Body,
+        scope: crate::proto::envelope::EventScope,
+        provenance: crate::proto::gait::log::v1::Provenance,
+    ) -> anyhow::Result<Event> {
+        match self {
+            Self::Persistent { log_path, .. } => {
+                wire::append_with_given_provenance(log_path, body, provenance, scope)
+            }
+            Self::Ephemeral { events } => {
+                let mut guard = events.lock().unwrap();
+                let prev = guard.last();
+                let mut evt = crate::proto::envelope::mint(body, prev, scope);
+                evt.provenance = Some(provenance);
+                guard.push(evt.clone());
+                Ok(evt)
+            }
+        }
+    }
+
     /// The full transcript, in order. The brain's `BrainInit.events` and the
     /// post-turn `count_run_complete` both source from here.
     pub(crate) fn events(&self) -> Vec<Event> {

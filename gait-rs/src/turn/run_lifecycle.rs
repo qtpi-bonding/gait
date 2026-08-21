@@ -26,6 +26,7 @@ pub(crate) fn begin_turn(
     git: &crate::turn::SessionGit,
     codebase: &std::path::Path,
     trigger: Vec<pb::event::Body>,
+    trigger_provenance: Option<pb::Provenance>,
 ) -> anyhow::Result<StartedTurn> {
     use crate::proto::envelope::EventScope;
 
@@ -96,14 +97,25 @@ pub(crate) fn begin_turn(
         },
     )?;
     let mut trigger_id = None;
+    let mut provenance = trigger_provenance;
     for body in trigger {
-        let event = log.append_body(
-            body,
-            EventScope::Turn {
-                run: run.index,
-                turn: turn_index,
-            },
-        )?;
+        let event = match provenance.take() {
+            Some(p) => log.append_body_with_provenance(
+                body,
+                EventScope::Turn {
+                    run: run.index,
+                    turn: turn_index,
+                },
+                p,
+            )?,
+            None => log.append_body(
+                body,
+                EventScope::Turn {
+                    run: run.index,
+                    turn: turn_index,
+                },
+            )?,
+        };
         trigger_id.get_or_insert(event.id);
     }
     if trigger_id.is_some() {
@@ -719,6 +731,7 @@ mod tests {
             &crate::turn::SessionGit::null(),
             codebase.path(),
             Vec::new(),
+            None,
         )
         .unwrap();
 
@@ -779,6 +792,7 @@ mod tests {
             &crate::turn::SessionGit::null(),
             codebase.path(),
             Vec::new(),
+            None,
         )
         .unwrap();
 
@@ -832,6 +846,7 @@ mod tests {
             &crate::turn::SessionGit::null(),
             codebase.path(),
             Vec::new(),
+            None,
         )
         .unwrap();
 

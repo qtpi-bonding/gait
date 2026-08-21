@@ -281,7 +281,10 @@ impl TurnSource for AcpTurnSource {
     async fn next(&mut self) -> Option<TurnStart> {
         // First call: feed the user input.
         if let Some(bodies) = self.first.take() {
-            return Some(TurnStart::Input(bodies));
+            return Some(TurnStart::Input {
+                bodies,
+                provenance: None,
+            });
         }
 
         // Post-turn: is the turn waiting for permission?
