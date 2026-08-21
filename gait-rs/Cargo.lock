@@ -1333,6 +1333,7 @@ dependencies = [
  "agent-client-protocol",
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "gait-core",
  "gait-ops",
  "gait-proto",
