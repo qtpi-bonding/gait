@@ -419,8 +419,27 @@ async fn smoke_cycle_workflow_via_goto() {
     );
 }
 
+// Regression test for `on_error.retry_times`. The previous version of this
+// test (`smoke_retry_on_error_goto`) relied on `goto: recovery`, a fixture
+// field `OnErrorConfig` never actually parses into anything (there is no
+// `goto` routing in the scheduler at all — it was silently dropped by serde
+// as an unknown field), and on a `sleep 10` node with a 100ms timeout to
+// force a failure. Two problems: (1) it asserted behavior
+// (`log.contains("on_error goto")`) that no code path ever produces, so it
+// could never actually pass once it reached that assertion; in practice it
+// always failed earlier, at the `run_workflow(...).unwrap()` call, because
+// `on_error.continue`/`goto` being absent meant the exhausted-retries error
+// aborted the whole run. (2) even that abort depended on a real wall-clock
+// race between a `sleep 10` timing out at exactly 100ms and a sibling node's
+// `echo` finishing first — exactly the kind of timing-dependent setup that
+// makes a test flaky under load. This version tests the actually-implemented
+// mechanism deterministically: a node whose command result depends only on
+// whether it has already run once (a marker file), not on wall-clock timing,
+// so retry_times actually recovering the node is exercised without any
+// timeout/sleep race, and a downstream `depends_on` node correctly waits for
+// that recovery instead of running unconditionally in parallel.
 #[tokio::test]
-async fn smoke_retry_on_error_goto() {
+async fn retry_recovers_from_transient_failure() {
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
 
@@ -454,19 +473,20 @@ async fn smoke_retry_on_error_goto() {
     )
     .unwrap();
     assert!(
-        log.contains("\"nodeError\""),
-        "run log must contain nodeError: {log}"
-    );
-    assert!(
-        log.contains("on_error goto"),
-        "node_error must reference on_error goto"
+        !log.contains("\"nodeError\""),
+        "a node that recovers within its retry budget must not log nodeError: {log}"
     );
     let run_log = WorkflowRunLog::open(&ws.path().join("workflow-runs"), session_id).unwrap();
     let events = run_log.read_events().unwrap();
     let state = reconstruct_state(&events);
     assert_eq!(
+        state.node_status("flaky"),
+        NodeStatus::Done,
+        "flaky must recover via retry and complete"
+    );
+    assert_eq!(
         state.node_status("recovery"),
         NodeStatus::Done,
-        "recovery must be done"
+        "recovery must run after flaky's retry-recovery completes"
     );
 }

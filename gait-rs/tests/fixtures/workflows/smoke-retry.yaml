@@ -2,11 +2,22 @@ name: smoke-retry
 nodes:
   - id: flaky
     shell:
-      run: "sleep 10"
-      timeout: 100
+      run: |
+        if [ -f attempt.marker ]; then
+          echo '{"ok": true}'
+        else
+          touch attempt.marker
+          echo 'not json'
+        fi
+    output_schema:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
     on_error:
       retry_times: 1
-      delay: 50
-      goto: recovery
+      delay: 10
   - id: recovery
+    depends_on: [flaky]
     shell: "echo RECOVERED"
