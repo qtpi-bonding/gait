@@ -6,6 +6,44 @@ use std::path::PathBuf;
 
 use gait_core::embed::{CliSink, Diag, TurnSink, TurnSource, TurnStart};
 
+fn apply_cli_overrides(
+    loaded: gait_core::config::GaitConfig,
+    args: &RunArgs,
+) -> gait_core::config::GaitConfig {
+    use gait_core::config::resolver::{ConfigResolver, Overrides};
+
+    // Preserve the existing append/dedup behavior for CLI allow/deny flags.
+    let mut allow = loaded.allow.clone();
+    for p in &args.allow {
+        if !allow.contains(p) {
+            allow.push(p.clone());
+        }
+    }
+    let mut deny = loaded.deny.clone();
+    for p in &args.deny {
+        if !deny.contains(p) {
+            deny.push(p.clone());
+        }
+    }
+    let sandbox_on = if args.sandbox_locked {
+        Some(true)
+    } else if args.no_sandbox {
+        Some(false)
+    } else if args.sandbox {
+        Some(true)
+    } else {
+        None
+    };
+    let cli_overrides = Overrides {
+        allow: Some(allow),
+        deny: Some(deny),
+        max_iter: args.max_iter.map(|n| Some(n as u32)),
+        sandbox_on,
+        ..Overrides::empty()
+    };
+    ConfigResolver::new(loaded).with(cli_overrides).resolve()
+}
+
 #[derive(Parser, Debug)]
 #[command(no_binary_name = true)]
 pub struct RunArgs {
@@ -140,7 +178,7 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
 
     // Entry point: surface gait.jsonc parse errors instead of silently
     // defaulting. CLI args layered on top still take precedence below.
-    let mut config = match gait_core::config::load_config_with(
+    let loaded = match gait_core::config::load_config_with(
         &gait_dir,
         gait_core::config::ConfigLoadPolicy::Strict,
     ) {
@@ -150,26 +188,7 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
             std::process::exit(1);
         }
     };
-    for p in &args.allow {
-        if !config.allow.contains(p) {
-            config.allow.push(p.clone());
-        }
-    }
-    for p in &args.deny {
-        if !config.deny.contains(p) {
-            config.deny.push(p.clone());
-        }
-    }
-    if let Some(n) = args.max_iter {
-        config.max_iter = Some(n);
-    }
-    if args.sandbox_locked {
-        config.sandbox.on = true;
-    } else if args.no_sandbox {
-        config.sandbox.on = false;
-    } else if args.sandbox {
-        config.sandbox.on = true;
-    }
+    let config = apply_cli_overrides(loaded, &args);
 
     // `--mode <name>` activates a mode overlay for this run by appending a
     // `Mode` event to the session log before the turn starts.
@@ -446,6 +465,31 @@ mod tests {
         let a = RunArgs::parse_from(&["--sandbox-locked".to_string()]);
         assert!(a.sandbox_locked);
         assert!(!a.no_sandbox);
+    }
+
+    #[test]
+    fn cli_allow_appends_and_dedupes_onto_config_allow() {
+        let loaded = gait_core::config::GaitConfig {
+            allow: vec!["read".to_string()],
+            ..gait_core::config::GaitConfig::default()
+        };
+        let args = RunArgs::parse_from(&[
+            "--allow".to_string(),
+            "read".to_string(),
+            "--allow".to_string(),
+            "shell".to_string(),
+        ]);
+        let resolved = apply_cli_overrides(loaded, &args);
+        assert_eq!(resolved.allow, vec!["read", "shell"]);
+    }
+
+    #[test]
+    fn cli_sandbox_locked_forces_on_even_with_no_sandbox() {
+        let loaded = gait_core::config::GaitConfig::default();
+        let args =
+            RunArgs::parse_from(&["--sandbox-locked".to_string(), "--no-sandbox".to_string()]);
+        let resolved = apply_cli_overrides(loaded, &args);
+        assert!(resolved.sandbox.on);
     }
 
     // ── RunLaunch round-trip (spec-00-footguns.md item 4) ───────────────────

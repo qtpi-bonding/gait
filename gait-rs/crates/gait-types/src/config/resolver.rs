@@ -10,6 +10,7 @@ pub struct Overrides {
     pub deny: Option<Vec<String>>,
     pub max_iter: Option<Option<u32>>,
     pub agent: Option<String>,
+    pub sandbox_on: Option<bool>,
 }
 
 impl Overrides {
@@ -21,6 +22,7 @@ impl Overrides {
             deny: None,
             max_iter: None,
             agent: None,
+            sandbox_on: None,
         }
     }
 }
@@ -65,6 +67,9 @@ impl ConfigResolver {
         // `agent` is not a field on GaitConfig; it's used by callers to route agent resolution.
         // We hold it in the Overrides struct for future use but don't apply it to GaitConfig here.
         let _ = layer.agent;
+        if let Some(sandbox_on) = layer.sandbox_on {
+            self.base.sandbox.on = sandbox_on;
+        }
         self
     }
 
@@ -137,5 +142,30 @@ mod tests {
             .with(Overrides::empty())
             .resolve();
         assert_eq!(effective.allow, base.allow);
+    }
+
+    #[test]
+    fn sandbox_on_override_applies() {
+        let base = GaitConfig::default(); // sandbox.on defaults to true
+        let effective = ConfigResolver::new(base)
+            .with(Overrides {
+                sandbox_on: Some(false),
+                ..Overrides::empty()
+            })
+            .resolve();
+        assert!(!effective.sandbox.on);
+    }
+
+    #[test]
+    fn sandbox_on_absent_layer_preserves_base() {
+        let base = GaitConfig {
+            sandbox: crate::config::SandboxConfig {
+                on: false,
+                ..crate::config::SandboxConfig::default()
+            },
+            ..GaitConfig::default()
+        };
+        let effective = ConfigResolver::new(base).with(Overrides::empty()).resolve();
+        assert!(!effective.sandbox.on);
     }
 }
