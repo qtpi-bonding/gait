@@ -6,6 +6,56 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
+const CONFIG_FIELDS: &[(&str, &str)] = &[
+    (
+        "inference",
+        "The selected model, e.g. \"anthropic/claude-sonnet-4-6\".",
+    ),
+    ("allow", "Tool-name / pattern allowlist."),
+    ("deny", "Tool-name / pattern denylist."),
+    ("tools", "Config-defined shell-command tools."),
+    (
+        "hooks",
+        "Lifecycle hook definitions (event, tool filter, shell command).",
+    ),
+    (
+        "output_schema_retries",
+        "Retry budget for structured_done schema validation.",
+    ),
+    (
+        "max_iter",
+        "Max turn iterations before giving up; defaults to 100 when absent.",
+    ),
+    (
+        "shell_timeout_secs",
+        "Wall-clock timeout for a foreground shell command.",
+    ),
+    (
+        "tool_timeout_secs",
+        "Wall-clock timeout for a single ripgrep-backed grep/codesearch/ls subprocess.",
+    ),
+    ("preview", "When to render edit/write previews."),
+    (
+        "result_schema",
+        "Optional JSON Schema the final structured_done result must match.",
+    ),
+    (
+        "show_thinking",
+        "Whether to render thinking/reasoning blocks in terminal output.",
+    ),
+    (
+        "sandbox",
+        "Sandbox engagement and filesystem/network policy.",
+    ),
+];
+
+fn render_config_fields(out: &mut String) {
+    out.push_str("\n### Config fields\n\n");
+    for (name, desc) in CONFIG_FIELDS {
+        let _ = writeln!(out, "- `{name}` — {desc}");
+    }
+}
+
 #[derive(Debug, Parser)]
 pub struct ManualArgs {
     #[command(subcommand)]
@@ -114,6 +164,7 @@ pub fn render_skill(
             }
         }
     }
+    render_config_fields(&mut body);
     while body.ends_with('\n') {
         body.pop();
     }
@@ -256,6 +307,63 @@ mod tests {
             render_skill(&manifest, crate::cli(), COMMANDS),
             Err(ManualError::UnknownCli { .. })
         ));
+    }
+
+    #[test]
+    fn renders_config_field_reference() {
+        let manifest = parse_manifest(
+            "guides:\n  - title: Configuration\n    body: |\n      How gait.jsonc works.\n",
+        )
+        .unwrap();
+        let rendered = render_skill(&manifest, crate::cli(), COMMANDS).unwrap();
+        assert!(rendered.contains("### Config fields"));
+        assert!(rendered.contains("`inference`"));
+        assert!(rendered.contains("`allow`"));
+    }
+
+    #[test]
+    fn config_fields_table_covers_every_gaitconfig_field() {
+        let _exhaustive = gait_core::config::GaitConfig {
+            inference: None,
+            allow: vec![],
+            deny: vec![],
+            tools: vec![],
+            hooks: vec![],
+            output_schema_retries: 3,
+            max_iter: None,
+            shell_timeout_secs: 60,
+            tool_timeout_secs: 30,
+            preview: Default::default(),
+            result_schema: None,
+            show_thinking: false,
+            sandbox: Default::default(),
+        };
+        let documented: std::collections::HashSet<&str> =
+            CONFIG_FIELDS.iter().map(|(name, _)| *name).collect();
+        let all_fields = [
+            "inference",
+            "allow",
+            "deny",
+            "tools",
+            "hooks",
+            "output_schema_retries",
+            "max_iter",
+            "shell_timeout_secs",
+            "tool_timeout_secs",
+            "preview",
+            "result_schema",
+            "show_thinking",
+            "sandbox",
+        ];
+        let missing: Vec<&str> = all_fields
+            .iter()
+            .filter(|field| !documented.contains(**field))
+            .copied()
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "GaitConfig field(s) missing from CONFIG_FIELDS in manual.rs: {missing:?}"
+        );
     }
 
     #[test]
