@@ -9,7 +9,7 @@ gait-core = { path = "../.." }
 gait-workflow = { path = "../gait-workflow" }
 gait-ops = { path = "../gait-ops" }
 gait-state = { path = "../gait-state" }
-agent-client-protocol = "1.1"
+agent-client-protocol = { version = "1.1", features = ["unstable_elicitation"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sync"] }
 tokio-util = "0.7"
 anyhow = "1"
