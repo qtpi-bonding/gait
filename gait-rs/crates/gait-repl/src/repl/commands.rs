@@ -5,6 +5,7 @@
 pub enum ReplCommandId {
     Help,
     Info,
+    Config,
     Auth,
     Inference,
     Mode,
@@ -51,6 +52,14 @@ pub const COMMANDS: &[ReplCommand] = &[
         desc: "Model, session, gait-dir, codebase",
         group: "general",
         usage: "/info",
+    },
+    ReplCommand {
+        id: ReplCommandId::Config,
+        slug: "/config",
+        aliases: &[],
+        desc: "Show effective configuration and disk plugins",
+        group: "general",
+        usage: "/config",
     },
     ReplCommand {
         id: ReplCommandId::Auth,

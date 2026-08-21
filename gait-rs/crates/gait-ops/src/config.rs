@@ -44,6 +44,31 @@ pub fn get(gait_dir: &Path, key: &str) -> Result<Option<serde_json::Value>, OpEr
     Ok(val.get(key).cloned())
 }
 
+/// Resolve the effective `GaitConfig` for `gait_dir` (Defaults < gait.jsonc,
+/// via `load_config`) plus disk-sourced skills/mcp/plugins, and serialize it
+/// as JSON for the shared CLI, REPL, and ACP inspection operation.
+///
+/// This intentionally does NOT build a live `Profile`/`ResolvedProfile`:
+/// that requires network provider construction and MCP handshakes, while this
+/// operation is introspection rather than a dry run.
+pub fn resolve(gait_dir: &Path, codebase: &Path) -> Result<serde_json::Value, OpError> {
+    let _ = codebase;
+    let config = gait_state::config::load_config(gait_dir);
+    let skills = gait_state::skills::scan_skills(gait_dir);
+    let mcp_servers = gait_state::mcp::scan_mcp_servers(gait_dir);
+    let mut value = serde_json::to_value(&config)
+        .map_err(|e| OpError::Conflict(format!("config serialize error: {e}")))?;
+    let obj = value
+        .as_object_mut()
+        .ok_or_else(|| OpError::Conflict("resolved config is not a JSON object".to_string()))?;
+    obj.insert("skills".to_string(), serde_json::to_value(&skills).unwrap());
+    obj.insert(
+        "mcp_servers".to_string(),
+        serde_json::to_value(&mcp_servers).unwrap(),
+    );
+    Ok(value)
+}
+
 // -----------------------------------------------------------------------------
 // Private helpers — the jsonc-safe read/write pair. Mirrors the layout of
 // `extension.rs` (private helpers sit at the bottom alongside the op that
@@ -264,5 +289,32 @@ mod tests {
     fn get_returns_none_when_config_is_missing_entirely() {
         let dir = ws();
         assert_eq!(get(dir.path(), "model").unwrap(), None);
+    }
+
+    #[test]
+    fn resolve_returns_effective_config_as_json() {
+        let dir = ws();
+        std::fs::write(
+            dir.path().join("gait.jsonc"),
+            r#"{"inference":"anthropic/claude-sonnet-4-6","allow":["read"]}"#,
+        )
+        .unwrap();
+        let resolved = resolve(dir.path(), dir.path()).unwrap();
+        assert_eq!(resolved["inference"], "anthropic/claude-sonnet-4-6");
+        assert_eq!(resolved["allow"][0], "read");
+    }
+
+    #[test]
+    fn resolve_reflects_disk_skills_and_mcp() {
+        let dir = ws();
+        std::fs::create_dir_all(dir.path().join("skills").join("tdd")).unwrap();
+        std::fs::write(
+            dir.path().join("skills").join("tdd").join("SKILL.md"),
+            "---\nname: tdd\ndescription: d\n---\n# body\n",
+        )
+        .unwrap();
+        let resolved = resolve(dir.path(), dir.path()).unwrap();
+        let skills = resolved["skills"].as_array().unwrap();
+        assert!(skills.iter().any(|s| s["name"] == "tdd"));
     }
 }

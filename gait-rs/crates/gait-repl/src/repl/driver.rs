@@ -420,6 +420,32 @@ impl TurnSource for ReplSource {
                 continue;
             }
 
+            // /config — render the shared effective configuration snapshot.
+            if matches!(
+                parsed_command,
+                Some(cmd::ParsedCommand {
+                    id: cmd::ReplCommandId::Config,
+                    args: ""
+                })
+            ) {
+                match gait_ops::config::resolve(&self.gait_dir, &self.codebase) {
+                    Ok(value) => {
+                        let rendered = serde_json::to_string_pretty(&value)
+                            .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"));
+                        self.shared
+                            .borrow_mut()
+                            .builder
+                            .write_raw(&format!("{rendered}\r\n"));
+                    }
+                    Err(error) => self
+                        .shared
+                        .borrow_mut()
+                        .builder
+                        .write_raw(&format!("[gait] /config: {error}\r\n")),
+                }
+                continue;
+            }
+
             // /auth list|status|link|unlink — use the same op boundary as the
             // CLI. Linking stores only a non-secret pointer to the external
             // credential owner.

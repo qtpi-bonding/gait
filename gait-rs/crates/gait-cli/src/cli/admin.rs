@@ -745,9 +745,10 @@ fn parse_config_value(raw: &str) -> serde_json::Value {
     serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.to_string()))
 }
 
-/// `gait config <set|get> ...` — the general external-CLI equivalent of any
-/// REPL slash command that mutates `gait.jsonc`. Calls the generic
-/// `gait_ops::config::set`/`get` directly (the comment-safe jsonc mutators).
+/// `gait config <set|get|show> ...` — the general external-CLI equivalent of
+/// any REPL slash command that reads or mutates `gait.jsonc`. `set`/`get`
+/// call the generic `gait_ops::config::set`/`get` (the comment-safe jsonc
+/// mutators); `show` calls the shared `gait_ops::config::resolve` op.
 /// gait-dir-wide, not session-scoped. Mirrors `WorkflowArgs`/`cmd_workflow`'s
 /// action+rest shape exactly.
 #[derive(Parser, Debug)]
@@ -755,7 +756,7 @@ fn parse_config_value(raw: &str) -> serde_json::Value {
 pub struct ConfigArgs {
     #[arg(long, env = "GAIT_DIR")]
     pub gait_dir: PathBuf,
-    /// Action: set | get
+    /// Action: set | get | show
     pub action: Option<String>,
     /// Remaining args: `<key> <value>` for `set`, `<key>` for `get`
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -797,8 +798,15 @@ pub fn cmd_config(args: ConfigArgs) {
                 }
             }
         }
+        "show" => match gait_ops::config::resolve(&args.gait_dir, &args.gait_dir) {
+            Ok(value) => println!("{}", serde_json::to_string_pretty(&value).unwrap()),
+            Err(e) => {
+                eprintln!("[gait] {e}");
+                std::process::exit(1);
+            }
+        },
         _ => {
-            eprintln!("[gait] usage: gait config <set|get> ...");
+            eprintln!("[gait] usage: gait config <set|get|show> ...");
             std::process::exit(1);
         }
     }
