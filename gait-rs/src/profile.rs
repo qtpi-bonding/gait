@@ -294,22 +294,8 @@ impl Profile {
             .unwrap_or_default();
         let deny = crate::permissions::merge_deny(&config.deny, &agent_deny);
 
-        // Phase 5: skills come from disk first; fall back to config.skills for
-        // backward compat with gait.jsonc inline bodies. The merge logic is
-        // extracted to `skills::merged_skill_registry` so it can be reused
-        // and tested independently.
-        let merged_skills = crate::skills::merged_skill_registry(gait_dir, config);
-
-        // MCP: disk files first; gait.jsonc entries kept if not already on disk (by name).
-        let mut disk_mcp = crate::mcp::scan_mcp_servers(gait_dir);
-        let disk_mcp_names: std::collections::HashSet<String> =
-            disk_mcp.iter().map(|s| s.name.clone()).collect();
-        for s in &config.mcp_servers {
-            if !disk_mcp_names.contains(&s.name) {
-                disk_mcp.push(s.clone());
-            }
-        }
-        let merged_mcp = disk_mcp;
+        let merged_skills = crate::skills::scan_skills(gait_dir);
+        let merged_mcp = crate::mcp::scan_mcp_servers(gait_dir);
 
         // Plugins: scan disk
         let disk_plugins = crate::wasm_plugins::scan_plugins(gait_dir);
@@ -724,56 +710,6 @@ mod tests {
     }
 
     #[test]
-    fn config_skills_kept_when_no_disk_skill() {
-        use tempfile::TempDir;
-        let dir = TempDir::new().unwrap();
-        let config = GaitConfig {
-            inference: Some("test/model".into()),
-            skills: vec![crate::config::SkillDef {
-                name: "inline".into(),
-                description: "inline desc".into(),
-                content: "# Inline body".into(),
-                enabled: true,
-            }],
-            ..GaitConfig::default()
-        };
-        let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
-        assert_eq!(
-            profile.skills.iter().filter(|s| s.name == "inline").count(),
-            1
-        );
-        assert_eq!(profile.skills.len(), 1);
-    }
-
-    #[test]
-    fn disk_skill_wins_over_config_skill_same_name() {
-        use tempfile::TempDir;
-        let dir = TempDir::new().unwrap();
-        let skill_dir = dir.path().join("skills").join("tdd");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(
-            skill_dir.join("SKILL.md"),
-            "---\nname: tdd\ndescription: Disk version\n---\n# Disk TDD\n",
-        )
-        .unwrap();
-        let config = GaitConfig {
-            inference: Some("test/model".into()),
-            skills: vec![crate::config::SkillDef {
-                name: "tdd".into(),
-                description: "Config version".into(),
-                content: "# Config TDD".into(),
-                enabled: true,
-            }],
-            ..GaitConfig::default()
-        };
-        let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
-        let tdd_count = profile.skills.iter().filter(|s| s.name == "tdd").count();
-        assert_eq!(tdd_count, 1, "should deduplicate same-named skill");
-        let tdd = profile.skills.iter().find(|s| s.name == "tdd").unwrap();
-        assert_eq!(tdd.description, "Disk version", "disk wins");
-    }
-
-    #[test]
     fn disk_mcp_populates_profile_mcp_servers() {
         use tempfile::TempDir;
         let dir = TempDir::new().unwrap();
@@ -792,65 +728,6 @@ mod tests {
         assert_eq!(profile.mcp_servers.len(), 1);
         assert_eq!(profile.mcp_servers[0].name, "slack");
         assert_eq!(profile.mcp_servers[0].command.as_deref(), Some("npx"));
-    }
-
-    #[test]
-    fn disk_mcp_wins_over_config_mcp_same_name() {
-        use tempfile::TempDir;
-        let dir = TempDir::new().unwrap();
-        let mcp_dir = dir.path().join("mcp");
-        std::fs::create_dir_all(&mcp_dir).unwrap();
-        std::fs::write(
-            mcp_dir.join("slack.json"),
-            r#"{"command":"npx","args":["disk-version"],"enabled":true}"#,
-        )
-        .unwrap();
-        let config = GaitConfig {
-            inference: Some("test/model".into()),
-            mcp_servers: vec![crate::config::McpServerDef {
-                name: "slack".into(),
-                command: None,
-                args: None,
-                env: None,
-                url: None,
-                spawn: Some("node config-version.js".into()),
-                connect: None,
-                enabled: true,
-                description: None,
-            }],
-            ..GaitConfig::default()
-        };
-        let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
-        assert_eq!(profile.mcp_servers.len(), 1, "should deduplicate");
-        assert_eq!(
-            profile.mcp_servers[0].command.as_deref(),
-            Some("npx"),
-            "disk wins"
-        );
-    }
-
-    #[test]
-    fn config_mcp_kept_when_no_disk_mcp() {
-        use tempfile::TempDir;
-        let dir = TempDir::new().unwrap();
-        let config = GaitConfig {
-            inference: Some("test/model".into()),
-            mcp_servers: vec![crate::config::McpServerDef {
-                name: "remote".into(),
-                command: None,
-                args: None,
-                env: None,
-                url: Some("http://localhost/mcp".into()),
-                spawn: None,
-                connect: None,
-                enabled: true,
-                description: None,
-            }],
-            ..GaitConfig::default()
-        };
-        let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
-        assert_eq!(profile.mcp_servers.len(), 1);
-        assert_eq!(profile.mcp_servers[0].name, "remote");
     }
 
     #[test]

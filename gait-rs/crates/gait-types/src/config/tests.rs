@@ -250,32 +250,6 @@ fn append_allow_pattern_bails_on_parse_error() {
 }
 
 #[test]
-fn parses_mcp_servers_spawn_and_connect() {
-    let dir = TempDir::new().unwrap();
-    std::fs::write(
-        dir.path().join("gait.jsonc"),
-        r#"
-{
-  "model": "anthropic/claude-sonnet-4-6",
-  "mcp_servers": [
-    { "name": "fs", "spawn": "npx @modelcontextprotocol/server-filesystem ." },
-    { "name": "remote", "connect": "http://localhost:3001/mcp" }
-  ]
-}
-"#,
-    )
-    .unwrap();
-    let cfg = load_config(dir.path());
-    assert_eq!(cfg.mcp_servers.len(), 2);
-    assert_eq!(cfg.mcp_servers[0].name, "fs");
-    assert!(cfg.mcp_servers[0].spawn.is_some());
-    assert!(cfg.mcp_servers[0].connect.is_none());
-    assert_eq!(cfg.mcp_servers[1].name, "remote");
-    assert!(cfg.mcp_servers[1].connect.is_some());
-    assert!(cfg.mcp_servers[1].spawn.is_none());
-}
-
-#[test]
 fn append_allow_creates_file_without_model_field() {
     let dir = TempDir::new().unwrap();
     // No gait.jsonc exists yet — append_allow_pattern must create one without a model key
@@ -291,66 +265,22 @@ fn append_allow_creates_file_without_model_field() {
 
 #[test]
 fn enabled_defaults_to_true_for_backward_compat() {
-    let json = r##"{ "model": "anthropic/claude-sonnet-4-6",
-        "mcp_servers": [{ "name": "slack", "spawn": "node mcp-slack.js" }],
-        "skills": [{ "name": "tdd", "description": "tdd workflow", "content": "# TDD" }]
-    }"##;
-    let cfg: GaitConfig = serde_json::from_str(json).unwrap();
-    assert!(
-        cfg.mcp_servers[0].enabled,
-        "mcp without enabled field should default true"
-    );
-    assert!(
-        cfg.skills[0].enabled,
-        "skill without enabled field should default true"
-    );
+    let mcp: McpServerDef = serde_json::from_str(r#"{"name":"slack","command":"node"}"#).unwrap();
+    let skill: SkillDef =
+        serde_json::from_str(r#"{"name":"tdd","description":"d","content":"c"}"#).unwrap();
+    assert!(mcp.enabled);
+    assert!(skill.enabled);
 }
 
 #[test]
 fn enabled_false_is_respected() {
-    let json = r#"{ "model": "anthropic/claude-sonnet-4-6",
-        "mcp_servers": [{ "name": "slack", "spawn": "node mcp-slack.js", "enabled": false }]
-    }"#;
-    let cfg: GaitConfig = serde_json::from_str(json).unwrap();
-    assert!(!cfg.mcp_servers[0].enabled);
-}
-
-#[test]
-fn wasm_plugin_def_parses() {
-    let json = r#"{ "model": "anthropic/claude-sonnet-4-6",
-        "wasm_plugins": [{ "name": "formatter", "path": "plugins/fmt.wasm", "enabled": true }]
-    }"#;
-    let cfg: GaitConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(cfg.wasm_plugins[0].name, "formatter");
-    assert!(cfg.wasm_plugins[0].enabled);
-}
-
-#[test]
-fn parses_mcp_servers_and_skills() {
-    let dir = TempDir::new().unwrap();
-    let content_str = "# TDD\n1. Write failing test\n2. Make it pass\n3. Refactor";
-    let content_json = serde_json::to_string(content_str).unwrap();
-    let jsonc = format!(
-        "{{
-  \"model\": \"minimax/MiniMax-M3\",
-  \"mcp_servers\": [
-    {{ \"name\": \"slack\", \"spawn\": \"node mcp-slack.js\" }}
-  ],
-  \"skills\": [
-    {{ \"name\": \"tdd\", \"description\": \"test-driven development workflow\", \"content\": {content_json} }}
-  ]
-}}
-"
-    );
-    std::fs::write(dir.path().join("gait.jsonc"), jsonc).unwrap();
-    let cfg = load_config(dir.path());
-    assert_eq!(cfg.mcp_servers.len(), 1);
-    assert_eq!(cfg.mcp_servers[0].name, "slack");
-    assert_eq!(
-        cfg.mcp_servers[0].spawn.as_deref(),
-        Some("node mcp-slack.js")
-    );
-    assert_eq!(cfg.skills.len(), 1);
+    let mcp: McpServerDef =
+        serde_json::from_str(r#"{"name":"slack","command":"node","enabled":false}"#).unwrap();
+    let skill: SkillDef =
+        serde_json::from_str(r#"{"name":"tdd","description":"d","content":"c","enabled":false}"#)
+            .unwrap();
+    assert!(!mcp.enabled);
+    assert!(!skill.enabled);
 }
 
 #[test]

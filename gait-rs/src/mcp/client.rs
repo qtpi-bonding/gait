@@ -15,31 +15,14 @@ impl McpClient {
             // Ecosystem-standard stdio: command + args + env
             let args: &[String] = def.args.as_deref().unwrap_or(&[]);
             connect_stdio(cmd, args, def.env.as_ref(), &def.name, "command").await?
-        } else if let Some(ref cmd_str) = def.spawn {
-            // Compat: split "prog arg1 arg2" into command + args
-            let mut parts = cmd_str.split_whitespace();
-            let prog = parts.next().ok_or_else(|| {
-                anyhow::anyhow!("empty spawn command for MCP server {}", def.name)
-            })?;
-            let rest: Vec<String> = parts.map(String::from).collect();
-            connect_stdio(prog, &rest, None, &def.name, "spawn").await?
         } else if let Some(ref url) = def.url {
             // Ecosystem-standard HTTP transport
             let transport = StreamableHttpClientTransport::from_uri(url.as_str());
             ().serve(transport)
                 .await
                 .map_err(|e| anyhow::anyhow!("MCP handshake failed (url {}): {e}", def.name))?
-        } else if let Some(ref url) = def.connect {
-            // Compat: connect → url
-            let transport = StreamableHttpClientTransport::from_uri(url.as_str());
-            ().serve(transport)
-                .await
-                .map_err(|e| anyhow::anyhow!("MCP handshake failed (connect {}): {e}", def.name))?
         } else {
-            anyhow::bail!(
-                "MCP server {} has neither command, spawn, url, nor connect",
-                def.name
-            );
+            anyhow::bail!("MCP server {} has neither command nor url", def.name);
         };
         Ok(Self {
             server_name: def.name.clone(),
@@ -122,49 +105,13 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn connect_fails_gracefully_when_binary_missing() {
+    async fn connect_fails_when_neither_command_nor_url() {
         let def = McpServerDef {
             name: "test".into(),
             command: None,
             args: None,
             env: None,
             url: None,
-            spawn: Some("no-such-binary-xyz-abc --foo".into()),
-            connect: None,
-            enabled: true,
-            description: None,
-        };
-        let result = McpClient::connect(&def).await;
-        assert!(result.is_err(), "expected error for missing binary");
-    }
-
-    #[tokio::test]
-    async fn connect_fails_gracefully_when_url_unreachable() {
-        let def = McpServerDef {
-            name: "test".into(),
-            command: None,
-            args: None,
-            env: None,
-            url: None,
-            spawn: None,
-            connect: Some("http://127.0.0.1:19191/mcp".into()),
-            enabled: true,
-            description: None,
-        };
-        let result = McpClient::connect(&def).await;
-        assert!(result.is_err(), "expected error for unreachable URL");
-    }
-
-    #[tokio::test]
-    async fn connect_fails_when_neither_spawn_nor_connect() {
-        let def = McpServerDef {
-            name: "test".into(),
-            command: None,
-            args: None,
-            env: None,
-            url: None,
-            spawn: None,
-            connect: None,
             enabled: true,
             description: None,
         };
@@ -183,8 +130,6 @@ mod tests {
             args: Some(vec!["--foo".into()]),
             env: None,
             url: None,
-            spawn: None,
-            connect: None,
             enabled: true,
             description: None,
         };
@@ -199,8 +144,6 @@ mod tests {
             args: None,
             env: None,
             url: None,
-            spawn: None,
-            connect: None,
             enabled: true,
             description: None,
         };

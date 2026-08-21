@@ -218,47 +218,6 @@ impl AgentState {
     pub fn session_plugins(&self) -> &std::collections::HashSet<String> {
         &self.session_plugins
     }
-
-    /// The genesis seed (M3): enabled-set derived from config exactly like
-    /// `Profile::from_config_and_agent` derives `config_enabled` (profile.rs:75-78)
-    /// — enabled mcp_servers + enabled skills — plus the resolved model /
-    /// instructions / allow / deny. So the first turn (before any `Agent` event
-    /// lands) yields the right enabled-set.
-    pub fn from_config(
-        cfg: &crate::config::GaitConfig,
-        model: String,
-        instructions: String,
-        allow: Vec<String>,
-        deny: Vec<String>,
-    ) -> Self {
-        let mcp = cfg
-            .mcp_servers
-            .iter()
-            .filter(|s| s.enabled)
-            .map(|s| s.name.clone())
-            .collect();
-        let skills = cfg
-            .skills
-            .iter()
-            .filter(|s| s.enabled)
-            .map(|s| s.name.clone())
-            .collect();
-        AgentState {
-            model,
-            instructions,
-            tools: Default::default(),
-            skills,
-            mcp,
-            plugins: Default::default(),
-            allow: allow.into_iter().collect(),
-            deny: deny.into_iter().collect(),
-            inference: None,
-            session_skills: Default::default(),
-            session_mcp: Default::default(),
-            session_plugins: Default::default(),
-            accepted_senders: Default::default(),
-        }
-    }
 }
 
 /// Checkpoint reset path: the `Agent` proto snapshot → working state.

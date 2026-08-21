@@ -1,6 +1,5 @@
 use crate::agent_frontmatter::split_frontmatter;
-use crate::config::{GaitConfig, SkillDef};
-use std::collections::HashSet;
+use crate::config::SkillDef;
 use std::path::Path;
 
 /// Scan `<gait_dir>/skills/*/SKILL.md` and return one `SkillDef` per valid file.
@@ -71,28 +70,6 @@ fn parse_skill_file(path: &Path) -> Option<SkillDef> {
         content: body,
         enabled: true,
     })
-}
-
-/// Merge skills scanned from `<gait_dir>/skills/*/SKILL.md` with any
-/// `config.skills` entries declared in `gait.jsonc`.
-///
-/// On collision (same `name`), the **disk** entry wins — it represents the
-/// canonical SKILL.md the user just registered/edited — and the
-/// `gait.jsonc` inline copy is dropped. `config.skills` entries with no
-/// matching disk entry are kept as-is, so legacy inline-only skills still
-/// resolve.
-///
-/// This is a pure extraction of the inline merge logic that used to live
-/// in `Profile::from_config_and_agent`; behavior is identical.
-pub fn merged_skill_registry(gait_dir: &Path, config: &GaitConfig) -> Vec<SkillDef> {
-    let mut disk_skills = scan_skills(gait_dir);
-    let disk_names: HashSet<String> = disk_skills.iter().map(|s| s.name.clone()).collect();
-    for s in &config.skills {
-        if !disk_names.contains(&s.name) {
-            disk_skills.push(s.clone());
-        }
-    }
-    disk_skills
 }
 
 #[cfg(test)]

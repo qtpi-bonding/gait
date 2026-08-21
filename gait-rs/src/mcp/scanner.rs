@@ -3,8 +3,8 @@ use std::path::Path;
 
 /// Scan `<gait_dir>/mcp/<name>.json` and return one `McpServerDef` per valid file.
 ///
-/// A file is valid if it is parseable JSON and has at least one of: `command`,
-/// `spawn`, `url`, or `connect`. The server name is the filename stem (e.g.
+/// A file is valid if it is parseable JSON and has at least one of: `command` or
+/// `url`. The server name is the filename stem (e.g.
 /// `mcp/slack.json` → name "slack"). Non-.json files are silently skipped.
 pub fn scan_mcp_servers(gait_dir: &Path) -> Vec<McpServerDef> {
     let mcp_dir = gait_dir.join("mcp");
@@ -66,17 +66,8 @@ fn parse_mcp_file(path: &Path, name: &str) -> Option<McpServerDef> {
         .get("url")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    let spawn = obj
-        .get("spawn")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let connect = obj
-        .get("connect")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
     // Must have at least one connection method
-    if command.is_none() && spawn.is_none() && url.is_none() && connect.is_none() {
+    if command.is_none() && url.is_none() {
         return None;
     }
 
@@ -86,8 +77,6 @@ fn parse_mcp_file(path: &Path, name: &str) -> Option<McpServerDef> {
         args,
         env,
         url,
-        spawn,
-        connect,
         enabled: obj.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
         description: obj
             .get("description")
@@ -189,19 +178,5 @@ mod tests {
         std::fs::create_dir_all(&mcp_dir).unwrap();
         std::fs::write(mcp_dir.join("README.md"), "# docs").unwrap();
         assert!(scan_mcp_servers(dir.path()).is_empty());
-    }
-
-    #[test]
-    fn scanner_accepts_legacy_spawn_field() {
-        let dir = TempDir::new().unwrap();
-        write_mcp(
-            &dir,
-            "legacy",
-            r#"{"spawn": "node mcp.js", "enabled": false}"#,
-        );
-        let servers = scan_mcp_servers(dir.path());
-        assert_eq!(servers.len(), 1);
-        assert_eq!(servers[0].name, "legacy");
-        assert_eq!(servers[0].spawn.as_deref(), Some("node mcp.js"));
     }
 }

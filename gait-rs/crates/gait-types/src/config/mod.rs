@@ -39,12 +39,6 @@ pub struct McpServerDef {
     /// Ecosystem-standard HTTP: URL of an already-running MCP server
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    /// Deprecated compat: full "prog args…" string, equivalent to command+args
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub spawn: Option<String>,
-    /// Deprecated compat: HTTP URL, equivalent to url
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub connect: Option<String>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     /// Optional description for the <loadable-index>.
@@ -71,7 +65,7 @@ pub struct SkillDef {
     pub enabled: bool,
 }
 
-/// Stub for future WASM plugin support.
+/// Definition of a disk-discovered WASM plugin.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WasmPluginDef {
     pub name: String,
@@ -410,13 +404,6 @@ pub struct GaitConfig {
     #[serde(default)]
     pub tools: Vec<ConfigTool>,
     #[serde(default)]
-    pub mcp_servers: Vec<McpServerDef>,
-    #[serde(default)]
-    /// Deprecated (O4): skill bodies should live in skills/<name>/SKILL.md.
-    pub skills: Vec<SkillDef>,
-    #[serde(default)]
-    pub wasm_plugins: Vec<WasmPluginDef>,
-    #[serde(default)]
     pub hooks: Vec<HookDef>,
     /// Max retries when an LLM result fails output_schema validation.
     #[serde(default = "default_output_schema_retries")]
@@ -482,9 +469,6 @@ impl Default for GaitConfig {
             allow: defaults::default_allow(),
             deny: defaults::default_deny(),
             tools: vec![],
-            mcp_servers: vec![],
-            skills: vec![],
-            wasm_plugins: vec![],
             hooks: vec![],
             output_schema_retries: defaults::default_output_schema_retries(),
             max_iter: defaults::default_max_iter(),
@@ -546,11 +530,7 @@ pub fn load_config_with(gait_dir: &Path, policy: ConfigLoadPolicy) -> anyhow::Re
     let raw = std::fs::read_to_string(&path).unwrap_or_default();
     let stripped = strip_jsonc_comments(&raw);
     match serde_json::from_str::<GaitConfig>(&stripped) {
-        Ok(config) => {
-            // O4: the `skills:` field is deprecated. Dropped silently — a library must not write to stderr.
-            let _ = &config.skills;
-            Ok(config)
-        }
+        Ok(config) => Ok(config),
         Err(e) => match policy {
             ConfigLoadPolicy::Strict => Err(anyhow::anyhow!(
                 "gait.jsonc parse error in {}: {e}",

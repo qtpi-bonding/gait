@@ -497,69 +497,12 @@ fn agent_state_from_pb_agent_maps_enabled_sets() {
     assert!(st.deny.contains("shell:rm *"));
 }
 
-#[test]
-fn agent_state_from_config_seeds_enabled_from_config() {
-    use crate::config::{GaitConfig, McpServerDef, SkillDef};
-    let cfg = GaitConfig {
-        inference: Some("deep".into()),
-        mcp_servers: vec![
-            McpServerDef {
-                name: "slack".into(),
-                command: None,
-                args: None,
-                env: None,
-                url: None,
-                spawn: None,
-                connect: None,
-                enabled: true,
-                description: None,
-            },
-            McpServerDef {
-                name: "off".into(),
-                command: None,
-                args: None,
-                env: None,
-                url: None,
-                spawn: None,
-                connect: None,
-                enabled: false,
-                description: None,
-            },
-        ],
-        skills: vec![SkillDef {
-            name: "tdd".into(),
-            description: "d".into(),
-            content: "c".into(),
-            enabled: true,
-        }],
-        ..GaitConfig::default()
-    };
-    let st = AgentState::from_config(
-        &cfg,
-        "anthropic/x".into(),
-        "sys".into(),
-        vec!["read".into()],
-        vec!["shell:rm *".into()],
-    );
-    assert!(st.mcp.contains("slack"), "enabled mcp seeded");
-    assert!(!st.mcp.contains("off"), "disabled mcp NOT seeded");
-    assert!(st.skills.contains("tdd"), "enabled skill seeded");
-    assert_eq!(st.model, "anthropic/x");
-    assert!(st.allow.contains("read") && st.deny.contains("shell:rm *"));
-}
-
 // ── ActiveAgent projection (T3 + T4) ────────────────────────────────────────
 
 #[test]
 fn active_agent_folds_load_toolcall_like_loadables() {
     use std::collections::HashMap;
-    let seed = AgentState::from_config(
-        &crate::config::GaitConfig::default(),
-        "m".into(),
-        "sys".into(),
-        vec![],
-        vec![],
-    );
+    let seed = AgentState::default();
     let evs = mint_events(vec![
         events::toggle("mcp", "slack", true),
         events::toggle("mcp", "slack", false),
@@ -574,13 +517,7 @@ fn active_agent_folds_load_toolcall_like_loadables() {
 #[test]
 fn active_agent_checkpoint_resets_baseline() {
     use std::collections::HashMap;
-    let seed = AgentState::from_config(
-        &crate::config::GaitConfig::default(),
-        "m".into(),
-        "sys".into(),
-        vec![],
-        vec![],
-    );
+    let seed = AgentState::default();
     let evs = mint_events(vec![
         events::toggle("skill", "old", true),
         wire::body(payload::Kind::Agent(pb::Agent {
@@ -617,13 +554,7 @@ fn active_agent_checkpoint_resets_baseline() {
 #[test]
 fn active_agent_honors_mutations_redacted_load_dropped() {
     use std::collections::HashMap;
-    let seed = AgentState::from_config(
-        &crate::config::GaitConfig::default(),
-        "m".into(),
-        "sys".into(),
-        vec![],
-        vec![],
-    );
+    let seed = AgentState::default();
     let one = mint_events(vec![events::toggle("mcp", "slack", true)]);
     let mut muts = HashMap::new();
     muts.insert(one[0].id.clone(), MutationState::Redacted { reason: None });
@@ -691,13 +622,7 @@ fn fold_returns_all_three_projections() {
         ],
     );
     let all_events = read_events(&path).unwrap();
-    let seed = AgentState::from_config(
-        &crate::config::GaitConfig::default(),
-        "m".into(),
-        "".into(),
-        vec![],
-        vec![],
-    );
+    let seed = AgentState::default();
     let result = fold(&all_events, seed).unwrap();
 
     // messages: user turn (no summary-only events, user_turn becomes a Message)
@@ -711,13 +636,7 @@ fn fold_returns_all_three_projections() {
 #[test]
 fn fold_runs_all_projections_single_pass() {
     let evs = mint_events(vec![events::toggle("mcp", "slack", true)]);
-    let seed = AgentState::from_config(
-        &crate::config::GaitConfig::default(),
-        "m".into(),
-        "".into(),
-        vec![],
-        vec![],
-    );
+    let seed = AgentState::default();
     let res = fold(&evs, seed).unwrap();
     assert!(res.agent.enabled_loadables().contains("slack"));
     assert!(
@@ -1230,13 +1149,7 @@ fn last_turn_blocks_empty_when_none() {
 fn active_agent_folds_toggle_per_kind() {
     use crate::proto::gait::log::v1::ToggleKind;
     use std::collections::HashMap;
-    let seed = AgentState::from_config(
-        &crate::config::GaitConfig::default(),
-        "m".into(),
-        "sys".into(),
-        vec![],
-        vec![],
-    );
+    let seed = AgentState::default();
     let evs = mint_events(vec![
         wire::body(payload::Kind::Toggle(pb::Toggle {
             kind: ToggleKind::Skill as i32,
