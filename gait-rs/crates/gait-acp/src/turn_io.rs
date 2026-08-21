@@ -276,20 +276,53 @@ impl AcpTurnSource {
     }
 }
 
+/// A durable pause a session is currently awaiting a reply for, read
+/// straight off the log — generalizes the old `pending_permissions` to
+/// cover all four of gait's `PauseReason` peers, not just `Permissions`.
+#[derive(Debug)]
+enum PendingInteraction {
+    Permission(Vec<PermissionItem>),
+    Clarify(Vec<gait_core::proto::gait::log::v1::ClarifyItem>),
+    Inform(Vec<gait_core::proto::gait::log::v1::InformItem>),
+    SandboxUnlock(Vec<gait_core::proto::gait::log::v1::SandboxUnlockItem>),
+}
+
 /// A paused turn can leave terminal bookkeeping after its interaction event.
-/// Inspect the request/reply sequence directly so that bookkeeping does not
-/// hide an unanswered permission request from the next ACP source round.
-fn pending_permissions(path: &std::path::Path) -> Option<Vec<PermissionItem>> {
+/// Inspect the request/reply sequence directly so bookkeeping does not hide
+/// an unanswered request from the next ACP source round. Mirrors the
+/// original `pending_permissions`' event-replay approach, generalized to
+/// all four pause reasons.
+fn pending_interaction(path: &std::path::Path) -> Option<PendingInteraction> {
     let events = gait_core::session::log::read_events(path).ok()?;
     let mut pending = None;
     for event in events {
         match gait_core::proto::event_kind(&event) {
-            Some(payload::Kind::Permissions(request)) => pending = Some(request.items.clone()),
+            Some(payload::Kind::Permissions(r)) => {
+                pending = Some(PendingInteraction::Permission(r.items.clone()))
+            }
             Some(payload::Kind::PermissionsReply(_)) => pending = None,
+            Some(payload::Kind::Clarify(r)) => {
+                pending = Some(PendingInteraction::Clarify(r.items.clone()))
+            }
+            Some(payload::Kind::ClarifyReply(_)) => pending = None,
+            Some(payload::Kind::Inform(r)) => {
+                pending = Some(PendingInteraction::Inform(r.items.clone()))
+            }
+            Some(payload::Kind::InformReply(_)) => pending = None,
+            Some(payload::Kind::SandboxUnlock(r)) => {
+                pending = Some(PendingInteraction::SandboxUnlock(r.items.clone()))
+            }
+            Some(payload::Kind::SandboxUnlockReply(_)) => pending = None,
             _ => {}
         }
     }
-    pending.filter(|items| !items.is_empty())
+    match &pending {
+        Some(PendingInteraction::Permission(items)) if items.is_empty() => None,
+        Some(PendingInteraction::Clarify(items)) if items.is_empty() => None,
+        Some(PendingInteraction::Inform(items)) if items.is_empty() => None,
+        Some(PendingInteraction::SandboxUnlock(items)) if items.is_empty() => None,
+        _ => pending,
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -308,7 +341,7 @@ impl TurnSource for AcpTurnSource {
         // window as an exhausted source: doing so finalizes the pause before
         // ACP has had a chance to answer it. Once the log is quiescent this is
         // a short, bounded wait and the normal no-permission path is unchanged.
-        let mut items = None;
+        let mut items: Option<Vec<PermissionItem>> = None;
         for _ in 0..20 {
             items = pending_permissions(&log_path).or_else(|| match session_state(&log_path) {
                 Ok(SessionState::AwaitingPermission { items }) => Some(items),
@@ -835,5 +868,75 @@ mod tests {
         let upd = tool_call_update(&it);
         assert_eq!(upd.tool_call_id, ToolCallId::new("tc1"));
         assert_eq!(upd.fields.title.as_deref(), Some("cargo build"));
+    }
+
+    #[test]
+    fn pending_interaction_detects_clarify() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        gait_state::proto::wire::append(
+            &path,
+            gait_state::proto::events::clarify(&[gait_core::proto::gait::log::v1::ClarifyItem {
+                id: "c1".into(),
+                content: "which db?".into(),
+                why: "ambiguous".into(),
+                kind: gait_core::proto::gait::log::v1::ClarifyKind::Is as i32,
+                options: vec![],
+            }]),
+        )
+        .unwrap();
+        match pending_interaction(&path) {
+            Some(PendingInteraction::Clarify(items)) => assert_eq!(items.len(), 1),
+            other => panic!("expected Clarify, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pending_interaction_detects_inform() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        gait_state::proto::wire::append(
+            &path,
+            gait_state::proto::events::inform(&[gait_core::proto::gait::log::v1::InformItem {
+                id: "i1".into(),
+                content: "deleted 3 stale branches".into(),
+                context: None,
+            }]),
+        )
+        .unwrap();
+        match pending_interaction(&path) {
+            Some(PendingInteraction::Inform(items)) => assert_eq!(items.len(), 1),
+            other => panic!("expected Inform, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pending_interaction_detects_sandbox_unlock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        gait_state::proto::wire::append(
+            &path,
+            gait_state::proto::events::sandbox_unlock(&[
+                gait_core::proto::gait::log::v1::SandboxUnlockItem {
+                    id: "u1".into(),
+                    tool_name: "shell".into(),
+                    resource: "/etc".into(),
+                    dimension: "write".into(),
+                    preview: None,
+                },
+            ]),
+        )
+        .unwrap();
+        match pending_interaction(&path) {
+            Some(PendingInteraction::SandboxUnlock(items)) => assert_eq!(items.len(), 1),
+            other => panic!("expected SandboxUnlock, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pending_interaction_none_when_idle() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        assert!(pending_interaction(&path).is_none());
     }
 }
