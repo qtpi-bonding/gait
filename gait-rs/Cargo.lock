@@ -1335,6 +1335,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "gait-core",
+ "gait-identity",
  "gait-ops",
  "gait-proto",
  "gait-state",

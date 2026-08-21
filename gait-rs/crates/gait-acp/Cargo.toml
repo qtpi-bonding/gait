@@ -27,5 +27,6 @@ path = "src/bin/mock_brain_acp.rs"
 [dev-dependencies]
 tempfile = "3"
 gait-proto = { path = "../gait-proto" }
+gait-identity = { path = "../gait-identity" }
 prost = "0.13"
 git2 = "0.19"
