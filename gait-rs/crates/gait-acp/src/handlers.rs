@@ -150,6 +150,7 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                                 .respond_with_internal_error(format!("unknown session: {sid}"));
                         };
                         let text = content_blocks_to_text(&req.prompt);
+                        let provenance = crate::meta_provenance::provenance_from_meta(&req.meta);
 
                         let handle = gait_core::embed::CascadeKillHandle::new();
                         map.set_cascade(&sid, handle.clone());
@@ -193,6 +194,7 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                                 session_id,
                                 gait_dir.clone(),
                                 cancel,
+                                provenance,
                             );
                             let opts = gait_workflow::SinglePromptOpts {
                                 run_id: format!("acp-{sid_thread}"),

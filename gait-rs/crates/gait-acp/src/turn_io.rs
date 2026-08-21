@@ -228,7 +228,7 @@ pub fn build_permission_options(
 
 /// Drives one ACP-initiated turn, including the Phase-3 permission loop.
 pub struct AcpTurnSource {
-    first: Option<Vec<gait_core::proto::gait::log::v1::event::Body>>,
+    first: Option<TurnStart>,
     cx: ConnectionTo<Client>,
     session_id: SessionId,
     sid: String,
@@ -247,10 +247,14 @@ impl AcpTurnSource {
         session_id: SessionId,
         gait_dir: PathBuf,
         cancel: tokio_util::sync::CancellationToken,
+        provenance: Option<gait_core::proto::gait::log::v1::Provenance>,
     ) -> Self {
         let sid = session_id.0.to_string();
         Self {
-            first: Some(user_turn_events(&repos, &codebase, text)),
+            first: Some(TurnStart::Input {
+                bodies: user_turn_events(&repos, &codebase, text),
+                provenance,
+            }),
             cx,
             session_id,
             sid,
@@ -280,11 +284,8 @@ fn pending_permissions(path: &std::path::Path) -> Option<Vec<PermissionItem>> {
 impl TurnSource for AcpTurnSource {
     async fn next(&mut self) -> Option<TurnStart> {
         // First call: feed the user input.
-        if let Some(bodies) = self.first.take() {
-            return Some(TurnStart::Input {
-                bodies,
-                provenance: None,
-            });
+        if let Some(start) = self.first.take() {
+            return Some(start);
         }
 
         // Post-turn: is the turn waiting for permission?
@@ -594,6 +595,71 @@ mod tests {
                 ),
             );
             assert!(turn_result_to_stop_reason(&run).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn acp_turn_source_carries_provenance_from_construction() {
+        let provenance = gait_core::proto::gait::log::v1::Provenance {
+            from: vec![1u8; 32],
+            to: vec![],
+            context: String::new(),
+            signature: vec![2u8; 64],
+            scheme: gait_core::proto::gait::log::v1::KeyScheme::Ed25519 as i32,
+        };
+        use agent_client_protocol::schema::ProtocolVersion;
+        use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse};
+        use agent_client_protocol::{Agent, Client, ConnectTo};
+        let (cx_tx, cx_rx) = tokio::sync::oneshot::channel();
+        let cx_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(cx_tx)));
+        let server = Agent.builder().on_receive_request(
+            move |_req: InitializeRequest,
+                  responder: agent_client_protocol::Responder<InitializeResponse>,
+                  cx: agent_client_protocol::ConnectionTo<Client>| {
+                let cx_tx = cx_tx.clone();
+                async move {
+                    cx_tx
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .expect("only one request")
+                        .send(cx)
+                        .unwrap();
+                    responder.respond(InitializeResponse::new(ProtocolVersion::V1))
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+        let (channel, server_future) = server.into_channel_and_future();
+        tokio::spawn(server_future);
+        Client
+            .connect_with(channel, async |cx| {
+                cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await
+                    .map(|_| ())
+            })
+            .await
+            .expect("connection should run");
+        let cx = cx_rx
+            .await
+            .expect("server callback must provide connection");
+        let mut source = AcpTurnSource::new(
+            "hello".into(),
+            Repos::production(),
+            PathBuf::from("."),
+            cx,
+            SessionId::new("s1"),
+            PathBuf::from("."),
+            tokio_util::sync::CancellationToken::new(),
+            Some(provenance.clone()),
+        );
+        match source.next().await.expect("first turn") {
+            TurnStart::Input {
+                provenance: Some(p),
+                ..
+            } => assert_eq!(p, provenance),
+            _ => panic!("expected Input with provenance"),
         }
     }
 
