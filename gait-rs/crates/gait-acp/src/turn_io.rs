@@ -5,10 +5,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use agent_client_protocol::schema::v1::{
-    ContentBlock, ContentChunk, PermissionOption, PermissionOptionId, PermissionOptionKind,
-    RequestPermissionOutcome, RequestPermissionRequest, SelectedPermissionOutcome, SessionId,
-    SessionNotification, SessionUpdate, StopReason, TextContent, ToolCall as AcpToolCall,
-    ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+    ContentBlock, ContentChunk, MessageId, PermissionOption, PermissionOptionId,
+    PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
+    SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate, StopReason,
+    TextContent, ToolCall as AcpToolCall, ToolCallId, ToolCallStatus, ToolCallUpdate,
+    ToolCallUpdateFields,
 };
 use agent_client_protocol::{Client, ConnectionTo};
 use gait_core::embed::{Diag, TurnSink, TurnSource, TurnStart, user_turn_events};
@@ -20,8 +21,15 @@ use gait_core::session::log::{SessionState, session_state};
 use gait_ops::permission::{GrantScope, ItemChoice};
 
 /// Wrap ACP text into an `AgentMessageChunk` / `AgentThoughtChunk` body.
+///
+/// Each call is its own complete message (gait only streams settled events
+/// over ACP today, never live deltas — see `AcpTurnSink::item`), so a fresh
+/// UUID per call is correct, not a shortcut: `ContentChunk::message_id` must
+/// be set for the v1->v2 conversion `acp-agui-adapter` depends on to succeed
+/// (`IntoV2 for v1::ContentChunk` errors on `message_id: None`).
 fn text_chunk(text: impl Into<String>) -> ContentChunk {
     ContentChunk::new(ContentBlock::Text(TextContent::new(text)))
+        .message_id(MessageId::from(uuid::Uuid::new_v4().to_string()))
 }
 
 /// Translate a client-renderable payload to an ACP `session/update`.
@@ -451,6 +459,10 @@ mod tests {
         match event_to_session_update(&ev) {
             Some(SessionUpdate::AgentMessageChunk(chunk)) => {
                 assert!(matches!(&chunk.content, ContentBlock::Text(t) if t.text == "hello"));
+                assert!(
+                    chunk.message_id.is_some(),
+                    "message_id must be set for v1->v2 conversion"
+                );
             }
             other => panic!("expected AgentMessageChunk, got {other:?}"),
         }
@@ -462,9 +474,22 @@ mod tests {
         match event_to_session_update(&ev) {
             Some(SessionUpdate::UserMessageChunk(chunk)) => {
                 assert!(matches!(&chunk.content, ContentBlock::Text(t) if t.text == "hello"));
+                assert!(
+                    chunk.message_id.is_some(),
+                    "message_id must be set for v1->v2 conversion"
+                );
             }
             other => panic!("expected UserMessageChunk, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn each_text_chunk_call_gets_a_distinct_message_id() {
+        // Each settled event is its own complete message (no live-delta
+        // streaming today), so two separate chunks must never collide.
+        let a = text_chunk("first");
+        let b = text_chunk("second");
+        assert_ne!(a.message_id, b.message_id);
     }
 
     #[test]
