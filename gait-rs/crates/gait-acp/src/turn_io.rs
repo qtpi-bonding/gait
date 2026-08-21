@@ -315,6 +315,42 @@ impl AcpTurnSource {
             _ => None,
         }
     }
+
+    /// Sends one `session/request_permission` offering exactly Once and
+    /// Session, then decodes the selected grant scope.
+    async fn resume_sandbox_unlock(&self) -> Option<gait_ops::permission::GrantScope> {
+        use agent_client_protocol::schema::v1::{
+            PermissionOption, PermissionOptionId, PermissionOptionKind, RequestPermissionOutcome,
+            RequestPermissionRequest, SelectedPermissionOutcome,
+        };
+        let once = PermissionOption::new(
+            PermissionOptionId::new("once"),
+            "Allow once",
+            PermissionOptionKind::AllowOnce,
+        );
+        let session = PermissionOption::new(
+            PermissionOptionId::new("session"),
+            "Allow this session",
+            PermissionOptionKind::AllowAlways,
+        );
+        let tool_call = ToolCallUpdate::new(
+            ToolCallId::new("sandbox-unlock"),
+            ToolCallUpdateFields::new().title("Sandbox unlock requested".to_string()),
+        );
+        let req =
+            RequestPermissionRequest::new(self.session_id.clone(), tool_call, vec![once, session]);
+        let resp = self.cx.send_request(req).block_task().await.ok()?;
+        match resp.outcome {
+            RequestPermissionOutcome::Selected(SelectedPermissionOutcome { option_id, .. }) => {
+                match option_id.0.as_ref() {
+                    "once" => Some(gait_ops::permission::GrantScope::Once),
+                    "session" => Some(gait_ops::permission::GrantScope::Session),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
 }
 
 /// A durable pause a session is currently awaiting a reply for, read
@@ -1109,5 +1145,72 @@ mod tests {
                 .await
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn resume_sandbox_unlock_sends_once_session_options_and_decodes_choice() {
+        use agent_client_protocol::schema::ProtocolVersion;
+        use agent_client_protocol::schema::v1::{
+            InitializeRequest, InitializeResponse, PermissionOptionKind, RequestPermissionOutcome,
+            RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
+        };
+        use agent_client_protocol::{Agent, Client, ConnectTo, Responder};
+        let (cx_tx, cx_rx) = tokio::sync::oneshot::channel();
+        let cx_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(cx_tx)));
+        let server = Agent.builder().on_receive_request(
+            move |_req: InitializeRequest,
+                  responder: Responder<InitializeResponse>,
+                  cx: agent_client_protocol::ConnectionTo<Client>| {
+                let cx_tx = cx_tx.clone();
+                async move {
+                    cx_tx.lock().unwrap().take().unwrap().send(cx).unwrap();
+                    responder.respond(InitializeResponse::new(ProtocolVersion::V1))
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+        let (channel, server_future) = server.into_channel_and_future();
+        tokio::spawn(server_future);
+        tokio::spawn(
+            Client
+                .builder()
+                .on_receive_request(
+                    |req: RequestPermissionRequest,
+                     responder: Responder<RequestPermissionResponse>,
+                     _cx| async move {
+                        assert_eq!(req.options.len(), 2);
+                        let session_opt = req
+                            .options
+                            .iter()
+                            .find(|o| o.kind == PermissionOptionKind::AllowAlways)
+                            .unwrap();
+                        responder.respond(RequestPermissionResponse::new(
+                            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                                session_opt.option_id.clone(),
+                            )),
+                        ))
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .connect_with(channel, async |cx| {
+                    cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
+                        .block_task()
+                        .await?;
+                    std::future::pending::<Result<(), agent_client_protocol::Error>>().await
+                }),
+        );
+        let cx = cx_rx.await.unwrap();
+        let source = AcpTurnSource::new(
+            "hello".into(),
+            Repos::production(),
+            PathBuf::from("."),
+            cx,
+            SessionId::new("s1"),
+            PathBuf::from("."),
+            tokio_util::sync::CancellationToken::new(),
+            None,
+        );
+        let scope = source.resume_sandbox_unlock().await;
+        assert_eq!(scope, Some(gait_ops::permission::GrantScope::Session));
     }
 }
