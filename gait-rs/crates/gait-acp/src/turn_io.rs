@@ -710,8 +710,8 @@ mod tests {
         let ev = event(events::mode(
             "plan",
             vec!["shell".to_string()],
-            "steer text".into(),
-            "Plan mode".into(),
+            "steer text",
+            "Plan mode",
         ));
         match event_to_session_update(&ev) {
             Some(SessionUpdate::CurrentModeUpdate(upd)) => {

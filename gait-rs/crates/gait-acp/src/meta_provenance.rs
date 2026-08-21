@@ -55,7 +55,6 @@ pub fn provenance_from_meta(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::Engine as _;
 
     fn b64(bytes: &[u8]) -> String {
         base64::engine::general_purpose::STANDARD.encode(bytes)
