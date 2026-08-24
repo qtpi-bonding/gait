@@ -73,7 +73,7 @@ impl SessionWatchHub {
                 for path in &event.paths {
                     let evt = HubEvent {
                         path: path.clone(),
-                        kind: event.kind.clone(),
+                        kind: event.kind,
                     };
                     let subs = subscribers_for_task.read().await;
                     for sub in subs.iter() {
