@@ -132,3 +132,91 @@ async fn backlog_larger_than_a_bounded_channel_would_hold_does_not_deadlock() {
         .expect("draining the backlog must not hang");
     assert_eq!(events.len(), 200);
 }
+
+#[tokio::test]
+async fn stream_ends_cleanly_when_session_is_persisted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let gait_dir = tmp.path().to_path_buf();
+    let dir = session_dirs(&gait_dir, "s1");
+    let log_path = dir.join("log.jsonl");
+    append_line(&log_path, &event_line("e1"));
+
+    let hub = SessionWatchHub::new(gait_dir.clone()).unwrap();
+    let mut stream = watch_session_log(&hub, &gait_dir, "s1").await.unwrap();
+
+    let first = stream.next().await.unwrap().unwrap();
+    assert_eq!(event_marker(&first), Some("e1".to_string()));
+
+    // Simulate persist: delete .active/s1/, materialize sessions/s1/log.jsonl.
+    std::fs::remove_dir_all(gait_dir.join(".active").join("s1")).unwrap();
+    let persisted_dir = gait_dir.join("sessions").join("s1");
+    std::fs::create_dir_all(&persisted_dir).unwrap();
+    std::fs::write(
+        persisted_dir.join("log.jsonl"),
+        format!("{}\n", event_line("e1")),
+    )
+    .unwrap();
+
+    let outcome = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("stream should end, not hang");
+    assert!(
+        outcome.is_none(),
+        "stream must end cleanly (None), not error, after persist"
+    );
+}
+
+#[tokio::test]
+async fn stream_ends_cleanly_when_session_is_discarded() {
+    let tmp = tempfile::tempdir().unwrap();
+    let gait_dir = tmp.path().to_path_buf();
+    let dir = session_dirs(&gait_dir, "s1");
+    let log_path = dir.join("log.jsonl");
+    append_line(&log_path, &event_line("e1"));
+
+    let hub = SessionWatchHub::new(gait_dir.clone()).unwrap();
+    let mut stream = watch_session_log(&hub, &gait_dir, "s1").await.unwrap();
+
+    let first = stream.next().await.unwrap().unwrap();
+    assert_eq!(event_marker(&first), Some("e1".to_string()));
+
+    // Simulate discard: delete .active/s1/, nothing replaces it.
+    std::fs::remove_dir_all(gait_dir.join(".active").join("s1")).unwrap();
+
+    let outcome = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("stream should end, not hang");
+    assert!(
+        outcome.is_none(),
+        "stream must end cleanly (None), not error, after discard"
+    );
+}
+
+#[tokio::test]
+async fn watch_attached_before_first_write_waits_instead_of_ending_early() {
+    // Regression test: a watch can attach before the session directory (or
+    // its log file) exists at all. The tail loop must wait for it to appear.
+    let tmp = tempfile::tempdir().unwrap();
+    let gait_dir = tmp.path().to_path_buf();
+    // Deliberately leave session s1 absent when the watch attaches.
+    std::fs::create_dir_all(gait_dir.join(".active")).unwrap();
+
+    let hub = SessionWatchHub::new(gait_dir.clone()).unwrap();
+    let mut stream = watch_session_log(&hub, &gait_dir, "s1").await.unwrap();
+
+    let premature = tokio::time::timeout(Duration::from_millis(450), stream.next()).await;
+    assert!(
+        premature.is_err(),
+        "stream must not end before the log file has ever existed"
+    );
+
+    let dir = session_dirs(&gait_dir, "s1");
+    append_line(&dir.join("log.jsonl"), &event_line("e1"));
+
+    let first = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("timed out waiting for the event once the file appeared")
+        .unwrap()
+        .unwrap();
+    assert_eq!(event_marker(&first), Some("e1".to_string()));
+}

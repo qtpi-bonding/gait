@@ -38,9 +38,28 @@ pub async fn watch_session_log(
         }
     }
 
-    // Phase 2: live tail, in the background.
+    // Phase 2: live tail, in the background. `ever_existed` is captured
+    // *here*, synchronously, before spawning — not lazily inside the spawned
+    // task on its first poll. `tokio::spawn` only schedules the task; the
+    // scheduler may not actually run it until sometime later, and if the
+    // caller (or another task) deletes `log_path` in that window, a version
+    // of this check living inside `tail_loop` would see the file already
+    // gone on its very first observation and wrongly conclude "never
+    // existed" — which then never terminates, because that branch waits
+    // forever for a file that already came and went. Computing it here
+    // instead ties it to a point that happens-before any such race: this
+    // function has already just read the backlog from `log_path` above, so
+    // whatever `log_path.exists()` says at this exact point is the true
+    // state as of a moment `watch_session_log`'s caller cannot get ahead of.
+    let ever_existed = log_path.exists();
     let subscription = hub.subscribe(log_path.clone()).await;
-    tokio::spawn(tail_loop(log_path, last_seen, tx, subscription));
+    tokio::spawn(tail_loop(
+        log_path,
+        last_seen,
+        ever_existed,
+        tx,
+        subscription,
+    ));
 
     Ok(UnboundedReceiverStream::new(rx))
 }
@@ -48,13 +67,10 @@ pub async fn watch_session_log(
 async fn tail_loop(
     log_path: std::path::PathBuf,
     mut last_seen: usize,
+    mut ever_existed: bool,
     tx: mpsc::UnboundedSender<Result<Event, WatchError>>,
     mut subscription: crate::hub::SubscriptionHandle,
 ) {
-    // A missing file on the first tick must not be treated as termination:
-    // the session may not have written its first event yet.
-    let mut ever_existed = log_path.exists();
-
     loop {
         let _ = tokio::time::timeout(
             std::time::Duration::from_millis(POLL_FALLBACK_MS),
