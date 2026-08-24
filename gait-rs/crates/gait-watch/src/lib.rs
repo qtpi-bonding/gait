@@ -4,6 +4,8 @@
 pub mod error;
 pub mod hub;
 pub mod parse;
+pub mod tail;
 
 pub use error::WatchError;
 pub use hub::{HubEvent, SessionWatchHub, SubscriptionHandle};
+pub use tail::watch_session_log;
