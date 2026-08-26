@@ -13,7 +13,7 @@ gait-sandbox  = { path = "../gait-sandbox" }   # session/daemons.rs: process::pr
 gait-provider = { path = "../gait-provider" }  # auth.rs / models_meta.rs: providers::lookup
 gait-auth     = { path = "../gait-auth" }
 gait-platform = { path = "../gait-platform" }
-git2 = "0.19"
+git2 = "0.20"
 libc = "0.2"
 clap = { version = "4", features = ["derive"] }
 regex = "1"

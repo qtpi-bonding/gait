@@ -35,7 +35,7 @@ serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 sha2 = "0.10"
 thiserror = "1"
-git2 = "0.19"
+git2 = "0.20"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]

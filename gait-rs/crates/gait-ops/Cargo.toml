@@ -14,7 +14,7 @@ anyhow = "1"
 thiserror = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-git2 = "0.19"     # init's commit + undo's transcript git-walk
+git2 = "0.20"     # init's commit + undo's transcript git-walk
 libc = "0.2"      # daemon::stop killpg(SIGTERM)
 serde_yaml = "0.9"  # extension's frontmatter helpers
 

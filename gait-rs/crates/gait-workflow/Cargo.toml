@@ -9,7 +9,7 @@ repository.workspace = true
 [dependencies]
 gait-core  = { path = "../.." }
 gait-proto = { path = "../gait-proto" }
-git2       = "0.19"
+git2       = "0.20"
 tokio      = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 anyhow     = "1"

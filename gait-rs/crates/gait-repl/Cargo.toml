@@ -28,7 +28,7 @@ libc = { version = "0.2", optional = true }
 prost = { version = "0.13", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 tempfile = { version = "3", optional = true }
-git2 = { version = "0.19", optional = true }
+git2 = { version = "0.20", optional = true }
 gait-testkit = { path = "../gait-testkit", optional = true }
 
 [dev-dependencies]
