@@ -21,7 +21,7 @@ async fn run_turn_test_call(
     codebase_path: std::path::PathBuf,
     session_id: String,
     provider: std::sync::Arc<dyn Provider>,
-    tools: Vec<Box<dyn Tool>>,
+    tools: Vec<Arc<dyn Tool>>,
     allow: Vec<String>,
     deny: Vec<String>,
     input: TurnInput,
@@ -50,7 +50,7 @@ async fn run_turn_test_call_seeded(
     codebase_path: std::path::PathBuf,
     session_id: String,
     provider: std::sync::Arc<dyn Provider>,
-    tools: Vec<Box<dyn Tool>>,
+    tools: Vec<Arc<dyn Tool>>,
     allow: Vec<String>,
     deny: Vec<String>,
     task: &str,
@@ -104,7 +104,7 @@ impl Provider for MockProvider {
         &self,
         _system: &str,
         _messages: &[Message],
-        _tools: &[Box<dyn Tool>],
+        _tools: &[Arc<dyn Tool>],
         _params: &crate::config::LlmParamsConfig,
         _tail_context: Option<&str>,
     ) -> Result<
@@ -153,7 +153,7 @@ impl Provider for FakeProvider {
         &self,
         _system: &str,
         _messages: &[Message],
-        _tools: &[Box<dyn Tool>],
+        _tools: &[Arc<dyn Tool>],
         _params: &crate::config::LlmParamsConfig,
         _tail_context: Option<&str>,
     ) -> Result<
@@ -219,7 +219,7 @@ async fn run_turn_writes_brain_events_without_coordinator_lifecycle() {
         codebase,
         "stest001".into(),
         provider,
-        vec![Box::new(read_tool)],
+        vec![Arc::new(read_tool)],
         vec!["read".into()],
         vec![],
         "do the thing",
@@ -360,7 +360,7 @@ async fn output_tool_result_used_in_turn_result() {
         ws.path().to_path_buf(),
         "stest_out".into(),
         provider,
-        vec![output_tool.boxed()],
+        vec![output_tool.arced()],
         vec![],
         vec![],
         TurnInput {
@@ -415,7 +415,7 @@ async fn output_tool_exempt_from_permission_gating() {
         ws.path().to_path_buf(),
         "stest_out2".into(),
         provider,
-        vec![output_tool.boxed()],
+        vec![output_tool.arced()],
         vec![],
         vec![],
         TurnInput {
@@ -692,7 +692,7 @@ async fn denied_tool_gets_blocked_result_without_prompting() {
         ws.path().to_path_buf(),
         "sdeny001".into(),
         provider,
-        vec![shell_tool.boxed(), output_tool.boxed()],
+        vec![shell_tool.arced(), output_tool.arced()],
         vec![],
         vec!["shell:rm *".to_string()],
         TurnInput {
@@ -784,7 +784,7 @@ async fn deny_wins_when_tool_in_both_allow_and_deny() {
         ws.path().to_path_buf(),
         "sdeny002".into(),
         provider,
-        vec![shell_tool.boxed(), output_tool.boxed()],
+        vec![shell_tool.arced(), output_tool.arced()],
         vec!["shell:rm *".to_string()],
         vec!["shell:rm *".to_string()],
         TurnInput {
@@ -896,7 +896,7 @@ async fn resume_executes_approved_tool_directly() {
         codebase.path().to_path_buf(),
         session_id.into(),
         provider,
-        vec![Box::new(shell_tool)],
+        vec![Arc::new(shell_tool)],
         vec!["shell:echo *".into()],
         vec![],
         TurnInput {
@@ -1262,7 +1262,7 @@ async fn resume_emits_denied_tool_result_for_rejected_call() {
         codebase.path().to_path_buf(),
         session_id.into(),
         provider,
-        vec![Box::new(shell_tool)],
+        vec![Arc::new(shell_tool)],
         vec![],
         vec![],
         TurnInput {
@@ -1386,7 +1386,7 @@ async fn resume_with_scope_agent_shows_whitelist_prefix() {
         ws.path().to_path_buf(),
         session_id.into(),
         provider,
-        vec![Box::new(shell_tool)],
+        vec![Arc::new(shell_tool)],
         vec![],
         vec![],
         TurnInput {
@@ -1538,7 +1538,7 @@ async fn load_skill_emits_toggle_event() {
     // enable() call to pass the visible-set enforcement in execute.rs.
     let caps = crate::profile::ResolvedProfile::for_test(
         provider,
-        vec![Box::new(load_tool), Box::new(output_tool)],
+        vec![Arc::new(load_tool), Arc::new(output_tool)],
         vec!["enable".into()],
         vec![],
     );
@@ -1641,7 +1641,7 @@ async fn enable_rejects_skill_outside_agent_whitelist() {
 
     let caps = crate::profile::ResolvedProfile::for_test(
         provider,
-        vec![Box::new(load_tool), Box::new(output_tool)],
+        vec![Arc::new(load_tool), Arc::new(output_tool)],
         vec!["enable".into()],
         vec![],
     );
@@ -1736,7 +1736,7 @@ async fn config_enabled_union_does_not_bypass_skill_whitelist_at_seed() {
     let output_tool = StructuredDoneTool::new();
     let caps = crate::profile::ResolvedProfile::for_test(
         provider,
-        vec![Box::new(output_tool)],
+        vec![Arc::new(output_tool)],
         vec![],
         vec![],
     );
@@ -1832,7 +1832,7 @@ async fn supervised_write_outside_ceiling_pauses_with_unlock() {
         ws.path().to_path_buf(),
         "sscope-write-01".into(),
         provider,
-        vec![write_tool.boxed()],
+        vec![write_tool.arced()],
         // write is in the allow list so permission gating won't trigger first
         vec!["write".into()],
         vec![],
@@ -1919,7 +1919,7 @@ async fn supervised_write_inside_codebase_returns_done() {
         ws.path().to_path_buf(),
         "sscope-write-inbounds-01".into(),
         provider,
-        vec![write_tool.boxed()],
+        vec![write_tool.arced()],
         // write is in the allow list so permission gating won't trigger first
         vec!["write".into()],
         vec![],
@@ -2004,7 +2004,7 @@ async fn auto_mode_shell_denial_propagates_as_tool_failure() {
         ws.path().to_path_buf(),
         "sshell-auto-deny-01".into(),
         provider,
-        vec![shell_tool.boxed()],
+        vec![shell_tool.arced()],
         vec!["shell".into()],
         vec![],
         TurnInput {
@@ -2079,7 +2079,7 @@ async fn shell_eacces_supervised_pause() {
         ws.path().to_path_buf(),
         "sshell-eacces-sup-01".into(),
         provider,
-        vec![shell_tool.boxed()],
+        vec![shell_tool.arced()],
         vec!["shell".into()],
         vec![],
         TurnInput {
@@ -2158,7 +2158,7 @@ async fn supervised_read_outside_ceiling_pauses_with_unlock() {
         ws.path().to_path_buf(),
         "sread-oos-01".into(),
         provider,
-        vec![read_tool.boxed()],
+        vec![read_tool.arced()],
         // read is in the allow list so permission gating won't intercept first
         vec!["read".into()],
         vec![],
@@ -2210,7 +2210,7 @@ async fn run_turn_with_schema(
     codebase_path: std::path::PathBuf,
     session_id: String,
     provider: std::sync::Arc<dyn Provider>,
-    tools: Vec<Box<dyn Tool>>,
+    tools: Vec<Arc<dyn Tool>>,
     result_schema: Option<serde_json::Value>,
     input: TurnInput,
     repos: crate::git::Repos,
@@ -2277,7 +2277,7 @@ async fn schema_bound_plain_text_then_structured_done_succeeds() {
         ws.path().to_path_buf(),
         "nudge_ok_001".into(),
         provider,
-        vec![output_tool.boxed()],
+        vec![output_tool.arced()],
         Some(schema),
         TurnInput {
             auto: true,
@@ -2341,7 +2341,7 @@ async fn schema_bound_plain_text_always_errors_after_nudges() {
         ws.path().to_path_buf(),
         "nudge_fail_001".into(),
         provider,
-        vec![output_tool.boxed()],
+        vec![output_tool.arced()],
         Some(schema),
         TurnInput {
             auto: true,

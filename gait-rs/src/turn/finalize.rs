@@ -18,6 +18,7 @@ use crate::git::{build_trace_message, TraceTrailers};
 use crate::proto::events;
 use crate::proto::gait::log::v1 as pb;
 use crate::types::HookContext;
+use std::sync::Arc;
 
 use super::persist::Persistence;
 use super::state::{TurnEnv, TurnState};
@@ -277,7 +278,7 @@ mod tests {
             &self,
             _system: &str,
             _messages: &[crate::types::Message],
-            _tools: &[Box<dyn crate::types::Tool>],
+            _tools: &[Arc<dyn crate::types::Tool>],
             _params: &crate::config::LlmParamsConfig,
             _tail_context: Option<&str>,
         ) -> Result<ChunkStream, ProviderError> {

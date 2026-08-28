@@ -42,7 +42,7 @@ pub(super) struct ToolExecResult {
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn execute_tool_call(
     tc: &ToolCall,
-    tools: &[Box<dyn Tool>],
+    tools: &[Arc<dyn Tool>],
     emitter: &Recorder,
     approval_prefix: Option<String>,
     _codebase: &std::path::Path,
@@ -558,7 +558,7 @@ mod synapse_routing_tests {
         .unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let rec = crate::proto::Recorder::for_session(dir.path(), "stest123", tx);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(TouchTool)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(TouchTool)];
         let tc = ToolCall {
             tool_call_id: "c1".into(),
             tool_name: "touch".into(),
@@ -688,7 +688,7 @@ mod synapse_routing_tests {
                 tool_name: "error_tool".into(),
                 args: serde_json::json!({}),
             },
-            &[Box::new(ErrorTool)],
+            &[Arc::new(ErrorTool)],
             &rec,
             None,
             dir.path(),
@@ -779,11 +779,11 @@ mod synapse_routing_tests {
         let outer = execute_tool_call(
             &tc,
             &[
-                Box::new(NamedTool {
+                Arc::new(NamedTool {
                     name: "same",
                     value: "first",
                 }),
-                Box::new(NamedTool {
+                Arc::new(NamedTool {
                     name: "same",
                     value: "second",
                 }),
@@ -831,7 +831,7 @@ mod synapse_routing_tests {
         .unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let rec = crate::proto::Recorder::for_session(dir.path(), "sbound1", tx);
-        let tools: Vec<Box<dyn Tool>> = vec![Box::new(HugeOutputTool)];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(HugeOutputTool)];
         let tc = ToolCall {
             tool_call_id: "c-bound".into(),
             tool_name: "huge_output".into(),

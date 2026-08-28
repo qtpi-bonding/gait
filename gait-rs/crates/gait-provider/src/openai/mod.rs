@@ -3,6 +3,7 @@ use gait_types::types::{AssistantContent, AssistantPart, Message, MessageContent
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub struct OpenAIProvider {
     pub api_key: String,
@@ -269,7 +270,7 @@ impl Provider for OpenAIProvider {
         &self,
         system: &str,
         messages: &[Message],
-        tools: &[Box<dyn Tool>],
+        tools: &[Arc<dyn Tool>],
         params: &gait_types::config::LlmParamsConfig,
         tail_context: Option<&str>,
     ) -> Result<ChunkStream, ProviderError> {

@@ -1,6 +1,7 @@
 use futures_util::Stream;
 use gait_types::types::{Message, Tool, Usage};
 use std::pin::Pin;
+use std::sync::Arc;
 
 // A chunk of streaming output from the LLM
 #[derive(Debug, Clone)]
@@ -142,7 +143,7 @@ pub trait Provider: Send + Sync {
         &self,
         system: &str,
         messages: &[Message],
-        tools: &[Box<dyn Tool>],
+        tools: &[Arc<dyn Tool>],
         params: &gait_types::config::LlmParamsConfig,
         tail_context: Option<&str>,
     ) -> Result<ChunkStream, ProviderError>;
@@ -154,7 +155,7 @@ pub trait Provider: Send + Sync {
         &self,
         system: &str,
         messages: &[Message],
-        tools: &[Box<dyn Tool>],
+        tools: &[Arc<dyn Tool>],
         params: &gait_types::config::LlmParamsConfig,
         tail_context: Option<&str>,
         _kind: RequestKind,

@@ -56,7 +56,7 @@ impl Provider for ScriptedProvider {
         &self,
         _s: &str,
         _m: &[Message],
-        _t: &[Box<dyn Tool>],
+        _t: &[Arc<dyn Tool>],
         _params: &gait_core::config::LlmParamsConfig,
         _tail_context: Option<&str>,
     ) -> Result<
@@ -139,7 +139,7 @@ async fn full_turn_creates_transcript_and_git_commit() {
         &emitter,
         gait_core::profile::ResolvedProfile::for_test(
             provider,
-            vec![Box::new(ls_tool)],
+            vec![Arc::new(ls_tool)],
             vec!["ls".into()],
             vec![],
         ),
@@ -258,7 +258,7 @@ async fn cwd_event_reaches_live_channel_through_turn() {
         &rec,
         gait_core::profile::ResolvedProfile::for_test(
             provider,
-            vec![Box::new(shell_tool)],
+            vec![Arc::new(shell_tool)],
             vec!["shell:true".into()],
             vec![],
         ),

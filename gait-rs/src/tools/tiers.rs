@@ -1,10 +1,11 @@
 use crate::types::Tool;
+use std::sync::Arc;
 
 /// All tools loaded into the registry for this session (tier 1: register/unregister).
 ///
 /// Built-in tools are always registered. MCP tools are registered when their
 /// server connects successfully during profile resolution.
-pub struct RegisteredTools(pub Vec<Box<dyn Tool>>);
+pub struct RegisteredTools(pub Vec<Arc<dyn Tool>>);
 
 /// Registered tools that are currently visible to the LLM (tier 2: enable/disable).
 ///
@@ -13,7 +14,7 @@ pub struct RegisteredTools(pub Vec<Box<dyn Tool>>);
 /// `RegisteredTools::into_enabled` is currently a pass-through; the `config_enabled`
 /// seed on `ResolvedProfile` handles the static portion, and `AgentState` handles
 /// the dynamic portion during a turn.
-pub struct EnabledTools(pub Vec<Box<dyn Tool>>);
+pub struct EnabledTools(pub Vec<Arc<dyn Tool>>);
 
 /// Enabled tools with their permission rules attached (tier 3: allow/deny).
 ///
@@ -43,11 +44,11 @@ impl EnabledTools {
         }
     }
 
-    pub fn as_slice(&self) -> &[Box<dyn Tool>] {
+    pub fn as_slice(&self) -> &[Arc<dyn Tool>] {
         &self.0
     }
 
-    pub fn into_vec(self) -> Vec<Box<dyn Tool>> {
+    pub fn into_vec(self) -> Vec<Arc<dyn Tool>> {
         self.0
     }
 
@@ -55,17 +56,17 @@ impl EnabledTools {
     /// `PermissionedTools::push_tool`; `pub(crate)` because callers outside the
     /// crate should go through `PermissionedTools::push_tool` instead of
     /// reaching past the permission tier.
-    pub(crate) fn as_slice_mut(&mut self) -> &mut Vec<Box<dyn Tool>> {
+    pub(crate) fn as_slice_mut(&mut self) -> &mut Vec<Arc<dyn Tool>> {
         &mut self.0
     }
 }
 
 impl PermissionedTools {
-    pub fn tools(&self) -> &[Box<dyn Tool>] {
+    pub fn tools(&self) -> &[Arc<dyn Tool>] {
         self.tools.as_slice()
     }
 
-    pub fn into_parts(self) -> (Vec<Box<dyn Tool>>, Vec<String>, Vec<String>) {
+    pub fn into_parts(self) -> (Vec<Arc<dyn Tool>>, Vec<String>, Vec<String>) {
         (self.tools.into_vec(), self.allow, self.deny)
     }
 
@@ -74,7 +75,7 @@ impl PermissionedTools {
     /// always available, without rebuilding the whole `Profile`. The new tool
     /// is still subject to the existing `allow` / `deny` rules — callers who
     /// need it auto-allowed should also extend `self.allow`.
-    pub fn push_tool(&mut self, tool: Box<dyn Tool>) {
+    pub fn push_tool(&mut self, tool: Arc<dyn Tool>) {
         self.tools.as_slice_mut().push(tool);
     }
 }

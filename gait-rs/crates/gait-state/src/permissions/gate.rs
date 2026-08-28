@@ -31,7 +31,7 @@ pub enum GateDecision {
 /// Pure: no I/O, no side effects. Preview streaming happens at the call site
 /// (the `Allow` arm in `mod.rs`).
 ///
-/// `tool` is `Option<&Box<dyn Tool>>` because a call may name a tool the loop
+/// `tool` is `Option<&dyn Tool>` because a call may name a tool the loop
 /// doesn't have in scope (unknown tool → treated as a "requires approval"
 /// call with the tool name as its own pattern, same as the original
 /// `unwrap_or_else(...)` fallback).

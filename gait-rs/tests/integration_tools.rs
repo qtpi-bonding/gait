@@ -15,7 +15,7 @@ async fn builtin_tools_returns_expected_tools() {
         vec![],
         gait_core::git::Repos::production(),
     );
-    assert_eq!(tools.len(), 16);
+    assert_eq!(tools.len(), 17);
     let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
     for expected in &[
         "read",
@@ -28,6 +28,7 @@ async fn builtin_tools_returns_expected_tools() {
         "structured_done",
         "codesearch",
         "webfetch",
+        "code",
         "enable",
         "spawn_agent",
         "list_agents",

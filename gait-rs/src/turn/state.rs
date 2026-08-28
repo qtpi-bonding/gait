@@ -50,6 +50,9 @@ use crate::types::{LoadableEntry, Message, Tool, Usage};
 /// (passed into `emitter.set_position`) rather than mutated. Keeping it as a
 /// local in `run_turn` matches the plan.
 pub(crate) struct TurnState {
+    /// Shared turn-scoped capability resolver. Nested callers use this path so
+    /// capability execution is not coupled to transcript event recording.
+    pub capability_dispatcher: Arc<super::capabilities::CapabilityDispatcher>,
     /// Aggregate token usage across all LLM steps of the turn.
     /// Updated via `Usage::add` from each `StreamChunk::StepUsage`.
     pub total_usage: Usage,
@@ -98,7 +101,7 @@ pub(crate) struct TurnState {
     /// and mutated in-loop by `ExecutionSignal::LoadContext` (MCP server
     /// enable/disable). Read by `provider.stream` each step and by the gate
     /// and scope pre-check.
-    pub tools: Vec<Box<dyn Tool>>,
+    pub tools: Vec<Arc<dyn Tool>>,
 
     /// `<loadable-index>` entries (MCP server / skill / plugin rows) built
     /// once in setup and read every step by
@@ -177,6 +180,12 @@ impl TurnState {
     ///   so the `LoadContext` mutations live in the struct from iteration 0.
     pub fn new(caps: &ResolvedProfile) -> Self {
         Self {
+            capability_dispatcher: Arc::new(super::capabilities::CapabilityDispatcher::new(
+                std::iter::empty::<Arc<dyn Tool>>(),
+                Vec::new(),
+                std::collections::HashMap::new(),
+                std::iter::empty::<String>(),
+            )),
             total_usage: Usage::default(),
             clarify_signal: None,
             inform_signal: None,
@@ -210,7 +219,7 @@ mod tests {
             &self,
             _system: &str,
             _messages: &[crate::types::Message],
-            _tools: &[Box<dyn Tool>],
+            _tools: &[Arc<dyn Tool>],
             _params: &crate::config::LlmParamsConfig,
             _tail_context: Option<&str>,
         ) -> Result<

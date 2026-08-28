@@ -1,5 +1,6 @@
 use super::super::*;
 use crate::types::ToolDef;
+use std::sync::Arc;
 
 // `pause_for_unlock`/`UnlockPauseCtx` were deleted in Task 9 (plan-01): the
 // Unlock pause now goes through `finalize::finalize` like every other exit
@@ -177,7 +178,7 @@ fn tool_gating_filters_when_tools_nonempty() {
         permission: None,
     };
 
-    let mut tools: Vec<Box<dyn Tool>> = vec![Box::new(read), Box::new(shell), Box::new(edit)];
+    let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(read), Arc::new(shell), Arc::new(edit)];
 
     // Non-empty enable-set: gate filters down to whitelisted tools only.
     let allowed: HashSet<String> = ["read", "edit"].iter().map(|s| s.to_string()).collect();
@@ -242,7 +243,7 @@ mod exec_replace_tests {
             &self,
             _system: &str,
             _messages: &[Message],
-            _tools: &[Box<dyn crate::types::Tool>],
+            _tools: &[Arc<dyn crate::types::Tool>],
             _params: &crate::config::LlmParamsConfig,
             _tail_context: Option<&str>,
         ) -> Result<

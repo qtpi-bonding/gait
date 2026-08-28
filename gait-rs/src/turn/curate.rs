@@ -37,7 +37,7 @@ pub(super) async fn apply_curate_filter(
     };
     let caps = crate::profile::ResolvedProfile {
         provider,
-        permissioned: crate::tools::RegisteredTools(vec![AnnotateTool::new().boxed()])
+        permissioned: crate::tools::RegisteredTools(vec![AnnotateTool::new().arced()])
             .into_enabled()
             .with_permissions(vec![], vec![]),
         model: model.to_string(),

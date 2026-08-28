@@ -1,3 +1,4 @@
+use std::sync::Arc;
 mod error;
 pub use error::ToolError;
 pub mod tiers;
@@ -6,6 +7,7 @@ pub use tiers::{EnabledTools, PermissionedTools, RegisteredTools};
 pub mod annotate;
 pub mod apply_patch;
 pub mod clarify;
+pub mod code;
 pub mod codesearch;
 pub mod fs_backend;
 pub mod glob;
@@ -26,6 +28,7 @@ pub mod write;
 
 pub use annotate::AnnotateTool;
 pub use clarify::ClarifyTool;
+pub use code::CodeTool;
 pub use codesearch::CodesearchTool;
 pub mod ctx;
 pub use apply_patch::ApplyPatchTool;
@@ -238,6 +241,7 @@ pub fn builtin_tool_names() -> &'static [&'static str] {
         "inform",
         "annotate",
         "prune",
+        "code",
     ]
 }
 
@@ -248,31 +252,32 @@ pub fn builtin_tools(
     skills: Vec<SkillDef>,
     plugins: Vec<crate::config::WasmPluginDef>,
     repos: crate::git::Repos,
-) -> Vec<Box<dyn Tool>> {
-    let tools: Vec<Box<dyn Tool>> = vec![
-        ReadTool::new(ctx.clone()).boxed(),
-        WriteTool::new(ctx.clone()).boxed(),
-        ApplyPatchTool::new(ctx.clone()).boxed(),
-        GlobTool::new(ctx.clone()).boxed(),
-        GrepTool::new(ctx.clone()).boxed(),
-        LsTool::new(ctx.clone()).boxed(),
-        ShellTool::new(ctx.clone()).boxed(),
-        StructuredDoneTool::new().boxed(),
-        CodesearchTool::new(ctx.clone()).boxed(),
+) -> Vec<Arc<dyn Tool>> {
+    let tools: Vec<Arc<dyn Tool>> = vec![
+        ReadTool::new(ctx.clone()).arced(),
+        WriteTool::new(ctx.clone()).arced(),
+        ApplyPatchTool::new(ctx.clone()).arced(),
+        GlobTool::new(ctx.clone()).arced(),
+        GrepTool::new(ctx.clone()).arced(),
+        LsTool::new(ctx.clone()).arced(),
+        ShellTool::new(ctx.clone()).arced(),
+        StructuredDoneTool::new().arced(),
+        CodesearchTool::new(ctx.clone()).arced(),
         {
             let wf = if let Some(ref hosts) = ctx.network_allowlist {
                 WebfetchTool::new().with_network_allowlist(hosts.clone())
             } else {
                 WebfetchTool::new()
             };
-            wf.boxed()
+            wf.arced()
         },
-        LoadTool::new(mcp_tools, skills, plugins).boxed(),
-        SpawnAgentTool::new(ctx.clone(), repos.clone()).boxed(),
-        ListAgentsTool::new(ctx.clone()).boxed(),
-        ClarifyTool::new().boxed(),
-        InformTool::new().boxed(),
-        PruneTool::new().boxed(),
+        LoadTool::new(mcp_tools, skills, plugins).arced(),
+        SpawnAgentTool::new(ctx.clone(), repos.clone()).arced(),
+        ListAgentsTool::new(ctx.clone()).arced(),
+        ClarifyTool::new().arced(),
+        InformTool::new().arced(),
+        PruneTool::new().arced(),
+        CodeTool::new().arced(),
     ];
     tools
 }
@@ -284,7 +289,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn builtin_tools_returns_sixteen() {
+    fn builtin_tools_returns_seventeen() {
         let tools = builtin_tools(
             ToolCtx::new(PathBuf::from("/tmp"), PathBuf::from("/tmp"), "stest".into()),
             vec![],
@@ -292,7 +297,7 @@ mod tests {
             vec![],
             crate::git::Repos::production(),
         );
-        assert_eq!(tools.len(), 16);
+        assert_eq!(tools.len(), 17);
     }
 
     #[test]

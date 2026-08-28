@@ -484,12 +484,30 @@ pub trait Tool: Send + Sync {
         vec![]
     }
 
+    /// Optional turn-local capability dispatcher hook. Tools that host nested
+    /// calls may override this; ordinary tools do nothing.
+    fn set_capability_dispatcher(
+        &self,
+        _dispatcher: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    ) {
+    }
+
     /// Convenience: box self into `Box<dyn Tool>`.
     fn boxed(self) -> Box<dyn Tool>
     where
         Self: Sized + 'static,
     {
         Box::new(self)
+    }
+
+    /// Convenience: wrap self into `Arc<dyn Tool>` — the shared-ownership
+    /// form used by `TurnState.tools` and `CapabilityDispatcher`'s native
+    /// tool map (the same instances, not lookalikes).
+    fn arced(self) -> std::sync::Arc<dyn Tool>
+    where
+        Self: Sized + 'static,
+    {
+        std::sync::Arc::new(self)
     }
 }
 

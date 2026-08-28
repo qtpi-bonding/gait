@@ -9,6 +9,7 @@
 use crate::profile::ResolvedProfile;
 use crate::proto::gait::log::v1 as pb;
 use crate::proto::wire;
+use std::sync::Arc;
 
 /// Build the proto `Agent` message from the live resolved profile.
 /// Mapped field-by-field from the in-memory `ResolvedProfile`. The `mcp_servers`
@@ -31,6 +32,7 @@ pub fn agent_msg(resolved: &ResolvedProfile) -> pb::Agent {
         skills: resolved
             .skill_registry
             .iter()
+            .filter(|s| s.model_invocable)
             .map(|s| s.name.clone())
             .collect(),
         plugins: Vec::new(),
@@ -82,7 +84,7 @@ mod tests {
             &self,
             _system: &str,
             _messages: &[Message],
-            _tools: &[Box<dyn Tool>],
+            _tools: &[Arc<dyn Tool>],
             _params: &crate::config::LlmParamsConfig,
             _tail_context: Option<&str>,
         ) -> Result<
@@ -104,10 +106,10 @@ mod tests {
         // Build a ResolvedProfile with everything populated, via for_test
         // (which gives a stub provider + empty allow/deny/skills) and then
         // override the fields the mapping reads. We pass a real Tool (Output)
-        // so the Vec<Box<dyn Tool>> is constructable in for_test.
+        // so the Vec<Arc<dyn Tool>> is constructable in for_test.
         let mut profile = ResolvedProfile::for_test(
             Arc::new(DummyProvider) as Arc<dyn gait_provider::provider::Provider>,
-            vec![Box::new(StructuredDoneTool::new())],
+            vec![Arc::new(StructuredDoneTool::new())],
             vec!["read".into()],
             vec!["shell:rm *".into()],
         );

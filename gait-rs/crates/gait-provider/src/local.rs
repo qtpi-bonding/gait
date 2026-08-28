@@ -63,7 +63,7 @@ fn assistant_content(content: &AssistantContent) -> (String, Vec<GenerationToolC
 pub fn build_request(
     system: &str,
     messages: &[Message],
-    tools: &[Box<dyn Tool>],
+    tools: &[Arc<dyn Tool>],
     params: &gait_types::config::LlmParamsConfig,
     tail_context: Option<&str>,
 ) -> GenerationRequest {
@@ -130,7 +130,7 @@ impl Provider for LocalProvider {
         &self,
         system: &str,
         messages: &[Message],
-        tools: &[Box<dyn Tool>],
+        tools: &[Arc<dyn Tool>],
         params: &gait_types::config::LlmParamsConfig,
         tail_context: Option<&str>,
     ) -> Result<ChunkStream, ProviderError> {

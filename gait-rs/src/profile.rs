@@ -1,6 +1,7 @@
 use crate::config::GaitConfig;
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Arc;
 
 /// The one resolved context boundary used by a live turn.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -80,7 +81,7 @@ impl ResolvedProfile {
     /// to the allow list so the model can call it without prompting. Intended
     /// for embedders (e.g. `gait-repl`) that want to inject a tool that the
     /// base `Profile::resolve` does not know about.
-    pub fn add_allowed_tool(&mut self, tool: Box<dyn crate::types::Tool>) {
+    pub fn add_allowed_tool(&mut self, tool: Arc<dyn crate::types::Tool>) {
         let name = tool.name().to_string();
         self.permissioned.push_tool(tool);
         if !self.permissioned.allow.iter().any(|a| a == &name) {
@@ -414,14 +415,14 @@ impl Profile {
         // Tools: builtins (moved from bin/gait.rs:242-249) + config tools (moved from bin/gait.rs:250-287).
         let tool_ctx =
             crate::tools::ToolCtx::new(codebase_path.clone(), gait_dir.clone(), session_id.clone());
-        let tools: Vec<Box<dyn crate::types::Tool>> = if self.hands_free {
+        let tools: Vec<Arc<dyn crate::types::Tool>> = if self.hands_free {
             // Hands-free: the only registered tool is the schema-aware structured_done.
             // Nothing else exists, so tool routing can never reach a hand.
             let schema = self
                 .result_schema
                 .clone()
                 .unwrap_or_else(|| serde_json::json!({ "type": "object" }));
-            vec![Box::new(crate::tools::StructuredDoneTool::with_schema(
+            vec![Arc::new(crate::tools::StructuredDoneTool::with_schema(
                 schema,
             ))]
         } else {
@@ -437,7 +438,7 @@ impl Profile {
             }
             if let Some(schema) = &self.result_schema {
                 if let Some(pos) = tools.iter().position(|t| t.name() == "structured_done") {
-                    tools[pos] = Box::new(crate::tools::StructuredDoneTool::with_schema(
+                    tools[pos] = Arc::new(crate::tools::StructuredDoneTool::with_schema(
                         schema.clone(),
                     ));
                 }
@@ -486,7 +487,7 @@ impl ResolvedProfile {
     /// everything else is empty/default.
     pub fn for_test(
         provider: std::sync::Arc<dyn gait_provider::provider::Provider>,
-        tools: Vec<Box<dyn crate::types::Tool>>,
+        tools: Vec<Arc<dyn crate::types::Tool>>,
         allow: Vec<String>,
         deny: Vec<String>,
     ) -> Self {
@@ -495,7 +496,7 @@ impl ResolvedProfile {
 
     pub fn for_test_with_schema(
         provider: std::sync::Arc<dyn gait_provider::provider::Provider>,
-        tools: Vec<Box<dyn crate::types::Tool>>,
+        tools: Vec<Arc<dyn crate::types::Tool>>,
         allow: Vec<String>,
         deny: Vec<String>,
         result_schema: Option<serde_json::Value>,
@@ -526,7 +527,7 @@ impl ResolvedProfile {
     }
 }
 
-/// Build a `Box<dyn Tool>` from a `ConfigTool` (a `gait.jsonc` tool descriptor).
+/// Build an `Arc<dyn Tool>` from a `ConfigTool` (a `gait.jsonc` tool descriptor).
 /// This is the body of the `for ct in &config.tools { ... }` loop formerly in
 /// `bin/gait.rs`, moved verbatim: it constructs a `ToolDef` whose `execute`
 /// shells out the configured command. `gait_dir` / `codebase_path` are the
@@ -535,7 +536,7 @@ fn build_config_tool(
     ct: &crate::config::ConfigTool,
     gait_dir: &std::path::Path,
     codebase_path: &std::path::Path,
-) -> Box<dyn crate::types::Tool> {
+) -> Arc<dyn crate::types::Tool> {
     let cmd = ct.cmd.clone();
     let cwd = if ct.cwd == "workspace" {
         gait_dir.to_path_buf()
@@ -546,7 +547,7 @@ fn build_config_tool(
     let description = ct.description.clone();
     // Note: config-defined tools receive no arguments from the model — they are fixed shell
     // commands. The empty parameters schema tells the model to call them with no input.
-    Box::new(crate::types::ToolDef {
+    Arc::new(crate::types::ToolDef {
         name,
         description,
         parameters: serde_json::json!({

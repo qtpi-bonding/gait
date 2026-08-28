@@ -1,3 +1,4 @@
+use std::sync::Arc;
 pub mod sse;
 pub mod types;
 
@@ -153,7 +154,7 @@ impl Provider for AnthropicProvider {
         &self,
         system: &str,
         messages: &[Message],
-        tools: &[Box<dyn Tool>],
+        tools: &[Arc<dyn Tool>],
         params: &gait_types::config::LlmParamsConfig,
         tail_context: Option<&str>,
     ) -> Result<ChunkStream, ProviderError> {

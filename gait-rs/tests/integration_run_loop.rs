@@ -51,7 +51,7 @@ impl Provider for TextProvider {
         &self,
         _s: &str,
         _m: &[Message],
-        _t: &[Box<dyn Tool>],
+        _t: &[Arc<dyn Tool>],
         _params: &gait_core::config::LlmParamsConfig,
         _tail_context: Option<&str>,
     ) -> Result<

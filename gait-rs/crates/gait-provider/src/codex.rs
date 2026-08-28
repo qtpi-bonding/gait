@@ -13,6 +13,7 @@ use gait_auth::{ResolvedCredential, SubscriptionCredential};
 use gait_types::types::{AssistantContent, AssistantPart, Message, MessageContent, Tool, Usage};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 
@@ -54,7 +55,7 @@ impl CodexResponsesProvider {
         &self,
         system: &str,
         messages: &[Message],
-        tools: &[Box<dyn Tool>],
+        tools: &[Arc<dyn Tool>],
         params: &gait_types::config::LlmParamsConfig,
         kind: RequestKind,
     ) -> Value {
@@ -144,7 +145,7 @@ impl Provider for CodexResponsesProvider {
         &self,
         system: &str,
         messages: &[Message],
-        tools: &[Box<dyn Tool>],
+        tools: &[Arc<dyn Tool>],
         params: &gait_types::config::LlmParamsConfig,
         tail_context: Option<&str>,
     ) -> Result<ChunkStream, ProviderError> {
@@ -163,7 +164,7 @@ impl Provider for CodexResponsesProvider {
         &self,
         system: &str,
         messages: &[Message],
-        tools: &[Box<dyn Tool>],
+        tools: &[Arc<dyn Tool>],
         params: &gait_types::config::LlmParamsConfig,
         tail_context: Option<&str>,
         kind: RequestKind,

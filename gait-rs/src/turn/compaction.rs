@@ -5,6 +5,7 @@
 //! and lets the caller append the resulting session-scoped `Summary` event.
 
 use futures_util::StreamExt;
+use std::sync::Arc;
 
 use crate::profile::ContextPolicy;
 use crate::types::{AssistantContent, AssistantPart, Message, Usage};
@@ -53,7 +54,7 @@ impl ContextEstimate {
 pub fn estimate(
     messages: &[Message],
     system_prompt: &str,
-    tools: &[Box<dyn crate::types::Tool>],
+    tools: &[Arc<dyn crate::types::Tool>],
     session_tail: &str,
     observed_tokens: u64,
 ) -> ContextEstimate {
@@ -228,7 +229,7 @@ pub async fn summarize(
         id: "compaction-instruction".to_string(),
         attribution: None,
     });
-    let no_tools: &[Box<dyn crate::types::Tool>] = &[];
+    let no_tools: &[Arc<dyn crate::types::Tool>] = &[];
     let mut params = env.llm_params.clone();
     params.max_tokens = Some(
         params

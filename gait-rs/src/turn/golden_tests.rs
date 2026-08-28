@@ -91,7 +91,7 @@ impl Provider for GoldenProvider {
         &self,
         _system: &str,
         _messages: &[crate::types::Message],
-        _tools: &[Box<dyn Tool>],
+        _tools: &[Arc<dyn Tool>],
         _params: &LlmParamsConfig,
         _tail_context: Option<&str>,
     ) -> Result<ChunkStream, ProviderError> {
@@ -384,7 +384,7 @@ struct Fixture {
     ws: TempDir,
     session_id: String,
     provider: Arc<GoldenProvider>,
-    tools: Vec<Box<dyn Tool>>,
+    tools: Vec<Arc<dyn Tool>>,
     allow: Vec<String>,
     deny: Vec<String>,
     input: TurnInput,
@@ -393,7 +393,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new(provider: GoldenProvider, tools: Vec<Box<dyn Tool>>, auto: bool) -> Self {
+    fn new(provider: GoldenProvider, tools: Vec<Arc<dyn Tool>>, auto: bool) -> Self {
         let ws = TempDir::new().expect("tempdir");
         init_git_repo(ws.path());
         Self {
@@ -452,7 +452,7 @@ impl Fixture {
         // here would make libgit2's worktree checkout fail (it requires the
         // target directory not already exist).
         let provider: Arc<dyn Provider> = self.provider.clone();
-        let tools = self.tools.clone_for_test();
+        let tools = self.tools.clone();
         let allow = self.allow.clone();
         let deny = self.deny.clone();
         let input = self.input.clone();
@@ -491,55 +491,6 @@ impl Fixture {
     }
 }
 
-/// Helper trait: cheaply clone `Vec<Box<dyn Tool>>` for the
-/// `run_turn_test_call` helper without consuming the fixture.
-trait CloneForTest {
-    fn clone_for_test(&self) -> Vec<Box<dyn Tool>>;
-}
-impl CloneForTest for Vec<Box<dyn Tool>> {
-    fn clone_for_test(&self) -> Vec<Box<dyn Tool>> {
-        // We cannot `clone()` `Box<dyn Tool>` (trait objects aren't
-        // generally cloneable). For the limited set of tools the harness
-        // constructs, build fresh instances of the same shape.
-        // Note: name-based reconstruction for the two `ToolDef` tools
-        // (closing-the-gap), plus read/write/shell/structured-done
-        // instances with the canonical ctx.
-        let ctx = ToolCtx::new(
-            std::path::PathBuf::from("/tmp"),
-            std::path::PathBuf::from("/tmp"),
-            "sgolden01".to_string(),
-        );
-        let names: Vec<&str> = self.iter().map(|t| t.name()).collect();
-        let mut out: Vec<Box<dyn Tool>> = Vec::new();
-        for n in names {
-            match n {
-                "read" => out.push(Box::new(ReadTool::new(ctx.clone()))),
-                "write" => out.push(Box::new(WriteTool::new(ctx.clone()))),
-                "shell" => out.push(Box::new(ShellTool::new(ctx.clone()))),
-                "structured_done" => out.push(Box::new(StructuredDoneTool::new())),
-                "clarify" => out.push(Box::new(crate::tools::ClarifyTool::new())),
-                "inform" => out.push(Box::new(crate::tools::InformTool::new())),
-                // ToolDef tools are recreated with a no-op closure. This is
-                // safe because the harness only uses ToolDef shapes for
-                // tools it doesn't actually execute — see scenario bodies
-                // that pass empty `tools` or all-allow ToolDefs.
-                other => out.push(Box::new(noop_tool_def(other))),
-            }
-        }
-        out
-    }
-}
-
-fn noop_tool_def(name: &str) -> ToolDef {
-    ToolDef {
-        name: name.to_string(),
-        description: format!("noop {}", name),
-        parameters: serde_json::json!({"type": "object"}),
-        execute: Box::new(|_args| Box::pin(async move { Ok(serde_json::Value::Null) })),
-        permission: None,
-    }
-}
-
 fn run_scenario(name: &str, fixture: Fixture) {
     // `record_kind` executes the turn (writing the log); `bodies_from_log`
     // must run after, or it reads a log that hasn't been written yet.
@@ -556,7 +507,7 @@ fn run_scenario(name: &str, fixture: Fixture) {
     }
 }
 
-fn make_done_scenario(sid: &str, tools: Vec<Box<dyn Tool>>, provider: GoldenProvider) -> Fixture {
+fn make_done_scenario(sid: &str, tools: Vec<Arc<dyn Tool>>, provider: GoldenProvider) -> Fixture {
     let mut fx = Fixture::new(provider, tools, true);
     fx.session_id = sid.to_string();
     fx
@@ -590,7 +541,7 @@ fn golden_done_structured() {
         },
         StreamChunk::Done,
     ])]);
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(StructuredDoneTool::new())];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(StructuredDoneTool::new())];
     let fx = make_done_scenario("sgdone02", tools, provider);
     run_scenario("done_structured", fx);
 }
@@ -606,7 +557,7 @@ fn golden_permissions() {
         },
         StreamChunk::Done,
     ])]);
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(ShellTool::new(ToolCtx::new(
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(ShellTool::new(ToolCtx::new(
         std::path::PathBuf::from("/tmp"),
         std::path::PathBuf::from("/tmp"),
         "sgperm01".to_string(),
@@ -632,7 +583,7 @@ fn golden_clarify() {
         },
         StreamChunk::Done,
     ])]);
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(crate::tools::ClarifyTool::new())];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(crate::tools::ClarifyTool::new())];
     let fx = make_done_scenario("sgclarify01", tools, provider);
     run_scenario("clarify", fx);
 }
@@ -652,7 +603,7 @@ fn golden_inform() {
         },
         StreamChunk::Done,
     ])]);
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(crate::tools::InformTool::new())];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(crate::tools::InformTool::new())];
     let fx = make_done_scenario("sginform01", tools, provider);
     run_scenario("inform", fx);
 }
@@ -672,7 +623,7 @@ fn golden_unlock_precheck() {
         },
         StreamChunk::Done,
     ])]);
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(WriteTool::new(ToolCtx::new(
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(WriteTool::new(ToolCtx::new(
         std::path::PathBuf::from("/tmp"),
         std::path::PathBuf::from("/tmp"),
         "sgunlock01".to_string(),
@@ -769,7 +720,7 @@ fn golden_schema_exhausted() {
         })
         .collect();
     let provider = GoldenProvider::new(responses);
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(StructuredDoneTool::new())];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(StructuredDoneTool::new())];
     let mut fx = Fixture::new(provider, tools, true);
     fx.session_id = "sgschexh".into();
     fx.result_schema = Some(serde_json::json!({"type": "object"}));
@@ -802,7 +753,7 @@ fn golden_max_steps() {
         })
         .collect();
     let provider = GoldenProvider::new(responses);
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(ReadTool::new(ctx))];
+    let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(ReadTool::new(ctx))];
     let mut fx = Fixture::new(provider, tools, true);
     fx.session_id = "sgmax".into();
     fx.allow = vec!["read".into()];
