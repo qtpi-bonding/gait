@@ -1,0 +1,20 @@
+[package]
+name = "gait-codemode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Native host boundary for Gait's fixed WebAssembly Code Mode guest"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_jcs = "0.1"
+async-trait = "0.1"
+thiserror = "1"
+wasmtime = { version = "29", default-features = false, features = ["cranelift", "runtime"] }
+futures = "0.3"
+tokio = { version = "1", features = ["time", "macros"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "time"] }

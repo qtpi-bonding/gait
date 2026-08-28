@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/gait-bin", "crates/gait-repl", "crates/gait-cli", "crates/gait-proto", "crates/gait-types", "crates/gait-platform", "crates/gait-auth", "crates/gait-provider", "crates/gait-local", "crates/gait-llama-cpp", "crates/gait-workflow", "crates/gait-ops", "crates/gait-sandbox", "crates/gait-state", "crates/gait-acp", "crates/gait-identity", "crates/gait-testkit", "crates/gait-watch"]
+members = ["crates/gait-bin", "crates/gait-repl", "crates/gait-cli", "crates/gait-proto", "crates/gait-types", "crates/gait-platform", "crates/gait-auth", "crates/gait-provider", "crates/gait-local", "crates/gait-llama-cpp", "crates/gait-workflow", "crates/gait-ops", "crates/gait-sandbox", "crates/gait-state", "crates/gait-acp", "crates/gait-identity", "crates/gait-testkit", "crates/gait-watch", "crates/gait-codemode", "crates/gait-codemode-js", "xtask"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
@@ -65,6 +65,7 @@ gait-sandbox    = { path = "crates/gait-sandbox" }
 gait-proto      = { path = "crates/gait-proto" }
 gait-identity   = { path = "crates/gait-identity" }
 gait-state      = { path = "crates/gait-state" }
+gait-codemode   = { path = "crates/gait-codemode" }
 prost          = "0.13"
 pbjson-types   = "0.7"
 # content_hash pipeline: SHA-256 over JCS(RFC 8785) of the canonical body JSON.

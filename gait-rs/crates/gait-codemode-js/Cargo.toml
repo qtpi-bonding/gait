@@ -1,0 +1,14 @@
+[package]
+name = "gait-codemode-js"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# This crate is intentionally metadata-only. rquickjs (a C/QuickJS binding)
+# cannot cross-compile to wasm32-unknown-unknown: its C build requires libc
+# headers (e.g. stdlib.h) that the "unknown" target does not provide. The
+# real Code Mode guest is the vendored QuickJS-WASI artifact at
+# vendor/quickjs-wasi/<version>/quickjs.wasm (see that directory's README),
+# copied and hash-verified into crates/gait-codemode/guest/ by
+# `cargo xtask codemode-guest`. See gait-rs/docs/architecture.md.
