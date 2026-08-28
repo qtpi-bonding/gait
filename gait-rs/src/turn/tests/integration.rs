@@ -1524,6 +1524,7 @@ async fn load_skill_emits_toggle_event() {
         description: String::new(),
         content: "TDD skill content".into(),
         enabled: false,
+        model_invocable: true,
     };
     let load_tool = crate::tools::LoadTool::new(vec![], vec![skill.clone()], vec![]);
     let output_tool = StructuredDoneTool::new();
@@ -1633,6 +1634,7 @@ async fn enable_rejects_skill_outside_agent_whitelist() {
         description: String::new(),
         content: "TDD skill content".into(),
         enabled: false,
+        model_invocable: true,
     };
     let load_tool = crate::tools::LoadTool::new(vec![], vec![skill.clone()], vec![]);
     let output_tool = StructuredDoneTool::new();
@@ -1729,6 +1731,7 @@ async fn config_enabled_union_does_not_bypass_skill_whitelist_at_seed() {
         description: String::new(),
         content: "TDD skill content".into(),
         enabled: true,
+        model_invocable: true,
     };
     let output_tool = StructuredDoneTool::new();
     let caps = crate::profile::ResolvedProfile::for_test(

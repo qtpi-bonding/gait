@@ -591,6 +591,233 @@ mod synapse_routing_tests {
             log.contains("/from-tool"),
             "tool-emitted event must be replayed into the log"
         );
+        let call = log.find("\"toolCall\"").unwrap();
+        let cwd = log.find("/from-tool").unwrap();
+        let result = log.rfind("\"toolResult\"").unwrap();
+        assert!(
+            call < cwd && cwd < result,
+            "durable event order was not ToolCall -> tool event -> ToolResult"
+        );
+    }
+
+    struct ErrorTool;
+    #[async_trait::async_trait]
+    impl Tool for ErrorTool {
+        fn name(&self) -> &str {
+            "error_tool"
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn parameters(&self) -> &serde_json::Value {
+            static P: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+            P.get_or_init(|| serde_json::json!({"type":"object"}))
+        }
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _rec: &dyn crate::types::Rec,
+        ) -> Result<serde_json::Value, crate::tools::ToolError> {
+            Err(crate::tools::ToolError::Execute("probe failed".into()))
+        }
+    }
+
+    struct NamedTool {
+        name: &'static str,
+        value: &'static str,
+    }
+    #[async_trait::async_trait]
+    impl Tool for NamedTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn parameters(&self) -> &serde_json::Value {
+            static P: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+            P.get_or_init(|| serde_json::json!({"type":"object"}))
+        }
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _rec: &dyn crate::types::Rec,
+        ) -> Result<serde_json::Value, crate::tools::ToolError> {
+            Ok(serde_json::Value::String(self.value.into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn baseline_outer_error_metadata_and_unknown_tool_contract() {
+        let dir = tempdir().unwrap();
+        let id = "scontract1";
+        std::fs::create_dir_all(
+            crate::session::live::log_path(dir.path(), id)
+                .parent()
+                .unwrap(),
+        )
+        .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let rec = crate::proto::Recorder::for_session(dir.path(), id, tx);
+        let unknown = execute_tool_call(
+            &ToolCall {
+                tool_call_id: "unknown".into(),
+                tool_name: "missing".into(),
+                args: serde_json::json!({}),
+            },
+            &[],
+            &rec,
+            None,
+            dir.path(),
+            dir.path(),
+            id,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(unknown
+            .result
+            .result
+            .as_str()
+            .unwrap()
+            .starts_with("unknown tool: missing"));
+        let known = execute_tool_call(
+            &ToolCall {
+                tool_call_id: "error".into(),
+                tool_name: "error_tool".into(),
+                args: serde_json::json!({}),
+            },
+            &[Box::new(ErrorTool)],
+            &rec,
+            None,
+            dir.path(),
+            dir.path(),
+            id,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(known
+            .result
+            .result
+            .as_str()
+            .unwrap()
+            .starts_with("error: probe failed"));
+        let events = crate::session::log::read_events(&rec.tx_path).unwrap();
+        let unknown_result = events
+            .iter()
+            .find_map(|e| match crate::turn::event_kind(e) {
+                Some(crate::proto::gait::log::v1::payload::Kind::ToolResult(r))
+                    if r.call_id == "unknown" =>
+                {
+                    Some(r)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(unknown_result.duration.is_none() && unknown_result.process.is_none());
+        let known_result = events
+            .iter()
+            .find_map(|e| match crate::turn::event_kind(e) {
+                Some(crate::proto::gait::log::v1::payload::Kind::ToolResult(r))
+                    if r.call_id == "error" =>
+                {
+                    Some(r)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(known_result.duration.is_some() && known_result.process.is_none());
+    }
+
+    #[tokio::test]
+    async fn baseline_zero_tools_and_duplicate_name_resolution() {
+        let dir = tempdir().unwrap();
+        let id = "sduplicate1";
+        std::fs::create_dir_all(
+            crate::session::live::log_path(dir.path(), id)
+                .parent()
+                .unwrap(),
+        )
+        .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let rec = crate::proto::Recorder::for_session(dir.path(), id, tx);
+        let tc = ToolCall {
+            tool_call_id: "empty".into(),
+            tool_name: "same".into(),
+            args: serde_json::json!({}),
+        };
+        let empty = execute_tool_call(
+            &tc,
+            &[],
+            &rec,
+            None,
+            dir.path(),
+            dir.path(),
+            id,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(empty
+            .result
+            .result
+            .as_str()
+            .unwrap()
+            .starts_with("unknown tool: same"));
+        let first: Arc<dyn Tool> = Arc::new(NamedTool {
+            name: "same",
+            value: "first",
+        });
+        let second: Arc<dyn Tool> = Arc::new(NamedTool {
+            name: "same",
+            value: "second",
+        });
+        let outer = execute_tool_call(
+            &tc,
+            &[
+                Box::new(NamedTool {
+                    name: "same",
+                    value: "first",
+                }),
+                Box::new(NamedTool {
+                    name: "same",
+                    value: "second",
+                }),
+            ],
+            &rec,
+            None,
+            dir.path(),
+            dir.path(),
+            id,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(outer.result.result.as_str().unwrap().starts_with("first"));
+        let dispatcher = crate::turn::capabilities::CapabilityDispatcher::new(
+            vec![first, second],
+            Vec::new(),
+            std::collections::HashMap::new(),
+            std::iter::empty::<String>(),
+        );
+        let nested = dispatcher
+            .invoke(
+                crate::turn::capabilities::CapabilityInvocation {
+                    address: crate::turn::capabilities::CapabilityAddress::Native {
+                        tool: "same".into(),
+                    },
+                    args: serde_json::json!({}),
+                },
+                &rec,
+            )
+            .await
+            .unwrap();
+        assert_eq!(nested, serde_json::json!("second"));
     }
 
     #[tokio::test]
