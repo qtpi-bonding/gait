@@ -11,7 +11,9 @@ use grep_searcher::{Searcher, Sink, SinkMatch};
 use crate::config::PreviewPolicy;
 use crate::proto::gait::log::v1 as pb;
 use crate::proto::{events, Recorder};
-use crate::types::{AssistantPart, Hook, HookContext, Tool, ToolCall, ToolResult, ToolResultKind};
+use crate::types::{
+    AssistantPart, Hook, HookContext, Rec, Tool, ToolCall, ToolResult, ToolResultKind,
+};
 
 use super::curate::apply_curate_filter;
 
@@ -30,6 +32,92 @@ pub(super) struct ToolExecResult {
     /// supervised mode and calls `pause_for_unlock`; in auto mode it is ignored
     /// (the tool failure result propagates normally). Phase 2c Task 6.
     pub denied: Option<pb::SandboxUnlockItem>,
+}
+
+/// Result of `execute_capability_raw`: the tool's raw output plus what each caller needs.
+pub(super) struct RawExecOutcome {
+    pub value: serde_json::Value,
+    pub duration: Option<pbjson_types::Duration>,
+    pub via_hand: bool,
+    pub denied: Option<pb::SandboxUnlockItem>,
+    pub sandbox_denied: Option<pb::SandboxDenied>,
+}
+
+/// Run one tool's actual work: argument coercion, routing, event replay, and timing.
+pub(super) async fn execute_capability_raw(
+    tool: &dyn Tool,
+    args: serde_json::Value,
+    emitter: &dyn Rec,
+    relay: Option<&crate::turn::nerve::NerveWriter>,
+) -> anyhow::Result<RawExecOutcome> {
+    let coerced_args = crate::tools::coerce_scalar_params(args, tool.parameters());
+    let started = std::time::Instant::now();
+    let is_relay_spawn = matches!(tool.name(), "spawn_agent" | "run_workflow") && relay.is_some();
+    let via_hand = tool.access().touches_world() || is_relay_spawn;
+    let (res, denied, sandbox_denied): (
+        Result<serde_json::Value, crate::tools::ToolError>,
+        Option<pb::SandboxUnlockItem>,
+        Option<pb::SandboxDenied>,
+    ) = if via_hand {
+        use crate::turn::synapse::{ScopeRequest, Synapse as _};
+        let scope_req = ScopeRequest {
+            access: tool.access(),
+        };
+        let fired = if let Some(nerve_writer) = relay {
+            use crate::turn::synapse::RelaySynapse;
+            RelaySynapse {
+                writer: nerve_writer.clone(),
+            }
+            .fire(tool, coerced_args.clone(), scope_req)
+            .await
+        } else {
+            use crate::turn::synapse::InProcessSynapse;
+            InProcessSynapse
+                .fire(tool, coerced_args.clone(), scope_req)
+                .await
+        };
+        match fired {
+            Ok((value, events, denied_item, whitelist_items, sandbox_denied_item)) => {
+                for event in events {
+                    if let Some(body) = event.body {
+                        emitter.record(body)?;
+                    }
+                }
+                if !whitelist_items.is_empty() {
+                    emitter.record(events::sandbox_whitelist_match(&whitelist_items))?;
+                }
+                if let Some(sd) = &sandbox_denied_item {
+                    emitter.record(events::sandbox_denied(
+                        &sd.tool_name,
+                        &sd.resource,
+                        &sd.dimension,
+                        &sd.matched_signature,
+                        sd.hint.clone(),
+                    ))?;
+                }
+                (Ok(value), denied_item, sandbox_denied_item)
+            }
+            Err(e) => (Err(e), None, None),
+        }
+    } else {
+        (
+            tool.execute(coerced_args.clone(), emitter).await,
+            None,
+            None,
+        )
+    };
+    let elapsed = started.elapsed();
+    let duration = Some(pbjson_types::Duration {
+        seconds: elapsed.as_secs() as i64,
+        nanos: elapsed.subsec_nanos() as i32,
+    });
+    Ok(RawExecOutcome {
+        value: res.map_err(anyhow::Error::from)?,
+        duration,
+        via_hand,
+        denied,
+        sandbox_denied,
+    })
 }
 
 /// Execute one tool call: emit ToolCall event, run the tool, emit ToolResult event.
@@ -71,83 +159,18 @@ pub(super) async fn execute_tool_call(
     // set when the hand detects EACCES/EPERM in a `shell` command's output while
     // running under Seatbelt. The turn loop inspects it after execute_tool_call returns.
 
+    let outer_started = std::time::Instant::now();
     let (raw, duration, process, synapse_denied, full_output) = match tools
         .iter()
         .find(|t| t.name() == tc.tool_name)
     {
         Some(t) => {
-            // Schema-guided coercion (integer/number/boolean string decoding + the
-            // unconditional float->int pass it layers on top of) needs the tool's
-            // parameters schema, so it lives here, not in the pre-lookup site. The
-            // `None` (unknown-tool) arm never uses `coerced_args` so nothing else
-            // changes. `coerce_int_params` is idempotent so re-applying it inside
-            // `coerce_scalar_params` is harmless.
-            let coerced_args = crate::tools::coerce_scalar_params(tc.args.clone(), t.parameters());
-            let started = std::time::Instant::now();
-            // `denied` is extracted only on the world-tool (synapse) path; it stays
-            // None on the brain path (control/transcript tools never touch the kernel).
-            let is_relay_spawn =
-                matches!(t.name(), "spawn_agent" | "run_workflow") && relay.is_some();
-            let via_hand = t.access().touches_world() || is_relay_spawn;
-            let (res, denied) = if via_hand {
-                // Hand path: run via the synapse, then replay the returned events
-                // into the real log (between ToolCall and ToolResult).
-                // Fall back to InProcessSynapse when not running as the `gait` binary
-                // (test binaries have different names and lack the `__run-tool` subcommand).
-                // The subprocess path is covered end-to-end by gait-bin/tests/run_tool_hand.rs.
-                use crate::turn::synapse::{ScopeRequest, Synapse as _};
-                let scope_req = ScopeRequest { access: t.access() };
-                let fired = if let Some(nerve_writer) = relay {
-                    // Phase 3: brain is under a spine — delegate via Nerve.
-                    use crate::turn::synapse::RelaySynapse;
-                    RelaySynapse {
-                        writer: nerve_writer.clone(),
-                    }
-                    .fire(t.as_ref(), coerced_args.clone(), scope_req)
-                    .await
-                } else {
-                    // No spine (tests, direct cargo test) — run in-process.
-                    // SubprocessSynapse was removed; the production path always
-                    // has a relay handle. The in-process path covers tests.
-                    use crate::turn::synapse::InProcessSynapse;
-                    InProcessSynapse
-                        .fire(t.as_ref(), coerced_args.clone(), scope_req)
-                        .await
-                };
-                match fired {
-                    Ok((value, events, denied_item, whitelist_items, sandbox_denied_item)) => {
-                        for event in events {
-                            if let Some(body) = event.body {
-                                emitter.record(body)?;
-                            }
-                        }
-                        if !whitelist_items.is_empty() {
-                            emitter.record(events::sandbox_whitelist_match(&whitelist_items))?;
-                        }
-                        if let Some(sd) = &sandbox_denied_item {
-                            emitter.record(events::sandbox_denied(
-                                &sd.tool_name,
-                                &sd.resource,
-                                &sd.dimension,
-                                &sd.matched_signature,
-                                sd.hint.clone(),
-                            ))?;
-                        }
-                        (Ok(value), denied_item)
-                    }
-                    Err(e) => (Err(e), None),
-                }
-            } else {
-                // Brain path: control/transcript tool, runs in-process as before.
-                (t.execute(coerced_args.clone(), emitter).await, None)
-            };
-            let elapsed = started.elapsed();
-            let duration = Some(pbjson_types::Duration {
-                seconds: elapsed.as_secs() as i64,
-                nanos: elapsed.subsec_nanos() as i32,
-            });
-            match res {
-                Ok(v) => {
+            match execute_capability_raw(t.as_ref(), tc.args.clone(), emitter, relay).await {
+                Ok(outcome) => {
+                    let v = outcome.value;
+                    let duration = outcome.duration;
+                    let via_hand = outcome.via_hand;
+                    let denied = outcome.denied;
                     let (v, full_output) = if via_hand && relay.is_some() {
                         let full_output =
                             crate::tools::full_output_ref_from_value(&v, gait_dir, session_id)
@@ -179,8 +202,8 @@ pub(super) async fn execute_tool_call(
                             crate::tools::full_output_ref_from_value(&v, gait_dir, session_id)
                                 .ok_or_else(|| {
                                     anyhow::anyhow!(
-                                    "archived tool result missing a valid full-output reference"
-                                )
+                                        "archived tool result missing a valid full-output reference"
+                                    )
                                 })?;
                         (v, Some(full_output))
                     };
@@ -227,9 +250,12 @@ pub(super) async fn execute_tool_call(
                     };
                     (
                         value.as_str().unwrap_or_default().to_string(),
-                        duration,
+                        Some(pbjson_types::Duration {
+                            seconds: outer_started.elapsed().as_secs() as i64,
+                            nanos: outer_started.elapsed().subsec_nanos() as i32,
+                        }),
                         None,
-                        denied,
+                        None,
                         full_output,
                     )
                 }
@@ -511,7 +537,8 @@ mod synapse_routing_tests {
             _a: serde_json::Value,
             rec: &dyn crate::types::Rec,
         ) -> Result<serde_json::Value, crate::tools::ToolError> {
-            rec.record(crate::proto::events::cwd("/from-tool")).ok();
+            rec.record(crate::proto::events::cwd("/from-tool"))
+                .map_err(crate::tools::ToolError::Internal)?;
             Ok(serde_json::Value::String("ok".into()))
         }
         fn access(&self) -> ToolAccess {
@@ -597,6 +624,31 @@ mod synapse_routing_tests {
         assert!(
             call < cwd && cwd < result,
             "durable event order was not ToolCall -> tool event -> ToolResult"
+        );
+    }
+
+    struct FailingRec;
+    impl crate::types::Rec for FailingRec {
+        fn record(
+            &self,
+            _body: crate::proto::gait::log::v1::event::Body,
+        ) -> anyhow::Result<crate::proto::gait::log::v1::Event> {
+            Err(anyhow::anyhow!("simulated durable-write failure"))
+        }
+        fn publish_delta(&self, _content: String) {}
+        fn spawn_process(&self, _argv: Vec<String>, _detached: bool) {}
+        fn tx_path(&self) -> &std::path::Path {
+            std::path::Path::new("/dev/null")
+        }
+    }
+
+    #[tokio::test]
+    async fn raw_runner_aborts_when_durable_event_recording_fails() {
+        let result =
+            execute_capability_raw(&TouchTool, serde_json::json!({}), &FailingRec, None).await;
+        assert!(
+            result.is_err(),
+            "durable event recording failure must abort"
         );
     }
 
