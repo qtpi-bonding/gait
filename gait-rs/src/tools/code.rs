@@ -53,6 +53,11 @@ pub struct CodeTool {
     slot: DispatcherSlot,
     schema: Value,
 }
+impl Default for CodeTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl CodeTool {
     pub fn new() -> Self {
         Self::with_slot(DispatcherSlot(Arc::new(RwLock::new(None))))

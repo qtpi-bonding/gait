@@ -600,12 +600,9 @@ fn host_call_trampoline(
         Err(err) => {
             let (exports, memory) = caller.data().clone_handles();
             let exports = &exports;
-            match new_js_error(caller, exports, memory, &err.to_string()) {
-                Ok(err_value) => {
-                    let _ = exports.qjs_throw.call(&mut *caller, err_value);
-                    let _ = exports.qjs_free_value.call(&mut *caller, err_value);
-                }
-                Err(_) => {}
+            if let Ok(err_value) = new_js_error(caller, exports, memory, &err.to_string()) {
+                let _ = exports.qjs_throw.call(&mut *caller, err_value);
+                let _ = exports.qjs_free_value.call(&mut *caller, err_value);
             }
             0
         }
@@ -911,10 +908,10 @@ async fn drive(
             .call(&mut *store, promise)
             .map_err(|e| rt(e.to_string()))?;
         if state == 1 {
-            return Ok(exports
+            return exports
                 .qjs_promise_result
                 .call(&mut *store, promise)
-                .map_err(|e| rt(e.to_string()))?);
+                .map_err(|e| rt(e.to_string()));
         }
         if state == 2 {
             let reason = exports

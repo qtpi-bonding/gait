@@ -536,7 +536,7 @@ pub(crate) fn finish_after_resume(
     let mut system_prompt = super::prompt::build_dynamic_system_prompt(
         &system_prompt,
         &state.entries,
-        &mcp_registry,
+        mcp_registry,
         &enabled_mcp,
         hooks,
     );
