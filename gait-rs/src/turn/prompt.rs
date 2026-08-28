@@ -3,11 +3,8 @@
 //! `<status>` system-prompt fragments plus the `MakeMcpToolDef` shim and
 //! the dynamic assembly step that folds hooks into the live system prompt.
 
-use std::sync::Arc;
-
 use crate::config::McpToolDef;
-use crate::mcp::McpClient;
-use crate::types::{Hook, LoadableEntry, Tool};
+use crate::types::{Hook, LoadableEntry};
 
 /// Render the `<status>` block the model sees at the top of every turn:
 /// unix timestamp, codebase HEAD, and dirty files. Tested directly — keep
@@ -136,33 +133,70 @@ pub fn build_session_state(
     out
 }
 
-/// Wrap a discovered `McpToolDef` (from the registry) plus its live
-/// `McpClient` in a `Box<dyn Tool>` the streaming loop can push into its
-/// `tools` vec. `pub(super)` — only the loop in `turn/mod.rs` calls it.
-pub(super) fn make_mcp_tool_def(def: &McpToolDef, client: Arc<McpClient>) -> Box<dyn Tool> {
-    let name = def.name.clone();
-    let description = def.description.clone();
-    let schema = def.schema.clone();
-    let server = def.server_name.clone();
-    let tool_name = def.name.clone();
-    Box::new(crate::types::ToolDef {
-        name: name.clone(),
-        description,
-        parameters: schema,
-        execute: Box::new(move |args| {
-            let client = client.clone();
-            let name = name.clone();
-            Box::pin(async move {
-                client
-                    .call_tool(&name, args)
-                    .await
-                    .map_err(crate::tools::ToolError::Internal)
+/// Compact, volatile index of enabled MCP façades. Full schemas are kept in
+/// the following reference layer so the index remains cheap to cache.
+pub fn build_mcp_index(
+    registry: &[McpToolDef],
+    enabled: &std::collections::HashSet<String>,
+) -> String {
+    let mut servers: Vec<_> = registry
+        .iter()
+        .filter(|d| enabled.contains(&d.server_name))
+        .map(|d| d.server_name.as_str())
+        .collect();
+    servers.sort_unstable();
+    servers.dedup();
+    let body = if servers.is_empty() {
+        "  (none)".to_string()
+    } else {
+        servers
+            .into_iter()
+            .map(|s| {
+                format!(
+                    "  {} — {} tool(s)",
+                    s,
+                    registry.iter().filter(|d| d.server_name == s).count()
+                )
             })
-        }),
-        permission: Some(Box::new(move |_args| {
-            crate::permissions::mcp_permission(&server, &tool_name)
-        })),
-    })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    format!("\n<mcp-index>\n{}\n</mcp-index>", body)
+}
+
+/// Full canonical JSON references available to Code Mode at invocation time.
+pub fn build_mcp_references(
+    registry: &[McpToolDef],
+    enabled: &std::collections::HashSet<String>,
+    max_bytes: usize,
+) -> String {
+    let mut out = String::from("\n<mcp-references>\n");
+    let mut servers: Vec<_> = registry
+        .iter()
+        .filter(|d| enabled.contains(&d.server_name))
+        .map(|d| d.server_name.clone())
+        .collect();
+    servers.sort();
+    servers.dedup();
+    for server in servers {
+        let tools = registry
+            .iter()
+            .filter(|d| d.server_name == server)
+            .map(|d| gait_codemode::ToolReference {
+                name: d.name.clone(),
+                description: Some(d.description.clone()),
+                input_schema: d.schema.clone(),
+                output_schema: d.output_schema.clone(),
+            })
+            .collect::<Vec<_>>();
+        out.push_str(&gait_codemode::render_reference(&server, &tools));
+        if out.len() > max_bytes {
+            return "\n<mcp-references>\n  (reference size limit exceeded)\n</mcp-references>"
+                .to_string();
+        }
+    }
+    out.push_str("</mcp-references>");
+    out
 }
 
 /// Assemble the per-turn dynamic system prompt: base instructions +
@@ -176,10 +210,14 @@ pub(super) fn make_mcp_tool_def(def: &McpToolDef, client: Arc<McpClient>) -> Box
 pub(super) fn build_dynamic_system_prompt(
     base: &str,
     entries: &[LoadableEntry],
+    mcp_registry: &[McpToolDef],
+    enabled_mcp: &std::collections::HashSet<String>,
     _hooks: &[Box<dyn Hook>],
 ) -> String {
     let catalog = build_loadable_catalog(entries);
-    format!("{}{}", base, catalog)
+    let index = build_mcp_index(mcp_registry, enabled_mcp);
+    let references = build_mcp_references(mcp_registry, enabled_mcp, 256 * 1024);
+    format!("{}{}{}", base, catalog, index) + &references
 }
 
 #[cfg(test)]
@@ -198,8 +236,8 @@ mod mode_tests {
     fn mode_steer_does_not_change_cached_prefix() {
         // The cached prefix is build_dynamic_system_prompt output; steer lives only
         // in the tail, so it must be byte-identical regardless of steer.
-        let a = build_dynamic_system_prompt("base", &[], &[]);
-        let b = build_dynamic_system_prompt("base", &[], &[]);
+        let a = build_dynamic_system_prompt("base", &[], &[], &Default::default(), &[]);
+        let b = build_dynamic_system_prompt("base", &[], &[], &Default::default(), &[]);
         assert_eq!(a, b); // guard: steer never enters this function's inputs
     }
 }

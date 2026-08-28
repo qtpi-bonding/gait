@@ -69,6 +69,10 @@ fn parse_skill_file(path: &Path) -> Option<SkillDef> {
         description,
         content: body,
         enabled: true,
+        model_invocable: yaml
+            .get("model_invocable")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true),
     })
 }
 
@@ -167,5 +171,33 @@ mod tests {
         write_skill(&dir, "nodesc", "name: nodesc\n", "# Body\ncontent\n");
         let skills = scan_skills(dir.path());
         assert_eq!(skills[0].description, "");
+    }
+
+    #[test]
+    fn scanner_parses_model_invocable_with_true_default() {
+        let dir = TempDir::new().unwrap();
+        write_skill(&dir, "default", "name: default\n", "body\n");
+        write_skill(
+            &dir,
+            "hidden",
+            "name: hidden\nmodel_invocable: false\n",
+            "body\n",
+        );
+        let mut skills = scan_skills(dir.path());
+        skills.sort_by(|a, b| a.name.cmp(&b.name));
+        assert!(skills[0].model_invocable);
+        assert!(!skills[1].model_invocable);
+    }
+
+    #[test]
+    fn skilldef_serde_defaults_model_invocable_to_true() {
+        let skill: SkillDef = serde_json::from_value(serde_json::json!({
+            "name": "serde-default",
+            "description": "",
+            "content": "body",
+            "enabled": true
+        }))
+        .unwrap();
+        assert!(skill.model_invocable);
     }
 }

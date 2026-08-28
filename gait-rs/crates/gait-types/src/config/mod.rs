@@ -54,6 +54,8 @@ pub struct McpToolDef {
     pub name: String,
     pub description: String,
     pub schema: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +65,9 @@ pub struct SkillDef {
     pub content: String,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Whether this skill is exposed to model-facing catalogs and loading.
+    #[serde(default = "default_enabled")]
+    pub model_invocable: bool,
 }
 
 /// Definition of a disk-discovered WASM plugin.

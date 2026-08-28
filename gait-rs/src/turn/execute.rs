@@ -356,32 +356,9 @@ pub(crate) async fn run_tools(
                         let visible = state.entries.iter().any(|e| e.name == item_name);
                         if visible {
                             if on {
-                                // MCP: push all tools from this server (server-granularity)
-                                for def in env
-                                    .mcp_registry
-                                    .iter()
-                                    .filter(|d| d.server_name == item_name)
-                                {
-                                    if let Some(client) = env.mcp_clients.get(&def.server_name) {
-                                        if !state.tools.iter().any(|t| t.name() == def.name) {
-                                            // duplicate guard
-                                            state.tools.push(super::prompt::make_mcp_tool_def(
-                                                def,
-                                                client.clone(),
-                                            ));
-                                        }
-                                    }
-                                }
                                 // Skill: no tools push needed — content is returned by LoadTool.execute()
                             } else {
-                                // Remove all tools from this server
-                                state.tools.retain(|t| {
-                                    env.mcp_registry
-                                        .iter()
-                                        .find(|d| d.name == t.name())
-                                        .map(|d| d.server_name != item_name)
-                                        .unwrap_or(true)
-                                });
+                                // MCP façades are not provider-native tools.
                             }
                             let toggle_kind =
                                 if env.mcp_registry.iter().any(|d| d.server_name == item_name) {
@@ -393,6 +370,9 @@ pub(crate) async fn run_tools(
                                 };
                             env.emitter
                                 .record(events::toggle(toggle_kind, item_name, on))?;
+                            if toggle_kind == "mcp" {
+                                state.capability_dispatcher.set_enabled(item_name, on);
+                            }
                         }
                     }
                     let prefix = tool_approval_prefixes.get(&tc.tool_call_id).cloned();

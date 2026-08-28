@@ -73,6 +73,19 @@ impl Tool for LoadTool {
             .and_then(|v| v.as_bool())
             .ok_or_else(|| ToolError::Execute("enable: missing 'enabled'".to_string()))?;
 
+        // Hidden skills are a policy denial, not an unknown-name case. Check
+        // before the disable fast path so guessed names cannot bypass it.
+        if self
+            .skill_registry
+            .iter()
+            .any(|def| def.name == name && !def.model_invocable)
+        {
+            return Err(ToolError::Execute(format!(
+                "skill '{}' is not model-invocable",
+                name
+            )));
+        }
+
         if !enabled {
             return Ok(Value::String(format!("disabled: {}", name)));
         }
@@ -81,8 +94,17 @@ impl Tool for LoadTool {
             let schema_str =
                 serde_json::to_string_pretty(&def.schema).unwrap_or_else(|_| "{}".into());
             return Ok(Value::String(format!(
-                "Tool '{}' enabled.\nDescription: {}\nSchema:\n{}",
-                name, def.description, schema_str
+                "Tool '{}' enabled.\nDescription: {}\nSchema:\n{}{}",
+                name,
+                def.description,
+                schema_str,
+                def.output_schema
+                    .as_ref()
+                    .map(|s| format!(
+                        "\nOutput schema:\n{}",
+                        serde_json::to_string_pretty(s).unwrap_or_default()
+                    ))
+                    .unwrap_or_default()
             )));
         }
 
@@ -116,6 +138,7 @@ fn make_mcp_registry() -> Vec<McpToolDef> {
             "properties": { "channel": {"type":"string"}, "text": {"type":"string"} },
             "required": ["channel","text"]
         }),
+        output_schema: None,
     }]
 }
 
@@ -126,6 +149,7 @@ fn make_skill_registry() -> Vec<SkillDef> {
         description: "test-driven workflow".into(),
         content: "# TDD\n1. Write failing test\n2. Make it pass".into(),
         enabled: true,
+        model_invocable: true,
     }]
 }
 
@@ -183,6 +207,31 @@ mod tests {
             )
             .await;
         assert!(err.unwrap_err().to_string().contains("unknown"));
+    }
+
+    #[tokio::test]
+    async fn hidden_skill_is_rejected_for_enable_and_disable() {
+        let hidden = SkillDef {
+            name: "private-workflow".into(),
+            description: "private".into(),
+            content: "secret".into(),
+            enabled: true,
+            model_invocable: false,
+        };
+        let tool = LoadTool::new(vec![], vec![hidden], vec![]);
+        for enabled in [true, false] {
+            let err = tool
+                .execute(
+                    serde_json::json!({"name":"private-workflow","enabled":enabled}),
+                    &crate::Recorder::detached(),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "skill 'private-workflow' is not model-invocable"
+            );
+        }
     }
 
     #[test]

@@ -270,6 +270,7 @@ fn enabled_defaults_to_true_for_backward_compat() {
         serde_json::from_str(r#"{"name":"tdd","description":"d","content":"c"}"#).unwrap();
     assert!(mcp.enabled);
     assert!(skill.enabled);
+    assert!(skill.model_invocable);
 }
 
 #[test]
@@ -281,6 +282,17 @@ fn enabled_false_is_respected() {
             .unwrap();
     assert!(!mcp.enabled);
     assert!(!skill.enabled);
+}
+
+#[test]
+fn model_invocable_false_is_respected_and_serialized() {
+    let skill: SkillDef = serde_json::from_str(
+        r#"{"name":"private","description":"d","content":"c","model_invocable":false}"#,
+    )
+    .unwrap();
+    assert!(!skill.model_invocable);
+    let encoded = serde_json::to_value(&skill).unwrap();
+    assert_eq!(encoded["model_invocable"], false);
 }
 
 #[test]

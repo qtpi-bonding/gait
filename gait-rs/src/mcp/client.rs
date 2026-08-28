@@ -43,6 +43,10 @@ impl McpClient {
                 name: t.name.to_string(),
                 description: t.description.as_deref().unwrap_or("").to_string(),
                 schema: serde_json::Value::Object((*t.input_schema).clone()),
+                output_schema: t
+                    .output_schema
+                    .as_ref()
+                    .map(|s| serde_json::Value::Object((**s).clone())),
             })
             .collect())
     }
@@ -61,6 +65,12 @@ impl McpClient {
             anyhow::anyhow!("tools/call {} on {} failed: {e}", name, self.server_name)
         })?;
 
+        if let Some(structured) = result.structured_content {
+            if result.is_error == Some(true) {
+                anyhow::bail!("MCP tool {} returned error: {}", name, structured);
+            }
+            return Ok(structured);
+        }
         let text: String = result
             .content
             .iter()
