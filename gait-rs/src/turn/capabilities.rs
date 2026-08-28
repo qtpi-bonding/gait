@@ -1,6 +1,7 @@
 //! Turn-scoped capability dispatch below the model transcript boundary.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use crate::config::McpToolDef;
@@ -53,6 +54,9 @@ pub struct CapabilityDispatcher {
     mcp: HashMap<String, Arc<dyn McpInvoker>>,
     registry: Vec<McpToolDef>,
     enabled: RwLock<HashSet<String>>,
+    gait_dir: PathBuf,
+    session_id: String,
+    relay: Option<crate::turn::nerve::NerveWriter>,
 }
 
 impl std::fmt::Debug for CapabilityDispatcher {
@@ -65,11 +69,18 @@ impl std::fmt::Debug for CapabilityDispatcher {
 }
 
 impl CapabilityDispatcher {
+    #[cfg(test)]
+    pub(super) fn native_tool_arc(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.native.get(name).cloned()
+    }
     pub fn new(
         tools: impl IntoIterator<Item = Arc<dyn Tool>>,
         registry: Vec<McpToolDef>,
         clients: HashMap<String, Arc<dyn McpInvoker>>,
         enabled: impl IntoIterator<Item = String>,
+        gait_dir: PathBuf,
+        session_id: String,
+        relay: Option<crate::turn::nerve::NerveWriter>,
     ) -> Self {
         Self {
             native: tools
@@ -79,6 +90,9 @@ impl CapabilityDispatcher {
             mcp: clients,
             registry,
             enabled: RwLock::new(enabled.into_iter().collect()),
+            gait_dir,
+            session_id,
+            relay,
         }
     }
     pub fn set_enabled(&self, server: impl Into<String>, value: bool) {
@@ -115,20 +129,38 @@ impl CapabilityDispatcher {
                 // These names are owned by the outer turn protocol. They must
                 // never be callable from guest code (doing so would create
                 // nested transcript/control events).
-                if matches!(
-                    tool.as_str(),
-                    "code" | "output" | "structured_done" | "clarify" | "inform" | "prune"
-                ) {
+                if is_reserved_native(&tool) {
                     return Err(CapabilityError::Reserved(tool).into());
                 }
                 let t = self
                     .native
                     .get(&tool)
                     .ok_or_else(|| CapabilityError::UnknownNative(tool.clone()))?;
-                let args = crate::tools::coerce_scalar_params(invocation.args, t.parameters());
-                t.execute(args, rec)
-                    .await
-                    .map_err(|e| anyhow::anyhow!(e.to_string()))
+                let outcome = super::exec::execute_capability_raw(
+                    t.as_ref(),
+                    invocation.args,
+                    rec,
+                    self.relay.as_ref(),
+                )
+                .await?;
+                if let Some(sd) = &outcome.sandbox_denied {
+                    return Err(anyhow::anyhow!(
+                        "sandbox denied {} on {} ({}){}",
+                        sd.dimension,
+                        sd.tool_name,
+                        sd.resource,
+                        sd.hint
+                            .as_ref()
+                            .map(|h| format!(": {h}"))
+                            .unwrap_or_default()
+                    ));
+                }
+                crate::tools::read_archived_or_raw(
+                    &outcome.value,
+                    &self.gait_dir,
+                    &self.session_id,
+                    gait_codemode::Limits::default().max_output_bytes,
+                )
             }
             CapabilityAddress::Mcp { server, tool } => {
                 let client = self
@@ -164,6 +196,20 @@ impl CapabilityDispatcher {
             }
         }
     }
+}
+
+pub(super) fn is_reserved_native(name: &str) -> bool {
+    matches!(
+        name,
+        "code"
+            | "output"
+            | "structured_done"
+            | "clarify"
+            | "inform"
+            | "prune"
+            | "enable"
+            | "annotate"
+    )
 }
 
 #[cfg(test)]
@@ -230,28 +276,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn baseline_code_mode_native_calls_currently_fail_with_unknown_native() {
+    async fn native_calls_now_succeed_after_dispatcher_wiring() {
         let dispatcher = CapabilityDispatcher::new(
-            std::iter::empty::<Arc<dyn Tool>>(),
+            vec![Arc::new(TouchTool) as Arc<dyn Tool>],
             Vec::new(),
             HashMap::new(),
             std::iter::empty::<String>(),
+            std::path::PathBuf::new(),
+            String::new(),
+            None,
         );
         let dir = tempfile::tempdir().unwrap();
         let rec = recorder(dir.path(), "sbaseline1");
-        let err = dispatcher
+        let result = dispatcher
             .invoke(
                 CapabilityInvocation {
                     address: CapabilityAddress::Native {
-                        tool: "read".into(),
+                        tool: "touch".into(),
                     },
                     args: serde_json::json!({}),
                 },
                 &rec,
             )
             .await
-            .unwrap_err();
-        assert_eq!(err.to_string(), "unknown native capability `read`");
+            .unwrap();
+        assert_eq!(result, serde_json::json!("ok"));
     }
 
     #[tokio::test]
@@ -261,6 +310,9 @@ mod tests {
             Vec::new(),
             HashMap::new(),
             std::iter::empty::<String>(),
+            std::path::PathBuf::new(),
+            String::new(),
+            None,
         );
         let dir = tempfile::tempdir().unwrap();
         let rec = recorder(dir.path(), "sreserved1");
@@ -300,10 +352,7 @@ mod tests {
                 )
                 .await
                 .unwrap_err();
-            assert_eq!(
-                err.to_string(),
-                format!("unknown native capability `{name}`")
-            );
+            assert_eq!(err.to_string(), format!("capability `{name}` is reserved"));
         }
     }
 
@@ -314,6 +363,9 @@ mod tests {
             Vec::new(),
             HashMap::new(),
             std::iter::empty::<String>(),
+            std::path::PathBuf::new(),
+            String::new(),
+            None,
         );
         let dir = tempfile::tempdir().unwrap();
         let rec = recorder(dir.path(), "sdirect1");
@@ -337,12 +389,122 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn nested_native_calls_now_route_through_the_hand_like_outer_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let rec = recorder(dir.path(), "sprobe1");
+        let dispatcher = CapabilityDispatcher::new(
+            vec![Arc::new(TouchTool) as Arc<dyn crate::types::Tool>],
+            Vec::new(),
+            std::collections::HashMap::new(),
+            std::iter::empty::<String>(),
+            dir.path().to_path_buf(),
+            "sprobe1".to_string(),
+            None,
+        );
+        dispatcher
+            .invoke(
+                CapabilityInvocation {
+                    address: CapabilityAddress::Native {
+                        tool: "touch".into(),
+                    },
+                    args: serde_json::json!({}),
+                },
+                &rec,
+            )
+            .await
+            .unwrap();
+        let log = std::fs::read_to_string(&rec.tx_path).unwrap();
+        assert!(log.contains("/from-tool"));
+        assert!(!log.contains("\"toolCall\""));
+        assert!(!log.contains("\"toolResult\""));
+    }
+
+    #[tokio::test]
+    async fn nested_sandbox_denial_becomes_a_catchable_error_not_a_pause() {
+        // InProcessSynapse::fire hardcodes sandbox_denied: None (it's
+        // unsandboxed by construction), so a denial can only be observed
+        // through RelaySynapse — mirror synapse.rs's own fake-spine pattern
+        // (relay_synapse_fake_spine_returns_feedback) rather than guessing
+        // at the mechanism.
+        use crate::turn::nerve;
+        use gait_proto::gait::sandbox::v1::{signal, Feedback};
+
+        let (brain_read, spine_write_half) = tokio::io::duplex(4096);
+        let (spine_read_half, brain_write) = tokio::io::duplex(4096);
+        let (writer, _handle) = nerve::start_nerve(brain_read, brain_write);
+
+        tokio::spawn(async move {
+            let mut r = spine_read_half;
+            let mut w = spine_write_half;
+            let sig = nerve::read_signal(&mut r).await.unwrap();
+            let Some(signal::Body::Impulse(_)) = sig.body.as_ref() else {
+                panic!("expected Impulse request");
+            };
+            let canned = gait_proto::gait::sandbox::v1::Signal {
+                corr_id: sig.corr_id,
+                body: Some(signal::Body::Feedback(Feedback {
+                    result: None,
+                    events: vec![],
+                    denied: None,
+                    daemon: None,
+                    final_content: None,
+                    whitelist_match_items: vec![],
+                    sandbox_denied: Some(crate::proto::gait::log::v1::SandboxDenied {
+                        tool_name: "touch".into(),
+                        resource: "/etc/shadow".into(),
+                        dimension: "write".into(),
+                        matched_signature: "EACCES".into(),
+                        hint: Some("add a shell_whitelist pattern".into()),
+                        matched_deny_pattern: None,
+                    }),
+                })),
+            };
+            nerve::write_signal(&mut w, &canned).await.unwrap();
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let rec = recorder(dir.path(), "sdenied1");
+        let dispatcher = CapabilityDispatcher::new(
+            vec![Arc::new(TouchTool) as Arc<dyn crate::types::Tool>],
+            Vec::new(),
+            HashMap::new(),
+            std::iter::empty::<String>(),
+            dir.path().to_path_buf(),
+            "sdenied1".to_string(),
+            Some(writer),
+        );
+        let err = dispatcher
+            .invoke(
+                CapabilityInvocation {
+                    address: CapabilityAddress::Native {
+                        tool: "touch".into(),
+                    },
+                    args: serde_json::json!({}),
+                },
+                &rec,
+            )
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("write"), "message: {msg}");
+        assert!(msg.contains("touch"), "message: {msg}");
+        assert!(msg.contains("/etc/shadow"), "message: {msg}");
+        assert!(
+            msg.contains("add a shell_whitelist pattern"),
+            "message: {msg}"
+        );
+    }
+
+    #[tokio::test]
     async fn baseline_nested_native_call_coerces_scalar_params_today() {
         let dispatcher = CapabilityDispatcher::new(
             vec![Arc::new(EchoArgsTool) as Arc<dyn Tool>],
             Vec::new(),
             HashMap::new(),
             std::iter::empty::<String>(),
+            std::path::PathBuf::new(),
+            String::new(),
+            None,
         );
         let dir = tempfile::tempdir().unwrap();
         let rec = recorder(dir.path(), "scoerce1");

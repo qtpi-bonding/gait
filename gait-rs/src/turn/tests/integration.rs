@@ -90,6 +90,73 @@ async fn run_turn_test_call_seeded(
     run_turn(&session, &emitter, caps, input).await
 }
 
+#[tokio::test]
+async fn dispatcher_native_map_shares_real_instance_identity_with_state_tools() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+    let session = crate::session::Session {
+        id: "sidentity1".into(),
+        gait_dir: ws.path().to_path_buf(),
+        codebase_path: ws.path().to_path_buf(),
+        assigned_by: None,
+        repos: crate::git::Repos::production(),
+    };
+    let provider: Arc<dyn Provider> = Arc::new(FakeProvider {
+        steps: Arc::new(vec![]),
+        call_idx: Arc::new(AtomicUsize::new(0)),
+    });
+    let read = crate::tools::ReadTool::new(crate::tools::ToolCtx::new(
+        ws.path().to_path_buf(),
+        ws.path().to_path_buf(),
+        session.id.clone(),
+    ));
+    let caps = crate::profile::ResolvedProfile::for_test(
+        provider,
+        vec![read.arced()],
+        vec!["read".into()],
+        vec![],
+    );
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let emitter = Recorder::for_session(&session.gait_dir, &session.id, tx);
+    let state = crate::turn::setup::build_test_turn_state(
+        &session,
+        &emitter,
+        caps,
+        TurnInput {
+            auto: true,
+            max_iter: Some(1),
+            preview_policy: crate::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: true,
+            sandbox_cfg: crate::config::SandboxConfig::default(),
+            relay: None,
+            initial_git: None,
+            daemons: vec![],
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    let read_in_state = state.tools.iter().find(|t| t.name() == "read").unwrap();
+    let resolved = state.capability_dispatcher.native_tool_arc("read").unwrap();
+    assert!(Arc::ptr_eq(read_in_state, &resolved));
+    for reserved in [
+        "code",
+        "output",
+        "structured_done",
+        "clarify",
+        "inform",
+        "enable",
+        "annotate",
+        "prune",
+    ] {
+        assert!(state
+            .capability_dispatcher
+            .native_tool_arc(reserved)
+            .is_none());
+    }
+}
+
 struct MockProvider {
     responses: Arc<Vec<Vec<StreamChunk>>>,
     call_idx: Arc<AtomicUsize>,

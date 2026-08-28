@@ -47,6 +47,7 @@ struct InformArg {
 
 pub(crate) mod agent_event;
 pub(crate) mod brain;
+pub(crate) mod capabilities;
 mod compaction;
 mod completion_poll;
 mod curate;
@@ -299,6 +300,7 @@ pub async fn run_turn(
         &hooks,
         &session_id,
         &gait_dir,
+        relay.clone(),
         &codebase_path,
         system_prompt,
         &mut state,

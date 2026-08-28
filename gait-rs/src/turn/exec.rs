@@ -856,6 +856,9 @@ mod synapse_routing_tests {
             Vec::new(),
             std::collections::HashMap::new(),
             std::iter::empty::<String>(),
+            std::path::PathBuf::new(),
+            String::new(),
+            None,
         );
         let nested = dispatcher
             .invoke(

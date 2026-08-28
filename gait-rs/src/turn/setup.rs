@@ -157,6 +157,7 @@ pub(crate) fn init(
                 .iter()
                 .filter(|sk| {
                     sk.enabled
+                        && sk.model_invocable
                         && crate::registry::whitelist_allows(&agent_whitelist.skills, &sk.name)
                 })
                 .map(|sk| sk.name.clone())
@@ -172,7 +173,12 @@ pub(crate) fn init(
             accepted_senders: Default::default(),
         };
         for n in &config_enabled {
-            if crate::registry::whitelist_allows(&agent_whitelist.skills, n) {
+            let model_invocable = skill_registry
+                .iter()
+                .find(|skill| skill.name == *n)
+                .map(|skill| skill.model_invocable)
+                .unwrap_or(true);
+            if model_invocable && crate::registry::whitelist_allows(&agent_whitelist.skills, n) {
                 s.skills.insert(n.clone());
             }
             s.mcp.insert(n.clone());
@@ -346,6 +352,7 @@ pub(crate) fn finish_after_resume(
     hooks: &[Box<dyn Hook>],
     session_id: &str,
     gait_dir: &Path,
+    relay: Option<crate::turn::nerve::NerveWriter>,
     codebase_path: &Path,
     system_prompt: String,
     state: &mut TurnState,
@@ -366,26 +373,46 @@ pub(crate) fn finish_after_resume(
         &muts,
     );
     let enabled_names = agent_state.enabled_loadables();
-    for server_name in &enabled_names {
-        for def in mcp_registry
-            .iter()
-            .filter(|d| &d.server_name == server_name)
-        {
-            if let Some(client) = mcp_clients.get(&def.server_name) {
-                if !state.tools.iter().any(|t| t.name() == def.name) {
-                    // duplicate guard
-                    state
-                        .tools
-                        .push(super::prompt::make_mcp_tool_def(def, client.clone()));
-                }
-            }
-        }
-    }
     // Skills are not pushed here — they surface via LoadTool.execute() return value.
     // Phase 8: tool-gating — if the agent declared an explicit tools enable-set,
     // filter the tool list to only those tools. Empty = no restriction (all pass through).
     if !agent_state.tools.is_empty() {
         state.tools.retain(|t| agent_state.tools.contains(t.name()));
+    }
+
+    // Code Mode uses this turn-scoped dispatcher for capability calls. It is
+    // deliberately kept below the transcript boundary: invoke() does not
+    // emit ToolCall/ToolResult events. Native tools are added by the outer
+    // execution layer; MCP clients are available here immediately.
+    {
+        use std::sync::Arc;
+        let clients = mcp_clients
+            .iter()
+            .map(|(name, client)| {
+                (
+                    name.clone(),
+                    client.clone() as Arc<dyn super::capabilities::McpInvoker>,
+                )
+            })
+            .collect();
+        let dispatcher = Arc::new(super::capabilities::CapabilityDispatcher::new(
+            state
+                .tools
+                .iter()
+                .filter(|t| !super::capabilities::is_reserved_native(t.name()))
+                .cloned(),
+            mcp_registry.to_vec(),
+            clients,
+            enabled_names.iter().cloned(),
+            gait_dir.to_path_buf(),
+            session_id.to_string(),
+            relay.clone(),
+        ));
+        let erased: Arc<dyn std::any::Any + Send + Sync> = dispatcher.clone();
+        for tool in &state.tools {
+            tool.set_capability_dispatcher(erased.clone());
+        }
+        state.capability_dispatcher = dispatcher;
     }
 
     // Warn about allow-list entries that don't match any builtin tool name.
@@ -422,6 +449,7 @@ pub(crate) fn finish_after_resume(
     let visible_skills = crate::registry::resolve_visible_set(
         &skill_registry
             .iter()
+            .filter(|s| s.model_invocable)
             .map(|s| s.name.clone())
             .collect::<Vec<_>>(),
         &agent_whitelist.skills,
@@ -470,7 +498,7 @@ pub(crate) fn finish_after_resume(
     }
     // Skill entries — one per skill (visible-set gated).
     for skill in skill_registry {
-        if !visible_skills.contains(&skill.name) {
+        if !skill.model_invocable || !visible_skills.contains(&skill.name) {
             continue;
         }
         state.entries.push(LoadableEntry {
@@ -496,8 +524,18 @@ pub(crate) fn finish_after_resume(
             enabled: enabled_names.contains(&plugin.name),
         });
     }
-    let mut system_prompt =
-        super::prompt::build_dynamic_system_prompt(&system_prompt, &state.entries, hooks);
+    let enabled_mcp: std::collections::HashSet<String> = enabled_names
+        .iter()
+        .filter(|name| mcp_registry.iter().any(|d| &d.server_name == *name))
+        .cloned()
+        .collect();
+    let mut system_prompt = super::prompt::build_dynamic_system_prompt(
+        &system_prompt,
+        &state.entries,
+        &mcp_registry,
+        &enabled_mcp,
+        hooks,
+    );
 
     // MUST happen AFTER `build_dynamic_system_prompt` so `Agent.instructions`
     // captures the effective prompt (loadable index + permissions included),
@@ -578,4 +616,76 @@ pub(crate) fn finish_after_resume(
     }
 
     Ok(system_prompt)
+}
+
+#[cfg(test)]
+pub(crate) async fn build_test_turn_state(
+    session: &Session,
+    emitter: &Recorder,
+    caps: crate::profile::ResolvedProfile,
+    input: TurnInput,
+    relay_arg: Option<crate::turn::nerve::NerveWriter>,
+) -> anyhow::Result<TurnState> {
+    let mut input = input;
+    input.relay = relay_arg;
+    let data = init(session, emitter, caps, input)?;
+    let SetupData {
+        mut state,
+        agent,
+        session_id,
+        gait_dir,
+        codebase_path,
+        mcp_registry,
+        mcp_clients,
+        skill_registry,
+        plugin_registry,
+        hooks,
+        agent_seed,
+        effective_allow,
+        pre_events,
+        sandbox_on,
+        relay,
+        codebase_hash,
+        dirty_files,
+        daemons,
+        agent_whitelist,
+        ingestor,
+        system_prompt,
+        ..
+    } = data;
+    super::resume::apply_if_pending(
+        &pre_events,
+        &ingestor,
+        emitter,
+        &mut state,
+        &codebase_path,
+        &gait_dir,
+        &session_id,
+        sandbox_on,
+        relay.as_ref(),
+        &codebase_hash,
+        &dirty_files,
+        &daemons,
+    )
+    .await?;
+    finish_after_resume(
+        &ingestor,
+        emitter,
+        &agent,
+        &agent_seed,
+        &mcp_registry,
+        &mcp_clients,
+        &skill_registry,
+        &plugin_registry,
+        &effective_allow,
+        &hooks,
+        &session_id,
+        &gait_dir,
+        relay.clone(),
+        &codebase_path,
+        system_prompt,
+        &mut state,
+        &agent_whitelist,
+    )?;
+    Ok(state)
 }

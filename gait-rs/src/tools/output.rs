@@ -165,6 +165,29 @@ pub(crate) fn full_output_ref_from_value(
     full_output_ref_from_text(text, gait_dir, session_id)
 }
 
+/// If `value` is an archived, marker-bearing model value, read the real
+/// content back from disk, bounded by `max_bytes`. Validates against the
+/// file's actual size via `std::fs::metadata` — never `full_output.bytes`,
+/// the marker's claimed count, which is untrusted and could be stale or
+/// forged. Otherwise `value` is already raw (in-process/brain path) and is
+/// returned unchanged.
+pub(crate) fn read_archived_or_raw(
+    value: &serde_json::Value,
+    gait_dir: &Path,
+    session_id: &str,
+    max_bytes: usize,
+) -> anyhow::Result<serde_json::Value> {
+    let Some(full_output) = full_output_ref_from_value(value, gait_dir, session_id) else {
+        return Ok(value.clone());
+    };
+    let real_bytes = std::fs::metadata(&full_output.path)?.len() as usize;
+    if real_bytes > max_bytes {
+        anyhow::bail!("archived output ({real_bytes} bytes) exceeds the Code Mode output limit ({max_bytes} bytes)");
+    }
+    let text = String::from_utf8_lossy(&std::fs::read(&full_output.path)?).into_owned();
+    Ok(serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text)))
+}
+
 fn read_full_output_preview(full_output: &FullOutput, budget: usize) -> std::io::Result<String> {
     if full_output.bytes as usize <= budget {
         return Ok(String::from_utf8_lossy(&std::fs::read(&full_output.path)?).into_owned());
@@ -329,6 +352,48 @@ pub(crate) fn ensure_archived_model_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_archived_or_raw_passes_through_an_unarchived_value() {
+        let value = serde_json::json!({"hello": "world"});
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            read_archived_or_raw(&value, dir.path(), "stest", 4096).unwrap(),
+            value
+        );
+    }
+
+    #[test]
+    fn read_archived_or_raw_round_trips_string_and_structured_values() {
+        let dir = tempfile::tempdir().unwrap();
+        for original in [
+            serde_json::json!("complete output"),
+            serde_json::json!({"output":"hi","exit_code":0}),
+        ] {
+            let path = prepare_tool_output_path(dir.path(), "stest", "probe").unwrap();
+            let (model, _) = archive_and_prepare_model_value(original.clone(), path).unwrap();
+            assert_eq!(
+                read_archived_or_raw(&model, dir.path(), "stest", 1_000_000).unwrap(),
+                original
+            );
+        }
+    }
+
+    #[test]
+    fn read_archived_or_raw_enforces_real_file_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = prepare_tool_output_path(dir.path(), "stest", "probe").unwrap();
+        let (model, full) =
+            archive_and_prepare_model_value(serde_json::json!("x".repeat(100)), path).unwrap();
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(full.path)
+            .unwrap()
+            .write_all(&[b'y'; 100])
+            .unwrap();
+        assert!(read_archived_or_raw(&model, dir.path(), "stest", 150).is_err());
+    }
 
     #[test]
     fn structured_full_outputs_have_canonical_key_order() {
