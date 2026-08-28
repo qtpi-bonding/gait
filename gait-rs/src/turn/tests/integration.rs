@@ -112,7 +112,11 @@ async fn dispatcher_native_map_shares_real_instance_identity_with_state_tools() 
     ));
     let caps = crate::profile::ResolvedProfile::for_test(
         provider,
-        vec![read.arced()],
+        // Include a reserved-name tool (AnnotateTool, name "annotate") so the
+        // construction-time filter is non-vacuously exercised below -- with
+        // only `read` present, the "reserved names absent" assertion would
+        // trivially pass regardless of whether the filter actually works.
+        vec![read.arced(), crate::tools::AnnotateTool::new().arced()],
         vec!["read".into()],
         vec![],
     );
@@ -140,6 +144,11 @@ async fn dispatcher_native_map_shares_real_instance_identity_with_state_tools() 
     let read_in_state = state.tools.iter().find(|t| t.name() == "read").unwrap();
     let resolved = state.capability_dispatcher.native_tool_arc("read").unwrap();
     assert!(Arc::ptr_eq(read_in_state, &resolved));
+    assert!(
+        state.tools.iter().any(|t| t.name() == "annotate"),
+        "annotate must be present in state.tools for this test to actually \
+         exercise the construction-time reserved-name filter below"
+    );
     for reserved in [
         "code",
         "output",

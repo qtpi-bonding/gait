@@ -382,8 +382,12 @@ pub(crate) fn finish_after_resume(
 
     // Code Mode uses this turn-scoped dispatcher for capability calls. It is
     // deliberately kept below the transcript boundary: invoke() does not
-    // emit ToolCall/ToolResult events. Native tools are added by the outer
-    // execution layer; MCP clients are available here immediately.
+    // emit ToolCall/ToolResult events. The native map is a one-shot snapshot
+    // of `state.tools` taken here, after the tool-gating retain() above and
+    // before any in-loop mutation — `state.tools` is never mutated again
+    // after this point in the turn (LoadContext toggles MCP servers via
+    // `capability_dispatcher.set_enabled`, not by touching `state.tools`).
+    // If that invariant ever changes, this snapshot must be rebuilt to match.
     {
         use std::sync::Arc;
         let clients = mcp_clients

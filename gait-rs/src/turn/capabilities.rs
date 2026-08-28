@@ -49,6 +49,11 @@ pub enum CapabilityError {
     Reserved(String),
 }
 
+/// Turn-scoped capability resolver. Its native tool map is a one-shot
+/// snapshot of `TurnState.tools`, built once in `setup::finish_after_resume`
+/// after tool-gating and before any in-loop mutation of `state.tools`. If
+/// `state.tools` ever becomes mutable again mid-turn, this map must be
+/// rebuilt to match — it is not kept in sync automatically.
 pub struct CapabilityDispatcher {
     native: HashMap<String, Arc<dyn Tool>>,
     mcp: HashMap<String, Arc<dyn McpInvoker>>,
@@ -304,7 +309,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn baseline_reserved_names_today() {
+    async fn all_reserved_names_are_rejected_including_the_widened_set() {
         let dispatcher = CapabilityDispatcher::new(
             std::iter::empty::<Arc<dyn Tool>>(),
             Vec::new(),
