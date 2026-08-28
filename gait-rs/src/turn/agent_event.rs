@@ -9,7 +9,6 @@
 use crate::profile::ResolvedProfile;
 use crate::proto::gait::log::v1 as pb;
 use crate::proto::wire;
-use std::sync::Arc;
 
 /// Build the proto `Agent` message from the live resolved profile.
 /// Mapped field-by-field from the in-memory `ResolvedProfile`. The `mcp_servers`
@@ -73,6 +72,7 @@ mod tests {
     use crate::types::{Message, Tool};
     use async_trait::async_trait;
     use gait_provider::provider::{Provider, ProviderError, StreamChunk};
+    use std::sync::Arc;
 
     pub struct DummyProvider;
     #[async_trait]
@@ -101,7 +101,6 @@ mod tests {
     fn agent_maps_fields_from_resolved_profile() {
         use crate::profile::ResolvedProfile;
         use crate::tools::StructuredDoneTool;
-        use std::sync::Arc;
 
         // Build a ResolvedProfile with everything populated, via for_test
         // (which gives a stub provider + empty allow/deny/skills) and then

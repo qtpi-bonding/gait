@@ -18,6 +18,8 @@ source of truth.
 | **gait-auth** | credential/auth-method contracts and external auth-source adapters. Depends on `gait-platform`. |
 | **gait-provider** | generation/wire leaf: `provider.rs`, `transport.rs`, `factory.rs`, `providers.rs`, `anthropic/`, `openai/`, `strict.rs`. Depends only on `gait-types`. |
 | **gait-sandbox** | containment leaf: `sandbox.rs` (incl. `brain_scope()`), `process/` (incl. `proc_start_time()`). Depends on `gait-types` and uses `gait-platform` only at native host-discovery boundaries; pure scope computation receives resolved paths. |
+| **gait-codemode** | native Code Mode host boundary: embeds the pinned QuickJS-WASI guest artifact, validates its minimal import allowlist, and formats MCP references. It does not link a WASI runtime. |
+| **gait-codemode-js** | metadata-only package for the fixed JavaScript guest artifact; it is not a Rust QuickJS implementation or evaluator. |
 | **gait-core** | the library: `turn/` (incl. the sealed runtimes `brain.rs`/`spine.rs`/`hand.rs`), `tools/`, `session/`, `embed.rs`. Depends on `gait-types`/`gait-provider`/`gait-sandbox`, re-exporting their modules at the crate root (`crate::types`, `crate::config`, `crate::diagnostic`, `crate::provider`, `crate::sandbox`, `crate::process`, …) so internal `crate::…` paths are unchanged. |
 | **gait-proto** | proto codegen + the log codec: `gait.{log,state,sandbox,workflow}.v1` and `envelope`/`wire`/`hash` (mint, append, `content_hash`) |
 | **gait-cli** | command implementations — `cmd_run`, `cmd_spine`, `cmd_brain`, `cmd_run_tool` — thin arg-parsers over the `gait-core` runtimes |
@@ -42,6 +44,45 @@ and inverted two upward edges (`brain_scope` out of `turn` into `sandbox`;
 `proc_start_time` out of `session::daemons` into `process`).
 
 ---
+
+## Code Mode boundary
+
+`gait-core` owns the native `code({ source })` tool, shared capability
+dispatcher, MCP façade, and `model_invocable` policy. MCP methods are exposed
+through the compact index and enabled-server references, not provider-native
+schemas. `gait-codemode` is native host code embedding the pinned QuickJS-WASI
+guest artifact; `gait-codemode-js` is metadata-only. QuickJS-WASI's minimal
+required `env` and `wasi_snapshot_preview1` imports are linked to inert stubs;
+no WASI implementation or ambient filesystem, network, process, clock, or
+random capability is granted.
+
+Only the outer `code` call is intended to produce provider transcript events;
+façade calls do not create nested tool events. The artifact/import and MCP
+reference/model-invocable regression tests are implemented.
+
+`CapabilityDispatcher`'s native tool map is populated from `TurnState.tools`
+— the same `Arc<dyn Tool>` instances the provider sees, not separately
+constructed lookalikes — filtered to exclude reserved outer-protocol names
+via a single `is_reserved_native` function shared between construction and
+invoke-time defense in depth. A nested native call routes through
+`execute_capability_raw`, the same hand/relay/sandbox path an outer tool
+call uses: world-touching tools still go through the hand, still get
+sandbox-routed, and durable side-channel events (tool-emitted events,
+`sandbox_whitelist_match`, `sandbox_denied`) are still recorded — there is
+no ToolCall/ToolResult pair and no supervised-unlock pause (that pause
+point only exists at the outer turn loop, between model steps). When the
+raw result comes back already archived (the relay path — the spine
+archives world-tool output before the hand→brain boundary), the real
+content is read back from disk via `read_archived_or_raw`, bounded by Code
+Mode's output limit and validated against the file's actual size via
+`std::fs::metadata` — never a marker's claimed byte count, which is
+untrusted and could be stale. A nested sandbox denial surfaces to guest JS
+as a catchable error built from `SandboxDenied`'s fields, not the
+supervised-unlock pause. Duplicate tool names (none observed in practice)
+resolve differently by design between the two paths — the outer `Vec`
+lookup keeps the first match, the dispatcher's `HashMap` construction keeps
+the last inserted — a pre-existing latent inconsistency this refactor
+intentionally left pinned rather than silently unifying.
 
 ## Layers
 

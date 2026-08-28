@@ -18,7 +18,6 @@ use crate::git::{build_trace_message, TraceTrailers};
 use crate::proto::events;
 use crate::proto::gait::log::v1 as pb;
 use crate::types::HookContext;
-use std::sync::Arc;
 
 use super::persist::Persistence;
 use super::state::{TurnEnv, TurnState};
