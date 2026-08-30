@@ -204,9 +204,9 @@ async fn session_close_merges_idle_session_then_prompt_errors_unknown() {
         "a subsequent prompt to a closed session errors unknown session"
     );
 
-    let active = gait_ops::session::list(&gait_dir).unwrap().active;
+    let active = gait_ops::session::list(&gait_dir, None).unwrap().active;
     assert!(
-        !active.contains(&session_id),
+        !active.iter().any(|r| r.session_id == session_id),
         "session/<id> branch is gone after persist"
     );
 }
@@ -247,9 +247,9 @@ async fn session_delete_removes_idle_session_without_merging() {
         !gait_state::session::live::worktree_dir(&gait_dir, &session_id).exists(),
         "worktree removed"
     );
-    let active = gait_ops::session::list(&gait_dir).unwrap().active;
+    let active = gait_ops::session::list(&gait_dir, None).unwrap().active;
     assert!(
-        !active.contains(&session_id),
+        !active.iter().any(|r| r.session_id == session_id),
         "session/<id> branch is gone after discard"
     );
 }

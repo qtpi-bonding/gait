@@ -11,8 +11,8 @@ use gait_cli::cli::daemons::DaemonsArgs;
 use gait_cli::cli::init::InitArgs;
 use gait_cli::cli::link::LinkArgs;
 use gait_cli::cli::session::{
-    AllowArgs, DenyArgs, DiscardArgs, LoadArgs, PersistArgs, PsArgs, ReplyArgs, SessionsArgs,
-    StatsArgs, StopArgs, UndoArgs, UnloadArgs, UnlockArgs,
+    AllowArgs, DenyArgs, DiscardArgs, LoadArgs, LogArgs, PersistArgs, PsArgs, ReplyArgs,
+    SessionsArgs, StatsArgs, StopArgs, UndoArgs, UnloadArgs, UnlockArgs,
 };
 use gait_cli::cli::workflow::WorkflowArgs;
 
@@ -90,6 +90,7 @@ pub enum Commands {
     Discard(DiscardArgs),
     Undo(UndoArgs),
     Stats(StatsArgs),
+    Log(LogArgs),
     Allow(AllowArgs),
     Deny(DenyArgs),
     Unlock(UnlockArgs),

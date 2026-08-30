@@ -11,10 +11,19 @@ use std::path::{Path, PathBuf};
 // list  (cmd_sessions)
 // -----------------------------------------------------------------------------
 
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SessionRow {
+    pub session_id: String,
+    /// First event's wall-clock ms, or `None` for a session with no log yet.
+    pub created_at: Option<u64>,
+    /// Last event's wall-clock ms, or `None` for a session with no log yet.
+    pub updated_at: Option<u64>,
+}
+
 #[derive(Debug, serde::Serialize)]
 pub struct ListOutcome {
-    /// Active (unmerged) session ids.
-    pub active: Vec<String>,
+    /// Active (unmerged) sessions, most-recently-updated first.
+    pub active: Vec<SessionRow>,
 }
 
 impl ListOutcome {
@@ -25,12 +34,33 @@ impl ListOutcome {
 }
 
 /// Walk `gait_dir`'s `session/*` branches and return the ones main is not a
-/// descendant of. Read-only; no log/branch writes.
-pub fn list(gait_dir: &Path) -> Result<ListOutcome, OpError> {
-    let active = gait_state::git::Repos::production()
+/// descendant of, each enriched with its log's first/last event timestamps,
+/// sorted most-recently-updated first. Read-only; no log/branch writes.
+///
+/// `last`, if set, truncates to that many most-recently-updated sessions
+/// (`gait sessions --last <n>`).
+pub fn list(gait_dir: &Path, last: Option<usize>) -> Result<ListOutcome, OpError> {
+    let ids = gait_state::git::Repos::production()
         .traces
         .list_active_sessions(gait_dir)?;
-    Ok(ListOutcome { active })
+    let mut rows: Vec<SessionRow> = ids
+        .into_iter()
+        .map(|session_id| {
+            let tx_path = gait_state::session::live::log_path(gait_dir, &session_id);
+            let events = gait_state::session::log::read_events(&tx_path).unwrap_or_default();
+            SessionRow {
+                created_at: events.first().map(|e| e.ts),
+                updated_at: events.last().map(|e| e.ts),
+                session_id,
+            }
+        })
+        .collect();
+    // Most-recently-updated first; a session with no log yet (None) sorts last.
+    rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    if let Some(n) = last {
+        rows.truncate(n);
+    }
+    Ok(ListOutcome { active: rows })
 }
 
 // -----------------------------------------------------------------------------
@@ -189,6 +219,45 @@ pub fn stats(gait_dir: &Path, session_id: &str) -> Result<StatsOutcome, OpError>
     })
 }
 
+/// The message of the `TurnDone` immediately preceding a `RunComplete` at
+/// `seq`/`run` — the "what did the last turn of this run say" lookup shared
+/// by `undo`'s per-turn list and `summary`'s last-run-only view. Empty
+/// string if the turn ended with no message (e.g. an empty `TurnDone`).
+fn turn_done_message_before(
+    events: &[gait_state::proto::gait::log::v1::Event],
+    seq: u64,
+    run: Option<u32>,
+) -> String {
+    use gait_state::proto::gait::log::v1::{event, payload};
+    events
+        .iter()
+        .rev()
+        .filter(|candidate| candidate.seq < seq && candidate.run == run)
+        .find_map(|candidate| match &candidate.body {
+            Some(event::Body::Payload(payload)) => match payload.kind.as_ref() {
+                Some(payload::Kind::TurnResult(turn)) => match turn.outcome.as_ref() {
+                    Some(gait_state::proto::gait::log::v1::turn_result::Outcome::Done(done)) => {
+                        match done.output.as_ref() {
+                            Some(gait_state::proto::gait::log::v1::turn_done::Output::Text(
+                                text,
+                            )) => Some(text.message.clone()),
+                            Some(
+                                gait_state::proto::gait::log::v1::turn_done::Output::Structured(
+                                    output,
+                                ),
+                            ) => Some(output.message.clone()),
+                            None => Some(String::new()),
+                        }
+                    }
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 // -----------------------------------------------------------------------------
 // undo  (cmd_undo)
 // -----------------------------------------------------------------------------
@@ -256,25 +325,7 @@ pub fn undo(params: UndoParams) -> Result<UndoOutcome, OpError> {
         if let Some(event::Body::Payload(p)) = &e.body {
             if let Some(payload::Kind::RunComplete(complete)) = &p.kind {
                 let idx = turns.len() as u32 + 1;
-                let message = events
-                    .iter()
-                    .rev()
-                    .filter(|candidate| candidate.seq < e.seq && candidate.run == e.run)
-                    .find_map(|candidate| match &candidate.body {
-                        Some(event::Body::Payload(payload)) => match payload.kind.as_ref() {
-                            Some(payload::Kind::TurnResult(turn)) => match turn.outcome.as_ref() {
-                                Some(gait_state::proto::gait::log::v1::turn_result::Outcome::Done(done)) => match done.output.as_ref() {
-                                    Some(gait_state::proto::gait::log::v1::turn_done::Output::Text(text)) => Some(text.message.clone()),
-                                    Some(gait_state::proto::gait::log::v1::turn_done::Output::Structured(output)) => Some(output.message.clone()),
-                                    None => Some(String::new()),
-                                },
-                                _ => None,
-                            },
-                            _ => None,
-                        },
-                        _ => None,
-                    })
-                    .unwrap_or_default();
+                let message = turn_done_message_before(&events, e.seq, e.run);
                 let full = complete
                     .final_state
                     .as_ref()
@@ -383,6 +434,107 @@ fn undo_transcript_to_turn(gait_dir: &Path, session_id: &str, turn: u32) -> Resu
     repo.reset(&obj, git2::ResetType::Hard, None)
         .map_err(anyhow::Error::from)?;
     Ok(())
+}
+
+// -----------------------------------------------------------------------------
+// summary  (cmd_log)
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct SummaryToolCount {
+    pub name: String,
+    pub count: u32,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SessionSummaryOutcome {
+    /// 1-indexed, same numbering as `undo --list`'s turns. `None` if the
+    /// session has not completed a run yet.
+    pub turn: Option<u32>,
+    pub message: String,
+    /// Short (8-char) checkpoint prefix, or `None` if the turn had no checkpoint.
+    pub checkpoint_short: Option<String>,
+    pub file_count: u32,
+    pub added_lines: Option<u64>,
+    pub removed_lines: Option<u64>,
+    pub tools: Vec<SummaryToolCount>,
+}
+
+impl SessionSummaryOutcome {
+    /// The CLI's only rendering of `log <session-id>` — no plain-text form exists.
+    pub fn to_json(&self, pretty: bool) -> String {
+        crate::render_json(self, pretty)
+    }
+}
+
+/// The last completed run's outcome: its final turn's `TurnDone` message,
+/// the checkpoint it landed on, and its `RunSummary` (files changed, tools
+/// used) — without reading or returning the full event stream. `gait log
+/// <session-id>` is meant as a quick "what happened" glance; `gait sessions`
+/// (per-session log path) or a direct log read is the tool for the full
+/// history.
+pub fn summary(gait_dir: &Path, session_id: &str) -> Result<SessionSummaryOutcome, OpError> {
+    use gait_state::proto::gait::log::v1::{event, payload};
+    use gait_state::session::log::read_events;
+
+    let tx_path = gait_state::session::live::log_path(gait_dir, session_id);
+    let events = read_events(&tx_path).map_err(anyhow::Error::from)?;
+
+    let mut turn_idx = 0u32;
+    let mut last: Option<SessionSummaryOutcome> = None;
+    for e in &events {
+        let Some(event::Body::Payload(p)) = &e.body else {
+            continue;
+        };
+        let Some(payload::Kind::RunComplete(complete)) = &p.kind else {
+            continue;
+        };
+        turn_idx += 1;
+        let message = turn_done_message_before(&events, e.seq, e.run);
+        let checkpoint_short = complete
+            .final_state
+            .as_ref()
+            .and_then(|s| s.checkpoint.as_deref())
+            .map(|s| s[..s.len().min(8)].to_string());
+        let (file_count, added_lines, removed_lines, tools) = match complete.summary.as_ref() {
+            Some(summary) => {
+                let changes = summary.changes.clone().unwrap_or_default();
+                let tools = summary
+                    .tools
+                    .iter()
+                    .map(|t| SummaryToolCount {
+                        name: t.name.clone(),
+                        count: t.count,
+                    })
+                    .collect();
+                (
+                    changes.file_count,
+                    changes.added_lines,
+                    changes.removed_lines,
+                    tools,
+                )
+            }
+            None => (0, None, None, Vec::new()),
+        };
+        last = Some(SessionSummaryOutcome {
+            turn: Some(turn_idx),
+            message,
+            checkpoint_short,
+            file_count,
+            added_lines,
+            removed_lines,
+            tools,
+        });
+    }
+    Ok(last.unwrap_or(SessionSummaryOutcome {
+        turn: None,
+        message: String::new(),
+        checkpoint_short: None,
+        file_count: 0,
+        added_lines: None,
+        removed_lines: None,
+        tools: Vec::new(),
+    }))
 }
 
 // -----------------------------------------------------------------------------
@@ -673,20 +825,97 @@ mod tests {
         std::fs::write(log_path, "").unwrap();
     }
 
+    /// Append one event per timestamp in `timestamps` (real `UserText`
+    /// bodies via `wire::append` so `content_hash`/version/scope are valid),
+    /// then patch each line's `ts` field to the requested value. `read_events`
+    /// only checks `version`/scope-prefix, not `content_hash`, so a patched
+    /// `ts` is safe for these ordering/timestamp-only tests.
+    fn write_events_with_ts(ws: &Path, id: &str, timestamps: &[u64]) {
+        let log_path = gait_state::session::live::log_path(ws, id);
+        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        for _ in timestamps {
+            gait_state::proto::wire::append(
+                &log_path,
+                gait_state::proto::events::user_text("x".into()),
+            )
+            .unwrap();
+        }
+        let text = std::fs::read_to_string(&log_path).unwrap();
+        let mut lines: Vec<serde_json::Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        for (line, ts) in lines.iter_mut().zip(timestamps) {
+            line["ts"] = serde_json::json!(ts);
+        }
+        let new_text: String = lines
+            .iter()
+            .map(|v| serde_json::to_string(v).unwrap() + "\n")
+            .collect();
+        std::fs::write(&log_path, new_text).unwrap();
+    }
+
     // -- list --
 
     #[test]
     fn list_returns_active_sessions() {
         let ws = ws_with_session("slist01");
-        let out = list(ws.path()).unwrap();
-        assert!(out.active.contains(&"slist01".to_string()));
+        let out = list(ws.path(), None).unwrap();
+        assert!(out.active.iter().any(|r| r.session_id == "slist01"));
     }
 
     #[test]
     fn list_empty_when_no_sessions() {
         let ws = ws_with_no_sessions();
-        let out = list(ws.path()).unwrap();
+        let out = list(ws.path(), None).unwrap();
         assert!(out.active.is_empty());
+    }
+
+    /// A session with no log yet reports `None` timestamps rather than
+    /// failing the whole listing.
+    #[test]
+    fn list_reports_none_timestamps_for_session_with_no_log() {
+        let ws = ws_with_session("slist02");
+        let out = list(ws.path(), None).unwrap();
+        let row = out
+            .active
+            .iter()
+            .find(|r| r.session_id == "slist02")
+            .expect("row present");
+        assert_eq!(row.created_at, None);
+        assert_eq!(row.updated_at, None);
+    }
+
+    /// Sessions with a log sort most-recently-updated first.
+    #[test]
+    fn list_sorts_most_recently_updated_first() {
+        let ws = ws_with_session("slist03");
+        Repos::production()
+            .traces
+            .create_session_worktree(ws.path(), "slist04")
+            .unwrap();
+        write_events_with_ts(ws.path(), "slist03", &[1_000, 2_000]);
+        write_events_with_ts(ws.path(), "slist04", &[5_000, 9_000]);
+
+        let out = list(ws.path(), None).unwrap();
+        let ids: Vec<&str> = out.active.iter().map(|r| r.session_id.as_str()).collect();
+        assert_eq!(ids, vec!["slist04", "slist03"]);
+    }
+
+    /// `last` truncates to the N most-recently-updated sessions.
+    #[test]
+    fn list_last_truncates_to_n_most_recent() {
+        let ws = ws_with_session("slist05");
+        Repos::production()
+            .traces
+            .create_session_worktree(ws.path(), "slist06")
+            .unwrap();
+        write_events_with_ts(ws.path(), "slist05", &[1_000]);
+        write_events_with_ts(ws.path(), "slist06", &[9_000]);
+
+        let out = list(ws.path(), Some(1)).unwrap();
+        assert_eq!(out.active.len(), 1);
+        assert_eq!(out.active[0].session_id, "slist06");
     }
 
     // -- ps --
@@ -1000,12 +1229,19 @@ mod tests {
     #[test]
     fn list_outcome_to_json_golden() {
         let out = ListOutcome {
-            active: vec!["s1".to_string(), "s2".to_string()],
+            active: vec![SessionRow {
+                session_id: "s1".to_string(),
+                created_at: Some(1_000),
+                updated_at: Some(2_000),
+            }],
         };
-        assert_eq!(out.to_json(false), "{\"active\":[\"s1\",\"s2\"]}");
+        assert_eq!(
+            out.to_json(false),
+            "{\"active\":[{\"session_id\":\"s1\",\"created_at\":1000,\"updated_at\":2000}]}"
+        );
         assert_eq!(
             out.to_json(true),
-            "{\n  \"active\": [\n    \"s1\",\n    \"s2\"\n  ]\n}"
+            "{\n  \"active\": [\n    {\n      \"session_id\": \"s1\",\n      \"created_at\": 1000,\n      \"updated_at\": 2000\n    }\n  ]\n}"
         );
     }
 
@@ -1068,5 +1304,107 @@ mod tests {
         })
         .unwrap_err();
         assert!(matches!(err, OpError::NotFound(_)));
+    }
+
+    // -- summary (cmd_log) --
+
+    /// Append a `TurnResult` (TextDone) then a `RunComplete` (with a
+    /// `RunSummary`) to `id`'s log — the minimal two-event fixture `summary`
+    /// reads.
+    fn write_run_complete_fixture(ws: &Path, id: &str, message: &str, checkpoint: &str) {
+        use gait_state::proto::events::{run_complete, turn_result};
+        use gait_state::proto::gait::log::v1::{
+            turn_done, turn_result::Outcome, ChangeSummary, RunComplete, RunEndState, RunSummary,
+            TextDone, ToolCount, TurnDone, TurnResult,
+        };
+        let log_path = gait_state::session::live::log_path(ws, id);
+        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        gait_state::proto::wire::append(
+            &log_path,
+            turn_result(TurnResult {
+                outcome: Some(Outcome::Done(TurnDone {
+                    output: Some(turn_done::Output::Text(TextDone {
+                        message: message.to_string(),
+                    })),
+                })),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        gait_state::proto::wire::append(
+            &log_path,
+            run_complete(RunComplete {
+                final_state: Some(RunEndState {
+                    checkpoint: Some(checkpoint.to_string()),
+                    ..Default::default()
+                }),
+                summary: Some(RunSummary {
+                    changes: Some(ChangeSummary {
+                        file_count: 2,
+                        added_lines: Some(10),
+                        removed_lines: Some(3),
+                        ..Default::default()
+                    }),
+                    tools: vec![ToolCount {
+                        name: "shell".to_string(),
+                        count: 3,
+                    }],
+                    ..Default::default()
+                }),
+            }),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn summary_empty_when_no_completed_run() {
+        let ws = ws_with_session("ssum01");
+        write_empty_log(ws.path(), "ssum01");
+        let out = summary(ws.path(), "ssum01").unwrap();
+        assert_eq!(out.turn, None);
+        assert_eq!(out.message, "");
+        assert_eq!(out.checkpoint_short, None);
+        assert_eq!(out.file_count, 0);
+        assert!(out.tools.is_empty());
+    }
+
+    #[test]
+    fn summary_returns_last_run_completes_details() {
+        let ws = ws_with_session("ssum02");
+        write_run_complete_fixture(ws.path(), "ssum02", "did the thing", "abcdef123456");
+        let out = summary(ws.path(), "ssum02").unwrap();
+        assert_eq!(out.turn, Some(1));
+        assert_eq!(out.message, "did the thing");
+        assert_eq!(out.checkpoint_short, Some("abcdef12".to_string()));
+        assert_eq!(out.file_count, 2);
+        assert_eq!(out.added_lines, Some(10));
+        assert_eq!(out.removed_lines, Some(3));
+        assert_eq!(
+            out.tools,
+            vec![SummaryToolCount {
+                name: "shell".to_string(),
+                count: 3
+            }]
+        );
+    }
+
+    #[test]
+    fn summary_outcome_to_json_golden() {
+        let out = SessionSummaryOutcome {
+            turn: Some(2),
+            message: "did stuff".to_string(),
+            checkpoint_short: Some("abcd1234".to_string()),
+            file_count: 1,
+            added_lines: Some(5),
+            removed_lines: None,
+            tools: vec![SummaryToolCount {
+                name: "shell".to_string(),
+                count: 1,
+            }],
+        };
+        assert_eq!(
+            out.to_json(false),
+            "{\"turn\":2,\"message\":\"did stuff\",\"checkpoint_short\":\"abcd1234\",\"file_count\":1,\"added_lines\":5,\"removed_lines\":null,\"tools\":[{\"name\":\"shell\",\"count\":1}]}"
+        );
     }
 }

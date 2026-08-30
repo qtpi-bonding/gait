@@ -159,6 +159,7 @@ async fn main() {
         Commands::Discard(args) => gait_cli::cli::session::cmd_discard(args),
         Commands::Undo(args) => gait_cli::cli::session::cmd_undo(args),
         Commands::Stats(args) => gait_cli::cli::session::cmd_stats(args),
+        Commands::Log(args) => gait_cli::cli::session::cmd_log(args),
         Commands::Allow(args) => gait_cli::cli::session::cmd_allow(args),
         Commands::Deny(args) => gait_cli::cli::session::cmd_deny(args),
         Commands::Unlock(args) => gait_cli::cli::session::cmd_unlock(args),

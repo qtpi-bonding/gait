@@ -313,10 +313,13 @@ pub struct SessionsArgs {
     pub gait_dir: PathBuf,
     #[arg(long)]
     pub pretty: bool,
+    /// Show only the N most-recently-updated sessions.
+    #[arg(long)]
+    pub last: Option<usize>,
 }
 
 pub fn cmd_sessions(args: SessionsArgs) {
-    match gait_ops::session::list(&args.gait_dir) {
+    match gait_ops::session::list(&args.gait_dir, args.last) {
         Ok(out) => println!("{}", out.to_json(args.pretty)),
         Err(e) => {
             eprintln!("[gait] error: {}", e);
@@ -357,6 +360,28 @@ pub struct StatsArgs {
 pub fn cmd_stats(args: StatsArgs) {
     match gait_ops::session::stats(&args.gait_dir, &args.session_id) {
         Ok(u) => println!("{}", u.to_json(args.pretty)),
+        Err(e) => {
+            eprintln!("[gait] error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+#[derive(Parser, Debug)]
+#[command(no_binary_name = true)]
+pub struct LogArgs {
+    pub session_id: String,
+    #[arg(long)]
+    pub pretty: bool,
+    #[arg(long, env = "GAIT_DIR")]
+    pub gait_dir: PathBuf,
+}
+
+/// The last completed run's outcome (done message, checkpoint, files/tools
+/// touched) — a quick glance without reading the full event stream.
+pub fn cmd_log(args: LogArgs) {
+    match gait_ops::session::summary(&args.gait_dir, &args.session_id) {
+        Ok(out) => println!("{}", out.to_json(args.pretty)),
         Err(e) => {
             eprintln!("[gait] error: {}", e);
             std::process::exit(1);
