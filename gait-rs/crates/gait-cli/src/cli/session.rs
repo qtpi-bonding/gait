@@ -20,8 +20,10 @@ pub struct PersistArgs {
     pub yes: bool,
     #[arg(long, env = "GAIT_DIR")]
     pub gait_dir: PathBuf,
+    /// Pretty-print the JSON result. Output is always JSON; this only
+    /// controls indentation.
     #[arg(long)]
-    pub json: bool,
+    pub pretty: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -36,7 +38,7 @@ pub struct DiscardArgs {
     #[arg(long, env = "GAIT_DIR")]
     pub gait_dir: PathBuf,
     #[arg(long)]
-    pub json: bool,
+    pub pretty: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -46,7 +48,7 @@ pub struct StopArgs {
     #[arg(long, env = "GAIT_DIR")]
     pub gait_dir: PathBuf,
     #[arg(long)]
-    pub json: bool,
+    pub pretty: bool,
 }
 
 enum Confirmed {
@@ -82,13 +84,16 @@ fn confirm_action(prompt: &str, yes: bool) -> Confirmed {
 // -----------------------------------------------------------------------------
 
 pub fn cmd_persist(args: PersistArgs) {
-    let yes = args.yes || args.json;
+    // `--json` used to double as an implicit `--yes` for scripted callers.
+    // Output is unconditionally JSON now, so that shortcut is gone — a
+    // non-interactive caller must pass `--yes` explicitly (or rely on
+    // `confirm_action`'s existing non-TTY `RequiresYes` gate).
     if args.all {
         run_bulk(
             gait_ops::session::BulkVerb::Persist,
             &args.gait_dir,
-            yes,
-            args.json,
+            args.yes,
+            args.pretty,
         );
         return;
     }
@@ -119,9 +124,13 @@ pub fn cmd_persist(args: PersistArgs) {
     };
     match gait_ops::session::bulk_act(&args.gait_dir, &plan, true) {
         Ok(outcome) => {
-            if !args.json {
-                eprintln!("[gait] session {} merged into main", id);
-            }
+            println!(
+                "{}",
+                gait_ops::render_json(
+                    &serde_json::json!({"session_id": id, "action": "persisted"}),
+                    args.pretty
+                )
+            );
             for (wid, w) in &outcome.warnings {
                 eprintln!("[gait] warning: session {}: {}", wid, w);
             }
@@ -134,13 +143,12 @@ pub fn cmd_persist(args: PersistArgs) {
 }
 
 pub fn cmd_discard(args: DiscardArgs) {
-    let yes = args.yes || args.json;
     if args.all {
         run_bulk(
             gait_ops::session::BulkVerb::Discard,
             &args.gait_dir,
-            yes,
-            args.json,
+            args.yes,
+            args.pretty,
         );
         return;
     }
@@ -152,7 +160,7 @@ pub fn cmd_discard(args: DiscardArgs) {
     // 3-state UX (Yes / No / RequiresYes) still applies.
     match confirm_action(
         &format!("discard session {id} permanently (no merge, unrecoverable)"),
-        yes,
+        args.yes,
     ) {
         Confirmed::Yes => {}
         Confirmed::No => {
@@ -173,22 +181,31 @@ pub fn cmd_discard(args: DiscardArgs) {
         eprintln!("[gait] error: {}", e);
         std::process::exit(1);
     }
-    if args.json {
-        println!(
-            "{}",
-            serde_json::json!({"session_id": id, "action": "discarded"})
-        );
-    } else {
-        eprintln!("[gait] session {} discarded", id);
-    }
+    println!(
+        "{}",
+        gait_ops::render_json(
+            &serde_json::json!({"session_id": id, "action": "discarded"}),
+            args.pretty
+        )
+    );
 }
 
 // -----------------------------------------------------------------------------
 // Bulk persist/discard with the 3-state consent flow
 // -----------------------------------------------------------------------------
 
-/// Bulk persist/discard over every idle, not-running session.
-fn run_bulk(verb: gait_ops::session::BulkVerb, gait_dir: &std::path::Path, yes: bool, json: bool) {
+/// Bulk persist/discard over every idle, not-running session. Output is
+/// always JSON on stdout (`pretty` only controls indentation); the
+/// interactive y/N confirmation prompt and warning/failure diagnostics stay
+/// plain text on stderr, per the existing `[gait] ...` diagnostic convention
+/// (`gait_core::embed::CliSink::diagnostic`) — that split is about stdout
+/// *results* vs. stderr *status/log lines*, not an exception to it.
+fn run_bulk(
+    verb: gait_ops::session::BulkVerb,
+    gait_dir: &std::path::Path,
+    yes: bool,
+    pretty: bool,
+) {
     let plan = match gait_ops::session::classify_bulk(gait_dir, verb) {
         Ok(p) => p,
         Err(e) => {
@@ -197,29 +214,10 @@ fn run_bulk(verb: gait_ops::session::BulkVerb, gait_dir: &std::path::Path, yes: 
         }
     };
 
-    if !json {
-        println!("eligible ({}):", plan.eligible.len());
-        for id in &plan.eligible {
-            println!("  {}\tidle", id);
-        }
-        if !plan.skipped.is_empty() {
-            println!("skipped ({}):", plan.skipped.len());
-            for (id, reason) in &plan.skipped {
-                println!("  {}\t{}", id, reason);
-            }
-        }
-    }
+    // The preview is itself a real result (what will happen) — always JSON.
+    println!("{}", plan.to_json(pretty));
 
     if plan.eligible.is_empty() {
-        if json {
-            println!("{}", plan.to_json());
-        } else {
-            let label = match verb {
-                gait_ops::session::BulkVerb::Persist => "persist",
-                gait_ops::session::BulkVerb::Discard => "discard",
-            };
-            println!("nothing to {}.", label);
-        }
         return;
     }
 
@@ -255,29 +253,12 @@ fn run_bulk(verb: gait_ops::session::BulkVerb, gait_dir: &std::path::Path, yes: 
         }
     };
 
-    if json {
-        println!("{}", outcome.to_json());
-    } else {
-        let past = match verb {
-            gait_ops::session::BulkVerb::Persist => "persisted",
-            gait_ops::session::BulkVerb::Discard => "discarded",
-        };
-        print!(
-            "{} {}, skipped {}",
-            past,
-            outcome.acted.len(),
-            outcome.skipped.len()
-        );
-        if !outcome.failed.is_empty() {
-            print!(", failed {}", outcome.failed.len());
-        }
-        println!();
-        for (id, e) in &outcome.failed {
-            eprintln!("  failed {}: {}", id, e);
-        }
-        for (id, w) in &outcome.warnings {
-            eprintln!("[gait] warning: session {}: {}", id, w);
-        }
+    println!("{}", outcome.to_json(pretty));
+    for (id, e) in &outcome.failed {
+        eprintln!("  failed {}: {}", id, e);
+    }
+    for (id, w) in &outcome.warnings {
+        eprintln!("[gait] warning: session {}: {}", id, w);
     }
 }
 
@@ -301,11 +282,12 @@ pub struct UndoArgs {
     #[arg(long, env = "GAIT_DIR")]
     pub gait_dir: PathBuf,
     #[arg(long)]
-    pub json: bool,
+    pub pretty: bool,
 }
 
 pub fn cmd_undo(args: UndoArgs) {
     use gait_ops::session::{undo as op_undo, UndoParams};
+    let pretty = args.pretty;
     let params = UndoParams {
         gait_dir: args.gait_dir,
         session_id: args.session_id,
@@ -321,23 +303,7 @@ pub fn cmd_undo(args: UndoArgs) {
             std::process::exit(1);
         }
     };
-    if args.list {
-        for t in &outcome.turns {
-            let mark = t.checkpoint_short.as_deref().unwrap_or("--------");
-            println!("turn {}\t[{}]\t{}", t.turn, mark, t.summary);
-        }
-        return;
-    }
-    if let Some(sha) = &outcome.checkpoint_short {
-        if outcome.code_undone {
-            println!("code restored to turn ({})", &sha[..sha.len().min(8)]);
-        } else {
-            println!("turn has no code checkpoint (non-git codebase); code not undone");
-        }
-    }
-    if outcome.transcript_undone {
-        println!("transcript undone to turn");
-    }
+    println!("{}", outcome.to_json(pretty));
 }
 
 #[derive(Parser, Debug)]
@@ -346,17 +312,12 @@ pub struct SessionsArgs {
     #[arg(long, env = "GAIT_DIR")]
     pub gait_dir: PathBuf,
     #[arg(long)]
-    pub json: bool,
+    pub pretty: bool,
 }
 
 pub fn cmd_sessions(args: SessionsArgs) {
     match gait_ops::session::list(&args.gait_dir) {
-        Ok(out) if out.active.is_empty() => println!("No active sessions."),
-        Ok(out) => {
-            for id in out.active {
-                println!("{}", id);
-            }
-        }
+        Ok(out) => println!("{}", out.to_json(args.pretty)),
         Err(e) => {
             eprintln!("[gait] error: {}", e);
             std::process::exit(1);
@@ -370,20 +331,12 @@ pub struct PsArgs {
     #[arg(long, env = "GAIT_DIR")]
     pub gait_dir: PathBuf,
     #[arg(long)]
-    pub json: bool,
+    pub pretty: bool,
 }
 
 pub fn cmd_ps(args: PsArgs) {
     match gait_ops::session::ps(&args.gait_dir) {
-        Ok(out) => {
-            if args.json {
-                println!("{}", out.to_json());
-            } else {
-                for (id, state) in out.to_rows() {
-                    println!("{}\t{}", id, state);
-                }
-            }
-        }
+        Ok(out) => println!("{}", out.to_json(args.pretty)),
         Err(e) => {
             eprintln!("[gait] error: {}", e);
             std::process::exit(1);
@@ -396,29 +349,14 @@ pub fn cmd_ps(args: PsArgs) {
 pub struct StatsArgs {
     pub session_id: String,
     #[arg(long)]
-    pub json: bool,
+    pub pretty: bool,
     #[arg(long, env = "GAIT_DIR")]
     pub gait_dir: PathBuf,
 }
 
 pub fn cmd_stats(args: StatsArgs) {
     match gait_ops::session::stats(&args.gait_dir, &args.session_id) {
-        Ok(u) => {
-            if args.json {
-                println!("{}", u.to_json());
-            } else {
-                println!("session {}", args.session_id);
-                println!("  input        {}", u.input);
-                println!("  output       {}", u.output);
-                println!("  cache read   {}", u.cache_read);
-                println!("  cache write  {}", u.cache_write);
-                println!("  compaction input  {}", u.compaction_input);
-                println!("  compaction output {}", u.compaction_output);
-                println!("  compaction cache read  {}", u.compaction_cache_read);
-                println!("  compaction cache write {}", u.compaction_cache_write);
-                println!("  total tokens {}", u.total);
-            }
-        }
+        Ok(u) => println!("{}", u.to_json(args.pretty)),
         Err(e) => {
             eprintln!("[gait] error: {}", e);
             std::process::exit(1);
@@ -444,7 +382,7 @@ pub struct AllowArgs {
     #[arg(long, env = "GAIT_DIR")]
     pub gait_dir: PathBuf,
     #[arg(long)]
-    pub json: bool,
+    pub pretty: bool,
 }
 
 pub fn cmd_allow(args: AllowArgs) {
@@ -472,9 +410,16 @@ pub fn cmd_allow(args: AllowArgs) {
 
     match op_allow(&args.gait_dir, &args.session_id, params) {
         Ok(out) => {
-            eprintln!(
-                "[gait] approved {} (scope: {:?})",
-                args.session_id, out.scope
+            println!(
+                "{}",
+                gait_ops::render_json(
+                    &serde_json::json!({
+                        "session_id": args.session_id,
+                        "scope": format!("{:?}", out.scope).to_lowercase(),
+                        "approved_count": out.reply_items.len(),
+                    }),
+                    args.pretty
+                )
             );
         }
         Err(e) => {
@@ -491,24 +436,23 @@ pub struct DenyArgs {
     #[arg(long, env = "GAIT_DIR")]
     pub gait_dir: PathBuf,
     #[arg(long)]
-    pub json: bool,
+    pub pretty: bool,
 }
 
 pub fn cmd_deny(args: DenyArgs) {
     use gait_ops::permission::deny as op_deny;
 
     match op_deny(&args.gait_dir, &args.session_id) {
-        Ok(out) if out.reply_items.is_empty() => {
-            eprintln!(
-                "[gait] no pending permissions for session {}",
-                args.session_id
-            );
-        }
         Ok(out) => {
-            eprintln!(
-                "[gait] denied {} pending permission(s) for session {}",
-                out.reply_items.len(),
-                args.session_id
+            println!(
+                "{}",
+                gait_ops::render_json(
+                    &serde_json::json!({
+                        "session_id": args.session_id,
+                        "denied_count": out.reply_items.len(),
+                    }),
+                    args.pretty
+                )
             );
         }
         Err(gait_ops::OpError::NotFound(_)) => {
@@ -538,7 +482,7 @@ pub struct UnlockArgs {
     #[arg(long, env = "GAIT_DIR")]
     pub gait_dir: PathBuf,
     #[arg(long)]
-    pub json: bool,
+    pub pretty: bool,
 }
 
 pub fn cmd_unlock(args: UnlockArgs) {
@@ -560,21 +504,18 @@ pub fn cmd_unlock(args: UnlockArgs) {
 
     match op_unlock(params) {
         Ok(out) => {
-            for w in &out.warnings {
-                eprintln!("[gait] warning: {w}");
-            }
-            if out.reply_items.is_empty() {
-                eprintln!(
-                    "[gait] no pending unlock items for session {}",
-                    args.session_id
-                );
-                return;
-            }
-            eprintln!(
-                "[gait] unlocked {} item(s) for session {} (scope: {})",
-                out.reply_items.len(),
-                args.session_id,
-                args.scope,
+            println!(
+                "{}",
+                gait_ops::render_json(
+                    &serde_json::json!({
+                        "session_id": args.session_id,
+                        "scope": args.scope,
+                        "unlocked_count": out.reply_items.len(),
+                        "persisted_grants": out.persisted_grants,
+                        "warnings": out.warnings,
+                    }),
+                    args.pretty
+                )
             );
         }
         Err(gait_ops::OpError::NotFound(_)) => {
@@ -596,7 +537,7 @@ pub struct ReplyArgs {
     #[arg(long, env = "GAIT_DIR")]
     pub gait_dir: PathBuf,
     #[arg(long)]
-    pub json: bool,
+    pub pretty: bool,
 }
 
 /// `gait load <kind> <name> --session <id>` — append a Toggle(enabled=true)
@@ -612,6 +553,8 @@ pub struct LoadArgs {
     pub session_id: String,
     #[arg(long, env = "GAIT_DIR")]
     pub gait_dir: PathBuf,
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 /// `gait unload <kind> <name> --session <id>` — append a Toggle(enabled=false)
@@ -627,6 +570,8 @@ pub struct UnloadArgs {
     pub session_id: String,
     #[arg(long, env = "GAIT_DIR")]
     pub gait_dir: PathBuf,
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 fn parse_ext_kind(kind: &str) -> Result<gait_ops::extension::ExtKind, String> {
@@ -658,8 +603,16 @@ pub fn cmd_load(args: LoadArgs) {
         name: args.name.clone(),
     }) {
         Ok(_) => println!(
-            "Loaded {} '{}' into session '{}'.",
-            args.kind, args.name, args.session_id
+            "{}",
+            gait_ops::render_json(
+                &serde_json::json!({
+                    "session_id": args.session_id,
+                    "kind": args.kind,
+                    "name": args.name,
+                    "action": "loaded",
+                }),
+                args.pretty
+            )
         ),
         Err(e) => {
             eprintln!("[gait] error: {}", e);
@@ -685,8 +638,16 @@ pub fn cmd_unload(args: UnloadArgs) {
         name: args.name.clone(),
     }) {
         Ok(_) => println!(
-            "Unloaded {} '{}' from session '{}'.",
-            args.kind, args.name, args.session_id
+            "{}",
+            gait_ops::render_json(
+                &serde_json::json!({
+                    "session_id": args.session_id,
+                    "kind": args.kind,
+                    "name": args.name,
+                    "action": "unloaded",
+                }),
+                args.pretty
+            )
         ),
         Err(e) => {
             eprintln!("[gait] error: {}", e);
@@ -701,9 +662,16 @@ pub fn cmd_reply(args: ReplyArgs) {
                 gait_ops::interaction::ReplyKind::Clarify => "clarify",
                 gait_ops::interaction::ReplyKind::Inform => "inform",
             };
-            eprintln!(
-                "[gait] answered pending {} '{}' for session {}",
-                kind, out.id, args.session_id
+            println!(
+                "{}",
+                gait_ops::render_json(
+                    &serde_json::json!({
+                        "session_id": args.session_id,
+                        "kind": kind,
+                        "id": out.id,
+                    }),
+                    args.pretty
+                )
             );
         }
         Err(e) => {

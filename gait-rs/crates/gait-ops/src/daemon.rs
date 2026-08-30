@@ -16,7 +16,7 @@ use std::path::Path;
 // -----------------------------------------------------------------------------
 
 /// One daemon in the list output.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DaemonRow {
     pub name: String,
     pub pid: i32,
@@ -27,9 +27,16 @@ pub struct DaemonRow {
 }
 
 /// Outcome of `list`.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct DaemonListOutcome {
     pub rows: Vec<DaemonRow>,
+}
+
+impl DaemonListOutcome {
+    /// The CLI's only rendering — no plain-text form exists.
+    pub fn to_json(&self, pretty: bool) -> String {
+        crate::render_json(&self.rows, pretty)
+    }
 }
 
 /// Query the daemon registry.
@@ -95,7 +102,7 @@ pub fn list(gait_dir: &Path, all: bool) -> Result<DaemonListOutcome, OpError> {
 // -----------------------------------------------------------------------------
 
 /// Outcome of `stop`: what happened when stopping a daemon.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct StopOutcome {
     /// The daemon name.
     pub id: String,
@@ -105,6 +112,13 @@ pub struct StopOutcome {
     pub was_alive: bool,
     /// Whether we sent a SIGTERM to the process group (true only if was_alive).
     pub signalled: bool,
+}
+
+impl StopOutcome {
+    /// The CLI's only rendering — no plain-text form exists.
+    pub fn to_json(&self, pretty: bool) -> String {
+        crate::render_json(self, pretty)
+    }
 }
 
 /// Send SIGTERM to a process group, wrapping the unsafe `libc::killpg` call
@@ -355,5 +369,43 @@ mod tests {
 
         let err = stop(dir.path(), "nonexistent").unwrap_err();
         assert!(matches!(err, OpError::NotFound(_)));
+    }
+
+    // -- JSON rendering (golden) --
+
+    #[test]
+    fn daemon_list_outcome_to_json_golden() {
+        let out = DaemonListOutcome {
+            rows: vec![DaemonRow {
+                name: "build".to_string(),
+                pid: 1234,
+                status: "running".to_string(),
+                log_path: "/tmp/build.log".to_string(),
+            }],
+        };
+        assert_eq!(
+            out.to_json(false),
+            "[{\"name\":\"build\",\"pid\":1234,\"status\":\"running\",\"log_path\":\"/tmp/build.log\"}]"
+        );
+    }
+
+    #[test]
+    fn daemon_list_outcome_to_json_empty() {
+        let out = DaemonListOutcome { rows: vec![] };
+        assert_eq!(out.to_json(false), "[]");
+    }
+
+    #[test]
+    fn stop_outcome_to_json_golden() {
+        let out = StopOutcome {
+            id: "build".to_string(),
+            pid: 1234,
+            was_alive: true,
+            signalled: true,
+        };
+        assert_eq!(
+            out.to_json(false),
+            "{\"id\":\"build\",\"pid\":1234,\"was_alive\":true,\"signalled\":true}"
+        );
     }
 }

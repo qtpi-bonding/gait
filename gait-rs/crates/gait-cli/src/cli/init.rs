@@ -3,7 +3,7 @@
 #![allow(clippy::print_stdout, clippy::print_stderr, clippy::exit)]
 
 use clap::Parser;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(no_binary_name = true)]
@@ -16,34 +16,21 @@ pub struct InitArgs {
     pub force: bool,
     /// Target gait-dir (default: current directory).
     pub path: Option<PathBuf>,
+    #[arg(long)]
+    pub pretty: bool,
 }
 
-fn print_init_summary(gait_dir: &Path) {
-    let display = gait_dir.display();
-    eprintln!("[gait] initialized gait-dir at {display}");
-    eprintln!();
-    eprintln!("  {:<32} {:<46} git", "file", "purpose");
-    eprintln!(
-        "  {:<32} {:<46} committed",
-        "gait.jsonc", "model + tool-permission config"
-    );
-    eprintln!(
-        "  {:<32} {:<46} committed",
-        "agents/default/AGENT.md", "the agent's role and instructions"
-    );
-    eprintln!(
-        "  {:<32} {:<46} ignored",
-        "USER.md", "your personal instructions (not shared)"
-    );
-    eprintln!(
-        "  {:<32} {:<46} committed*",
-        "skills/", "installed skills  (skills/<n>/SKILL.md)"
-    );
-    eprintln!("  {:<32} {:<46} ignored", "sessions/", "turn history");
-    eprintln!();
-    eprintln!("  * empty dir; git-tracked when you add skills");
-    eprintln!();
-    eprintln!("  next: gait run --task \"...\"");
+/// The scaffolded files table `gait init` always creates — static
+/// documentation data, not per-run state, but carried in the JSON result so
+/// the new-workspace layout is discoverable without reading source.
+fn scaffold_files() -> serde_json::Value {
+    serde_json::json!([
+        {"path": "gait.jsonc", "purpose": "model + tool-permission config", "git": "committed"},
+        {"path": "agents/default/AGENT.md", "purpose": "the agent's role and instructions", "git": "committed"},
+        {"path": "USER.md", "purpose": "your personal instructions (not shared)", "git": "ignored"},
+        {"path": "skills/", "purpose": "installed skills (skills/<n>/SKILL.md)", "git": "committed (empty dir; tracked once you add skills)"},
+        {"path": "sessions/", "purpose": "turn history", "git": "ignored"},
+    ])
 }
 
 pub fn cmd_init(args: InitArgs) {
@@ -61,24 +48,27 @@ pub fn cmd_init(args: InitArgs) {
     };
     match gait_ops::workspace::init(params) {
         Ok(outcome) => {
-            if outcome.gitignored {
-                println!(
-                    "[gait] added {} to {}",
-                    outcome.gitignore_line.as_deref().unwrap_or(""),
-                    outcome
-                        .gitignore_path
-                        .as_ref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default()
-                );
-            }
             if outcome.in_tree {
                 eprintln!(
                     "[gait] warning: this workspace is inside your code tree; running it will \
                      require --allow-intree, and an agent could then write to its own config."
                 );
             }
-            print_init_summary(&outcome.gait_dir);
+            println!(
+                "{}",
+                gait_ops::render_json(
+                    &serde_json::json!({
+                        "gait_dir": outcome.gait_dir.display().to_string(),
+                        "pre_existing_workspace": outcome.pre_existing_workspace,
+                        "in_tree": outcome.in_tree,
+                        "gitignored": outcome.gitignored,
+                        "gitignore_line": outcome.gitignore_line,
+                        "gitignore_path": outcome.gitignore_path.map(|p| p.display().to_string()),
+                        "files": scaffold_files(),
+                    }),
+                    args.pretty
+                )
+            );
         }
         Err(gait_ops::OpError::Conflict(msg)) => {
             eprintln!("[gait] {msg}");

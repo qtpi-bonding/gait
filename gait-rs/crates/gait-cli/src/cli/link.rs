@@ -15,6 +15,8 @@ pub fn pointer_body(gait_dir: &Path) -> String {
 pub struct LinkArgs {
     /// Path to an existing gait workspace to point at.
     pub gait_dir: PathBuf,
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 pub fn cmd_link(args: LinkArgs) {
@@ -26,9 +28,14 @@ pub fn cmd_link(args: LinkArgs) {
     };
     match gait_ops::workspace::link(&cwd, &target) {
         Ok(out) => println!(
-            "[gait] linked {} -> {}",
-            out.gaitref.display(),
-            out.target.display()
+            "{}",
+            gait_ops::render_json(
+                &serde_json::json!({
+                    "gaitref": out.gaitref.display().to_string(),
+                    "target": out.target.display().to_string(),
+                }),
+                args.pretty
+            )
         ),
         Err(e) => {
             eprintln!("[gait] {e}");

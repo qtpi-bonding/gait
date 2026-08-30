@@ -22,6 +22,12 @@ pub struct WorkflowArgs {
     /// Remaining args (workflow name, id, …)
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub rest: Vec<String>,
+    /// Applies to `list`/`abort`/`validate` only — `run`/`continue` stream
+    /// turn output through `CliSink` (always compact, no pretty option) and
+    /// `log` streams one compact JSON object per event (NDJSON; pretty would
+    /// break line-per-event streaming).
+    #[arg(long)]
+    pub pretty: bool,
 }
 /// Pull a `--gait-dir <path>` or `--gait-dir=<path>` pair out of `rest`,
 /// returning the extracted path (if any) and the remaining tokens.
@@ -58,25 +64,61 @@ fn extract_gait_dir_from_rest(rest: &[String]) -> (Option<PathBuf>, Vec<String>)
     (found, remaining)
 }
 
+/// Same problem `extract_gait_dir_from_rest` solves, for the boolean
+/// `--pretty` flag: `WorkflowArgs.rest`'s `trailing_var_arg` swallows a
+/// `--pretty` typed after the action (`gait workflow list --pretty`) before
+/// it can reach `WorkflowArgs.pretty`.
+fn extract_pretty_from_rest(rest: &[String]) -> (bool, Vec<String>) {
+    let mut found = false;
+    let mut remaining = Vec::with_capacity(rest.len());
+    for tok in rest {
+        if tok == "--pretty" {
+            found = true;
+        } else {
+            remaining.push(tok.clone());
+        }
+    }
+    (found, remaining)
+}
+
+/// Priority between `WorkflowArgs.gait_dir` (a leading `--gait-dir`, or
+/// clap's `env = "GAIT_DIR"` fallback if no leading flag was given at all)
+/// and a `--gait-dir` recovered from `rest` by `extract_gait_dir_from_rest`.
+/// The recovered value must win: clap's `env` fallback populates
+/// `WorkflowArgs.gait_dir` from `$GAIT_DIR` whenever no *leading* flag is
+/// present, which is indistinguishable from "the user really meant the env
+/// default" — but a `--gait-dir` typed after the action and swallowed into
+/// `rest` is an explicit, deliberate choice that must not be shadowed by an
+/// env var the user may not even know is set.
+fn resolve_workflow_gait_dir(
+    cli_field: Option<PathBuf>,
+    from_rest: Option<PathBuf>,
+) -> Option<PathBuf> {
+    from_rest.or(cli_field)
+}
+
 pub async fn cmd_workflow(args: WorkflowArgs) {
     let (gait_dir_from_rest, rest) = extract_gait_dir_from_rest(&args.rest);
-    let gait_dir =
-        match crate::cli::args::resolve_gait_dir_from(args.gait_dir.clone().or(gait_dir_from_rest))
-        {
-            Ok(dir) => dir,
-            Err(error) => {
-                eprintln!("[gait] {error}");
-                std::process::exit(1);
-            }
-        };
+    let (pretty_from_rest, rest) = extract_pretty_from_rest(&rest);
+    let pretty = args.pretty || pretty_from_rest;
+    let gait_dir = match crate::cli::args::resolve_gait_dir_from(resolve_workflow_gait_dir(
+        args.gait_dir.clone(),
+        gait_dir_from_rest,
+    )) {
+        Ok(dir) => dir,
+        Err(error) => {
+            eprintln!("[gait] {error}");
+            std::process::exit(1);
+        }
+    };
     let sub = args.action.as_deref().unwrap_or("");
     match sub {
         "run" => cmd_workflow_run(&rest, gait_dir).await,
-        "list" => cmd_workflow_list(&rest, gait_dir),
+        "list" => cmd_workflow_list(&rest, gait_dir, pretty),
         "continue" => cmd_workflow_continue(&rest, gait_dir).await,
-        "abort" => cmd_workflow_abort(&rest, gait_dir),
+        "abort" => cmd_workflow_abort(&rest, gait_dir, pretty),
         "log" => cmd_workflow_log(&rest, gait_dir),
-        "validate" => cmd_workflow_validate(&rest, gait_dir),
+        "validate" => cmd_workflow_validate(&rest, gait_dir, pretty),
         _ => {
             eprintln!("[gait] usage: gait workflow <run|list|continue|abort|log|validate>");
             std::process::exit(1);
@@ -149,7 +191,7 @@ pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) {
 /// Parse and structurally validate a workflow's graph without running it —
 /// no worktree, no run-log, no gait-dir session state touched. Exits 0 with
 /// "is valid" on success, exits 1 and prints every problem found on failure.
-pub fn cmd_workflow_validate(argv: &[String], gait_dir: PathBuf) {
+pub fn cmd_workflow_validate(argv: &[String], gait_dir: PathBuf, pretty: bool) {
     let name = match argv.first() {
         Some(n) => n.clone(),
         None => {
@@ -174,13 +216,16 @@ pub fn cmd_workflow_validate(argv: &[String], gait_dir: PathBuf) {
     };
     let proto = gait_workflow::convert::to_proto(&wf);
     let errors = gait_workflow::validate::validate_graph(&proto);
-    if errors.is_empty() {
-        eprintln!("[gait workflow] {} is valid", name);
-    } else {
-        eprintln!("[gait workflow] {} is invalid:", name);
-        for e in &errors {
-            eprintln!("  - {e}");
-        }
+    let valid = errors.is_empty();
+    let error_strings: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
+    println!(
+        "{}",
+        gait_ops::render_json(
+            &serde_json::json!({"name": name, "valid": valid, "errors": error_strings}),
+            pretty
+        )
+    );
+    if !valid {
         std::process::exit(1);
     }
 }
@@ -216,15 +261,16 @@ fn collect_workflow_summaries(workflow_runs_dir: &Path) -> Vec<(String, String, 
     out
 }
 
-pub fn cmd_workflow_list(_argv: &[String], gait_dir: PathBuf) {
+pub fn cmd_workflow_list(_argv: &[String], gait_dir: PathBuf, pretty: bool) {
     let summaries = collect_workflow_summaries(&gait_dir.join("workflow-runs"));
-    if summaries.is_empty() {
-        println!("(no workflow runs)");
-        return;
-    }
-    for (run_id, name, status) in summaries {
-        println!("{} — {} ({})", run_id, name, status);
-    }
+    let runs: Vec<serde_json::Value> = summaries
+        .into_iter()
+        .map(|(run_id, name, status)| serde_json::json!({"run_id": run_id, "name": name, "status": status}))
+        .collect();
+    println!(
+        "{}",
+        gait_ops::render_json(&serde_json::json!({"runs": runs}), pretty)
+    );
 }
 
 /// `gait workflow continue <run-id> [--force] [--force-rerun <node-id>]...`
@@ -346,7 +392,7 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) {
     }
 }
 
-pub fn cmd_workflow_abort(argv: &[String], gait_dir: PathBuf) {
+pub fn cmd_workflow_abort(argv: &[String], gait_dir: PathBuf, pretty: bool) {
     let workflow_id = match argv.first() {
         Some(id) => id.clone(),
         None => {
@@ -378,7 +424,13 @@ pub fn cmd_workflow_abort(argv: &[String], gait_dir: PathBuf) {
         eprintln!("[gait] failed to record abort for {}: {}", workflow_id, e);
         std::process::exit(1);
     }
-    println!("[gait workflow] aborted {}", workflow_id);
+    println!(
+        "{}",
+        gait_ops::render_json(
+            &serde_json::json!({"workflow_id": workflow_id, "action": "aborted"}),
+            pretty
+        )
+    );
 }
 
 pub fn cmd_workflow_log(argv: &[String], gait_dir: PathBuf) {
@@ -429,6 +481,39 @@ mod gait_dir_extraction_tests {
         let (found, remaining) = extract_gait_dir_from_rest(&rest);
         assert_eq!(found, None);
         assert_eq!(remaining, rest);
+    }
+
+    // -- gait_dir priority (bug: env-populated CLI field was winning over an
+    // explicit --gait-dir recovered from `rest`) --
+
+    #[test]
+    fn rest_extracted_gait_dir_wins_over_env_populated_cli_field() {
+        // Simulates `$GAIT_DIR` being set in the environment (so clap's
+        // `env = "GAIT_DIR"` populates `WorkflowArgs.gait_dir` even though the
+        // user never passed a leading --gait-dir) while the user ALSO typed
+        // `--gait-dir <path>` after the action, where trailing_var_arg
+        // swallows it into `rest` before `extract_gait_dir_from_rest` pulls
+        // it back out. The explicit, recovered value must win.
+        let cli_field_from_env = Some(PathBuf::from("/env/default"));
+        let from_rest = Some(PathBuf::from("/explicit/from/rest"));
+        assert_eq!(
+            super::resolve_workflow_gait_dir(cli_field_from_env, from_rest),
+            Some(PathBuf::from("/explicit/from/rest"))
+        );
+    }
+
+    #[test]
+    fn env_populated_cli_field_used_when_nothing_recovered_from_rest() {
+        let cli_field_from_env = Some(PathBuf::from("/env/default"));
+        assert_eq!(
+            super::resolve_workflow_gait_dir(cli_field_from_env, None),
+            Some(PathBuf::from("/env/default"))
+        );
+    }
+
+    #[test]
+    fn none_when_neither_source_has_a_value() {
+        assert_eq!(super::resolve_workflow_gait_dir(None, None), None);
     }
 }
 
@@ -490,7 +575,7 @@ mod abort_tests {
         );
         assert_eq!(before.workflow_status(), "running");
 
-        cmd_workflow_abort(&["deploy-abort-1".to_string()], gait_dir.clone());
+        cmd_workflow_abort(&["deploy-abort-1".to_string()], gait_dir.clone(), false);
 
         // Post-condition: abort wrote a terminal WorkflowError → folds to "failed",
         // so list/continue no longer treat it as resumable.
@@ -577,7 +662,7 @@ mod validate_tests {
         // If this exits the process, the test binary dies and no later test
         // in this run reports pass/fail — reaching this assertion at all is
         // the proof cmd_workflow_validate did not call std::process::exit.
-        cmd_workflow_validate(&["good".to_string()], gait_dir);
+        cmd_workflow_validate(&["good".to_string()], gait_dir, false);
         // No panic, no exit — the happy path returned normally.
     }
 }

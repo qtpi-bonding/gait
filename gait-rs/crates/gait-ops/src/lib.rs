@@ -10,6 +10,17 @@
 mod error;
 pub use error::OpError;
 
+/// Shared JSON renderer for every `Outcome::to_json(pretty)` in this crate —
+/// the CLI's only output format (design decision 2026-08-30: no plain-text
+/// rendering in gait-cli, `pretty` replaces the old `--json`/plain split).
+pub fn render_json<T: serde::Serialize>(value: &T, pretty: bool) -> String {
+    if pretty {
+        serde_json::to_string_pretty(value).unwrap_or_default()
+    } else {
+        serde_json::to_string(value).unwrap_or_default()
+    }
+}
+
 // Domain modules — filled in by later tasks. Declared now so the tree exists.
 pub mod auth;
 pub mod config;

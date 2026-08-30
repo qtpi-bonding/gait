@@ -11,10 +11,17 @@ use std::path::{Path, PathBuf};
 // list  (cmd_sessions)
 // -----------------------------------------------------------------------------
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct ListOutcome {
     /// Active (unmerged) session ids.
     pub active: Vec<String>,
+}
+
+impl ListOutcome {
+    /// The CLI's only rendering of `sessions` — no plain-text form exists.
+    pub fn to_json(&self, pretty: bool) -> String {
+        crate::render_json(self, pretty)
+    }
 }
 
 /// Walk `gait_dir`'s `session/*` branches and return the ones main is not a
@@ -30,7 +37,7 @@ pub fn list(gait_dir: &Path) -> Result<ListOutcome, OpError> {
 // ps  (cmd_ps)
 // -----------------------------------------------------------------------------
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct PsRow {
     pub session_id: String,
     pub state: String,
@@ -42,9 +49,9 @@ pub struct PsOutcome {
 }
 
 impl PsOutcome {
-    /// `(session_id, state)` rows, in the order returned by `ps` — the single
-    /// source of truth for the tab-separated table both the CLI and (future)
-    /// REPL print. No I/O; returns data only (Wall 1).
+    /// `(session_id, state)` rows, in the order returned by `ps` — kept for
+    /// `gait-repl`'s own (separate, non-JSON) rendering; `gait-cli` no longer
+    /// calls this, it always renders `to_json`.
     pub fn to_rows(&self) -> Vec<(String, String)> {
         self.rows
             .iter()
@@ -52,16 +59,12 @@ impl PsOutcome {
             .collect()
     }
 
-    /// The `--json` shape: `[{"session_id": .., "state": ..}, ...]`, pretty
-    /// printed. This is the API contract — CLI and any future frontend render
-    /// this exact string rather than re-deriving the shape.
-    pub fn to_json(&self) -> String {
-        let arr: Vec<serde_json::Value> = self
-            .rows
-            .iter()
-            .map(|r| serde_json::json!({"session_id": r.session_id, "state": r.state}))
-            .collect();
-        serde_json::to_string_pretty(&arr).unwrap_or_default()
+    /// The CLI's only rendering: `[{"session_id": .., "state": ..}, ...]`,
+    /// compact or pretty-printed per `pretty`. This is the API contract — the
+    /// CLI and any future frontend render this exact string rather than
+    /// re-deriving the shape.
+    pub fn to_json(&self, pretty: bool) -> String {
+        crate::render_json(&self.rows, pretty)
     }
 }
 
@@ -113,7 +116,7 @@ pub fn ps(gait_dir: &Path) -> Result<PsOutcome, OpError> {
 // stats  (cmd_stats)
 // -----------------------------------------------------------------------------
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct StatsOutcome {
     pub input: u64,
     pub output: u64,
@@ -127,13 +130,10 @@ pub struct StatsOutcome {
 }
 
 impl StatsOutcome {
-    /// The `--json` shape distinguishes harness compaction from normal agent
-    /// work while retaining one total for cost accounting.
-    pub fn to_json(&self) -> String {
-        format!(
-            "{{\"input\":{},\"output\":{},\"cache_read\":{},\"cache_write\":{},\"compaction_input\":{},\"compaction_output\":{},\"compaction_cache_read\":{},\"compaction_cache_write\":{}}}",
-            self.input, self.output, self.cache_read, self.cache_write, self.compaction_input, self.compaction_output, self.compaction_cache_read, self.compaction_cache_write
-        )
+    /// The CLI's only rendering: distinguishes harness compaction from normal
+    /// agent work while retaining one `total` for cost accounting.
+    pub fn to_json(&self, pretty: bool) -> String {
+        crate::render_json(self, pretty)
     }
 }
 
@@ -193,7 +193,7 @@ pub fn stats(gait_dir: &Path, session_id: &str) -> Result<StatsOutcome, OpError>
 // undo  (cmd_undo)
 // -----------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct UndoTurn {
     pub turn: u32,
     pub summary: String,
@@ -211,7 +211,7 @@ pub struct UndoParams {
     pub list: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct UndoOutcome {
     /// Populated when `list: true` (turn list with checkpoint prefixes).
     pub turns: Vec<UndoTurn>,
@@ -221,6 +221,16 @@ pub struct UndoOutcome {
     pub code_undone: bool,
     /// Short checkpoint prefix used (8 chars), or `None` if no checkpoint.
     pub checkpoint_short: Option<String>,
+}
+
+impl UndoOutcome {
+    /// The CLI's only rendering, covering both `list` mode (`turns`
+    /// populated) and act mode (`code_undone`/`transcript_undone`/
+    /// `checkpoint_short` populated) — one shape, fields simply empty/false/
+    /// null in whichever mode didn't apply.
+    pub fn to_json(&self, pretty: bool) -> String {
+        crate::render_json(self, pretty)
+    }
 }
 
 /// Port of `cmd_undo`'s two modes. `list: true` returns the turn list (no
@@ -429,6 +439,7 @@ fn render_bulk_json(
     skipped: &[(String, String)],
     acted: &[String],
     failed: &[(String, String)],
+    pretty: bool,
 ) -> String {
     let v = serde_json::json!({
         "eligible": eligible,
@@ -440,21 +451,27 @@ fn render_bulk_json(
             .map(|(id, e)| serde_json::json!({"session_id": id, "error": e}))
             .collect::<Vec<_>>(),
     });
-    serde_json::to_string_pretty(&v).unwrap_or_default()
+    crate::render_json(&v, pretty)
 }
 
 impl BulkPlan {
-    /// `--json` shape for the preview (before `bulk_act` runs): `acted`/`failed`
-    /// are empty arrays.
-    pub fn to_json(&self) -> String {
-        render_bulk_json(&self.eligible, &self.skipped, &[], &[])
+    /// The CLI's only rendering of the preview (before `bulk_act` runs):
+    /// `acted`/`failed` are empty arrays.
+    pub fn to_json(&self, pretty: bool) -> String {
+        render_bulk_json(&self.eligible, &self.skipped, &[], &[], pretty)
     }
 }
 
 impl BulkOutcome {
-    /// `--json` shape for the completed action.
-    pub fn to_json(&self) -> String {
-        render_bulk_json(&self.eligible, &self.skipped, &self.acted, &self.failed)
+    /// The CLI's only rendering of the completed action.
+    pub fn to_json(&self, pretty: bool) -> String {
+        render_bulk_json(
+            &self.eligible,
+            &self.skipped,
+            &self.acted,
+            &self.failed,
+            pretty,
+        )
     }
 }
 
@@ -909,7 +926,11 @@ mod tests {
             ]
         );
         assert_eq!(
-            out.to_json(),
+            out.to_json(false),
+            "[{\"session_id\":\"s1\",\"state\":\"idle\"},{\"session_id\":\"s2\",\"state\":\"awaiting-permission\"}]"
+        );
+        assert_eq!(
+            out.to_json(true),
             "[\n  {\n    \"session_id\": \"s1\",\n    \"state\": \"idle\"\n  },\n  {\n    \"session_id\": \"s2\",\n    \"state\": \"awaiting-permission\"\n  }\n]"
         );
     }
@@ -928,8 +949,12 @@ mod tests {
             total: 37,
         };
         assert_eq!(
-            out.to_json(),
-            "{\"input\":10,\"output\":20,\"cache_read\":3,\"cache_write\":4,\"compaction_input\":0,\"compaction_output\":0,\"compaction_cache_read\":0,\"compaction_cache_write\":0}"
+            out.to_json(false),
+            "{\"input\":10,\"output\":20,\"cache_read\":3,\"cache_write\":4,\"compaction_input\":0,\"compaction_output\":0,\"compaction_cache_read\":0,\"compaction_cache_write\":0,\"total\":37}"
+        );
+        assert_eq!(
+            out.to_json(true),
+            "{\n  \"input\": 10,\n  \"output\": 20,\n  \"cache_read\": 3,\n  \"cache_write\": 4,\n  \"compaction_input\": 0,\n  \"compaction_output\": 0,\n  \"compaction_cache_read\": 0,\n  \"compaction_cache_write\": 0,\n  \"total\": 37\n}"
         );
     }
 
@@ -941,7 +966,11 @@ mod tests {
             skipped: vec![("s2".to_string(), "running".to_string())],
         };
         assert_eq!(
-            plan.to_json(),
+            plan.to_json(false),
+            "{\"eligible\":[\"s1\"],\"skipped\":[{\"session_id\":\"s2\",\"state\":\"running\"}],\"acted\":[],\"failed\":[]}"
+        );
+        assert_eq!(
+            plan.to_json(true),
             "{\n  \"eligible\": [\n    \"s1\"\n  ],\n  \"skipped\": [\n    {\n      \"session_id\": \"s2\",\n      \"state\": \"running\"\n    }\n  ],\n  \"acted\": [],\n  \"failed\": []\n}"
         );
     }
@@ -957,8 +986,71 @@ mod tests {
             warnings: Vec::new(),
         };
         assert_eq!(
-            outcome.to_json(),
+            outcome.to_json(false),
+            "{\"eligible\":[\"s1\"],\"skipped\":[],\"acted\":[\"s1\"],\"failed\":[]}"
+        );
+        assert_eq!(
+            outcome.to_json(true),
             "{\n  \"eligible\": [\n    \"s1\"\n  ],\n  \"skipped\": [],\n  \"acted\": [\n    \"s1\"\n  ],\n  \"failed\": []\n}"
+        );
+    }
+
+    // -- new JSON shapes: list (sessions) and undo --
+
+    #[test]
+    fn list_outcome_to_json_golden() {
+        let out = ListOutcome {
+            active: vec!["s1".to_string(), "s2".to_string()],
+        };
+        assert_eq!(out.to_json(false), "{\"active\":[\"s1\",\"s2\"]}");
+        assert_eq!(
+            out.to_json(true),
+            "{\n  \"active\": [\n    \"s1\",\n    \"s2\"\n  ]\n}"
+        );
+    }
+
+    #[test]
+    fn list_outcome_to_json_empty() {
+        let out = ListOutcome { active: vec![] };
+        assert_eq!(out.to_json(false), "{\"active\":[]}");
+    }
+
+    #[test]
+    fn undo_outcome_to_json_list_mode_golden() {
+        let out = UndoOutcome {
+            turns: vec![
+                UndoTurn {
+                    turn: 1,
+                    summary: "did a thing".to_string(),
+                    checkpoint_short: Some("abcd1234".to_string()),
+                },
+                UndoTurn {
+                    turn: 2,
+                    summary: "did another".to_string(),
+                    checkpoint_short: None,
+                },
+            ],
+            transcript_undone: false,
+            code_undone: false,
+            checkpoint_short: None,
+        };
+        assert_eq!(
+            out.to_json(false),
+            "{\"turns\":[{\"turn\":1,\"summary\":\"did a thing\",\"checkpoint_short\":\"abcd1234\"},{\"turn\":2,\"summary\":\"did another\",\"checkpoint_short\":null}],\"transcript_undone\":false,\"code_undone\":false,\"checkpoint_short\":null}"
+        );
+    }
+
+    #[test]
+    fn undo_outcome_to_json_act_mode_golden() {
+        let out = UndoOutcome {
+            turns: vec![],
+            transcript_undone: true,
+            code_undone: true,
+            checkpoint_short: Some("abcd1234".to_string()),
+        };
+        assert_eq!(
+            out.to_json(false),
+            "{\"turns\":[],\"transcript_undone\":true,\"code_undone\":true,\"checkpoint_short\":\"abcd1234\"}"
         );
     }
 

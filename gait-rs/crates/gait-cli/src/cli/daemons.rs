@@ -13,7 +13,7 @@ pub struct DaemonsArgs {
     /// Daemon name (for `stop`)
     pub name: Option<String>,
     #[arg(long)]
-    pub json: bool,
+    pub pretty: bool,
     /// `list` only: also show daemons that have finished (done/killed),
     /// not just ones currently running.
     #[arg(long)]
@@ -33,43 +33,23 @@ pub fn cmd_daemons(args: DaemonsArgs) {
                     return;
                 }
             };
-            cmd_daemons_stop(&gait_dir, &name);
+            cmd_daemons_stop(&gait_dir, &name, args.pretty);
         }
-        Some("list") | None => cmd_daemons_list(&gait_dir, args.all),
+        Some("list") | None => cmd_daemons_list(&gait_dir, args.all, args.pretty),
         Some(other) => eprintln!("[gait daemons] unknown subcommand: {}", other),
     }
 }
 
-fn cmd_daemons_list(gait_dir: &std::path::Path, all: bool) {
+fn cmd_daemons_list(gait_dir: &std::path::Path, all: bool, pretty: bool) {
     match gait_ops::daemon::list(gait_dir, all) {
-        Ok(outcome) => {
-            if outcome.rows.is_empty() {
-                println!("No daemons.");
-                return;
-            }
-            for row in &outcome.rows {
-                println!(
-                    "{} (pid {}) — {} — log: {}",
-                    row.name, row.pid, row.status, row.log_path
-                );
-            }
-        }
+        Ok(outcome) => println!("{}", outcome.to_json(pretty)),
         Err(e) => eprintln!("[gait daemons] error: {}", e),
     }
 }
 
-fn cmd_daemons_stop(gait_dir: &std::path::Path, name: &str) {
+fn cmd_daemons_stop(gait_dir: &std::path::Path, name: &str, pretty: bool) {
     match gait_ops::daemon::stop(gait_dir, name) {
-        Ok(outcome) => {
-            if outcome.was_alive {
-                println!(
-                    "[gait daemons] stopped {} (pid {})",
-                    outcome.id, outcome.pid
-                );
-            } else {
-                println!("[gait daemons] {} is not running", outcome.id);
-            }
-        }
+        Ok(outcome) => println!("{}", outcome.to_json(pretty)),
         Err(e) => eprintln!("[gait daemons] error: {}", e),
     }
 }

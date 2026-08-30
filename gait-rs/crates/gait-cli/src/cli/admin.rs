@@ -16,6 +16,8 @@ pub struct AuthArgs {
     /// Override the external CLI's home directory
     #[arg(long)]
     pub home: Option<PathBuf>,
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 /// `gait models [filter]`
@@ -23,6 +25,8 @@ pub struct AuthArgs {
 pub struct ModelsArgs {
     /// Optional substring filter for model ids
     pub filter: Option<String>,
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 /// `gait inference list|show|select|clear [name] --session <id>`.
@@ -41,6 +45,8 @@ pub struct InferenceArgs {
     pub compaction_threshold_tokens: Option<u64>,
     #[arg(long)]
     pub session: Option<String>,
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 /// `gait local setup --model-path /path/to/model.gguf`
@@ -68,6 +74,8 @@ pub struct LocalArgs {
     /// Begin compaction before the context is full.
     #[arg(long, default_value_t = 6000)]
     pub compaction_threshold_tokens: u64,
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 #[cfg(feature = "local")]
@@ -87,10 +95,16 @@ pub async fn cmd_local(args: LocalArgs) {
                 args.compaction_threshold_tokens,
             ) {
                 Ok(inference) => println!(
-                    "added inference '{}' → {}\nGGUF: {}",
-                    inference.name,
-                    inference.model,
-                    model_path.display()
+                    "{}",
+                    gait_ops::render_json(
+                        &serde_json::json!({
+                            "name": inference.name,
+                            "model": inference.model,
+                            "gguf": model_path.display().to_string(),
+                            "action": "added",
+                        }),
+                        args.pretty
+                    )
                 ),
                 Err(error) => {
                     eprintln!("[gait] {error}");
@@ -144,13 +158,22 @@ pub async fn cmd_local(args: LocalArgs) {
                 .gait_dir
                 .join("local-runners")
                 .join(format!("{key}.sock"));
+            let render = |status: &str, model_key: Option<&str>| {
+                println!(
+                    "{}",
+                    gait_ops::render_json(
+                        &serde_json::json!({"status": status, "model_key": model_key}),
+                        args.pretty
+                    )
+                )
+            };
             match local_runner_command(&socket, args.action.as_deref().unwrap()).await {
                 Ok(Some(gait_local::RunnerResponse::Status { model_key })) => {
-                    println!("running\t{model_key}")
+                    render("running", Some(&model_key))
                 }
-                Ok(Some(gait_local::RunnerResponse::Stopped)) => println!("stopped"),
-                Ok(_) => println!("not running"),
-                Err(error) if args.action.as_deref() == Some("status") => println!("not running"),
+                Ok(Some(gait_local::RunnerResponse::Stopped)) => render("stopped", None),
+                Ok(_) => render("not running", None),
+                Err(_) if args.action.as_deref() == Some("status") => render("not running", None),
                 Err(error) => {
                     eprintln!("[gait] local runner: {error}");
                     std::process::exit(1)
@@ -192,11 +215,14 @@ async fn local_runner_command(
 }
 
 pub fn cmd_inference(args: InferenceArgs) {
+    let pretty = args.pretty;
     match args.action.as_deref().unwrap_or("list") {
         "list" => {
-            for name in gait_ops::inference::list(&args.gait_dir) {
-                println!("{name}");
-            }
+            let names: Vec<String> = gait_ops::inference::list(&args.gait_dir);
+            println!(
+                "{}",
+                gait_ops::render_json(&serde_json::json!({"inferences": names}), pretty)
+            );
         }
         "show" => {
             let name = args.name.as_deref().unwrap_or_else(|| {
@@ -204,7 +230,13 @@ pub fn cmd_inference(args: InferenceArgs) {
                 std::process::exit(2)
             });
             match gait_ops::inference::show(&args.gait_dir, name) {
-                Ok(i) => println!("{}\t{}", i.name, i.model),
+                Ok(i) => println!(
+                    "{}",
+                    gait_ops::render_json(
+                        &serde_json::json!({"name": i.name, "model": i.model}),
+                        pretty
+                    )
+                ),
                 Err(e) => {
                     eprintln!("[gait] {e}");
                     std::process::exit(1)
@@ -277,7 +309,13 @@ pub fn cmd_inference(args: InferenceArgs) {
                 });
             match gait_ops::inference::add(&args.gait_dir, name, model, compaction_threshold_tokens)
             {
-                Ok(i) => println!("added inference '{}' → model {}", i.name, i.model),
+                Ok(i) => println!(
+                    "{}",
+                    gait_ops::render_json(
+                        &serde_json::json!({"name": i.name, "model": i.model, "action": "added"}),
+                        pretty
+                    )
+                ),
                 Err(e) => {
                     eprintln!("[gait] {e}");
                     std::process::exit(1);
@@ -344,6 +382,8 @@ pub struct RegisterArgs {
     /// Session id (only meaningful with --scope session)
     #[arg(long)]
     pub session: Option<String>,
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 /// `gait unregister mcp|skill|plugin <name>`
@@ -366,6 +406,8 @@ pub struct UnregisterArgs {
     /// Session id (only meaningful with --scope session)
     #[arg(long)]
     pub session: Option<String>,
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 /// `gait enable mcp|skill|plugin <name>`
@@ -379,6 +421,8 @@ pub struct EnableArgs {
     /// Gait dir (falls back to $GAIT_DIR)
     #[arg(long, env = "GAIT_DIR")]
     pub gait_dir: Option<PathBuf>,
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 /// `gait disable mcp|skill|plugin <name>`
@@ -392,6 +436,8 @@ pub struct DisableArgs {
     /// Gait dir (falls back to $GAIT_DIR)
     #[arg(long, env = "GAIT_DIR")]
     pub gait_dir: Option<PathBuf>,
+    #[arg(long)]
+    pub pretty: bool,
 }
 /// Parse --key value pairs from an arg slice into a HashMap.
 pub fn parse_flags(args: &[String]) -> std::collections::HashMap<String, String> {
@@ -425,6 +471,7 @@ pub async fn cmd_auth(args: AuthArgs) {
         .map(|s| if s == "ls" { "list" } else { s })
         .unwrap_or("list");
     let provider = args.provider.as_deref();
+    let pretty = args.pretty;
     match action {
         "list" => {
             let creds = match gait_ops::auth::list() {
@@ -434,13 +481,10 @@ pub async fn cmd_auth(args: AuthArgs) {
                     std::process::exit(1);
                 }
             };
-            if creds.is_empty() {
-                println!("No credentials configured. Run: gait auth add <provider>");
-            } else {
-                for (k, v) in &creds {
-                    println!("  {}: {}", k, v);
-                }
-            }
+            println!(
+                "{}",
+                gait_ops::render_json(&serde_json::json!({"credentials": creds}), pretty)
+            );
         }
         "add" => {
             let provider = match provider {
@@ -466,7 +510,13 @@ pub async fn cmd_auth(args: AuthArgs) {
                 .trim()
                 .to_string();
             match gait_ops::auth::add(provider, key) {
-                Ok(out) => println!("Saved {} credentials ({})", out.provider, out.display),
+                Ok(out) => println!(
+                    "{}",
+                    gait_ops::render_json(
+                        &serde_json::json!({"provider": out.provider, "display": out.display, "action": "saved"}),
+                        pretty
+                    )
+                ),
                 Err(e) => {
                     eprintln!("[gait] error: {}", e);
                     std::process::exit(1);
@@ -485,14 +535,22 @@ pub async fn cmd_auth(args: AuthArgs) {
                     user_code,
                     ..
                 } => {
-                    println!("Open {verification_url} and enter code: {user_code}");
-                    println!("Waiting for approval...");
+                    // Interactive progress, not the command's result — stays
+                    // on stderr as a plain diagnostic.
+                    eprintln!("Open {verification_url} and enter code: {user_code}");
+                    eprintln!("Waiting for approval...");
                 }
                 _ => unreachable!("Codex subscription login uses a device code"),
             })
             .await
             {
-                Ok(out) => println!("Saved {} credentials ({})", out.provider, out.display),
+                Ok(out) => println!(
+                    "{}",
+                    gait_ops::render_json(
+                        &serde_json::json!({"provider": out.provider, "display": out.display, "action": "saved"}),
+                        pretty
+                    )
+                ),
                 Err(error) => {
                     eprintln!("[gait] error: {error}");
                     std::process::exit(1);
@@ -508,8 +566,13 @@ pub async fn cmd_auth(args: AuthArgs) {
                 }
             };
             match gait_ops::auth::status(provider) {
-                Ok(Some(status)) => println!("{provider}: {status}"),
-                Ok(None) => println!("{provider}: not configured"),
+                Ok(status) => println!(
+                    "{}",
+                    gait_ops::render_json(
+                        &serde_json::json!({"provider": provider, "status": status}),
+                        pretty
+                    )
+                ),
                 Err(error) => {
                     eprintln!("[gait] error: {error}");
                     std::process::exit(1);
@@ -532,7 +595,13 @@ pub async fn cmd_auth(args: AuthArgs) {
                 }
             };
             match gait_ops::auth::link(provider, source, args.home) {
-                Ok(out) => println!("Linked {} credentials ({})", out.provider, out.display),
+                Ok(out) => println!(
+                    "{}",
+                    gait_ops::render_json(
+                        &serde_json::json!({"provider": out.provider, "display": out.display, "action": "linked"}),
+                        pretty
+                    )
+                ),
                 Err(error) => {
                     eprintln!("[gait] error: {error}");
                     std::process::exit(1);
@@ -548,7 +617,13 @@ pub async fn cmd_auth(args: AuthArgs) {
                 }
             };
             match gait_ops::auth::unlink(provider) {
-                Ok(out) => println!("Unlinked {} external credentials", out.provider),
+                Ok(out) => println!(
+                    "{}",
+                    gait_ops::render_json(
+                        &serde_json::json!({"provider": out.provider, "action": "unlinked"}),
+                        pretty
+                    )
+                ),
                 Err(error) => {
                     eprintln!("[gait] error: {error}");
                     std::process::exit(1);
@@ -562,7 +637,13 @@ pub async fn cmd_auth(args: AuthArgs) {
                 std::process::exit(1);
             }
             match gait_ops::auth::logout_codex().await {
-                Ok(out) => println!("Logged out and removed {} credentials", out.provider),
+                Ok(out) => println!(
+                    "{}",
+                    gait_ops::render_json(
+                        &serde_json::json!({"provider": out.provider, "action": "logged_out"}),
+                        pretty
+                    )
+                ),
                 Err(error) => {
                     eprintln!("[gait] error: {error}");
                     std::process::exit(1);
@@ -578,7 +659,13 @@ pub async fn cmd_auth(args: AuthArgs) {
                 }
             };
             match gait_ops::auth::remove(provider) {
-                Ok(out) => println!("Removed {} credentials", out.provider),
+                Ok(out) => println!(
+                    "{}",
+                    gait_ops::render_json(
+                        &serde_json::json!({"provider": out.provider, "action": "removed"}),
+                        pretty
+                    )
+                ),
                 Err(e) => {
                     eprintln!("[gait] error: {}", e);
                     std::process::exit(1);
@@ -600,15 +687,12 @@ pub async fn cmd_models(args: ModelsArgs) {
     match gait_ops::auth::models(filter).await {
         Ok(out) => {
             let filtered = out.render_filtered();
-            for m in &filtered {
-                println!("  {}/{}", m.provider, m.id);
-            }
             println!(
-                "\n{} models{}",
-                filtered.len(),
-                filter
-                    .map(|f| format!(" matching \"{}\"", f))
-                    .unwrap_or_default()
+                "{}",
+                gait_ops::render_json(
+                    &serde_json::json!({"models": filtered, "count": filtered.len()}),
+                    args.pretty
+                )
             );
         }
         Err(e) => {
@@ -640,26 +724,21 @@ pub fn cmd_register(args: RegisterArgs) -> anyhow::Result<()> {
     };
 
     let out = gait_ops::extension::register(params).map_err(|e| anyhow::anyhow!("{e}"))?;
-    match out.scope {
-        "agent" => println!(
-            "Added {} '{}' to agent whitelist at {}.",
-            args.kind,
-            args.name,
-            out.written_to.display()
-        ),
-        "session" => println!(
-            "Added {} '{}' to session '{}' whitelist.",
-            args.kind,
-            args.name,
-            args.session.as_deref().unwrap_or("")
-        ),
-        _ => {
-            println!("Registered {} '{}'.", args.kind, args.name);
-            if !out.hint.is_empty() {
-                println!("→ {}", out.hint);
-            }
-        }
-    }
+    println!(
+        "{}",
+        gait_ops::render_json(
+            &serde_json::json!({
+                "kind": args.kind,
+                "name": args.name,
+                "scope": out.scope,
+                "written_to": out.written_to.display().to_string(),
+                "session_id": args.session,
+                "hint": out.hint,
+                "action": "registered",
+            }),
+            args.pretty
+        )
+    );
     Ok(())
 }
 
@@ -677,7 +756,13 @@ pub fn cmd_enable(args: EnableArgs) {
         name: args.name.clone(),
     };
     match gait_ops::extension::enable(params) {
-        Ok(_) => eprintln!("Enabled {} '{}'.", args.kind, args.name),
+        Ok(_) => println!(
+            "{}",
+            gait_ops::render_json(
+                &serde_json::json!({"kind": args.kind, "name": args.name, "action": "enabled"}),
+                args.pretty
+            )
+        ),
         Err(e) => {
             eprintln!("[gait] error: {}", e);
             std::process::exit(1);
@@ -699,7 +784,13 @@ pub fn cmd_disable(args: DisableArgs) {
         name: args.name.clone(),
     };
     match gait_ops::extension::disable(params) {
-        Ok(_) => eprintln!("Disabled {} '{}'.", args.kind, args.name),
+        Ok(_) => println!(
+            "{}",
+            gait_ops::render_json(
+                &serde_json::json!({"kind": args.kind, "name": args.name, "action": "disabled"}),
+                args.pretty
+            )
+        ),
         Err(e) => {
             eprintln!("[gait] error: {}", e);
             std::process::exit(1);
@@ -720,21 +811,20 @@ pub fn cmd_unregister(args: UnregisterArgs) -> anyhow::Result<()> {
     };
 
     let out = gait_ops::extension::unregister(params).map_err(|e| anyhow::anyhow!("{e}"))?;
-    match out.scope {
-        "agent" => println!(
-            "Removed {} '{}' from agent whitelist at {}.",
-            args.kind,
-            args.name,
-            out.written_to.display()
-        ),
-        "session" => println!(
-            "Removed {} '{}' from session '{}' whitelist (still visible if the agent's own whitelist also grants it).",
-            args.kind,
-            args.name,
-            args.session.as_deref().unwrap_or("")
-        ),
-        _ => eprintln!("Removed {} '{}'.", args.kind, args.name),
-    }
+    println!(
+        "{}",
+        gait_ops::render_json(
+            &serde_json::json!({
+                "kind": args.kind,
+                "name": args.name,
+                "scope": out.scope,
+                "written_to": out.written_to.display().to_string(),
+                "session_id": args.session,
+                "action": "unregistered",
+            }),
+            args.pretty
+        )
+    );
     Ok(())
 }
 
@@ -761,6 +851,8 @@ pub struct ConfigArgs {
     /// Remaining args: `<key> <value>` for `set`, `<key>` for `get`
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub rest: Vec<String>,
+    #[arg(long)]
+    pub pretty: bool,
 }
 
 pub fn cmd_config(args: ConfigArgs) {
@@ -777,7 +869,13 @@ pub fn cmd_config(args: ConfigArgs) {
             });
             let value = parse_config_value(&value_raw);
             match gait_ops::config::set(&args.gait_dir, &key, value) {
-                Ok(()) => eprintln!("[gait] {} set to {}", key, value_raw),
+                Ok(()) => println!(
+                    "{}",
+                    gait_ops::render_json(
+                        &serde_json::json!({"key": key, "value": value_raw}),
+                        args.pretty
+                    )
+                ),
                 Err(e) => {
                     eprintln!("[gait] error: {}", e);
                     std::process::exit(1);
@@ -790,8 +888,13 @@ pub fn cmd_config(args: ConfigArgs) {
                 std::process::exit(1);
             });
             match gait_ops::config::get(&args.gait_dir, &key) {
-                Ok(Some(v)) => println!("{}", v),
-                Ok(None) => println!("(unset)"),
+                Ok(v) => println!(
+                    "{}",
+                    gait_ops::render_json(
+                        &serde_json::json!({"key": key, "value": v}),
+                        args.pretty
+                    )
+                ),
                 Err(e) => {
                     eprintln!("[gait] error: {}", e);
                     std::process::exit(1);
@@ -799,7 +902,7 @@ pub fn cmd_config(args: ConfigArgs) {
             }
         }
         "show" => match gait_ops::config::resolve(&args.gait_dir, &args.gait_dir) {
-            Ok(value) => println!("{}", serde_json::to_string_pretty(&value).unwrap()),
+            Ok(value) => println!("{}", gait_ops::render_json(&value, args.pretty)),
             Err(e) => {
                 eprintln!("[gait] {e}");
                 std::process::exit(1);
