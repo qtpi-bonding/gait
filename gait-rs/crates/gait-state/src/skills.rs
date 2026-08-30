@@ -64,15 +64,25 @@ fn parse_skill_file(path: &Path) -> Option<SkillDef> {
     if body.is_empty() {
         return None;
     }
+    let model_invocable = match yaml.get("model_invocable") {
+        None => true,
+        Some(v) => match v.as_bool() {
+            Some(b) => b,
+            None => {
+                eprintln!(
+                    "[gait] warning: skill {} has non-boolean model_invocable ({v:?}); defaulting to false",
+                    path.display()
+                );
+                false
+            }
+        },
+    };
     Some(SkillDef {
         name,
         description,
         content: body,
         enabled: true,
-        model_invocable: yaml
-            .get("model_invocable")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true),
+        model_invocable,
     })
 }
 

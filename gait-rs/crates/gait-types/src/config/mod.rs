@@ -66,8 +66,12 @@ pub struct SkillDef {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     /// Whether this skill is exposed to model-facing catalogs and loading.
-    #[serde(default = "default_enabled")]
+    #[serde(default = "default_model_invocable")]
     pub model_invocable: bool,
+}
+
+fn default_model_invocable() -> bool {
+    true
 }
 
 /// Definition of a disk-discovered WASM plugin.
