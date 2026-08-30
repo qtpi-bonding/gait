@@ -51,7 +51,12 @@ impl McpClient {
             .collect())
     }
 
-    pub async fn call_tool(&self, name: &str, args: Value) -> anyhow::Result<Value> {
+    pub async fn call_tool(
+        &self,
+        name: &str,
+        args: Value,
+        output_schema: Option<&Value>,
+    ) -> anyhow::Result<Value> {
         let arguments: Option<Map<String, Value>> = match args {
             Value::Object(map) => Some(map),
             Value::Null => None,
@@ -65,12 +70,6 @@ impl McpClient {
             anyhow::anyhow!("tools/call {} on {} failed: {e}", name, self.server_name)
         })?;
 
-        if let Some(structured) = result.structured_content {
-            if result.is_error == Some(true) {
-                anyhow::bail!("MCP tool {} returned error: {}", name, structured);
-            }
-            return Ok(structured);
-        }
         let text: String = result
             .content
             .iter()
@@ -81,11 +80,43 @@ impl McpClient {
             .collect::<Vec<_>>()
             .join("\n");
 
-        if result.is_error == Some(true) {
-            anyhow::bail!("MCP tool {} returned error: {}", name, text);
-        }
-        Ok(Value::String(text))
+        process_call_tool_result(
+            name,
+            result.structured_content,
+            text,
+            result.is_error == Some(true),
+            output_schema,
+        )
     }
+}
+
+fn process_call_tool_result(
+    name: &str,
+    structured_content: Option<Value>,
+    text: String,
+    is_error: bool,
+    output_schema: Option<&Value>,
+) -> anyhow::Result<Value> {
+    if let Some(structured) = structured_content {
+        if is_error {
+            anyhow::bail!("MCP tool {} returned error: {}", name, structured);
+        }
+        return Ok(structured);
+    }
+    // Check the tool's own failure first: an error response naturally has no
+    // structured_content, and its real message is more useful than a generic
+    // contract-violation report. Only treat missing structured_content as a
+    // schema contract violation when the call otherwise succeeded.
+    if is_error {
+        anyhow::bail!("MCP tool {} returned error: {}", name, text);
+    }
+    if output_schema.is_some() {
+        anyhow::bail!(
+            "MCP tool {} declares output_schema but returned no structured_content — contract violation",
+            name
+        );
+    }
+    Ok(Value::String(text))
 }
 
 async fn connect_stdio(
@@ -113,6 +144,60 @@ async fn connect_stdio(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn declared_output_schema_rejects_missing_structured_content() {
+        let schema = serde_json::json!({"type": "object"});
+        let error = process_call_tool_result(
+            "contract_tool",
+            None,
+            "text fallback".into(),
+            false,
+            Some(&schema),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "MCP tool contract_tool declares output_schema but returned no structured_content — contract violation"
+        );
+    }
+
+    #[test]
+    fn tool_error_surfaces_its_own_message_even_with_a_declared_schema() {
+        let schema = serde_json::json!({"type": "object"});
+        let error = process_call_tool_result(
+            "failing_tool",
+            None,
+            "disk full".into(),
+            true,
+            Some(&schema),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "MCP tool failing_tool returned error: disk full"
+        );
+    }
+
+    #[test]
+    fn output_schema_preserves_structured_results_and_no_schema_fallback() {
+        let schema = serde_json::json!({"type": "object"});
+        assert_eq!(
+            process_call_tool_result(
+                "structured_tool",
+                Some(serde_json::json!({"ok": true})),
+                "ignored".into(),
+                false,
+                Some(&schema),
+            )
+            .unwrap(),
+            serde_json::json!({"ok": true})
+        );
+        assert_eq!(
+            process_call_tool_result("text_tool", None, "plain text".into(), false, None).unwrap(),
+            Value::String("plain text".into())
+        );
+    }
 
     #[tokio::test]
     async fn connect_fails_when_neither_command_nor_url() {

@@ -23,13 +23,23 @@ pub struct CapabilityInvocation {
 
 #[async_trait]
 pub trait McpInvoker: Send + Sync {
-    async fn call(&self, tool: &str, args: Value) -> anyhow::Result<Value>;
+    async fn call(
+        &self,
+        tool: &str,
+        args: Value,
+        output_schema: Option<&Value>,
+    ) -> anyhow::Result<Value>;
 }
 
 #[async_trait]
 impl McpInvoker for crate::mcp::McpClient {
-    async fn call(&self, tool: &str, args: Value) -> anyhow::Result<Value> {
-        self.call_tool(tool, args).await
+    async fn call(
+        &self,
+        tool: &str,
+        args: Value,
+        output_schema: Option<&Value>,
+    ) -> anyhow::Result<Value> {
+        self.call_tool(tool, args, output_schema).await
     }
 }
 
@@ -220,7 +230,9 @@ impl CapabilityDispatcher {
                     }
                     .into());
                 }
-                client.call(&tool, invocation.args).await
+                client
+                    .call(&tool, invocation.args, def.output_schema.as_ref())
+                    .await
             }
         }
     }
