@@ -188,6 +188,7 @@ impl TurnState {
                 std::path::PathBuf::new(),
                 String::new(),
                 None,
+                Vec::new(),
             )),
             total_usage: Usage::default(),
             clarify_signal: None,

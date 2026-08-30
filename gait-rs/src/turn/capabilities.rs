@@ -47,6 +47,8 @@ pub enum CapabilityError {
     InvalidArguments { address: String, message: String },
     #[error("capability `{0}` is reserved")]
     Reserved(String),
+    #[error("permission denied: `{tool}` matches deny pattern `{pattern}`")]
+    Denied { tool: String, pattern: String },
 }
 
 /// Turn-scoped capability resolver. Its native tool map is a one-shot
@@ -62,6 +64,7 @@ pub struct CapabilityDispatcher {
     gait_dir: PathBuf,
     session_id: String,
     relay: Option<crate::turn::nerve::NerveWriter>,
+    deny: Vec<String>,
 }
 
 impl std::fmt::Debug for CapabilityDispatcher {
@@ -78,6 +81,7 @@ impl CapabilityDispatcher {
     pub(super) fn native_tool_arc(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.native.get(name).cloned()
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         tools: impl IntoIterator<Item = Arc<dyn Tool>>,
         registry: Vec<McpToolDef>,
@@ -86,6 +90,7 @@ impl CapabilityDispatcher {
         gait_dir: PathBuf,
         session_id: String,
         relay: Option<crate::turn::nerve::NerveWriter>,
+        deny: Vec<String>,
     ) -> Self {
         Self {
             native: tools
@@ -98,6 +103,7 @@ impl CapabilityDispatcher {
             gait_dir,
             session_id,
             relay,
+            deny,
         }
     }
     pub fn set_enabled(&self, server: impl Into<String>, value: bool) {
@@ -141,6 +147,23 @@ impl CapabilityDispatcher {
                     .native
                     .get(&tool)
                     .ok_or_else(|| CapabilityError::UnknownNative(tool.clone()))?;
+                // Deny is a hard floor for outer tool calls (checked before allow,
+                // applies even in auto mode — see permissions::gate::classify) but
+                // nested Code Mode calls never pass through that gate at all, since
+                // they never become a `ToolCall` the outer loop classifies. Re-check
+                // the same deny list here so one approved `code` call can't bypass
+                // config-level deny patterns for everything it calls inside. There
+                // is no equivalent allow/ask check: nested calls can't pause the
+                // turn for a permission prompt, per this plan's Global Constraints.
+                if let crate::types::ToolPermission::RequiresApproval(requests) =
+                    t.permission(&invocation.args)
+                {
+                    if let Some(pattern) = requests.iter().find_map(|req| {
+                        crate::permissions::find_matched_deny_pattern(&tool, req, &self.deny)
+                    }) {
+                        return Err(CapabilityError::Denied { tool, pattern }.into());
+                    }
+                }
                 let outcome = super::exec::execute_capability_raw(
                     t.as_ref(),
                     invocation.args,
@@ -290,6 +313,7 @@ mod tests {
             std::path::PathBuf::new(),
             String::new(),
             None,
+            Vec::new(),
         );
         let dir = tempfile::tempdir().unwrap();
         let rec = recorder(dir.path(), "sbaseline1");
@@ -318,6 +342,7 @@ mod tests {
             std::path::PathBuf::new(),
             String::new(),
             None,
+            Vec::new(),
         );
         let dir = tempfile::tempdir().unwrap();
         let rec = recorder(dir.path(), "sreserved1");
@@ -371,6 +396,7 @@ mod tests {
             std::path::PathBuf::new(),
             String::new(),
             None,
+            Vec::new(),
         );
         let dir = tempfile::tempdir().unwrap();
         let rec = recorder(dir.path(), "sdirect1");
@@ -405,6 +431,7 @@ mod tests {
             dir.path().to_path_buf(),
             "sprobe1".to_string(),
             None,
+            Vec::new(),
         );
         dispatcher
             .invoke(
@@ -477,6 +504,7 @@ mod tests {
             dir.path().to_path_buf(),
             "sdenied1".to_string(),
             Some(writer),
+            Vec::new(),
         );
         let err = dispatcher
             .invoke(
@@ -501,6 +529,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn nested_deny_listed_call_is_rejected_before_execution_and_is_catchable() {
+        let dir = tempfile::tempdir().unwrap();
+        let rec = recorder(dir.path(), "sdenylist1");
+        let dispatcher = CapabilityDispatcher::new(
+            vec![Arc::new(TouchTool) as Arc<dyn Tool>],
+            Vec::new(),
+            HashMap::new(),
+            std::iter::empty::<String>(),
+            std::path::PathBuf::new(),
+            String::new(),
+            None,
+            vec!["touch".to_string()],
+        );
+        let err = dispatcher
+            .invoke(
+                CapabilityInvocation {
+                    address: CapabilityAddress::Native {
+                        tool: "touch".into(),
+                    },
+                    args: serde_json::json!({}),
+                },
+                &rec,
+            )
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("permission denied"), "message: {msg}");
+        assert!(msg.contains("touch"), "message: {msg}");
+        // The tool never actually ran: nothing was recorded at all (TouchTool's
+        // only side effect is the /from-tool cwd event it emits on execute()).
+        let log = std::fs::read_to_string(&rec.tx_path).unwrap_or_default();
+        assert!(!log.contains("/from-tool"));
+    }
+
+    #[tokio::test]
+    async fn nested_call_not_matching_deny_list_still_executes() {
+        let dir = tempfile::tempdir().unwrap();
+        let rec = recorder(dir.path(), "sdenylist2");
+        let dispatcher = CapabilityDispatcher::new(
+            vec![Arc::new(TouchTool) as Arc<dyn Tool>],
+            Vec::new(),
+            HashMap::new(),
+            std::iter::empty::<String>(),
+            std::path::PathBuf::new(),
+            String::new(),
+            None,
+            vec!["shell:rm *".to_string()],
+        );
+        let result = dispatcher
+            .invoke(
+                CapabilityInvocation {
+                    address: CapabilityAddress::Native {
+                        tool: "touch".into(),
+                    },
+                    args: serde_json::json!({}),
+                },
+                &rec,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result, serde_json::json!("ok"));
+    }
+
+    #[tokio::test]
     async fn baseline_nested_native_call_coerces_scalar_params_today() {
         let dispatcher = CapabilityDispatcher::new(
             vec![Arc::new(EchoArgsTool) as Arc<dyn Tool>],
@@ -510,6 +602,7 @@ mod tests {
             std::path::PathBuf::new(),
             String::new(),
             None,
+            Vec::new(),
         );
         let dir = tempfile::tempdir().unwrap();
         let rec = recorder(dir.path(), "scoerce1");

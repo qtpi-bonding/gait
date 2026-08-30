@@ -297,6 +297,7 @@ pub async fn run_turn(
         &skill_registry,
         &plugin_registry,
         &effective_allow,
+        &deny,
         &hooks,
         &session_id,
         &gait_dir,

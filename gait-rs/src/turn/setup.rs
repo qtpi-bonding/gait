@@ -349,6 +349,7 @@ pub(crate) fn finish_after_resume(
     skill_registry: &[crate::config::SkillDef],
     plugin_registry: &[crate::config::WasmPluginDef],
     effective_allow: &[String],
+    deny: &[String],
     hooks: &[Box<dyn Hook>],
     session_id: &str,
     gait_dir: &Path,
@@ -411,6 +412,7 @@ pub(crate) fn finish_after_resume(
             gait_dir.to_path_buf(),
             session_id.to_string(),
             relay.clone(),
+            deny.to_vec(),
         ));
         let erased: Arc<dyn std::any::Any + Send + Sync> = dispatcher.clone();
         for tool in &state.tools {
@@ -646,6 +648,7 @@ pub(crate) async fn build_test_turn_state(
         hooks,
         agent_seed,
         effective_allow,
+        deny,
         pre_events,
         sandbox_on,
         relay,
@@ -682,6 +685,7 @@ pub(crate) async fn build_test_turn_state(
         &skill_registry,
         &plugin_registry,
         &effective_allow,
+        &deny,
         &hooks,
         &session_id,
         &gait_dir,
