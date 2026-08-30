@@ -33,9 +33,13 @@ use crate::types::{Tool, ToolAccess};
 
 /// What the brain requests for a tool call. Phase 1 carries only the access
 /// dimensions; Phase 2 adds resolved paths + network targets bounded by the spine.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ScopeRequest {
     pub access: ToolAccess,
+    /// How the caller wants a successful result finalized — see
+    /// `crate::types::OutputPresentation`. Declared by the caller (an outer
+    /// `ToolCall` vs. a Code Mode capability dispatch), not by the tool.
+    pub output_presentation: crate::types::OutputPresentation,
 }
 
 /// The motor pathway from a decided tool call to a hand: run the tool and return
@@ -160,7 +164,7 @@ impl Synapse for RelaySynapse {
         &self,
         tool: &dyn Tool,
         args: serde_json::Value,
-        _scope: ScopeRequest,
+        scope: ScopeRequest,
     ) -> Result<
         (
             serde_json::Value,
@@ -197,6 +201,14 @@ impl Synapse for RelaySynapse {
                             gait_proto::gait::sandbox::v1::OutputCaptureMode::Spool as i32
                         }
                     },
+                    output_presentation: match scope.output_presentation {
+                        crate::types::OutputPresentation::ModelPreview => {
+                            gait_proto::gait::sandbox::v1::OutputPresentation::ModelPreview as i32
+                        }
+                        crate::types::OutputPresentation::CodemodeFull => {
+                            gait_proto::gait::sandbox::v1::OutputPresentation::CodemodeFull as i32
+                        }
+                    },
                 },
             )),
         };
@@ -225,6 +237,19 @@ impl Synapse for RelaySynapse {
             .as_ref()
             .and_then(|v| serde_json::to_value(v).ok())
             .unwrap_or(serde_json::Value::Null);
+
+        // Set only by the CODEMODE_FULL finalizer (see spine/handlers/output.rs)
+        // when it fails — e.g. the archive exceeds the Code Mode output budget.
+        // Every other Feedback (including today's ordinary error_feedback()
+        // calls) leaves this None/false, so the outer ToolCall path's existing
+        // "error text as a normal result" behavior is unchanged.
+        if feedback.is_error.unwrap_or(false) {
+            let message = result_json
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| result_json.to_string());
+            return Err(ToolError::Execute(message));
+        }
 
         Ok((
             result_json,
@@ -279,6 +304,7 @@ mod tests {
                 serde_json::json!({"k":"v"}),
                 ScopeRequest {
                     access: EchoTool.access(),
+                    ..Default::default()
                 },
             )
             .await
@@ -338,6 +364,7 @@ mod tests {
                     final_content: None,
                     whitelist_match_items: vec![],
                     sandbox_denied: None,
+                    is_error: None,
                 })),
             };
             nerve::write_signal(&mut w, &canned).await.unwrap();
@@ -350,6 +377,7 @@ mod tests {
                 serde_json::json!({"k": "v"}),
                 ScopeRequest {
                     access: EchoTool.access(),
+                    ..Default::default()
                 },
             )
             .await
@@ -359,6 +387,117 @@ mod tests {
         assert!(events.is_empty());
         assert!(denied.is_none());
         assert!(whitelist_items.is_empty());
+    }
+
+    /// RelaySynapse must surface a Feedback with `is_error: Some(true)` as a
+    /// real `Err`, not a successful capability value that happens to be an
+    /// error string -- otherwise a Code Mode caller can't distinguish "the
+    /// archive was too big" from "the tool returned that text as its result."
+    #[tokio::test]
+    async fn relay_synapse_surfaces_is_error_feedback_as_a_real_err() {
+        use crate::turn::nerve;
+        use gait_proto::gait::sandbox::v1::{signal, Feedback};
+
+        let (brain_read, spine_write_half) = tokio::io::duplex(4096);
+        let (spine_read_half, brain_write) = tokio::io::duplex(4096);
+        let (writer, _handle) = nerve::start_nerve(brain_read, brain_write);
+
+        tokio::spawn(async move {
+            let mut r = spine_read_half;
+            let mut w = spine_write_half;
+            let sig = nerve::read_signal(&mut r).await.unwrap();
+            let canned = gait_proto::gait::sandbox::v1::Signal {
+                corr_id: sig.corr_id,
+                body: Some(signal::Body::Feedback(Feedback {
+                    result: Some(pbjson_types::Value {
+                        kind: Some(pbjson_types::value::Kind::StringValue(
+                            "archived output (5000000 bytes) exceeds the Code Mode output limit"
+                                .to_string(),
+                        )),
+                    }),
+                    events: vec![],
+                    denied: None,
+                    daemon: None,
+                    final_content: None,
+                    whitelist_match_items: vec![],
+                    sandbox_denied: None,
+                    is_error: Some(true),
+                })),
+            };
+            nerve::write_signal(&mut w, &canned).await.unwrap();
+        });
+
+        let syn = RelaySynapse { writer };
+        let err = syn
+            .fire(
+                &EchoTool,
+                serde_json::json!({"k": "v"}),
+                ScopeRequest {
+                    access: EchoTool.access(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, ToolError::Execute(_)), "got {err:?}");
+        assert!(err
+            .to_string()
+            .contains("exceeds the Code Mode output limit"));
+    }
+
+    /// The caller's requested presentation must cross the Nerve on the
+    /// Impulse, the same way the tool's own output_capture_mode already does.
+    #[tokio::test]
+    async fn relay_synapse_sends_the_requested_output_presentation() {
+        use crate::turn::nerve;
+        use gait_proto::gait::sandbox::v1::{signal, Feedback};
+
+        let (brain_read, spine_write_half) = tokio::io::duplex(4096);
+        let (spine_read_half, brain_write) = tokio::io::duplex(4096);
+        let (writer, _handle) = nerve::start_nerve(brain_read, brain_write);
+
+        tokio::spawn(async move {
+            let mut r = spine_read_half;
+            let mut w = spine_write_half;
+            let sig = nerve::read_signal(&mut r).await.unwrap();
+            let Some(signal::Body::Impulse(impulse)) = sig.body.as_ref() else {
+                panic!("expected Impulse request");
+            };
+            assert_eq!(
+                impulse.output_presentation,
+                gait_proto::gait::sandbox::v1::OutputPresentation::CodemodeFull as i32,
+                "the caller's requested presentation must cross the nerve"
+            );
+            let canned = gait_proto::gait::sandbox::v1::Signal {
+                corr_id: sig.corr_id,
+                body: Some(signal::Body::Feedback(Feedback {
+                    result: Some(pbjson_types::Value {
+                        kind: Some(pbjson_types::value::Kind::StringValue("ok".to_string())),
+                    }),
+                    events: vec![],
+                    denied: None,
+                    daemon: None,
+                    final_content: None,
+                    whitelist_match_items: vec![],
+                    sandbox_denied: None,
+                    is_error: None,
+                })),
+            };
+            nerve::write_signal(&mut w, &canned).await.unwrap();
+        });
+
+        let syn = RelaySynapse { writer };
+        syn.fire(
+            &EchoTool,
+            serde_json::json!({"k": "v"}),
+            ScopeRequest {
+                access: EchoTool.access(),
+                output_presentation: crate::types::OutputPresentation::CodemodeFull,
+            },
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -395,6 +534,7 @@ mod tests {
                     final_content: None,
                     whitelist_match_items: vec![],
                     sandbox_denied: None,
+                    is_error: None,
                 })),
             };
             nerve::write_signal(&mut w, &canned).await.unwrap();

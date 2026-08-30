@@ -421,6 +421,7 @@ pub async fn relay_brain_turn(
                             &sid,
                             "spawn_agent",
                             None,
+                            crate::types::OutputPresentation::ModelPreview,
                         );
                         handlers::reply_feedback(stdin_writer, corr_id, feedback).await;
                     });

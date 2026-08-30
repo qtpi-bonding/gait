@@ -19,6 +19,19 @@ enum OutputCaptureMode {
   OUTPUT_CAPTURE_MODE_SPOOL = 2;
 }
 
+// How the spine should finalize a successful result before it crosses back
+// to the brain. MODEL_PREVIEW (default) is today's human-facing bound
+// (truncated text + a full-output marker). CODEMODE_FULL is for a Code Mode
+// capability dispatch, which needs the real, complete value (JS can't
+// dereference a marker the way the transcript renderer can) — the spine
+// materializes it from the archive and puts it directly in Feedback.result,
+// since only the spine/hand ever touches disk, never the sealed brain.
+enum OutputPresentation {
+  OUTPUT_PRESENTATION_UNSPECIFIED = 0;
+  OUTPUT_PRESENTATION_MODEL_PREVIEW = 1;
+  OUTPUT_PRESENTATION_CODEMODE_FULL = 2;
+}
+
 message Impulse {
   reserved 3; // was `cwd` — removed; each `shell` call resolves its own cwd,
               // nothing folds a session-wide "active cwd" into this IPC anymore.
@@ -35,6 +48,9 @@ message Impulse {
   // the hand receives a writable spool target; the hand verifies the declaration
   // against its own locally constructed tool before execution.
   OutputCaptureMode output_capture_mode = 7;
+  // Declared by the caller (outer ToolCall vs. a Code Mode capability
+  // dispatch), not the tool itself — see OutputPresentation.
+  OutputPresentation output_presentation = 8;
 }
 
 // Sent hand→brain: one tool invocation response.
@@ -46,6 +62,13 @@ message Feedback {
   optional string final_content = 6;  // delegated write/edit: tool's final file content
   repeated gait.log.v1.SandboxWhitelistMatchItem whitelist_match_items = 7;
   optional gait.log.v1.SandboxDenied sandbox_denied = 8;
+  // Set only by the CODEMODE_FULL finalizer when it fails (e.g. the archive
+  // exceeds the Code Mode output budget) — `result` then carries the error
+  // text as a plain string, and the caller (RelaySynapse) must surface it as
+  // a real Err rather than a successful capability value. Never set by any
+  // other finalizer; every existing error_feedback() call site is unaffected
+  // and keeps today's "error text as a normal result" behavior.
+  optional bool is_error = 9;
 }
 
 // Brain → spine: archive the complete result of a tool that intentionally ran

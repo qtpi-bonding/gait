@@ -416,6 +416,7 @@ pub async fn run_hand(config: HandConfig) {
         final_content,
         whitelist_match_items: vec![],
         sandbox_denied,
+        is_error: None,
     };
     respond(hand_response::Outcome::Feedback(feedback));
 }
@@ -652,6 +653,8 @@ mod tests {
             prefetch: None,
             shell_whitelist_patterns: vec![],
             output_capture_mode: gait_proto::gait::sandbox::v1::OutputCaptureMode::Returned as i32,
+            output_presentation: gait_proto::gait::sandbox::v1::OutputPresentation::Unspecified
+                as i32,
         };
         let codebase = Path::new("/ws/repo");
         let scope = SandboxScope {
@@ -687,6 +690,8 @@ mod tests {
             prefetch: None,
             shell_whitelist_patterns: vec![],
             output_capture_mode: gait_proto::gait::sandbox::v1::OutputCaptureMode::Returned as i32,
+            output_presentation: gait_proto::gait::sandbox::v1::OutputPresentation::Unspecified
+                as i32,
         };
         let codebase = Path::new("/ws/repo");
         let scope = SandboxScope {
@@ -718,6 +723,8 @@ mod tests {
             prefetch: None,
             shell_whitelist_patterns: vec![],
             output_capture_mode: gait_proto::gait::sandbox::v1::OutputCaptureMode::Spool as i32,
+            output_presentation: gait_proto::gait::sandbox::v1::OutputPresentation::Unspecified
+                as i32,
         };
         let codebase = Path::new("/ws/repo");
         let scope = SandboxScope {
@@ -763,6 +770,8 @@ mod tests {
             prefetch: None,
             shell_whitelist_patterns: vec![],
             output_capture_mode: gait_proto::gait::sandbox::v1::OutputCaptureMode::Returned as i32,
+            output_presentation: gait_proto::gait::sandbox::v1::OutputPresentation::Unspecified
+                as i32,
         };
 
         // Use a tempdir with a scaffolded gait.jsonc so local_deny_policy has a
@@ -796,6 +805,8 @@ mod tests {
             }),
             shell_whitelist_patterns: vec![],
             output_capture_mode: gait_proto::gait::sandbox::v1::OutputCaptureMode::Returned as i32,
+            output_presentation: gait_proto::gait::sandbox::v1::OutputPresentation::Unspecified
+                as i32,
         };
         assert_eq!(
             select_fs(&with)

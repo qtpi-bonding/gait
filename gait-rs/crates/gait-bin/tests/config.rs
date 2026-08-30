@@ -24,9 +24,11 @@ fn config_set_then_get_round_trips_via_binary() {
         .output()
         .unwrap();
     assert!(get_out.status.success());
+    let value: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&get_out.stdout).trim()).unwrap();
     assert_eq!(
-        String::from_utf8_lossy(&get_out.stdout).trim(),
-        "\"anthropic/claude-opus-4\""
+        value,
+        serde_json::json!({"key": "model", "value": "anthropic/claude-opus-4"})
     );
 }
 

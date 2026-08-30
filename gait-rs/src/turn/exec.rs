@@ -49,6 +49,7 @@ pub(super) async fn execute_capability_raw(
     args: serde_json::Value,
     emitter: &dyn Rec,
     relay: Option<&crate::turn::nerve::NerveWriter>,
+    output_presentation: crate::types::OutputPresentation,
 ) -> anyhow::Result<RawExecOutcome> {
     let coerced_args = crate::tools::coerce_scalar_params(args, tool.parameters());
     let started = std::time::Instant::now();
@@ -62,6 +63,7 @@ pub(super) async fn execute_capability_raw(
         use crate::turn::synapse::{ScopeRequest, Synapse as _};
         let scope_req = ScopeRequest {
             access: tool.access(),
+            output_presentation,
         };
         let fired = if let Some(nerve_writer) = relay {
             use crate::turn::synapse::RelaySynapse;
@@ -165,7 +167,15 @@ pub(super) async fn execute_tool_call(
         .find(|t| t.name() == tc.tool_name)
     {
         Some(t) => {
-            match execute_capability_raw(t.as_ref(), tc.args.clone(), emitter, relay).await {
+            match execute_capability_raw(
+                t.as_ref(),
+                tc.args.clone(),
+                emitter,
+                relay,
+                crate::types::OutputPresentation::ModelPreview,
+            )
+            .await
+            {
                 Ok(outcome) => {
                     let v = outcome.value;
                     let duration = outcome.duration;
@@ -644,8 +654,14 @@ mod synapse_routing_tests {
 
     #[tokio::test]
     async fn raw_runner_aborts_when_durable_event_recording_fails() {
-        let result =
-            execute_capability_raw(&TouchTool, serde_json::json!({}), &FailingRec, None).await;
+        let result = execute_capability_raw(
+            &TouchTool,
+            serde_json::json!({}),
+            &FailingRec,
+            None,
+            crate::types::OutputPresentation::ModelPreview,
+        )
+        .await;
         assert!(
             result.is_err(),
             "durable event recording failure must abort"
@@ -856,8 +872,6 @@ mod synapse_routing_tests {
             Vec::new(),
             std::collections::HashMap::new(),
             std::iter::empty::<String>(),
-            std::path::PathBuf::new(),
-            String::new(),
             None,
             Vec::new(),
         );

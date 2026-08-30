@@ -409,8 +409,6 @@ pub(crate) fn finish_after_resume(
             mcp_registry.to_vec(),
             clients,
             enabled_names.iter().cloned(),
-            gait_dir.to_path_buf(),
-            session_id.to_string(),
             relay.clone(),
             deny.to_vec(),
         ));

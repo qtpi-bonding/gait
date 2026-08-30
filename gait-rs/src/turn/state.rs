@@ -185,8 +185,6 @@ impl TurnState {
                 Vec::new(),
                 std::collections::HashMap::new(),
                 std::iter::empty::<String>(),
-                std::path::PathBuf::new(),
-                String::new(),
                 None,
                 Vec::new(),
             )),

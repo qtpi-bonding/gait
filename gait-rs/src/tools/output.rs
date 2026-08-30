@@ -165,29 +165,6 @@ pub(crate) fn full_output_ref_from_value(
     full_output_ref_from_text(text, gait_dir, session_id)
 }
 
-/// If `value` is an archived, marker-bearing model value, read the real
-/// content back from disk, bounded by `max_bytes`. Validates against the
-/// file's actual size via `std::fs::metadata` — never `full_output.bytes`,
-/// the marker's claimed count, which is untrusted and could be stale or
-/// forged. Otherwise `value` is already raw (in-process/brain path) and is
-/// returned unchanged.
-pub(crate) fn read_archived_or_raw(
-    value: &serde_json::Value,
-    gait_dir: &Path,
-    session_id: &str,
-    max_bytes: usize,
-) -> anyhow::Result<serde_json::Value> {
-    let Some(full_output) = full_output_ref_from_value(value, gait_dir, session_id) else {
-        return Ok(value.clone());
-    };
-    let real_bytes = std::fs::metadata(&full_output.path)?.len() as usize;
-    if real_bytes > max_bytes {
-        anyhow::bail!("archived output ({real_bytes} bytes) exceeds the Code Mode output limit ({max_bytes} bytes)");
-    }
-    let text = String::from_utf8_lossy(&std::fs::read(&full_output.path)?).into_owned();
-    Ok(serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text)))
-}
-
 fn read_full_output_preview(full_output: &FullOutput, budget: usize) -> std::io::Result<String> {
     if full_output.bytes as usize <= budget {
         return Ok(String::from_utf8_lossy(&std::fs::read(&full_output.path)?).into_owned());
@@ -336,6 +313,38 @@ pub(crate) fn archive_and_prepare_model_value(
     Ok((model, full_output))
 }
 
+/// Spine-side only sibling of `archive_and_prepare_model_value`: instead of
+/// the human-facing truncated preview, materializes the FULL archived value
+/// (bounded only by `max_bytes`, checked against the archive's real on-disk
+/// size via `std::fs::metadata` — never a caller-claimed size) for a Code
+/// Mode capability dispatch. JS can't dereference a marker + truncated text
+/// the way the transcript renderer can, so it needs the real value back.
+///
+/// Must only be called from spine/hand-role code, which alone has real disk
+/// access — the sealed brain must never call this (see
+/// `RelaySynapse::archive_output`'s "keeps the sealed brain free of disk
+/// access" invariant). Preserves the exact reconstruction contract the old
+/// brain-side `read_archived_or_raw` had: a structured value round-trips
+/// through its canonical JSON encoding; anything else comes back as a plain
+/// string.
+pub(crate) fn archive_and_prepare_full_value(
+    original: serde_json::Value,
+    path: PathBuf,
+    max_bytes: usize,
+) -> anyhow::Result<serde_json::Value> {
+    let full_output = if path.exists() {
+        full_output_for_existing(path)?
+    } else {
+        archive_value(path, &original)?
+    };
+    let real_bytes = std::fs::metadata(&full_output.path)?.len() as usize;
+    if real_bytes > max_bytes {
+        anyhow::bail!("archived output ({real_bytes} bytes) exceeds the Code Mode output limit ({max_bytes} bytes)");
+    }
+    let text = String::from_utf8_lossy(&std::fs::read(&full_output.path)?).into_owned();
+    Ok(serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text)))
+}
+
 pub(crate) fn ensure_archived_model_value(
     original: serde_json::Value,
     gait_dir: &Path,
@@ -354,45 +363,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn read_archived_or_raw_passes_through_an_unarchived_value() {
-        let value = serde_json::json!({"hello": "world"});
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(
-            read_archived_or_raw(&value, dir.path(), "stest", 4096).unwrap(),
-            value
-        );
-    }
-
-    #[test]
-    fn read_archived_or_raw_round_trips_string_and_structured_values() {
+    fn archive_and_prepare_full_value_round_trips_string_and_structured_values() {
         let dir = tempfile::tempdir().unwrap();
         for original in [
             serde_json::json!("complete output"),
             serde_json::json!({"output":"hi","exit_code":0}),
         ] {
             let path = prepare_tool_output_path(dir.path(), "stest", "probe").unwrap();
-            let (model, _) = archive_and_prepare_model_value(original.clone(), path).unwrap();
-            assert_eq!(
-                read_archived_or_raw(&model, dir.path(), "stest", 1_000_000).unwrap(),
-                original
-            );
+            let full = archive_and_prepare_full_value(original.clone(), path, 1_000_000).unwrap();
+            assert_eq!(full, original);
         }
     }
 
     #[test]
-    fn read_archived_or_raw_enforces_real_file_size() {
+    fn archive_and_prepare_full_value_never_truncates_unlike_the_model_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = "line\n".repeat(MODEL_TOOL_OUTPUT_MAX_BYTES);
+        let path = prepare_tool_output_path(dir.path(), "stest", "probe").unwrap();
+        let full = archive_and_prepare_full_value(serde_json::json!(raw.clone()), path, 10_000_000)
+            .unwrap();
+        assert_eq!(full, serde_json::json!(raw));
+    }
+
+    #[test]
+    fn archive_and_prepare_full_value_enforces_real_file_size() {
         let dir = tempfile::tempdir().unwrap();
         let path = prepare_tool_output_path(dir.path(), "stest", "probe").unwrap();
-        let (model, full) =
-            archive_and_prepare_model_value(serde_json::json!("x".repeat(100)), path).unwrap();
-        use std::io::Write;
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(full.path)
-            .unwrap()
-            .write_all(&[b'y'; 100])
-            .unwrap();
-        assert!(read_archived_or_raw(&model, dir.path(), "stest", 150).is_err());
+        let err = archive_and_prepare_full_value(serde_json::json!("x".repeat(200)), path, 150)
+            .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("exceeds the Code Mode output limit"));
     }
 
     #[test]

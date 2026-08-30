@@ -228,6 +228,7 @@ fn impulse_round_trips_via_binary_prost() {
         prefetch: None,
         shell_whitelist_patterns: vec![],
         output_capture_mode: crate::gait::sandbox::v1::OutputCaptureMode::Returned as i32,
+        output_presentation: crate::gait::sandbox::v1::OutputPresentation::Unspecified as i32,
     };
 
     let bytes = prost::Message::encode_to_vec(&impulse);
@@ -266,6 +267,7 @@ fn feedback_carries_value_and_events() {
         final_content: None,
         whitelist_match_items: vec![],
         sandbox_denied: None,
+        is_error: None,
     };
 
     let bytes = prost::Message::encode_to_vec(&feedback);
@@ -400,6 +402,7 @@ fn impulse_prefetch_and_feedback_final_content_roundtrip() {
         }),
         shell_whitelist_patterns: vec![],
         output_capture_mode: crate::gait::sandbox::v1::OutputCaptureMode::Returned as i32,
+        output_presentation: crate::gait::sandbox::v1::OutputPresentation::Unspecified as i32,
     };
     let round = Impulse::decode(imp.encode_to_vec().as_slice()).unwrap();
     assert_eq!(round.prefetch.unwrap().content.as_deref(), Some("buf"));
@@ -412,6 +415,7 @@ fn impulse_prefetch_and_feedback_final_content_roundtrip() {
         final_content: Some("new".into()),
         whitelist_match_items: vec![],
         sandbox_denied: None,
+        is_error: None,
     };
     let round = Feedback::decode(fb.encode_to_vec().as_slice()).unwrap();
     assert_eq!(round.final_content.as_deref(), Some("new"));

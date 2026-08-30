@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 
 use gait_proto::gait::sandbox::v1::{
     hand_response, network_scope::Mode, HandResponse, Impulse, NetworkScope, OutputCaptureMode,
-    Scope,
+    OutputPresentation, Scope,
 };
 use prost::Message;
 
@@ -83,6 +83,7 @@ fn run_tool_executes_read_in_subprocess() {
         prefetch: None,
         shell_whitelist_patterns: vec![],
         output_capture_mode: OutputCaptureMode::Returned as i32,
+        output_presentation: OutputPresentation::Unspecified as i32,
     };
     let impulse_bytes = impulse.encode_to_vec();
 
@@ -138,6 +139,7 @@ fn returned_tool_rejects_a_supplied_spool_target() {
         prefetch: None,
         shell_whitelist_patterns: vec![],
         output_capture_mode: OutputCaptureMode::Returned as i32,
+        output_presentation: OutputPresentation::Unspecified as i32,
     };
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_gait"))
@@ -222,6 +224,7 @@ fn shell_output_and_tmpdir_survive_the_hand_subprocess() {
         prefetch: None,
         shell_whitelist_patterns: vec![],
         output_capture_mode: OutputCaptureMode::Spool as i32,
+        output_presentation: OutputPresentation::Unspecified as i32,
     };
 
     let exe = env!("CARGO_BIN_EXE_gait");
@@ -307,6 +310,7 @@ fn detached_shell_keeps_its_inherited_session_tmpdir_after_hand_exit() {
         prefetch: None,
         shell_whitelist_patterns: vec![],
         output_capture_mode: OutputCaptureMode::Spool as i32,
+        output_presentation: OutputPresentation::Unspecified as i32,
     };
 
     let exe = env!("CARGO_BIN_EXE_gait");

@@ -42,10 +42,10 @@ pub use ls::LsTool;
 #[cfg(test)]
 pub(crate) use output::full_output_from_text;
 pub(crate) use output::{
-    archive_and_prepare_model_value, archive_text, ensure_archived_model_value,
-    full_output_for_existing, full_output_ref_from_text, full_output_ref_from_value,
-    model_text_for_inline, model_text_for_inline_with_note, prepare_tool_output_path,
-    read_archived_or_raw, FullOutput, MODEL_TOOL_OUTPUT_MAX_BYTES,
+    archive_and_prepare_full_value, archive_and_prepare_model_value, archive_text,
+    ensure_archived_model_value, full_output_for_existing, full_output_ref_from_text,
+    full_output_ref_from_value, model_text_for_inline, model_text_for_inline_with_note,
+    prepare_tool_output_path, FullOutput, MODEL_TOOL_OUTPUT_MAX_BYTES,
 };
 pub use prune::PruneTool;
 pub use read::ReadTool;

@@ -1,7 +1,6 @@
 //! Turn-scoped capability dispatch below the model transcript boundary.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use crate::config::McpToolDef;
@@ -71,8 +70,6 @@ pub struct CapabilityDispatcher {
     mcp: HashMap<String, Arc<dyn McpInvoker>>,
     registry: Vec<McpToolDef>,
     enabled: RwLock<HashSet<String>>,
-    gait_dir: PathBuf,
-    session_id: String,
     relay: Option<crate::turn::nerve::NerveWriter>,
     deny: Vec<String>,
 }
@@ -91,14 +88,11 @@ impl CapabilityDispatcher {
     pub(super) fn native_tool_arc(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.native.get(name).cloned()
     }
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         tools: impl IntoIterator<Item = Arc<dyn Tool>>,
         registry: Vec<McpToolDef>,
         clients: HashMap<String, Arc<dyn McpInvoker>>,
         enabled: impl IntoIterator<Item = String>,
-        gait_dir: PathBuf,
-        session_id: String,
         relay: Option<crate::turn::nerve::NerveWriter>,
         deny: Vec<String>,
     ) -> Self {
@@ -110,8 +104,6 @@ impl CapabilityDispatcher {
             mcp: clients,
             registry,
             enabled: RwLock::new(enabled.into_iter().collect()),
-            gait_dir,
-            session_id,
             relay,
             deny,
         }
@@ -174,11 +166,16 @@ impl CapabilityDispatcher {
                         return Err(CapabilityError::Denied { tool, pattern }.into());
                     }
                 }
+                // CodemodeFull: the spine already materializes the full
+                // archived value into Feedback.result before it crosses back
+                // here (see spine/handlers/output.rs's finalize_feedback) --
+                // this brain-side code never touches disk itself.
                 let outcome = super::exec::execute_capability_raw(
                     t.as_ref(),
                     invocation.args,
                     rec,
                     self.relay.as_ref(),
+                    crate::types::OutputPresentation::CodemodeFull,
                 )
                 .await?;
                 if let Some(sd) = &outcome.sandbox_denied {
@@ -193,12 +190,7 @@ impl CapabilityDispatcher {
                             .unwrap_or_default()
                     ));
                 }
-                crate::tools::read_archived_or_raw(
-                    &outcome.value,
-                    &self.gait_dir,
-                    &self.session_id,
-                    gait_codemode::Limits::default().max_output_bytes,
-                )
+                Ok(outcome.value)
             }
             CapabilityAddress::Mcp { server, tool } => {
                 let client = self
@@ -322,8 +314,6 @@ mod tests {
             Vec::new(),
             HashMap::new(),
             std::iter::empty::<String>(),
-            std::path::PathBuf::new(),
-            String::new(),
             None,
             Vec::new(),
         );
@@ -351,8 +341,6 @@ mod tests {
             Vec::new(),
             HashMap::new(),
             std::iter::empty::<String>(),
-            std::path::PathBuf::new(),
-            String::new(),
             None,
             Vec::new(),
         );
@@ -405,8 +393,6 @@ mod tests {
             Vec::new(),
             HashMap::new(),
             std::iter::empty::<String>(),
-            std::path::PathBuf::new(),
-            String::new(),
             None,
             Vec::new(),
         );
@@ -440,8 +426,6 @@ mod tests {
             Vec::new(),
             std::collections::HashMap::new(),
             std::iter::empty::<String>(),
-            dir.path().to_path_buf(),
-            "sprobe1".to_string(),
             None,
             Vec::new(),
         );
@@ -493,6 +477,7 @@ mod tests {
                     daemon: None,
                     final_content: None,
                     whitelist_match_items: vec![],
+                    is_error: None,
                     sandbox_denied: Some(crate::proto::gait::log::v1::SandboxDenied {
                         tool_name: "touch".into(),
                         resource: "/etc/shadow".into(),
@@ -513,8 +498,6 @@ mod tests {
             Vec::new(),
             HashMap::new(),
             std::iter::empty::<String>(),
-            dir.path().to_path_buf(),
-            "sdenied1".to_string(),
             Some(writer),
             Vec::new(),
         );
@@ -541,6 +524,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn nested_native_call_gets_the_spine_materialized_full_value_not_a_marker() {
+        // The real bug this fixes: invoke()'s Native branch used to call a
+        // brain-side disk read (read_archived_or_raw) on whatever the hand
+        // returned, which always failed with a real EPERM (the brain has no
+        // disk access). Now the spine materializes the full value itself
+        // (CodemodeFull presentation) and hands it back ready to use --
+        // invoke() must return it as-is, no brain-side I/O at all.
+        use crate::turn::nerve;
+        use gait_proto::gait::sandbox::v1::{signal, Feedback};
+
+        let (brain_read, spine_write_half) = tokio::io::duplex(4096);
+        let (spine_read_half, brain_write) = tokio::io::duplex(4096);
+        let (writer, _handle) = nerve::start_nerve(brain_read, brain_write);
+
+        tokio::spawn(async move {
+            let mut r = spine_read_half;
+            let mut w = spine_write_half;
+            let sig = nerve::read_signal(&mut r).await.unwrap();
+            let Some(signal::Body::Impulse(impulse)) = sig.body.as_ref() else {
+                panic!("expected Impulse request");
+            };
+            assert_eq!(
+                impulse.output_presentation,
+                gait_proto::gait::sandbox::v1::OutputPresentation::CodemodeFull as i32,
+                "a Code Mode capability dispatch must request the full value, \
+                 not the human-facing preview"
+            );
+            // Simulates what the real spine sends back once it has already
+            // materialized the archive itself (see finalize_feedback) --
+            // the real content, not a "[full output: ...]" marker string.
+            let canned = gait_proto::gait::sandbox::v1::Signal {
+                corr_id: sig.corr_id,
+                body: Some(signal::Body::Feedback(Feedback {
+                    result: Some(pbjson_types::Value {
+                        kind: Some(pbjson_types::value::Kind::StringValue(
+                            "the complete file content".to_string(),
+                        )),
+                    }),
+                    events: vec![],
+                    denied: None,
+                    daemon: None,
+                    final_content: None,
+                    whitelist_match_items: vec![],
+                    sandbox_denied: None,
+                    is_error: None,
+                })),
+            };
+            nerve::write_signal(&mut w, &canned).await.unwrap();
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let rec = recorder(dir.path(), "scodemode1");
+        let dispatcher = CapabilityDispatcher::new(
+            vec![Arc::new(TouchTool) as Arc<dyn crate::types::Tool>],
+            Vec::new(),
+            HashMap::new(),
+            std::iter::empty::<String>(),
+            Some(writer),
+            Vec::new(),
+        );
+        let result = dispatcher
+            .invoke(
+                CapabilityInvocation {
+                    address: CapabilityAddress::Native {
+                        tool: "touch".into(),
+                    },
+                    args: serde_json::json!({}),
+                },
+                &rec,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result, serde_json::json!("the complete file content"));
+    }
+
+    #[tokio::test]
     async fn nested_deny_listed_call_is_rejected_before_execution_and_is_catchable() {
         let dir = tempfile::tempdir().unwrap();
         let rec = recorder(dir.path(), "sdenylist1");
@@ -549,8 +608,6 @@ mod tests {
             Vec::new(),
             HashMap::new(),
             std::iter::empty::<String>(),
-            std::path::PathBuf::new(),
-            String::new(),
             None,
             vec!["touch".to_string()],
         );
@@ -584,8 +641,6 @@ mod tests {
             Vec::new(),
             HashMap::new(),
             std::iter::empty::<String>(),
-            std::path::PathBuf::new(),
-            String::new(),
             None,
             vec!["shell:rm *".to_string()],
         );
@@ -611,8 +666,6 @@ mod tests {
             Vec::new(),
             HashMap::new(),
             std::iter::empty::<String>(),
-            std::path::PathBuf::new(),
-            String::new(),
             None,
             Vec::new(),
         );

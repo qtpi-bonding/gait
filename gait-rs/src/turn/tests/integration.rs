@@ -2558,6 +2558,8 @@ async fn session_shell_output_is_readable_after_the_hand_exits() {
             prefetch: None,
             shell_whitelist_patterns: vec![],
             output_capture_mode: gait_proto::gait::sandbox::v1::OutputCaptureMode::Spool as i32,
+            output_presentation: gait_proto::gait::sandbox::v1::OutputPresentation::Unspecified
+                as i32,
         },
         &crate::config::SandboxConfig::default(),
         gait_dir.path(),
@@ -2624,6 +2626,8 @@ async fn session_shell_output_is_readable_after_the_hand_exits() {
             prefetch: None,
             shell_whitelist_patterns: vec![],
             output_capture_mode: gait_proto::gait::sandbox::v1::OutputCaptureMode::Returned as i32,
+            output_presentation: gait_proto::gait::sandbox::v1::OutputPresentation::Unspecified
+                as i32,
         },
         &crate::config::SandboxConfig::default(),
         gait_dir.path(),
@@ -2701,6 +2705,7 @@ async fn delegated_read_serves_buffer_not_disk() {
         prefetch: None,
         shell_whitelist_patterns: vec![],
         output_capture_mode: gait_proto::gait::sandbox::v1::OutputCaptureMode::Returned as i32,
+        output_presentation: gait_proto::gait::sandbox::v1::OutputPresentation::Unspecified as i32,
     };
     let group = crate::process::establish(None);
     // This test calls run_tool_as_spine directly (no real brain process), but hand
@@ -2781,6 +2786,7 @@ async fn shell_command_matching_whitelist_carries_match_items_in_feedback() {
         prefetch: None,
         shell_whitelist_patterns: vec![],
         output_capture_mode: gait_proto::gait::sandbox::v1::OutputCaptureMode::Spool as i32,
+        output_presentation: gait_proto::gait::sandbox::v1::OutputPresentation::Unspecified as i32,
     };
 
     let sandbox_cfg = crate::config::SandboxConfig {
@@ -2861,6 +2867,7 @@ async fn shell_command_not_matching_whitelist_carries_no_match_items() {
         prefetch: None,
         shell_whitelist_patterns: vec![],
         output_capture_mode: gait_proto::gait::sandbox::v1::OutputCaptureMode::Spool as i32,
+        output_presentation: gait_proto::gait::sandbox::v1::OutputPresentation::Unspecified as i32,
     };
 
     let sandbox_cfg = crate::config::SandboxConfig {

@@ -59,7 +59,7 @@ mod tests {
 mod confined_read_tests {
     use gait_core::proto::gait::sandbox::v1::{
         hand_response, network_scope::Mode, Feedback, HandResponse, Impulse, NetworkScope,
-        OutputCaptureMode, Scope,
+        OutputCaptureMode, OutputPresentation, Scope,
     };
     use pbjson_types::value::Kind;
     use prost::Message as _;
@@ -177,6 +177,7 @@ mod confined_read_tests {
             prefetch: None,
             shell_whitelist_patterns: vec![],
             output_capture_mode: OutputCaptureMode::Spool as i32,
+            output_presentation: OutputPresentation::Unspecified as i32,
         }
     }
 
@@ -248,6 +249,7 @@ mod confined_read_tests {
             prefetch: None,
             shell_whitelist_patterns: vec![],
             output_capture_mode: OutputCaptureMode::Returned as i32,
+            output_presentation: OutputPresentation::Unspecified as i32,
         };
         let (_fb, result) = run_hand(&cb, "read", impulse);
         assert!(

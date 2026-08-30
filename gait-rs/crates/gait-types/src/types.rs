@@ -382,6 +382,18 @@ pub enum OutputCaptureMode {
     Spool,
 }
 
+/// How the caller wants a successful tool result finalized — declared by the
+/// caller (an outer `ToolCall` vs. a Code Mode capability dispatch), not by
+/// the tool itself. Drives which spine-side finalizer runs; see
+/// `crate::tools::archive_and_prepare_model_value` (ModelPreview) vs.
+/// `crate::tools::archive_and_prepare_full_value` (CodemodeFull).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutputPresentation {
+    #[default]
+    ModelPreview,
+    CodemodeFull,
+}
+
 /// Errors a tool can surface. Public so the trait boundary stays in the foundation
 /// while `tools::ToolError` keeps resolving via a re-export.
 #[derive(Debug, thiserror::Error)]

@@ -34,7 +34,7 @@ use crate::proto::Recorder;
 use crate::test_utils::init_git_repo;
 use crate::tools::ToolCtx;
 use crate::tools::{ReadTool, ShellTool, StructuredDoneTool, WriteTool};
-use crate::types::{Tool, ToolDef};
+use crate::types::Tool;
 use gait_provider::provider::{ChunkStream, Provider, ProviderError, StreamChunk, TimeoutPhase};
 
 use crate::turn::TurnInput;

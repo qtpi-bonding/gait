@@ -51,10 +51,16 @@ pub(super) fn feedback_result(value: serde_json::Value) -> Feedback {
         final_content: None,
         whitelist_match_items: vec![],
         sandbox_denied: None,
+        is_error: None,
     }
 }
 
-/// Build a Feedback carrying a string error result.
+/// Build a Feedback carrying a string error result. `is_error` is
+/// deliberately left `None` here — every existing caller of this helper
+/// relies on today's "error text surfaces as an ordinary result" contract
+/// for the outer ToolCall path. Only the CODEMODE_FULL finalizer sets
+/// `is_error: Some(true)` directly (see `spine/handlers/output.rs`), since
+/// that's the one caller that needs a real, unambiguous error outcome.
 pub fn error_feedback(msg: &str) -> Feedback {
     Feedback {
         result: Some(pbjson_types::Value {
@@ -66,6 +72,7 @@ pub fn error_feedback(msg: &str) -> Feedback {
         final_content: None,
         whitelist_match_items: vec![],
         sandbox_denied: None,
+        is_error: None,
     }
 }
 

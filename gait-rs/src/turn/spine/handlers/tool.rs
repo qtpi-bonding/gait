@@ -182,6 +182,17 @@ pub async fn run_tool_as_spine(
             return error_feedback("invalid or unspecified output capture mode")
         }
     };
+    // Unlike output_capture_mode, an absent/unspecified presentation is not an
+    // error -- it's the ordinary case for every caller that never set it
+    // (the outer ToolCall path, and every existing test), and defaults safely
+    // to today's human-facing preview.
+    use gait_proto::gait::sandbox::v1::OutputPresentation as ProtoOutputPresentation;
+    let output_presentation = match ProtoOutputPresentation::try_from(impulse.output_presentation) {
+        Ok(ProtoOutputPresentation::CodemodeFull) => crate::types::OutputPresentation::CodemodeFull,
+        Ok(ProtoOutputPresentation::ModelPreview)
+        | Ok(ProtoOutputPresentation::Unspecified)
+        | Err(_) => crate::types::OutputPresentation::ModelPreview,
+    };
 
     let jail_raw = std::env::temp_dir().join(format!(
         "gait-hand-{}",
@@ -351,6 +362,9 @@ pub async fn run_tool_as_spine(
         prefetch,
         shell_whitelist_patterns,
         output_capture_mode: impulse.output_capture_mode,
+        // The hand never finalizes output — it just runs the tool and returns
+        // the raw Feedback. Presentation only matters afterward, spine-side.
+        output_presentation: impulse.output_presentation,
     };
     let bytes = impulse_with_scope.encode_to_vec();
 
@@ -485,6 +499,7 @@ pub async fn run_tool_as_spine(
             session_id,
             &impulse.tool,
             Some(output_path),
+            output_presentation,
         ),
         Ok(HandResponse {
             outcome: Some(hand_response::Outcome::Error(e)),
@@ -917,6 +932,8 @@ mod tests {
             prefetch: None,
             shell_whitelist_patterns: vec![],
             output_capture_mode: ProtoOutputCaptureMode::Returned as i32,
+            output_presentation: gait_proto::gait::sandbox::v1::OutputPresentation::Unspecified
+                as i32,
         };
         let group = crate::process::establish(None);
         let feedback = run_tool_as_spine(
