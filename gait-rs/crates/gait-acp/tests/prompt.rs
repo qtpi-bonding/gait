@@ -457,3 +457,131 @@ async fn drain_reaps_in_flight_turn_on_teardown() {
         "drain must release the turn's SessionLock"
     );
 }
+
+/// Reproduces the `session_map`-clobbering bug documented in
+/// `docs/feedback/2026-08-30-promptrequest-session-map-bookkeeping-clobbered-on-lock-rejection.md`:
+/// a rejected concurrent `PromptRequest` must not steal the first turn's
+/// `cascade`/`cancel` bookkeeping out from under it.
+///
+/// Proven by TIMING, not just outcome: the first turn's mock brain hangs for
+/// `HANG_MS` before it would ever finish on its own. A `session/cancel`
+/// (simulated via `map.cancel`) issued right after the rejected second
+/// prompt must make the first turn terminate almost immediately (its real
+/// `CascadeKillHandle::kill()` actually fires) — not merely report
+/// `StopReason::Cancelled` after silently waiting out the full `HANG_MS`
+/// because the map's `was_cancelled` flag happened to still read true. If
+/// `cascade` was already taken/overwritten by the rejected second request,
+/// `kill()` is a no-op and the response only arrives once `HANG_MS` elapses
+/// on its own — which is exactly the "no-op cancel" bug this test catches.
+#[tokio::test]
+async fn cancel_after_rejected_concurrent_prompt_reaches_the_first_turns_real_state() {
+    const HANG_MS: u64 = 5_000;
+    set_brain_exe();
+    let t = tempfile::TempDir::new().unwrap();
+    let (gait_dir, repo) = make_workspace(t.path(), "clobber");
+    // Sleep AFTER sending a frame (mock_hang_ms), not before (mock_delay_ms):
+    // `wait_until_locked` only proves SessionLock was acquired, which happens
+    // BEFORE the brain subprocess is spawned and cascade-group-registered
+    // (see relay_brain_turn) -- it is not proof the real, killable process
+    // exists yet. Waiting for an actual streamed update below is the real
+    // happened-before signal that the brain has spawned, run, and enrolled.
+    use gait_core::proto::gait::log::v1::{Event, StreamItem, stream_item};
+    use gait_proto::gait::sandbox::v1::{Signal, StreamForward, signal};
+    let assistant = Event {
+        body: Some(gait_core::proto::events::assistant_text("hi there".into())),
+        ..Default::default()
+    };
+    let event_sig = Signal {
+        corr_id: 0,
+        body: Some(signal::Body::StreamForward(StreamForward {
+            item: Some(StreamItem {
+                item: Some(stream_item::Item::Event(assistant)),
+            }),
+        })),
+    };
+    std::fs::write(gait_dir.join("mock_frames.bin"), frame(&event_sig)).unwrap();
+    std::fs::write(gait_dir.join("mock_hang_ms"), HANG_MS.to_string()).unwrap();
+
+    let map = SessionMap::new();
+    let (channel, server) = gait_acp::build_agent(map.clone()).into_channel_and_future();
+    tokio::spawn(server);
+
+    let updates = std::sync::Arc::new(std::sync::Mutex::new(Vec::<SessionUpdate>::new()));
+    let updates_h = updates.clone();
+    let map_for_cancel = map.clone();
+    let started = std::time::Instant::now();
+    let (sid, resp) = Client
+        .builder()
+        .on_receive_notification(
+            move |notif: SessionNotification, _cx| {
+                let updates_h = updates_h.clone();
+                async move {
+                    updates_h.lock().unwrap().push(notif.update);
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .connect_with(channel, async move |cx| {
+            let sid = cx
+                .send_request(NewSessionRequest::new(repo.clone()))
+                .block_task()
+                .await?
+                .session_id;
+            let first = cx.send_request(PromptRequest::new(
+                sid.clone(),
+                vec!["hi".to_string().into()],
+            ));
+            // Real happened-before: the update only arrives once the brain
+            // has actually spawned, run, and streamed the event -- i.e. it is
+            // genuinely registered in the cascade group by now.
+            for _ in 0..500 {
+                if !updates.lock().unwrap().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            assert!(
+                !updates.lock().unwrap().is_empty(),
+                "timed out waiting for the first turn's streamed update"
+            );
+            let second = cx
+                .send_request(PromptRequest::new(
+                    sid.clone(),
+                    vec!["hi again".to_string().into()],
+                ))
+                .block_task()
+                .await;
+            assert!(
+                second.is_err(),
+                "second concurrent prompt on a locked session must still error"
+            );
+            // Simulate the `session/cancel` notification handler, which calls
+            // exactly this method on the session_map.
+            map_for_cancel.cancel(sid.0.as_ref());
+            let resp = first.block_task().await?;
+            Ok((sid.0.to_string(), resp))
+        })
+        .await
+        .expect("session opens, second prompt is rejected, first prompt responds");
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        resp.stop_reason,
+        StopReason::Cancelled,
+        "cancel() must reach the FIRST turn's real cancel token, not a token \
+         belonging to the rejected second request"
+    );
+    assert!(
+        !session_is_locked(&gait_dir, &sid),
+        "the first turn's real cascade must actually be killed, not an \
+         orphaned handle from the rejected second request"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_millis(HANG_MS / 2),
+        "cancel() must terminate the real turn promptly (took {elapsed:?}, \
+         hang delay was {HANG_MS}ms) -- a response that only arrives once the \
+         mock brain's own delay elapses means cascade.kill() was a no-op \
+         against an orphaned/clobbered handle, not a real cancellation"
+    );
+}

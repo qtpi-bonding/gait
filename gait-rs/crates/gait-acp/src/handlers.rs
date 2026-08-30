@@ -149,6 +149,18 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                             return responder
                                 .respond_with_internal_error(format!("unknown session: {sid}"));
                         };
+                        // Reject BEFORE touching any session_map bookkeeping. A
+                        // second concurrent PromptRequest is going to fail once
+                        // its thread reaches SessionLock anyway (see the
+                        // 2026-08-21 doc) -- but overwriting cascade/cancel/join
+                        // here first would clobber the still-running first
+                        // turn's live tracking in the window before that
+                        // rejection lands (see the 2026-08-30 follow-up doc).
+                        if map.has_live_turn(&sid) {
+                            return responder.respond_with_internal_error(format!(
+                                "session already has an in-flight turn: {sid}"
+                            ));
+                        }
                         let text = content_blocks_to_text(&req.prompt);
                         let provenance = crate::meta_provenance::provenance_from_meta(&req.meta);
 
@@ -204,6 +216,7 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                                 codebase,
                                 fs_delegate,
                                 allow_intree: false,
+                                cascade: Some(handle),
                                 ..Default::default()
                             };
                             let outcome = local.block_on(

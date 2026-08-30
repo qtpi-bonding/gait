@@ -143,6 +143,20 @@ impl SessionMap {
             .is_some_and(|e| e.cancel.is_cancelled())
     }
 
+    /// Whether this session already has an unfinished turn thread tracked.
+    /// `PromptRequest`'s handler must check this BEFORE overwriting
+    /// `cascade`/`cancel`/`join` for a session — otherwise a second concurrent
+    /// request (which is going to be rejected once it reaches `SessionLock`
+    /// anyway) clobbers the first turn's live bookkeeping in the window
+    /// before its own rejection lands.
+    pub fn has_live_turn(&self, session_id: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .is_some_and(|e| e.join.as_ref().is_some_and(|j| !j.is_finished()))
+    }
+
     /// Store the turn's joinable thread so `drain` can reap it on teardown.
     pub fn set_turn_thread(&self, session_id: &str, join: std::thread::JoinHandle<()>) {
         if let Some(e) = self.0.lock().unwrap().get_mut(session_id) {
@@ -415,6 +429,47 @@ mod tests {
     fn remove_unknown_session_is_noop() {
         let m = SessionMap::new();
         assert_eq!(m.remove("nope"), None);
+    }
+
+    #[test]
+    fn has_live_turn_false_for_unknown_session() {
+        let m = SessionMap::new();
+        assert!(!m.has_live_turn("nope"));
+    }
+
+    #[test]
+    fn has_live_turn_false_when_no_thread_set() {
+        let m = SessionMap::new();
+        m.insert(PathBuf::from("/g/.gait"), "s".into(), PathBuf::from("/c"));
+        assert!(!m.has_live_turn("s"));
+    }
+
+    #[test]
+    fn has_live_turn_true_while_thread_running() {
+        let m = SessionMap::new();
+        m.insert(PathBuf::from("/g/.gait"), "s".into(), PathBuf::from("/c"));
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        m.set_turn_thread(
+            "s",
+            std::thread::spawn(move || {
+                let _ = rx.recv();
+            }),
+        );
+        assert!(m.has_live_turn("s"));
+        drop(tx); // let the thread finish so the test doesn't leak it
+    }
+
+    #[test]
+    fn has_live_turn_false_after_thread_finishes() {
+        let m = SessionMap::new();
+        m.insert(PathBuf::from("/g/.gait"), "s".into(), PathBuf::from("/c"));
+        let join = std::thread::spawn(|| {});
+        join.join().unwrap();
+        // Re-spawn a finished handle isn't possible; store a fresh already-done one.
+        m.set_turn_thread("s", std::thread::spawn(|| {}));
+        // Give it a moment to actually finish (it does nothing, but avoid a race).
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(!m.has_live_turn("s"));
     }
 
     #[test]
