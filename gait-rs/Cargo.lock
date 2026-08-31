@@ -1519,6 +1519,7 @@ dependencies = [
  "gait-testkit",
  "gait-workflow",
  "git2",
+ "pbjson-types",
  "prost",
  "serde",
  "serde_json",

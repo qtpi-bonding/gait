@@ -72,8 +72,13 @@ impl TurnDriver for PromptNodeDriver {
         // `GAIT_BRAIN_EXE` overrides the brain binary — the seam that lets an
         // integration test point the spine at `mock_brain` instead of a real
         // `gait __brain` (the same trick `tests/common` uses for `run_loop`,
-        // now reachable through the workflow path). Unset in production, where
-        // the current executable is the gait binary itself.
+        // now reachable through the workflow path). Unset in production: both
+        // supported production binaries — `gait` and `gait-acp` — answer to
+        // the sealed role tokens `is_role_argv` checks for (see
+        // `gait-bin/src/main.rs` and `gait-acp/src/main.rs`), so
+        // `current_exe() __brain ...` is a valid self-spawn from either one.
+        // Any other embedding binary must supply `GAIT_BRAIN_EXE` unless it
+        // also implements the same sealed-role dispatch.
         let gait_bin = std::env::var_os("GAIT_BRAIN_EXE")
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gait")));
