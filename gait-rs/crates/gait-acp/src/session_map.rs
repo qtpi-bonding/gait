@@ -24,6 +24,9 @@ pub struct SessionEntry {
     /// per-session, or a cancelled turn would poison later prompts.
     pub cancel: tokio_util::sync::CancellationToken,
     pub join: Option<std::thread::JoinHandle<()>>,
+    /// `gait/idempotency_key` values already seen for this session's whole
+    /// lifetime (not just the current turn) — see `record_idempotency_key`.
+    pub seen_idempotency_keys: std::collections::HashSet<String>,
 }
 
 #[derive(Clone, Default)]
@@ -46,6 +49,7 @@ impl SessionMap {
                 cascade: None,
                 cancel: tokio_util::sync::CancellationToken::new(),
                 join: None,
+                seen_idempotency_keys: std::collections::HashSet::new(),
             },
         );
     }
@@ -70,6 +74,7 @@ impl SessionMap {
                     cascade: None,
                     cancel: tokio_util::sync::CancellationToken::new(),
                     join: None,
+                    seen_idempotency_keys: std::collections::HashSet::new(),
                 },
             );
             return Ok(true);
@@ -155,6 +160,35 @@ impl SessionMap {
             .unwrap()
             .get(session_id)
             .is_some_and(|e| e.join.as_ref().is_some_and(|j| !j.is_finished()))
+    }
+
+    /// Whether `key` has already been recorded as seen for `session_id` — a
+    /// pure read, no mutation. The handler calls this FIRST, before any
+    /// other admission check (e.g. `has_live_turn`), so a genuine repeat of
+    /// an already-*admitted* prompt is always caught, regardless of what
+    /// else is going on in the session. Returns `false` for an unknown
+    /// session (nothing recorded there; `resolve()` rejects unknown sessions
+    /// separately).
+    pub fn has_seen_idempotency_key(&self, session_id: &str, key: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .is_some_and(|e| e.seen_idempotency_keys.contains(key))
+    }
+
+    /// Record `key` as seen for `session_id`. Callers MUST call this only
+    /// after a request has passed every other admission check (in
+    /// particular `has_live_turn`) and is actually going to run — recording
+    /// any earlier would permanently blacklist a key whose logical prompt
+    /// was rejected for some unrelated reason and never executed, silently
+    /// dropping a legitimate later retry of that same prompt. No-op for an
+    /// unknown session — nothing to record against; `resolve()` already
+    /// rejects unknown sessions separately.
+    pub fn record_idempotency_key(&self, session_id: &str, key: &str) {
+        if let Some(entry) = self.0.lock().unwrap().get_mut(session_id) {
+            entry.seen_idempotency_keys.insert(key.to_string());
+        }
     }
 
     /// Store the turn's joinable thread so `drain` can reap it on teardown.
@@ -485,5 +519,35 @@ mod tests {
             !m.contains(Path::new("/g/.gait"), "s"),
             "entry dropped after remove"
         );
+    }
+
+    #[test]
+    fn has_seen_idempotency_key_false_until_recorded() {
+        let m = SessionMap::new();
+        m.insert(PathBuf::from("/g/.gait"), "s".into(), PathBuf::from("/c"));
+        assert!(!m.has_seen_idempotency_key("s", "k1"));
+        m.record_idempotency_key("s", "k1");
+        assert!(m.has_seen_idempotency_key("s", "k1"));
+    }
+
+    #[test]
+    fn record_idempotency_key_distinguishes_keys() {
+        let m = SessionMap::new();
+        m.insert(PathBuf::from("/g/.gait"), "s".into(), PathBuf::from("/c"));
+        m.record_idempotency_key("s", "k1");
+        assert!(!m.has_seen_idempotency_key("s", "k2"));
+    }
+
+    #[test]
+    fn has_seen_idempotency_key_false_for_unknown_session() {
+        let m = SessionMap::new();
+        assert!(!m.has_seen_idempotency_key("nope", "k1"));
+    }
+
+    #[test]
+    fn record_idempotency_key_unknown_session_is_noop() {
+        let m = SessionMap::new();
+        m.record_idempotency_key("nope", "k1");
+        assert!(!m.has_seen_idempotency_key("nope", "k1"));
     }
 }

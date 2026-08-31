@@ -5,6 +5,7 @@
 //! See docs/plans/2026-07-09-acp-adapter-design.md.
 pub mod fs_delegate;
 pub mod handlers;
+mod idempotency;
 pub mod lifecycle;
 mod meta_provenance;
 pub mod session_map;

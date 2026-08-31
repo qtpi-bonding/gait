@@ -149,6 +149,24 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                             return responder
                                 .respond_with_internal_error(format!("unknown session: {sid}"));
                         };
+                        // Reject a resend of an already-admitted idempotency
+                        // key immediately, before every other admission check
+                        // below -- this must run FIRST so the key is never
+                        // falsely blacklisted by some OTHER rejection reason.
+                        // The key is only *recorded* (further down) once the
+                        // request has passed every check and this turn is
+                        // actually going to run -- see
+                        // `SessionMap::record_idempotency_key`'s doc comment
+                        // for why recording earlier would be unsound.
+                        let idempotency_key =
+                            crate::idempotency::idempotency_key_from_meta(&req.meta);
+                        if let Some(key) = &idempotency_key {
+                            if map.has_seen_idempotency_key(&sid, key) {
+                                return responder.respond_with_error(
+                                    crate::idempotency::already_seen_error(key),
+                                );
+                            }
+                        }
                         // Reject BEFORE touching any session_map bookkeeping. A
                         // second concurrent PromptRequest is going to fail once
                         // its thread reaches SessionLock anyway (see the
@@ -160,6 +178,13 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                             return responder.respond_with_internal_error(format!(
                                 "session already has an in-flight turn: {sid}"
                             ));
+                        }
+                        // Only now -- past every admission check, committed to
+                        // actually running this turn -- record the idempotency
+                        // key. Recording earlier would permanently blacklist a
+                        // key whose prompt was rejected above and never ran.
+                        if let Some(key) = &idempotency_key {
+                            map.record_idempotency_key(&sid, key);
                         }
                         let text = content_blocks_to_text(&req.prompt);
                         let provenance = crate::meta_provenance::provenance_from_meta(&req.meta);
