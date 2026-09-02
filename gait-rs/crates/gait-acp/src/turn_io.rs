@@ -847,7 +847,8 @@ mod tests {
             to: vec![],
             context: String::new(),
             signature: vec![2u8; 64],
-            scheme: gait_core::proto::gait::log::v1::KeyScheme::Ed25519 as i32,
+            scheme: gait_identity::KeyScheme::Ed25519 as i32,
+            delegation_cert: None,
         };
         use agent_client_protocol::schema::ProtocolVersion;
         use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse};

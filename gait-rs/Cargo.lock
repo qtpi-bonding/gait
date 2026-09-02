@@ -1519,6 +1519,7 @@ dependencies = [
  "gait-testkit",
  "gait-workflow",
  "git2",
+ "identity-crypto",
  "pbjson-types",
  "prost",
  "serde",
@@ -1678,6 +1679,7 @@ dependencies = [
  "ed25519-dalek",
  "gait-proto",
  "hex",
+ "identity-crypto",
  "rand 0.8.6",
  "serde",
  "serde_json",
@@ -1743,6 +1745,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "hex",
+ "identity-crypto",
  "pbjson",
  "pbjson-build",
  "pbjson-types",
@@ -2327,6 +2330,22 @@ name = "ident_case"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
+
+[[package]]
+name = "identity-crypto"
+version = "0.1.0"
+source = "git+ssh://git@github-qtpi-bonding-identity-crypto/qtpi-bonding/identity-crypto.git?rev=7211397#721139766e80897fdd3b163c639b2d9a0f8ae570"
+dependencies = [
+ "anyhow",
+ "ed25519-dalek",
+ "hex",
+ "pbjson",
+ "pbjson-build",
+ "prost",
+ "prost-build",
+ "protoc-bin-vendored",
+ "serde",
+]
 
 [[package]]
 name = "idna"

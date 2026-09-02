@@ -3,7 +3,8 @@
 //! a plain human ACP client sends no such key at all, and a badly-formed
 //! one from a misbehaving peer must not block the prompt.
 use base64::Engine as _;
-use gait_core::proto::gait::log::v1::{KeyScheme, Provenance};
+use gait_core::proto::gait::log::v1::Provenance;
+use identity_crypto::KeyScheme;
 
 const META_KEY: &str = "gait/provenance";
 const SUPPORTED_VERSION: u64 = 1;
@@ -49,6 +50,7 @@ pub fn provenance_from_meta(
         context,
         signature,
         scheme: KeyScheme::Ed25519 as i32,
+        delegation_cert: None,
     })
 }
 
@@ -94,10 +96,7 @@ mod tests {
         assert_eq!(p.signature, sig);
         assert_eq!(p.context, "room:general");
         assert_eq!(p.to, vec!["session-abc".to_string()]);
-        assert_eq!(
-            p.scheme,
-            gait_core::proto::gait::log::v1::KeyScheme::Ed25519 as i32
-        );
+        assert_eq!(p.scheme, gait_identity::KeyScheme::Ed25519 as i32);
     }
 
     #[test]

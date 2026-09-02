@@ -2,7 +2,8 @@
 //! Lives in `gait-identity`, not `gait-proto`: `gait-proto` cannot depend on
 //! this crate's scheme-dispatched crypto (would cycle).
 
-use gait_proto::gait::log::v1::{Event, KeyScheme};
+use gait_proto::gait::log::v1::Event;
+use identity_crypto::KeyScheme;
 
 /// True only if `event` carries provenance with a signature that verifies
 /// against `event.content_hash` under the declared scheme. Any failure mode
@@ -52,6 +53,7 @@ mod tests {
             context: String::new(),
             signature,
             scheme: signer.scheme() as i32,
+            delegation_cert: None,
         });
         assert!(verify_provenance(&ev));
     }
@@ -67,6 +69,7 @@ mod tests {
             context: String::new(),
             signature,
             scheme: signer.scheme() as i32,
+            delegation_cert: None,
         });
         ev.content_hash = "tampered".to_string(); // simulate a corrupted/edited event
         assert!(!verify_provenance(&ev));
@@ -89,6 +92,7 @@ mod tests {
             context: String::new(),
             signature: vec![],
             scheme: 0, // KeyScheme::Unspecified
+            delegation_cert: None,
         });
         assert!(!verify_provenance(&ev));
     }

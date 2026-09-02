@@ -1588,7 +1588,8 @@ fn active_raw_messages_populates_attribution_from_provenance() {
         to: vec![],
         context: String::new(),
         signature: vec![],
-        scheme: crate::proto::gait::log::v1::KeyScheme::Ed25519 as i32,
+        scheme: gait_identity::KeyScheme::Ed25519 as i32,
+        delegation_cert: None,
     });
 
     let raw = run_projection(&ActiveRawMessages, &[ev], &HashMap::new());
@@ -1955,7 +1956,8 @@ fn active_raw_messages_agent_update_uses_provenance_not_session_id() {
         to: vec![],
         context: String::new(),
         signature: vec![],
-        scheme: crate::proto::gait::log::v1::KeyScheme::Ed25519 as i32,
+        scheme: gait_identity::KeyScheme::Ed25519 as i32,
+        delegation_cert: None,
     });
 
     let raw = run_projection(&ActiveRawMessages, &[ev], &HashMap::new());

@@ -257,10 +257,7 @@ mod tests {
             .as_ref()
             .expect("notify_parent must stamp provenance");
         assert!(gait_identity::verify_provenance(appended));
-        assert_eq!(
-            provenance.scheme,
-            gait_proto::gait::log::v1::KeyScheme::Ed25519 as i32
-        );
+        assert_eq!(provenance.scheme, gait_identity::KeyScheme::Ed25519 as i32);
     }
 
     fn daemon_completion(name: &str, exit_code: i32, status: &str, log_path: &str) -> Completion {

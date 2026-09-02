@@ -23,16 +23,21 @@ fn main() {
     config
         .file_descriptor_set_path(&descriptor_path)
         .compile_well_known_types()
-        .extern_path(".google.protobuf", "::pbjson_types");
+        .extern_path(".google.protobuf", "::pbjson_types")
+        .extern_path(".identitycrypto.v1", "::identity_crypto::proto::identitycrypto::v1");
 
     config
-        .compile_protos(&protos, &[&proto_dir])
+        .compile_protos(
+            &protos,
+            &[&proto_dir, &PathBuf::from(identity_crypto::proto_include_dir())],
+        )
         .expect("compile protos");
 
     let descriptor_set = std::fs::read(&descriptor_path).expect("read descriptor set");
     pbjson_build::Builder::new()
         .register_descriptors(&descriptor_set)
         .expect("register descriptors")
+        .extern_path(".identitycrypto.v1", "::identity_crypto::proto::identitycrypto::v1")
         .build(&[".gait"])
         .expect("build pbjson serde");
 }

@@ -161,6 +161,7 @@ pub fn append_with_provenance(
         context,
         signature,
         scheme,
+        delegation_cert: None,
     });
     write_event(path, ev)
 }
@@ -358,7 +359,7 @@ mod tests {
             &path,
             body,
             from.clone(),
-            crate::gait::log::v1::KeyScheme::Ed25519 as i32,
+            identity_crypto::KeyScheme::Ed25519 as i32,
             |msg| msg.to_vec(),
             vec![],
             String::new(),
@@ -367,10 +368,7 @@ mod tests {
         .unwrap();
         let provenance = ev.provenance.as_ref().expect("provenance set");
         assert_eq!(provenance.from, from);
-        assert_eq!(
-            provenance.scheme,
-            crate::gait::log::v1::KeyScheme::Ed25519 as i32
-        );
+        assert_eq!(provenance.scheme, identity_crypto::KeyScheme::Ed25519 as i32);
         assert_eq!(provenance.signature, ev.content_hash.as_bytes());
         assert_eq!((ev.run, ev.turn, ev.step), (Some(1), Some(2), None));
     }

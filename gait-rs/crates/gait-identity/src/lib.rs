@@ -5,7 +5,7 @@ pub use keyring::{Keyring, KeyringEntry};
 pub mod verify_event;
 pub use verify_event::verify_provenance;
 
-pub use gait_proto::gait::log::v1::KeyScheme;
+pub use identity_crypto::KeyScheme;
 
 /// Anything that can sign on behalf of one agent identity.
 pub trait Signer {

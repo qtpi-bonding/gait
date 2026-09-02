@@ -37,10 +37,10 @@ fn clarify_kind_str(k: i32) -> &'static str {
 
 /// Render `Provenance.from` as a scheme-labeled hexadecimal public key.
 fn render_sender(p: &pb::Provenance) -> String {
-    let scheme_label = match pb::KeyScheme::try_from(p.scheme) {
-        Ok(pb::KeyScheme::Ed25519) => "ed25519",
-        Ok(pb::KeyScheme::Secp256k1Schnorr) => "secp256k1-schnorr",
-        Ok(pb::KeyScheme::Unspecified) | Err(_) => "unspecified",
+    let scheme_label = match gait_identity::KeyScheme::try_from(p.scheme) {
+        Ok(gait_identity::KeyScheme::Ed25519) => "ed25519",
+        Ok(gait_identity::KeyScheme::Secp256k1Schnorr) => "secp256k1-schnorr",
+        Ok(gait_identity::KeyScheme::Unspecified) | Err(_) => "unspecified",
     };
     format!("{scheme_label}:{}", hex::encode(&p.from))
 }
