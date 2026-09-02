@@ -64,18 +64,23 @@ pub fn write_child_session(opts: WriteChildSessionOpts<'_>) -> anyhow::Result<()
     })?;
     wire::append(&tx_path, events::inference(inference))?;
 
-    let signer = gait_identity::Keyring::load(opts.gait_dir)
+    let device_signer = gait_identity::Keyring::load(opts.gait_dir)
         .map_err(|e| anyhow::anyhow!("loading keyring at {}: {e}", opts.gait_dir.display()))?
         .signer()?;
-    wire::append_with_provenance(
+    let session = gait_identity::SessionKey::mint(
+        &device_signer,
+        std::time::Duration::from_secs(3600),
+    )?;
+    wire::append_with_delegated_provenance(
         &tx_path,
         events::user_text(opts.task),
-        signer.public_key().to_vec(),
-        signer.scheme() as i32,
-        |msg| signer.sign(msg),
+        session.signer().public_key().to_vec(),
+        session.signer().scheme() as i32,
+        |msg| session.signer().sign(msg),
         vec![],
         String::new(),
         crate::proto::envelope::EventScope::Session,
+        session.delegation_cert().clone(),
     )?;
 
     opts.repos.traces.commit_session(
@@ -310,10 +315,16 @@ mod tests {
             .unwrap()
             .signer()
             .unwrap();
-        assert_eq!(
-            user_turn_event.provenance.as_ref().map(|p| p.from.clone()),
-            Some(signer.public_key().to_vec()),
-        );
+        let prov = user_turn_event
+            .provenance
+            .as_ref()
+            .expect("user_turn must carry provenance");
+        let cert = prov
+            .delegation_cert
+            .as_ref()
+            .expect("delegated spawn provenance must carry its certificate");
+        assert_eq!(prov.from, cert.session_public_key);
+        assert_eq!(cert.device_public_key, signer.public_key().to_vec());
         assert!(
             gait_identity::verify_provenance(user_turn_event),
             "spawn_agent must sign with a real, verifiable signature"
@@ -475,7 +486,20 @@ mod tests {
             .unwrap()
             .signer()
             .unwrap();
-        assert_eq!(prov.from, signer.public_key().to_vec());
+        assert_eq!(
+            prov.from,
+            prov.delegation_cert
+                .as_ref()
+                .expect("delegated spawn provenance must carry its certificate")
+                .session_public_key
+        );
+        assert_eq!(
+            prov.delegation_cert
+                .as_ref()
+                .expect("delegated spawn provenance must carry its certificate")
+                .device_public_key,
+            signer.public_key().to_vec()
+        );
         assert!(
             gait_identity::verify_provenance(user_text_event),
             "spawn_agent must sign with a real, verifiable signature"

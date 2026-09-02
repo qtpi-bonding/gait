@@ -199,10 +199,19 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
         .unwrap()
         .signer()
         .unwrap();
+    let prov = user_turn_event
+        .provenance
+        .as_ref()
+        .expect("user_turn must carry provenance");
+    let cert = prov
+        .delegation_cert
+        .as_ref()
+        .expect("delegated spawn provenance must carry its certificate");
+    assert_eq!(prov.from, cert.session_public_key);
     assert_eq!(
-        user_turn_event.provenance.as_ref().map(|p| p.from.clone()),
-        Some(signer.public_key().to_vec()),
-        "child user_turn must be signed by the parent's keyring"
+        cert.device_public_key,
+        signer.public_key().to_vec(),
+        "child user_turn's session key must be delegated by the parent's device keyring"
     );
     assert!(
         gait_identity::verify_provenance(user_turn_event),

@@ -126,7 +126,7 @@ pub fn notify_parent(
     // Append the *_update event + commit. We hold the lock, so writing
     // directly via `wire::append` is the legal path (NOT SessionLog::open,
     // which would re-acquire and deadlock). Mirrors harness.rs:118-128.
-    let signer = match gait_identity::Keyring::load(gait_dir).and_then(|kr| kr.signer()) {
+    let device_signer = match gait_identity::Keyring::load(gait_dir).and_then(|kr| kr.signer()) {
         Ok(s) => s,
         Err(e) => {
             eprintln!(
@@ -137,15 +137,26 @@ pub fn notify_parent(
         }
     };
     use gait_identity::Signer as _;
-    if let Err(e) = crate::proto::wire::append_with_provenance(
+    let session = match gait_identity::SessionKey::mint(
+        &device_signer,
+        std::time::Duration::from_secs(60),
+    ) {
+        Ok(session) => session,
+        Err(e) => {
+            eprintln!("[gait] notify_parent: minting session key failed: {e}");
+            return NotifyOutcome::NoParent;
+        }
+    };
+    if let Err(e) = crate::proto::wire::append_with_delegated_provenance(
         &tx_path,
         c.body(),
-        signer.public_key().to_vec(),
-        signer.scheme() as i32,
-        |msg| signer.sign(msg),
+        session.signer().public_key().to_vec(),
+        session.signer().scheme() as i32,
+        |msg| session.signer().sign(msg),
         vec![],
         String::new(),
         crate::proto::envelope::EventScope::Session,
+        session.delegation_cert().clone(),
     ) {
         // Log the append failure as a diagnostic warn — silently dropping
         // would leave the caller with no signal that the completion was lost.
