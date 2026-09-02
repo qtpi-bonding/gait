@@ -649,11 +649,6 @@ impl MessagesState {
             .unwrap_or("unspecified");
         self.push_user(format!("error during {}: {}", phase_str, e.message), id);
     }
-
-    fn into_messages(mut self) -> Vec<Message> {
-        self.msgs.append(&mut self.deferred);
-        self.msgs
-    }
 }
 
 /// The Transcript: the `Vec<Message>` the model reads, folded from the Log.
@@ -1351,62 +1346,6 @@ pub fn apply_cascade(mutations: &mut HashMap<String, MutationState>, events: &[E
             }
         }
     }
-}
-
-/// Result of folding the full event log through all Retrace projections.
-pub struct RetraceResult {
-    /// The Transcript: Vec<Message> for the model context window.
-    pub messages: Vec<Message>,
-    /// Folded agent-dimension state (replaces enabled_loadables + active_agent).
-    pub agent: AgentState,
-    /// Effective session allow-list: config baseline + log-derived session/once
-    /// grants. STUB until Task 6 (currently just the config seed; empty in `fold`).
-    pub effective_allow: std::collections::HashSet<String>,
-    /// LWW-converged mutations (Redact/Replace) keyed by target event id,
-    /// with ToolCall↔ToolResult cascade applied.
-    pub mutations: HashMap<String, MutationState>,
-    /// Runtime-only sandbox unlock grants (once/session scope). `once` paths
-    /// expire each RunComplete; `session` paths persist for the session.
-    /// `global`/`agent` grants are in gait.jsonc / agent files and not here.
-    pub active_unlock: ActiveUnlockState,
-}
-
-/// Fold the full event log into all projections in a single pass.
-///
-/// Every projection (`ActiveMessages`, `ActiveAgent`, `ActivePermissions`) folds
-/// the SAME input: the mutation-applied, full-session event stream. Summary is
-/// handled only inside `ActiveMessages` (it resets the message context); the state
-/// projections fold the whole session and ignore it. `agent_seed` is the M3 genesis
-/// state built from config (model, instructions, enabled mcp/skills, allow/deny).
-pub fn fold(all_events: &[Event], agent_seed: AgentState) -> Result<RetraceResult, SessionError> {
-    // Phase 0 — substrate: converge the mutation set (LWW + cascade) once.
-    let mut mutations = active_mutations(all_events);
-    apply_cascade(&mut mutations, all_events);
-
-    // Phase 1 — drive every projection over the same effective stream.
-    let agent = run_projection(&ActiveAgent { seed: agent_seed }, all_events, &mutations);
-    let allow_state = run_projection(
-        &ActivePermissions {
-            seed: Default::default(),
-        },
-        all_events,
-        &mutations,
-    );
-    let effective_allow: std::collections::HashSet<String> = allow_state
-        .session
-        .union(&allow_state.once)
-        .cloned()
-        .collect();
-    let messages = run_projection(&ActiveMessages, all_events, &mutations).into_messages();
-    let active_unlock = active_unlock_state(all_events);
-
-    Ok(RetraceResult {
-        messages,
-        agent,
-        effective_allow,
-        mutations,
-        active_unlock,
-    })
 }
 
 /// Most recent `Agent` payload LWW-Register — used only by the drift-guard in

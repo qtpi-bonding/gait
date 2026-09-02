@@ -594,7 +594,12 @@ fn active_agent_projection_checkpoint_is_last_write_wins() {
 }
 
 #[test]
-fn fold_returns_all_three_projections() {
+fn active_agent_and_messages_projections_agree_over_the_same_event_set() {
+    // Was `fold_returns_all_three_projections`, driven through the dead
+    // `fold()` wrapper (deleted -- zero real callers, see the plan). Same
+    // event set, same assertions, now via the real per-projection entry
+    // points `messages()`/`ActiveAgent` that production code actually calls.
+    use std::collections::HashMap;
     let dir = TempDir::new().unwrap();
     let path = write_events(
         dir.path(),
@@ -623,24 +628,33 @@ fn fold_returns_all_three_projections() {
     );
     let all_events = read_events(&path).unwrap();
     let seed = AgentState::default();
-    let result = fold(&all_events, seed).unwrap();
 
     // messages: user turn (no summary-only events, user_turn becomes a Message)
-    assert!(!result.messages.is_empty());
+    assert!(!messages(&all_events).unwrap().is_empty());
+    let agent = run_projection(&ActiveAgent { seed }, &all_events, &HashMap::new());
     // agent.model: the checkpoint we wrote
-    assert_eq!(result.agent.model, "gpt-fold");
+    assert_eq!(agent.model, "gpt-fold");
     // enabled_loadables: tdd was toggled on
-    assert!(result.agent.enabled_loadables().contains("tdd"));
+    assert!(agent.enabled_loadables().contains("tdd"));
 }
 
 #[test]
-fn fold_runs_all_projections_single_pass() {
+fn active_agent_and_permissions_projections_agree_over_the_same_event_set() {
+    // Was `fold_runs_all_projections_single_pass` -- see the note above.
+    use std::collections::HashMap;
     let evs = mint_events(vec![events::toggle("mcp", "slack", true)]);
     let seed = AgentState::default();
-    let res = fold(&evs, seed).unwrap();
-    assert!(res.agent.enabled_loadables().contains("slack"));
+    let agent = run_projection(&ActiveAgent { seed }, &evs, &HashMap::new());
+    assert!(agent.enabled_loadables().contains("slack"));
+    let allow_state = run_projection(
+        &ActivePermissions {
+            seed: Default::default(),
+        },
+        &evs,
+        &HashMap::new(),
+    );
     assert!(
-        res.effective_allow.is_empty(),
+        allow_state.session.is_empty() && allow_state.once.is_empty(),
         "permission stub yields no grants yet"
     );
 }
@@ -845,7 +859,11 @@ fn permissions_session_deny_revokes_but_ledger_keeps_both() {
 }
 
 #[test]
-fn fold_effective_allow_includes_session_grant() {
+fn permissions_projection_effective_allow_includes_session_grant() {
+    // Was `fold_effective_allow_includes_session_grant`, driven through the
+    // dead `fold()` wrapper (deleted). `effective_allow` was just
+    // `ActivePermissions`'s session ∪ once union, computed directly here.
+    use std::collections::HashMap;
     let evs = mint_events(vec![events::permissions_reply(&[
         pb::PermissionsReplyItem {
             id: "1".into(),
@@ -854,10 +872,21 @@ fn fold_effective_allow_includes_session_grant() {
             scope: pb::Scope::Session as i32,
         },
     ])]);
-    let res = fold(&evs, AgentState::default()).unwrap();
+    let allow_state = run_projection(
+        &ActivePermissions {
+            seed: Default::default(),
+        },
+        &evs,
+        &HashMap::new(),
+    );
+    let effective_allow: std::collections::HashSet<String> = allow_state
+        .session
+        .union(&allow_state.once)
+        .cloned()
+        .collect();
     assert!(
-        res.effective_allow.contains("shell:git status"),
-        "fold flattens session grants into effective_allow"
+        effective_allow.contains("shell:git status"),
+        "session grants must flatten into effective_allow"
     );
 }
 
@@ -1062,7 +1091,10 @@ fn cascade_redact_overrides_orphan_replace() {
 }
 
 #[test]
-fn fold_mutations_included_in_result() {
+fn active_mutations_and_messages_agree_on_a_redacted_event() {
+    // Was `fold_mutations_included_in_result`, driven through the dead
+    // `fold()` wrapper (deleted). `mutations` was just `active_mutations`'s
+    // own converged set; `messages` is the real, live rendering path.
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("tx.jsonl");
 
@@ -1070,12 +1102,13 @@ fn fold_mutations_included_in_result() {
     wire::append(&path, redact_body(&e.id)).unwrap();
 
     let all = read_events(&path).unwrap();
-    let result = fold(&all, AgentState::default()).unwrap();
+    let mut mutations = active_mutations(&all);
+    apply_cascade(&mut mutations, &all);
 
-    assert!(!result.mutations.is_empty(), "fold must populate mutations");
+    assert!(!mutations.is_empty(), "must populate mutations");
     assert!(
-        result.messages.is_empty(),
-        "redacted event must not appear in fold messages"
+        messages(&all).unwrap().is_empty(),
+        "redacted event must not appear in messages"
     );
 }
 #[test]
@@ -1454,14 +1487,13 @@ fn fold_replaces_tool_result_in_messages() {
 
     let all = read_events(&path).unwrap();
 
-    let result = fold(&all, AgentState::default()).unwrap();
+    let msgs = messages(&all).unwrap();
 
     // Exactly one ToolResult message should appear, and its content must be
 
     // the replacement string — not the original.
 
-    let tool_results: Vec<_> = result
-        .messages
+    let tool_results: Vec<_> = msgs
         .iter()
         .filter_map(|m| match m {
             Message::ToolResult { content, .. } => Some(content.as_slice()),
@@ -1475,7 +1507,7 @@ fn fold_replaces_tool_result_in_messages() {
         tool_results.len(),
         1,
         "expected exactly one ToolResult, got messages: {:?}",
-        result.messages
+        msgs
     );
 
     let rendered = match &tool_results[0].result {
@@ -1542,7 +1574,7 @@ fn cascade_replace_tool_result_then_redact_call_hides_both() {
 
     let all = read_events(&path).unwrap();
 
-    let result = fold(&all, AgentState::default()).unwrap();
+    let msgs = messages(&all).unwrap();
 
     // No ToolResult entry should remain in messages — cascade promoted the
 
@@ -1550,15 +1582,12 @@ fn cascade_replace_tool_result_then_redact_call_hides_both() {
 
     // redacted directly, so even without coalescing nothing would render.)
 
-    let has_tool = result
-        .messages
-        .iter()
-        .any(|m| matches!(m, Message::ToolResult { .. }));
+    let has_tool = msgs.iter().any(|m| matches!(m, Message::ToolResult { .. }));
 
     assert!(
         !has_tool,
         "cascade must hide the ToolResult too, got: {:?}",
-        result.messages
+        msgs
     );
 }
 
