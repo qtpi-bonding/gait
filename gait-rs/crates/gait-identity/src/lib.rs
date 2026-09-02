@@ -2,6 +2,8 @@
 
 pub mod keyring;
 pub use keyring::{Keyring, KeyringEntry};
+pub mod session_key;
+pub use session_key::SessionKey;
 pub mod verify_event;
 pub use verify_event::verify_provenance;
 

@@ -166,6 +166,36 @@ pub fn append_with_provenance(
     write_event(path, ev)
 }
 
+/// Like [`append_with_provenance`], but for a session key signing under a
+/// `DelegationCert` from its device key -- attaches the cert to the minted
+/// event's `Provenance` alongside the signature. `append_with_provenance`'s
+/// own signature stays stable for its existing (non-delegating) callers.
+#[allow(clippy::too_many_arguments)]
+pub fn append_with_delegated_provenance(
+    path: &Path,
+    body: event::Body,
+    from: Vec<u8>,
+    scheme: i32,
+    sign: impl FnOnce(&[u8]) -> Vec<u8>,
+    to: Vec<String>,
+    context: String,
+    scope: EventScope,
+    delegation_cert: identity_crypto::DelegationCert,
+) -> anyhow::Result<Event> {
+    let prev = last_event(path)?;
+    let mut ev = mint(body, prev.as_ref(), scope);
+    let signature = sign(ev.content_hash.as_bytes());
+    ev.provenance = Some(crate::gait::log::v1::Provenance {
+        from,
+        to,
+        context,
+        signature,
+        scheme,
+        delegation_cert: Some(delegation_cert),
+    });
+    write_event(path, ev)
+}
+
 /// Like [`append_with_provenance`], but relays a provenance already signed by
 /// someone else. It attaches the value verbatim without signing or verifying.
 pub fn append_with_given_provenance(
@@ -216,6 +246,40 @@ mod tests {
         body(payload::Kind::AssistantText(AssistantText {
             content: "hi".into(),
         }))
+    }
+
+    #[test]
+    fn append_with_delegated_provenance_persists_the_cert() {
+        use crate::gait::log::v1::{event, payload, Payload, UserText};
+        use identity_crypto::DelegationCert;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let cert = DelegationCert {
+            agent_id: "ed25519:test".into(),
+            device_public_key: vec![1; 32],
+            session_public_key: vec![2; 32],
+            not_before_unix_seconds: 100,
+            not_after_unix_seconds: 200,
+            signature: vec![3; 64],
+        };
+        let body = event::Body::Payload(Payload {
+            kind: Some(payload::Kind::UserText(UserText {
+                content: "hi".into(),
+            })),
+        });
+        let ev = append_with_delegated_provenance(
+            &path,
+            body,
+            vec![2; 32],
+            1,
+            |msg| msg.to_vec(),
+            vec![],
+            String::new(),
+            EventScope::Session,
+            cert.clone(),
+        )
+        .unwrap();
+        assert_eq!(ev.provenance.unwrap().delegation_cert, Some(cert));
     }
 
     #[test]
