@@ -59,7 +59,7 @@ fn coalesce_defers_interstitial_message_until_after_tool_result() {
         Message::User {
             content: MessageContent::Text("error during llm: timed out".into()),
             id: "error-event".into(),
-            attribution: None,
+            attribution: Vec::new(),
         },
         Message::ToolResult {
             content: vec![ToolResult {
@@ -1612,14 +1612,16 @@ fn active_raw_messages_populates_attribution_from_provenance() {
     let pubkey = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04];
 
     let mut ev = scoped_mint(events::user_text("do the thing".into()), None, 0, 0);
-    ev.provenance = Some(crate::proto::gait::log::v1::Provenance {
+    ev.provenance = vec![crate::proto::gait::log::v1::Provenance {
         from: pubkey,
         to: vec![],
         context: String::new(),
         signature: vec![],
         scheme: gait_identity::KeyScheme::Ed25519 as i32,
         delegation_cert: None,
-    });
+        attested_author_agent_id: None,
+        attested_verification_outcome: None,
+    }];
 
     let raw = run_projection(&ActiveRawMessages, &[ev], &HashMap::new());
 
@@ -1629,12 +1631,16 @@ fn active_raw_messages_populates_attribution_from_provenance() {
             content,
             ..
         } => {
-            let a = attribution
-                .as_ref()
-                .expect("provenance-bearing event must carry attribution");
-            assert_eq!(a.sender, "ed25519:deadbeef01020304");
-            assert!(
-                !a.verified,
+            assert_eq!(
+                attribution.len(),
+                1,
+                "provenance-bearing event must carry attribution"
+            );
+            let a = &attribution[0];
+            assert_eq!(a.author_agent_id, "ed25519:deadbeef01020304");
+            assert_eq!(
+                a.trust,
+                crate::types::Trust::Unverified,
                 "placeholder identity must never be marked verified"
             );
             match content {
@@ -1980,14 +1986,16 @@ fn active_raw_messages_agent_update_uses_provenance_not_session_id() {
             )),
         });
     let mut ev = scoped_mint(body, None, 0, 0);
-    ev.provenance = Some(crate::proto::gait::log::v1::Provenance {
+    ev.provenance = vec![crate::proto::gait::log::v1::Provenance {
         from: pubkey.clone(),
         to: vec![],
         context: String::new(),
         signature: vec![],
         scheme: gait_identity::KeyScheme::Ed25519 as i32,
         delegation_cert: None,
-    });
+        attested_author_agent_id: None,
+        attested_verification_outcome: None,
+    }];
 
     let raw = run_projection(&ActiveRawMessages, &[ev], &HashMap::new());
 
@@ -2003,4 +2011,71 @@ fn active_raw_messages_agent_update_uses_provenance_not_session_id() {
         }
         _ => panic!("expected User variant"),
     }
+}
+
+#[test]
+fn a_resumed_session_folds_an_attested_message_as_verified_not_unverified() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("tx.jsonl");
+    let attested_provenance = pb::Provenance {
+        attested_author_agent_id: Some("agent-2".into()),
+        attested_verification_outcome: Some(identity_crypto::VerificationOutcome::DirectKey as i32),
+        context: "room-general".into(),
+        ..Default::default()
+    };
+    wire::append_with_given_provenances(
+        &path,
+        events::user_text("hello from the room".into()),
+        vec![attested_provenance],
+        crate::proto::envelope::EventScope::Session,
+    )
+    .unwrap();
+
+    // Simulates a session resume: fresh read from disk, fresh fold -- not
+    // reusing any in-memory state from whatever wrote the event.
+    let all_events = read_events(&path).unwrap();
+    let msgs = messages(&all_events).unwrap();
+
+    let crate::types::Message::User { attribution, .. } = &msgs[0] else {
+        panic!("expected a User message");
+    };
+    assert_eq!(attribution.len(), 1);
+    assert_eq!(
+        attribution[0].trust,
+        crate::types::Trust::Verified,
+        "an attested message must fold as Verified on resume, not Unverified -- this is the regression the highest-priority round-3 finding was about"
+    );
+    assert_eq!(attribution[0].author_agent_id, "agent-2");
+    assert_eq!(attribution[0].room_id, "room-general");
+}
+
+#[test]
+fn a_resumed_session_folds_a_system_outcome_message_as_system_not_verified_or_unverified() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("tx.jsonl");
+    let attested_provenance = pb::Provenance {
+        attested_author_agent_id: Some("system".into()),
+        attested_verification_outcome: Some(identity_crypto::VerificationOutcome::System as i32),
+        context: "room-general".into(),
+        ..Default::default()
+    };
+    wire::append_with_given_provenances(
+        &path,
+        events::user_text("agent joined the room".into()),
+        vec![attested_provenance],
+        crate::proto::envelope::EventScope::Session,
+    )
+    .unwrap();
+
+    let all_events = read_events(&path).unwrap();
+    let msgs = messages(&all_events).unwrap();
+
+    let crate::types::Message::User { attribution, .. } = &msgs[0] else {
+        panic!("expected a User message");
+    };
+    assert_eq!(
+        attribution[0].trust,
+        crate::types::Trust::System,
+        "a System-outcome message must render its own distinct trust level, not collapse into Verified or Unverified"
+    );
 }

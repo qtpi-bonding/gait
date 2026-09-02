@@ -68,10 +68,14 @@ gait-state      = { path = "crates/gait-state" }
 gait-codemode   = { path = "crates/gait-codemode" }
 prost          = "0.13"
 pbjson-types   = "0.7"
+prost-types    = "0.13"
 # content_hash pipeline: SHA-256 over JCS(RFC 8785) of the canonical body JSON.
 serde_jcs      = "0.1"
 jsonschema     = { version = "0.18", default-features = false }
 tempfile       = "3"
+base64         = "0.22"
+hex            = "0.4"
+identity-crypto = { git = "ssh://git@github-qtpi-bonding-identity-crypto/qtpi-bonding/identity-crypto.git", rev = "f09e99b" }
 
 [features]
 testing = []
@@ -80,6 +84,7 @@ local = ["gait-provider/local-native"]
 [dev-dependencies]
 tempfile = "3"
 serial_test = "3"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
 gait-workflow = { path = "crates/gait-workflow" }
 gait-ops = { path = "crates/gait-ops" }
 # gait-core's test helpers (e.g. `git::checkpoint::MockCheckpointRepo`) live in

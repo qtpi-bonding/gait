@@ -204,8 +204,7 @@ impl TurnSource for OneTurnSource {
             return Some(TurnStart::SessionUpdate(updates));
         }
         self.bodies.take().map(|bodies| TurnStart::Input {
-            bodies,
-            provenance: None,
+            bodies: bodies.into_iter().map(|body| (body, None)).collect(),
         })
     }
 }

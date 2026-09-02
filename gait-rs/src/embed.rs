@@ -272,13 +272,13 @@ pub async fn run_loop(
     cascade: Option<&CascadeKillHandle>,
 ) -> anyhow::Result<()> {
     while let Some(start) = source.next().await {
-        let (trigger, trigger_provenance) = match start {
+        let trigger = match start {
             TurnStart::SessionUpdate(bodies) => {
                 record_session_update(&session.repos, gait_dir, session_id, bodies)?;
                 continue;
             }
-            TurnStart::Input { bodies, provenance } => (bodies, provenance),
-            TurnStart::Resume => (Vec::new(), None),
+            TurnStart::Input { bodies } => bodies,
+            TurnStart::Resume => Vec::new(),
         };
         let launch = driver.brain_launch(session_id);
         // Safety invariant (design §7): the gait-dir holds the agent's own config,
@@ -312,10 +312,7 @@ pub async fn run_loop(
             launch.cascade_group_arg,
             cascade.map(|h| &h.0),
             &session.repos,
-            &crate::turn::spine::TurnMode::Persistent {
-                trigger,
-                trigger_provenance,
-            },
+            &crate::turn::spine::TurnMode::Persistent { trigger },
             launch.fs_delegate.clone(),
         )
         .await;

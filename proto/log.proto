@@ -42,7 +42,7 @@ message Event {
   // owner. `content_hash` covers only the body arm, by construction — see
   // envelope.rs's doc comment — so `provenance.signature` instead signs
   // `content_hash` itself (see Provenance's doc comment).
-  optional Provenance provenance = 9;
+  repeated Provenance provenance = 9;
   optional uint32 step      = 10; // 0-indexed step ordinal within the turn
   reserved 11 to 15;             // remaining envelope-field reservation
 
@@ -76,6 +76,16 @@ message Provenance {
   // Travels WITH the event rather than being pre-registered anywhere. See
   // an internal design note §3.
   optional identitycrypto.v1.DelegationCert delegation_cert = 6;
+
+  // Set only for a message that arrived via a multimatrix-attested
+  // delivery batch (see an internal design note).
+  // Unlike from/signature/scheme above, there is no per-message embedded
+  // signature to verify here -- authenticity was already established once
+  // by verifying the whole DeliveryAttestation's single signature before
+  // this event was ever appended (see gait-core's attestation module).
+  // Mutually exclusive with the direct-signature fields above.
+  optional string attested_author_agent_id = 7;
+  optional identitycrypto.v1.VerificationOutcome attested_verification_outcome = 8;
 }
 
 

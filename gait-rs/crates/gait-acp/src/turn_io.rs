@@ -266,11 +266,49 @@ impl AcpTurnSource {
         provenance: Option<gait_core::proto::gait::log::v1::Provenance>,
     ) -> Self {
         let sid = session_id.0.to_string();
+        // `provenance` (when present) belongs to the user_text body only --
+        // user_turn_events()'s second body (context_status) is spine-derived
+        // metadata, not attributable content, so it never carries provenance.
+        let mut bodies: Vec<(
+            gait_core::proto::gait::log::v1::event::Body,
+            Option<gait_core::proto::gait::log::v1::Provenance>,
+        )> = user_turn_events(&repos, &codebase, text)
+            .into_iter()
+            .map(|b| (b, None))
+            .collect();
+        if let Some(first) = bodies.first_mut() {
+            first.1 = provenance;
+        }
         Self {
-            first: Some(TurnStart::Input {
-                bodies: user_turn_events(&repos, &codebase, text),
-                provenance,
-            }),
+            first: Some(TurnStart::Input { bodies }),
+            cx,
+            session_id,
+            sid,
+            gait_dir,
+            cancel,
+        }
+    }
+
+    /// Construct a turn source from an already-verified list of `(body,
+    /// provenance)` pairs -- one per attested room message -- instead of a
+    /// single free-text `task` plus one optional provenance. Used by the
+    /// `PromptRequest` handler's attested-delivery branch, where the caller
+    /// (`attestation::verify_and_build_messages`) has already produced the
+    /// authoritative bodies and must not re-derive them from `req.prompt`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_bodies(
+        bodies: Vec<(
+            gait_core::proto::gait::log::v1::event::Body,
+            Option<gait_core::proto::gait::log::v1::Provenance>,
+        )>,
+        cx: ConnectionTo<Client>,
+        session_id: SessionId,
+        gait_dir: PathBuf,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Self {
+        let sid = session_id.0.to_string();
+        Self {
+            first: Some(TurnStart::Input { bodies }),
             cx,
             session_id,
             sid,
@@ -849,6 +887,8 @@ mod tests {
             signature: vec![2u8; 64],
             scheme: gait_identity::KeyScheme::Ed25519 as i32,
             delegation_cert: None,
+            attested_author_agent_id: None,
+            attested_verification_outcome: None,
         };
         use agent_client_protocol::schema::ProtocolVersion;
         use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse};
@@ -898,10 +938,13 @@ mod tests {
             Some(provenance.clone()),
         );
         match source.next().await.expect("first turn") {
-            TurnStart::Input {
-                provenance: Some(p),
-                ..
-            } => assert_eq!(p, provenance),
+            TurnStart::Input { bodies } => {
+                assert_eq!(
+                    bodies[0].1.as_ref(),
+                    Some(&provenance),
+                    "provenance must be attached to the first (user_text) body"
+                );
+            }
             _ => panic!("expected Input with provenance"),
         }
     }

@@ -25,8 +25,7 @@ pub(crate) fn begin_turn(
     log: &crate::turn::SessionLog,
     git: &crate::turn::SessionGit,
     codebase: &std::path::Path,
-    trigger: Vec<pb::event::Body>,
-    trigger_provenance: Option<pb::Provenance>,
+    trigger: Vec<(pb::event::Body, Option<pb::Provenance>)>,
 ) -> anyhow::Result<StartedTurn> {
     use crate::proto::envelope::EventScope;
 
@@ -97,9 +96,8 @@ pub(crate) fn begin_turn(
         },
     )?;
     let mut trigger_id = None;
-    let mut provenance = trigger_provenance;
-    for body in trigger {
-        let event = match provenance.take() {
+    for (body, provenance) in trigger {
+        let event = match provenance {
             Some(p) => log.append_body_with_provenance(
                 body,
                 EventScope::Turn {
@@ -731,7 +729,6 @@ mod tests {
             &crate::turn::SessionGit::null(),
             codebase.path(),
             Vec::new(),
-            None,
         )
         .unwrap();
 
@@ -792,7 +789,6 @@ mod tests {
             &crate::turn::SessionGit::null(),
             codebase.path(),
             Vec::new(),
-            None,
         )
         .unwrap();
 
@@ -846,7 +842,6 @@ mod tests {
             &crate::turn::SessionGit::null(),
             codebase.path(),
             Vec::new(),
-            None,
         )
         .unwrap();
 

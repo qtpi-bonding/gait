@@ -265,9 +265,12 @@ mod tests {
         let appended = events.last().unwrap();
         let provenance = appended
             .provenance
-            .as_ref()
+            .first()
             .expect("notify_parent must stamp provenance");
-        assert!(gait_identity::verify_provenance(appended));
+        assert!(gait_identity::verify_provenance(
+            provenance,
+            &appended.content_hash
+        ));
         assert_eq!(provenance.scheme, gait_identity::KeyScheme::Ed25519 as i32);
     }
 

@@ -63,7 +63,7 @@ impl CodexResponsesProvider {
         for message in messages {
             match message {
                 Message::User { content, attribution, .. } => input.push(json!({
-                    "role": "user", "content": [{"type": "input_text", "text": format!("{}{}", gait_types::types::render_attribution_prefix(attribution), text_content(content))}]
+                    "role": "user", "content": [{"type": "input_text", "text": gait_types::types::render_user_text(attribution, &text_content(content))}]
                 })),
                 Message::Assistant { content, .. } => {
                     let mut content_items = Vec::new();
@@ -174,7 +174,7 @@ impl Provider for CodexResponsesProvider {
             effective_messages.push(Message::User {
                 content: MessageContent::Text(tail.to_string()),
                 id: String::new(),
-                attribution: None,
+                attribution: Vec::new(),
             });
         }
         let body = self.request_body(system, &effective_messages, tools, params, kind);
@@ -486,7 +486,7 @@ mod tests {
     }
 
     #[test]
-    fn prepends_attribution_marker_to_user_message() {
+    fn wraps_user_message_in_room_message_tag_when_attributed() {
         let provider = CodexResponsesProvider::new(
             test_credential("access-test"),
             "gpt-5.3-codex".into(),
@@ -498,10 +498,11 @@ mod tests {
         let message = Message::User {
             content: MessageContent::Text("hello world".to_string()),
             id: "msg-123".to_string(),
-            attribution: Some(gait_types::types::Attribution {
-                sender: "ed25519:deadbeef".into(),
-                verified: false,
-            }),
+            attribution: vec![gait_types::types::Attribution {
+                author_agent_id: "agent-2".into(),
+                room_id: "room-general".into(),
+                trust: gait_types::types::Trust::Unverified,
+            }],
         };
 
         let body =
@@ -517,13 +518,9 @@ mod tests {
             .and_then(|text| text.as_str())
             .expect("text field in message");
 
-        assert!(
-            input_content.starts_with("[from: ed25519:deadbeef, unverified]\n"),
-            "attribution marker should be prepended to message; got: {input_content:?}"
-        );
-        assert!(
-            input_content.ends_with("hello world"),
-            "original message content should remain at the end; got: {input_content:?}"
+        assert_eq!(
+            input_content,
+            "<room-message from=\"agent-2\" room=\"room-general\" trust=\"unverified\">hello world</room-message>\n"
         );
     }
 }

@@ -201,7 +201,7 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
         .unwrap();
     let prov = user_turn_event
         .provenance
-        .as_ref()
+        .first()
         .expect("user_turn must carry provenance");
     let cert = prov
         .delegation_cert
@@ -214,7 +214,7 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
         "child user_turn's session key must be delegated by the parent's device keyring"
     );
     assert!(
-        gait_identity::verify_provenance(user_turn_event),
+        gait_identity::verify_provenance(prov, &user_turn_event.content_hash),
         "spawn_agent must sign with a real, verifiable signature"
     );
 }

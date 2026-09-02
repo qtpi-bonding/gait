@@ -317,7 +317,7 @@ mod tests {
             .unwrap();
         let prov = user_turn_event
             .provenance
-            .as_ref()
+            .first()
             .expect("user_turn must carry provenance");
         let cert = prov
             .delegation_cert
@@ -326,7 +326,7 @@ mod tests {
         assert_eq!(prov.from, cert.session_public_key);
         assert_eq!(cert.device_public_key, signer.public_key().to_vec());
         assert!(
-            gait_identity::verify_provenance(user_turn_event),
+            gait_identity::verify_provenance(prov, &user_turn_event.content_hash),
             "spawn_agent must sign with a real, verifiable signature"
         );
 
@@ -480,7 +480,7 @@ mod tests {
             .expect("task injection event must exist");
         let prov = user_text_event
             .provenance
-            .as_ref()
+            .first()
             .expect("task injection must carry provenance");
         let signer = gait_identity::Keyring::load(ws.path())
             .unwrap()
@@ -501,7 +501,7 @@ mod tests {
             signer.public_key().to_vec()
         );
         assert!(
-            gait_identity::verify_provenance(user_text_event),
+            gait_identity::verify_provenance(prov, &user_text_event.content_hash),
             "spawn_agent must sign with a real, verifiable signature"
         );
     }

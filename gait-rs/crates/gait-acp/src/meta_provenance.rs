@@ -51,6 +51,8 @@ pub fn provenance_from_meta(
         signature,
         scheme: KeyScheme::Ed25519 as i32,
         delegation_cert: None,
+        attested_author_agent_id: None,
+        attested_verification_outcome: None,
     })
 }
 

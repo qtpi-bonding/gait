@@ -1027,12 +1027,12 @@ impl TurnSource for ReplSource {
                     last_blocks: &self.last_blocks,
                 },
             );
-            let bodies = user_turn_events(&self.repos, &self.codebase, expanded);
+            let bodies = user_turn_events(&self.repos, &self.codebase, expanded)
+                .into_iter()
+                .map(|b| (b, None))
+                .collect();
             self.ran_turn = true;
-            return Some(TurnStart::Input {
-                bodies,
-                provenance: None,
-            });
+            return Some(TurnStart::Input { bodies });
         }
     }
 }

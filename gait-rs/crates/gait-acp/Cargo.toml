@@ -9,12 +9,13 @@ gait-core = { path = "../.." }
 gait-workflow = { path = "../gait-workflow" }
 gait-ops = { path = "../gait-ops" }
 gait-state = { path = "../gait-state" }
+gait-identity = { path = "../gait-identity" }
 agent-client-protocol = { version = "1.1", features = ["unstable_elicitation"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sync"] }
 tokio-util = "0.7"
 anyhow = "1"
 base64 = "0.22"
-identity-crypto = { git = "ssh://git@github-qtpi-bonding-identity-crypto/qtpi-bonding/identity-crypto.git", rev = "7211397" }
+identity-crypto = { git = "ssh://git@github-qtpi-bonding-identity-crypto/qtpi-bonding/identity-crypto.git", rev = "f09e99b" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -29,7 +30,10 @@ path = "src/bin/mock_brain_acp.rs"
 [dev-dependencies]
 tempfile = "3"
 gait-proto = { path = "../gait-proto" }
-gait-identity = { path = "../gait-identity" }
 prost = "0.13"
+prost-types = "0.13"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+hex = "0.4"
 git2 = "0.20"
 pbjson-types = "0.7"

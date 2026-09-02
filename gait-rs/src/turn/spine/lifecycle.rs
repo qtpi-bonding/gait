@@ -32,8 +32,14 @@ pub struct ProfileInputs {
 /// brain's input from memory and writes nothing to disk.
 pub enum TurnMode {
     Persistent {
-        trigger: Vec<crate::proto::gait::log::v1::event::Body>,
-        trigger_provenance: Option<crate::proto::gait::log::v1::Provenance>,
+        /// One optional provenance per trigger body -- a batch (e.g. an
+        /// attested delivery of several room messages) has one `Provenance`
+        /// per message, so this is paired inline rather than a separate
+        /// parallel field a caller could accidentally mis-align in length.
+        trigger: Vec<(
+            crate::proto::gait::log::v1::event::Body,
+            Option<crate::proto::gait::log::v1::Provenance>,
+        )>,
     },
     Ephemeral {
         input: Vec<crate::proto::gait::log::v1::Event>,

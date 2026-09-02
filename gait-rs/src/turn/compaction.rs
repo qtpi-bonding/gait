@@ -227,7 +227,7 @@ pub async fn summarize(
     request.push(Message::User {
         content: crate::types::MessageContent::Text(COMPACTION_INSTRUCTION.to_string()),
         id: "compaction-instruction".to_string(),
-        attribution: None,
+        attribution: Vec::new(),
     });
     let no_tools: &[Arc<dyn crate::types::Tool>] = &[];
     let mut params = env.llm_params.clone();

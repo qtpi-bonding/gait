@@ -8,8 +8,15 @@ use crate::proto::gait::log::v1::event;
 /// [`TurnSource::next`] means no more work.
 pub enum TurnStart {
     Input {
-        bodies: Vec<event::Body>,
-        provenance: Option<crate::proto::gait::log::v1::Provenance>,
+        /// One optional provenance per body, not a separate parallel field —
+        /// a batch (e.g. an attested delivery of several room messages) has
+        /// one `Provenance` per message, and pairing them inline can never
+        /// be accidentally mis-aligned in length the way two parallel
+        /// `Vec`/`Option` fields could.
+        bodies: Vec<(
+            event::Body,
+            Option<crate::proto::gait::log::v1::Provenance>,
+        )>,
     },
     SessionUpdate(Vec<event::Body>),
     Resume,
@@ -40,8 +47,7 @@ impl ArgSource {
         Self {
             start: Some(
                 body.map(|b| TurnStart::Input {
-                    bodies: vec![b],
-                    provenance: None,
+                    bodies: vec![(b, None)],
                 })
                 .unwrap_or(TurnStart::Resume),
             ),
@@ -65,7 +71,7 @@ mod tests {
         let body = crate::proto::events::user_text("hi".into());
         let mut s = ArgSource::new(Some(body));
         match s.next().await.expect("first yield") {
-            TurnStart::Input { ref bodies, .. } => match &bodies[0] {
+            TurnStart::Input { ref bodies } => match &bodies[0].0 {
                 event::Body::Payload(p) => {
                     assert!(matches!(p.kind, Some(payload::Kind::UserText(_))))
                 }

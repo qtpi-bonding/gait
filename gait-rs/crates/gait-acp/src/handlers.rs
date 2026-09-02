@@ -25,6 +25,8 @@ use crate::session_map::{SessionMap, discover_gait_dir_for_cwd};
 use crate::turn_io::{
     AcpTurnSink, AcpTurnSource, content_blocks_to_text, turn_result_to_stop_reason,
 };
+use gait_core::attestation::TrustedMultimatrixKey;
+use gait_identity::Signer as _;
 
 /// Build the gait-acp agent: registers `initialize` and `session/new` against
 /// the given `SessionMap`. Returns the concrete `Builder` (not just an opaque
@@ -53,9 +55,24 @@ pub fn advertise_modes(gait_dir: &Path) -> SessionModeState {
 }
 
 pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Client>, NullRun> {
+    build_agent_with_attestation(map, false, Vec::new())
+}
+
+/// Like [`build_agent`], but with the attestation-verification policy that
+/// governs `session/prompt`: `require_attestation` is a single process-wide
+/// `bool` (not per-session state -- the trust decision has to be rooted in
+/// how the process itself was launched, e.g. by `multimatrix-bridge`, not a
+/// runtime `_meta` claim), and `trusted_keys` pins which multimatrix service
+/// keys a `DeliveryAttestation` may be signed by.
+pub fn build_agent_with_attestation(
+    map: SessionMap,
+    require_attestation: bool,
+    trusted_keys: Vec<TrustedMultimatrixKey>,
+) -> Builder<Agent, impl HandleDispatchFrom<Client>, NullRun> {
     // Connection-level: written by the `initialize` handler below, read by each
     // `session/prompt` before it installs the fs delegate (design §1).
     let caps = std::sync::Arc::new(crate::fs_delegate::ClientFsCaps::default());
+    let trusted_keys = std::sync::Arc::new(trusted_keys);
     Agent
         .builder()
         .name("gait-acp")
@@ -137,11 +154,13 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
             {
                 let map = map.clone();
                 let caps = caps.clone();
+                let trusted_keys = trusted_keys.clone();
                 move |req: PromptRequest,
                       responder: Responder<PromptResponse>,
                       cx: agent_client_protocol::ConnectionTo<Client>| {
                     let map = map.clone();
                     let caps = caps.clone();
+                    let trusted_keys = trusted_keys.clone();
                     async move {
                         let session_id = req.session_id.clone();
                         let sid = session_id.0.to_string();
@@ -186,8 +205,106 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                         if let Some(key) = &idempotency_key {
                             map.record_idempotency_key(&sid, key);
                         }
-                        let text = content_blocks_to_text(&req.prompt);
-                        let provenance = crate::meta_provenance::provenance_from_meta(&req.meta);
+                        // Mandatory attestation check. `own_device_public_key`
+                        // is loaded unconditionally (cheap, and
+                        // verify_and_build_messages returns Ok(None) before
+                        // ever touching it when `_meta` carries no
+                        // attestation at all) -- an empty fallback on a
+                        // keyring-load failure is safe: it simply can never
+                        // match a real recipient list, so a genuine
+                        // attestation still gets correctly rejected rather
+                        // than silently bypassing the check.
+                        let own_device_public_key: Vec<u8> = gait_identity::Keyring::load(&gait_dir)
+                            .ok()
+                            .and_then(|k| k.signer().ok())
+                            .map(|s| s.public_key().to_vec())
+                            .unwrap_or_default();
+                        let replay_store =
+                            match gait_state::attestation_replay::AttestationReplayStore::new(&gait_dir) {
+                                Ok(store) => store,
+                                Err(e) => {
+                                    return responder.respond_with_internal_error(format!(
+                                        "opening attestation replay store: {e}"
+                                    ));
+                                }
+                            };
+                        let verified = gait_core::attestation::verify_and_build_messages(
+                            &req.meta,
+                            &own_device_public_key,
+                            &trusted_keys,
+                            &replay_store,
+                        );
+                        // Two ways to build this turn's trigger: the
+                        // fail-open, no-attestation path (today's behavior,
+                        // byte-for-byte unchanged -- text + optional single
+                        // direct provenance, via user_turn_events() so the
+                        // context_status body is still included), or the
+                        // fix -- one (body, provenance) pair per verified
+                        // room message, built exclusively from `body_text`,
+                        // never from `req.prompt`.
+                        enum TurnInput {
+                            Legacy {
+                                text: String,
+                                provenance: Option<gait_core::proto::gait::log::v1::Provenance>,
+                            },
+                            Verified {
+                                bodies: Vec<(
+                                    gait_core::proto::gait::log::v1::event::Body,
+                                    Option<gait_core::proto::gait::log::v1::Provenance>,
+                                )>,
+                            },
+                        }
+                        let turn_input = match verified {
+                            // An attestation was present and invalid (bad
+                            // signature, untrusted key, replay, or this
+                            // device not a listed recipient) -- always a hard
+                            // failure, regardless of session policy. Present-
+                            // but-invalid is never treated as absent.
+                            Err(e) => {
+                                return responder.respond_with_internal_error(format!(
+                                    "delivery-attestation verification failed: {e}"
+                                ));
+                            }
+                            // No attestation present at all.
+                            Ok(None) => {
+                                if require_attestation {
+                                    return responder.respond_with_internal_error(
+                                        "this session requires a verified delivery-attestation, but none was present"
+                                            .to_string(),
+                                    );
+                                }
+                                TurnInput::Legacy {
+                                    text: content_blocks_to_text(&req.prompt),
+                                    provenance: crate::meta_provenance::provenance_from_meta(
+                                        &req.meta,
+                                    ),
+                                }
+                            }
+                            // The fix: build every logged event body -- and
+                            // every piece of model-facing rendered text --
+                            // exclusively from the verified body_text, never
+                            // from req.prompt. A compromised/buggy bridge
+                            // that signs one message but sends different
+                            // prompt content must never have that different
+                            // text executed.
+                            Ok(Some(messages)) => TurnInput::Verified {
+                                bodies: messages
+                                    .into_iter()
+                                    .map(|m| {
+                                        (
+                                            gait_core::proto::wire::body(
+                                                gait_core::proto::gait::log::v1::payload::Kind::UserText(
+                                                    gait_core::proto::gait::log::v1::UserText {
+                                                        content: m.body_text,
+                                                    },
+                                                ),
+                                            ),
+                                            Some(m.provenance),
+                                        )
+                                    })
+                                    .collect(),
+                            },
+                        };
 
                         let handle = gait_core::embed::CascadeKillHandle::new();
                         map.set_cascade(&sid, handle.clone());
@@ -223,20 +340,33 @@ pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Cl
                             } else {
                                 None
                             };
-                            let source = AcpTurnSource::new(
-                                text.clone(),
-                                gait_core::git::Repos::production(),
-                                codebase.clone(),
-                                cx,
-                                session_id,
-                                gait_dir.clone(),
-                                cancel,
-                                provenance,
-                            );
+                            let source: AcpTurnSource = match turn_input {
+                                TurnInput::Legacy { text, provenance } => AcpTurnSource::new(
+                                    text,
+                                    gait_core::git::Repos::production(),
+                                    codebase.clone(),
+                                    cx,
+                                    session_id,
+                                    gait_dir.clone(),
+                                    cancel,
+                                    provenance,
+                                ),
+                                TurnInput::Verified { bodies } => AcpTurnSource::new_with_bodies(
+                                    bodies,
+                                    cx,
+                                    session_id,
+                                    gait_dir.clone(),
+                                    cancel,
+                                ),
+                            };
                             let opts = gait_workflow::SinglePromptOpts {
                                 run_id: format!("acp-{sid_thread}"),
                                 continue_session: sid_thread.clone(),
-                                prompt: Some(text),
+                                // SinglePromptOpts.prompt is ignored whenever a
+                                // live TurnSource is supplied (always true
+                                // here, per single_prompt.rs) -- the real
+                                // trigger content lives in `source` above.
+                                prompt: None,
                                 gait_dir,
                                 codebase,
                                 fs_delegate,

@@ -97,13 +97,13 @@ impl SessionLog {
     ) -> anyhow::Result<Event> {
         match self {
             Self::Persistent { log_path, .. } => {
-                wire::append_with_given_provenance(log_path, body, provenance, scope)
+                wire::append_with_given_provenances(log_path, body, vec![provenance], scope)
             }
             Self::Ephemeral { events } => {
                 let mut guard = events.lock().unwrap();
                 let prev = guard.last();
                 let mut evt = crate::proto::envelope::mint(body, prev, scope);
-                evt.provenance = Some(provenance);
+                evt.provenance = vec![provenance];
                 guard.push(evt.clone());
                 Ok(evt)
             }

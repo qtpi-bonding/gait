@@ -126,7 +126,7 @@ pub fn mint(body: event::Body, prev: Option<&Event>, scope: EventScope) -> Event
         turn,
         step,
         body: Some(body),
-        provenance: None,
+        provenance: Vec::new(),
     };
     stamp_hash(&mut ev);
     ev

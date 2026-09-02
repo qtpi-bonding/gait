@@ -279,33 +279,39 @@ pub fn to_anthropic_messages(messages: &[Message]) -> Vec<AnthropicMessage> {
                 content,
                 attribution,
                 ..
-            } => {
-                let prefix = gait_types::types::render_attribution_prefix(attribution);
-                AnthropicMessage {
-                    role: "user".into(),
-                    content: match content {
-                        MessageContent::Text(t) => AnthropicContent::Text(format!("{prefix}{t}")),
-                        MessageContent::Parts(parts) => {
-                            let mut blocks: Vec<AnthropicBlock> = Vec::new();
-                            if !prefix.is_empty() {
-                                blocks.push(AnthropicBlock::Text {
-                                    text: prefix.clone(),
-                                    cache_control: None,
-                                });
-                            }
-                            blocks.extend(parts.iter().map(|p| match p {
-                                gait_types::types::ContentPart::Text { text } => {
-                                    AnthropicBlock::Text {
-                                        text: text.clone(),
-                                        cache_control: None,
-                                    }
-                                }
-                            }));
-                            AnthropicContent::Blocks(blocks)
+            } => AnthropicMessage {
+                role: "user".into(),
+                content: match content {
+                    MessageContent::Text(t) => {
+                        AnthropicContent::Text(gait_types::types::render_user_text(attribution, t))
+                    }
+                    MessageContent::Parts(parts) => {
+                        let mut blocks: Vec<AnthropicBlock> = Vec::new();
+                        if !attribution.is_empty() {
+                            // Parts are already separate, structurally-distinct
+                            // Anthropic content blocks (not concatenated at the
+                            // text level), so the marker only needs to convey
+                            // the bounded/escaped attribution itself -- an
+                            // empty body is fine, the real text follows as its
+                            // own block(s) below.
+                            let marker =
+                                gait_types::types::render_room_messages(attribution, &[String::new()])
+                                    .unwrap_or_default();
+                            blocks.push(AnthropicBlock::Text {
+                                text: marker,
+                                cache_control: None,
+                            });
                         }
-                    },
-                }
-            }
+                        blocks.extend(parts.iter().map(|p| match p {
+                            gait_types::types::ContentPart::Text { text } => AnthropicBlock::Text {
+                                text: text.clone(),
+                                cache_control: None,
+                            },
+                        }));
+                        AnthropicContent::Blocks(blocks)
+                    }
+                },
+            },
             Message::Assistant { content, .. } => AnthropicMessage {
                 role: "assistant".into(),
                 content: match content {
@@ -672,7 +678,7 @@ mod tests {
                 content: gait_types::types::MessageContent::Text(
                     "[daemon:build] done — exit 0 — log: /tmp/build.log".into(),
                 ),
-                attribution: None,
+                attribution: Vec::new(),
             },
         ];
         let converted = to_anthropic_messages(&messages);
@@ -711,11 +717,12 @@ mod tests {
     }
 
     #[test]
-    fn user_message_with_attribution_prepends_prefix_to_text() {
-        let attribution = Some(gait_types::types::Attribution {
-            sender: "ed25519:deadbeef".into(),
-            verified: false,
-        });
+    fn user_message_with_attribution_wraps_text_in_room_message_tag() {
+        let attribution = vec![gait_types::types::Attribution {
+            author_agent_id: "agent-2".into(),
+            room_id: "room-general".into(),
+            trust: gait_types::types::Trust::Unverified,
+        }];
         let messages = vec![Message::User {
             id: String::new(),
             content: MessageContent::Text("Hello from peer".into()),
@@ -725,13 +732,9 @@ mod tests {
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "user");
         if let AnthropicContent::Text(text) = &converted[0].content {
-            assert!(
-                text.starts_with("[from: ed25519:deadbeef, unverified]\n"),
-                "text should start with attribution prefix, got: {text:?}"
-            );
-            assert!(
-                text.contains("Hello from peer"),
-                "text should contain original message, got: {text:?}"
+            assert_eq!(
+                text,
+                "<room-message from=\"agent-2\" room=\"room-general\" trust=\"unverified\">Hello from peer</room-message>\n"
             );
         } else {
             panic!("expected Text content, got {:?}", converted[0].content);
@@ -739,11 +742,12 @@ mod tests {
     }
 
     #[test]
-    fn user_message_with_attribution_inserts_prefix_block_in_parts() {
-        let attribution = Some(gait_types::types::Attribution {
-            sender: "ed25519:deadbeef".into(),
-            verified: false,
-        });
+    fn user_message_with_attribution_inserts_marker_block_in_parts() {
+        let attribution = vec![gait_types::types::Attribution {
+            author_agent_id: "agent-2".into(),
+            room_id: "room-general".into(),
+            trust: gait_types::types::Trust::Unverified,
+        }];
         let messages = vec![Message::User {
             id: String::new(),
             content: MessageContent::Parts(vec![
@@ -763,18 +767,18 @@ mod tests {
             assert_eq!(
                 blocks.len(),
                 3,
-                "expected 3 blocks (attribution + 2 parts), got {}",
+                "expected 3 blocks (attribution marker + 2 parts), got {}",
                 blocks.len()
             );
-            // First block should be the attribution prefix
+            // First block should be the attribution marker
             if let AnthropicBlock::Text {
                 text,
                 cache_control,
             } = &blocks[0]
             {
                 assert!(
-                    text.contains("[from: ed25519:deadbeef, unverified]"),
-                    "first block should contain attribution prefix, got: {text:?}"
+                    text.contains("from=\"agent-2\""),
+                    "first block should contain the attribution marker, got: {text:?}"
                 );
                 assert!(
                     cache_control.is_none(),

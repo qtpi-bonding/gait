@@ -13,8 +13,8 @@
 use crate::proto::gait::log::v1::{self as pb, event, payload, ClarifyKind, Event};
 use crate::session::{log::read_events, SessionError};
 use crate::types::{
-    AssistantContent, AssistantPart, Attribution, Message, MessageContent, ToolCall, ToolResult,
-    ToolResultKind,
+    AssistantContent, AssistantPart, Attribution, Attributions, Message, MessageContent, ToolCall,
+    ToolResult, ToolResultKind, Trust,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -35,8 +35,13 @@ fn clarify_kind_str(k: i32) -> &'static str {
     }
 }
 
-/// Render `Provenance.from` as a scheme-labeled hexadecimal public key.
+/// Render `Provenance.from` as a scheme-labeled hexadecimal public key -- or,
+/// for an attested `Provenance` (no `from`/`scheme` to hex-encode), the
+/// verified author id directly.
 fn render_sender(p: &pb::Provenance) -> String {
+    if let Some(author) = &p.attested_author_agent_id {
+        return format!("attested:{author}");
+    }
     let scheme_label = match gait_identity::KeyScheme::try_from(p.scheme) {
         Ok(gait_identity::KeyScheme::Ed25519) => "ed25519",
         Ok(gait_identity::KeyScheme::Secp256k1Schnorr) => "secp256k1-schnorr",
@@ -414,7 +419,7 @@ impl RawMessagesState {
             base: vec![Message::User {
                 content: MessageContent::Text(format!("[Session history summary: {summary}]")),
                 id: id.to_string(),
-                attribution: None,
+                attribution: Vec::new(),
             }],
         }
     }
@@ -433,7 +438,7 @@ impl MessagesState {
             msgs: vec![Message::User {
                 content: MessageContent::Text(format!("[Session history summary: {}]", summary)),
                 id: id.to_string(),
-                attribution: None,
+                attribution: Vec::new(),
             }],
             deferred: vec![],
             phase: MsgPhase::Other,
@@ -458,7 +463,7 @@ impl MessagesState {
         self.push_non_tool(Message::User {
             content: MessageContent::Text(text),
             id: id.to_string(),
-            attribution: None,
+            attribution: Vec::new(),
         });
     }
 
@@ -539,7 +544,7 @@ impl MessagesState {
         // (e.g. "agent:s1234abcd"); see the plan's Global Constraints.
         let sender = ev
             .provenance
-            .as_ref()
+            .first()
             .map(render_sender)
             .unwrap_or_else(|| au.session_id.clone());
         let mut content = format!(
@@ -756,10 +761,39 @@ impl Projection for ActiveRawMessages {
     fn apply(&self, st: &mut Self::State, ev: &Event, kind: &payload::Kind) {
         match kind {
             payload::Kind::UserText(u) => {
-                let attribution = ev.provenance.as_ref().map(|p| Attribution {
-                    sender: render_sender(p),
-                    verified: gait_identity::verify_provenance(ev),
-                });
+                let attribution: Attributions = ev
+                    .provenance
+                    .iter()
+                    .map(|p| {
+                        if let Some(outcome) = p.attested_verification_outcome {
+                            // Attested: never call verify_provenance (Global
+                            // Constraints rule -- there's no embedded
+                            // signature to check).
+                            Attribution {
+                                author_agent_id: p
+                                    .attested_author_agent_id
+                                    .clone()
+                                    .unwrap_or_default(),
+                                room_id: p.context.clone(),
+                                trust: Trust::from_verification_outcome(outcome),
+                            }
+                        } else {
+                            // Direct: same check as today, just per-entry
+                            // instead of per-event, and via
+                            // verify_provenance's new (Task 1)
+                            // one-Provenance-at-a-time signature.
+                            Attribution {
+                                author_agent_id: render_sender(p),
+                                room_id: p.context.clone(),
+                                trust: if gait_identity::verify_provenance(p, &ev.content_hash) {
+                                    Trust::Verified
+                                } else {
+                                    Trust::Unverified
+                                },
+                            }
+                        }
+                    })
+                    .collect();
                 st.base.push(Message::User {
                     content: MessageContent::Text(u.content.clone()),
                     id: ev.id.clone(),
@@ -802,7 +836,7 @@ impl Projection for ActiveRawMessages {
                     _ => Message::User {
                         content: MessageContent::Text(ti.content.clone()),
                         id: ev.id.clone(),
-                        attribution: None,
+                        attribution: Vec::new(),
                     },
                 };
                 st.base.push(msg);
@@ -811,7 +845,7 @@ impl Projection for ActiveRawMessages {
             payload::Kind::CancellationSignal(_) => st.base.push(Message::User {
                 content: MessageContent::Text("[turn interrupted by user]".to_string()),
                 id: ev.id.clone(),
-                attribution: None,
+                attribution: Vec::new(),
             }),
             payload::Kind::AgentUpdate(au) => {
                 let status = pb::AgentStatus::try_from(au.status)
@@ -829,7 +863,7 @@ impl Projection for ActiveRawMessages {
                 // public-key bytes; render_sender() hex-encodes it with a scheme label.
                 let sender = ev
                     .provenance
-                    .as_ref()
+                    .first()
                     .map(render_sender)
                     .unwrap_or_else(|| au.session_id.clone());
                 let mut content = format!(
@@ -843,7 +877,7 @@ impl Projection for ActiveRawMessages {
                 st.base.push(Message::User {
                     content: MessageContent::Text(content),
                     id: ev.id.clone(),
-                    attribution: None,
+                    attribution: Vec::new(),
                 });
             }
             payload::Kind::DaemonUpdate(du) => {
@@ -861,7 +895,7 @@ impl Projection for ActiveRawMessages {
                 st.base.push(Message::User {
                     content: MessageContent::Text(content),
                     id: ev.id.clone(),
-                    attribution: None,
+                    attribution: Vec::new(),
                 });
             }
             payload::Kind::Clarify(c) => {
@@ -900,7 +934,7 @@ impl Projection for ActiveRawMessages {
                 st.base.push(Message::User {
                     content: MessageContent::Text(text),
                     id: ev.id.clone(),
-                    attribution: None,
+                    attribution: Vec::new(),
                 });
             }
             payload::Kind::ClarifyConvergence(cc) => {
@@ -913,7 +947,7 @@ impl Projection for ActiveRawMessages {
                         st.base.push(Message::User {
                             content: MessageContent::Text(format!("[response] {}", resp)),
                             id: ev.id.clone(),
-                            attribution: None,
+                            attribution: Vec::new(),
                         });
                     }
                 }
@@ -946,7 +980,7 @@ impl Projection for ActiveRawMessages {
                 st.base.push(Message::User {
                     content: MessageContent::Text(text),
                     id: ev.id.clone(),
-                    attribution: None,
+                    attribution: Vec::new(),
                 });
             }
             payload::Kind::Error(e) => {
@@ -965,7 +999,7 @@ impl Projection for ActiveRawMessages {
                         phase_str, e.message
                     )),
                     id: ev.id.clone(),
-                    attribution: None,
+                    attribution: Vec::new(),
                 });
             }
             payload::Kind::Cwd(_)

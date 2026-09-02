@@ -75,11 +75,7 @@ pub fn build_request(
                 attribution,
                 ..
             } => out.push(GenerationMessage::User {
-                content: format!(
-                    "{}{}",
-                    gait_types::types::render_attribution_prefix(attribution),
-                    text_content(content)
-                ),
+                content: gait_types::types::render_user_text(attribution, &text_content(content)),
             }),
             Message::Assistant { content, .. } => {
                 let (content, tool_calls) = assistant_content(content);
@@ -185,7 +181,7 @@ mod tests {
             Message::User {
                 content: MessageContent::Text("hello".into()),
                 id: "u".into(),
-                attribution: None,
+                attribution: Vec::new(),
             },
             Message::Assistant {
                 content: AssistantContent::Parts(vec![
@@ -266,14 +262,15 @@ mod tests {
     }
 
     #[test]
-    fn request_prepends_attribution_prefix_to_user_message() {
+    fn request_wraps_user_message_in_room_message_tag_when_attributed() {
         let messages = vec![Message::User {
             content: MessageContent::Text("hello".into()),
             id: "u".into(),
-            attribution: Some(gait_types::types::Attribution {
-                sender: "ed25519:deadbeef".into(),
-                verified: false,
-            }),
+            attribution: vec![gait_types::types::Attribution {
+                author_agent_id: "agent-2".into(),
+                room_id: "room-general".into(),
+                trust: gait_types::types::Trust::Unverified,
+            }],
         }];
         let request = build_request("system", &messages, &[], &Default::default(), None);
         assert_eq!(request.messages.len(), 1);
@@ -281,15 +278,9 @@ mod tests {
             GenerationMessage::User { content } => content,
             _ => panic!("Expected User message"),
         };
-        assert!(
-            content.starts_with("[from: ed25519:deadbeef, unverified]\n"),
-            "Content should start with attribution prefix, got: {}",
-            content
-        );
-        assert!(
-            content.ends_with("hello"),
-            "Content should end with original message, got: {}",
-            content
+        assert_eq!(
+            content,
+            "<room-message from=\"agent-2\" room=\"room-general\" trust=\"unverified\">hello</room-message>\n"
         );
     }
 }

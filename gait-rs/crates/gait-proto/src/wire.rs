@@ -155,14 +155,16 @@ pub fn append_with_provenance(
     let prev = last_event(path)?;
     let mut ev = mint(body, prev.as_ref(), scope);
     let signature = sign(ev.content_hash.as_bytes());
-    ev.provenance = Some(crate::gait::log::v1::Provenance {
+    ev.provenance = vec![crate::gait::log::v1::Provenance {
         from,
         to,
         context,
         signature,
         scheme,
         delegation_cert: None,
-    });
+        attested_author_agent_id: None,
+        attested_verification_outcome: None,
+    }];
     write_event(path, ev)
 }
 
@@ -185,28 +187,35 @@ pub fn append_with_delegated_provenance(
     let prev = last_event(path)?;
     let mut ev = mint(body, prev.as_ref(), scope);
     let signature = sign(ev.content_hash.as_bytes());
-    ev.provenance = Some(crate::gait::log::v1::Provenance {
+    ev.provenance = vec![crate::gait::log::v1::Provenance {
         from,
         to,
         context,
         signature,
         scheme,
         delegation_cert: Some(delegation_cert),
-    });
+        attested_author_agent_id: None,
+        attested_verification_outcome: None,
+    }];
     write_event(path, ev)
 }
 
-/// Like [`append_with_provenance`], but relays a provenance already signed by
-/// someone else. It attaches the value verbatim without signing or verifying.
-pub fn append_with_given_provenance(
+/// Like [`append_with_provenance`], but relays one or more provenances
+/// already signed/established by someone else (a direct signature, or an
+/// attested authorship pair from a verified `DeliveryAttestation` — see
+/// gait-core's `attestation` module). Attaches the values verbatim without
+/// signing or re-verifying. One `Provenance` per trigger body — see
+/// `TurnStart::Input`'s `Vec<(event::Body, Option<Provenance>)>` pairing for
+/// why this is a list rather than a single value.
+pub fn append_with_given_provenances(
     path: &Path,
     body: event::Body,
-    provenance: crate::gait::log::v1::Provenance,
+    provenances: Vec<crate::gait::log::v1::Provenance>,
     scope: EventScope,
 ) -> anyhow::Result<Event> {
     let prev = last_event(path)?;
     let mut ev = mint(body, prev.as_ref(), scope);
-    ev.provenance = Some(provenance);
+    ev.provenance = provenances;
     write_event(path, ev)
 }
 
@@ -279,7 +288,7 @@ mod tests {
             cert.clone(),
         )
         .unwrap();
-        assert_eq!(ev.provenance.unwrap().delegation_cert, Some(cert));
+        assert_eq!(ev.provenance[0].delegation_cert, Some(cert));
     }
 
     #[test]
@@ -430,11 +439,40 @@ mod tests {
             EventScope::Turn { run: 1, turn: 2 },
         )
         .unwrap();
-        let provenance = ev.provenance.as_ref().expect("provenance set");
+        let provenance = ev.provenance.first().expect("provenance set");
         assert_eq!(provenance.from, from);
         assert_eq!(provenance.scheme, identity_crypto::KeyScheme::Ed25519 as i32);
         assert_eq!(provenance.signature, ev.content_hash.as_bytes());
         assert_eq!((ev.run, ev.turn, ev.step), (Some(1), Some(2), None));
+    }
+
+    #[test]
+    fn append_with_given_provenances_preserves_every_entry_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.jsonl");
+        let body = crate::gait::log::v1::event::Body::Payload(crate::gait::log::v1::Payload {
+            kind: Some(crate::gait::log::v1::payload::Kind::UserText(
+                crate::gait::log::v1::UserText {
+                    content: "hi".into(),
+                },
+            )),
+        });
+        let p1 = crate::gait::log::v1::Provenance {
+            context: "room-a".into(),
+            ..Default::default()
+        };
+        let p2 = crate::gait::log::v1::Provenance {
+            context: "room-b".into(),
+            ..Default::default()
+        };
+        let event = append_with_given_provenances(
+            &path,
+            body,
+            vec![p1.clone(), p2.clone()],
+            EventScope::Session,
+        )
+        .unwrap();
+        assert_eq!(event.provenance, vec![p1, p2]);
     }
 
     #[test]

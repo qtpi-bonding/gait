@@ -337,12 +337,12 @@ mod cache_prefix_tests {
             Message::User {
                 content: MessageContent::Text("find the bug".into()),
                 id: "u1".into(),
-                attribution: None,
+                attribution: Vec::new(),
             },
             Message::User {
                 content: MessageContent::Text("any update?".into()),
                 id: "u2".into(),
-                attribution: None,
+                attribution: Vec::new(),
             },
         ]
     }

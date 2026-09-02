@@ -28,7 +28,7 @@ fn sample_event() -> Event {
                 content: "hello".into(),
             })),
         })),
-        provenance: None,
+        provenance: Vec::new(),
     }
 }
 

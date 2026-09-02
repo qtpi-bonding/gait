@@ -185,11 +185,7 @@ fn to_chat_messages(system: &str, messages: &[Message]) -> Vec<ChatMessage> {
                         .collect::<Vec<_>>()
                         .join(""),
                 };
-                let text = format!(
-                    "{}{}",
-                    gait_types::types::render_attribution_prefix(attribution),
-                    text
-                );
+                let text = gait_types::types::render_user_text(attribution, &text);
                 out.push(ChatMessage {
                     role: "user".into(),
                     content: Some(Value::String(text)),
@@ -531,7 +527,7 @@ mod tests {
             Message::User {
                 id: "u1".into(),
                 content: MessageContent::Text("first".into()),
-                attribution: None,
+                attribution: Vec::new(),
             },
             Message::Assistant {
                 id: "a1".into(),
@@ -542,7 +538,7 @@ mod tests {
         second.push(Message::User {
             id: "u2".into(),
             content: MessageContent::Text("new event".into()),
-            attribution: None,
+            attribution: Vec::new(),
         });
 
         let first_wire = to_chat_messages("stable system", &first);
@@ -631,19 +627,22 @@ mod tests {
     }
 
     #[test]
-    fn to_chat_messages_prepends_attribution_prefix() {
+    fn to_chat_messages_wraps_user_message_in_room_message_tag() {
         let msg = Message::User {
             id: "test-msg-1".into(),
             content: MessageContent::Text("Hello, world!".into()),
-            attribution: Some(gait_types::types::Attribution {
-                sender: "ed25519:deadbeef".into(),
-                verified: false,
-            }),
+            attribution: vec![gait_types::types::Attribution {
+                author_agent_id: "agent-2".into(),
+                room_id: "room-general".into(),
+                trust: gait_types::types::Trust::Unverified,
+            }],
         };
         let chat_msgs = to_chat_messages("", &[msg]);
         assert_eq!(chat_msgs.len(), 1);
         let content_str = chat_msgs[0].content.as_ref().unwrap().as_str().unwrap();
-        assert!(content_str.starts_with("[from: ed25519:deadbeef, unverified]\n"));
-        assert!(content_str.contains("Hello, world!"));
+        assert_eq!(
+            content_str,
+            "<room-message from=\"agent-2\" room=\"room-general\" trust=\"unverified\">Hello, world!</room-message>\n"
+        );
     }
 }

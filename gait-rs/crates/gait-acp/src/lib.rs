@@ -16,8 +16,20 @@ pub use session_map::SessionMap;
 
 /// Serve the gait-acp agent over real stdio. This is the binary's entry point.
 pub async fn run() -> anyhow::Result<()> {
+    run_with_attestation(false, Vec::new()).await
+}
+
+/// Like [`run`], but with the attestation-verification policy for
+/// `session/prompt` -- see [`handlers::build_agent_with_attestation`].
+/// `require_attestation` is the process-level trust boundary: it is set by
+/// however this process was launched (e.g. `multimatrix-bridge` passing
+/// `--require-attestation`), never by a runtime `_meta` claim.
+pub async fn run_with_attestation(
+    require_attestation: bool,
+    trusted_keys: Vec<gait_core::attestation::TrustedMultimatrixKey>,
+) -> anyhow::Result<()> {
     let map = SessionMap::new();
-    let result = build_agent(map.clone())
+    let result = handlers::build_agent_with_attestation(map.clone(), require_attestation, trusted_keys)
         .connect_to(agent_client_protocol::Stdio::new())
         .await;
     // Connection closed (editor disconnected): reap every in-flight turn so no

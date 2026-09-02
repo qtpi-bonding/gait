@@ -15,6 +15,7 @@ pub use gait_types::{config, diagnostic, sandbox_grant, types};
 pub use gait_provider::{anthropic, factory, openai, provider, providers, strict, transport};
 
 pub mod agent_frontmatter;
+pub mod attestation_replay;
 pub mod auth;
 pub mod config_hook;
 pub mod daemon_exit;
