@@ -75,7 +75,7 @@ jsonschema     = { version = "0.18", default-features = false }
 tempfile       = "3"
 base64         = "0.22"
 hex            = "0.4"
-identity-crypto = { git = "ssh://git@github-qtpi-bonding-identity-crypto/qtpi-bonding/identity-crypto.git", rev = "f09e99b" }
+identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "f09e99b" }
 
 [features]
 testing = []

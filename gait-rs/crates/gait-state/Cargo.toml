@@ -37,4 +37,4 @@ testing = []
 
 [dev-dependencies]
 tempfile = "3"
-identity-crypto = { git = "ssh://git@github-qtpi-bonding-identity-crypto/qtpi-bonding/identity-crypto.git", rev = "f09e99b" }
+identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "f09e99b" }
