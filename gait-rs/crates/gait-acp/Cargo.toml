@@ -6,7 +6,7 @@ rust-version = "1.88"
 
 [dependencies]
 gait-core = { path = "../.." }
-gait-workflow = { path = "../gait-workflow" }
+gait-turn-runner = { path = "../gait-turn-runner" }
 gait-ops = { path = "../gait-ops" }
 gait-state = { path = "../gait-state" }
 gait-identity = { path = "../gait-identity" }

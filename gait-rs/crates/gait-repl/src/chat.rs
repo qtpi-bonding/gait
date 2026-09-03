@@ -172,6 +172,25 @@ pub async fn run_chat(
         &theme,
     );
 
+    // Entry point: surface gait.jsonc parse errors instead of silently
+    // defaulting. The REPL's whole UX hinges on `sandbox.on` being the value
+    // the user wrote, not the compiled-in default; the rest of the loaded
+    // config feeds the `--model` profile-override path below.
+    let loaded_config = match gait_core::config::load_config_with(
+        &gait_dir,
+        gait_core::config::ConfigLoadPolicy::Strict,
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            // No `ReplBuilder` constructed yet — nothing to synchronize against.
+            #[allow(clippy::print_stderr)]
+            {
+                eprintln!("[gait] {e}");
+            }
+            std::process::exit(1);
+        }
+    };
+
     // One builder, shared by the per-session source + sink. It outlives each
     // turn within a session; `/n` replaces it so editor history stays local.
     let builder = ReplBuilder::new(Box::new(crate::repl::ReedlineReader(rl)), theme.clone());
@@ -181,24 +200,7 @@ pub async fn run_chat(
             status_text: String::new(),
             turn_done_blocks: None,
             control: None,
-            // Entry point: surface gait.jsonc parse errors instead of silently
-            // defaulting. The REPL's whole UX hinges on `sandbox.on` being
-            // the value the user wrote, not the compiled-in default.
-            sandbox_on: match gait_core::config::load_config_with(
-                &gait_dir,
-                gait_core::config::ConfigLoadPolicy::Strict,
-            ) {
-                Ok(c) => c.sandbox.on,
-                Err(e) => {
-                    // No `ReplBuilder` constructed yet — this closure runs while
-                    // building the `ReplShared` it would otherwise write through.
-                    #[allow(clippy::print_stderr)]
-                    {
-                        eprintln!("[gait] {e}");
-                    }
-                    std::process::exit(1);
-                }
-            },
+            sandbox_on: loaded_config.sandbox.on,
         }));
     let repos = gait_core::git::Repos::production();
 
@@ -221,6 +223,17 @@ pub async fn run_chat(
         });
     }
 
+    // Disk-config allow/deny, loaded once. `--model` (`model_override`)
+    // forces a `TurnProfileOverride` to carry the inference override across —
+    // but per `gait_turn_runner::resolve_allow`, ANY `Some(profile)` speaks
+    // for `allow` *literally* (no runner-side widening back to disk config
+    // for an absent/empty list). So when we build that override we must fill
+    // in the real disk-config allow/deny ourselves, not leave them empty —
+    // an empty `Vec` there would silently strip every tool from a plain
+    // `--model` override.
+    let base_allow = loaded_config.allow.clone();
+    let base_deny = loaded_config.deny.clone();
+
     loop {
         let shell_history_path = gait_dir
             .join("tmp")
@@ -239,37 +252,50 @@ pub async fn run_chat(
             ran_turn: false,
         };
 
-        // Drive the interactive REPL session through the one blessed
-        // degenerate-workflow API (spec-06 §1). `prompt: None` builds an
-        // interactive/open node internally; `continue_session` pins it to the
-        // current session's log.
+        // Drive the interactive REPL session through the shared sealed-turn
+        // runner (Task 3) — no workflow concept involved. `continue_session`
+        // is caller bookkeeping only now; `session_id` is what actually pins
+        // the turn to the current session's log.
         let run_id = format!("chat-{}", session_id);
         let mut sink = crate::repl::ReplSink {
             shared: shared.clone(),
         };
-        let mut observer = gait_workflow::observer::NullObserver;
-        let _outcome = gait_workflow::single_prompt_run(
-            gait_workflow::SinglePromptOpts {
+        let outcome = gait_turn_runner::run_turn_source(
+            gait_turn_runner::TurnRunOpts {
                 run_id,
+                session_id: session_id.clone(),
                 continue_session: session_id.clone(),
-                prompt: None,
                 gait_dir: gait_dir.clone(),
                 codebase: codebase.clone(),
-                args: vec![],
-                profile: model_override
-                    .clone()
-                    .map(|model| gait_workflow::ProfileOverride {
+                args: Vec::new(),
+                sandbox_on: None,
+                cascade_group_arg: None,
+                cascade: None,
+                profile: model_override.clone().map(|model| {
+                    gait_turn_runner::TurnProfileOverride {
                         inference: Some(model),
                         explicit_inference_override: true,
-                        ..Default::default()
-                    }),
-                ..Default::default()
+                        session_updates: Vec::new(),
+                        // Presence-based resolution (gait-turn-runner C3):
+                        // any `Some(profile)` speaks for `allow`/`deny`
+                        // literally, so carry the real disk-config lists
+                        // through rather than leaving them empty.
+                        allow: base_allow.clone(),
+                        deny: base_deny.clone(),
+                        agent: None,
+                        max_iter: None,
+                        result_schema: None,
+                        auto: None,
+                    }
+                }),
+                fs_delegate: None,
+                allow_intree: false,
             },
+            Box::new(source),
             &mut sink,
-            &mut observer,
-            Some(Box::new(source)),
         )
         .await?;
+        debug_assert!(outcome.opened || outcome.completed);
         // NodeOpen means the ReplSource yielded None (the user typed /q, /n,
         // or EOF).  Check the control signal to decide whether to loop.
 

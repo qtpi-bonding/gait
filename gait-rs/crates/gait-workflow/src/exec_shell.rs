@@ -19,12 +19,14 @@ pub struct NodeContext<'a> {
     /// so dropping that `Recorder` remains the single point that closes the channel.
     pub workflow_tx: &'a tokio::sync::mpsc::UnboundedSender<SinkFrame>,
     /// CLI-only degenerate-run overrides (spec-06 §3 Task 3.2). `None`/absent
-    /// for every real workflow node — only `single_prompt_run`'s one node ever
-    /// sets these, so `exec_prompt_node` prefers them over disk config.
+    /// for every real workflow node — the now-deleted `single_prompt_run`'s
+    /// one node was the only production caller that ever set these (Task 3
+    /// moved the CLI/REPL off `WorkflowRunOpts` entirely); `exec_prompt_node`
+    /// still prefers them over disk config when present.
     pub sandbox_on: Option<bool>,
     pub cascade_group_arg: Option<String>,
     pub cascade: Option<&'a gait_core::embed::CascadeKillHandle>,
-    pub profile: Option<&'a crate::single_prompt::ProfileOverride>,
+    pub profile: Option<&'a gait_turn_runner::TurnProfileOverride>,
     /// Optional editor-buffer delegate injected by a workflow-level consumer
     /// (e.g. a future ACP adapter). `None` for every real workflow node.
     pub fs_delegate: Option<std::sync::Arc<dyn gait_core::embed::FsDelegate>>,

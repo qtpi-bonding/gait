@@ -255,6 +255,7 @@ impl TurnSource for LiveWithSessionUpdates {
 /// `ConfigResolver`/`Overrides` workflow+node layering) and passes the fully
 /// resolved values through here, so for a real DAG node every field below is
 /// effectively already final.
+#[derive(Clone)]
 pub struct TurnProfileOverride {
     pub inference: Option<String>,
     /// Whether `inference` is an explicit caller override rather than a
@@ -564,6 +565,24 @@ pub async fn run_turn_source(
         inner: source,
     });
     run_sealed_turn(opts, EitherSource::Live(source), sink).await
+}
+
+/// `{name}-{unixsecs}-{subsec_nanos:09}-{counter}` — human-readable AND
+/// collision-free. Full subsec nanos makes cross-process same-instant collision
+/// astronomically unlikely; a process-local atomic counter guarantees uniqueness
+/// for repeated in-process calls. Moved from `gait_workflow::convert::mint_run_id`
+/// (Task 3) — it has no DAG dependency, so every caller of a sealed turn (CLI,
+/// REPL, ACP, and `gait-workflow`'s own real-DAG run ids) can mint through here.
+/// `gait_workflow::convert::mint_run_id` re-exports this for the workflow
+/// crate's own callers.
+pub fn mint_run_id(name: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("{name}-{}-{:09}-{n}", now.as_secs(), now.subsec_nanos())
 }
 
 /// Drive one literal one-shot prompt through a sealed turn. Exists as a

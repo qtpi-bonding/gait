@@ -1,4 +1,4 @@
-//! Drives the real REPL turn-engine path (`gait_workflow::single_prompt_run`,
+//! Drives the real REPL turn-engine path (`gait_turn_runner::run_turn_source`,
 //! the same call `chat.rs` makes) through a scripted, multi-turn conversation
 //! — input lines via `ScriptedReader`, canned brain responses via `mock_brain`
 //! — and returns the annotated transcript (see `ui::annotate`) of what would
@@ -329,28 +329,31 @@ pub async fn run_script(
     let mut sink = crate::repl::ReplSink {
         shared: shared.clone(),
     };
-    let mut observer = gait_workflow::observer::NullObserver;
 
     let capture = crate::ui::capture::Capture::begin();
-    let outcome = gait_workflow::single_prompt_run(
-        gait_workflow::SinglePromptOpts {
+    let outcome = gait_turn_runner::run_turn_source(
+        gait_turn_runner::TurnRunOpts {
             run_id: format!("repl-drive-{session_id}"),
+            session_id: session_id.to_string(),
             continue_session: session_id.to_string(),
-            prompt: None,
             gait_dir: gait_dir.to_path_buf(),
             codebase: codebase.to_path_buf(),
+            args: Vec::new(),
             sandbox_on: Some(false),
-            ..Default::default()
+            cascade_group_arg: None,
+            cascade: None,
+            profile: None,
+            fs_delegate: None,
+            allow_intree: false,
         },
+        Box::new(source),
         &mut sink,
-        &mut observer,
-        Some(Box::new(source)),
     )
     .await;
     let bytes = capture.end();
     if let Err(e) = outcome {
         anyhow::bail!(
-            "single_prompt_run failed: {e}; capture={}",
+            "run_turn_source failed: {e}; capture={}",
             String::from_utf8_lossy(&bytes)
         );
     }

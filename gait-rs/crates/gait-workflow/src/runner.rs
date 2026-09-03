@@ -40,15 +40,18 @@ pub struct WorkflowRunOpts {
     pub args: Vec<String>,
     /// CLI-only degenerate-run overrides (spec-06 §3 Task 3.2, the C1 fix): a
     /// real multi-node `gait workflow run` graph leaves these `None`/empty and
-    /// every node resolves its config from disk, as before. `single_prompt_run`
-    /// (the CLI's one path here) sets them so the CLI's `--model`/`--allow`/
-    /// `--deny`/`--agent`/`--max-iter`/`--sandbox`/`--cascade-group`/result
-    /// schema reach the degenerate node's spawned brain instead of being
-    /// silently dropped by exec_prompt_node's disk-config re-resolution.
+    /// every node resolves its config from disk, as before. Pre-Task-3, the
+    /// now-deleted `single_prompt_run` (the CLI/REPL's one degenerate-node
+    /// path) set these so `--model`/`--allow`/`--deny`/`--agent`/`--max-iter`/
+    /// `--sandbox`/`--cascade-group`/result schema reached the degenerate
+    /// node's spawned brain; the CLI/REPL now call `gait-turn-runner`
+    /// directly and no longer route through `WorkflowRunOpts` at all, so no
+    /// production caller sets this field today — it stays for any future
+    /// `gait workflow run` caller that needs the same override plumbing.
     pub sandbox_on: Option<bool>,
     pub cascade_group_arg: Option<String>,
     pub cascade: Option<gait_core::embed::CascadeKillHandle>,
-    pub profile: Option<crate::single_prompt::ProfileOverride>,
+    pub profile: Option<gait_turn_runner::TurnProfileOverride>,
     /// Optional editor-buffer delegate injected by a workflow-level consumer
     /// (e.g. a future ACP adapter). `None` for REPL/CLI/workflow nodes.
     pub fs_delegate: Option<std::sync::Arc<dyn gait_core::embed::FsDelegate>>,
@@ -123,15 +126,15 @@ struct NodeRunParams {
 /// `None`/empty) is correct for every enqueue site EXCEPT the run's initial
 /// ready-node seeding and `handle_open_node` — a branch/newly-ready
 /// enqueue only ever fires inside a real multi-node `gait workflow run` graph,
-/// which never carries CLI overrides in the first place (only
-/// `single_prompt_run`'s single node does, and a single node has no
-/// dependents to enqueue mid-run).
+/// which never carries CLI overrides in the first place (the now-deleted
+/// `single_prompt_run`'s single degenerate node was the only caller that
+/// ever did, and a single node has no dependents to enqueue mid-run).
 #[derive(Clone, Default)]
 struct RunOverrides {
     sandbox_on: Option<bool>,
     cascade_group_arg: Option<String>,
     cascade: Option<gait_core::embed::CascadeKillHandle>,
-    profile: Option<crate::single_prompt::ProfileOverride>,
+    profile: Option<gait_turn_runner::TurnProfileOverride>,
     fs_delegate: Option<std::sync::Arc<dyn gait_core::embed::FsDelegate>>,
     allow_intree: bool,
 }

@@ -1,9 +1,9 @@
 //! Spec-06 §2: a degenerate single-prompt run creates run_id + run log only —
 //! no run worktree, no run lock. (The positive/shell case lives in run_lock.rs.)
 use gait_core::proto::gait::workflow::v1::{node, Node, PromptNode, Workflow};
+use gait_turn_runner::TurnProfileOverride;
 use gait_workflow::observer::CliObserver;
 use gait_workflow::runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
-use gait_workflow::{single_prompt_run, SinglePromptOpts};
 
 use tempfile::TempDir;
 
@@ -81,21 +81,40 @@ async fn degenerate_single_prompt_run_creates_no_run_worktree_or_lock() {
     );
 }
 
+// Task 3: `single_prompt_run`/`SinglePromptOpts` are gone — the degenerate
+// one-node graph they used to build is now exercised directly through
+// `run_workflow`, same as every other node. This test also carries a
+// `profile: Some(TurnProfileOverride)` override (unlike the sibling test
+// above, which passes none) to prove `exec_prompt_node`'s shared-runner
+// profile plumbing doesn't disturb the run's laziness — the degenerate node
+// here is absent-prompt/no-input, so it returns `NodeOutput::open()` before
+// the override's allow/deny/inference fields are ever consulted.
 #[tokio::test]
-async fn single_prompt_run_builds_degenerate_graph_and_stays_lazy() {
+async fn degenerate_graph_with_profile_override_stays_lazy() {
     let tmp = TempDir::new().unwrap();
     let gait_dir = tmp.path().to_path_buf();
     init_git_repo(&gait_dir);
     let run_id = "chat-spr-001".to_string();
     let mut sink = gait_core::embed::CliSink::stdio(true);
-    let outcome = single_prompt_run(
-        SinglePromptOpts {
+    let outcome = run_workflow(
+        WorkflowRunOpts {
+            workflow_def: degenerate_wf(),
+            yaml_path: String::new(),
             run_id: run_id.clone(),
-            continue_session: String::new(),
-            prompt: None,
             gait_dir: gait_dir.clone(),
             codebase: gait_dir.clone(),
             args: vec![],
+            profile: Some(TurnProfileOverride {
+                inference: None,
+                explicit_inference_override: false,
+                session_updates: vec![],
+                allow: vec![],
+                deny: vec![],
+                agent: None,
+                max_iter: None,
+                result_schema: None,
+                auto: None,
+            }),
             ..Default::default()
         },
         &mut sink,
@@ -113,7 +132,7 @@ async fn single_prompt_run_builds_degenerate_graph_and_stays_lazy() {
     assert!(run_dir.join("log.jsonl").exists());
     assert!(
         !run_dir.join("worktree").exists(),
-        "single prompt stays lazy through the blessed API"
+        "a degenerate node stays lazy through the shared runner"
     );
     // (No `lock`-absence assertion — see M2 note in Task 1.1: it's vacuous post-Drop.)
 }

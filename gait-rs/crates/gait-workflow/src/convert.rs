@@ -166,23 +166,9 @@ fn node_to_proto(n: &NodeDef) -> Node {
     }
 }
 
-/// `{workflow}-{unixsecs}-{subsec_nanos:09}-{counter}` — human-readable AND
-/// collision-free. Full subsec nanos makes cross-process same-instant collision
-/// astronomically unlikely; a process-local atomic counter guarantees uniqueness
-/// for repeated in-process calls.
-pub fn mint_run_id(workflow_name: &str) -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let n = SEQ.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "{workflow_name}-{}-{:09}-{n}",
-        now.as_secs(),
-        now.subsec_nanos()
-    )
-}
+/// Moved to `gait-turn-runner` (Task 3) — re-exported here so the workflow
+/// crate's own real-DAG run ids keep minting through the same path.
+pub use gait_turn_runner::mint_run_id;
 
 #[cfg(test)]
 mod tests {

@@ -6,4 +6,5 @@ pub mod init;
 pub mod link;
 pub mod run;
 pub mod session;
+#[cfg(feature = "workflow")]
 pub mod workflow;

@@ -10,7 +10,7 @@ repository.workspace = true
 gait-core    = { path = "../.." }
 gait-ops     = { path = "../gait-ops" }
 gait-auth    = { path = "../gait-auth" }
-gait-workflow = { path = "../gait-workflow" }
+gait-turn-runner = { path = "../gait-turn-runner" }
 gait-proto   = { path = "../gait-proto" }
 prost        = "0.13"
 pbjson-types = "0.7"
@@ -28,12 +28,22 @@ serde_yaml = "0.9"
 libc = "0.2"
 
 [features]
-default = []
+default = ["workflow"]
 local = ["dep:gait-local"]
 dev-harness = []
+# `gait workflow` subcommand (real YAML DAG runs). Ordinary CLI turns
+# (`cli::run::cmd_run`) no longer need `gait-workflow` at all (Task 3) — only
+# `cli::workflow` does. Default-on so today's full `gait` binary (which builds
+# gait-cli with default features) is unaffected; a future minimal build can
+# opt out.
+workflow = ["dep:gait-workflow"]
 
 [dependencies.gait-local]
 path = "../gait-local"
+optional = true
+
+[dependencies.gait-workflow]
+path = "../gait-workflow"
 optional = true
 
 [[bin]]

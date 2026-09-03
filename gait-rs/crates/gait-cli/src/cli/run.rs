@@ -327,12 +327,12 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
         None
     };
 
-    // spec-06 §3 (one orchestrator, one BrainLaunch site): `cmd_run` no longer
-    // builds its own driver/Session/run_loop call — it goes through the same
-    // `single_prompt_run` -> `run_workflow` -> `PromptNodeDriver` path the REPL
-    // uses. The CLI's resolved profile/sandbox/cascade travel as overrides
-    // (Task 3.2's C1 fix) so they still reach the spawned brain.
-    let profile_override = gait_workflow::ProfileOverride {
+    // spec-06 §3 (one orchestrator, one BrainLaunch site) / Task 3: `cmd_run`
+    // drives its sealed turn directly through `gait-turn-runner`, with no
+    // compile-time reference to `gait-workflow`. The CLI's resolved
+    // profile/sandbox/cascade travel as overrides (Task 3.2's C1 fix) so they
+    // still reach the spawned brain.
+    let profile_override = gait_turn_runner::TurnProfileOverride {
         inference: args.inference.clone(),
         explicit_inference_override: args.inference.is_some(),
         session_updates: if prompt.is_some() {
@@ -350,26 +350,47 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
         result_schema,
         auto: args.auto.then_some(true),
     };
-    let outcome = gait_workflow::single_prompt_run(
-        gait_workflow::SinglePromptOpts {
-            run_id: gait_workflow::convert::mint_run_id("chat"),
-            continue_session: session_id.clone(),
+    let outcome = if let Some(source) = input {
+        gait_turn_runner::run_turn_source(
+            gait_turn_runner::TurnRunOpts {
+                run_id: gait_turn_runner::mint_run_id("chat"),
+                session_id: session_id.clone(),
+                continue_session: session_id.clone(),
+                gait_dir: gait_dir.clone(),
+                codebase: codebase_path.clone(),
+                args: vec![],
+                sandbox_on: Some(config.sandbox.on),
+                cascade_group_arg: args.cascade_group.clone(),
+                cascade: Some(kill_handle.clone()),
+                profile: Some(profile_override),
+                fs_delegate: None,
+                allow_intree: args.allow_intree,
+            },
+            source,
+            &mut sink,
+        )
+        .await
+    } else {
+        gait_turn_runner::run_single_prompt(
+            gait_turn_runner::TurnRunOpts {
+                run_id: gait_turn_runner::mint_run_id("chat"),
+                session_id: session_id.clone(),
+                continue_session: session_id.clone(),
+                gait_dir: gait_dir.clone(),
+                codebase: codebase_path.clone(),
+                args: vec![],
+                sandbox_on: Some(config.sandbox.on),
+                cascade_group_arg: args.cascade_group.clone(),
+                cascade: Some(kill_handle.clone()),
+                profile: Some(profile_override),
+                fs_delegate: None,
+                allow_intree: args.allow_intree,
+            },
             prompt,
-            gait_dir: gait_dir.clone(),
-            codebase: codebase_path.clone(),
-            args: vec![],
-            sandbox_on: Some(config.sandbox.on),
-            cascade_group_arg: args.cascade_group.clone(),
-            cascade: Some(kill_handle.clone()),
-            profile: Some(profile_override),
-            fs_delegate: None,
-            allow_intree: args.allow_intree,
-        },
-        &mut sink,
-        &mut gait_workflow::observer::NullObserver,
-        input,
-    )
-    .await;
+            &mut sink,
+        )
+        .await
+    };
 
     let outcome = match outcome {
         Ok(o) => o,
@@ -383,14 +404,13 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
         std::process::exit(1);
     }
 
-    match outcome {
-        // GatePaused is unreachable for a degenerate single-prompt run (no gate
-        // node in the one-node graph `single_prompt_run` builds); mapped to 0
-        // for now. If `cmd_run` ever drives a real multi-node graph, a paused
-        // workflow is NOT "done" — revisit this arm then.
-        gait_workflow::WorkflowOutcome::Completed
-        | gait_workflow::WorkflowOutcome::NodeOpen
-        | gait_workflow::WorkflowOutcome::GatePaused => {}
+    // `GatePaused`/gate concepts don't exist for a bare sealed turn (no gate
+    // node in play). `!outcome.completed && !outcome.opened` would mean the
+    // turn produced neither a terminal result nor stayed open — treat that as
+    // a failure exit, mirroring the old `WorkflowOutcome` mapping's implicit
+    // "anything else is fine" behavior for `Completed`/`NodeOpen`.
+    if !outcome.completed && !outcome.opened {
+        std::process::exit(1);
     }
 }
 

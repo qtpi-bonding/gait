@@ -325,7 +325,6 @@ pub fn build_agent_with_attestation(
                                 .expect("current-thread runtime");
                             let local = tokio::task::LocalSet::new();
                             let mut sink = AcpTurnSink::new(cx.clone(), session_id.clone());
-                            let mut obs = gait_workflow::observer::NullObserver;
                             // Install the fs delegate iff the client advertised BOTH
                             // fs methods; otherwise None -> disk I/O under the sandbox
                             // (today's behavior). The spine still authorizes every
@@ -359,28 +358,28 @@ pub fn build_agent_with_attestation(
                                     cancel,
                                 ),
                             };
-                            let opts = gait_workflow::SinglePromptOpts {
+                            let opts = gait_turn_runner::TurnRunOpts {
                                 run_id: format!("acp-{sid_thread}"),
+                                session_id: sid_thread.clone(),
                                 continue_session: sid_thread.clone(),
-                                // SinglePromptOpts.prompt is ignored whenever a
-                                // live TurnSource is supplied (always true
-                                // here, per single_prompt.rs) -- the real
-                                // trigger content lives in `source` above.
-                                prompt: None,
                                 gait_dir,
                                 codebase,
+                                args: Vec::new(),
+                                sandbox_on: None,
+                                cascade_group_arg: None,
+                                cascade: Some(handle),
+                                // The real trigger content lives in `source`
+                                // below (a live TurnSource), not here.
+                                profile: None,
                                 fs_delegate,
                                 allow_intree: false,
-                                cascade: Some(handle),
-                                ..Default::default()
                             };
                             let outcome = local.block_on(
                                 &rt,
-                                gait_workflow::single_prompt_run(
+                                gait_turn_runner::run_turn_source(
                                     opts,
+                                    Box::new(source),
                                     &mut sink,
-                                    &mut obs,
-                                    Some(Box::new(source)),
                                 ),
                             );
                             map_thread.take_cascade(&sid_thread);

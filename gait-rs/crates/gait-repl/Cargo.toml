@@ -9,7 +9,8 @@ repository.workspace = true
 [dependencies]
 gait-core = { path = "../.." }
 gait-ops = { path = "../gait-ops" }
-gait-workflow = { path = "../gait-workflow" }
+gait-turn-runner = { path = "../gait-turn-runner" }
+gait-workflow = { path = "../gait-workflow", optional = true }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 serde_json = "1"
@@ -37,7 +38,13 @@ pbjson-types = "0.7"
 serial_test = "3"
 
 [features]
+default = ["workflow"]
 dev-harness = ["dep:libc", "dep:prost", "dep:serde", "dep:tempfile", "dep:git2", "dep:gait-testkit"]
+# `/workflow` REPL command (real YAML DAG runs). Ordinary REPL turns
+# (`chat.rs`) no longer need `gait-workflow` at all (Task 3) — only
+# `repl::driver::run_named_workflow` does. Default-on so today's full `gait`
+# binary is unaffected; a future minimal build can opt out.
+workflow = ["dep:gait-workflow"]
 
 [[bin]]
 name = "mock_brain"

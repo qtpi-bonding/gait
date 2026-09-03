@@ -19,10 +19,8 @@ pub mod output;
 pub mod record;
 pub mod run_log;
 
-pub mod single_prompt;
 pub mod status;
 
 pub use runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
-pub use single_prompt::{single_prompt_run, ProfileOverride, SinglePromptOpts};
 
 pub use status::workflow_status_block;
