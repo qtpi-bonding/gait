@@ -30,7 +30,9 @@ pub fn resolve_codebase(args: &[String]) -> std::path::PathBuf {
 }
 
 // cmd_brain deleted (Task 5): dispatch now via gait_core::__dispatch_role.
-// `gait run` routes through cmd_run → single_prompt_run → run_workflow (spec-06 §3).
+// `gait run` routes through cmd_run -> gait_turn_runner::{run_single_prompt,
+// run_turn_source} directly (Task 3) -- no `gait-workflow`/`run_workflow`
+// involved for an ordinary turn.
 
 pub async fn cmd_run(argv: &[String]) {
     let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {

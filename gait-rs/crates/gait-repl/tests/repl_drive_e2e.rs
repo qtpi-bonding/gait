@@ -1,5 +1,5 @@
 //! End-to-end proof that the dev-harness drives the real REPL turn-engine
-//! path (gait_workflow::single_prompt_run, via ScriptedReader + mock_brain)
+//! path (gait_turn_runner::run_turn_source, via ScriptedReader + mock_brain)
 //! through a multi-turn script and produces an annotated transcript — see
 //! docs/superpowers/specs/2026-07-20-repl-drive-harness-design.md.
 //!
@@ -8,7 +8,7 @@
 //! intercepts every `print!`/`eprint!` call — on ANY thread, not just the
 //! test's own — before it reaches a real OS-level fd, diverting it into
 //! libtest's own buffer instead. `ui::capture::Capture` (used by
-//! `run_script_fresh` via `single_prompt_run`'s renderer) works by dup2-ing
+//! `run_script_fresh` via `run_turn_source`'s renderer) works by dup2-ing
 //! the real stderr fd and reading back whatever lands on it; under the
 //! default harness that's nothing at all — `Capture::end()` silently returns
 //! zero bytes regardless of what the renderer actually rendered, only

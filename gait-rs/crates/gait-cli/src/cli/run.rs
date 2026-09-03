@@ -246,9 +246,9 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
         std::process::exit(1);
     }
 
-    // Expand the task text (`single_prompt_run`'s literal branch builds the
-    // actual user_turn/context_status events from this, same as the old
-    // direct-run_loop path did inline).
+    // Expand the task text (`gait_turn_runner::run_single_prompt`'s literal
+    // branch builds the actual user_turn/context_status events from this,
+    // same as the old direct-run_loop path did inline).
     let prompt: Option<String> = args.task.clone().map(|task_text| {
         let hist = gait_dir
             .join("tmp")
@@ -286,7 +286,7 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
     // the group a SIGTERM before its own 300ms→SIGKILL escalation, and the
     // brain (`turn/brain.rs::run_brain`) now wires that SIGTERM to its live
     // `CancellationToken`, so the in-flight turn gets a real chance to return
-    // `TurnResult::Cancelled` — relayed back through `single_prompt_run`
+    // `TurnResult::Cancelled` — relayed back through `gait_turn_runner`
     // below — instead of being signal-killed outright. Give it a bounded
     // grace window to do that; a second signal (impatient user) or the
     // window expiring falls through to the previous hard-kill-and-exit path.
@@ -343,8 +343,14 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
         } else {
             Vec::new()
         },
-        allow: args.allow.clone(),
-        deny: args.deny.clone(),
+        // Use the already-merged `config.allow`/`config.deny` (computed by
+        // `apply_cli_overrides` above: config's own list + CLI `--allow`/
+        // `--deny` flags, appended/deduped), not the raw CLI flags alone —
+        // `gait_turn_runner::resolve_allow` takes a `Some(profile)`'s allow
+        // list literally (no runner-side widening back to disk config), so
+        // this must already be the caller's fully-resolved final list.
+        allow: config.allow.clone(),
+        deny: config.deny.clone(),
         agent: args.agent_name.clone(),
         max_iter: config.max_iter,
         result_schema,

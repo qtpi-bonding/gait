@@ -1373,7 +1373,14 @@ fn one_off_schema() -> serde_json::Value {
 }
 
 /// Run a named workflow (`workflows/<name>.yaml`) for the REPL `/workflow`
-/// command — awaits `run_workflow` inline (spec-06 §5 Task 4.1). The old
+/// command — awaits `run_workflow` inline (spec-06 §5 Task 4.1).
+///
+/// TODO(Task 5): `gait-workflow` is behind gait-repl's `workflow` Cargo
+/// feature (default-on) as of Task 3, but this function and its `/workflow`
+/// dispatch site still reference `gait_workflow::` unconditionally — no
+/// `#[cfg(feature = "workflow")]` here yet. Gating this needs the REPL
+/// command-table/capability infrastructure Task 4/5 introduces; until then
+/// `cargo build -p gait-repl --no-default-features` will not compile. The old
 /// `GaitWorkflowRunner` replacement spawned a detached `std::thread` + its own
 /// tokio runtime: an untracked resident thread, a daemonless-model violation
 /// (gait is 1 turn = 1 exit; no reapers/resident processes). Foreground is the

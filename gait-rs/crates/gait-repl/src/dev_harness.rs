@@ -367,7 +367,7 @@ pub async fn run_script(
             .map(|e| (e.run, e.turn, e.step))
             .collect();
         anyhow::bail!(
-            "single_prompt_run reported a turn failure; coords={coords:?}; capture={}",
+            "run_turn_source reported a turn failure; coords={coords:?}; capture={}",
             String::from_utf8_lossy(&bytes),
         );
     }

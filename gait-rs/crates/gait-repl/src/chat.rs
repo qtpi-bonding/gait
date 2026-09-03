@@ -296,8 +296,8 @@ pub async fn run_chat(
         )
         .await?;
         debug_assert!(outcome.opened || outcome.completed);
-        // NodeOpen means the ReplSource yielded None (the user typed /q, /n,
-        // or EOF).  Check the control signal to decide whether to loop.
+        // `outcome.opened` means the ReplSource yielded None (the user typed
+        // /q, /n, or EOF). Check the control signal to decide whether to loop.
 
         // The source ended the run with a control signal (or EOF).
         let control = shared.borrow_mut().control.take();

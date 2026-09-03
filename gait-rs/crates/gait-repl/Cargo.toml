@@ -44,6 +44,14 @@ dev-harness = ["dep:libc", "dep:prost", "dep:serde", "dep:tempfile", "dep:git2",
 # (`chat.rs`) no longer need `gait-workflow` at all (Task 3) — only
 # `repl::driver::run_named_workflow` does. Default-on so today's full `gait`
 # binary is unaffected; a future minimal build can opt out.
+#
+# TODO(Task 5): this feature only gates the *dependency* today —
+# `repl::driver::run_named_workflow` and its `/workflow` command dispatch
+# site still reference `gait_workflow::` unconditionally (no
+# `#[cfg(feature = "workflow")]` on them yet), so `cargo build -p gait-repl
+# --no-default-features` does not compile yet. Gating that call site needs
+# the REPL command-table/capability infrastructure Task 4/5 introduces
+# (`MIN_REPL_COMMANDS` etc.) — finish the gate there, not before.
 workflow = ["dep:gait-workflow"]
 
 [[bin]]
