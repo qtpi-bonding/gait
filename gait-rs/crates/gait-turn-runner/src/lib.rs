@@ -142,6 +142,14 @@ impl TurnDriver for SealedTurnDriver {
 struct DirectSink<'a> {
     inner: &'a mut dyn TurnSink,
     result: Option<RunResult>,
+    /// Set on any `Diag::Error` diagnostic, mirroring `CapturingSink`'s own
+    /// `failed` field (brief Step 3a: "capturing `result`/`failed` the same
+    /// way `CapturingSink` does today"). Not yet read by
+    /// `run_result_to_outcome`/`TurnRunOutcome` — kept for parity with
+    /// `CapturingSink` and so a future `TurnRunOutcome.failed` field has
+    /// something to read.
+    #[allow(dead_code)]
+    failed: bool,
 }
 
 impl<'a> DirectSink<'a> {
@@ -149,6 +157,7 @@ impl<'a> DirectSink<'a> {
         Self {
             inner,
             result: None,
+            failed: false,
         }
     }
 }
@@ -171,6 +180,9 @@ impl TurnSink for DirectSink<'_> {
         self.inner.session_id(id);
     }
     fn diagnostic(&mut self, level: Diag, msg: &str) {
+        if level == Diag::Error {
+            self.failed = true;
+        }
         self.inner.diagnostic(level, msg);
     }
 }
@@ -215,6 +227,27 @@ impl TurnSource for EitherSource {
     }
 }
 
+/// Wraps a live `TurnSource` so a caller-supplied `TurnProfileOverride::session_updates`
+/// is honored on the `run_turn_source` path too (I1) — `run_single_prompt`
+/// already gets this for free via `OneTurnSource`'s own `session_updates`
+/// field; a live source has no equivalent slot of its own, so this prepends
+/// exactly one `TurnStart::SessionUpdate` yield (if non-empty) before
+/// delegating every subsequent call to the wrapped source, unchanged.
+struct LiveWithSessionUpdates {
+    session_updates: Option<Vec<gait_core::proto::gait::log::v1::event::Body>>,
+    inner: Box<dyn TurnSource>,
+}
+
+#[async_trait::async_trait(?Send)]
+impl TurnSource for LiveWithSessionUpdates {
+    async fn next(&mut self) -> Option<TurnStart> {
+        if let Some(updates) = self.session_updates.take().filter(|v| !v.is_empty()) {
+            return Some(TurnStart::SessionUpdate(updates));
+        }
+        self.inner.next().await
+    }
+}
+
 /// CLI/REPL/ACP/workflow-supplied overrides layered on top of this crate's
 /// own disk-config resolution (`gait.jsonc`). `None`/empty fields fall back
 /// to the disk-resolved default; `gait-workflow`'s own caller (Task 2 Step
@@ -252,14 +285,43 @@ impl TurnProfileOverride {
     }
 }
 
+/// Resolve the effective allow list. Unlike `resolve_auto`, presence of the
+/// override — not emptiness of its `allow` field — is what decides fallback:
+/// a caller that supplies a `profile` at all speaks for the allow list
+/// *literally*, so an intentionally empty list (a workflow resolved to "no
+/// tools allowed") must never be silently widened back to the disk-config
+/// default (C3 fix — the old code treated `allow.is_empty()` as "unset" and
+/// fell back to `base_allow`, which quietly widened permissions). Only the
+/// total absence of a profile — nothing to say at all — falls back to
+/// `base_allow`.
+fn resolve_allow(base_allow: Vec<String>, ov: Option<&TurnProfileOverride>) -> Vec<String> {
+    match ov {
+        Some(p) => p.allow.clone(),
+        None => base_allow,
+    }
+}
+
 /// Options for one sealed turn, independent of any workflow concept.
 pub struct TurnRunOpts {
-    /// Run identity. REPL passes `chat-<session>`; CLI mints via
-    /// `convert::mint_run_id`.
+    /// Run identity, carried through unchanged for the caller's own
+    /// bookkeeping (workflow run-id/worktree derivation, audit logging,
+    /// etc.) — REPL passes `chat-<session>`; CLI mints via
+    /// `convert::mint_run_id`; `gait-workflow`'s adapter passes the
+    /// workflow run's own id. This crate does NOT read it: `session_id`
+    /// alone is the authoritative session identity `run_loop`/`Session::open`
+    /// use to open or attach a session and to spawn each turn.
     pub run_id: String,
     pub session_id: String,
-    /// `""` = fresh session; else attach (spec-04 semantics) — carried
-    /// through unchanged from `SinglePromptOpts::continue_session`.
+    /// Carried through unchanged from the old `SinglePromptOpts::continue_session`
+    /// / `PromptNode.continue_session` for the caller's own bookkeeping —
+    /// this crate does NOT perform "" = fresh vs non-empty = attach
+    /// resolution itself. `session_id` is already the caller-resolved,
+    /// authoritative session id by the time it reaches `TurnRunOpts`:
+    /// `Session::open` is idempotent (loads the session log at `session_id`
+    /// if one exists, creates a fresh one otherwise). A caller that needs
+    /// fresh-vs-attach semantics resolves `session_id` itself before
+    /// constructing `TurnRunOpts` — see `gait-workflow::runner::node_session_id`
+    /// for the resolution this crate's callers inherited it from.
     pub continue_session: String,
     pub gait_dir: PathBuf,
     pub codebase: PathBuf,
@@ -368,22 +430,43 @@ async fn run_sealed_turn(
         allow_intree,
     } = opts;
 
+    // C1: a live source is allowed to legitimately produce no terminal turn
+    // this call (it may exhaust having only relayed permission/resume
+    // plumbing) — that must come back as `TurnRunOutcome { opened: true, .. }`,
+    // not an error. A `Literal`/one-shot source producing no result IS
+    // unexpected (a real bug), so it keeps erroring below. Capture which case
+    // we're in before `source` moves into `run_loop`.
+    let is_live = matches!(source, EitherSource::Live(_));
+
+    let ov = profile.as_ref();
+
     let loaded = gait_core::config::load_config(&gait_dir);
-    let resolved_cfg = gait_core::config::ConfigResolver::new(loaded.clone()).resolve_checked()?;
-    let base_inference = resolved_cfg
+    let sandbox_cfg = loaded.sandbox.clone();
+    // C2 fix: layer the caller's inference override in via `Overrides`
+    // BEFORE calling `resolve_checked()`, exactly like the old
+    // `exec_prompt_node`'s consumer/per-call `Overrides` layering did
+    // (`ConfigResolver::new(loaded).with(consumer).with(per_call).resolve_checked()`).
+    // Calling `resolve_checked()` on the bare disk config first — the old
+    // (buggy) order in this crate — hard-errors whenever `gait.jsonc` sets no
+    // default inference, even when the caller supplies one (e.g. `--inference
+    // <name>`, or a workflow YAML `inference:`).
+    let inference_layer = gait_core::config::resolver::Overrides {
+        inference: ov.and_then(|p| p.inference.clone()),
+        ..gait_core::config::resolver::Overrides::empty()
+    };
+    let resolved_cfg = gait_core::config::ConfigResolver::new(loaded)
+        .with(inference_layer)
+        .resolve_checked()?;
+    let inference = resolved_cfg
         .inference
         .clone()
         .expect("resolve_checked guarantees inference is Some");
     let base_allow = resolved_cfg.allow.clone();
-    let sandbox_cfg = loaded.sandbox;
 
-    let ov = profile.as_ref();
-    let inference = ov.and_then(|p| p.inference.clone()).unwrap_or(base_inference);
     let explicit_inference_override = ov.map(|p| p.explicit_inference_override).unwrap_or(false);
-    let allow = ov
-        .filter(|p| !p.allow.is_empty())
-        .map(|p| p.allow.clone())
-        .unwrap_or(base_allow);
+    // C3 fix: see `resolve_allow`'s doc comment — an empty `profile.allow` is
+    // preserved literally, not silently widened to `base_allow`.
+    let allow = resolve_allow(base_allow, ov);
     let deny = ov.map(|p| p.deny.clone()).unwrap_or_default();
     let agent_name = ov.and_then(|p| p.agent.clone());
     let max_iter = ov.and_then(|p| p.max_iter);
@@ -428,18 +511,33 @@ async fn run_sealed_turn(
     )
     .await?;
 
-    // `driver.last_error` is set by `on_turn_error` whenever `run_loop`
-    // swallowed a real turn failure to let its one-shot source exhaust
-    // normally (see that fn's doc comment) — prefer it over the generic
-    // fallback so the actual cause reaches the caller instead of a
-    // contentless "no TurnResult" message.
-    let turn_result = direct.result.take().ok_or_else(|| {
-        driver
+    match direct.result.take() {
+        Some(turn_result) => Ok(run_result_to_outcome(turn_result)),
+        // C1: a live source that exhausted without ever producing a
+        // TurnResult (e.g. it only relayed permission/resume plumbing, or
+        // yielded nothing this call) is the ordinary "still open" case, not
+        // an error — mirrors `gait-workflow::exec_prompt_node`'s absent-
+        // prompt/live-node branch, which always returns `NodeOutput::open()`
+        // once its live source returns.
+        None if is_live => Ok(TurnRunOutcome {
+            completed: false,
+            opened: true,
+            text: None,
+            json: None,
+            exit_code: None,
+            run_result: None,
+        }),
+        // A literal one-shot source producing no result IS unexpected.
+        // `driver.last_error` is set by `on_turn_error` whenever `run_loop`
+        // swallowed a real turn failure to let its one-shot source exhaust
+        // normally (see that fn's doc comment) — prefer it over the generic
+        // fallback so the actual cause reaches the caller instead of a
+        // contentless "no TurnResult" message.
+        None => Err(driver
             .last_error
             .take()
-            .unwrap_or_else(|| anyhow::anyhow!("run_loop returned without a TurnResult"))
-    })?;
-    Ok(run_result_to_outcome(turn_result))
+            .unwrap_or_else(|| anyhow::anyhow!("run_loop returned without a TurnResult"))),
+    }
 }
 
 /// Drive an already-live `TurnSource` (interactive/open case: ACP's
@@ -452,6 +550,19 @@ pub async fn run_turn_source(
     source: Box<dyn TurnSource>,
     sink: &mut dyn TurnSink,
 ) -> anyhow::Result<TurnRunOutcome> {
+    // I1 fix: `opts.profile.session_updates` must be honored on this path
+    // too, not only via `run_single_prompt`'s `OneTurnSource`. Wrap the
+    // caller's live source so the first `next()` call yields the queued
+    // updates (if any), then delegates to the caller's source unchanged.
+    let session_updates = opts
+        .profile
+        .as_ref()
+        .map(|p| p.session_updates.clone())
+        .unwrap_or_default();
+    let source: Box<dyn TurnSource> = Box::new(LiveWithSessionUpdates {
+        session_updates: Some(session_updates),
+        inner: source,
+    });
     run_sealed_turn(opts, EitherSource::Live(source), sink).await
 }
 
@@ -654,6 +765,49 @@ mod tests {
         assert!(
             TurnProfileOverride::resolve_auto(true, Some(&off)),
             "absent override preserves a true base"
+        );
+    }
+
+    fn empty_profile(allow: Vec<String>) -> TurnProfileOverride {
+        TurnProfileOverride {
+            inference: None,
+            explicit_inference_override: false,
+            session_updates: vec![],
+            allow,
+            deny: vec![],
+            agent: None,
+            max_iter: None,
+            result_schema: None,
+            auto: None,
+        }
+    }
+
+    // C3 regression: a caller-supplied `profile` with a deliberately empty
+    // `allow` must NOT be silently widened back to the disk-config default —
+    // that would be a permission-model widening bug (a workflow that
+    // resolved to "no tools allowed" would end up with the base allow list
+    // instead).
+    #[test]
+    fn empty_profile_allow_is_preserved_literally_not_widened_to_base() {
+        let base = vec!["run_workflow".to_string()];
+        let empty_override = empty_profile(vec![]);
+        assert_eq!(
+            resolve_allow(base.clone(), Some(&empty_override)),
+            Vec::<String>::new(),
+            "an explicit empty allow list must stay empty"
+        );
+
+        let non_empty_override = empty_profile(vec!["read".to_string()]);
+        assert_eq!(
+            resolve_allow(base.clone(), Some(&non_empty_override)),
+            vec!["read".to_string()],
+            "a non-empty override must still win over the base"
+        );
+
+        assert_eq!(
+            resolve_allow(base.clone(), None),
+            base,
+            "no profile at all still falls back to the disk-config default"
         );
     }
 }

@@ -24,7 +24,9 @@ use gait_core::proto::envelope;
 use gait_core::proto::gait::log::v1 as pb;
 use gait_core::proto::gait::sandbox::v1::{signal, Append, FinalizedTurn, Signal};
 use gait_core::embed::{Diag, TurnSink};
-use gait_turn_runner::{run_single_prompt, run_turn_source, OneTurnSource, TurnRunOpts};
+use gait_turn_runner::{
+    run_single_prompt, run_turn_source, OneTurnSource, TurnProfileOverride, TurnRunOpts,
+};
 use prost::Message;
 
 fn init_git_repo(dir: &std::path::Path) {
@@ -87,6 +89,13 @@ fn terminated_ok(msg: &str) -> Signal {
 }
 
 fn setup_gait_dir() -> tempfile::TempDir {
+    setup_gait_dir_with_jsonc(r#"{ "inference": "mock" }"#)
+}
+
+/// Like `setup_gait_dir`, but lets the caller control `gait.jsonc`'s content
+/// — used by the C2 regression test, which needs a disk config with NO
+/// default `inference` set at all.
+fn setup_gait_dir_with_jsonc(jsonc: &str) -> tempfile::TempDir {
     let ws = tempfile::tempdir().unwrap();
     let gait_dir = ws.path().to_path_buf();
     init_git_repo(&gait_dir);
@@ -97,7 +106,7 @@ fn setup_gait_dir() -> tempfile::TempDir {
         "model: mock/model\ncompaction_threshold_tokens: 128000\n",
     )
     .unwrap();
-    std::fs::write(gait_dir.join("gait.jsonc"), r#"{ "inference": "mock" }"#).unwrap();
+    std::fs::write(gait_dir.join("gait.jsonc"), jsonc).unwrap();
 
     let mut blob = Vec::new();
     for s in [append_assistant("done"), terminated_ok("done")] {
@@ -211,5 +220,78 @@ async fn run_turn_source_finishes_a_live_one_turn_source() {
         "the shared runner must report the turn as completed: {:?}, diagnostics: {:?}",
         outcome.text, sink.diagnostics
     );
+    assert_eq!(outcome.text.as_deref(), Some("done"));
+}
+
+/// C1 regression: a live source that yields nothing this call (it may have
+/// only relayed permission/resume plumbing, or simply produced no terminal
+/// turn) must come back as `TurnRunOutcome { opened: true, .. }`, not an
+/// `Err`. No mock brain turn is ever spawned here (the source never yields an
+/// `Input`), so this doesn't depend on `GAIT_BRAIN_EXE` at all — but reuses
+/// `setup_gait_dir` for a valid disk config anyway (`resolve_checked` still
+/// runs before `run_loop` starts).
+struct EmptySource;
+
+#[async_trait::async_trait(?Send)]
+impl gait_core::embed::TurnSource for EmptySource {
+    async fn next(&mut self) -> Option<gait_core::embed::TurnStart> {
+        None
+    }
+}
+
+#[tokio::test]
+async fn run_turn_source_reports_opened_when_the_live_source_yields_nothing() {
+    let ws = setup_gait_dir();
+    let gait_dir = ws.path().to_path_buf();
+    let mut sink = RecordingSink::default();
+
+    let source: Box<dyn gait_core::embed::TurnSource> = Box::new(EmptySource);
+    let outcome = run_turn_source(test_opts("run-3", "s3", &gait_dir), source, &mut sink)
+        .await
+        .unwrap();
+
+    assert!(
+        outcome.opened,
+        "a live source producing no terminal turn must come back as opened, not an error"
+    );
+    assert!(!outcome.completed);
+    assert!(outcome.text.is_none());
+    assert!(outcome.json.is_none());
+    assert!(outcome.exit_code.is_none());
+    assert!(outcome.run_result.is_none());
+}
+
+/// C2 regression: a caller-supplied `profile.inference` must be layered in
+/// BEFORE `resolve_checked()`, so it can satisfy the "some inference is set"
+/// requirement even when `gait.jsonc` sets no default at all — matching the
+/// old `exec_prompt_node`'s `ConfigResolver::new(loaded).with(consumer).with(per_call).resolve_checked()`
+/// ordering. Before the fix this hard-errored with "no inference" even
+/// though the caller explicitly supplied one.
+#[tokio::test]
+async fn caller_supplied_inference_override_satisfies_resolve_checked_with_no_disk_default() {
+    let ws = setup_gait_dir_with_jsonc(r#"{}"#);
+    let gait_dir = ws.path().to_path_buf();
+    let mut sink = RecordingSink::default();
+
+    let mut opts = test_opts("run-4", "s4", &gait_dir);
+    opts.profile = Some(TurnProfileOverride {
+        inference: Some("mock".to_string()),
+        explicit_inference_override: true,
+        session_updates: vec![],
+        allow: vec![],
+        deny: vec![],
+        agent: None,
+        max_iter: None,
+        result_schema: None,
+        auto: None,
+    });
+
+    let outcome = run_single_prompt(opts, Some("hello".to_string()), &mut sink)
+        .await
+        .unwrap_or_else(|e| {
+            panic!("caller-supplied inference override must satisfy resolve_checked: {e}")
+        });
+
+    assert!(outcome.completed);
     assert_eq!(outcome.text.as_deref(), Some("done"));
 }
