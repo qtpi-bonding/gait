@@ -30,10 +30,16 @@ libc = "0.2"
 [features]
 default = []
 local = ["dep:gait-local"]
+dev-harness = []
 
 [dependencies.gait-local]
 path = "../gait-local"
 optional = true
+
+[[bin]]
+name = "mock_brain"
+path = "../../src/bin/mock_brain.rs"
+required-features = ["dev-harness"]
 
 [dev-dependencies]
 serial_test = "3"
