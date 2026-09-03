@@ -7,8 +7,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-gait-core  = { path = "../.." }
-gait-proto = { path = "../gait-proto" }
+gait-core        = { path = "../.." }
+gait-proto       = { path = "../gait-proto" }
+gait-turn-runner = { path = "../gait-turn-runner" }
 git2       = "0.20"
 tokio      = { version = "1", features = ["full"] }
 tokio-util = "0.7"

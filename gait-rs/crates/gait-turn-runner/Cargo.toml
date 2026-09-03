@@ -1,0 +1,31 @@
+[package]
+name = "gait-turn-runner"
+description = "Shared sealed-turn execution runner, independent of workflow concepts."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gait-core   = { path = "../.." }
+anyhow      = "1"
+async-trait = "0.1"
+serde_json  = "1"
+tokio-util  = "0.7"
+
+gait-testkit = { path = "../gait-testkit", optional = true }
+
+[features]
+default = []
+dev-harness = ["dep:gait-testkit"]
+
+[[bin]]
+name = "mock_brain"
+path = "src/bin/mock_brain.rs"
+required-features = ["dev-harness"]
+
+[dev-dependencies]
+tokio     = { version = "1", features = ["full", "test-util"] }
+tempfile  = "3"
+git2      = "0.20"
+prost     = "0.13"

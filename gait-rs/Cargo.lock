@@ -1881,6 +1881,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "gait-turn-runner"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "gait-core",
+ "gait-testkit",
+ "git2",
+ "prost",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "gait-types"
 version = "0.1.0"
 dependencies = [
@@ -1919,6 +1935,7 @@ dependencies = [
  "futures-util",
  "gait-core",
  "gait-proto",
+ "gait-turn-runner",
  "git2",
  "hex",
  "jsonschema",
