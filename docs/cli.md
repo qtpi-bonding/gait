@@ -14,6 +14,8 @@ The binary's full surface, verified against `crates/gait-bin/src/lib.rs` and `cr
 
 The CLI is a thin dispatcher over `gait-core`; the Turn I/O Boundary, the run-loop, and the engine live in the library. Frontends other than the CLI (REPL, ACP adapters, embedders) all share that same engine. See [`gait-rs/docs/architecture.md`](../gait-rs/docs/architecture.md).
 
+This reference covers the full `gait` binary's command surface. The `gait-min` binary (same source, a smaller compile-time feature set — see [`gait-rs/docs/gait-min.md`](../gait-rs/docs/gait-min.md)) exposes every command above except `gait workflow ...`; everything else, including the REPL, sessions, config, auth, and skill/plugin/MCP admin commands, is identical. (`gait local ...` is a separate `local` feature opt-in absent from *both* binaries' default builds — not a full/Min distinction.)
+
 ---
 
 ## `gait init [<path>]`
@@ -218,7 +220,9 @@ gait daemons stop <name> --gait-dir <path>              # stop a tracked backgro
 
 ### Workflows
 
-See [docs/workflows.md](workflows.md) for the full YAML reference.
+Not available in `gait-min` — the `gait-workflow` DAG runner is excluded from that build's dependency tree entirely, not merely disabled. See [docs/workflows.md](workflows.md) for the full YAML reference.
+
+`gait workflow list`/`gait workflow log` only ever see runs started by `gait workflow run`. An ordinary one-shot task or REPL turn does not create a `workflow-runs/` entry, in either build — see [`gait-rs/docs/gait-min.md`](../gait-rs/docs/gait-min.md#side-effect-affecting-both-builds-workflow-runs-bookkeeping).
 
 ```bash
 gait workflow run <name> [args...] --gait-dir <path>     # run workflows/<name>.yaml

@@ -24,12 +24,19 @@ source of truth.
 | **gait-proto** | proto codegen + the log codec: `gait.{log,state,sandbox,workflow}.v1` and `envelope`/`wire`/`hash` (mint, append, `content_hash`) |
 | **gait-cli** | command implementations — `cmd_run`, `cmd_spine`, `cmd_brain`, `cmd_run_tool` — thin arg-parsers over the `gait-core` runtimes |
 | **gait-repl** | the REPL/TUI (`chat.rs`, `repl_loop.rs`) — another embedder over `run_loop` |
-| **gait-workflow** | the workflow runner (a DAG of prompt/tool nodes) |
-| **gait-bin** | the `gait` binary — a thin dispatcher into `gait-cli` |
+| **gait-turn-runner** | shared sealed-turn execution (`run_turn_source`/`run_single_prompt`): the ordinary (non-DAG) turn logic CLI, REPL, ACP, and `gait-workflow` itself all drive a single turn through. Depends only on `gait-core`; never references `gait-workflow`'s `SinkFrame`/`NodeOutput`. |
+| **gait-workflow** | the workflow runner (a DAG of prompt/tool nodes). Drives its own prompt/shell nodes through `gait-turn-runner`, the same as any other frontend. |
+| **gait-acp** | the [ACP](https://agentclientprotocol.com) editor-bridge adapter — its own binary (`mock_brain_acp`'s sibling), not linked into `gait-bin`/`gait-min`. Drives ordinary turns through `gait-turn-runner` directly, same as the CLI and REPL. |
+| **gait-bin** | the `gait`/`gait-min` binaries — thin dispatchers into `gait-cli`, composed at compile time from the `full`/`min` Cargo feature sets (see [`docs/gait-min.md`](gait-min.md)) |
 
 The three sealed runtimes live in **gait-core** so both the CLI and the REPL can reach
 them; `gait-cli`'s `cmd_brain` / `cmd_run_tool` just parse args and call `run_brain` /
-`run_hand`.
+`run_hand`. **`gait-turn-runner` sits between the frontends (CLI, REPL, ACP) and
+`gait-workflow`/`gait-core`**: CLI/REPL/ACP call `gait-turn-runner` directly for
+ordinary turns, and `gait-workflow` itself calls down into `gait-turn-runner` for its
+own prompt nodes — the dependency runs frontends/workflow → turn-runner → gait-core,
+never the reverse (`gait-workflow` no longer implements ordinary turns as a degenerate
+one-node DAG the way it used to).
 
 `gait-platform` and `gait-types` are foundation leaves;
 `gait-provider`/`gait-sandbox` form a compiler-enforced DAG under
@@ -42,6 +49,26 @@ This broke a live `types ↔ tools` cycle (`ToolError` moved down into `gait-typ
 a `Rec` trait replaced the concrete `Recorder` in the `Tool`/`Hook` trait surface)
 and inverted two upward edges (`brain_scope` out of `turn` into `sandbox`;
 `proc_start_time` out of `session::daemons` into `process`).
+
+### Product composition: `gait` vs. `gait-min`
+
+`gait-bin` produces two binaries from one crate, selected entirely at compile time via
+Cargo features — never a runtime flag:
+
+```bash
+# Full gait: the existing default product
+cargo build -p gait-bin --bin gait
+
+# gait Min: no workflows, extensions, or rich TUI
+cargo build -p gait-bin --no-default-features --features min --bin gait-min
+```
+
+`full` turns on `workflow` (`dep:gait-workflow`), `rich-tui` (`gait-repl`'s themed
+markdown/syntax-highlighted renderer), and `gait-core/mcp`+`gait-core/code-mode`. `min` is
+empty by design — Min's behavior comes from what other features *don't* turn on, not from
+anything `min` itself enables. Both binaries share the sealed turn engine, the permission
+gate, the sandbox, and skills unconditionally; see [`docs/gait-min.md`](gait-min.md) for the
+full in/out list and the `make check-min` verification target that guards it.
 
 ---
 
@@ -241,8 +268,10 @@ engine. `run_turn` never touches stdin/stdout/a terminal — it only folds the l
 - `trait TurnSink { item, result, session_id, diagnostic, begin_turn, end_turn }` — the agnostic
   output contract. `drive(rx, &mut sink)` pumps the channel into a sink.
 - Adapters: **`StdioSink`** (CLI — Trace+Error → stderr, the one proto `RunResult` → stdout),
-  the workflow-runner **view sink** (drives the REPL `ReplBuilder` for interactive prompt nodes),
-  and **`JsonSink`** (a callback sink emitting pbjson for embedders — see below).
+  **`ReplSink`** (REPL, via `gait-turn-runner`'s `run_turn_source`/`run_single_prompt`), the
+  workflow-runner **view sink** (drives the REPL `ReplBuilder` for a real `gait workflow`/
+  `/workflow` DAG run's interactive prompt nodes), and **`JsonSink`** (a callback sink emitting
+  pbjson for embedders — see below).
 
 ### Input port (`port/input.rs`)
 - `trait TurnSource { async fn next() → Option<TurnStart> }` where `TurnStart{Input(event::Body) |
@@ -258,7 +287,10 @@ engine. `run_turn` never touches stdin/stdout/a terminal — it only folds the l
 - `run_loop(source, &mut sink, session, gait_dir, session_id, &mut driver)` — appends each input
   event, runs one `run_turn` per yield, pumps its stream to the sink. Shared by `cmd_run`
   (`cli/run.rs`, `ArgSource`+`StdioSink`+`CliDriver`) and `run_chat`
-  (`chat.rs`, `chat → ReplSource` driven via the workflow runner's interactive prompt node).
+  (`chat.rs`, `ReplSource`+`ReplSink`). Both go through `gait-turn-runner`'s
+  `run_turn_source`/`run_single_prompt` for an ordinary turn — CLI, REPL, and ACP no longer
+  implement an ordinary turn as a degenerate one-node workflow run; only a real
+  `gait workflow run`/`/workflow` DAG execution touches `gait-workflow` at all.
 
 ### The embedding facade (`gait_ai::embed`)
 The whole surface is public under one module: `TurnSource`/`TurnStart`, `TurnSink`/`JsonSink`,

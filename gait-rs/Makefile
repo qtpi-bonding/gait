@@ -3,7 +3,7 @@
 -include Makefile.local
 INSTALL_DIR ?= /usr/local/bin
 
-.PHONY: build install fmt lint test check hooks
+.PHONY: build install fmt lint test check check-min hooks
 
 build:
 	cargo build --release -p gait-bin
@@ -27,6 +27,21 @@ test:
 
 # Run the same checks the pre-commit hook enforces.
 check: lint test
+
+# gait-min composition check: formatting, Min feature tests, a Min binary
+# build, and a hard dependency-absence assertion. Uses an explicit `if`
+# (not `&&`/`||`) so a broken `rg`/pipe fails loudly instead of silently
+# reporting success, and checks `-e normal` (excludes dev-dependency edges,
+# so it reflects what actually ships in the binary) for the full excluded
+# package list, including `wasmtime` alongside the crates that pull it in.
+check-min:
+	cargo fmt --check
+	cargo test -p gait-bin --no-default-features --features min
+	cargo build -p gait-bin --no-default-features --features min --bin gait-min
+	@if cargo tree -p gait-bin -e normal --no-default-features --features min | rg -q 'gait-workflow|gait-acp|termimad|syntect|termbg|rmcp|wasmtime'; then \
+		echo "min composition pulled in an excluded dependency" >&2; \
+		exit 1; \
+	fi
 
 # Activate the repo's git hooks (fmt + clippy on commit) for this clone.
 hooks:

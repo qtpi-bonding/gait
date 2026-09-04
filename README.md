@@ -46,6 +46,20 @@ Or `make install` from inside `gait-rs/` (edit `Makefile` to set `INSTALL_DIR`).
 
 The installed binary is small (tens of MB). The `target/` directory is several GB of intermediate Cargo build cache — `cargo clean` after copying the binary out is fine.
 
+### Full gait vs. gait-min
+
+`gait` and `gait-min` are the same source tree built with different Cargo feature sets — not a fork, not a runtime mode:
+
+```bash
+# Full gait: the existing default product
+cargo build -p gait-bin --bin gait
+
+# gait Min: no workflows, extensions, or rich TUI
+cargo build -p gait-bin --no-default-features --features min --bin gait-min
+```
+
+Min keeps the CLI, the plain REPL, durable event-sourced sessions, the permission gate, the sandbox, and skills; it drops the `gait-workflow` DAG runner, MCP, plugins, Code Mode, the rich-TUI renderer (`termimad`/`syntect`/`termbg`), and the local model backend from its dependency tree entirely — see [gait-rs/docs/gait-min.md](gait-rs/docs/gait-min.md) for exactly what's in, what's out, and why.
+
 ## Quickstart
 
 ```bash
@@ -125,6 +139,7 @@ Plus subcommands (`gait <subcommand>`) for everything else. See [docs/cli.md](do
 - **[docs/sandbox.md](docs/sandbox.md)** — the three-layer sandbox config, `--unlock`, `awaiting-unlock`, shell whitelist.
 - **[gait-rs/docs/sandbox-security.md](gait-rs/docs/sandbox-security.md)** — brain/spine/hand process model, threat model, what's enforced vs. not.
 - **[gait-rs/docs/architecture.md](gait-rs/docs/architecture.md)** — engine internals: crate layout, event log, projections, ops boundary, embedding API.
+- **[gait-rs/docs/gait-min.md](gait-rs/docs/gait-min.md)** — the `gait-min` compile-time composition: what's in, what's out, and how it's verified.
 - **[gait-rs/docs/embedding.md](gait-rs/docs/embedding.md)** — driving gait from another program over the Turn I/O Boundary.
 - **[gait-rs/CLAUDE.md](gait-rs/CLAUDE.md)** — development notes for contributors.
 
@@ -189,6 +204,7 @@ cargo build --release     # release build
 make fmt                  # format the workspace
 make lint                 # rustfmt --check + clippy -D warnings
 make check                # lint + test (what CI/the hook enforce)
+make check-min             # gait-min composition: fmt, Min tests/build, dependency-absence check
 ```
 
 Two git hooks live in [`.githooks/`](.githooks/): `pre-commit` runs `cargo fmt --check` (Rust sources/manifests only); `pre-push` runs `cargo clippy -D warnings` (heavier, runs once before pushing). Activate with:
