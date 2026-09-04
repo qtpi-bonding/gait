@@ -30,6 +30,7 @@ pub trait McpInvoker: Send + Sync {
     ) -> anyhow::Result<Value>;
 }
 
+#[cfg(feature = "mcp")]
 #[async_trait]
 impl McpInvoker for crate::mcp::McpClient {
     async fn call(

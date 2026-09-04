@@ -54,7 +54,7 @@ git2 = "0.20"
 uuid = { version = "1", features = ["v4"] }
 libc = "0.2"
 fs2  = "0.4"
-rmcp = { version = "1", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+rmcp = { version = "1", optional = true, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 portable-pty = "0.8"
 grep-regex = "0.1.14"
 grep-searcher = "0.1.16"
@@ -65,7 +65,7 @@ gait-sandbox    = { path = "crates/gait-sandbox" }
 gait-proto      = { path = "crates/gait-proto" }
 gait-identity   = { path = "crates/gait-identity" }
 gait-state      = { path = "crates/gait-state" }
-gait-codemode   = { path = "crates/gait-codemode" }
+gait-codemode   = { path = "crates/gait-codemode", optional = true }
 prost          = "0.13"
 pbjson-types   = "0.7"
 prost-types    = "0.13"
@@ -80,15 +80,16 @@ identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git",
 [features]
 testing = []
 local = ["gait-provider/local-native"]
-# Stubs for `gait-bin`'s `full`/`min` composition (Task 5). `rmcp` and
-# `gait-codemode` are still unconditional dependencies here — actually
-# gating them behind `dep:rmcp`/`dep:gait-codemode` optional dependencies
-# and their call sites (`src/mcp/client.rs`, `ResolvedProfile.mcp_clients`,
-# etc.) is Task 6a's job. These no-op features exist only so
-# `--features mcp`/`--features code-mode`/`--features min` resolve cleanly
-# today; they don't yet change what gets compiled.
-mcp = []
-code-mode = []
+# `gait-bin`'s `full`/`min` composition (Task 5). `min` itself is a no-op here
+# — it only exists so `cargo test -p gait-core --features min` resolves when
+# testing this crate directly; `gait-bin`'s own `min = [..., "gait-core/min"]`
+# (deliberately) doesn't turn `mcp`/`code-mode` on. `mcp` makes `rmcp` (the
+# live MCP client, `src/mcp/client.rs`) and `ResolvedProfile.mcp_clients`
+# real; `code-mode` makes `gait-codemode` (and therefore `wasmtime`/
+# `cranelift`) a real dependency — its call sites (`src/tools/code.rs`,
+# `src/turn/spine/handlers/output.rs`) are gated in Task 6b/6c, not here.
+mcp = ["dep:rmcp"]
+code-mode = ["dep:gait-codemode"]
 min = []
 
 [dev-dependencies]

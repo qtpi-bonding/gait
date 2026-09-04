@@ -43,7 +43,7 @@ pub(super) async fn apply_curate_filter(
         model: model.to_string(),
         instructions: CURATE_SYSTEM_PROMPT.to_string(),
         mcp_registry: vec![],
-        mcp_clients: std::collections::HashMap::new(),
+        mcp_clients: Default::default(),
         skill_registry: vec![],
         plugin_registry: vec![],
         config_enabled: std::collections::HashSet::new(),

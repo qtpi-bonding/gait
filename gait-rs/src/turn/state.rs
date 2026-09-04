@@ -163,7 +163,7 @@ pub(crate) struct TurnEnv<'a> {
     pub relay: Option<&'a crate::turn::nerve::NerveWriter>,
     pub model: &'a str,
     pub mcp_registry: &'a [crate::config::McpToolDef],
-    pub mcp_clients: &'a std::collections::HashMap<String, Arc<crate::mcp::McpClient>>,
+    pub mcp_clients: &'a crate::profile::McpClients,
     pub plugin_registry: &'a [crate::config::WasmPluginDef],
     pub result_schema: &'a Option<serde_json::Value>,
 }

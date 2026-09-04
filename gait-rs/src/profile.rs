@@ -3,6 +3,17 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
+/// The live, connected MCP client map. Real (`HashMap<String,
+/// Arc<crate::mcp::McpClient>>`) only under the `mcp` feature — `rmcp` is
+/// this crate's only real dependency behind that feature, so under `min`
+/// (no `mcp`) this collapses to `()`. `Default::default()` works for both
+/// (`HashMap::new()` and `()`), so most construction sites need no `#[cfg]`
+/// of their own; only sites that actually connect/iterate/index into it do.
+#[cfg(feature = "mcp")]
+pub(crate) type McpClients = std::collections::HashMap<String, Arc<crate::mcp::McpClient>>;
+#[cfg(not(feature = "mcp"))]
+pub(crate) type McpClients = ();
+
 /// The one resolved context boundary used by a live turn.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ContextPolicy {
@@ -61,8 +72,7 @@ pub struct ResolvedProfile {
     pub model: String,
     pub instructions: String,
     pub(crate) mcp_registry: Vec<crate::config::McpToolDef>,
-    pub(crate) mcp_clients:
-        std::collections::HashMap<String, std::sync::Arc<crate::mcp::McpClient>>,
+    pub(crate) mcp_clients: McpClients,
     pub skill_registry: Vec<crate::config::SkillDef>,
     pub plugin_registry: Vec<crate::config::WasmPluginDef>,
     pub config_enabled: std::collections::HashSet<String>,
@@ -387,11 +397,18 @@ impl Profile {
         // contributes zero tools and the run continues. MCP config errors are a startup/config
         // problem the user fixes once, not a per-turn alert. Callers can detect MCP misconfig by
         // checking `resolved_profile.mcp_registry.is_empty()` when servers were configured.
+        // `mut` only matters under `feature = "mcp"` (the connect loop below
+        // extends it); under `min` it's declared but never mutated.
+        #[cfg_attr(not(feature = "mcp"), allow(unused_mut))]
         let mut mcp_registry: Vec<crate::config::McpToolDef> = vec![];
-        let mut mcp_clients: std::collections::HashMap<
-            String,
-            std::sync::Arc<crate::mcp::McpClient>,
-        > = std::collections::HashMap::new();
+        // Under `min` (no `mcp` feature) `McpClients` is `()`, and there is
+        // no live client to connect — `mcp_registry` simply stays empty,
+        // same as when every configured server fails to connect today.
+        #[cfg(feature = "mcp")]
+        let mut mcp_clients: McpClients = std::collections::HashMap::new();
+        #[cfg(not(feature = "mcp"))]
+        let mcp_clients: McpClients = ();
+        #[cfg(feature = "mcp")]
         for server_def in &self.mcp_servers {
             match crate::mcp::McpClient::connect(server_def).await {
                 Ok(client) => {
@@ -510,7 +527,7 @@ impl ResolvedProfile {
             model: "test/model".into(),
             instructions: String::new(),
             mcp_registry: vec![],
-            mcp_clients: std::collections::HashMap::new(),
+            mcp_clients: Default::default(),
             skill_registry: vec![],
             plugin_registry: vec![],
             config_enabled: std::collections::HashSet::new(),
@@ -729,6 +746,54 @@ mod tests {
         assert_eq!(profile.mcp_servers.len(), 1);
         assert_eq!(profile.mcp_servers[0].name, "slack");
         assert_eq!(profile.mcp_servers[0].command.as_deref(), Some("npx"));
+    }
+
+    /// Task 6a: `Profile.mcp_servers` (the pre-connect, disk-scanned list) is
+    /// never gated -- it always reflects `mcp/*.json` files on disk, in every
+    /// feature build. `ResolvedProfile.mcp_registry` only gets populated by
+    /// the live connect loop in `resolve()`, which under `min` (no `mcp`
+    /// feature) is compiled out entirely, so it stays empty even when
+    /// `mcp_servers` is non-empty. Uses a nonexistent binary so `connect()`
+    /// fails fast and deterministically under `full` too (no live MCP server
+    /// available in the test sandbox) -- the compile-time gate under `min` is
+    /// the thing Task 6a actually adds; this test pins the resulting
+    /// behavior (mcp_registry empty, mcp_servers still disk-accurate) in
+    /// both feature builds.
+    #[tokio::test]
+    async fn min_build_never_populates_mcp_registry_but_profile_still_scans_disk() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let mcp_dir = dir.path().join("mcp");
+        std::fs::create_dir_all(&mcp_dir).unwrap();
+        std::fs::write(
+            mcp_dir.join("slack.json"),
+            r#"{"command":"no-such-binary-xyz-abc","args":[],"enabled":true}"#,
+        )
+        .unwrap();
+        let config = GaitConfig {
+            inference: Some("anthropic/claude-x".into()),
+            ..GaitConfig::default()
+        };
+        let profile = Profile::from_config_and_agent(&config, dir.path(), None, None, None);
+        assert_eq!(
+            profile.mcp_servers.len(),
+            1,
+            "disk scan must still see mcp/slack.json regardless of feature build"
+        );
+        let resolved = profile
+            .resolve(
+                dir.path().to_path_buf(),
+                "s1".into(),
+                dir.path().to_path_buf(),
+                crate::git::Repos::production(),
+                Some(gait_auth::ResolvedCredential::ApiKey("test-key".into())),
+            )
+            .await
+            .unwrap();
+        assert!(
+            resolved.mcp_registry.is_empty(),
+            "no live server connected, so no tools should be discovered"
+        );
     }
 
     #[test]

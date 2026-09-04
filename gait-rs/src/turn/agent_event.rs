@@ -17,7 +17,10 @@ use crate::proto::wire;
 /// so the drift check in `run_turn` doesn't thrash on otherwise-identical
 /// agent configs.
 pub fn agent_msg(resolved: &ResolvedProfile) -> pb::Agent {
+    #[cfg(feature = "mcp")]
     let mut mcp_servers: Vec<String> = resolved.mcp_clients.keys().cloned().collect();
+    #[cfg(not(feature = "mcp"))]
+    let mut mcp_servers: Vec<String> = Vec::new();
     mcp_servers.sort();
     pb::Agent {
         instructions: resolved.instructions.clone(),

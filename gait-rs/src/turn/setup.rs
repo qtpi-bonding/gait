@@ -49,7 +49,7 @@ pub(crate) struct SetupData {
     pub repos: Repos,
     pub system_prompt: String,
     pub mcp_registry: Vec<crate::config::McpToolDef>,
-    pub mcp_clients: std::collections::HashMap<String, std::sync::Arc<crate::mcp::McpClient>>,
+    pub mcp_clients: crate::profile::McpClients,
     pub skill_registry: Vec<crate::config::SkillDef>,
     pub plugin_registry: Vec<crate::config::WasmPluginDef>,
     pub hooks: Vec<Box<dyn Hook>>,
@@ -345,7 +345,7 @@ pub(crate) fn finish_after_resume(
     agent: &pb::Agent,
     agent_seed: &AgentState,
     mcp_registry: &[crate::config::McpToolDef],
-    mcp_clients: &std::collections::HashMap<String, std::sync::Arc<crate::mcp::McpClient>>,
+    mcp_clients: &crate::profile::McpClients,
     skill_registry: &[crate::config::SkillDef],
     plugin_registry: &[crate::config::WasmPluginDef],
     effective_allow: &[String],
@@ -391,7 +391,11 @@ pub(crate) fn finish_after_resume(
     // If that invariant ever changes, this snapshot must be rebuilt to match.
     {
         use std::sync::Arc;
-        let clients = mcp_clients
+        #[cfg(feature = "mcp")]
+        let clients: std::collections::HashMap<
+            String,
+            Arc<dyn super::capabilities::McpInvoker>,
+        > = mcp_clients
             .iter()
             .map(|(name, client)| {
                 (
@@ -400,6 +404,15 @@ pub(crate) fn finish_after_resume(
                 )
             })
             .collect();
+        // No live MCP clients to wrap under `min` — `mcp_clients` is `()`.
+        #[cfg(not(feature = "mcp"))]
+        let clients: std::collections::HashMap<
+            String,
+            Arc<dyn super::capabilities::McpInvoker>,
+        > = {
+            let _ = mcp_clients;
+            std::collections::HashMap::new()
+        };
         let dispatcher = Arc::new(super::capabilities::CapabilityDispatcher::new(
             state
                 .tools
