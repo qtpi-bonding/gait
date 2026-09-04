@@ -27,6 +27,7 @@ pub mod auth;
 pub mod config;
 pub mod daemon;
 pub mod extension;
+pub mod identity;
 pub mod inference;
 pub mod interaction;
 pub mod permission;
