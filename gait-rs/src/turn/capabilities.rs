@@ -8,18 +8,27 @@ use crate::types::{Rec, Tool};
 use async_trait::async_trait;
 use serde_json::Value;
 
+// Under `min` (neither `mcp` nor `code-mode`), nothing in production code
+// reaches these types — the only reachable path (the `code` tool downcasting
+// into `CapabilityDispatcher::invoke`) lives in the `gait-codemode` crate,
+// which `min` never pulls in. They stay exercised by this module's own
+// `#[cfg(test)]` suite regardless, so the dead-code lint only fires on the
+// non-test compilation of a `min` build.
+#[cfg_attr(not(any(feature = "mcp", feature = "code-mode")), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum CapabilityAddress {
     Native { tool: String },
     Mcp { server: String, tool: String },
 }
 
+#[cfg_attr(not(any(feature = "mcp", feature = "code-mode")), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct CapabilityInvocation {
     pub address: CapabilityAddress,
     pub args: Value,
 }
 
+#[cfg_attr(not(any(feature = "mcp", feature = "code-mode")), allow(dead_code))]
 #[async_trait]
 pub trait McpInvoker: Send + Sync {
     async fn call(
@@ -43,6 +52,7 @@ impl McpInvoker for crate::mcp::McpClient {
     }
 }
 
+#[cfg_attr(not(any(feature = "mcp", feature = "code-mode")), allow(dead_code))]
 #[derive(Debug, thiserror::Error)]
 pub enum CapabilityError {
     #[error("unknown native capability `{0}`")]
@@ -69,9 +79,12 @@ pub enum CapabilityError {
 pub struct CapabilityDispatcher {
     native: HashMap<String, Arc<dyn Tool>>,
     mcp: HashMap<String, Arc<dyn McpInvoker>>,
+    #[cfg_attr(not(any(feature = "mcp", feature = "code-mode")), allow(dead_code))]
     registry: Vec<McpToolDef>,
     enabled: RwLock<HashSet<String>>,
+    #[cfg_attr(not(any(feature = "mcp", feature = "code-mode")), allow(dead_code))]
     relay: Option<crate::turn::nerve::NerveWriter>,
+    #[cfg_attr(not(any(feature = "mcp", feature = "code-mode")), allow(dead_code))]
     deny: Vec<String>,
 }
 
@@ -118,6 +131,7 @@ impl CapabilityDispatcher {
             enabled.remove(&server);
         }
     }
+    #[cfg_attr(not(any(feature = "mcp", feature = "code-mode")), allow(dead_code))]
     pub fn is_enabled(&self, server: &str) -> bool {
         self.enabled
             .read()
@@ -125,6 +139,7 @@ impl CapabilityDispatcher {
             .contains(server)
     }
 
+    #[cfg_attr(not(any(feature = "mcp", feature = "code-mode")), allow(dead_code))]
     pub fn mcp_tools<'a>(&'a self, server: &'a str) -> impl Iterator<Item = &'a McpToolDef> + 'a {
         self.registry
             .iter()
@@ -133,6 +148,7 @@ impl CapabilityDispatcher {
 
     /// Execute without recording ToolCall/ToolResult events. Native tools still
     /// receive the recorder they require for their own durable side effects.
+    #[cfg_attr(not(any(feature = "mcp", feature = "code-mode")), allow(dead_code))]
     pub async fn invoke(
         &self,
         invocation: CapabilityInvocation,

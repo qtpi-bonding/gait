@@ -21,6 +21,12 @@ fmt:
 lint:
 	cargo fmt --all -- --check
 	cargo clippy --workspace --all-targets -- -D warnings
+	@if cargo tree -p gait-acp -e normal | rg -q 'rmcp|gait-codemode'; then \
+		echo "gait-acp: mcp/code-mode dependencies present (ok)"; \
+	else \
+		echo "gait-acp is missing rmcp/gait-codemode — mcp/code-mode features on its gait-core dep were dropped" >&2; \
+		exit 1; \
+	fi
 
 test:
 	cargo test --workspace
@@ -36,6 +42,7 @@ check: lint test
 # package list, including `wasmtime` alongside the crates that pull it in.
 check-min:
 	cargo fmt --check
+	cargo clippy -p gait-bin --no-default-features --features min --all-targets -- -D warnings
 	cargo test -p gait-bin --no-default-features --features min
 	cargo build -p gait-bin --no-default-features --features min --bin gait-min
 	@if cargo tree -p gait-bin -e normal --no-default-features --features min | rg -q 'gait-workflow|gait-acp|termimad|syntect|termbg|rmcp|wasmtime'; then \

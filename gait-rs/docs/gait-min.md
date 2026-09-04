@@ -37,7 +37,17 @@ surface around it. Specifically, Min includes:
   (no markdown rendering, no syntax highlighting, no background-color
   detection). It still transitively links `crossterm` via `reedline` for
   basic line editing (history, cursor movement) — that's terminal
-  input handling, not the rich-TUI renderer this build excludes.
+  input handling, not the rich-TUI renderer this build excludes. Input
+  expansion (`@path`, `$(cmd)`, `$(N)`) works the same as in the rich REPL and
+  the CLI; the plain REPL has no `!cmd` shell-history recorder, so `$(N)`
+  history recall always misses, and `>(N)` quote-reply of a prior turn's
+  blocks is not tracked here. Only a subset of slash commands is available —
+  `/help`, `/info`, `/inference`, `/auth`, `/new`, `/undo`, `/sandbox`,
+  `/unlock`, `/skill`, and `/exit` (alias `/q`); this is the exact set in
+  `MIN_REPL_COMMANDS` (`crates/gait-repl/src/plain.rs`). `/config`, `/mode`,
+  `/shell`, `/workflow`, `/undo-code`, and `/undo-transcript` are full-`gait`-only:
+  typing one of these in the plain REPL prints `[gait] not available in this
+  build` rather than being sent to the model as prompt text.
 - **Durable, event-sourced sessions** — the same append-only JSONL log,
   the same git-committed session state, the same projections. There is no
   reduced or alternate session format for Min.
@@ -61,9 +71,13 @@ These are genuinely absent from `gait-min`'s dependency tree, not merely
 disabled at runtime — `cargo tree -p gait-bin -e normal --no-default-features
 --features min` shows none of them:
 
-- **Workflows** — the `gait-workflow` YAML DAG runner. No `gait-min workflow`
-  subcommand, no `/workflow` REPL command, and `gait-workflow` itself is not
-  a linked dependency.
+- **Workflows** — the `gait-workflow` YAML DAG runner. `gait-min` has no
+  `workflow` subcommand at all (see `gait-min --help`), no `/workflow` REPL
+  command, and `gait-workflow` itself is not a linked dependency. Running a
+  workflow DAG requires the full `gait workflow run` — there is no
+  `gait-min workflow run` equivalent, and Min never creates a
+  `workflow-runs/` directory for any reason, since it has no workflow support
+  to create one with.
 - **MCP** — the `rmcp` client crate and everything under `gait-core`'s `mcp`
   feature. No live MCP server connections.
 - **Plugins** — WASM plugin loading.
@@ -99,10 +113,12 @@ turns** — in *either* build, full `gait` included. This is not Min-specific
 and not gated by any feature flag; it falls directly out of the runner
 extraction (an ordinary turn was previously implemented as a degenerate
 one-node workflow run, which is why it used to leave a `workflow-runs/`
-trace at all). A real `gait workflow run`/`gait-min workflow run` still
+trace at all). A real `gait workflow run` (full `gait` only — `gait-min` has
+no `workflow` subcommand, see "What's excluded from Min" above) still
 creates a `workflow-runs/<run_id>/` directory and log exactly as before —
 only ordinary turns changed, and `gait workflow list` output reflects the
-narrower set of runs it now sees.
+narrower set of runs it now sees. `gait-min` never creates a `workflow-runs/`
+directory under any circumstances, ordinary turn or otherwise.
 
 ## Verifying the composition
 

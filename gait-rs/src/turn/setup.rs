@@ -108,6 +108,10 @@ pub(crate) fn init(
     let repos = session.repos.clone();
     let system_prompt = caps.instructions;
     let mcp_registry = caps.mcp_registry;
+    // Under `min` (no `mcp`/`code-mode` feature), `McpClients` is `()`, so this
+    // binding is a unit value on that build — still correct, just not worth a
+    // conditional to silence the lint on a line that binds a real value otherwise.
+    #[allow(clippy::let_unit_value)]
     let mcp_clients = caps.mcp_clients;
     let skill_registry = caps.skill_registry;
     let plugin_registry = caps.plugin_registry;

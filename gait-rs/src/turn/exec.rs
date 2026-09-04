@@ -40,6 +40,10 @@ pub(super) struct RawExecOutcome {
     pub duration: Option<pbjson_types::Duration>,
     pub via_hand: bool,
     pub denied: Option<pb::SandboxUnlockItem>,
+    /// Read only by `capabilities::CapabilityDispatcher::invoke`, which is
+    /// itself unreachable in production code under `min` (neither `mcp` nor
+    /// `code-mode`) — see the matching `cfg_attr` there.
+    #[cfg_attr(not(any(feature = "mcp", feature = "code-mode")), allow(dead_code))]
     pub sandbox_denied: Option<pb::SandboxDenied>,
 }
 

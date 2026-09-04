@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.88"
 
 [dependencies]
-gait-core = { path = "../.." }
+gait-core = { path = "../..", features = ["mcp", "code-mode"] }
 gait-turn-runner = { path = "../gait-turn-runner" }
 gait-ops = { path = "../gait-ops" }
 gait-state = { path = "../gait-state" }

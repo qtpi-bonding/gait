@@ -413,6 +413,7 @@ fn render_repl_command(out: &mut String, command: &ReplCommand) {
 mod tests {
     use super::*;
     use gait_repl::repl::commands::COMMANDS;
+    #[cfg(feature = "workflow")]
     use tempfile::TempDir;
 
     fn full_input(cli: Command) -> ManualInput<'static> {

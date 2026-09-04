@@ -662,7 +662,7 @@ impl TurnSource for PlainSource {
                 parsed,
                 Some(cmd::ParsedCommand {
                     id: ReplCommandId::Help,
-                    args: ""
+                    ..
                 })
             ) {
                 self.eprintln(&min_help_text());
@@ -673,7 +673,7 @@ impl TurnSource for PlainSource {
                 parsed,
                 Some(cmd::ParsedCommand {
                     id: ReplCommandId::Info,
-                    args: ""
+                    ..
                 })
             ) {
                 let cfg = gait_core::config::load_config(&self.gait_dir);
@@ -763,7 +763,34 @@ impl TurnSource for PlainSource {
                 _ => {}
             }
 
-            let bodies = user_turn_events(&self.repos, &self.codebase, line)
+            // `cmd::parse` matches against the FULL `repl::commands::COMMANDS`
+            // table, not just `MIN_REPL_COMMANDS` — so a command outside this
+            // build's supported set (e.g. `/config`, `/mode`, `/shell`,
+            // `/workflow`, `/undo-code`, `/undo-transcript`) still parses
+            // successfully here. Every id actually supported by the plain
+            // REPL is handled above and already `continue`d or `return`ed by
+            // this point, so any `Some(_)` still reaching here is one of
+            // those unsupported commands — catch it before it falls through
+            // to being sent to the model as literal prompt text.
+            if parsed.is_some() {
+                self.eprintln("[gait] not available in this build");
+                continue;
+            }
+
+            // Unified expansion (identical to the rich REPL and the `gait-min`
+            // CLI path): $(cmd)/$(N), @path. The plain REPL has no `!cmd`
+            // shell-history recorder, so `$(N)` history recall always misses
+            // (there is no `sh.jsonl` writer to populate it); `>(N)` quote-reply
+            // has no prior-turn blocks to draw on here, so it is passed empty.
+            let expanded = gait_core::expand::expand_input(
+                &line,
+                &gait_core::expand::ExpandCtx {
+                    codebase: &self.codebase,
+                    history: &self.gait_dir.join("sh.jsonl"),
+                    last_blocks: &[],
+                },
+            );
+            let bodies = user_turn_events(&self.repos, &self.codebase, expanded)
                 .into_iter()
                 .map(|b| (b, None))
                 .collect();
