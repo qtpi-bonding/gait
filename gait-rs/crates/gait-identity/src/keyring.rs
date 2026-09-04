@@ -22,6 +22,13 @@ pub struct KeyringEntry {
     pub revoked_at: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SelfProof {
+    pub scheme: KeyScheme,
+    pub public_key: Vec<u8>,
+    pub signature: Vec<u8>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Keyring {
     pub keys: Vec<KeyringEntry>,
@@ -88,6 +95,33 @@ impl Keyring {
             other => anyhow::bail!("no signer implementation for scheme {other:?}"),
         }
     }
+
+    /// Signs `identity_crypto`'s canonical self-proof transcript for the
+    /// keyring's active signer -- the "prove you hold this key right now"
+    /// signature every external caller of this key (grorg's RegisterAgent,
+    /// AddAgentKey, and this crate's own RenameAgent-shaped flows) needs.
+    /// The private key never leaves this function; callers get back only the
+    /// public key and the signature.
+    pub fn sign_self_proof(&self, nonce: &[u8]) -> anyhow::Result<SelfProof> {
+        let signer = self.signer()?;
+        let public_key = signer.public_key().to_vec();
+        let pubkey_bytes: [u8; 32] = public_key
+            .clone()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("signer public key is not 32 bytes"))?;
+        let scheme = signer.scheme();
+        let transcript = identity_crypto::transcripts::self_proof_transcript(
+            nonce,
+            &pubkey_bytes,
+            scheme as i32,
+        );
+        let signature = signer.sign(&transcript);
+        Ok(SelfProof {
+            scheme,
+            public_key,
+            signature,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -120,5 +154,31 @@ mod tests {
     fn load_missing_file_errors() {
         let dir = tempfile::TempDir::new().unwrap();
         assert!(Keyring::load(dir.path()).is_err());
+    }
+
+    #[test]
+    fn sign_self_proof_produces_a_signature_verifiable_against_the_canonical_transcript() {
+        let kr = Keyring::generate();
+        let nonce = b"test-nonce";
+        let proof = kr.sign_self_proof(nonce).unwrap();
+
+        let transcript = identity_crypto::transcripts::self_proof_transcript(
+            nonce,
+            &proof.public_key.clone().try_into().unwrap(),
+            proof.scheme as i32,
+        );
+        let public_key_hex = hex::encode(&proof.public_key);
+        assert!(identity_crypto::verify_ed25519(
+            &public_key_hex,
+            &transcript,
+            &proof.signature
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn sign_self_proof_errors_when_keyring_has_no_active_signer() {
+        let kr = Keyring { keys: vec![] };
+        assert!(kr.sign_self_proof(b"nonce").is_err());
     }
 }
