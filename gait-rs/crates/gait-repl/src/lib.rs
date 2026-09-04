@@ -20,6 +20,13 @@ pub mod tools;
 #[allow(clippy::print_stderr)]
 pub mod ui;
 
+// Frame-scripting primitives (Script/Turn/Frame + the mock-brain wire
+// format + a fresh-gait-dir fixture) shared by both REPL flavors' e2e test
+// harnesses. No ReplBuilder/Theme dependency, so this compiles under
+// `dev-harness` alone with `rich-tui` off — see turn_script.rs's doc comment.
+#[cfg(feature = "dev-harness")]
+pub mod turn_script;
+
 // Drives the real REPL turn-engine path through the themed ReplBuilder /
 // ReplSource / ReplSink stack (`chat.rs`'s own path) so it can capture and
 // annotate what the rich renderer would have painted — not meaningful

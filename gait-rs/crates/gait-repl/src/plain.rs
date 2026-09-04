@@ -138,6 +138,66 @@ pub async fn run_plain_repl(args: PlainReplArgs) -> anyhow::Result<()> {
     .await
 }
 
+/// A `Write` handle onto a shared in-memory buffer, used by
+/// `run_plain_script_fresh` to capture everything the plain REPL writes
+/// (stdout+stderr combined, matching the acceptance test's "one transcript"
+/// shape) across a real `run_plain_loop` drive. Not `#[cfg(test)]` — this
+/// function is called from `tests/plain_repl_e2e.rs`, a separate crate that
+/// only sees the library's normal (non-test) build.
+#[cfg(feature = "dev-harness")]
+struct CapturingWriter(Rc<RefCell<Vec<u8>>>);
+#[cfg(feature = "dev-harness")]
+impl Write for CapturingWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.borrow_mut().write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Drives a scripted, mock-brain-backed conversation through the plain
+/// REPL's *real* entry point (`run_plain_loop`, the same call
+/// `run_plain_repl` makes) — a fresh git-inited temp gait-dir, a
+/// `ScriptedReader` over `script`'s turn inputs, and `GAIT_BRAIN_EXE`
+/// pointed at `mock_brain_exe` — and returns everything written to
+/// stdout+stderr. Unlike `dev_harness::run_script_fresh` this never
+/// constructs a `ReplBuilder`/`Theme`, so it's usable with `rich-tui` off;
+/// see `tests/plain_repl_e2e.rs`.
+#[cfg(feature = "dev-harness")]
+pub async fn run_plain_script_fresh(
+    script: &crate::turn_script::Script,
+    mock_brain_exe: &std::path::Path,
+) -> anyhow::Result<(tempfile::TempDir, String)> {
+    let (ws, gait_dir, codebase) =
+        crate::turn_script::setup_fresh_gait_dir_and_codebase(mock_brain_exe)?;
+    crate::turn_script::write_numbered_frames(&gait_dir, &script.turns)?;
+
+    let lines: Vec<&str> = script.turns.iter().map(|t| t.input.as_str()).collect();
+    let reader: Box<dyn LineReader> = Box::new(crate::repl::ScriptedReader::lines(&lines));
+
+    let buf = Rc::new(RefCell::new(Vec::<u8>::new()));
+    let out_buf = buf.clone();
+    let err_buf = buf.clone();
+    let args = PlainReplArgs {
+        gait_dir,
+        codebase,
+        agent_name: None,
+        session_id: Some(gait_core::session::new_session_id()),
+        model_override: None,
+    };
+    run_plain_loop(
+        args,
+        reader,
+        move || Box::new(CapturingWriter(out_buf.clone())) as Box<dyn Write>,
+        move || Box::new(CapturingWriter(err_buf.clone())) as Box<dyn Write>,
+    )
+    .await?;
+
+    let output = String::from_utf8_lossy(&buf.borrow()).to_string();
+    Ok((ws, output))
+}
+
 /// The reusable driver behind `run_plain_repl`: takes an injectable line
 /// reader and writer factories (called fresh per session-loop iteration, so
 /// a test can hand back clones of one shared in-memory buffer) so both the

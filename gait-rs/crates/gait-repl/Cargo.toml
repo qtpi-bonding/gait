@@ -63,13 +63,23 @@ dev-harness = ["dep:libc", "dep:prost", "dep:serde", "dep:tempfile", "dep:git2",
 # `repl::driver::run_named_workflow` does. Default-on so today's full `gait`
 # binary is unaffected; a future minimal build can opt out.
 #
-# TODO(Task 5): this feature only gates the *dependency* today —
-# `repl::driver::run_named_workflow` and its `/workflow` command dispatch
-# site still reference `gait_workflow::` unconditionally (no
-# `#[cfg(feature = "workflow")]` on them yet), so `cargo build -p gait-repl
-# --no-default-features` does not compile yet. Gating that call site needs
-# the REPL command-table/capability infrastructure Task 4/5 introduces
-# (`MIN_REPL_COMMANDS` etc.) — finish the gate there, not before.
+# TODO(Task 5+): `repl::driver::run_named_workflow` and its `/workflow`
+# command dispatch site still reference `gait_workflow::` unconditionally —
+# no `#[cfg(feature = "workflow")]` on them. That's harmless for
+# `cargo build -p gait-repl --no-default-features` today only because Task 4
+# put the *entire* `repl::driver` module behind `rich-tui` (it holds a
+# `ui::ReplBuilder` field and calls `crate::theme::RESET` throughout), not
+# behind `workflow` — so with `rich-tui` off, `run_named_workflow` and its
+# unconditional `gait_workflow::` reference are simply unreachable, and this
+# `workflow` feature still only gates the *dependency* (`dep:gait-workflow`),
+# not any call site. The gap this leaves: a `workflow`-on + `rich-tui`-off
+# build (real `/workflow` REPL support without the themed renderer) has no
+# working `/workflow` command today — `plain.rs`'s `MIN_REPL_COMMANDS`
+# doesn't even list it. If a future task wants `/workflow` in `gait-min`,
+# `repl::driver::run_named_workflow` needs a `repl::skill.rs`-style
+# extraction into a `rich-tui`-independent module first, gated on
+# `#[cfg(feature = "workflow")]` there instead of riding along with
+# `repl::driver`'s `rich-tui` gate.
 workflow = ["dep:gait-workflow"]
 
 [[bin]]
@@ -92,3 +102,14 @@ harness = false
 # still errors (cargo's behavior for an explicitly-selected target), so drive
 # it with `--features "dev-harness,rich-tui"`.
 required-features = ["dev-harness", "rich-tui"]
+
+# Companion to repl_drive_e2e above, but for the plain REPL: proves
+# gait_repl::plain::run_plain_script_fresh drives a real turn through
+# gait_turn_runner::run_turn_source + a real mock_brain process with
+# "rich-tui" off. Only needs "dev-harness" (mock_brain's own deps) — no
+# raw-fd capture here (plain.rs's writers are already an in-memory buffer),
+# so the default libtest harness is fine.
+[[test]]
+name = "plain_repl_e2e"
+path = "tests/plain_repl_e2e.rs"
+required-features = ["dev-harness"]
