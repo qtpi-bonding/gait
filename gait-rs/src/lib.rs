@@ -1,4 +1,3 @@
-pub mod attestation;
 pub mod harness;
 pub mod scheduler;
 pub mod tools;
