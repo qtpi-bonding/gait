@@ -1654,7 +1654,6 @@ dependencies = [
  "grep-regex",
  "grep-searcher",
  "hex",
- "identity-crypto",
  "ignore",
  "jsonschema",
  "libc",
