@@ -85,6 +85,7 @@ pub struct Cli {
 pub enum Commands {
     Manual(manual::ManualArgs),
     Init(InitArgs),
+    Identity(gait_cli::cli::identity::IdentityArgs),
     Link(LinkArgs),
     Sessions(SessionsArgs),
     Ps(PsArgs),

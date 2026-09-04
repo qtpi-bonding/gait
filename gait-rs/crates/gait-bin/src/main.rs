@@ -151,6 +151,7 @@ async fn main() {
             }
         }
         Commands::Init(args) => gait_cli::cli::init::cmd_init(args),
+        Commands::Identity(args) => gait_cli::cli::identity::cmd_identity(args),
         Commands::Link(args) => gait_cli::cli::link::cmd_link(args),
         Commands::Sessions(args) => gait_cli::cli::session::cmd_sessions(args),
         Commands::Ps(args) => gait_cli::cli::session::cmd_ps(args),
