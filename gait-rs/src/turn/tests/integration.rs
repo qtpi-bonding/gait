@@ -166,6 +166,54 @@ async fn dispatcher_native_map_shares_real_instance_identity_with_state_tools() 
     }
 }
 
+/// Task 6b: `turn::setup` (and everything it transitively calls, notably
+/// `turn::prompt::build_dynamic_system_prompt`) must build and run cleanly
+/// under `--no-default-features --features min` — no unconditional reference
+/// to an `mcp`/`code-mode`-gated type anywhere on this path. This test itself
+/// is feature-agnostic; what makes it meaningful is running it under `min`
+/// (see Step 3/5 of the task brief): if any call site on this path still
+/// references a gated type unconditionally, the whole crate fails to
+/// *compile* under `min`, so this test (and every other test) never even
+/// gets to run.
+#[tokio::test]
+async fn min_turn_setup_never_touches_extension_types() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+    let session = crate::session::Session {
+        id: "sminsetup1".into(),
+        gait_dir: ws.path().to_path_buf(),
+        codebase_path: ws.path().to_path_buf(),
+        assigned_by: None,
+        repos: crate::git::Repos::production(),
+    };
+    let provider: Arc<dyn Provider> = Arc::new(FakeProvider {
+        steps: Arc::new(vec![]),
+        call_idx: Arc::new(AtomicUsize::new(0)),
+    });
+    let caps = crate::profile::ResolvedProfile::for_test(provider, vec![], vec![], vec![]);
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let emitter = Recorder::for_session(&session.gait_dir, &session.id, tx);
+    let outcome = crate::turn::setup::build_test_turn_state(
+        &session,
+        &emitter,
+        caps,
+        TurnInput {
+            auto: true,
+            max_iter: Some(1),
+            preview_policy: crate::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: true,
+            sandbox_cfg: crate::config::SandboxConfig::default(),
+            relay: None,
+            initial_git: None,
+            daemons: vec![],
+        },
+        None,
+    )
+    .await;
+    assert!(outcome.is_ok());
+}
+
 struct MockProvider {
     responses: Arc<Vec<Vec<StreamChunk>>>,
     call_idx: Arc<AtomicUsize>,

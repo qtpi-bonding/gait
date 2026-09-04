@@ -62,7 +62,16 @@ pub(in crate::turn::spine) fn finalize_feedback(
                     }
                 }
             };
+            // Under `min` (no `code-mode` feature) `gait_codemode` isn't
+            // linked, but `CodemodeFull` is a plain-data enum variant that
+            // still exists structurally — this branch is simply unreachable
+            // in practice (no Code Mode tool is ever dispatched, see Task
+            // 6c). Mirror `gait_codemode::Limits::default().max_output_bytes`
+            // locally so behavior stays identical to the real dependency.
+            #[cfg(feature = "code-mode")]
             let max_bytes = gait_codemode::Limits::default().max_output_bytes;
+            #[cfg(not(feature = "code-mode"))]
+            let max_bytes: usize = 4 * 1024 * 1024;
             match crate::tools::archive_and_prepare_full_value(original, path, max_bytes) {
                 Ok(full_value) => {
                     feedback.result = feedback_result(full_value).result;
@@ -245,6 +254,10 @@ mod tests {
         assert_eq!(value, original);
     }
 
+    // References `gait_codemode::Limits` directly to prove the finalizer
+    // bounds against the *real* Code Mode budget, not a test-only stand-in —
+    // meaningless (and unlinked) without the `code-mode` feature.
+    #[cfg(feature = "code-mode")]
     #[test]
     fn codemode_full_presentation_errors_unambiguously_when_over_budget() {
         // Genuinely exceed the real Code Mode output budget (not a fake

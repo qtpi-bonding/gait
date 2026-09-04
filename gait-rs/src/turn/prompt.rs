@@ -165,6 +165,10 @@ pub fn build_mcp_index(
 }
 
 /// Full canonical JSON references available to Code Mode at invocation time.
+/// Under `min` (no `code-mode` feature) there is no Code Mode consumer for
+/// this block at all — `gait_codemode` isn't even linked — so it degrades to
+/// an empty string rather than rendering a reference layer nothing reads.
+#[cfg(feature = "code-mode")]
 pub fn build_mcp_references(
     registry: &[McpToolDef],
     enabled: &std::collections::HashSet<String>,
@@ -197,6 +201,18 @@ pub fn build_mcp_references(
     }
     out.push_str("</mcp-references>");
     out
+}
+
+/// Min-side no-op: no Code Mode consumer exists to read `<mcp-references>`,
+/// so the block is omitted entirely rather than built and thrown away.
+#[cfg(not(feature = "code-mode"))]
+pub fn build_mcp_references(
+    registry: &[McpToolDef],
+    enabled: &std::collections::HashSet<String>,
+    max_bytes: usize,
+) -> String {
+    let _ = (registry, enabled, max_bytes);
+    String::new()
 }
 
 /// Assemble the per-turn dynamic system prompt: base instructions +
