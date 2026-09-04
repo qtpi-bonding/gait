@@ -293,7 +293,7 @@ impl AcpTurnSource {
     /// provenance)` pairs -- one per attested room message -- instead of a
     /// single free-text `task` plus one optional provenance. Used by the
     /// `PromptRequest` handler's attested-delivery branch, where the caller
-    /// (`attestation::verify_and_build_messages`) has already produced the
+    /// (`gait_ops::attestation::verify_and_build_messages`) has already produced the
     /// authoritative bodies and must not re-derive them from `req.prompt`.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_bodies(

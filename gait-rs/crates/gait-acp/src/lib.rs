@@ -26,7 +26,7 @@ pub async fn run() -> anyhow::Result<()> {
 /// `--require-attestation`), never by a runtime `_meta` claim.
 pub async fn run_with_attestation(
     require_attestation: bool,
-    trusted_keys: Vec<gait_core::attestation::TrustedMultimatrixKey>,
+    trusted_keys: Vec<gait_ops::attestation::TrustedMultimatrixKey>,
 ) -> anyhow::Result<()> {
     let map = SessionMap::new();
     let result = handlers::build_agent_with_attestation(map.clone(), require_attestation, trusted_keys)

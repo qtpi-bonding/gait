@@ -25,8 +25,7 @@ use crate::session_map::{SessionMap, discover_gait_dir_for_cwd};
 use crate::turn_io::{
     AcpTurnSink, AcpTurnSource, content_blocks_to_text, turn_result_to_stop_reason,
 };
-use gait_core::attestation::TrustedMultimatrixKey;
-use gait_identity::Signer as _;
+use gait_ops::attestation::TrustedMultimatrixKey;
 
 /// Build the gait-acp agent: registers `initialize` and `session/new` against
 /// the given `SessionMap`. Returns the concrete `Builder` (not just an opaque
@@ -214,11 +213,8 @@ pub fn build_agent_with_attestation(
                         // match a real recipient list, so a genuine
                         // attestation still gets correctly rejected rather
                         // than silently bypassing the check.
-                        let own_device_public_key: Vec<u8> = gait_identity::Keyring::load(&gait_dir)
-                            .ok()
-                            .and_then(|k| k.signer().ok())
-                            .map(|s| s.public_key().to_vec())
-                            .unwrap_or_default();
+                        let own_device_public_key: Vec<u8> =
+                            gait_ops::attestation::load_own_device_public_key(&gait_dir);
                         let replay_store =
                             match gait_state::attestation_replay::AttestationReplayStore::new(&gait_dir) {
                                 Ok(store) => store,
@@ -228,7 +224,7 @@ pub fn build_agent_with_attestation(
                                     ));
                                 }
                             };
-                        let verified = gait_core::attestation::verify_and_build_messages(
+                        let verified = gait_ops::attestation::verify_and_build_messages(
                             &req.meta,
                             &own_device_public_key,
                             &trusted_keys,

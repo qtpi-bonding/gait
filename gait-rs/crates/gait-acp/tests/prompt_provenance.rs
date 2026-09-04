@@ -199,7 +199,7 @@ async fn attested_delivery_uses_verified_body_text_never_the_differing_prompt() 
 
     // A throwaway "multimatrix service key" -- pinned as trusted below.
     let mm_signing_key = SigningKey::generate(&mut OsRng);
-    let trusted_key = gait_core::attestation::TrustedMultimatrixKey {
+    let trusted_key = gait_ops::attestation::TrustedMultimatrixKey {
         key_id: "mm-key-1".into(),
         public_key_hex: hex::encode(mm_signing_key.verifying_key().to_bytes()),
     };

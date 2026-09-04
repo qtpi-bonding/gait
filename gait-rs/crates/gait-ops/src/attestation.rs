@@ -16,6 +16,7 @@
 //! rendering exclusively from this list.
 use anyhow::{anyhow, Context, Result};
 use base64::Engine as _;
+use gait_identity::Signer as _;
 use gait_proto::gait::log::v1::Provenance;
 use prost::Message as _;
 
@@ -119,6 +120,14 @@ pub fn verify_and_build_messages(
             })
             .collect(),
     ))
+}
+
+pub fn load_own_device_public_key(gait_dir: &std::path::Path) -> Vec<u8> {
+    gait_identity::Keyring::load(gait_dir)
+        .ok()
+        .and_then(|k| k.signer().ok())
+        .map(|s| s.public_key().to_vec())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -332,6 +341,13 @@ mod tests {
             gait_state::attestation_replay::AttestationReplayStore::new(replay_dir.path())
                 .unwrap();
         assert!(verify_and_build_messages(&meta, &MY_DEVICE_PUBKEY, &[wrong_trusted], &store).is_err());
+    }
+
+    #[test]
+    fn load_own_device_public_key_returns_empty_vec_when_no_keyring_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = load_own_device_public_key(dir.path());
+        assert!(key.is_empty());
     }
 
     #[test]

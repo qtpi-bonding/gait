@@ -17,7 +17,7 @@
 //! no-other-CLI-surface behavior.
 fn parse_attestation_flags(
     argv: &[String],
-) -> (bool, Vec<gait_core::attestation::TrustedMultimatrixKey>) {
+) -> (bool, Vec<gait_ops::attestation::TrustedMultimatrixKey>) {
     let mut require_attestation = false;
     let mut trusted_keys = Vec::new();
     let mut i = 0;
@@ -27,7 +27,7 @@ fn parse_attestation_flags(
             "--trusted-multimatrix-key" => {
                 if let Some(value) = argv.get(i + 1) {
                     if let Some((key_id, hex_pubkey)) = value.split_once(':') {
-                        trusted_keys.push(gait_core::attestation::TrustedMultimatrixKey {
+                        trusted_keys.push(gait_ops::attestation::TrustedMultimatrixKey {
                             key_id: key_id.to_string(),
                             public_key_hex: hex_pubkey.to_string(),
                         });
