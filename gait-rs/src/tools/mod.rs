@@ -7,6 +7,11 @@ pub use tiers::{EnabledTools, PermissionedTools, RegisteredTools};
 pub mod annotate;
 pub mod apply_patch;
 pub mod clarify;
+// `code`'s own `#![cfg(feature = "code-mode")]` (first line of code.rs) cfg's
+// out the whole module, declaration included — a bare `pub use code::CodeTool;`
+// with no matching `#[cfg]` here fails to resolve when `code-mode` is off, so
+// the declaration/use pair below must carry the same gate explicitly.
+#[cfg(feature = "code-mode")]
 pub mod code;
 pub mod codesearch;
 pub mod fs_backend;
@@ -28,6 +33,7 @@ pub mod write;
 
 pub use annotate::AnnotateTool;
 pub use clarify::ClarifyTool;
+#[cfg(feature = "code-mode")]
 pub use code::CodeTool;
 pub use codesearch::CodesearchTool;
 pub mod ctx;
@@ -222,6 +228,12 @@ pub fn coerce_scalar_params(
 }
 
 /// Names of all built-in tools. Used for allow-list validation without constructing tool instances.
+///
+/// Two `#[cfg]`-gated definitions (rather than a `#[cfg]` on one array
+/// element, which stable Rust doesn't permit on expressions in this
+/// position) — the `code` entry only appears when the `code-mode` feature
+/// is on, matching `builtin_tools`'s own gating below.
+#[cfg(feature = "code-mode")]
 pub fn builtin_tool_names() -> &'static [&'static str] {
     &[
         "read",
@@ -242,6 +254,29 @@ pub fn builtin_tool_names() -> &'static [&'static str] {
         "annotate",
         "prune",
         "code",
+    ]
+}
+
+#[cfg(not(feature = "code-mode"))]
+pub fn builtin_tool_names() -> &'static [&'static str] {
+    &[
+        "read",
+        "write",
+        "apply_patch",
+        "glob",
+        "grep",
+        "ls",
+        "shell",
+        "structured_done",
+        "codesearch",
+        "webfetch",
+        "enable",
+        "spawn_agent",
+        "list_agents",
+        "clarify",
+        "inform",
+        "annotate",
+        "prune",
     ]
 }
 
@@ -277,6 +312,7 @@ pub fn builtin_tools(
         ClarifyTool::new().arced(),
         InformTool::new().arced(),
         PruneTool::new().arced(),
+        #[cfg(feature = "code-mode")]
         CodeTool::new().arced(),
     ];
     tools
@@ -297,7 +333,11 @@ mod tests {
             vec![],
             crate::git::Repos::production(),
         );
-        assert_eq!(tools.len(), 17);
+        // 17 with the `code-mode` feature's `code` tool registered, 16
+        // without it (Task 6c gates `CodeTool`'s registration on that
+        // feature).
+        let expected = if cfg!(feature = "code-mode") { 17 } else { 16 };
+        assert_eq!(tools.len(), expected);
     }
 
     #[test]
@@ -457,6 +497,30 @@ mod tests {
         );
         assert_eq!(props["parse"]["type"].as_str().unwrap(), "array");
         assert_eq!(props["curate_prompt"]["type"].as_str().unwrap(), "string");
+    }
+
+    #[test]
+    #[cfg(not(feature = "code-mode"))]
+    fn min_tool_registry_has_no_code_mode_tool() {
+        // Under `min` (no `code-mode` feature), `CodeTool` ("code" — see
+        // `tools/code.rs`'s `Tool::name`) must be absent from the registry:
+        // Task 6c gates its module declaration, `builtin_tools`'s
+        // registration, and this list's entry all on `code-mode`.
+        let names = builtin_tool_names();
+        assert!(!names.contains(&"code"), "code tool present under min: {names:?}");
+    }
+
+    #[test]
+    fn min_enable_tool_present_and_skill_lookup_works() {
+        // `LoadTool`/`enable` needs no gating (round-6 finding): its
+        // registries (`McpToolDef`/`SkillDef`/`WasmPluginDef`) are plain
+        // gait-types data with no `rmcp`/`gait_codemode` dependency. This is
+        // a regression guard confirming `enable`, `read`, and `shell` stay
+        // unconditionally present in every build, `min` included.
+        let names = builtin_tool_names();
+        assert!(names.contains(&"read"));
+        assert!(names.contains(&"shell"));
+        assert!(names.contains(&"enable"));
     }
 
     #[test]

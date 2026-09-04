@@ -15,9 +15,12 @@ async fn builtin_tools_returns_expected_tools() {
         vec![],
         gait_core::git::Repos::production(),
     );
-    assert_eq!(tools.len(), 17);
+    // 17 with the `code-mode` feature's `code` tool registered, 16 without
+    // it (Task 6c gates `CodeTool`'s registration on that feature).
+    let expected_len = if cfg!(feature = "code-mode") { 17 } else { 16 };
+    assert_eq!(tools.len(), expected_len);
     let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-    for expected in &[
+    let mut expected_names = vec![
         "read",
         "write",
         "apply_patch",
@@ -28,14 +31,17 @@ async fn builtin_tools_returns_expected_tools() {
         "structured_done",
         "codesearch",
         "webfetch",
-        "code",
         "enable",
         "spawn_agent",
         "list_agents",
         "clarify",
         "inform",
         "prune",
-    ] {
+    ];
+    if cfg!(feature = "code-mode") {
+        expected_names.push("code");
+    }
+    for expected in &expected_names {
         assert!(
             names.contains(expected),
             "missing tool '{}', got: {:?}",
