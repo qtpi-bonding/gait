@@ -40,14 +40,27 @@ guides:
       the current interactive session.
 
   - title: Workflows and extensions
+    requires: [workflow, extensions]
     cli_cmds:
       - workflow
       - enable
       - disable
     repl_cmds:
       - /workflow
+    body: |
+      Workflows run repeatable sequences of prompts and operations. MCP tools and plugins can
+      be enabled for a session when they are available in the configured Gait directory.
+
+      `enable`/`disable`/`register`/`unregister`/`load`/`unload` also accept a `skill` kind —
+      that usage works in every Gait build (see the Skills guide), since skills are not part of
+      this extensions capability.
+
+  - title: Skills
+    # No `requires` — skills are available in both full and min builds.
+    cli_cmds: []
+    repl_cmds:
       - /skill
     body: |
-      Workflows run repeatable sequences of prompts and operations. Skills, MCP tools, and
-      plugins can be enabled for a session when they are available in the configured Gait
-      directory.
+      Skills are reusable, markdown-based capability files. Register, load, enable, or unload a
+      skill with `--kind skill` (see `enable`/`disable`/`register`/`unregister`/`load`/`unload`)
+      or the REPL's `/skill` command — this works in every Gait build.

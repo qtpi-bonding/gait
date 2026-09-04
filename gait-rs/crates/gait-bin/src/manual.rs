@@ -1,58 +1,110 @@
 use clap::{Command, Parser, Subcommand};
-use gait_repl::repl::commands::{ReplCommand, COMMANDS};
+use gait_repl::repl::commands::ReplCommand;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
-const CONFIG_FIELDS: &[(&str, &str)] = &[
+/// Which binary the manual is being generated for. Determines which
+/// guides/config fields are visible (via each guide/field's `requires`
+/// capability list) and which program name command paths render under.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManualFlavor {
+    Full,
+    Min,
+}
+
+impl ManualFlavor {
+    fn capabilities(self) -> &'static [&'static str] {
+        match self {
+            ManualFlavor::Full => FULL_CAPABILITIES,
+            ManualFlavor::Min => MIN_CAPABILITIES,
+        }
+    }
+}
+
+/// Capabilities present in the full `gait` build. `extensions` is an
+/// umbrella over `mcp`+`plugins`+`code-mode` (all compiled into `full`);
+/// treated here as its own plain literal member rather than derived.
+/// `skills` is deliberately absent — it is not a gated feature; it is
+/// available in every build.
+const FULL_CAPABILITIES: &[&str] = &[
+    "workflow",
+    "rich-tui",
+    "mcp",
+    "code-mode",
+    "local",
+    "extensions",
+];
+const MIN_CAPABILITIES: &[&str] = &[];
+
+const CONFIG_FIELDS: &[(&str, &str, &[&str])] = &[
     (
         "inference",
         "The selected model, e.g. \"anthropic/claude-sonnet-4-6\".",
+        &[],
     ),
-    ("allow", "Tool-name / pattern allowlist."),
-    ("deny", "Tool-name / pattern denylist."),
-    ("tools", "Config-defined shell-command tools."),
+    ("allow", "Tool-name / pattern allowlist.", &[]),
+    ("deny", "Tool-name / pattern denylist.", &[]),
+    (
+        "tools",
+        "Config-defined shell-command tools.",
+        &["extensions"],
+    ),
     (
         "hooks",
         "Lifecycle hook definitions (event, tool filter, shell command).",
+        &["extensions"],
     ),
     (
         "output_schema_retries",
         "Retry budget for structured_done schema validation.",
+        &[],
     ),
     (
         "max_iter",
         "Max turn iterations before giving up; defaults to 100 when absent.",
+        &[],
     ),
     (
         "shell_timeout_secs",
         "Wall-clock timeout for a foreground shell command.",
+        &[],
     ),
     (
         "tool_timeout_secs",
         "Wall-clock timeout for a single ripgrep-backed grep/codesearch/ls subprocess.",
+        &[],
     ),
-    ("preview", "When to render edit/write previews."),
+    ("preview", "When to render edit/write previews.", &[]),
     (
         "result_schema",
         "Optional JSON Schema the final structured_done result must match.",
+        &[],
     ),
     (
         "show_thinking",
         "Whether to render thinking/reasoning blocks in terminal output.",
+        &[],
     ),
     (
         "sandbox",
         "Sandbox engagement and filesystem/network policy.",
+        &[],
     ),
 ];
 
-fn render_config_fields(out: &mut String) {
+fn requires_met(requires: &[&str], flavor: ManualFlavor) -> bool {
+    requires.iter().all(|r| flavor.capabilities().contains(r))
+}
+
+fn render_config_fields(out: &mut String, flavor: ManualFlavor) {
     out.push_str("\n### Config fields\n\n");
-    for (name, desc) in CONFIG_FIELDS {
-        let _ = writeln!(out, "- `{name}` — {desc}");
+    for (name, desc, requires) in CONFIG_FIELDS {
+        if requires_met(requires, flavor) {
+            let _ = writeln!(out, "- `{name}` — {desc}");
+        }
     }
 }
 
@@ -78,6 +130,24 @@ pub struct ManualInstallArgs {
     pub gait_dir: Option<PathBuf>,
 }
 
+/// `gait-min manual` — a deliberately smaller command surface than full
+/// `gait manual`. `print` writes the generated Markdown to stdout only; it
+/// creates no files (not because skills are unavailable in Min — they are —
+/// but because no future `install` path exists for Min yet). Every other
+/// action is an error; `install` is intentionally absent from
+/// `gait-min --help`.
+#[derive(Debug, Parser)]
+pub struct MinManualArgs {
+    #[command(subcommand)]
+    pub command: MinManualCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MinManualCommand {
+    /// Print the generated model-facing manual to stdout.
+    Print,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ManualManifest {
     #[serde(default)]
@@ -87,6 +157,10 @@ pub struct ManualManifest {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GuideSource {
     pub title: String,
+    /// Capabilities that must all be present in the selected `ManualFlavor`
+    /// for this guide to render. Absent/empty means "always render."
+    #[serde(default)]
+    pub requires: Vec<String>,
     #[serde(default)]
     pub cli_cmds: Vec<String>,
     #[serde(default)]
@@ -116,12 +190,35 @@ pub fn parse_manifest(yaml: &str) -> Result<ManualManifest, ManualError> {
     Ok(manifest)
 }
 
-/// Render the model-facing manual from the live CLI and REPL definitions.
-pub fn render_skill(
+/// Inputs to [`render_manual`]/[`render_manual_with_manifest`]: which
+/// program name command paths render under, the live `clap::Command` tree,
+/// the REPL command registry, and the flavor that gates guides/config
+/// fields by capability.
+pub struct ManualInput<'a> {
+    pub program_name: &'a str,
+    pub cli: Command,
+    pub repl_commands: &'a [ReplCommand],
+    pub flavor: ManualFlavor,
+}
+
+fn guide_visible(guide: &GuideSource, flavor: ManualFlavor) -> bool {
+    let requires: Vec<&str> = guide.requires.iter().map(String::as_str).collect();
+    requires_met(&requires, flavor)
+}
+
+/// Render the model-facing manual from the live CLI and REPL definitions,
+/// using a caller-supplied manifest (used by tests to exercise custom
+/// guides without touching the real `gait-manual/manual.yaml`).
+fn render_manual_with_manifest(
     manifest: &ManualManifest,
-    cli: Command,
-    repl_commands: &[ReplCommand],
+    input: ManualInput<'_>,
 ) -> Result<String, ManualError> {
+    let ManualInput {
+        program_name,
+        cli,
+        repl_commands,
+        flavor,
+    } = input;
     let cli_index = cli_index(cli.clone());
     let repl_index: BTreeMap<&str, &ReplCommand> = repl_commands
         .iter()
@@ -135,7 +232,7 @@ pub fn render_skill(
         .collect();
 
     let mut body = String::from("# Gait Manual\n");
-    for guide in &manifest.guides {
+    for guide in manifest.guides.iter().filter(|g| guide_visible(g, flavor)) {
         writeln!(body, "\n## {}\n\n{}", guide.title, guide.body.trim())
             .expect("writing to String cannot fail");
 
@@ -146,7 +243,7 @@ pub fn render_skill(
                     guide: guide.title.clone(),
                     command: name.clone(),
                 })?;
-                render_cli_command(&mut body, name, command);
+                render_cli_command(&mut body, program_name, name, command);
             }
         }
 
@@ -164,21 +261,23 @@ pub fn render_skill(
             }
         }
     }
-    render_config_fields(&mut body);
+    render_config_fields(&mut body, flavor);
     while body.ends_with('\n') {
         body.pop();
     }
     body.push('\n');
 
-    let hash = manual_source_hash(manifest, &cli, repl_commands);
+    let hash = manual_source_hash(program_name, flavor, manifest, &cli, repl_commands);
     Ok(format!(
         "---\nname: gait-manual\ndescription: Explain how to use and configure Gait.\nmanual-source-hash: {hash}\n---\n\n{body}"
     ))
 }
 
-pub fn render_default_skill() -> Result<String, ManualError> {
+/// Render the model-facing manual for `input.flavor` from the real
+/// `gait-manual/manual.yaml`.
+pub fn render_manual(input: ManualInput<'_>) -> Result<String, ManualError> {
     let manifest = parse_manifest(include_str!("../../../gait-manual/manual.yaml"))?;
-    render_skill(&manifest, crate::cli(), COMMANDS)
+    render_manual_with_manifest(&manifest, input)
 }
 
 pub fn install(args: ManualArgs, gait_dir: &Path) -> anyhow::Result<()> {
@@ -190,7 +289,12 @@ pub fn install(args: ManualArgs, gait_dir: &Path) -> anyhow::Result<()> {
             path.display()
         );
     }
-    let content = render_default_skill()?;
+    let content = render_manual(ManualInput {
+        program_name: "gait",
+        cli: crate::cli(),
+        repl_commands: gait_repl::repl::commands::COMMANDS,
+        flavor: ManualFlavor::Full,
+    })?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -199,13 +303,36 @@ pub fn install(args: ManualArgs, gait_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `gait-min manual print` — writes the generated Markdown to stdout only.
+/// Creates no files.
+pub fn print(args: MinManualArgs, cli: Command, repl_commands: &[ReplCommand]) -> anyhow::Result<()> {
+    let MinManualCommand::Print = args.command;
+    let content = render_manual(ManualInput {
+        program_name: "gait-min",
+        cli,
+        repl_commands,
+        flavor: ManualFlavor::Min,
+    })?;
+    print!("{content}");
+    Ok(())
+}
+
 fn manual_source_hash(
+    program_name: &str,
+    flavor: ManualFlavor,
     manifest: &ManualManifest,
     cli: &Command,
     repl_commands: &[ReplCommand],
 ) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(serde_yaml::to_string(manifest).expect("manual manifest serializes"));
+    hasher.update(program_name.as_bytes());
+    hasher.update(format!("{flavor:?}").as_bytes());
+    let visible_guides: Vec<&GuideSource> = manifest
+        .guides
+        .iter()
+        .filter(|g| guide_visible(g, flavor))
+        .collect();
+    hasher.update(serde_yaml::to_string(&visible_guides).expect("manual manifest serializes"));
     for command in cli_index(cli.clone()).values() {
         hasher.update(command.get_name().as_bytes());
         hasher.update(normalize_help_env_values(
@@ -243,8 +370,8 @@ fn collect_cli_commands(command: Command, parent: String, index: &mut BTreeMap<S
     }
 }
 
-fn render_cli_command(out: &mut String, path: &str, command: &Command) {
-    let _ = writeln!(out, "\n#### `gait {path}`\n");
+fn render_cli_command(out: &mut String, program_name: &str, path: &str, command: &Command) {
+    let _ = writeln!(out, "\n#### `{program_name} {path}`\n");
     if let Some(about) = command.get_about() {
         let _ = writeln!(out, "{}\n", about);
     }
@@ -285,12 +412,22 @@ fn render_repl_command(out: &mut String, command: &ReplCommand) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gait_repl::repl::commands::COMMANDS;
     use tempfile::TempDir;
+
+    fn full_input(cli: Command) -> ManualInput<'static> {
+        ManualInput {
+            program_name: "gait",
+            cli,
+            repl_commands: COMMANDS,
+            flavor: ManualFlavor::Full,
+        }
+    }
 
     #[test]
     fn renders_live_command_metadata() {
         let manifest = parse_manifest("guides:\n  - title: Sessions\n    cli_cmds: [sessions]\n    repl_cmds: [/new]\n    body: |\n      Manage sessions.\n").unwrap();
-        let rendered = render_skill(&manifest, crate::cli(), COMMANDS).unwrap();
+        let rendered = render_manual_with_manifest(&manifest, full_input(crate::cli())).unwrap();
         assert!(rendered.contains("#### `gait sessions`"));
         assert!(rendered.contains("#### `/new`"));
         assert!(rendered.contains("Start a fresh session"));
@@ -304,7 +441,7 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            render_skill(&manifest, crate::cli(), COMMANDS),
+            render_manual_with_manifest(&manifest, full_input(crate::cli())),
             Err(ManualError::UnknownCli { .. })
         ));
     }
@@ -315,7 +452,7 @@ mod tests {
             "guides:\n  - title: Configuration\n    body: |\n      How gait.jsonc works.\n",
         )
         .unwrap();
-        let rendered = render_skill(&manifest, crate::cli(), COMMANDS).unwrap();
+        let rendered = render_manual_with_manifest(&manifest, full_input(crate::cli())).unwrap();
         assert!(rendered.contains("### Config fields"));
         assert!(rendered.contains("`inference`"));
         assert!(rendered.contains("`allow`"));
@@ -339,7 +476,7 @@ mod tests {
             sandbox: Default::default(),
         };
         let documented: std::collections::HashSet<&str> =
-            CONFIG_FIELDS.iter().map(|(name, _)| *name).collect();
+            CONFIG_FIELDS.iter().map(|(name, _, _)| *name).collect();
         let all_fields = [
             "inference",
             "allow",

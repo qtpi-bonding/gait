@@ -86,7 +86,9 @@ pub struct MinCli {
 
 #[derive(Subcommand)]
 pub enum MinCommands {
-    Manual(manual::ManualArgs),
+    /// Print the generated model-facing manual (writes Markdown to stdout,
+    /// creates no files). Deliberately smaller than full `gait manual`.
+    Manual(manual::MinManualArgs),
     Init(InitArgs),
     Link(LinkArgs),
     Sessions(SessionsArgs),

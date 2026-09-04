@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use gait_bin::min_cli::{MinCli, MinCommands};
 use std::path::PathBuf;
 
@@ -99,7 +99,6 @@ async fn main() {
     let command = match cli.command {
         Some(c) => c,
         None => {
-            use clap::CommandFactory;
             MinCli::command().print_help().unwrap();
             println!();
             std::process::exit(0);
@@ -108,18 +107,12 @@ async fn main() {
 
     match command {
         MinCommands::Manual(args) => {
-            let manual_gait_dir = match &args.command {
-                gait_bin::manual::ManualCommand::Install(options) => options.gait_dir.clone(),
-            };
-            let gait_dir = gait_core::gait_dir::resolve(
-                manual_gait_dir.or_else(|| gait_dir_arg.clone()),
-                &cwd,
-            )
-            .unwrap_or_else(|e| {
-                eprintln!("[gait] {e}");
-                std::process::exit(1);
-            });
-            if let Err(e) = gait_bin::manual::install(args, &gait_dir) {
+            // `gait-min manual print` writes to stdout only; it creates no
+            // files, so it needs no gait-dir resolution (unlike full
+            // `gait manual install`).
+            if let Err(e) =
+                gait_bin::manual::print(args, MinCli::command(), gait_repl::plain::MIN_REPL_COMMANDS)
+            {
                 eprintln!("[gait] error: {e}");
                 std::process::exit(1);
             }
