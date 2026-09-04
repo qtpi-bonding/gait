@@ -17,14 +17,14 @@ serde_json = "1"
 serde_yaml = "0.9"
 async-trait = "0.1"
 glob = "0.3"
-termimad = "0.34"
-termbg = "0.5"
+termimad = { version = "0.34", optional = true }
+termbg = { version = "0.5", optional = true }
 crossterm = "0.29"
-syntect = { version = "5.2", default-features = false, features = ["default-themes", "default-syntaxes", "parsing", "regex-fancy"] }
+syntect = { version = "5.2", optional = true, default-features = false, features = ["default-themes", "default-syntaxes", "parsing", "regex-fancy"] }
 tokio-util = "0.7"
 reedline = "0.48"
-unicode-width = "0.2"
-nu-ansi-term = "0.50"
+unicode-width = { version = "0.2", optional = true }
+nu-ansi-term = { version = "0.50", optional = true }
 libc = { version = "0.2", optional = true }
 prost = { version = "0.13", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
@@ -38,7 +38,25 @@ pbjson-types = "0.7"
 serial_test = "3"
 
 [features]
-default = ["workflow"]
+default = ["workflow", "rich-tui"]
+# The themed full-`gait` terminal renderer: markdown (termimad), syntax
+# highlighting (syntect), background-color detection (termbg), and the
+# reedline highlighter's ANSI styling (nu-ansi-term) + its display-width
+# math (unicode-width). `gait-min` builds without this feature and gets only
+# the plain REPL (`plain.rs`) — streamed text on stdout/stderr, no ANSI
+# rendering. `reedline`/`crossterm` stay unconditional: `reedline` pulls in
+# `crossterm` transitively regardless of this feature (verified via `cargo
+# tree -p gait-repl --no-default-features`), and the plain REPL still needs a
+# real line editor.
+rich-tui = ["dep:termimad", "dep:termbg", "dep:syntect", "dep:unicode-width", "dep:nu-ansi-term"]
+# The `mock_brain` binary (a canned brain process for scripted turn tests)
+# and its deps. Deliberately does NOT imply `rich-tui`: `mock_brain` itself
+# only needs `gait-testkit`, so the plain REPL's own turn-engine tests can
+# drive a real turn (via `gait_turn_runner::run_turn_source` + this binary)
+# under `--features dev-harness` with `rich-tui` off. `src/dev_harness.rs`
+# (the annotate/capture *rendering* harness `chat.rs`'s e2e test uses) is
+# gated separately below on `all(dev-harness, rich-tui)`, since it drives the
+# themed `ReplBuilder`/`ReplSource`/`ReplSink` stack directly.
 dev-harness = ["dep:libc", "dep:prost", "dep:serde", "dep:tempfile", "dep:git2", "dep:gait-testkit"]
 # `/workflow` REPL command (real YAML DAG runs). Ordinary REPL turns
 # (`chat.rs`) no longer need `gait-workflow` at all (Task 3) — only
@@ -65,3 +83,12 @@ required-features = ["dev-harness"]
 name = "repl_drive_e2e"
 path = "tests/repl_drive_e2e.rs"
 harness = false
+# Drives gait_repl::dev_harness, which only exists under "dev-harness" AND
+# "rich-tui" together (it renders through the themed ReplBuilder stack — see
+# src/dev_harness.rs and the feature doc comments above). Without both, a
+# bare `cargo test -p gait-repl` (or any run over all targets) skips this
+# target cleanly instead of failing to resolve the import; naming it
+# explicitly via `--test repl_drive_e2e` with an insufficient feature set
+# still errors (cargo's behavior for an explicitly-selected target), so drive
+# it with `--features "dev-harness,rich-tui"`.
+required-features = ["dev-harness", "rich-tui"]

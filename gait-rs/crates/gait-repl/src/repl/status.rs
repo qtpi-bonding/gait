@@ -4,8 +4,10 @@
 //! the input row and is therefore allowed to disappear when the edit buffer is
 //! long.  These rows are ordinary terminal output and remain in scrollback.
 
+#[cfg(feature = "rich-tui")]
 use gait_core::proto::gait::log::v1 as pb;
 
+#[cfg(feature = "rich-tui")]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ReplStatus {
     pub agent: Option<String>,
@@ -16,6 +18,7 @@ pub(crate) struct ReplStatus {
     pub branch: Option<String>,
 }
 
+#[cfg(feature = "rich-tui")]
 impl ReplStatus {
     pub(crate) fn render(&self) -> String {
         [
@@ -37,6 +40,7 @@ impl ReplStatus {
 /// Extract the configured provider-specific effort/think level. Missing
 /// provider settings intentionally returns `None`: provider defaults must not
 /// be presented as an invented "medium" setting.
+#[cfg(feature = "rich-tui")]
 pub(crate) fn reasoning_label(inference: &pb::Inference) -> Option<String> {
     let params = inference.llm_params.as_ref()?;
     match params.provider_params.as_ref()? {
@@ -69,7 +73,7 @@ pub(crate) fn short_model(model: &str) -> String {
         .to_string()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rich-tui"))]
 mod tests {
     use super::*;
 

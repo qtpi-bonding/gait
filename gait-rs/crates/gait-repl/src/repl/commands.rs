@@ -27,6 +27,7 @@ pub struct ParsedCommand<'a> {
     pub args: &'a str,
 }
 
+#[derive(Clone, Copy)]
 pub struct ReplCommand {
     pub id: ReplCommandId,
     pub slug: &'static str,
