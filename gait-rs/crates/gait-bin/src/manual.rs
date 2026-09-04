@@ -503,6 +503,15 @@ mod tests {
         );
     }
 
+    // `install()` renders with `ManualFlavor::Full`, and the manifest's
+    // "Workflows and extensions" guide references the `workflow` CLI
+    // subcommand — which `crate::cli()` only compiles in when the
+    // `workflow` Cargo feature is on. In practice this is always true for
+    // shipping `gait` (full → workflow) and never exercised by `gait-min`
+    // (which never calls `install()`/`crate::cli()`), but a bare
+    // `--features min` build (no `workflow`) genuinely lacks the
+    // subcommand, so gate this test to match where it's meaningful.
+    #[cfg(feature = "workflow")]
     #[test]
     fn install_writes_manual_skill() {
         let dir = TempDir::new().unwrap();
