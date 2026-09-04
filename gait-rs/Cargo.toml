@@ -80,6 +80,16 @@ identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git",
 [features]
 testing = []
 local = ["gait-provider/local-native"]
+# Stubs for `gait-bin`'s `full`/`min` composition (Task 5). `rmcp` and
+# `gait-codemode` are still unconditional dependencies here — actually
+# gating them behind `dep:rmcp`/`dep:gait-codemode` optional dependencies
+# and their call sites (`src/mcp/client.rs`, `ResolvedProfile.mcp_clients`,
+# etc.) is Task 6a's job. These no-op features exist only so
+# `--features mcp`/`--features code-mode`/`--features min` resolve cleanly
+# today; they don't yet change what gets compiled.
+mcp = []
+code-mode = []
+min = []
 
 [dev-dependencies]
 tempfile = "3"

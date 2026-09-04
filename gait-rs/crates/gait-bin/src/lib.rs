@@ -14,9 +14,12 @@ use gait_cli::cli::session::{
     AllowArgs, DenyArgs, DiscardArgs, LoadArgs, LogArgs, PersistArgs, PsArgs, ReplyArgs,
     SessionsArgs, StatsArgs, StopArgs, UndoArgs, UnloadArgs, UnlockArgs,
 };
+#[cfg(feature = "workflow")]
 use gait_cli::cli::workflow::WorkflowArgs;
 
 pub mod manual;
+#[cfg(feature = "min")]
+pub mod min_cli;
 
 #[derive(Parser)]
 #[command(
@@ -108,6 +111,7 @@ pub enum Commands {
     #[cfg(feature = "local")]
     Local(LocalArgs),
     Inference(InferenceArgs),
+    #[cfg(feature = "workflow")]
     Workflow(WorkflowArgs),
     Daemons(DaemonsArgs),
 }
