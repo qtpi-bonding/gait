@@ -455,6 +455,12 @@ pub(crate) fn finish_after_resume(
     // decided to be visible. Computed per kind since each has its own
     // whitelist axis. `agent_state.session_*()` are the Phase 2 accessors
     // (only reachable here, post-fold -- not at the genesis seed above).
+    // Under `min` (no `mcp` feature), `mcp_registry` is always empty (Task 6a
+    // gates its only producer, `ResolvedProfile::resolve`'s MCP-discovery
+    // step), and the only consumer of `visible_mcp` (the MCP-entries block
+    // below) is itself gated out under `min` — so `visible_mcp` isn't
+    // computed at all under `min`, not just computed over an empty registry.
+    #[cfg(feature = "mcp")]
     let visible_mcp = crate::registry::resolve_visible_set(
         &mcp_registry
             .iter()
@@ -483,35 +489,43 @@ pub(crate) fn finish_after_resume(
 
     // Step 5: Augment system prompt with unified <loadable-index>.
     // Build entries: one per whitelisted MCP server, one per whitelisted skill.
-    // Group MCP tool defs by server name so we can show one entry per server.
-    let mut mcp_tools_by_server: std::collections::HashMap<&str, Vec<&crate::config::McpToolDef>> =
-        std::collections::HashMap::new();
-    for def in mcp_registry {
-        mcp_tools_by_server
-            .entry(def.server_name.as_str())
-            .or_default()
-            .push(def);
-    }
-    // MCP server entries — one per server (visible-set gated). Description
+    // MCP server entries — one per server (visible-set gated), gated on the
+    // `mcp` feature (mirrors Task 6a's per-field `ResolvedProfile` gating):
+    // under `min`, `mcp_registry` is always empty anyway (Task 6a gates its
+    // only producer), so this whole block would push nothing at runtime —
+    // gating it here means no MCP-entry code exists in a `min` binary at all,
+    // not just that it happens to run over an empty registry. Description
     // comes from McpServerDef.description (config layer); fall back to tool
     // count. Note: we don't have direct access to McpServerDef in run_turn,
     // so we build the description from the discovered tool count when
     // there's no explicit description available. Run-level only.
-    for (server_name, defs) in &mcp_tools_by_server {
-        if !visible_mcp.contains(*server_name) {
-            continue;
+    #[cfg(feature = "mcp")]
+    {
+        // Group MCP tool defs by server name so we can show one entry per server.
+        let mut mcp_tools_by_server: std::collections::HashMap<&str, Vec<&crate::config::McpToolDef>> =
+            std::collections::HashMap::new();
+        for def in mcp_registry {
+            mcp_tools_by_server
+                .entry(def.server_name.as_str())
+                .or_default()
+                .push(def);
         }
-        let description = format!(
-            "{} tool{}",
-            defs.len(),
-            if defs.len() == 1 { "" } else { "s" }
-        );
-        state.entries.push(LoadableEntry {
-            name: server_name.to_string(),
-            kind: LoadableKind::Mcp,
-            description,
-            enabled: enabled_names.contains(*server_name),
-        });
+        for (server_name, defs) in &mcp_tools_by_server {
+            if !visible_mcp.contains(*server_name) {
+                continue;
+            }
+            let description = format!(
+                "{} tool{}",
+                defs.len(),
+                if defs.len() == 1 { "" } else { "s" }
+            );
+            state.entries.push(LoadableEntry {
+                name: server_name.to_string(),
+                kind: LoadableKind::Mcp,
+                description,
+                enabled: enabled_names.contains(*server_name),
+            });
+        }
     }
     // Skill entries — one per skill (visible-set gated).
     for skill in skill_registry {
@@ -541,15 +555,29 @@ pub(crate) fn finish_after_resume(
             enabled: enabled_names.contains(&plugin.name),
         });
     }
+    // `mcp_registry` is naturally empty under `min` (see above), but gate
+    // both arguments explicitly anyway so no MCP-index/Code-Mode-reference
+    // fragment is ever a live code path in a `min` binary — only the
+    // already-empty `entries`/`mcp_registry_arg` reach `build_dynamic_
+    // system_prompt`, whose own arity/behavior this task leaves unchanged.
+    #[cfg(feature = "mcp")]
     let enabled_mcp: std::collections::HashSet<String> = enabled_names
         .iter()
         .filter(|name| mcp_registry.iter().any(|d| &d.server_name == *name))
         .cloned()
         .collect();
+    #[cfg(not(feature = "mcp"))]
+    let enabled_mcp: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    #[cfg(feature = "mcp")]
+    let mcp_registry_arg: &[crate::config::McpToolDef] = mcp_registry;
+    #[cfg(not(feature = "mcp"))]
+    let mcp_registry_arg: &[crate::config::McpToolDef] = &[];
+
     let mut system_prompt = super::prompt::build_dynamic_system_prompt(
         &system_prompt,
         &state.entries,
-        mcp_registry,
+        mcp_registry_arg,
         &enabled_mcp,
         hooks,
     );

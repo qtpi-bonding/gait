@@ -214,6 +214,95 @@ async fn min_turn_setup_never_touches_extension_types() {
     assert!(outcome.is_ok());
 }
 
+/// Task 7: `finish_after_resume`'s catalog-entry construction (`turn::setup`,
+/// not `build_dynamic_system_prompt`/`build_loadable_catalog` themselves,
+/// which stay unmodified) must list a real skill in every build but only
+/// list an MCP server entry when the `mcp` feature is on. `mcp_registry` is
+/// set directly on the `ResolvedProfile` fixture (bypassing the real
+/// `Profile::resolve` MCP-discovery step that Task 6a already gates) so this
+/// exercises `turn::setup`'s own gating from Step 4, not just the upstream
+/// emptiness `ResolvedProfile::resolve` would otherwise supply under `min`.
+#[tokio::test]
+async fn min_dynamic_catalog_lists_skills_but_not_mcp() {
+    use crate::types::LoadableKind;
+
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+    let session = crate::session::Session {
+        id: "smincat001".into(),
+        gait_dir: ws.path().to_path_buf(),
+        codebase_path: ws.path().to_path_buf(),
+        assigned_by: None,
+        repos: crate::git::Repos::production(),
+    };
+    let provider: Arc<dyn Provider> = Arc::new(FakeProvider {
+        steps: Arc::new(vec![]),
+        call_idx: Arc::new(AtomicUsize::new(0)),
+    });
+    let skill = crate::config::SkillDef {
+        name: "tdd".into(),
+        description: "test-driven workflow".into(),
+        content: "TDD skill content".into(),
+        enabled: false,
+        model_invocable: true,
+    };
+    let caps = crate::profile::ResolvedProfile::for_test(provider, vec![], vec![], vec![]);
+    let caps = crate::profile::ResolvedProfile {
+        skill_registry: vec![skill],
+        mcp_registry: vec![crate::config::McpToolDef {
+            server_name: "slack".into(),
+            name: "send".into(),
+            description: "post to Slack".into(),
+            schema: serde_json::json!({}),
+            output_schema: None,
+        }],
+        agent_whitelist: crate::registry::AgentWhitelist::wildcard(),
+        ..caps
+    };
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let emitter = Recorder::for_session(&session.gait_dir, &session.id, tx);
+    let state = crate::turn::setup::build_test_turn_state(
+        &session,
+        &emitter,
+        caps,
+        TurnInput {
+            auto: true,
+            max_iter: Some(1),
+            preview_policy: crate::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: true,
+            sandbox_cfg: crate::config::SandboxConfig::default(),
+            relay: None,
+            initial_git: None,
+            daemons: vec![],
+        },
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        state
+            .entries
+            .iter()
+            .any(|e| e.kind == LoadableKind::Skill && e.name == "tdd"),
+        "skill entry must be present in every build: {:?}",
+        state.entries
+    );
+    #[cfg(not(feature = "mcp"))]
+    assert!(
+        !state.entries.iter().any(|e| e.kind == LoadableKind::Mcp),
+        "min build must not surface an MCP loadable entry: {:?}",
+        state.entries
+    );
+    #[cfg(feature = "mcp")]
+    assert!(
+        state.entries.iter().any(|e| e.kind == LoadableKind::Mcp),
+        "full build should still surface the MCP loadable entry: {:?}",
+        state.entries
+    );
+}
+
 struct MockProvider {
     responses: Arc<Vec<Vec<StreamChunk>>>,
     call_idx: Arc<AtomicUsize>,

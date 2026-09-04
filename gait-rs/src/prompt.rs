@@ -129,6 +129,18 @@ mod tests {
         assert!(!p.contains("<user"));
     }
 
+    /// Task 7: `min` and `full` builds share exactly one harness file/prompt —
+    /// there is no second `gait-min-harness.md`. This only exercises harness
+    /// sharing (`compose_system_prompt` never calls `build_dynamic_system_
+    /// prompt`, which is what Step 4/the `min_dynamic_catalog_lists_skills_
+    /// but_not_mcp` test in `turn/tests/integration.rs` covers instead).
+    #[test]
+    fn min_static_harness_is_identical_to_full() {
+        let gait = tempfile::TempDir::new().unwrap();
+        let prompt = compose_system_prompt(gait.path(), None, None, "structured_done");
+        assert!(prompt.contains("<harness src=\"gait-harness.md\""));
+    }
+
     #[test]
     fn codebase_key_is_basename_plus_hash_and_stable() {
         let k1 = codebase_key(Path::new("/tmp/does-not-exist/myrepo"));
