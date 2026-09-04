@@ -1312,6 +1312,65 @@ mod tests {
     }
 
     #[test]
+    fn min_register_load_commands_are_unconditional() {
+        // `gait-ops` has no `min`/`full` feature split at all (unlike
+        // `gait-core`/`gait-bin`, which gate `rmcp`/`gait_codemode` behind
+        // `mcp`/`code-mode`) — that absence is itself the round-6 finding
+        // made concrete: there is nothing here to gate. `register`/`load`
+        // with kind="mcp" write/read the same raw JSON file and Toggle
+        // event a full build would, regardless of whether `gait-core`'s
+        // `mcp`/`code-mode` features are compiled in. Only turn-execution
+        // time (actually opening a live MCP connection) differs under
+        // `min` — untouched by this task and not exercised here.
+        let dir = TempDir::new().unwrap();
+        let session_id = "minmcp01";
+        let tx_path = gait_state::session::live::log_path(dir.path(), session_id);
+        std::fs::create_dir_all(tx_path.parent().unwrap()).unwrap();
+
+        // register mcp — writes mcp/<name>.json, disabled by default.
+        let mut p = reg("mcp", "slack", dir.path());
+        p.spawn = Some("node mcp-slack.js".into());
+        let outcome = register(p).unwrap();
+        assert_eq!(outcome.scope, "global");
+        let disk_path = dir.path().join("mcp").join("slack.json");
+        assert!(disk_path.exists());
+        let val: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&disk_path).unwrap()).unwrap();
+        assert_eq!(val["command"], "node");
+        assert_eq!(val["enabled"], false);
+
+        // load mcp — appends a Toggle(enabled=true) event to the session
+        // log, the same bookkeeping act a full build performs.
+        let load_outcome = load(LoadParams {
+            gait_dir: dir.path().to_path_buf(),
+            session_id: session_id.to_string(),
+            kind: ExtKind::Mcp,
+            name: "slack".to_string(),
+        })
+        .unwrap();
+        assert!(load_outcome.enabled);
+        let toggle = read_toggle(&tx_path);
+        assert_eq!(toggle.name, "slack");
+        assert!(toggle.enabled, "load must set enabled=true even under min");
+
+        // unload mcp — appends a Toggle(enabled=false) event; still no
+        // feature gate involved.
+        let unload_outcome = unload(LoadParams {
+            gait_dir: dir.path().to_path_buf(),
+            session_id: session_id.to_string(),
+            kind: ExtKind::Mcp,
+            name: "slack".to_string(),
+        })
+        .unwrap();
+        assert!(!unload_outcome.enabled);
+
+        // unregister mcp — removes the disk entry. Still no feature gate.
+        let unreg_outcome = unregister(unreg("mcp", "slack", dir.path())).unwrap();
+        assert_eq!(unreg_outcome.scope, "global");
+        assert!(!disk_path.exists());
+    }
+
+    #[test]
     fn load_is_visible_to_the_next_turns_agent_state_projection() {
         // This is the exact fold turn-start uses to compute the active
         // skill/mcp/plugin set for the system prompt (gait_state::session::
