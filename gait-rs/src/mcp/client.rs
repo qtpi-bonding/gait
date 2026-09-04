@@ -1,5 +1,3 @@
-#![cfg(feature = "mcp")]
-
 use crate::config::{McpServerDef, McpToolDef};
 use rmcp::model::{CallToolRequestParams, RawContent};
 use rmcp::transport::{ConfigureCommandExt, StreamableHttpClientTransport, TokioChildProcess};

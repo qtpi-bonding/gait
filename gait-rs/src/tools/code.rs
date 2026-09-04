@@ -1,5 +1,4 @@
 //! Model-facing Code Mode evaluator tool.
-#![cfg(feature = "code-mode")]
 use crate::turn::capabilities::{CapabilityAddress, CapabilityDispatcher, CapabilityInvocation};
 use crate::types::{ExecutionMode, ExecutionSignal, Rec, Tool, ToolError};
 use async_trait::async_trait;
