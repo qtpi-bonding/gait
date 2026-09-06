@@ -234,9 +234,16 @@ pub async fn run_brain(config: BrainConfig, gait_dir: PathBuf, codebase_path: Pa
             let Some((phase, elapsed_ms, label)) = crate::diagnostic::current_phase_full() else {
                 continue;
             };
-            let (turn, model) = crate::diagnostic::current_identity().unwrap_or((0, String::new()));
-            let mut rec =
-                crate::diagnostic::DiagRecord::ping(&ping_session, turn, &model, phase, elapsed_ms);
+            let (turn, model, agent_id) =
+                crate::diagnostic::current_identity().unwrap_or((0, String::new(), None));
+            let mut rec = crate::diagnostic::DiagRecord::ping(
+                &ping_session,
+                turn,
+                &model,
+                agent_id,
+                phase,
+                elapsed_ms,
+            );
             rec.detail = label;
             let sig = Signal {
                 corr_id: 0,

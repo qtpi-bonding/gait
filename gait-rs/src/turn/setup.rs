@@ -275,14 +275,25 @@ pub(crate) fn init(
     let pre_events = ingestor.events()?;
     // The spine writes TurnStart before launching the sealed brain. Its scoped
     // coordinate is therefore the authoritative position for every step event.
-    let (current_run, current_turn) = pre_events
+    // Also recover the triggering message's attested agent id (if any) from
+    // `trigger_event_id` -- see the `set_brain_identity` call below.
+    let (current_run, current_turn, trigger_agent_id) = pre_events
         .iter()
         .rev()
         .find_map(|event| match crate::proto::event_kind(event) {
-            Some(payload::Kind::TurnStart(_)) => Some((event.run?, event.turn?)),
+            Some(payload::Kind::TurnStart(ts)) => {
+                let agent_id = ts.trigger_event_id.as_deref().and_then(|trigger_id| {
+                    pre_events
+                        .iter()
+                        .find(|e| e.id == trigger_id)
+                        .and_then(|e| e.provenance.first())
+                        .and_then(|p| p.attested_author_agent_id.clone())
+                });
+                Some((event.run?, event.turn?, agent_id))
+            }
             _ => None,
         })
-        .unwrap_or((0, 0));
+        .unwrap_or((0, 0, None));
     emitter.set_scope(crate::proto::envelope::EventScope::Step {
         run: current_run,
         turn: current_turn,
@@ -291,8 +302,10 @@ pub(crate) fn init(
     // Thread the same turn number + model that `log.jsonl` stamps into the
     // brain's always-on diagnostic ping (no-op outside the brain process, where
     // the identity cell is never installed). Without this the per-phase
-    // heartbeat frames carry `turn:0` / `model:""`.
-    crate::diagnostic::set_brain_identity(current_turn, &model);
+    // heartbeat frames carry `turn:0` / `model:""`. `trigger_agent_id` is
+    // `Some` only when this turn was driven by a verified multimatrix
+    // delivery -- see `an internal design note`.
+    crate::diagnostic::set_brain_identity(current_turn, &model, trigger_agent_id);
 
     Ok(SetupData {
         state,

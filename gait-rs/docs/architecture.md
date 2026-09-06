@@ -13,7 +13,7 @@ source of truth.
 
 | Crate | Role |
 |---|---|
-| **gait-types** | foundation leaf: `types` (`Tool`/`Hook` traits, `ToolError`, the `Rec` recorder-surface trait), `config/`, `diagnostic.rs`. Depends only on `gait-proto`. |
+| **gait-types** | foundation leaf: `types` (`Tool`/`Hook` traits, `ToolError`, the `Rec` recorder-surface trait), `config/`, `diagnostic.rs` (see [`docs/observability.md`](observability.md)). Depends only on `gait-proto`. |
 | **gait-platform** | host leaf: injectable platform kind, native directories, and environment access. Its direct consumers are restricted to `gait-auth`, `gait-state`, and `gait-sandbox`. |
 | **gait-auth** | credential/auth-method contracts and external auth-source adapters. Depends on `gait-platform`. |
 | **gait-provider** | generation/wire leaf: `provider.rs`, `transport.rs`, `factory.rs`, `providers.rs`, `anthropic/`, `openai/`, `strict.rs`. Depends only on `gait-types`. |

@@ -71,6 +71,15 @@ pub struct DiagRecord {
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// grorg's Agent identity of the turn's triggering message, when it
+    /// arrived via a verified multimatrix delivery
+    /// (`Provenance.attested_author_agent_id`). Field name matches the
+    /// cross-repo convention in
+    /// `an internal design note` so a neighbor's
+    /// `grep agent_id` finds gait's lines alongside multimatrix's/grorg's.
+    /// `None` for ordinary (non-attested) turns.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
 }
 
 /// Unix epoch millis. Dependency-free; used for DiagRecord.ts.
@@ -153,27 +162,29 @@ pub fn install_brain_phase_cell() -> PhaseCell {
 // process-global cell threads them to the ping so heartbeat frames carry the
 // real turn/model instead of `0`/`""`. Mirrors the `BRAIN_PHASE` install/set/read
 // discipline: a no-op in the spine process and tests (cell never installed).
-static BRAIN_IDENTITY: OnceLock<Mutex<(u32, String)>> = OnceLock::new();
+static BRAIN_IDENTITY: OnceLock<Mutex<(u32, String, Option<String>)>> = OnceLock::new();
 
 /// Install the brain-process identity cell (call ONCE at brain startup).
-/// Seeds with `(0, "")` — the turn loop updates it via [`set_brain_identity`].
+/// Seeds with `(0, "", None)` — the turn loop updates it via [`set_brain_identity`].
 pub fn install_brain_identity() {
-    BRAIN_IDENTITY.get_or_init(|| Mutex::new((0, String::new())));
+    BRAIN_IDENTITY.get_or_init(|| Mutex::new((0, String::new(), None)));
 }
 
-/// Set the current turn number and model. No-op if not installed (spine / tests).
-pub fn set_brain_identity(turn: u32, model: &str) {
+/// Set the current turn number, model, and (if the turn's triggering message
+/// arrived via a verified multimatrix delivery) grorg agent id. No-op if not
+/// installed (spine / tests).
+pub fn set_brain_identity(turn: u32, model: &str, agent_id: Option<String>) {
     if let Some(cell) = BRAIN_IDENTITY.get() {
         let mut g = cell.lock().unwrap_or_else(|e| e.into_inner());
-        *g = (turn, model.to_string());
+        *g = (turn, model.to_string(), agent_id);
     }
 }
 
-/// Snapshot of `(turn, model)`, or `None` if not installed.
-pub fn current_identity() -> Option<(u32, String)> {
+/// Snapshot of `(turn, model, agent_id)`, or `None` if not installed.
+pub fn current_identity() -> Option<(u32, String, Option<String>)> {
     BRAIN_IDENTITY.get().map(|cell| {
         let g = cell.lock().unwrap_or_else(|e| e.into_inner());
-        (g.0, g.1.clone())
+        (g.0, g.1.clone(), g.2.clone())
     })
 }
 
@@ -239,7 +250,14 @@ impl DiagRecord {
     /// `mono_ms` is 0 in pings — the brain-start timer is not wired to the ping
     /// task, so setting it to `elapsed_ms` (time-in-phase) would give consumers
     /// wrong deltas when diffing across records.
-    pub fn ping(session: &str, turn: u32, model: &str, phase: Phase, elapsed_ms: u64) -> Self {
+    pub fn ping(
+        session: &str,
+        turn: u32,
+        model: &str,
+        agent_id: Option<String>,
+        phase: Phase,
+        elapsed_ms: u64,
+    ) -> Self {
         Self {
             ts: now_unix_millis(),
             mono_ms: 0,
@@ -251,6 +269,7 @@ impl DiagRecord {
             attempt: None,
             model: model.into(),
             detail: None,
+            agent_id,
         }
     }
     /// A terminal failure record (spine-side; session known, turn/model best-effort).
@@ -266,6 +285,7 @@ impl DiagRecord {
             attempt: None,
             model: String::new(),
             detail: Some(detail.into()),
+            agent_id: None,
         }
     }
 
@@ -283,6 +303,7 @@ impl DiagRecord {
             attempt: None,
             model: String::new(),
             detail: Some(detail.into()),
+            agent_id: None,
         }
     }
 }
@@ -304,6 +325,7 @@ mod tests {
             attempt: Some(1),
             model: "minimax/MiniMax-M3".into(),
             detail: Some("received 0 bytes".into()),
+            agent_id: Some("agent:s1234".into()),
         };
         let line = r.to_json_line();
         assert!(!line.contains('\n'), "exactly one line");
@@ -311,6 +333,18 @@ mod tests {
         assert_eq!(v["phase"], "reasoning");
         assert_eq!(v["event"], "heartbeat");
         assert_eq!(v["elapsed_ms"], 45000);
+        assert_eq!(v["agent_id"], "agent:s1234");
+    }
+
+    #[test]
+    fn agent_id_omitted_when_none() {
+        let r = DiagRecord::ping("s3d6bf3d6", 1, "minimax/MiniMax-M3", None, Phase::TurnBegin, 0);
+        let line = r.to_json_line();
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert!(
+            v.get("agent_id").is_none(),
+            "ordinary (non-attested) turns must not carry an agent_id field: {line}"
+        );
     }
 
     #[test]
@@ -328,13 +362,14 @@ mod tests {
     #[test]
     fn identity_threads_real_turn_and_model_into_ping() {
         install_brain_identity();
-        set_brain_identity(7, "minimax/MiniMax-M3");
-        let (turn, model) = current_identity().expect("identity installed");
+        set_brain_identity(7, "minimax/MiniMax-M3", Some("agent:s1234".into()));
+        let (turn, model, agent_id) = current_identity().expect("identity installed");
         assert_eq!(turn, 7);
         assert_eq!(model, "minimax/MiniMax-M3");
+        assert_eq!(agent_id.as_deref(), Some("agent:s1234"));
 
-        // The ping frame built from the snapshot must carry both — not 0/"".
-        let rec = DiagRecord::ping("sb4a1be49", turn, &model, Phase::TurnBegin, 1);
+        // The ping frame built from the snapshot must carry all three — not 0/""/None.
+        let rec = DiagRecord::ping("sb4a1be49", turn, &model, agent_id, Phase::TurnBegin, 1);
         let line = rec.to_json_line();
         let v: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(v["turn"], 7, "heartbeat carries the real turn: {line}");
@@ -342,6 +377,7 @@ mod tests {
             v["model"], "minimax/MiniMax-M3",
             "heartbeat carries the real model: {line}"
         );
+        assert_eq!(v["agent_id"], "agent:s1234");
     }
 
     #[test]
