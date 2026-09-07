@@ -191,6 +191,24 @@ pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) {
 /// Parse and structurally validate a workflow's graph without running it —
 /// no worktree, no run-log, no gait-dir session state touched. Exits 0 with
 /// "is valid" on success, exits 1 and prints every problem found on failure.
+/// Validate raw workflow YAML against the generated `WorkflowDef` JSON
+/// Schema, returning every violation found (not just the first). `None`
+/// means the YAML is schema-valid (or wasn't parseable YAML at all — the
+/// `serde_yaml::from_str::<WorkflowDef>` call right after this one owns
+/// reporting that case).
+fn schema_shape_errors(yaml_content: &str) -> Option<Vec<String>> {
+    let as_json = serde_yaml::from_str::<serde_json::Value>(yaml_content).ok()?;
+    let schema_value = serde_json::to_value(gait_workflow::schema::json_schema())
+        .expect("generated workflow JSON Schema always serializes");
+    let compiled = jsonschema::JSONSchema::compile(&schema_value).ok()?;
+    let errors: Vec<String> = compiled
+        .validate(&as_json)
+        .err()?
+        .map(|e| format!("{}: {}", e.instance_path, e))
+        .collect();
+    Some(errors)
+}
+
 pub fn cmd_workflow_validate(argv: &[String], gait_dir: PathBuf, pretty: bool) {
     let name = match argv.first() {
         Some(n) => n.clone(),
@@ -207,6 +225,21 @@ pub fn cmd_workflow_validate(argv: &[String], gait_dir: PathBuf, pretty: bool) {
             std::process::exit(1);
         }
     };
+
+    // Schema-shape check first: reports every field-level violation (wrong
+    // type, missing required field, etc.) in one pass. The `serde_yaml`
+    // parse below stops at the first error, so this runs ahead of it.
+    if let Some(error_strings) = schema_shape_errors(&yaml_content) {
+        println!(
+            "{}",
+            gait_ops::render_json(
+                &serde_json::json!({"name": name, "valid": false, "errors": error_strings}),
+                pretty
+            )
+        );
+        std::process::exit(1);
+    }
+
     let wf: WorkflowDef = match serde_yaml::from_str(&yaml_content) {
         Ok(w) => w,
         Err(e) => {
@@ -664,5 +697,30 @@ mod validate_tests {
         // the proof cmd_workflow_validate did not call std::process::exit.
         cmd_workflow_validate(&["good".to_string()], gait_dir, false);
         // No panic, no exit — the happy path returned normally.
+    }
+
+    #[test]
+    fn schema_shape_errors_reports_every_violation_at_once() {
+        // Two independent shape errors: `nodes` is a string instead of a
+        // list, and `auto` is a string instead of a bool. A bare
+        // `serde_yaml::from_str::<WorkflowDef>` would only ever surface the
+        // first one it happens to hit.
+        let yaml = "name: bad\nauto: \"yes\"\nnodes: \"oops\"\n";
+        let errors = super::schema_shape_errors(yaml).expect("schema violations expected");
+        assert_eq!(errors.len(), 2, "expected both violations, got: {errors:?}");
+        assert!(
+            errors.iter().any(|e| e.contains("/nodes")),
+            "missing /nodes violation: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|e| e.contains("/auto")),
+            "missing /auto violation: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn schema_shape_errors_is_none_for_valid_workflow_yaml() {
+        let yaml = "name: good\nnodes:\n  - id: a\n    shell: \"echo hi\"\n";
+        assert_eq!(super::schema_shape_errors(yaml), None);
     }
 }

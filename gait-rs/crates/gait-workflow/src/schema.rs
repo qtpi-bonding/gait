@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -7,7 +8,15 @@ use std::collections::HashMap;
 /// gate like a normal successful node output.
 pub const GATE_PAUSED_SENTINEL: &str = "__gate_paused__";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// JSON Schema for [`WorkflowDef`], generated from the struct definitions
+/// above. Used by `gait workflow validate` to report every shape violation
+/// in a workflow YAML at once, instead of stopping at the first `serde_yaml`
+/// parse error.
+pub fn json_schema() -> schemars::schema::RootSchema {
+    schemars::schema_for!(WorkflowDef)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkflowDef {
     pub name: String,
     #[serde(default)]
@@ -31,7 +40,7 @@ fn default_version() -> String {
     "1".into()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct HooksConfig {
     pub before: Option<String>,
     pub after: Option<String>,
@@ -39,13 +48,13 @@ pub struct HooksConfig {
     pub timeout_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct RecordConfig {
     #[serde(default)]
     pub commands: Vec<RecordCommand>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RecordCommand {
     pub id: String,
     pub command: String,
@@ -57,7 +66,7 @@ fn default_record_timeout() -> u64 {
     120_000
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct OnErrorConfig {
     #[serde(default)]
     pub retry_times: u32,
@@ -93,7 +102,7 @@ impl Default for OnErrorConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct NodeDef {
     pub id: String,
     #[serde(default)]
@@ -146,7 +155,7 @@ impl NodeDef {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum ShellConfig {
     Short(String),
@@ -174,7 +183,7 @@ impl ShellConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ShellConfigFull {
     pub run: String,
     #[serde(default = "default_cwd")]
@@ -190,7 +199,7 @@ fn default_shell_timeout() -> u64 {
     120_000
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct BranchConfig {
     pub on: String,
     #[serde(default)]
@@ -201,7 +210,7 @@ pub struct BranchConfig {
     pub cases: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum GateConfig {
     Short(String),

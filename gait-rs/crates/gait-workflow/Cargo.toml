@@ -21,6 +21,7 @@ async-trait = "0.1"
 futures-util = "0.3"
 regex = "1"
 jsonschema = { version = "0.18", default-features = false }
+schemars   = { version = "0.8", features = ["derive"] }
 sha2 = "0.10"
 hex = "0.4"
 walkdir = "2"
