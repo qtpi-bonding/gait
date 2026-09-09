@@ -23,10 +23,26 @@ pub fn resolve_gait_dir_from(
 }
 
 /// Resolve codebase: --codebase arg > current working directory.
+///
+/// Canonicalized here, once, so every downstream consumer (tool
+/// implementations' own `Path::exists()`/read/write calls via
+/// `ToolCtx.codebase_path`, AND the sandbox scope computed separately in
+/// `compute_scope_with_home`) sees the same resolved path. Before this fix,
+/// only the sandbox-scope side canonicalized its own copy (to handle
+/// symlinks like macOS's `/tmp` -> `/private/tmp`); tools kept using this
+/// raw, un-resolved value, so a symlinked `--codebase` made the kernel-level
+/// sandbox grant (canonical path) and the tools' own filesystem checks (raw
+/// path) diverge — a `glob`/`ls` on the raw path could get silently denied
+/// at a symlink component the grant didn't cover, surfacing as a false
+/// "Directory not found" for a directory that genuinely exists. Falls back
+/// to the raw path if canonicalize fails (e.g. genuinely doesn't exist yet),
+/// same pattern used elsewhere (`gait_dir_inside_codebase` in embed.rs,
+/// `compute_scope_with_home` in gait-sandbox).
 pub fn resolve_codebase(args: &[String]) -> std::path::PathBuf {
-    extract_path_arg(args, "--codebase").unwrap_or_else(|| {
+    let raw = extract_path_arg(args, "--codebase").unwrap_or_else(|| {
         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-    })
+    });
+    raw.canonicalize().unwrap_or(raw)
 }
 
 // cmd_brain deleted (Task 5): dispatch now via gait_core::__dispatch_role.
@@ -96,14 +112,39 @@ mod tests {
         #[test]
         fn resolve_codebase_defaults_to_pwd() {
             let result = resolve_codebase(&[]);
-            assert_eq!(result, std::env::current_dir().unwrap());
+            let cwd = std::env::current_dir().unwrap();
+            assert_eq!(result, cwd.canonicalize().unwrap_or(cwd));
         }
 
         #[test]
         fn resolve_codebase_uses_arg() {
-            let args = vec!["--codebase".to_string(), "/tmp/mycode".to_string()];
+            // A non-existent path: canonicalize() fails, falls back to raw —
+            // exercises the fallback branch specifically.
+            let args = vec!["--codebase".to_string(), "/tmp/mycode-does-not-exist".to_string()];
             let result = resolve_codebase(&args);
-            assert_eq!(result, std::path::PathBuf::from("/tmp/mycode"));
+            assert_eq!(result, std::path::PathBuf::from("/tmp/mycode-does-not-exist"));
+        }
+
+        // Regression test for the archeglyph-eb report (2026-09-08): a
+        // symlinked --codebase (macOS's /tmp -> /private/tmp is the common
+        // real-world trigger) must resolve to the SAME canonical path tools
+        // and the sandbox scope both end up using, not the raw symlinked one.
+        #[cfg(unix)]
+        #[test]
+        fn resolve_codebase_resolves_a_symlinked_path_to_its_real_target() {
+            let t = tempfile::TempDir::new().unwrap();
+            let real_dir = t.path().join("real-codebase");
+            std::fs::create_dir_all(&real_dir).unwrap();
+            let link = t.path().join("linked-codebase");
+            std::os::unix::fs::symlink(&real_dir, &link).unwrap();
+
+            let args = vec!["--codebase".to_string(), link.to_string_lossy().to_string()];
+            let result = resolve_codebase(&args);
+            assert_eq!(
+                result,
+                real_dir.canonicalize().unwrap(),
+                "must resolve through the symlink to the real directory, not stay at the symlink path"
+            );
         }
     }
 }
