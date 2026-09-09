@@ -3,3 +3,8 @@ sessions/
 agents/
 AGENTS.md
 CLAUDE.md
+
+# Blanket-ignore markdown: only docs already tracked in git stay tracked.
+# A new .md needs `git add -f` to get in — keeps plans/notes/scratch docs
+# from accumulating in the repo by default.
+*.md
