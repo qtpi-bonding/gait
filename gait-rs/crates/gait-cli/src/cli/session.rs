@@ -35,6 +35,15 @@ pub struct DiscardArgs {
     pub all: bool,
     #[arg(long, short = 'y')]
     pub yes: bool,
+    /// Required alongside --all: --yes alone only skips the interactive
+    /// y/N prompt, it does not acknowledge a bulk discard. Without --force,
+    /// `discard --all` prints the dry-run list of what it WOULD discard and
+    /// refuses to proceed, no matter how --yes is set. (2026-09-08:
+    /// non-interactive callers were passing a blanket --yes and discarding
+    /// 100+ sessions unattended -- this makes that a second, distinct,
+    /// deliberate opt-in.)
+    #[arg(long)]
+    pub force: bool,
     #[arg(long, env = "GAIT_DIR")]
     pub gait_dir: PathBuf,
     #[arg(long)]
@@ -93,6 +102,7 @@ pub fn cmd_persist(args: PersistArgs) {
             gait_ops::session::BulkVerb::Persist,
             &args.gait_dir,
             args.yes,
+            true, // force is meaningless for Persist (reversible; bulk_act ignores it)
             args.pretty,
         );
         return;
@@ -122,7 +132,7 @@ pub fn cmd_persist(args: PersistArgs) {
         eligible: one,
         skipped: plan.skipped,
     };
-    match gait_ops::session::bulk_act(&args.gait_dir, &plan, true) {
+    match gait_ops::session::bulk_act(&args.gait_dir, &plan, true, true) {
         Ok(outcome) => {
             println!(
                 "{}",
@@ -148,6 +158,7 @@ pub fn cmd_discard(args: DiscardArgs) {
             gait_ops::session::BulkVerb::Discard,
             &args.gait_dir,
             args.yes,
+            args.force,
             args.pretty,
         );
         return;
@@ -177,7 +188,10 @@ pub fn cmd_discard(args: DiscardArgs) {
         eligible: vec![id.to_string()],
         skipped: Vec::new(),
     };
-    if let Err(e) = gait_ops::session::bulk_act(&args.gait_dir, &plan, true) {
+    // Single-session discard: not gated on --force (bulk_act only requires
+    // it for eligible.len() > 1) — the interactive/--yes confirm above is
+    // this path's whole gate, same as before.
+    if let Err(e) = gait_ops::session::bulk_act(&args.gait_dir, &plan, true, true) {
         eprintln!("[gait] error: {}", e);
         std::process::exit(1);
     }
@@ -204,6 +218,7 @@ fn run_bulk(
     verb: gait_ops::session::BulkVerb,
     gait_dir: &std::path::Path,
     yes: bool,
+    force: bool,
     pretty: bool,
 ) {
     let plan = match gait_ops::session::classify_bulk(gait_dir, verb) {
@@ -215,10 +230,27 @@ fn run_bulk(
     };
 
     // The preview is itself a real result (what will happen) — always JSON.
+    // This IS the dry-run listing: printed unconditionally, before any
+    // confirmation or force check, so a caller sees exactly what would be
+    // discarded even when the run below refuses to proceed.
     println!("{}", plan.to_json(pretty));
 
     if plan.eligible.is_empty() {
         return;
+    }
+
+    // A bulk (>1) discard needs --force, on top of --yes/confirmation — a
+    // single blanket --yes must not be enough to wipe out many sessions at
+    // once. Checked here (before the confirm prompt) so a non-interactive
+    // caller gets this specific, actionable error instead of the generic
+    // "refusing ... without --yes" one.
+    if verb == gait_ops::session::BulkVerb::Discard && plan.eligible.len() > 1 && !force {
+        eprintln!(
+            "[gait] error: refusing to discard {} sessions without --force \
+             (see the eligible list printed above; re-run with --force once reviewed)",
+            plan.eligible.len()
+        );
+        std::process::exit(1);
     }
 
     // 3-state consent: Yes / No / RequiresYes. `No` aborts quietly (exit 0),
@@ -245,7 +277,7 @@ fn run_bulk(
         }
     }
 
-    let outcome = match gait_ops::session::bulk_act(gait_dir, &plan, true) {
+    let outcome = match gait_ops::session::bulk_act(gait_dir, &plan, true, force) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("[gait] error: {}", e);

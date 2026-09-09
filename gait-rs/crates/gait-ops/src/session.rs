@@ -640,7 +640,30 @@ pub fn classify_bulk(gait_dir: &Path, verb: BulkVerb) -> Result<BulkPlan, OpErro
 
 /// Act on a previously-computed plan. `confirmed: false` returns
 /// `OpError::ConfirmationRequired` and mutates nothing.
-pub fn bulk_act(gait_dir: &Path, plan: &BulkPlan, confirmed: bool) -> Result<BulkOutcome, OpError> {
+///
+/// `force` is a second, distinct gate that only matters for a *bulk*
+/// discard (`verb == Discard` with more than one eligible session):
+/// discard is unrecoverable (no merge), so a single blanket `confirmed`
+/// (which a non-interactive caller can set once and forget, e.g. a
+/// scripted `--yes`) isn't enough acknowledgment for wiping out an
+/// unbounded number of sessions in one call. A caller must set `force`
+/// too, on top of `confirmed`, specifically to bulk-discard more than one
+/// session. Single-session discards (`eligible.len() <= 1`, whether from
+/// `discard <id>` or a `--all` plan that happens to match one session)
+/// are unaffected — `force` is ignored for those.
+pub fn bulk_act(
+    gait_dir: &Path,
+    plan: &BulkPlan,
+    confirmed: bool,
+    force: bool,
+) -> Result<BulkOutcome, OpError> {
+    if plan.verb == BulkVerb::Discard && plan.eligible.len() > 1 && !force {
+        return Err(OpError::ConfirmationRequired(format!(
+            "bulk discard of {} sessions requires --force (a second, distinct flag from \
+             confirmation) — review the eligible list above, then re-run with --force",
+            plan.eligible.len()
+        )));
+    }
     if !confirmed {
         return Err(OpError::ConfirmationRequired(format!(
             "{} {} session(s) requires confirmation",
@@ -998,7 +1021,7 @@ mod tests {
         let ws = ws_with_session("sbulk02");
         write_empty_log(ws.path(), "sbulk02");
         let plan = classify_bulk(ws.path(), BulkVerb::Persist).unwrap();
-        let err = bulk_act(ws.path(), &plan, false).unwrap_err();
+        let err = bulk_act(ws.path(), &plan, false, false).unwrap_err();
         assert!(matches!(err, OpError::ConfirmationRequired(_)));
         // Still present: the act loop never ran.
         assert!(gait_state::session::live::worktree_dir(ws.path(), "sbulk02").exists());
@@ -1014,7 +1037,7 @@ mod tests {
         std::fs::create_dir_all(output.parent().unwrap()).unwrap();
         std::fs::write(&output, "runtime-only").unwrap();
         let plan = classify_bulk(ws.path(), BulkVerb::Persist).unwrap();
-        let outcome = bulk_act(ws.path(), &plan, true).unwrap();
+        let outcome = bulk_act(ws.path(), &plan, true, true).unwrap();
         assert_eq!(outcome.acted, vec!["sbulk03".to_string()]);
         assert!(outcome.failed.is_empty());
         // The session's branch is now merged into main — the worktree dir is gone.
@@ -1037,12 +1060,52 @@ mod tests {
         std::fs::create_dir_all(output.parent().unwrap()).unwrap();
         std::fs::write(&output, "runtime-only").unwrap();
         let plan = classify_bulk(ws.path(), BulkVerb::Discard).unwrap();
-        let outcome = bulk_act(ws.path(), &plan, true).unwrap();
+        let outcome = bulk_act(ws.path(), &plan, true, true).unwrap();
         assert_eq!(outcome.acted, vec!["sbulk04".to_string()]);
         assert!(outcome.failed.is_empty());
         // discard_session removes the worktree dir without merging into main.
         assert!(!gait_state::session::live::worktree_dir(ws.path(), "sbulk04").exists());
         assert!(!output.exists(), "discard must remove runtime outputs");
+    }
+
+    /// Regression test (2026-09-08): a bulk discard of more than one session
+    /// must refuse without `force`, even when `confirmed` is true — a single
+    /// blanket `--yes` must not be enough to wipe out many sessions at once.
+    #[test]
+    fn bulk_act_discard_of_multiple_sessions_requires_force() {
+        let ws = ws_with_session("sforce01");
+        write_empty_log(ws.path(), "sforce01");
+        Repos::production()
+            .traces
+            .create_session_worktree(ws.path(), "sforce02")
+            .unwrap();
+        write_empty_log(ws.path(), "sforce02");
+
+        let plan = classify_bulk(ws.path(), BulkVerb::Discard).unwrap();
+        assert_eq!(plan.eligible.len(), 2, "fixture must have 2 eligible sessions");
+
+        // confirmed=true, force=false: refused, nothing touched.
+        let err = bulk_act(ws.path(), &plan, true, false).unwrap_err();
+        assert!(matches!(err, OpError::ConfirmationRequired(_)));
+        assert!(gait_state::session::live::worktree_dir(ws.path(), "sforce01").exists());
+        assert!(gait_state::session::live::worktree_dir(ws.path(), "sforce02").exists());
+
+        // confirmed=true, force=true: proceeds.
+        let outcome = bulk_act(ws.path(), &plan, true, true).unwrap();
+        assert_eq!(outcome.acted.len(), 2);
+    }
+
+    /// A single-session discard (the common case: `discard <id>`, or a
+    /// `--all` plan that happens to match exactly one session) is NOT
+    /// gated on `force` — only a genuinely bulk (>1) discard is.
+    #[test]
+    fn bulk_act_discard_of_a_single_session_does_not_require_force() {
+        let ws = ws_with_session("sforce03");
+        write_empty_log(ws.path(), "sforce03");
+        let plan = classify_bulk(ws.path(), BulkVerb::Discard).unwrap();
+        assert_eq!(plan.eligible.len(), 1);
+        let outcome = bulk_act(ws.path(), &plan, true, false).unwrap();
+        assert_eq!(outcome.acted, vec!["sforce03".to_string()]);
     }
 
     // -- additional classify_bulk tests (parity with cli/session.rs) --

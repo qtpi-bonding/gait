@@ -237,7 +237,7 @@ pub fn close_session(
         eligible: vec![sid.clone()],
         skipped: Vec::new(),
     };
-    match gait_ops::session::bulk_act(&gait_dir, &one, /* confirmed */ true) {
+    match gait_ops::session::bulk_act(&gait_dir, &one, /* confirmed */ true, /* force */ true) {
         Ok(_) => responder.respond(CloseSessionResponse::new()),
         Err(e) => responder.respond_with_internal_error(e.to_string()),
     }
@@ -261,7 +261,10 @@ pub fn delete_session(
         eligible: vec![sid.clone()],
         skipped: Vec::new(),
     };
-    match gait_ops::session::bulk_act(&gait_dir, &plan, true) {
+    // Single-session discard (this is `session/delete` for one session,
+    // never a bulk operation) — not gated on force, same as bulk_act's
+    // eligible.len() <= 1 exemption.
+    match gait_ops::session::bulk_act(&gait_dir, &plan, true, true) {
         Ok(_) => responder.respond(DeleteSessionResponse::new()),
         Err(e) => responder.respond_with_internal_error(e.to_string()),
     }
