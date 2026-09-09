@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 gait-proto = { path = "../gait-proto" }
-identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "f09e99b" }
+identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "675d474" }
 anyhow = "1"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.8"

@@ -83,9 +83,8 @@ pub fn verify_and_build_messages(
     // separate reconciliation step. There is nothing further to check
     // against; the signed structure IS the delivery payload (design §2).
     let transcript = identity_crypto::transcripts::delivery_attestation_transcript(&attestation);
-    let ok =
+    let _verified =
         identity_crypto::verify_ed25519(&trusted.public_key_hex, &transcript, &attestation.signature)?;
-    anyhow::ensure!(ok, "delivery-attestation signature does not verify");
 
     // Replay-store keying is just key_id now -- the membership check above
     // already established this attestation is for us; there's no separate

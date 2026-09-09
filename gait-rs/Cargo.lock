@@ -2373,7 +2373,7 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 [[package]]
 name = "identity-crypto"
 version = "0.1.0"
-source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=f09e99b#f09e99b52bff6216d9774d5fc17f40d390ace95f"
+source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=675d474#675d474162151a8ffcbbfc615a716c71651b024a"
 dependencies = [
  "anyhow",
  "ed25519-dalek",

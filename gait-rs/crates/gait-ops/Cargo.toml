@@ -17,7 +17,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 git2 = "0.20"     # init's commit + undo's transcript git-walk
 libc = "0.2"      # daemon::stop killpg(SIGTERM)
 serde_yaml = "0.9"  # extension's frontmatter helpers
-identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "f09e99b" }
+identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "675d474" }
 base64 = "0.22"
 prost = "0.13"
 

@@ -173,7 +173,7 @@ mod tests {
             &transcript,
             &proof.signature
         )
-        .unwrap());
+        .is_ok());
     }
 
     #[test]

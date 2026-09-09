@@ -33,7 +33,7 @@ mod tests {
         let transcript = identity_crypto::transcripts::self_proof_transcript(
             b"n", &outcome.public_key.clone().try_into().unwrap(), 1,
         );
-        assert!(identity_crypto::verify_ed25519(&public_key_hex, &transcript, &outcome.signature).unwrap());
+        assert!(identity_crypto::verify_ed25519(&public_key_hex, &transcript, &outcome.signature).is_ok());
     }
 
     #[test]
