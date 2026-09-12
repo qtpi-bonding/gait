@@ -330,7 +330,7 @@ impl ReplBuilder {
             }
             eprint!("\r\n");
             eprint!(
-                "  {}0 = all · number = once · s = session · a = agent · r = reject · esc = abort{}\r\n",
+                "  {}0 = all · number = once · s = session · a = agent · r = reject · rs = reject session · esc = abort{}\r\n",
                 muted, RESET
             );
 
@@ -408,6 +408,14 @@ impl ReplBuilder {
                     text: None,
                     scope: pb::Scope::Unspecified as i32,
                 },
+                gait_core::permissions::PermissionChoice::DenySession(p) => {
+                    pb::PermissionsReplyItem {
+                        id: item.id.clone(),
+                        decision: pb::Decision::Deny as i32,
+                        text: Some(p.clone()),
+                        scope: pb::Scope::Session as i32,
+                    }
+                }
             };
             reply_items.push(perm);
         }

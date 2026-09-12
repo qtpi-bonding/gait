@@ -299,7 +299,31 @@ pub fn reply_for_items(
                 text: Some(pattern),
                 scope: scope_tag as i32,
             }
+        } else if c.scope == GrantScope::Session {
+            // Mirrors the Allow/Session branch above: requires a pattern,
+            // persists via save_choice (log-only, see DenySession's doc
+            // comment), and carries the pattern in `text` so the
+            // ActivePermissions fold picks it up into `deny_session`.
+            let Some(pattern) = c.pattern.clone() else {
+                return Err(OpError::from(anyhow::anyhow!(
+                    "session-scoped deny choice for item '{}' is missing a pattern",
+                    c.id
+                )));
+            };
+            save_choice(
+                &PermissionChoice::DenySession(pattern.clone()),
+                gait_dir,
+                session_id,
+                None,
+            )?;
+            pb::PermissionsReplyItem {
+                id: c.id.clone(),
+                decision: pb::Decision::Deny as i32,
+                text: Some(pattern),
+                scope: pb::Scope::Session as i32,
+            }
         } else {
+            // Plain "reject once" — no persistence, matches today's behavior.
             pb::PermissionsReplyItem {
                 id: c.id.clone(),
                 decision: pb::Decision::Deny as i32,

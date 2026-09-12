@@ -534,7 +534,7 @@ impl PlainSource {
                         self.eprintln(&line);
                     }
                     self.eprintln(
-                        "  0 = all, number = once, s = session, a = agent, r = reject",
+                        "  0 = all, number = once, s = session, a = agent, r = reject, rs = reject session",
                     );
                     let raw = self.read_line_raw();
                     let choice = if cancelled {
@@ -598,6 +598,14 @@ impl PlainSource {
                                 decision: pb::Decision::Deny as i32,
                                 text: None,
                                 scope: pb::Scope::Unspecified as i32,
+                            }
+                        }
+                        gait_core::permissions::PermissionChoice::DenySession(p) => {
+                            pb::PermissionsReplyItem {
+                                id: item.id.clone(),
+                                decision: pb::Decision::Deny as i32,
+                                text: Some(p.clone()),
+                                scope: pb::Scope::Session as i32,
                             }
                         }
                     });

@@ -261,6 +261,12 @@ pub(crate) fn init(
         retrace::apply_cascade(&mut muts, &evs);
         let seed: std::collections::HashSet<String> = allow.iter().cloned().collect();
         let ea = crate::permissions::grants::effective_allow(seed, &evs, &muts);
+        // Session-scoped Rejects (mirrors session-scoped Allows above): union
+        // them into `deny` so a repeat of an identical, already-rejected
+        // request short-circuits at the gate's deny tier instead of asking
+        // again — see AllowState::deny_session's doc comment.
+        let deny_session = crate::permissions::grants::effective_deny_session(&evs, &muts);
+        let deny: Vec<String> = deny.into_iter().chain(deny_session).collect();
         let mode = retrace::active_mode(&evs, &muts);
         crate::permissions::grants::overlay_mode_permissions(
             ea,

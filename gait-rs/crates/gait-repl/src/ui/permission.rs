@@ -16,8 +16,12 @@ pub fn preview_block(preview: Option<&str>) -> Vec<String> {
 /// Two-axis grammar: an optional scope letter (`o`/`s`/`a`) and an optional
 /// pattern number, in either order. The number picks the pattern (default: the
 /// broadest, `patterns.last()`); the letter picks the scope (default, i.e. a
-/// bare number, is Once). `r` rejects. No `g`/global — global stays config-only.
+/// bare number, is Once). `r` rejects; `rs`[N] rejects for the rest of this
+/// session (the deny-side mirror of `s`[N] — no letter-order flexibility here,
+/// `rs` only, since `sr`/`r`+digit would collide with the scope tokenizer). No
+/// `g`/global — global stays config-only, for both allow and reject.
 ///   `2` → once-pattern-2 · `s2`/`2s` → session · `a1`/`1a` → agent · `s` → session-broadest
+///   `rs` → reject-session-broadest · `rs2` → reject-session-pattern-2
 pub(crate) fn parse_permission_response(
     input: &str,
     patterns: &[String],
@@ -26,6 +30,21 @@ pub(crate) fn parse_permission_response(
     let s = input.trim().to_lowercase();
     if s == "r" || s == "deny" || s == "reject" {
         return Some(PermissionChoice::Deny);
+    }
+    // "rs"[N] rejects for the rest of this session — the deny-side mirror of
+    // "s"[N] below. Checked before the scope-letter tokenizer since 's' alone
+    // is reserved there for Allow-session.
+    if let Some(rest) = s.strip_prefix("rs") {
+        let pattern = if rest.is_empty() {
+            patterns.last()?.clone()
+        } else {
+            let n: usize = rest.parse().ok()?;
+            if n < 1 || n > patterns.len() {
+                return None;
+            }
+            patterns[patterns.len() - n].clone()
+        };
+        return Some(PermissionChoice::DenySession(pattern));
     }
     if s.is_empty() {
         return None;

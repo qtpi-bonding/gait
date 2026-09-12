@@ -859,6 +859,38 @@ fn permissions_session_deny_revokes_but_ledger_keeps_both() {
 }
 
 #[test]
+fn permissions_session_deny_populates_deny_session_bucket() {
+    // The Deny-side mirror of `permissions_projection_effective_allow_includes_session_grant`
+    // below: a session-scoped Reject must land in `deny_session` so
+    // `grants::effective_deny_session` can union it into the gate's `deny`
+    // list — an identical request should never be asked about again.
+    use std::collections::{HashMap, HashSet};
+    let evs = mint_events(vec![events::permissions_reply(&[
+        pb::PermissionsReplyItem {
+            id: "1".into(),
+            decision: pb::Decision::Deny as i32,
+            text: Some("shell:curl *".into()),
+            scope: pb::Scope::Session as i32,
+        },
+    ])]);
+    let st = run_projection(
+        &ActivePermissions {
+            seed: HashSet::new(),
+        },
+        &evs,
+        &HashMap::new(),
+    );
+    assert!(
+        st.deny_session.contains("shell:curl *"),
+        "session-scoped reject must land in deny_session"
+    );
+    assert!(
+        !st.session.contains("shell:curl *"),
+        "a bare reject with no prior allow must not also appear in the allow-side set"
+    );
+}
+
+#[test]
 fn permissions_projection_effective_allow_includes_session_grant() {
     // Was `fold_effective_allow_includes_session_grant`, driven through the
     // dead `fold()` wrapper (deleted). `effective_allow` was just

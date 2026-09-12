@@ -13,8 +13,14 @@ pub enum PermissionChoice {
     Once(String),
     /// Approve for the rest of this session (log-derived; no config file).
     Session(String),
-    /// Deny — model receives "permission denied" and can react.
+    /// Reject once — model receives "permission denied" and can react.
+    /// No persistence: an identical request is asked about again.
     Deny,
+    /// Reject for the rest of this session (log-derived; no config file).
+    /// Mirrors `Session` for the allow side: unioned into the gate's deny
+    /// list via `grants::effective_deny_session`, so an identical request is
+    /// never asked about again this session.
+    DenySession(String),
 }
 
 // moved to permissions::persist (Task 3): save_choice + compute_allow_decisions

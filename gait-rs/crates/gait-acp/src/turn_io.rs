@@ -149,7 +149,14 @@ pub fn tool_call_update(item: &PermissionItem) -> ToolCallUpdate {
 ///   - Allow once      -> each seg { Allow, Once, patterns[0] }        (kind AllowOnce)
 ///   - Allow session   -> each seg { Allow, Session, patterns.last() } (kind AllowAlways)
 ///   - Reject          -> each seg { Deny }                            (kind RejectOnce)
+///   - Reject session  -> each seg { Deny, Session, patterns.last() }  (kind RejectAlways)
 ///   - (single-segment only) one Allow-session per *middle* rung        (kind AllowAlways)
+///
+/// "Reject session" mirrors "Allow session" on the deny side: the client
+/// picks it to mean "no, and stop asking me about this exact command" —
+/// see AllowState::deny_session's doc comment for the mechanism. Plain
+/// "Reject" keeps today's behavior (asked again on the next identical
+/// attempt), matching "Allow once" on the allow side.
 ///
 /// The `option_id` is an opaque ordinal; the map records exactly which
 /// `ItemChoice`s selecting it yields. No semantics are encoded in the string.
@@ -184,8 +191,15 @@ pub fn build_permission_options(
     let deny = |id: &str| ItemChoice {
         id: id.to_string(),
         decision: Decision::Deny,
-        scope: GrantScope::Once, // ignored for Deny
+        scope: GrantScope::Once, // ignored for Deny — plain "reject once"
         pattern: None,
+        agent: None,
+    };
+    let deny_session = |id: &str, pat: &str| ItemChoice {
+        id: id.to_string(),
+        decision: Decision::Deny,
+        scope: GrantScope::Session,
+        pattern: Some(pat.to_string()),
         agent: None,
     };
 
@@ -220,6 +234,15 @@ pub fn build_permission_options(
         "Reject".to_string(),
         PermissionOptionKind::RejectOnce,
         segs.iter().map(|s| deny(&s.id)).collect(),
+    );
+    // Canonical: reject this session (broadest per seg) — the deny-side
+    // mirror of "Allow this session" below.
+    push(
+        &mut options,
+        &mut map,
+        "Reject this session".to_string(),
+        PermissionOptionKind::RejectAlways,
+        segs.iter().map(|s| deny_session(&s.id, &broad(s))).collect(),
     );
 
     // Session-granular: single-segment only (per-rung is ambiguous for compounds).
@@ -967,8 +990,9 @@ mod tests {
         let segs = vec![item("tc1", "cargo build", &["cargo build", "cargo *", "*"])];
         let (options, map) = build_permission_options(&segs);
 
-        // Canonical three + one middle-rung session option = 4.
-        assert_eq!(options.len(), 4, "3 canonical + 1 middle rung");
+        // Canonical four (allow-once, allow-session, reject, reject-session)
+        // + one middle-rung session option = 5.
+        assert_eq!(options.len(), 5, "4 canonical + 1 middle rung");
 
         // Every option decodes.
         for opt in &options {
@@ -1025,8 +1049,8 @@ mod tests {
         ];
         let (options, map) = build_permission_options(&segs);
 
-        // Exactly the canonical three — no per-rung explosion for multi-segment.
-        assert_eq!(options.len(), 3, "compound requests get canonical-only");
+        // Exactly the canonical four — no per-rung explosion for multi-segment.
+        assert_eq!(options.len(), 4, "compound requests get canonical-only");
 
         // "Allow this session" expands to ONE choice per segment (both broadest),
         // proving all-or-nothing coverage of the shared id.
@@ -1065,6 +1089,34 @@ mod tests {
         let choices = &map[&reject.option_id];
         assert_eq!(choices.len(), 2);
         assert!(choices.iter().all(|c| c.decision == Decision::Deny));
+    }
+
+    #[test]
+    fn reject_session_decodes_to_session_scoped_deny_broadest_pattern() {
+        // The deny-side mirror of "Allow this session": kind RejectAlways,
+        // Decision::Deny, GrantScope::Session, broadest pattern per segment.
+        let segs = vec![
+            item("tc9", "cargo build", &["cargo build", "cargo *"]),
+            item("tc9", "git push", &["git push", "git *"]),
+        ];
+        let (options, map) = build_permission_options(&segs);
+        let reject_session = options
+            .iter()
+            .find(|o| o.kind == PermissionOptionKind::RejectAlways)
+            .unwrap();
+        let choices = &map[&reject_session.option_id];
+        assert_eq!(choices.len(), 2, "one choice per segment");
+        assert!(choices
+            .iter()
+            .all(|c| c.id == "tc9" && c.decision == Decision::Deny && c.scope == GrantScope::Session));
+        let pats: std::collections::HashSet<&str> = choices
+            .iter()
+            .filter_map(|c| c.pattern.as_deref())
+            .collect();
+        assert!(
+            pats.contains("cargo *") && pats.contains("git *"),
+            "each seg's broadest pattern"
+        );
     }
 
     #[test]

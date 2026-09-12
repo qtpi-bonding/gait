@@ -37,9 +37,14 @@
 //! | `Once`   | log (`PermissionsReply` events)                         | `retrace::ActivePermissions` fold (once bucket)               | one turn — cleared at `RunComplete`                           |
 //!
 //! Session-scoped `Deny` forward-revokes a prior session-granted allow via the
-//! `retrace::ActivePermissions` fold; once-scoped `Deny` is a no-op and does
-//! not persist. The persist-side policy lives in [`persist::save_choice`]; the
-//! mechanism (file editing) stays in `config` / `agent_frontmatter`.
+//! `retrace::ActivePermissions` fold, AND adds the pattern to the fold's
+//! `deny_session` bucket — [`grants::effective_deny_session`] unions this into
+//! the gate's `deny` list, so an identical request is never asked about again
+//! this session (the Deny-side mirror of session-scoped `Allow`). Once-scoped
+//! `Deny` is a true no-op and does not persist. The persist-side policy lives
+//! in [`persist::save_choice`]; the mechanism (file editing) stays in
+//! `config` / `agent_frontmatter` — neither has a Deny arm yet, since no
+//! caller constructs a file-backed (Global/Agent) deny choice today.
 //!
 //! # 3. The single-matcher invariant
 //!

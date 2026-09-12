@@ -42,6 +42,26 @@ pub fn effective_allow(
     st.session.union(&st.once).cloned().collect()
 }
 
+/// Deny-side mirror of [`effective_allow`]: session-scoped Reject patterns
+/// (the `deny_session` bucket of [`crate::session::retrace::AllowState`]),
+/// to be unioned into the gate's `deny` list. There is no once-scoped
+/// equivalent — once-scoped Deny is a deliberate no-op, matching plain
+/// "Reject" today. `seed` is empty here; the config/agent deny baseline is
+/// unioned in separately by the caller via `merge_deny`.
+pub fn effective_deny_session(
+    evs: &[Event],
+    muts: &std::collections::HashMap<String, MutationState>,
+) -> Vec<String> {
+    let st = run_projection(
+        &ActivePermissions {
+            seed: HashSet::new(),
+        },
+        evs,
+        muts,
+    );
+    st.deny_session.into_iter().collect()
+}
+
 /// Overlay an active mode's deny-only policy onto the resolved turn policy.
 /// `None` is the identity (default / no mode). Pure; no I/O.
 pub fn overlay_mode_permissions(
@@ -55,6 +75,58 @@ pub fn overlay_mode_permissions(
             (effective_allow, deny)
         }
         None => (effective_allow, deny),
+    }
+}
+
+#[cfg(test)]
+mod effective_deny_session_tests {
+    use super::*;
+    use crate::proto::events;
+    use crate::proto::gait::log::v1 as pb;
+
+    fn mint_events(bodies: Vec<pb::event::Body>) -> Vec<Event> {
+        bodies
+            .into_iter()
+            .map(|body| {
+                crate::proto::envelope::mint(
+                    body,
+                    None,
+                    crate::proto::envelope::EventScope::Step {
+                        run: 0,
+                        turn: 0,
+                        step: 0,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn session_scoped_reject_is_unioned_in() {
+        let evs = mint_events(vec![events::permissions_reply(&[
+            pb::PermissionsReplyItem {
+                id: "1".into(),
+                decision: pb::Decision::Deny as i32,
+                text: Some("shell:curl *".into()),
+                scope: pb::Scope::Session as i32,
+            },
+        ])]);
+        let deny = effective_deny_session(&evs, &std::collections::HashMap::new());
+        assert_eq!(deny, vec!["shell:curl *".to_string()]);
+    }
+
+    #[test]
+    fn plain_reject_once_contributes_nothing() {
+        let evs = mint_events(vec![events::permissions_reply(&[
+            pb::PermissionsReplyItem {
+                id: "1".into(),
+                decision: pb::Decision::Deny as i32,
+                text: None,
+                scope: pb::Scope::Unspecified as i32,
+            },
+        ])]);
+        let deny = effective_deny_session(&evs, &std::collections::HashMap::new());
+        assert!(deny.is_empty(), "once-scoped/plain reject must not persist");
     }
 }
 

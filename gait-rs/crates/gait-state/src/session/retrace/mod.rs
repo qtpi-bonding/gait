@@ -1167,10 +1167,18 @@ pub fn coalesce(raw: Vec<Message>) -> Vec<Message> {
 /// Effective allow-list state: config baseline + log-derived grants, split by
 /// lifetime. `session` persists for the whole session; `once` is cleared on every
 /// `RunComplete` (active for the whole run in which it was granted).
+///
+/// `deny_session` is the Deny-side mirror of `session`: a session-scoped
+/// Reject inserts its pattern here, and `grants::effective_deny_session`
+/// unions it into the gate's `deny` list so the identical request short-circuits
+/// to `GateDecision::Deny` on every later attempt this session — without ever
+/// needing another ask. There is no `deny_once` bucket: once-scoped Deny is
+/// deliberately a no-op (single-shot; matches today's plain "Reject" behavior).
 #[derive(Default)]
 pub struct AllowState {
     pub session: std::collections::HashSet<String>,
     pub once: std::collections::HashSet<String>,
+    pub deny_session: std::collections::HashSet<String>,
 }
 
 /// Effective session allow-list projection. Seeds `session` from config
@@ -1178,6 +1186,9 @@ pub struct AllowState {
 /// append-only ledger: a `session` approve inserts and a `session` deny REMOVES
 /// the pattern (the honest forward revoke — both events stay in the Log; only the
 /// derived set changes); a `once` approve is active until the next `RunComplete`.
+/// A session-scoped Reject additionally inserts into `deny_session` (see its
+/// doc comment) — this is safe from override races because `gate::classify`
+/// always checks the deny tier before the allow tier, regardless of event order.
 /// `agent`/`global` scopes are config-file backed and ignored here. Because it
 /// folds the mutation-applied stream, undo/redact of a grant also drops it — but
 /// redact is for mistakes, not normal revocation.
@@ -1190,6 +1201,7 @@ impl Projection for ActivePermissions {
         AllowState {
             session: self.seed.clone(),
             once: Default::default(),
+            deny_session: Default::default(),
         }
     }
     fn apply(&self, state: &mut Self::State, _ev: &Event, kind: &payload::Kind) {
@@ -1209,7 +1221,8 @@ impl Projection for ActivePermissions {
                         }
                         (pb::Scope::Session, pb::Decision::Deny) => {
                             state.session.remove(&pat);
-                        } // forward revoke
+                            state.deny_session.insert(pat);
+                        } // forward revoke of any prior allow + a standing deny
                         (pb::Scope::Once, pb::Decision::Allow) => {
                             state.once.insert(pat);
                         }

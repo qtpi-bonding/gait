@@ -10,13 +10,17 @@
 //! materialize any Global/Agent grant. It performs matching via the shared
 //! `matching::is_request_approved` predicate, but its job is to write, not to
 //! classify — classification lives in `permissions::gate`.
-//! Deny persistence is intentionally unsupported today and is tracked in
-//! the deny-persistence design. The
-//! `PermissionChoice::Deny` arm in `save_choice` is a no-op: persisting a
-//! user's deny choice via `save_choice` is unbuilt. Note this does **not**
-//! affect the deny floor at evaluation time — the gate still honors the
-//! in-memory and config-loaded `deny` list as a hard floor
-//! (`permissions/gate.rs`). Only *persisting* a deny pattern across restarts
+//! Deny persistence mirrors Allow for the two log-derived scopes: `Once`
+//! (true no-op — an identical request is asked about again) and `Session`
+//! (`PermissionChoice::DenySession`, folded by `ActivePermissions` into
+//! `AllowState::deny_session` and unioned into the gate's `deny` list by
+//! `grants::effective_deny_session` — an identical request is never asked
+//! about again this session). File-backed Global/Agent deny persistence
+//! (surviving restarts, editing `gait.jsonc`/agent frontmatter `deny[]`) is
+//! unbuilt; `save_choice` has no arm for it because no caller constructs one
+//! yet. This does **not** affect the deny floor at evaluation time — the
+//! gate always honors the in-memory and config-loaded `deny` list as a hard
+//! floor (`permissions/gate.rs`), regardless of what gets persisted here.
 //!
 
 use std::path::Path;
@@ -58,6 +62,10 @@ pub fn save_choice(
             // No side effect — derived from the PermissionsReply(session) log event.
         }
         PermissionChoice::Deny => {}
+        PermissionChoice::DenySession(_pattern) => {
+            // No side effect — derived from the PermissionsReply(session, deny)
+            // log event, folded into AllowState::deny_session by ActivePermissions.
+        }
     }
     Ok(())
 }
