@@ -533,9 +533,31 @@ pub async fn run_one_off_turn(
     input_text: String,
     schema: serde_json::Value,
 ) -> anyhow::Result<RunResult> {
-    // The brain requires a --gait-dir; a scratch tempdir is never written to.
+    // The brain requires a --gait-dir; a scratch tempdir is never written to
+    // durably (no session, no `gait sessions` visibility, no commit). Under
+    // GAIT_DEBUG, the turn's own diagnostic.jsonl still lands in this scratch
+    // dir — leak it (skip the TempDir auto-cleanup) so it survives the run
+    // and print its path, instead of letting it vanish on drop before anyone
+    // can read it. Ephemeral-ness (no persistence, no session log) is
+    // unaffected; only whether the scratch dir itself is deleted changes.
     let scratch = tempfile::tempdir()?;
+    let debug_mode = std::env::var_os("GAIT_DEBUG").is_some();
+    let scratch_path = if debug_mode {
+        scratch.keep()
+    } else {
+        scratch.path().to_path_buf()
+    };
     let session_id = "ephemeral";
+    if debug_mode {
+        eprintln!(
+            "[gait] GAIT_DEBUG: ephemeral scratch dir preserved at {}",
+            scratch_path.display()
+        );
+        eprintln!(
+            "[gait] GAIT_DEBUG: diagnostic.jsonl at {}",
+            crate::session::live::diagnostic_path(&scratch_path, session_id).display()
+        );
+    }
 
     // Seed the in-memory transcript with the user input event.
     let body = crate::proto::events::user_text(input_text);
@@ -558,7 +580,7 @@ pub async fn run_one_off_turn(
 
     let mut sink = RecordingSink::default();
     crate::turn::spine::relay_brain_turn(
-        scratch.path(),
+        &scratch_path,
         codebase,
         session_id,
         exe,
