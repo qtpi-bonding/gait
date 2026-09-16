@@ -9,14 +9,26 @@ pub struct ExecArgs {
     /// Named inference override.
     #[arg(long)]
     pub inference: Option<String>,
+    /// Path to a caller-supplied structured output schema, overriding the
+    /// default `{cmd|output}` one-off shape.
+    #[arg(long)]
+    pub result_schema: Option<std::path::PathBuf>,
+    /// Inline JSON structured output schema, overriding the default
+    /// `{cmd|output}` one-off shape.
+    #[arg(long)]
+    pub result_schema_json: Option<String>,
     /// The prompt (each positional is joined with spaces)
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub prompt: Vec<String>,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum OneOff {
     Cmd(String),
     Output(String),
+    /// A caller-supplied `--result-schema`/`--result-schema-json` was given:
+    /// the raw schema-validated result, printed verbatim rather than
+    /// interpreted as a shell command or plain-text answer.
+    Raw(Value),
 }
 
 /// Two-variant mutually-exclusive schema: exactly one of `cmd` | `output`.
@@ -78,6 +90,10 @@ fn resolve_one_off_inference(
 
 pub fn render_and_maybe_run(one_off: OneOff, is_tty: bool) -> anyhow::Result<i32> {
     match one_off {
+        OneOff::Raw(value) => {
+            println!("{}", serde_json::to_string(&value)?);
+            Ok(0)
+        }
         OneOff::Output(text) => {
             println!("{text}");
             Ok(0)
@@ -115,17 +131,39 @@ fn read_single_key() -> anyhow::Result<char> {
     Ok(buf[0] as char)
 }
 
+/// Resolve `--result-schema`/`--result-schema-json` into a schema value.
+/// `None` when neither flag was given — callers fall back to the default
+/// `{cmd|output}` one-off shape.
+fn resolve_custom_schema(args: &ExecArgs) -> anyhow::Result<Option<Value>> {
+    if let Some(path) = &args.result_schema {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("reading --result-schema {}: {e}", path.display()))?;
+        return Ok(Some(serde_json::from_str(&text).map_err(|e| {
+            anyhow::anyhow!("parsing --result-schema {}: {e}", path.display())
+        })?));
+    }
+    if let Some(raw) = &args.result_schema_json {
+        return Ok(Some(serde_json::from_str(raw).map_err(|e| {
+            anyhow::anyhow!("parsing --result-schema-json: {e}")
+        })?));
+    }
+    Ok(None)
+}
+
 pub async fn run_one_off(
     prompt: &str,
     inference_override: Option<String>,
     gait_dir: &Path,
     codebase: &Path,
+    custom_schema: Option<Value>,
 ) -> anyhow::Result<OneOff> {
     // Resolve the same immutable named inference as persistent CLI/REPL turns.
     // The snapshot crosses the ephemeral boundary in memory; no selection
     // event or session is created.
     let inference = resolve_one_off_inference(gait_dir, inference_override.as_deref())?;
     let exe = std::env::current_exe()?;
+    let using_custom_schema = custom_schema.is_some();
+    let schema = custom_schema.unwrap_or_else(one_off_schema);
     let res = gait_core::embed::run_one_off_turn(
         codebase,
         &exe,
@@ -133,7 +171,7 @@ pub async fn run_one_off(
         /* sandbox_on */ true,
         inference,
         prompt.to_string(),
-        one_off_schema(),
+        schema,
     )
     .await?;
     let result = res
@@ -154,10 +192,21 @@ pub async fn run_one_off(
         })
         .and_then(|value| serde_json::to_value(value).ok())
         .ok_or_else(|| anyhow::anyhow!("model returned no structured result"))?;
-    parse_one_off(&result)
+    if using_custom_schema {
+        Ok(OneOff::Raw(result))
+    } else {
+        parse_one_off(&result)
+    }
 }
 
 pub async fn cmd_exec(args: ExecArgs, gait_dir: &Path, codebase: &Path) {
+    let custom_schema = match resolve_custom_schema(&args) {
+        Ok(schema) => schema,
+        Err(e) => {
+            eprintln!("gait -e: {e}");
+            std::process::exit(1);
+        }
+    };
     let inference = args.inference;
     let mut prompt = args.prompt.join(" ");
     if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
@@ -171,7 +220,7 @@ pub async fn cmd_exec(args: ExecArgs, gait_dir: &Path, codebase: &Path) {
             prompt.push_str(piped.trim_end());
         }
     }
-    let code = match run_one_off(&prompt, inference, gait_dir, codebase).await {
+    let code = match run_one_off(&prompt, inference, gait_dir, codebase, custom_schema).await {
         Ok(one) => {
             let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
             render_and_maybe_run(one, is_tty).unwrap_or(1)
@@ -211,6 +260,50 @@ mod tests {
     fn schema_has_oneof_two_variants() {
         let s = one_off_schema();
         assert_eq!(s["oneOf"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn resolve_custom_schema_none_when_neither_flag_set() {
+        let args = ExecArgs {
+            inference: None,
+            result_schema: None,
+            result_schema_json: None,
+            prompt: vec![],
+        };
+        assert_eq!(resolve_custom_schema(&args).unwrap(), None);
+    }
+
+    #[test]
+    fn resolve_custom_schema_parses_inline_json() {
+        let args = ExecArgs {
+            inference: None,
+            result_schema: None,
+            result_schema_json: Some(r#"{"type":"object"}"#.to_string()),
+            prompt: vec![],
+        };
+        assert_eq!(
+            resolve_custom_schema(&args).unwrap(),
+            Some(json!({"type": "object"}))
+        );
+    }
+
+    #[test]
+    fn resolve_custom_schema_rejects_invalid_json() {
+        let args = ExecArgs {
+            inference: None,
+            result_schema: None,
+            result_schema_json: Some("not json".to_string()),
+            prompt: vec![],
+        };
+        assert!(resolve_custom_schema(&args).is_err());
+    }
+
+    #[test]
+    fn render_and_maybe_run_prints_raw_json_for_custom_schema_result() {
+        let value = json!({"tests": {"a": {"body": "x"}}});
+        // Only assert it doesn't error; stdout capture isn't worth the
+        // plumbing here — `OneOff::Raw` just serializes and prints.
+        assert_eq!(render_and_maybe_run(OneOff::Raw(value), false).unwrap(), 0);
     }
 
     #[test]

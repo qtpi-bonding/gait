@@ -43,6 +43,8 @@ async fn main() {
         let codebase = cli.codebase.clone().unwrap_or_else(cwd_or_dot);
         let args = gait_cli::cli::exec::ExecArgs {
             inference: cli.inference,
+            result_schema: cli.result_schema,
+            result_schema_json: cli.result_schema_json,
             prompt: vec![exec_prompt],
         };
         gait_cli::cli::exec::cmd_exec(args, &gait_dir, &codebase).await;

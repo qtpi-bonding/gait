@@ -18,9 +18,14 @@ async fn run_one_off_resolves_named_inference_from_gait_dir() {
         "model: anthropic/claude-haiku-4-5-20251001\ncompaction_threshold_tokens: 128000\n",
     )
     .unwrap();
-    let r =
-        gait_cli::cli::exec::run_one_off("untar a.tar", Some("test".into()), gait_dir.path(), &cwd)
-            .await;
+    let r = gait_cli::cli::exec::run_one_off(
+        "untar a.tar",
+        Some("test".into()),
+        gait_dir.path(),
+        &cwd,
+        None,
+    )
+    .await;
     assert!(matches!(
         r.unwrap(),
         gait_cli::cli::exec::OneOff::Cmd(_) | gait_cli::cli::exec::OneOff::Output(_)
