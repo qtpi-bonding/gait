@@ -61,6 +61,8 @@ pub struct RunArgs {
     pub mode: Option<String>,
     #[arg(long = "result-schema")]
     pub result_schema_path: Option<String>,
+    #[arg(long = "result-schema-json", conflicts_with = "result_schema_path")]
+    pub result_schema_json: Option<String>,
     #[arg(long, action = clap::ArgAction::Append)]
     pub allow: Vec<String>,
     #[arg(long, action = clap::ArgAction::Append)]
@@ -267,14 +269,40 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
         )
     });
 
-    // Read per-spawn result schema if the child session has one written by the parent process.
-    let result_schema: Option<serde_json::Value> = {
+    // Explicit CLI schemas take precedence. The session file remains the
+    // fallback used by spawned agents.
+    let explicit_result_schema: Option<serde_json::Value> = (|| {
+        if let Some(raw) = args.result_schema_json.as_deref() {
+            return serde_json::from_str::<serde_json::Value>(raw)
+                .map(Some)
+                .map_err(|e| format!("--result-schema-json: {e}"));
+        }
+        if let Some(path) = args.result_schema_path.as_deref() {
+            let raw = std::fs::read_to_string(path)
+                .map_err(|e| format!("--result-schema {path}: {e}"))?;
+            return serde_json::from_str(&raw)
+                .map(Some)
+                .map_err(|e| format!("--result-schema {path}: {e}"));
+        }
+        Ok(None)
+    })()
+        .unwrap_or_else(|e| {
+            eprintln!("[gait] {e}");
+            std::process::exit(1);
+        });
+    if let Some(schema) = &explicit_result_schema {
+        if !schema.is_object() {
+            eprintln!("[gait] result schema must be a top-level JSON object");
+            std::process::exit(1);
+        }
+    }
+    let result_schema: Option<serde_json::Value> = explicit_result_schema.or_else(|| {
         let schema_path = gait_core::session::live::worktree_dir(&gait_dir, &session_id)
             .join("result_schema.json");
         std::fs::read(&schema_path)
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-    };
+    });
 
     // Process-lifetime cascade kill handle — held by the SIGINT/SIGTERM handler
     // and threaded through run_loop (via SinglePromptOpts.cascade) so
@@ -537,6 +565,7 @@ mod tests {
             inference: Some("deep".to_string()),
             agent_name: Some("default".to_string()),
             result_schema_path: Some("/schema.json".to_string()),
+            result_schema_json: None,
             allow: vec!["Bash".to_string()],
             deny: vec!["Net".to_string()],
             unlock: vec!["/tmp".to_string()],

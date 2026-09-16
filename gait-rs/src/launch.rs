@@ -44,6 +44,7 @@ pub struct RunLaunch {
     pub inference: Option<String>,
     pub agent_name: Option<String>,
     pub result_schema_path: Option<String>,
+    pub result_schema_json: Option<String>,
     pub allow: Vec<String>,
     pub deny: Vec<String>,
     pub unlock: Vec<String>,
@@ -94,6 +95,9 @@ impl RunLaunch {
         }
         if let Some(rs) = &self.result_schema_path {
             a.extend(["--result-schema".to_string(), rs.clone()]);
+        }
+        if let Some(rs) = &self.result_schema_json {
+            a.extend(["--result-schema-json".to_string(), rs.clone()]);
         }
         if self.sandbox {
             a.push("--sandbox".to_string());

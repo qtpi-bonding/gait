@@ -109,6 +109,7 @@ async fn main() {
                 .result_schema
                 .as_ref()
                 .map(|rs| rs.to_string_lossy().to_string()),
+            result_schema_json: cli.result_schema_json.clone(),
             gait_dir: Some(gait_dir.clone()),
             codebase: Some(codebase.clone()),
             allow_intree: cli.allow_intree,

@@ -71,6 +71,9 @@ pub struct MinCli {
     /// Path to structured output schema
     #[arg(long, short = 'R')]
     pub result_schema: Option<PathBuf>,
+    /// Inline JSON structured output schema
+    #[arg(long, conflicts_with = "result_schema")]
+    pub result_schema_json: Option<String>,
     #[arg(long, short = 'd', hide = true)]
     pub gait_dir: Option<PathBuf>,
     #[arg(long, short = 'c', hide = true)]

@@ -77,6 +77,7 @@ See [docs/repl.md](repl.md).
 | `--unlock <path>` | | Pre-grant sandbox path access (repeatable). |
 | `--max-iter <n>` | `-n` | Cap agentic tool-use steps. |
 | `--result-schema <file>` | `-R` | JSON Schema file — force structured output. |
+| `--result-schema-json <json>` |  | Inline JSON Schema — force structured output. |
 | `--mode <name>` | | Activate a mode overlay for this turn. |
 | `--sandbox` | | Force the sandbox on (overrides config). |
 | `--no-sandbox` | | Force the sandbox off (overrides config). |
