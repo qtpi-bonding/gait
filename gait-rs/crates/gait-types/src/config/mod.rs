@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -6,7 +7,7 @@ pub mod resolver;
 
 pub use resolver::{ConfigResolver, Overrides};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ConfigTool {
     pub name: String,
     pub description: String,
@@ -91,7 +92,7 @@ pub struct WasmPluginDef {
 /// `tool` filters to a specific tool name (pre_tool / post_tool only); absent means all tools.
 /// `run` is a shell command. All `GAIT_*` env vars are set before execution — see docs/hooks.md.
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HookDef {
     pub event: String,
     #[serde(default)]
@@ -393,7 +394,7 @@ impl LlmParamsConfig {
 /// When to render edit/write previews. `on-ask` (default): only at the permission
 /// prompt. `always`: also stream the diff live (ephemeral) for auto/allow-listed
 /// tools. `off`: never.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum PreviewPolicy {
     #[default]
@@ -402,16 +403,21 @@ pub enum PreviewPolicy {
     Off,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GaitConfig {
+    /// The selected model, e.g. "anthropic/claude-sonnet-4-6".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inference: Option<String>,
+    /// Tool-name / pattern allowlist.
     #[serde(default)]
     pub allow: Vec<String>,
+    /// Tool-name / pattern denylist.
     #[serde(default)]
     pub deny: Vec<String>,
+    /// Config-defined shell-command tools.
     #[serde(default)]
     pub tools: Vec<ConfigTool>,
+    /// Lifecycle hook definitions (event, tool filter, shell command).
     #[serde(default)]
     pub hooks: Vec<HookDef>,
     /// Max retries when an LLM result fails output_schema validation.
@@ -455,7 +461,12 @@ pub struct GaitConfig {
     /// Sandbox policy for shell/process/file execution. Strict-by-default
     /// (`on: true`, empty allow-lists, network off) so that engagement is
     /// safe unless the user explicitly opts in.
+    // `SandboxConfig` embeds `NetworkConfig`, whose custom (de)serialize isn't
+    // schema-derivable — represent it as opaque JSON for manual-generation
+    // purposes; the field's own doc comment above still becomes its schema
+    // `description`, which is all `render_config_fields` reads.
     #[serde(default)]
+    #[schemars(with = "serde_json::Value")]
     pub sandbox: SandboxConfig,
 }
 

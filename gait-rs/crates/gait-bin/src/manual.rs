@@ -39,72 +39,48 @@ const FULL_CAPABILITIES: &[&str] = &[
 ];
 const MIN_CAPABILITIES: &[&str] = &[];
 
-const CONFIG_FIELDS: &[(&str, &str, &[&str])] = &[
-    (
-        "inference",
-        "The selected model, e.g. \"anthropic/claude-sonnet-4-6\".",
-        &[],
-    ),
-    ("allow", "Tool-name / pattern allowlist.", &[]),
-    ("deny", "Tool-name / pattern denylist.", &[]),
-    (
-        "tools",
-        "Config-defined shell-command tools.",
-        &["extensions"],
-    ),
-    (
-        "hooks",
-        "Lifecycle hook definitions (event, tool filter, shell command).",
-        &["extensions"],
-    ),
-    (
-        "output_schema_retries",
-        "Retry budget for structured_done schema validation.",
-        &[],
-    ),
-    (
-        "max_iter",
-        "Max turn iterations before giving up; defaults to 100 when absent.",
-        &[],
-    ),
-    (
-        "shell_timeout_secs",
-        "Wall-clock timeout for a foreground shell command.",
-        &[],
-    ),
-    (
-        "tool_timeout_secs",
-        "Wall-clock timeout for a single ripgrep-backed grep/codesearch/ls subprocess.",
-        &[],
-    ),
-    ("preview", "When to render edit/write previews.", &[]),
-    (
-        "result_schema",
-        "Optional JSON Schema the final structured_done result must match.",
-        &[],
-    ),
-    (
-        "show_thinking",
-        "Whether to render thinking/reasoning blocks in terminal output.",
-        &[],
-    ),
-    (
-        "sandbox",
-        "Sandbox engagement and filesystem/network policy.",
-        &[],
-    ),
-];
+/// Fields whose visibility depends on a build capability, beyond what a doc
+/// comment can express. `tools`/`hooks` (config-defined shell tools / hooks)
+/// only make sense to document when `extensions` (MCP/plugins/code-mode) is
+/// compiled in — everything else is unconditionally visible.
+const CONFIG_FIELD_REQUIRES: &[(&str, &[&str])] =
+    &[("tools", &["extensions"]), ("hooks", &["extensions"])];
+
+fn config_field_requires(name: &str) -> &'static [&'static str] {
+    CONFIG_FIELD_REQUIRES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, r)| *r)
+        .unwrap_or(&[])
+}
 
 fn requires_met(requires: &[&str], flavor: ManualFlavor) -> bool {
     requires.iter().all(|r| flavor.capabilities().contains(r))
 }
 
+/// Config-field descriptions come straight from `GaitConfig`'s own doc
+/// comments via its live `JsonSchema` derive — the same "can't drift" source
+/// CLI flags already get from `clap`'s `--help`. See `CONFIG_FIELD_REQUIRES`
+/// for the one thing a schema can't carry (capability gating).
 fn render_config_fields(out: &mut String, flavor: ManualFlavor) {
     out.push_str("\n### Config fields\n\n");
-    for (name, desc, requires) in CONFIG_FIELDS {
-        if requires_met(requires, flavor) {
-            let _ = writeln!(out, "- `{name}` — {desc}");
+    let schema = schemars::schema_for!(gait_core::config::GaitConfig);
+    let object = schema
+        .schema
+        .object
+        .as_ref()
+        .expect("GaitConfig derives JsonSchema as an object schema");
+    for (name, subschema) in &object.properties {
+        if !requires_met(config_field_requires(name), flavor) {
+            continue;
         }
+        let desc = subschema
+            .clone()
+            .into_object()
+            .metadata
+            .and_then(|m| m.description)
+            .unwrap_or_default();
+        let _ = writeln!(out, "- `{name}` — {desc}");
     }
 }
 
@@ -350,6 +326,13 @@ fn manual_source_hash(
 
 fn cli_index(root: Command) -> BTreeMap<String, Command> {
     let mut index = BTreeMap::new();
+    // The root command itself carries the task-running flag surface (-e,
+    // --result-schema-json, --inference, --auto-approve, ...) — none of
+    // that lives on any subcommand, so it must be indexed separately under
+    // the empty-string key or it can never appear in the manual.
+    if !root.is_hide_set() {
+        index.insert(String::new(), root.clone());
+    }
     for child in root.get_subcommands() {
         collect_cli_commands(child.clone(), String::new(), &mut index);
     }
@@ -371,7 +354,11 @@ fn collect_cli_commands(command: Command, parent: String, index: &mut BTreeMap<S
 }
 
 fn render_cli_command(out: &mut String, program_name: &str, path: &str, command: &Command) {
-    let _ = writeln!(out, "\n#### `{program_name} {path}`\n");
+    if path.is_empty() {
+        let _ = writeln!(out, "\n#### `{program_name}`\n");
+    } else {
+        let _ = writeln!(out, "\n#### `{program_name} {path}`\n");
+    }
     if let Some(about) = command.get_about() {
         let _ = writeln!(out, "{}\n", about);
     }
@@ -461,6 +448,9 @@ mod tests {
 
     #[test]
     fn config_fields_table_covers_every_gaitconfig_field() {
+        // Exhaustive struct literal: naming every field forces a compile
+        // error here the moment `GaitConfig` gains or loses one, so this
+        // list can't silently drift from the real struct.
         let _exhaustive = gait_core::config::GaitConfig {
             inference: None,
             allow: vec![],
@@ -476,8 +466,6 @@ mod tests {
             show_thinking: false,
             sandbox: Default::default(),
         };
-        let documented: std::collections::HashSet<&str> =
-            CONFIG_FIELDS.iter().map(|(name, _, _)| *name).collect();
         let all_fields = [
             "inference",
             "allow",
@@ -493,14 +481,28 @@ mod tests {
             "show_thinking",
             "sandbox",
         ];
-        let missing: Vec<&str> = all_fields
+        // Descriptions now come from `GaitConfig`'s own doc comments via its
+        // `JsonSchema` derive, so the failure mode this test guards against
+        // shifted from "missing from a hand-written list" to "field exists
+        // but has no doc comment" — assert every field's live schema
+        // description is non-empty instead.
+        let schema = schemars::schema_for!(gait_core::config::GaitConfig);
+        let object = schema.schema.object.as_ref().unwrap();
+        let undocumented: Vec<&str> = all_fields
             .iter()
-            .filter(|field| !documented.contains(**field))
+            .filter(|field| {
+                let desc = object
+                    .properties
+                    .get(**field)
+                    .and_then(|s| s.clone().into_object().metadata)
+                    .and_then(|m| m.description);
+                !matches!(desc, Some(d) if !d.is_empty())
+            })
             .copied()
             .collect();
         assert!(
-            missing.is_empty(),
-            "GaitConfig field(s) missing from CONFIG_FIELDS in manual.rs: {missing:?}"
+            undocumented.is_empty(),
+            "GaitConfig field(s) missing a doc comment (used as the manual description): {undocumented:?}"
         );
     }
 

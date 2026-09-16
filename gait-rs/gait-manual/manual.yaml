@@ -11,6 +11,26 @@ guides:
       Use the CLI to initialize a Gait directory, run one-off tasks, or continue a session.
       Use the REPL when you want an interactive coding session.
 
+  - title: Running a task
+    cli_cmds:
+      - ""
+    repl_cmds: []
+    body: |
+      Every task runs one of three ways: a bare positional (`gait "fix the login bug"`) starts
+      or continues the default session; `-e`/`--exec` runs a single hands-free request with no
+      session and no file/repo access; `-i`/`--interactive` opens the REPL. These three are
+      mutually exclusive.
+
+      `--auto-approve`, `--allow`, `--deny`, and `--unlock` control tool permissions for the
+      run. `--inference` selects a named model; `-a`/`--agent` loads an agent file; `-s`/`--session`
+      continues an existing session by id; `-n`/`--max-iter` caps agentic steps.
+
+      `-R`/`--result-schema` (a file) and `--result-schema-json` (inline) declare a JSON Schema
+      the final `structured_done` result must match; the two are mutually exclusive. Under `-e`,
+      the run's workspace lives under a scratch temp directory that is deleted on exit —
+      `--gait-dir` is *not* where an ephemeral run writes, and its diagnostics are lost with it
+      unless `GAIT_DEBUG=1` is set, which keeps the scratch directory and prints its path.
+
   - title: Sessions
     cli_cmds:
       - sessions

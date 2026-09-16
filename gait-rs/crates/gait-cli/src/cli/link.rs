@@ -8,8 +8,14 @@ pub fn pointer_body(gait_dir: &Path) -> String {
     format!("gaitdir: {}\n", gait_dir.display())
 }
 
-/// clap args for `gait link`. Mirror `InitArgs`'s derive exactly
-/// (`#[derive(Parser)]` + `#[command(no_binary_name = true)]`, per init.rs:6-11).
+/// Point the current directory at an existing gait workspace.
+///
+/// Writes a `.gaitref` pointer file, so `gait_core::gait_dir::resolve` finds
+/// the workspace by walk-up without needing `--gait-dir` on every invocation.
+// Mirrors `InitArgs`'s derive exactly (`#[derive(Parser)]` +
+// `#[command(no_binary_name = true)]`, per init.rs:6-11) — a plain comment
+// so it doesn't leak into clap's `--help`/subcommand-about text the way a
+// `///` doc comment does.
 #[derive(clap::Parser, Debug)]
 #[command(no_binary_name = true)]
 pub struct LinkArgs {
