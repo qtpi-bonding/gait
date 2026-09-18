@@ -206,10 +206,11 @@ message Inference {
   uint64 compaction_threshold_tokens = 4;
 }
 message Mode {                          // active mode from this seq forward; "" name = default/none
-  string name        = 1;
-  repeated string deny = 2;
-  string steer       = 3;
-  string description = 4;     // human-readable label for UIs; behaviorally inert
+  string name          = 1;
+  repeated string deny  = 2;
+  string steer         = 3;
+  string description   = 4;     // human-readable label for UIs; behaviorally inert
+  repeated string allow = 5;    // permission-gate allow patterns, unioned into effective_allow
 }
 // User-initiated turn cancellation (Esc key). ActiveMessages folds this into
 // [turn interrupted by user] in the next turn's transcript.
@@ -493,7 +494,7 @@ message PermissionsReplyItem {
   Scope scope          = 4;            // legacy null → SCOPE_UNSPECIFIED
 }
 enum Decision { DECISION_UNSPECIFIED = 0; DECISION_ALLOW = 1; DECISION_DENY = 2; }
-enum Scope    { SCOPE_UNSPECIFIED = 0; SCOPE_ONCE = 1; SCOPE_AGENT = 2; SCOPE_GLOBAL = 3; SCOPE_SESSION = 4; }
+enum Scope    { SCOPE_UNSPECIFIED = 0; SCOPE_ONCE = 1; SCOPE_AGENT = 2; SCOPE_GLOBAL = 3; SCOPE_SESSION = 4; SCOPE_MODE = 5; }
 message Permissions      { repeated PermissionItem items = 1; }
 message PermissionsReply { reserved 1; repeated PermissionsReplyItem items = 2; }  // 1 = former `from` (replier id) — removed, superseded by Event.provenance
 
