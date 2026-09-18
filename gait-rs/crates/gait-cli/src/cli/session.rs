@@ -434,8 +434,6 @@ pub struct AllowArgs {
     pub pattern: Option<String>,
     #[arg(long, value_name = "SCOPE")]
     pub scope: Option<String>,
-    #[arg(long)]
-    pub agent: Option<String>,
     #[arg(long, env = "GAIT_DIR")]
     pub gait_dir: PathBuf,
     #[arg(long)]
@@ -447,12 +445,18 @@ pub fn cmd_allow(args: AllowArgs) {
 
     let scope = match args.scope.as_deref() {
         Some("global") => GrantScope::Global,
-        Some("agent") => GrantScope::Agent,
+        Some("mode") => GrantScope::Mode,
         Some("session") => GrantScope::Session,
         Some("once") | None => GrantScope::Once,
+        Some("agent") => {
+            eprintln!(
+                "[gait] error: --scope agent is no longer supported for allow; use --scope mode"
+            );
+            std::process::exit(1);
+        }
         Some(other) => {
             eprintln!(
-                "[gait] error: unknown --scope '{}' (expected global|agent|session|once)",
+                "[gait] error: unknown --scope '{}' (expected global|mode|session|once)",
                 other
             );
             std::process::exit(1);
@@ -462,7 +466,6 @@ pub fn cmd_allow(args: AllowArgs) {
     let params = AllowParams {
         scope,
         pattern: args.pattern,
-        agent: args.agent,
     };
 
     match op_allow(&args.gait_dir, &args.session_id, params) {
