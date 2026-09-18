@@ -23,6 +23,8 @@ pub enum GrantScope {
     Global,
     /// Save pattern to the agent's frontmatter (`allow[]`).
     Agent,
+    /// Save pattern to the currently active mode's MODE.yaml (`allow[]`).
+    Mode,
     /// Log-only, lifetime = session. No file write.
     Session,
     /// Log-only, lifetime = one turn. No file write.
@@ -35,6 +37,7 @@ impl From<GrantScope> for gait_state::proto::gait::log::v1::Scope {
         match s {
             GrantScope::Global => Self::Global,
             GrantScope::Agent => Self::Agent,
+            GrantScope::Mode => Self::Mode,
             GrantScope::Session => Self::Session,
             GrantScope::Once => Self::Once,
         }
@@ -48,9 +51,16 @@ impl From<GrantScope> for gait_state::proto::gait::log::v1::Scope {
 pub struct AllowParams {
     pub scope: GrantScope,
     pub pattern: Option<String>,
-    /// Required when `scope == GrantScope::Agent`. Resolved against
-    /// `<gait_dir>/agents/<name>/AGENT.md`.
-    pub agent: Option<String>,
+}
+
+/// Resolve the name of the session's currently active mode from its event log.
+/// Returns `None` when the log cannot be read or no mode is active.
+pub fn resolve_active_mode_name(gait_dir: &Path, session_id: &str) -> Option<String> {
+    let tx_path = gait_state::session::live::log_path(gait_dir, session_id);
+    let evs = gait_state::session::log::read_events(&tx_path).ok()?;
+    let mut muts = gait_state::session::retrace::active_mutations(&evs);
+    gait_state::session::retrace::apply_cascade(&mut muts, &evs);
+    gait_state::session::retrace::active_mode(&evs, &muts).map(|m| m.name)
 }
 
 /// Outcome returned by [`allow`]. Carries the reply items the op wrote (so the
@@ -68,7 +78,6 @@ pub fn allow(
     session_id: &str,
     params: AllowParams,
 ) -> Result<AllowOutcome, OpError> {
-    use gait_state::agent_frontmatter::{resolve_markdown_context_path, MarkdownKind};
     use gait_state::permissions::{
         compute_allow_decisions, AllowParams as CoreAllowParams, AllowScope as CoreAllowScope,
     };
@@ -76,15 +85,17 @@ pub fn allow(
 
     let core_scope = match params.scope {
         GrantScope::Global => CoreAllowScope::Global,
-        GrantScope::Agent => CoreAllowScope::Agent,
+        GrantScope::Mode => CoreAllowScope::Mode,
         GrantScope::Session => CoreAllowScope::Session,
         GrantScope::Once => CoreAllowScope::Once,
+        GrantScope::Agent => {
+            return Err(OpError::from(anyhow::anyhow!(
+                "scope 'agent' is not supported for allow; use --scope mode"
+            )));
+        }
     };
 
-    let agent_path = params
-        .agent
-        .as_deref()
-        .map(|n| resolve_markdown_context_path(gait_dir, MarkdownKind::Agent, n));
+    let mode_name = resolve_active_mode_name(gait_dir, session_id);
 
     let core_params = CoreAllowParams {
         scope: core_scope,
@@ -107,7 +118,7 @@ pub fn allow(
         &core_params,
         gait_dir,
         session_id,
-        agent_path.as_deref(),
+        mode_name.as_deref(),
     )?;
 
     write_permissions_reply(&tx_path, "user", reply_items.clone()).map_err(anyhow::Error::from)?;
@@ -182,8 +193,6 @@ pub struct ItemChoice {
     pub scope: GrantScope,
     /// The chosen pattern (a rung of the item's ladder). Required for Allow.
     pub pattern: Option<String>,
-    /// Required only when `scope == GrantScope::Agent`.
-    pub agent: Option<String>,
 }
 
 /// Outcome of [`reply`]: the reply items written.
@@ -193,7 +202,7 @@ pub struct ReplyOutcome {
 }
 
 /// Write one `PermissionsReply` covering explicit per-item `choices`. Persists any
-/// Global/Agent grant via `save_choice`; Once/Session are log-derived.
+/// Global/Mode grant via `save_choice`; Once/Session are log-derived.
 ///
 /// Errors if there is no pending `AwaitingPermission` state, if a choice's `id`
 /// matches no pending item, if an Allow choice has no `pattern`, or if the
@@ -235,7 +244,6 @@ pub fn reply_for_items(
     items: Vec<pb::PermissionItem>,
     choices: Vec<ItemChoice>,
 ) -> Result<ReplyOutcome, OpError> {
-    use gait_state::agent_frontmatter::{resolve_markdown_context_path, MarkdownKind};
     use gait_state::permissions::{save_choice, PermissionChoice};
     use gait_state::session::log::write_permissions_reply;
 
@@ -277,22 +285,24 @@ pub fn reply_for_items(
                     c.id
                 )));
             };
-            let agent_path = c
-                .agent
-                .as_deref()
-                .map(|n| resolve_markdown_context_path(gait_dir, MarkdownKind::Agent, n));
+            let mode_name = resolve_active_mode_name(gait_dir, session_id);
             let (choice, scope_tag) = match c.scope {
                 GrantScope::Global => {
                     (PermissionChoice::Global(pattern.clone()), pb::Scope::Global)
                 }
-                GrantScope::Agent => (PermissionChoice::Agent(pattern.clone()), pb::Scope::Agent),
+                GrantScope::Mode => (PermissionChoice::Mode(pattern.clone()), pb::Scope::Mode),
                 GrantScope::Session => (
                     PermissionChoice::Session(pattern.clone()),
                     pb::Scope::Session,
                 ),
                 GrantScope::Once => (PermissionChoice::Once(pattern.clone()), pb::Scope::Once),
+                GrantScope::Agent => {
+                    return Err(OpError::from(anyhow::anyhow!(
+                        "scope 'agent' is not supported for reply/allow; use 'mode'"
+                    )));
+                }
             };
-            save_choice(&choice, gait_dir, session_id, agent_path.as_deref())?;
+            save_choice(&choice, gait_dir, session_id, mode_name.as_deref())?;
             pb::PermissionsReplyItem {
                 id: c.id.clone(),
                 decision: pb::Decision::Allow as i32,
@@ -411,6 +421,10 @@ pub fn unlock(params: UnlockParams) -> Result<UnlockOutcome, OpError> {
         GrantScope::Once | GrantScope::Session => {
             // log-only; nothing to persist.
         }
+        GrantScope::Mode => {
+            // Mode is a tool-permission scope; unlock has no mode grant
+            // persistence target and therefore remains log-only.
+        }
         GrantScope::Global => {
             persisted_grants = persist_grant_items(&items, &params.gait_dir, &mut warnings);
         }
@@ -505,6 +519,7 @@ mod tests {
         use gait_state::proto::gait::log::v1 as pb;
         assert_eq!(pb::Scope::from(GrantScope::Global), pb::Scope::Global);
         assert_eq!(pb::Scope::from(GrantScope::Agent), pb::Scope::Agent);
+        assert_eq!(pb::Scope::from(GrantScope::Mode), pb::Scope::Mode);
         assert_eq!(pb::Scope::from(GrantScope::Session), pb::Scope::Session);
         assert_eq!(pb::Scope::from(GrantScope::Once), pb::Scope::Once);
     }
@@ -583,7 +598,6 @@ mod tests {
             AllowParams {
                 scope: GrantScope::Once,
                 pattern: None,
-                agent: None,
             },
         )
         .unwrap();
@@ -622,7 +636,6 @@ mod tests {
             AllowParams {
                 scope: GrantScope::Session,
                 pattern: None,
-                agent: None,
             },
         )
         .unwrap();
@@ -645,7 +658,6 @@ mod tests {
             AllowParams {
                 scope: GrantScope::Once,
                 pattern: None,
-                agent: None,
             },
         )
         .unwrap_err();
@@ -965,14 +977,12 @@ mod tests {
                     decision: pb::Decision::Allow,
                     scope: GrantScope::Session,
                     pattern: Some("shell:cargo *".into()),
-                    agent: None,
                 },
                 ItemChoice {
                     id: "p2".into(),
                     decision: pb::Decision::Deny,
                     scope: GrantScope::Once,
                     pattern: None,
-                    agent: None,
                 },
             ],
         )
@@ -1023,7 +1033,6 @@ mod tests {
                 decision: pb::Decision::Deny,
                 scope: GrantScope::Once,
                 pattern: None,
-                agent: None,
             }],
         )
         .unwrap_err();
@@ -1043,7 +1052,6 @@ mod tests {
                 decision: pb::Decision::Deny,
                 scope: GrantScope::Once,
                 pattern: None,
-                agent: None,
             }],
         )
         .unwrap_err();
@@ -1087,7 +1095,6 @@ mod tests {
                 decision: pb::Decision::Allow,
                 scope: GrantScope::Once,
                 pattern: Some("read:a".into()),
-                agent: None,
             }],
         )
         .unwrap_err();
