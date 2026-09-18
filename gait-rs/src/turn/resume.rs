@@ -139,7 +139,7 @@ pub(crate) async fn apply_if_pending(
                             .map(|r| Scope::try_from(r.scope).unwrap_or(Scope::Unspecified));
                         match scope {
                             Some(Scope::Once) => Some("[User approved once.]".to_string()),
-                            Some(Scope::Agent) | Some(Scope::Global) => {
+                            Some(Scope::Mode) | Some(Scope::Global) => {
                                 let pattern = items
                                     .iter()
                                     .flat_map(|p| p.patterns.iter())

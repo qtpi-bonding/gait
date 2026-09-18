@@ -1531,8 +1531,8 @@ async fn resume_emits_denied_tool_result_for_rejected_call() {
 }
 
 #[tokio::test]
-async fn resume_with_scope_agent_shows_whitelist_prefix() {
-    // When a user approved with scope="agent", the resumed tool result should
+async fn resume_with_scope_mode_shows_whitelist_prefix() {
+    // When a user approved with scope="mode", the resumed tool result should
     // show "[User added to whitelist: <pattern>]" instead of "[User approved.]"
     let ws = TempDir::new().unwrap();
     init_git_repo(ws.path());
@@ -1546,7 +1546,7 @@ async fn resume_with_scope_agent_shows_whitelist_prefix() {
 
     // Pre-write a transcript with a Permissions+PermissionsReply already in it,
     // simulating a previous turn that was interrupted mid-permission-prompt.
-    // The PermissionsReply has scope="agent" to indicate it was saved to agent config.
+    // The PermissionsReply has scope="mode" to indicate it was saved to the active mode.
     let shell_args = serde_json::json!({ "cmd": "ls", "reason": "list files" });
     wire::append(
         &tx_path,
@@ -1573,7 +1573,7 @@ async fn resume_with_scope_agent_shows_whitelist_prefix() {
             id: "tc-scope-1".into(),
             decision: pb::Decision::Allow as i32,
             text: None,
-            scope: pb::Scope::Agent as i32,
+            scope: pb::Scope::Mode as i32,
         }]),
     )
     .unwrap();
