@@ -62,20 +62,35 @@ pub fn effective_deny_session(
     st.deny_session.into_iter().collect()
 }
 
-/// Overlay an active mode's deny-only policy onto the resolved turn policy.
-/// `None` is the identity (default / no mode). Pure; no I/O.
+/// Overlay an active mode's allow/deny policy onto the resolved turn policy.
+/// `None` for either is the identity (default / no mode, or a mode with an
+/// empty list). Deny is monotonic (unioned via `merge_deny`, dedup, config
+/// order first — see that fn's doc). Allow is a plain union: mode allow
+/// entries are appended after `effective_allow`'s existing entries,
+/// deduped. Pure; no I/O.
 pub fn overlay_mode_permissions(
     effective_allow: Vec<String>,
     deny: Vec<String>,
+    mode_allow: Option<&Vec<String>>,
     mode_deny: Option<&Vec<String>>,
 ) -> (Vec<String>, Vec<String>) {
-    match mode_deny {
-        Some(mode_deny) => {
-            let deny = crate::permissions::merge_deny(&deny, mode_deny);
-            (effective_allow, deny)
+    let effective_allow = match mode_allow {
+        Some(mode_allow) => {
+            let mut ea = effective_allow;
+            for p in mode_allow {
+                if !ea.contains(p) {
+                    ea.push(p.clone());
+                }
+            }
+            ea
         }
-        None => (effective_allow, deny),
-    }
+        None => effective_allow,
+    };
+    let deny = match mode_deny {
+        Some(mode_deny) => crate::permissions::merge_deny(&deny, mode_deny),
+        None => deny,
+    };
+    (effective_allow, deny)
 }
 
 #[cfg(test)]
@@ -139,12 +154,24 @@ mod overlay_tests {
         let ea = vec!["read:*".to_string()];
         let deny = vec![];
         let mode = vec!["write".into()];
-        let (ea2, deny2) = overlay_mode_permissions(ea, deny, Some(&mode));
+        let (ea2, deny2) = overlay_mode_permissions(ea, deny, None, Some(&mode));
         assert_eq!(ea2, vec!["read:*".to_string()]);
         assert_eq!(deny2, vec!["write".to_string()]); // mode deny lands in the monotonic deny set
                                                       // None overlay is identity:
-        let (ea3, deny3) = overlay_mode_permissions(vec!["x".into()], vec!["y".into()], None);
+        let (ea3, deny3) = overlay_mode_permissions(vec!["x".into()], vec!["y".into()], None, None);
         assert_eq!((ea3, deny3), (vec!["x".to_string()], vec!["y".to_string()]));
+    }
+
+    #[test]
+    fn overlay_unions_mode_allow_into_effective_allow() {
+        let ea = vec!["read:*".to_string()];
+        let deny = vec![];
+        let mode_allow = vec!["shell:cargo *".to_string()];
+        let mode_deny = vec!["write".to_string()];
+        let (ea2, deny2) =
+            overlay_mode_permissions(ea, deny, Some(&mode_allow), Some(&mode_deny));
+        assert_eq!(ea2, vec!["read:*".to_string(), "shell:cargo *".to_string()]);
+        assert_eq!(deny2, vec!["write".to_string()]);
     }
 
     #[test]

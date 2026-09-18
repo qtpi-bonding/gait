@@ -271,6 +271,7 @@ pub(crate) fn init(
         crate::permissions::grants::overlay_mode_permissions(
             ea,
             deny,
+            mode.as_ref().map(|m| &m.allow),
             mode.as_ref().map(|m| &m.deny),
         )
     };
