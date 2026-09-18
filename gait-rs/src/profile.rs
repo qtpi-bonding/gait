@@ -296,14 +296,8 @@ impl Profile {
             .expect("validated inference parameters")
             .unwrap_or_default();
 
-        let allow = agent_path
-            .and_then(|p| crate::agent_frontmatter::read_agent_allow(p.to_path_buf()).ok())
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| config.allow.clone());
-        let agent_deny = agent_path
-            .and_then(|p| crate::agent_frontmatter::read_agent_deny(p.to_path_buf()).ok())
-            .unwrap_or_default();
-        let deny = crate::permissions::merge_deny(&config.deny, &agent_deny);
+        let allow = config.allow.clone();
+        let deny = config.deny.clone();
 
         let merged_skills = crate::skills::scan_skills(gait_dir);
         let merged_mcp = crate::mcp::scan_mcp_servers(gait_dir);

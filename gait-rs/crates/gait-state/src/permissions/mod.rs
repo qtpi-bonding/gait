@@ -32,7 +32,7 @@
 //! | Scope    | Persisted where                                         | Enters via                                                    | Lifetime                                                       |
 //! |----------|---------------------------------------------------------|---------------------------------------------------------------|----------------------------------------------------------------|
 //! | `Global` | config (`gait.jsonc` `allow[]`)                         | the `seed` passed to [`grants::effective_allow`]              | until removed from config                                      |
-//! | `Agent`  | agent frontmatter (`allow[]`)                           | the `seed` passed to [`grants::effective_allow`]              | while the agent file is active / until removed from frontmatter |
+//! | `Mode`   | `modes/<name>/MODE.yaml` `allow[]`                      | [`grants::overlay_mode_permissions`], applied after `effective_allow` is resolved | while the mode is active / until changed                       |
 //! | `Session`| log (`PermissionsReply` events)                         | `retrace::ActivePermissions` fold (session bucket)            | the current session                                            |
 //! | `Once`   | log (`PermissionsReply` events)                         | `retrace::ActivePermissions` fold (once bucket)               | one turn — cleared at `RunComplete`                           |
 //!
@@ -43,12 +43,12 @@
 //! this session (the Deny-side mirror of session-scoped `Allow`). Once-scoped
 //! `Deny` is a true no-op and does not persist. The persist-side policy lives
 //! in [`persist::save_choice`]; the mechanism (file editing) stays in
-//! `config` / `agent_frontmatter` — neither has a Deny arm yet, since no
-//! caller constructs a file-backed (Global/Agent) deny choice today.
+//! `config` / `modes` — neither has a Deny arm yet, since no
+//! caller constructs a file-backed (Global/Mode) deny choice today.
 //!
 //! # 3. The single-matcher invariant
 //!
-//! All grant sources — config seed, agent frontmatter seed, replayed
+//! All grant sources — config seed, mode overlay, replayed
 //! `session ∪ once` grants — collapse into **one**
 //! `effective_allow: Vec<String>` built by [`grants::effective_allow`] and
 //! matched by exactly one predicate, [`matching::matches_pattern_entry`]
