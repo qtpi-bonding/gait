@@ -113,10 +113,17 @@ pub fn inference(inference: pb::Inference) -> pb::event::Body {
 
 /// Active-mode overlay event (replay-complete, LWW-folded by `ActiveMode`).
 /// `name == ""` is the clear sentinel (back to default/no overlay).
-pub fn mode(name: &str, deny: Vec<String>, steer: &str, description: &str) -> pb::event::Body {
+pub fn mode(
+    name: &str,
+    deny: Vec<String>,
+    allow: Vec<String>,
+    steer: &str,
+    description: &str,
+) -> pb::event::Body {
     wire::body(pb::payload::Kind::Mode(pb::Mode {
         name: name.to_string(),
         deny,
+        allow,
         steer: steer.to_string(),
         description: description.to_string(),
     }))

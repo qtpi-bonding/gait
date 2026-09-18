@@ -771,6 +771,7 @@ mod tests {
         let ev = event(events::mode(
             "plan",
             vec!["shell".to_string()],
+            vec![],
             "steer text",
             "Plan mode",
         ));

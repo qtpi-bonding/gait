@@ -12,6 +12,8 @@ struct ModeFile {
     #[serde(default)]
     deny: Vec<String>,
     #[serde(default)]
+    allow: Vec<String>,
+    #[serde(default)]
     steer: String,
     #[serde(default)]
     description: String,
@@ -27,6 +29,7 @@ pub fn load_mode(gait_dir: &Path, name: &str) -> anyhow::Result<pb::Mode> {
     Ok(pb::Mode {
         name: name.to_string(),
         deny: f.deny,
+        allow: f.allow,
         steer: f.steer,
         description: f.description,
     })
@@ -52,10 +55,10 @@ pub fn list_modes(gait_dir: &Path) -> Vec<String> {
 /// empty clear sentinel (back to baseline); any other name is resolved from disk.
 pub fn activate_mode(log_path: &Path, gait_dir: &Path, name: &str) -> anyhow::Result<()> {
     let body = if name.is_empty() || name == "default" {
-        crate::proto::events::mode("", vec![], "", "")
+        crate::proto::events::mode("", vec![], vec![], "", "")
     } else {
         let m = load_mode(gait_dir, name)?;
-        crate::proto::events::mode(&m.name, m.deny, &m.steer, &m.description)
+        crate::proto::events::mode(&m.name, m.deny, m.allow, &m.steer, &m.description)
     };
     // Callers may activate a mode before the session's worktree/log directory
     // has otherwise been created (e.g. `--mode` on a brand-new CLI session).
@@ -63,6 +66,33 @@ pub fn activate_mode(log_path: &Path, gait_dir: &Path, name: &str) -> anyhow::Re
         std::fs::create_dir_all(parent)?;
     }
     crate::proto::wire::append(log_path, body)?;
+    Ok(())
+}
+
+/// Append a pattern to a mode's allow list, creating the mode file if needed.
+pub fn append_mode_allow(gait_dir: &Path, mode_name: &str, pattern: &str) -> anyhow::Result<()> {
+    let dir = gait_dir.join("modes").join(mode_name);
+    let path = dir.join("MODE.yaml");
+    let mut f: ModeFile = if path.exists() {
+        let text = std::fs::read_to_string(&path)?;
+        serde_yaml::from_str(&text)
+            .map_err(|e| anyhow::anyhow!("mode '{mode_name}' is malformed: {e}"))?
+    } else {
+        ModeFile::default()
+    };
+    if !f.allow.iter().any(|p| p == pattern) {
+        f.allow.push(pattern.to_string());
+    }
+    std::fs::create_dir_all(&dir)?;
+    let out = serde_yaml::to_string(&serde_yaml::Value::Mapping({
+        let mut m = serde_yaml::Mapping::new();
+        m.insert("deny".into(), serde_yaml::to_value(&f.deny)?);
+        m.insert("allow".into(), serde_yaml::to_value(&f.allow)?);
+        m.insert("steer".into(), serde_yaml::Value::String(f.steer.clone()));
+        m.insert("description".into(), serde_yaml::Value::String(f.description.clone()));
+        m
+    }))?;
+    std::fs::write(&path, out)?;
     Ok(())
 }
 
@@ -85,6 +115,22 @@ mod tests {
         assert_eq!(m.name, "plan");
         assert_eq!(m.deny, vec!["write", "edit"]);
         assert_eq!(m.steer, "no edits");
+    }
+
+    #[test]
+    fn loads_allow_field() {
+        let t = TempDir::new().unwrap();
+        write_mode(t.path(), "write", "allow: [read, write, edit]\ndeny: [\"shell:rm *\"]\n");
+        let m = load_mode(t.path(), "write").unwrap();
+        assert_eq!(m.allow, vec!["read", "write", "edit"]);
+        assert_eq!(m.deny, vec!["shell:rm *"]);
+    }
+
+    #[test]
+    fn allow_defaults_empty_when_absent() {
+        let t = TempDir::new().unwrap();
+        write_mode(t.path(), "bare", "deny: [write]\n");
+        assert!(load_mode(t.path(), "bare").unwrap().allow.is_empty());
     }
 
     #[test]
@@ -121,5 +167,15 @@ mod tests {
         let t = TempDir::new().unwrap();
         write_mode(t.path(), "bare", "deny: [write]\n");
         assert_eq!(load_mode(t.path(), "bare").unwrap().description, "");
+    }
+
+    #[test]
+    fn append_mode_allow_creates_and_dedups() {
+        let t = TempDir::new().unwrap();
+        append_mode_allow(t.path(), "write", "shell:cargo *").unwrap();
+        append_mode_allow(t.path(), "write", "shell:cargo *").unwrap();
+        append_mode_allow(t.path(), "write", "read").unwrap();
+        let m = load_mode(t.path(), "write").unwrap();
+        assert_eq!(m.allow, vec!["shell:cargo *", "read"]);
     }
 }
