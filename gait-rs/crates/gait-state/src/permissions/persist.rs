@@ -2,12 +2,15 @@
 //!
 //! `save_choice` is the single owner of the scope→target *policy* (which
 //! `PermissionChoice` arm writes to which file). The generic file-editors it
-//! delegates to — `config::append_allow_pattern`, `agent_frontmatter::append_agent_allow`
-//! — stay in their crates; this module only owns the routing decision.
+//! delegates to — `config::append_allow_pattern` (gait-types) and this
+//! module's own private `append_mode_allow` (Mode's MODE.yaml writer lives
+//! here, not in the top-level crate's `modes` module, since gait-state
+//! cannot depend on gait-core — the dependency graph only runs the other
+//! way).
 //!
 //! `compute_allow_decisions` is persistence-adjacent: it walks pending items
 //! and turns each into a `PermissionsReplyItem`, calling `save_choice` to
-//! materialize any Global/Agent grant. It performs matching via the shared
+//! materialize any Global/Mode grant. It performs matching via the shared
 //! `matching::is_request_approved` predicate, but its job is to write, not to
 //! classify — classification lives in `permissions::gate`.
 //! Deny persistence mirrors Allow for the two log-derived scopes: `Once`
@@ -15,8 +18,8 @@
 //! (`PermissionChoice::DenySession`, folded by `ActivePermissions` into
 //! `AllowState::deny_session` and unioned into the gate's `deny` list by
 //! `grants::effective_deny_session` — an identical request is never asked
-//! about again this session). File-backed Global/Agent deny persistence
-//! (surviving restarts, editing `gait.jsonc`/agent frontmatter `deny[]`) is
+//! about again this session). File-backed Global/Mode deny persistence
+//! (surviving restarts, editing `gait.jsonc`/mode `deny[]`) is
 //! unbuilt; `save_choice` has no arm for it because no caller constructs one
 //! yet. This does **not** affect the deny floor at evaluation time — the
 //! gate always honors the in-memory and config-loaded `deny` list as a hard
@@ -32,7 +35,11 @@ use super::matching::{is_request_approved, AllowParams, AllowScope, PermissionCh
 /// Persist a `PermissionChoice` to its backing store.
 ///
 /// * `Global(pattern)` → appends to `<gait_dir>/gait.jsonc`
-/// * `Agent(pattern)` → appends to the agent's frontmatter at `agent_path`
+/// * `Mode(pattern)`   → appends to the session's currently active mode's
+///   `modes/<name>/MODE.yaml` `allow` list, via this module's own
+///   `append_mode_allow`. A no-op (with no error) if there is no active mode — callers should
+///   warn the user rather than silently drop the grant; see
+///   `gait-ops::permission::allow`.
 /// * `Once(pattern)`  → no side effect; the grant is recorded as a
 ///   `PermissionsReply{scope:"once"}` log event by chat.rs and replayed by
 ///   the `ActivePermissions` projection.
@@ -44,15 +51,15 @@ pub fn save_choice(
     choice: &PermissionChoice,
     gait_dir: &Path,
     _session_id: &str,
-    agent_path: Option<&Path>,
+    mode_name: Option<&str>,
 ) -> anyhow::Result<()> {
     match choice {
         PermissionChoice::Global(pattern) => {
             crate::config::append_allow_pattern(gait_dir, pattern)?;
         }
-        PermissionChoice::Agent(pattern) => {
-            if let Some(path) = agent_path {
-                crate::agent_frontmatter::append_agent_allow(path.to_path_buf(), pattern)?;
+        PermissionChoice::Mode(pattern) => {
+            if let Some(name) = mode_name {
+                append_mode_allow(gait_dir, name, pattern)?;
             }
         }
         PermissionChoice::Once(_pattern) => {
@@ -73,7 +80,7 @@ pub fn save_choice(
 /// Pure decision logic for an approval against already-loaded pending items.
 ///
 /// Takes the items vector the caller has already loaded from the session log,
-/// runs the allow-pattern matching (calling `save_choice` to persist Global/Agent
+/// runs the allow-pattern matching (calling `save_choice` to persist Global/Mode
 /// grants), and returns the `PermissionsReplyItem`s to write back. No session log
 /// reads or writes happen here — the caller is responsible for I/O.
 pub fn compute_allow_decisions(
@@ -81,7 +88,7 @@ pub fn compute_allow_decisions(
     params: &AllowParams,
     gait_dir: &std::path::Path,
     session_id: &str,
-    agent_path: Option<&std::path::Path>,
+    mode_name: Option<&str>,
 ) -> anyhow::Result<Vec<crate::proto::gait::log::v1::PermissionsReplyItem>> {
     let mut reply_items: Vec<pb::PermissionsReplyItem> = Vec::new();
 
@@ -108,21 +115,21 @@ pub fn compute_allow_decisions(
         if covered {
             let choice = match &params.scope {
                 AllowScope::Global => PermissionChoice::Global(effective_pattern.clone()),
-                AllowScope::Agent => PermissionChoice::Agent(effective_pattern.clone()),
+                AllowScope::Mode => PermissionChoice::Mode(effective_pattern.clone()),
                 AllowScope::Session => PermissionChoice::Session(effective_pattern.clone()),
                 AllowScope::Once => PermissionChoice::Once(effective_pattern.clone()),
             };
-            save_choice(&choice, gait_dir, session_id, agent_path)?;
+            save_choice(&choice, gait_dir, session_id, mode_name)?;
             reply_items.push(pb::PermissionsReplyItem {
                 id: item.id.clone(),
                 decision: pb::Decision::Allow as i32,
                 // Carry the pattern so the retrace session/once fold buckets it
                 // (mod.rs:1064 skips items whose `text` is None). Inert for
-                // Global/Agent (the fold only matches Session/Once).
+                // Global/Mode (the fold only matches Session/Once).
                 text: Some(effective_pattern.clone()),
                 scope: match &params.scope {
                     AllowScope::Global => pb::Scope::Global as i32,
-                    AllowScope::Agent => pb::Scope::Agent as i32,
+                    AllowScope::Mode => pb::Scope::Mode as i32,
                     AllowScope::Session => pb::Scope::Session as i32,
                     AllowScope::Once => pb::Scope::Once as i32,
                 },
@@ -140,9 +147,85 @@ pub fn compute_allow_decisions(
     Ok(reply_items)
 }
 
+/// Append a pattern to `modes/<name>/MODE.yaml`'s `allow` list.
+///
+/// The mode loader lives in the top-level crate; keeping this small writer
+/// here avoids making gait-state depend on that crate.
+fn append_mode_allow(gait_dir: &Path, mode_name: &str, pattern: &str) -> anyhow::Result<()> {
+    #[derive(serde::Deserialize, Default)]
+    struct ModeFile {
+        #[serde(default)]
+        deny: Vec<String>,
+        #[serde(default)]
+        allow: Vec<String>,
+        #[serde(default)]
+        steer: String,
+        #[serde(default)]
+        description: String,
+    }
+
+    let dir = gait_dir.join("modes").join(mode_name);
+    let path = dir.join("MODE.yaml");
+    let mut f: ModeFile = if path.exists() {
+        let text = std::fs::read_to_string(&path)?;
+        serde_yaml::from_str(&text)
+            .map_err(|e| anyhow::anyhow!("mode '{mode_name}' is malformed: {e}"))?
+    } else {
+        ModeFile::default()
+    };
+    if !f.allow.iter().any(|p| p == pattern) {
+        f.allow.push(pattern.to_string());
+    }
+    std::fs::create_dir_all(&dir)?;
+    let out = serde_yaml::to_string(&serde_yaml::Value::Mapping({
+        let mut m = serde_yaml::Mapping::new();
+        m.insert("deny".into(), serde_yaml::to_value(&f.deny)?);
+        m.insert("allow".into(), serde_yaml::to_value(&f.allow)?);
+        m.insert("steer".into(), serde_yaml::Value::String(f.steer));
+        m.insert("description".into(), serde_yaml::Value::String(f.description));
+        m
+    }))?;
+    std::fs::write(&path, out)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn append_mode_allow_creates_and_dedups() {
+        let t = tempfile::TempDir::new().unwrap();
+        append_mode_allow(t.path(), "write", "shell:cargo *").unwrap();
+        append_mode_allow(t.path(), "write", "shell:cargo *").unwrap();
+        append_mode_allow(t.path(), "write", "read").unwrap();
+        let text = std::fs::read_to_string(t.path().join("modes/write/MODE.yaml")).unwrap();
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&text).unwrap();
+        let allow: Vec<String> = yaml["allow"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(allow, vec!["shell:cargo *", "read"]);
+    }
+
+    #[test]
+    fn save_choice_mode_scope_appends_to_mode_yaml() {
+        let t = tempfile::TempDir::new().unwrap();
+        let choice = PermissionChoice::Mode("shell:git *".to_string());
+        save_choice(&choice, t.path(), "s", Some("write")).unwrap();
+        let text = std::fs::read_to_string(t.path().join("modes/write/MODE.yaml")).unwrap();
+        assert!(text.contains("shell:git *"));
+    }
+
+    #[test]
+    fn save_choice_mode_scope_with_no_active_mode_is_a_noop() {
+        let t = tempfile::TempDir::new().unwrap();
+        let choice = PermissionChoice::Mode("shell:git *".to_string());
+        save_choice(&choice, t.path(), "s", None).unwrap();
+        assert!(!t.path().join("modes").exists());
+    }
 
     #[test]
     fn save_choice_global_appends_to_gait_jsonc() {

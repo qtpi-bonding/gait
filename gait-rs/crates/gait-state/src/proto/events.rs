@@ -1155,7 +1155,7 @@ mod tests {
 
     #[test]
     fn mode_event_roundtrips_and_empty_name_is_clear_sentinel() {
-        let body = super::mode("plan", vec!["write".into()], "no edits", "d");
+        let body = super::mode("plan", vec!["write".into()], vec![], "no edits", "d");
         match body {
             crate::proto::gait::log::v1::event::Body::Payload(p) => match p.kind {
                 Some(pb::payload::Kind::Mode(m)) => {
@@ -1169,7 +1169,7 @@ mod tests {
             other => panic!("expected Payload body, got {other:?}"),
         }
 
-        let clear = super::mode("", vec![], "", "");
+        let clear = super::mode("", vec![], vec![], "", "");
         match clear {
             crate::proto::gait::log::v1::event::Body::Payload(p) => match p.kind {
                 Some(pb::payload::Kind::Mode(m)) => assert_eq!(m.name, ""),

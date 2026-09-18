@@ -69,33 +69,6 @@ pub fn activate_mode(log_path: &Path, gait_dir: &Path, name: &str) -> anyhow::Re
     Ok(())
 }
 
-/// Append a pattern to a mode's allow list, creating the mode file if needed.
-pub fn append_mode_allow(gait_dir: &Path, mode_name: &str, pattern: &str) -> anyhow::Result<()> {
-    let dir = gait_dir.join("modes").join(mode_name);
-    let path = dir.join("MODE.yaml");
-    let mut f: ModeFile = if path.exists() {
-        let text = std::fs::read_to_string(&path)?;
-        serde_yaml::from_str(&text)
-            .map_err(|e| anyhow::anyhow!("mode '{mode_name}' is malformed: {e}"))?
-    } else {
-        ModeFile::default()
-    };
-    if !f.allow.iter().any(|p| p == pattern) {
-        f.allow.push(pattern.to_string());
-    }
-    std::fs::create_dir_all(&dir)?;
-    let out = serde_yaml::to_string(&serde_yaml::Value::Mapping({
-        let mut m = serde_yaml::Mapping::new();
-        m.insert("deny".into(), serde_yaml::to_value(&f.deny)?);
-        m.insert("allow".into(), serde_yaml::to_value(&f.allow)?);
-        m.insert("steer".into(), serde_yaml::Value::String(f.steer.clone()));
-        m.insert("description".into(), serde_yaml::Value::String(f.description.clone()));
-        m
-    }))?;
-    std::fs::write(&path, out)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,15 +140,5 @@ mod tests {
         let t = TempDir::new().unwrap();
         write_mode(t.path(), "bare", "deny: [write]\n");
         assert_eq!(load_mode(t.path(), "bare").unwrap().description, "");
-    }
-
-    #[test]
-    fn append_mode_allow_creates_and_dedups() {
-        let t = TempDir::new().unwrap();
-        append_mode_allow(t.path(), "write", "shell:cargo *").unwrap();
-        append_mode_allow(t.path(), "write", "shell:cargo *").unwrap();
-        append_mode_allow(t.path(), "write", "read").unwrap();
-        let m = load_mode(t.path(), "write").unwrap();
-        assert_eq!(m.allow, vec!["shell:cargo *", "read"]);
     }
 }
