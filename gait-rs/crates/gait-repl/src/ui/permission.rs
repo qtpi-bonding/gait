@@ -13,14 +13,14 @@ pub fn preview_block(preview: Option<&str>) -> Vec<String> {
     }
 }
 
-/// Two-axis grammar: an optional scope letter (`o`/`s`/`a`) and an optional
+/// Two-axis grammar: an optional scope letter (`o`/`s`/`m`) and an optional
 /// pattern number, in either order. The number picks the pattern (default: the
 /// broadest, `patterns.last()`); the letter picks the scope (default, i.e. a
 /// bare number, is Once). `r` rejects; `rs`[N] rejects for the rest of this
 /// session (the deny-side mirror of `s`[N] — no letter-order flexibility here,
 /// `rs` only, since `sr`/`r`+digit would collide with the scope tokenizer). No
 /// `g`/global — global stays config-only, for both allow and reject.
-///   `2` → once-pattern-2 · `s2`/`2s` → session · `a1`/`1a` → agent · `s` → session-broadest
+///   `2` → once-pattern-2 · `s2`/`2s` → session · `m1`/`1m` → mode · `s` → session-broadest
 ///   `rs` → reject-session-broadest · `rs2` → reject-session-pattern-2
 pub(crate) fn parse_permission_response(
     input: &str,
@@ -55,7 +55,7 @@ pub(crate) fn parse_permission_response(
     let mut digits = String::new();
     for c in s.chars() {
         match c {
-            'o' | 's' | 'a' if letter.is_none() => letter = Some(c),
+            'o' | 's' | 'm' if letter.is_none() => letter = Some(c),
             d if d.is_ascii_digit() => digits.push(d),
             _ => return None, // a second letter or any junk → unrecognized
         }
@@ -75,7 +75,7 @@ pub(crate) fn parse_permission_response(
 
     Some(match letter {
         Some('s') => PermissionChoice::Session(pattern),
-        Some('a') => PermissionChoice::Agent(pattern),
+        Some('m') => PermissionChoice::Mode(pattern),
         Some('o') => PermissionChoice::Once(pattern),
         None => {
             // a bare letter was handled above; here digits are guaranteed present
@@ -89,7 +89,7 @@ pub(crate) fn parse_permission_response(
 mod tests {
     use super::*;
 
-    use gait_core::permissions::PermissionChoice::{Agent, Deny, Once, Session};
+    use gait_core::permissions::PermissionChoice::{Deny, Mode, Once, Session};
 
     // Matches command_patterns order: broad first, specific last.
     // [1] = most specific (patterns.last()), [2] = broadest (patterns.first()).
@@ -126,14 +126,14 @@ mod tests {
     }
 
     #[test]
-    fn agent_pattern_either_order() {
+    fn mode_pattern_either_order() {
         assert_eq!(
-            parse_permission_response("a1", &pats()),
-            Some(Agent("shell:cargo test *".into()))
+            parse_permission_response("m1", &pats()),
+            Some(Mode("shell:cargo test *".into()))
         );
         assert_eq!(
-            parse_permission_response("1a", &pats()),
-            Some(Agent("shell:cargo test *".into()))
+            parse_permission_response("1m", &pats()),
+            Some(Mode("shell:cargo test *".into()))
         );
     }
 
@@ -145,8 +145,8 @@ mod tests {
             Some(Session("shell:cargo test *".into()))
         );
         assert_eq!(
-            parse_permission_response("a", &pats()),
-            Some(Agent("shell:cargo test *".into()))
+            parse_permission_response("m", &pats()),
+            Some(Mode("shell:cargo test *".into()))
         );
         assert_eq!(
             parse_permission_response("o", &pats()),

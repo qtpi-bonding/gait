@@ -143,7 +143,6 @@ impl ReplBuilder {
         &mut self,
         gait_dir: &std::path::Path,
         session_id: &str,
-        agent_path: Option<&std::path::Path>,
     ) -> anyhow::Result<InteractionOutcome> {
         // Interactive prompts own stderr while waiting for input. Stop the
         // live turn timer first so its redraw cannot interleave with the
@@ -155,7 +154,7 @@ impl ReplBuilder {
             Pending::Clarify(items) => self.run_clarify(items),
             Pending::Inform(items) => self.run_inform(items),
             Pending::Permission(items) => {
-                self.run_permission(items, gait_dir, session_id, agent_path)
+                self.run_permission(items, gait_dir, session_id)
             }
             Pending::None => anyhow::bail!("run_interaction called with no pending interaction"),
         }
@@ -243,7 +242,6 @@ impl ReplBuilder {
         items: Vec<pb::PermissionItem>,
         gait_dir: &std::path::Path,
         session_id: &str,
-        agent_path: Option<&std::path::Path>,
     ) -> anyhow::Result<InteractionOutcome> {
         use crate::ui::permission::parse_permission_response;
         use gait_core::permissions::PermissionChoice;
@@ -330,7 +328,7 @@ impl ReplBuilder {
             }
             eprint!("\r\n");
             eprint!(
-                "  {}0 = all · number = once · s = session · a = agent · r = reject · rs = reject session · esc = abort{}\r\n",
+                "  {}0 = all · number = once · s = session · m = mode · r = reject · rs = reject session · esc = abort{}\r\n",
                 muted, RESET
             );
 
@@ -372,7 +370,7 @@ impl ReplBuilder {
             };
 
             if let Err(e) =
-                gait_core::permissions::save_choice(&choice, gait_dir, session_id, agent_path)
+                gait_core::permissions::save_choice(&choice, gait_dir, session_id, gait_ops::permission::resolve_active_mode_name(gait_dir, session_id).as_deref())
             {
                 eprint!("[gait] warning: could not save permission: {e}\r\n");
             }
@@ -390,11 +388,11 @@ impl ReplBuilder {
                     text: Some(p.clone()),
                     scope: pb::Scope::Session as i32,
                 },
-                gait_core::permissions::PermissionChoice::Agent(p) => pb::PermissionsReplyItem {
+                gait_core::permissions::PermissionChoice::Mode(p) => pb::PermissionsReplyItem {
                     id: item.id.clone(),
                     decision: pb::Decision::Allow as i32,
                     text: Some(p.clone()),
-                    scope: pb::Scope::Agent as i32,
+                    scope: pb::Scope::Mode as i32,
                 },
                 gait_core::permissions::PermissionChoice::Global(p) => pb::PermissionsReplyItem {
                     id: item.id.clone(),
@@ -430,7 +428,7 @@ impl ReplBuilder {
 enum BulkScope {
     Once,
     Session,
-    Agent,
+    Mode,
 }
 
 impl BulkScope {
@@ -439,12 +437,12 @@ impl BulkScope {
         match self {
             BulkScope::Once => PermissionChoice::Once(pattern),
             BulkScope::Session => PermissionChoice::Session(pattern),
-            BulkScope::Agent => PermissionChoice::Agent(pattern),
+            BulkScope::Mode => PermissionChoice::Mode(pattern),
         }
     }
 }
 
-/// Parse `0`, `s0`, `0s`, `a0`, `0a` → BulkScope. Anything else → None.
+/// Parse `0`, `s0`, `0s`, `m0`, `0m` → BulkScope. Anything else → None.
 fn parse_bulk_scope(input: &str) -> Option<BulkScope> {
     let s = input.trim().to_lowercase();
     let mut has_zero = false;
@@ -452,7 +450,7 @@ fn parse_bulk_scope(input: &str) -> Option<BulkScope> {
     for c in s.chars() {
         match c {
             '0' if !has_zero => has_zero = true,
-            'o' | 's' | 'a' if letter.is_none() => letter = Some(c),
+            'o' | 's' | 'm' if letter.is_none() => letter = Some(c),
             _ => return None,
         }
     }
@@ -461,7 +459,7 @@ fn parse_bulk_scope(input: &str) -> Option<BulkScope> {
     }
     Some(match letter {
         Some('s') => BulkScope::Session,
-        Some('a') => BulkScope::Agent,
+        Some('m') => BulkScope::Mode,
         _ => BulkScope::Once,
     })
 }
@@ -636,7 +634,7 @@ mod tests {
         }];
         let tmp = tempfile::TempDir::new().unwrap();
         let outcome = builder
-            .run_permission(items, tmp.path(), "sess1", None)
+            .run_permission(items, tmp.path(), "sess1")
             .expect("run_permission must not error on a deny reply");
         // We can't capture stderr bytes here without a bigger harness change;
         // this test only proves the reason-bearing item flows through
@@ -663,7 +661,7 @@ mod tests {
 
         let tmp = tempfile::TempDir::new().unwrap();
         builder
-            .run_interaction(tmp.path(), "sess1", None)
+            .run_interaction(tmp.path(), "sess1")
             .expect("permission prompt must complete");
         assert!(
             builder.state.timer.is_none(),

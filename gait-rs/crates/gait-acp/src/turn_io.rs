@@ -186,21 +186,18 @@ pub fn build_permission_options(
         decision: Decision::Allow,
         scope,
         pattern: Some(pat.to_string()),
-        agent: None,
     };
     let deny = |id: &str| ItemChoice {
         id: id.to_string(),
         decision: Decision::Deny,
         scope: GrantScope::Once, // ignored for Deny — plain "reject once"
         pattern: None,
-        agent: None,
     };
     let deny_session = |id: &str, pat: &str| ItemChoice {
         id: id.to_string(),
         decision: Decision::Deny,
         scope: GrantScope::Session,
         pattern: Some(pat.to_string()),
-        agent: None,
     };
 
     // A segment always has at least one rung; guard defensively.

@@ -279,11 +279,7 @@ impl TurnSource for ReplSource {
                 let signal_blocks = s.turn_done_blocks.take();
                 self.last_blocks = signal_blocks.unwrap_or_else(|| s.builder.take_turn_blocks());
                 if s.builder.has_interaction() {
-                    Some(s.builder.run_interaction(
-                        &self.gait_dir,
-                        &self.session_id,
-                        self.agent_path.as_deref(),
-                    ))
+                    Some(s.builder.run_interaction(&self.gait_dir, &self.session_id))
                 } else {
                     None
                 }

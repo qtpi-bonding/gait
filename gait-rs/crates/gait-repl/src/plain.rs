@@ -534,7 +534,7 @@ impl PlainSource {
                         self.eprintln(&line);
                     }
                     self.eprintln(
-                        "  0 = all, number = once, s = session, a = agent, r = reject, rs = reject session",
+                        "  0 = all, number = once, s = session, m = mode, r = reject, rs = reject session",
                     );
                     let raw = self.read_line_raw();
                     let choice = if cancelled {
@@ -555,7 +555,7 @@ impl PlainSource {
                         &choice,
                         &self.gait_dir,
                         &self.session_id,
-                        self.agent_path.as_deref(),
+                        gait_ops::permission::resolve_active_mode_name(&self.gait_dir, &self.session_id).as_deref(),
                     ) {
                         self.eprintln(&format!("[gait] warning: could not save permission: {e}"));
                     }
@@ -576,12 +576,12 @@ impl PlainSource {
                                 scope: pb::Scope::Session as i32,
                             }
                         }
-                        gait_core::permissions::PermissionChoice::Agent(p) => {
+                        gait_core::permissions::PermissionChoice::Mode(p) => {
                             pb::PermissionsReplyItem {
                                 id: item.id.clone(),
                                 decision: pb::Decision::Allow as i32,
                                 text: Some(p.clone()),
-                                scope: pb::Scope::Agent as i32,
+                                scope: pb::Scope::Mode as i32,
                             }
                         }
                         gait_core::permissions::PermissionChoice::Global(p) => {
