@@ -7,8 +7,8 @@ use gait_types::sandbox_grant::SandboxGrant;
 pub enum PermissionChoice {
     /// Save pattern to gait.jsonc (persists across sessions).
     Global(String),
-    /// Save pattern to agent frontmatter (scoped to this agent file).
-    Agent(String),
+    /// Save pattern to the session's currently active mode's MODE.yaml.
+    Mode(String),
     /// Approve once (log-derived; no temp file).
     Once(String),
     /// Approve for the rest of this session (log-derived; no config file).
@@ -27,7 +27,7 @@ pub enum PermissionChoice {
 #[derive(Debug, Clone)]
 pub enum AllowScope {
     Global,
-    Agent,
+    Mode,
     Session,
     Once,
 }
