@@ -30,6 +30,7 @@ pub mod extension;
 pub mod identity;
 pub mod inference;
 pub mod interaction;
+pub mod mode;
 pub mod permission;
 
 pub mod session;
