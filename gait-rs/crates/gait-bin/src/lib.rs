@@ -4,8 +4,8 @@ use std::path::PathBuf;
 #[cfg(feature = "local")]
 use gait_cli::cli::admin::LocalArgs;
 use gait_cli::cli::admin::{
-    AuthArgs, ConfigArgs, DisableArgs, EnableArgs, InferenceArgs, ModelsArgs, RegisterArgs,
-    UnregisterArgs,
+    AuthArgs, ConfigArgs, DisableArgs, EnableArgs, InferenceArgs, ModeArgs, ModelsArgs,
+    RegisterArgs, UnregisterArgs,
 };
 use gait_cli::cli::daemons::DaemonsArgs;
 use gait_cli::cli::init::InitArgs;
@@ -115,6 +115,7 @@ pub enum Commands {
     #[cfg(feature = "local")]
     Local(LocalArgs),
     Inference(InferenceArgs),
+    Mode(ModeArgs),
     #[cfg(feature = "workflow")]
     Workflow(WorkflowArgs),
     Daemons(DaemonsArgs),

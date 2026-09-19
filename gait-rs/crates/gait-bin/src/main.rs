@@ -191,6 +191,7 @@ async fn main() {
         #[cfg(feature = "local")]
         Commands::Local(args) => gait_cli::cli::admin::cmd_local(args).await,
         Commands::Inference(args) => gait_cli::cli::admin::cmd_inference(args),
+        Commands::Mode(args) => gait_cli::cli::admin::cmd_mode(args),
         #[cfg(feature = "workflow")]
         Commands::Workflow(args) => gait_cli::cli::workflow::cmd_workflow(args).await,
         Commands::Daemons(args) => gait_cli::cli::daemons::cmd_daemons(args),

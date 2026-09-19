@@ -329,6 +329,154 @@ pub fn cmd_inference(args: InferenceArgs) {
     }
 }
 
+/// `gait mode list|show|add|select|clear [name] --session <id>`.
+#[derive(Parser, Debug)]
+pub struct ModeArgs {
+    #[arg(long, env = "GAIT_DIR")]
+    pub gait_dir: PathBuf,
+    pub action: Option<String>,
+    pub name: Option<String>,
+    /// Repeatable allow pattern for the `add` action. Ignored by other actions.
+    #[arg(long = "allow")]
+    pub allow: Vec<String>,
+    /// Repeatable deny pattern for the `add` action. Ignored by other actions.
+    #[arg(long = "deny")]
+    pub deny: Vec<String>,
+    /// Freeform steering text for the `add` action. Ignored by other actions.
+    #[arg(long, default_value = "")]
+    pub steer: String,
+    /// Human-readable description for the `add` action. Ignored by other actions.
+    #[arg(long, default_value = "")]
+    pub description: String,
+    #[arg(long)]
+    pub session: Option<String>,
+    #[arg(long)]
+    pub pretty: bool,
+}
+
+pub fn cmd_mode(args: ModeArgs) {
+    let pretty = args.pretty;
+    match args.action.as_deref().unwrap_or("list") {
+        "list" => {
+            let names: Vec<String> = gait_ops::mode::list(&args.gait_dir);
+            println!(
+                "{}",
+                gait_ops::render_json(&serde_json::json!({"modes": names}), pretty)
+            );
+        }
+        "show" => {
+            let name = args.name.as_deref().unwrap_or_else(|| {
+                eprintln!("[gait] usage: gait mode show <name>");
+                std::process::exit(2)
+            });
+            match gait_ops::mode::show(&args.gait_dir, name) {
+                Ok(m) => println!(
+                    "{}",
+                    gait_ops::render_json(
+                        &serde_json::json!({
+                            "name": m.name,
+                            "allow": m.allow,
+                            "deny": m.deny,
+                            "steer": m.steer,
+                            "description": m.description,
+                        }),
+                        pretty
+                    )
+                ),
+                Err(e) => {
+                    eprintln!("[gait] {e}");
+                    std::process::exit(1)
+                }
+            }
+        }
+        "select" => {
+            let name = args.name.as_deref().unwrap_or_else(|| {
+                eprintln!("[gait] usage: gait mode select <name> --session <id>");
+                std::process::exit(2)
+            });
+            let session = args.session.as_deref().unwrap_or_else(|| {
+                eprintln!("[gait] --session is required");
+                std::process::exit(2)
+            });
+            let result = (|| -> anyhow::Result<()> {
+                let worktree = gait_core::session::live::worktree_dir(&args.gait_dir, session);
+                if !worktree.exists() {
+                    anyhow::bail!("session '{session}' is not active");
+                }
+                let selection = gait_ops::mode::resolve_selection(&args.gait_dir, name)?;
+                gait_core::embed::record_session_update(
+                    &gait_core::git::Repos::production(),
+                    &args.gait_dir,
+                    session,
+                    vec![selection.event_body],
+                )
+            })();
+            if let Err(e) = result {
+                eprintln!("[gait] {e}");
+                std::process::exit(1);
+            }
+        }
+        "clear" => {
+            let session = args.session.as_deref().unwrap_or_else(|| {
+                eprintln!("[gait] --session is required");
+                std::process::exit(2)
+            });
+            let result = (|| -> anyhow::Result<()> {
+                let worktree = gait_core::session::live::worktree_dir(&args.gait_dir, session);
+                if !worktree.exists() {
+                    anyhow::bail!("session '{session}' is not active");
+                }
+                let selection = gait_ops::mode::resolve_selection(&args.gait_dir, "default")?;
+                gait_core::embed::record_session_update(
+                    &gait_core::git::Repos::production(),
+                    &args.gait_dir,
+                    session,
+                    vec![selection.event_body],
+                )
+            })();
+            if let Err(e) = result {
+                eprintln!("[gait] {e}");
+                std::process::exit(1);
+            }
+        }
+        "add" => {
+            let name = args.name.as_deref().unwrap_or_else(|| {
+                eprintln!("[gait] usage: gait mode add <name> [--allow <pattern>]... [--deny <pattern>]... [--steer <text>] [--description <text>]");
+                std::process::exit(2)
+            });
+            match gait_ops::mode::add(
+                &args.gait_dir,
+                name,
+                &args.allow,
+                &args.deny,
+                &args.steer,
+                &args.description,
+            ) {
+                Ok(m) => println!(
+                    "{}",
+                    gait_ops::render_json(
+                        &serde_json::json!({
+                            "name": m.name,
+                            "allow": m.allow,
+                            "deny": m.deny,
+                            "action": "added",
+                        }),
+                        pretty
+                    )
+                ),
+                Err(e) => {
+                    eprintln!("[gait] {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        _ => {
+            eprintln!("[gait] mode action must be list, show, add, select, or clear");
+            std::process::exit(2)
+        }
+    }
+}
+
 /// `gait register mcp|skill|plugin <name> [flags]`
 #[derive(Parser, Debug)]
 #[command(no_binary_name = true)]

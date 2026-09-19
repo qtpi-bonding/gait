@@ -155,6 +155,7 @@ async fn main() {
         MinCommands::Auth(args) => gait_cli::cli::admin::cmd_auth(args).await,
         MinCommands::Models(args) => gait_cli::cli::admin::cmd_models(args).await,
         MinCommands::Inference(args) => gait_cli::cli::admin::cmd_inference(args),
+        MinCommands::Mode(args) => gait_cli::cli::admin::cmd_mode(args),
         MinCommands::Daemons(args) => gait_cli::cli::daemons::cmd_daemons(args),
     }
 }
