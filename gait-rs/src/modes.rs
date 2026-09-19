@@ -1,55 +1,18 @@
-//! User-defined **mode** overlays: `<gait_dir>/modes/<name>/MODE.yaml` (parallel
-//! to `skills/<name>/SKILL.md`). A mode is a `{deny, steer}` safety lens
-//! folded from the log as a replay-complete `Mode` event. `default` is reserved
-//! (the no-op baseline; never read from disk). See
-//! docs/plans/2026-07-08-mode-overlay-design.md.
+//! Session-log activation for user-defined mode overlays. File I/O
+//! (`ModeFile`, `load_mode`, `list_modes`, `write_mode`, `append_mode_allow`,
+//! `resolve_selection`) lives in `gait_state::modes` — see that module's doc
+//! comment. This file keeps only `activate_mode`, which appends directly to
+//! a session's transcript log (a top-level-crate concern, alongside the
+//! crate's other session-log writers), plus re-exports so existing
+//! `crate::modes::...` call sites elsewhere in this crate keep working
+//! unchanged.
 
-use crate::proto::gait::log::v1 as pb;
+pub use gait_state::modes::{
+    append_mode_allow, clear_mode, list_modes, load_mode, resolve_selection, ModeFile, ModeInfo,
+    ResolvedModeSelection,
+};
+
 use std::path::Path;
-
-#[derive(serde::Deserialize, Default)]
-struct ModeFile {
-    #[serde(default)]
-    deny: Vec<String>,
-    #[serde(default)]
-    allow: Vec<String>,
-    #[serde(default)]
-    steer: String,
-    #[serde(default)]
-    description: String,
-}
-
-/// Resolve `modes/<name>/MODE.yaml` into a replay-complete `pb::Mode`.
-pub fn load_mode(gait_dir: &Path, name: &str) -> anyhow::Result<pb::Mode> {
-    let path = gait_dir.join("modes").join(name).join("MODE.yaml");
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| anyhow::anyhow!("no such mode '{name}' ({}): {e}", path.display()))?;
-    let f: ModeFile = serde_yaml::from_str(&text)
-        .map_err(|e| anyhow::anyhow!("mode '{name}' is malformed: {e}"))?;
-    Ok(pb::Mode {
-        name: name.to_string(),
-        deny: f.deny,
-        allow: f.allow,
-        steer: f.steer,
-        description: f.description,
-    })
-}
-
-/// List authored mode names (`modes/*/MODE.yaml`), excluding the reserved
-/// `default`. Sorted for stable display.
-pub fn list_modes(gait_dir: &Path) -> Vec<String> {
-    let mut out = vec![];
-    if let Ok(rd) = std::fs::read_dir(gait_dir.join("modes")) {
-        for e in rd.flatten() {
-            let name = e.file_name().to_string_lossy().to_string();
-            if name != "default" && e.path().join("MODE.yaml").is_file() {
-                out.push(name);
-            }
-        }
-    }
-    out.sort();
-    out
-}
 
 /// Append a `Mode` event to the session log. `name == "" | "default"` appends the
 /// empty clear sentinel (back to baseline); any other name is resolved from disk.
@@ -74,71 +37,22 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn write_mode(dir: &Path, name: &str, body: &str) {
-        let d = dir.join("modes").join(name);
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::write(d.join("MODE.yaml"), body).unwrap();
-    }
-
-    #[test]
-    fn loads_full_mode() {
-        let t = TempDir::new().unwrap();
-        write_mode(t.path(), "plan", "deny: [write, edit]\nsteer: no edits\n");
-        let m = load_mode(t.path(), "plan").unwrap();
-        assert_eq!(m.name, "plan");
-        assert_eq!(m.deny, vec!["write", "edit"]);
-        assert_eq!(m.steer, "no edits");
-    }
-
-    #[test]
-    fn loads_allow_field() {
-        let t = TempDir::new().unwrap();
-        write_mode(t.path(), "write", "allow: [read, write, edit]\ndeny: [\"shell:rm *\"]\n");
-        let m = load_mode(t.path(), "write").unwrap();
-        assert_eq!(m.allow, vec!["read", "write", "edit"]);
-        assert_eq!(m.deny, vec!["shell:rm *"]);
-    }
-
-    #[test]
-    fn allow_defaults_empty_when_absent() {
-        let t = TempDir::new().unwrap();
-        write_mode(t.path(), "bare", "deny: [write]\n");
-        assert!(load_mode(t.path(), "bare").unwrap().allow.is_empty());
-    }
-
-    #[test]
-    fn missing_and_malformed_are_clean_errors() {
-        let t = TempDir::new().unwrap();
-        assert!(load_mode(t.path(), "nope").is_err());
-        write_mode(t.path(), "bad", "deny: [unclosed\n");
-        assert!(load_mode(t.path(), "bad").is_err());
-    }
-
     #[test]
     fn default_clears_without_disk() {
         let t = TempDir::new().unwrap();
-        // no modes/default on disk; activating "default" must still succeed
         let log = t.path().join("s.log");
         std::fs::write(&log, b"").unwrap();
         activate_mode(&log, t.path(), "default").unwrap();
     }
 
     #[test]
-    fn loads_description() {
+    fn activates_an_authored_mode() {
         let t = TempDir::new().unwrap();
-        write_mode(
-            t.path(),
-            "plan",
-            "deny: [write]\ndescription: Plan only — no edits\nsteer: no edits\n",
-        );
-        let m = load_mode(t.path(), "plan").unwrap();
-        assert_eq!(m.description, "Plan only — no edits");
-    }
-
-    #[test]
-    fn description_defaults_empty_when_absent() {
-        let t = TempDir::new().unwrap();
-        write_mode(t.path(), "bare", "deny: [write]\n");
-        assert_eq!(load_mode(t.path(), "bare").unwrap().description, "");
+        let modes_dir = t.path().join("modes").join("plan");
+        std::fs::create_dir_all(&modes_dir).unwrap();
+        std::fs::write(modes_dir.join("MODE.yaml"), "deny: [write]\n").unwrap();
+        let log = t.path().join("s.log");
+        activate_mode(&log, t.path(), "plan").unwrap();
+        assert!(log.exists());
     }
 }
