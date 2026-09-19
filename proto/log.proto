@@ -158,6 +158,7 @@ CancellationSignal cancellation_signal = 55;
     RunComplete        run_complete        = 75;
     RunCancelled       run_cancelled       = 76;
     RunFailed          run_failed          = 77;
+    ClassifyDecision   classify_decision   = 78;
   }
   reserved 16;
   reserved "turn_complete";
@@ -205,12 +206,39 @@ message Inference {
   optional LlmParams llm_params = 3;
   uint64 compaction_threshold_tokens = 4;
 }
+message ClassifyPolicy {
+  string inference               = 1;  // named inference profile to call (an INFERENCE.yaml entry)
+  double risk_threshold          = 2;  // deny if any *_risk noul >= this value
+  uint32 max_consecutive_denials = 3;  // circuit breaker: stop trusting the classifier and fall back to a real pause after this many denials in a row this turn
+}
+
 message Mode {                          // active mode from this seq forward; "" name = default/none
   string name          = 1;
   repeated string deny  = 2;
   string steer         = 3;
   string description   = 4;     // human-readable label for UIs; behaviorally inert
   repeated string allow = 5;    // permission-gate allow patterns, unioned into effective_allow
+  optional ClassifyPolicy classify_policy = 6;
+}
+
+// Emitted when a mode's classify_policy resolves a Tier-3 ("ask") tool call
+// without pausing for a human — approve or deny. Supplemental audit record,
+// same role as PermissionDenied: never replaces what the model sees (still
+// a normal ToolResult, still just plain "permission denied" text), just makes
+// the decision queryable in the log. Never emitted for a call that failed
+// outright (network/timeout/malformed) — that produces no decision, only a
+// normal PauseReason::Permissions.
+//
+// noul scale: 1 = confident risk detected on that axis, 0 = confident safe.
+message ClassifyDecision {
+  string permission_item_id   = 1;  // matches PermissionItem.id for this tool call
+  string tool_name            = 2;  // which tool (e.g. "shell") — the category
+  string cmd                  = 3;  // the specific command/pattern text classified
+  bool   approved             = 4;  // final decision: true = skipped the pause, false = denied
+  double confidentiality_risk = 5;
+  double integrity_risk       = 6;
+  double availability_risk    = 7;
+  string inference            = 8;  // which named inference profile answered
 }
 // User-initiated turn cancellation (Esc key). ActiveMessages folds this into
 // [turn interrupted by user] in the next turn's transcript.
