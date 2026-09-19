@@ -1,4 +1,5 @@
 pub mod anthropic;
+pub mod classify;
 pub mod codex;
 pub mod factory;
 #[cfg(feature = "local")]
