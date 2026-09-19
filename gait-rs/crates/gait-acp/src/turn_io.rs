@@ -771,6 +771,7 @@ mod tests {
             vec![],
             "steer text",
             "Plan mode",
+            None,
         ));
         match event_to_session_update(&ev) {
             Some(SessionUpdate::CurrentModeUpdate(upd)) => {

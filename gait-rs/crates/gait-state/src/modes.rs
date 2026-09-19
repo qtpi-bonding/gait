@@ -25,6 +25,28 @@ pub struct ModeFile {
     pub steer: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub classify_policy: Option<ClassifyPolicyArgs>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Default)]
+pub struct ClassifyPolicyArgs {
+    #[serde(default)]
+    pub inference: String,
+    #[serde(default)]
+    pub risk_threshold: f64,
+    #[serde(default)]
+    pub max_consecutive_denials: u32,
+}
+
+impl From<&ClassifyPolicyArgs> for pb::ClassifyPolicy {
+    fn from(a: &ClassifyPolicyArgs) -> Self {
+        pb::ClassifyPolicy {
+            inference: a.inference.clone(),
+            risk_threshold: a.risk_threshold,
+            max_consecutive_denials: a.max_consecutive_denials,
+        }
+    }
 }
 
 /// Resolve `modes/<name>/MODE.yaml` into a replay-complete `pb::Mode`.
@@ -40,6 +62,7 @@ pub fn load_mode(gait_dir: &Path, name: &str) -> anyhow::Result<pb::Mode> {
         deny: f.deny,
         steer: f.steer,
         description: f.description,
+        classify_policy: f.classify_policy.as_ref().map(pb::ClassifyPolicy::from),
     })
 }
 
@@ -69,6 +92,7 @@ pub fn write_mode(
     deny: &[String],
     steer: &str,
     description: &str,
+    classify_policy: Option<ClassifyPolicyArgs>,
 ) -> anyhow::Result<()> {
     if name.is_empty() || name == "default" {
         anyhow::bail!("'{name}' is not a valid mode name (reserved)");
@@ -88,6 +112,7 @@ pub fn write_mode(
         deny: deny.to_vec(),
         steer: steer.to_string(),
         description: description.to_string(),
+        classify_policy,
     };
     std::fs::write(
         &mode_file,
@@ -126,6 +151,7 @@ pub fn clear_mode() -> pb::Mode {
         deny: vec![],
         steer: String::new(),
         description: String::new(),
+        classify_policy: None,
     }
 }
 
@@ -138,6 +164,7 @@ pub struct ModeInfo {
     pub deny: Vec<String>,
     pub steer: String,
     pub description: String,
+    pub classify_policy: Option<pb::ClassifyPolicy>,
 }
 
 /// A fully resolved mode selection, ready for a caller to append as a
@@ -166,6 +193,7 @@ pub fn resolve_selection(gait_dir: &Path, name: &str) -> anyhow::Result<Resolved
         deny: mode.deny.clone(),
         steer: mode.steer.clone(),
         description: mode.description.clone(),
+        classify_policy: mode.classify_policy.clone(),
     };
     Ok(ResolvedModeSelection {
         info,
@@ -175,6 +203,7 @@ pub fn resolve_selection(gait_dir: &Path, name: &str) -> anyhow::Result<Resolved
             mode.allow.clone(),
             &mode.steer,
             &mode.description,
+            mode.classify_policy.clone(),
         ),
         mode,
     })
@@ -191,6 +220,8 @@ struct SerializableModeFile {
     deny: Vec<String>,
     steer: String,
     description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    classify_policy: Option<ClassifyPolicyArgs>,
 }
 
 impl From<&ModeFile> for SerializableModeFile {
@@ -200,6 +231,7 @@ impl From<&ModeFile> for SerializableModeFile {
             deny: f.deny.clone(),
             steer: f.steer.clone(),
             description: f.description.clone(),
+            classify_policy: f.classify_policy.clone(),
         }
     }
 }
@@ -255,6 +287,7 @@ mod tests {
             &["shell:rm *".to_string()],
             "review only, no writes",
             "Review mode",
+            None,
         )
         .unwrap();
         let m = load_mode(t.path(), "review").unwrap();
@@ -268,15 +301,15 @@ mod tests {
     #[test]
     fn write_mode_refuses_overwrite() {
         let t = TempDir::new().unwrap();
-        write_mode(t.path(), "p", &[], &[], "", "").unwrap();
-        let err = write_mode(t.path(), "p", &["read".into()], &[], "", "").unwrap_err();
+        write_mode(t.path(), "p", &[], &[], "", "", None).unwrap();
+        let err = write_mode(t.path(), "p", &["read".into()], &[], "", "", None).unwrap_err();
         assert!(format!("{err}").contains("already exists"), "got: {err}");
     }
 
     #[test]
     fn write_mode_reserved_name_default_is_rejected() {
         let t = TempDir::new().unwrap();
-        let err = write_mode(t.path(), "default", &[], &[], "", "").unwrap_err();
+        let err = write_mode(t.path(), "default", &[], &[], "", "", None).unwrap_err();
         assert!(format!("{err}").contains("reserved"), "got: {err}");
     }
 
@@ -309,9 +342,53 @@ mod tests {
     #[test]
     fn resolve_selection_loads_named_mode() {
         let t = TempDir::new().unwrap();
-        write_mode(t.path(), "plan", &[], &["write".into()], "", "").unwrap();
+        write_mode(t.path(), "plan", &[], &["write".into()], "", "", None).unwrap();
         let sel = resolve_selection(t.path(), "plan").unwrap();
         assert_eq!(sel.info.name, "plan");
         assert_eq!(sel.info.deny, vec!["write"]);
+    }
+
+    #[test]
+    fn loads_classify_policy() {
+        let t = TempDir::new().unwrap();
+        write_mode_file(
+            t.path(),
+            "fast-review",
+            "allow: [read]\nclassify_policy:\n  inference: jev-fast\n  risk_threshold: 0.3\n  max_consecutive_denials: 3\n",
+        );
+        let m = load_mode(t.path(), "fast-review").unwrap();
+        let cp = m.classify_policy.expect("classify_policy must be Some");
+        assert_eq!(cp.inference, "jev-fast");
+        assert!((cp.risk_threshold - 0.3).abs() < 1e-9);
+        assert_eq!(cp.max_consecutive_denials, 3);
+    }
+
+    #[test]
+    fn classify_policy_defaults_to_none_when_absent() {
+        let t = TempDir::new().unwrap();
+        write_mode_file(t.path(), "bare", "deny: [write]\n");
+        assert!(load_mode(t.path(), "bare").unwrap().classify_policy.is_none());
+    }
+
+    #[test]
+    fn write_mode_with_classify_policy_round_trips() {
+        let t = TempDir::new().unwrap();
+        write_mode(
+            t.path(),
+            "fast-review",
+            &["read".to_string()],
+            &[],
+            "",
+            "",
+            Some(ClassifyPolicyArgs {
+                inference: "jev-fast".to_string(),
+                risk_threshold: 0.3,
+                max_consecutive_denials: 3,
+            }),
+        )
+        .unwrap();
+        let m = load_mode(t.path(), "fast-review").unwrap();
+        let cp = m.classify_policy.expect("classify_policy must be Some");
+        assert_eq!(cp.inference, "jev-fast");
     }
 }

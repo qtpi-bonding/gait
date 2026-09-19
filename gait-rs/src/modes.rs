@@ -8,8 +8,8 @@
 //! unchanged.
 
 pub use gait_state::modes::{
-    append_mode_allow, clear_mode, list_modes, load_mode, resolve_selection, ModeFile, ModeInfo,
-    ResolvedModeSelection,
+    append_mode_allow, clear_mode, list_modes, load_mode, resolve_selection, write_mode,
+    ClassifyPolicyArgs, ModeFile, ModeInfo, ResolvedModeSelection,
 };
 
 use std::path::Path;
@@ -18,10 +18,10 @@ use std::path::Path;
 /// empty clear sentinel (back to baseline); any other name is resolved from disk.
 pub fn activate_mode(log_path: &Path, gait_dir: &Path, name: &str) -> anyhow::Result<()> {
     let body = if name.is_empty() || name == "default" {
-        crate::proto::events::mode("", vec![], vec![], "", "")
+        crate::proto::events::mode("", vec![], vec![], "", "", None)
     } else {
         let m = load_mode(gait_dir, name)?;
-        crate::proto::events::mode(&m.name, m.deny, m.allow, &m.steer, &m.description)
+        crate::proto::events::mode(&m.name, m.deny, m.allow, &m.steer, &m.description, m.classify_policy)
     };
     // Callers may activate a mode before the session's worktree/log directory
     // has otherwise been created (e.g. `--mode` on a brand-new CLI session).

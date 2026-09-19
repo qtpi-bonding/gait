@@ -20,6 +20,7 @@ pub fn show(gait_dir: &Path, name: &str) -> Result<ModeInfo, OpError> {
         deny: m.deny,
         steer: m.steer,
         description: m.description,
+        classify_policy: m.classify_policy,
     })
 }
 
@@ -41,13 +42,14 @@ pub fn add(
     steer: &str,
     description: &str,
 ) -> Result<ModeInfo, OpError> {
-    gait_state::modes::write_mode(gait_dir, name, allow, deny, steer, description)?;
+    gait_state::modes::write_mode(gait_dir, name, allow, deny, steer, description, None)?;
     Ok(ModeInfo {
         name: name.to_string(),
         allow: allow.to_vec(),
         deny: deny.to_vec(),
         steer: steer.to_string(),
         description: description.to_string(),
+        classify_policy: None,
     })
 }
 

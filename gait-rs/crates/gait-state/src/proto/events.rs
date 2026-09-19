@@ -119,6 +119,7 @@ pub fn mode(
     allow: Vec<String>,
     steer: &str,
     description: &str,
+    classify_policy: Option<pb::ClassifyPolicy>,
 ) -> pb::event::Body {
     wire::body(pb::payload::Kind::Mode(pb::Mode {
         name: name.to_string(),
@@ -126,6 +127,7 @@ pub fn mode(
         allow,
         steer: steer.to_string(),
         description: description.to_string(),
+        classify_policy,
     }))
 }
 
@@ -1155,7 +1157,7 @@ mod tests {
 
     #[test]
     fn mode_event_roundtrips_and_empty_name_is_clear_sentinel() {
-        let body = super::mode("plan", vec!["write".into()], vec![], "no edits", "d");
+        let body = super::mode("plan", vec!["write".into()], vec![], "no edits", "d", None);
         match body {
             crate::proto::gait::log::v1::event::Body::Payload(p) => match p.kind {
                 Some(pb::payload::Kind::Mode(m)) => {
@@ -1169,7 +1171,7 @@ mod tests {
             other => panic!("expected Payload body, got {other:?}"),
         }
 
-        let clear = super::mode("", vec![], vec![], "", "");
+        let clear = super::mode("", vec![], vec![], "", "", None);
         match clear {
             crate::proto::gait::log::v1::event::Body::Payload(p) => match p.kind {
                 Some(pb::payload::Kind::Mode(m)) => assert_eq!(m.name, ""),
