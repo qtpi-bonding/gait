@@ -50,6 +50,8 @@ use crate::types::{LoadableEntry, Message, Tool, Usage};
 /// (passed into `emitter.set_position`) rather than mutated. Keeping it as a
 /// local in `run_turn` matches the plan.
 pub(crate) struct TurnState {
+    /// Number of classifier denials in a row in this turn.
+    pub classify_denial_streak: u32,
     /// Shared turn-scoped capability resolver. Nested callers use this path so
     /// capability execution is not coupled to transcript event recording.
     pub capability_dispatcher: Arc<super::capabilities::CapabilityDispatcher>,
@@ -160,6 +162,8 @@ pub(crate) struct TurnEnv<'a> {
     /// Needed by `execute::run_tools` (Task 17) for gate_classify and
     /// execute_tool_call.
     pub effective_allow: &'a [String],
+    pub classify_policy: Option<&'a pb::ClassifyPolicy>,
+    pub classifier: &'a dyn super::execute::Classifier,
     pub relay: Option<&'a crate::turn::nerve::NerveWriter>,
     pub model: &'a str,
     pub mcp_registry: &'a [crate::config::McpToolDef],
@@ -180,6 +184,7 @@ impl TurnState {
     ///   so the `LoadContext` mutations live in the struct from iteration 0.
     pub fn new(caps: &ResolvedProfile) -> Self {
         Self {
+            classify_denial_streak: 0,
             capability_dispatcher: Arc::new(super::capabilities::CapabilityDispatcher::new(
                 std::iter::empty::<Arc<dyn Tool>>(),
                 Vec::new(),

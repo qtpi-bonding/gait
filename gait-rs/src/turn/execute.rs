@@ -38,6 +38,46 @@ use super::state::{TurnEnv, TurnState};
 use super::{validate_against_schema, ClarifyArg, InformArg};
 use crate::permissions::find_matched_deny_pattern;
 
+/// Injectable boundary around the external classifier. Tests use a fake;
+/// production resolves the named inference profile here, at the turn layer.
+#[async_trait::async_trait]
+pub(crate) trait Classifier: Send + Sync {
+    async fn classify(
+        &self,
+        inference: &str,
+        state: &str,
+    ) -> Result<gait_provider::classify::RiskScores, gait_provider::classify::ClassifyError>;
+}
+
+pub(crate) struct ProductionClassifier {
+    pub gait_dir: std::path::PathBuf,
+}
+
+pub(crate) struct DisabledClassifier;
+
+fn classify_approves(scores: &gait_provider::classify::RiskScores, threshold: f64) -> bool {
+    // noul: 0 is confident safe, 1 is confident risk.
+    scores.confidentiality_risk < threshold
+        && scores.integrity_risk < threshold
+        && scores.availability_risk < threshold
+}
+
+#[async_trait::async_trait]
+impl Classifier for DisabledClassifier {
+    async fn classify(&self, _inference: &str, _state: &str) -> Result<gait_provider::classify::RiskScores, gait_provider::classify::ClassifyError> {
+        Err(gait_provider::classify::ClassifyError::BadModelString("disabled".into()))
+    }
+}
+
+#[async_trait::async_trait]
+impl Classifier for ProductionClassifier {
+    async fn classify(&self, inference: &str, state: &str) -> Result<gait_provider::classify::RiskScores, gait_provider::classify::ClassifyError> {
+        let profile = gait_state::inferences::load_inference(&self.gait_dir, inference)
+            .map_err(|e| gait_provider::classify::ClassifyError::BadModelString(e.to_string()))?;
+        gait_provider::classify::classify(&profile.model, state).await
+    }
+}
+
 /// Classifies this step's tool calls under the permission gate, executes the
 /// allowed ones (parallel batch + serial, dispatching on `ExecutionSignal`),
 /// and folds the results into `state.messages`. Returns the `StepOutcome` for
@@ -90,7 +130,71 @@ pub(crate) async fn run_tools(
             }
             GateDecision::Gate { items } => {
                 gated_ids.insert(tc.tool_call_id.clone());
-                pending_permissions.extend(items);
+                // All-or-nothing per tool_call_id (every item here shares the
+                // same id -- see resume.rs's "all segments must be approved"
+                // convention). Classify every item first, without emitting
+                // anything or touching the streak, so a partial-batch failure
+                // (some items classified, one call errored) can't leave
+                // already-decided items dropped -- neither executed nor
+                // re-surfaced for a human. Only commit to an outcome once
+                // every item in the batch got a real answer.
+                let mut resolved = false;
+                if let Some(policy) = env.classify_policy {
+                    if state.classify_denial_streak < policy.max_consecutive_denials {
+                        let mut scored: Vec<(pb::PermissionItem, gait_provider::classify::RiskScores)> =
+                            Vec::with_capacity(items.len());
+                        let mut call_failed = false;
+                        for item in &items {
+                            let state_text = format!(
+                                "{}: {}\n\npatterns: {}",
+                                tc.tool_name,
+                                tc.args,
+                                item.patterns.join(", ")
+                            );
+                            match env.classifier.classify(&policy.inference, &state_text).await {
+                                Ok(scores) => scored.push((item.clone(), scores)),
+                                Err(_) => {
+                                    call_failed = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if !call_failed {
+                            let tc_approved = scored
+                                .iter()
+                                .all(|(_, s)| classify_approves(s, policy.risk_threshold));
+                            for (item, scores) in &scored {
+                                env.emitter.record(events::classify_decision(pb::ClassifyDecision {
+                                    permission_item_id: item.id.clone(),
+                                    tool_name: item.tool_name.clone(),
+                                    cmd: item.cmd.clone(),
+                                    approved: tc_approved,
+                                    confidentiality_risk: scores.confidentiality_risk,
+                                    integrity_risk: scores.integrity_risk,
+                                    availability_risk: scores.availability_risk,
+                                    inference: policy.inference.clone(),
+                                }))?;
+                            }
+                            if tc_approved {
+                                state.classify_denial_streak = 0;
+                                gated_ids.remove(&tc.tool_call_id);
+                                tool_approval_prefixes
+                                    .insert(tc.tool_call_id.clone(), "[Classifier-approved]".into());
+                            } else {
+                                state.classify_denial_streak =
+                                    state.classify_denial_streak.saturating_add(1);
+                                gated_ids.remove(&tc.tool_call_id);
+                                denied_ids.insert(tc.tool_call_id.clone());
+                            }
+                            resolved = true;
+                        }
+                        // call_failed: no ClassifyDecision emitted (no decision was
+                        // made), streak untouched, falls through below unresolved.
+                    }
+                }
+                if !resolved {
+                    pending_permissions.extend(items);
+                }
             }
         }
     }
@@ -680,5 +784,413 @@ mod tests {
         let mut items: Vec<pb::PermissionItem> = vec![];
         attach_near_miss_hints(&mut items, &["shell:rm *".to_string()]);
         assert!(items.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod classify_gate_tests {
+    use super::*;
+    use crate::git::checkpoint::MockCheckpointRepo;
+    use crate::git::Repos;
+    use crate::session::Ingestor;
+    use crate::session::Session;
+    use gait_provider::classify::{ClassifyError, RiskScores};
+    use gait_provider::provider::{ChunkStream, Provider, ProviderError, StreamChunk};
+    use std::sync::{Arc, Mutex};
+
+    struct NoopTrace;
+    impl crate::git::trace::TraceRepo for NoopTrace {
+        fn init_workspace(&self, _: &std::path::Path) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn create_session_worktree(&self, _: &std::path::Path, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn commit_session(&self, _: &std::path::Path, _: &str, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn list_active_sessions(&self, _: &std::path::Path) -> anyhow::Result<Vec<String>> {
+            Ok(vec![])
+        }
+        fn finish_session(&self, _: &std::path::Path, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn create_branch_worktree(
+            &self,
+            _: &std::path::Path,
+            _: &str,
+            _: &str,
+            _: &std::path::Path,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn remove_branch_worktree(&self, _: &std::path::Path, _: &std::path::Path) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn merge_branch_ff(&self, _: &std::path::Path, _: &str, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn discard_session(&self, _: &std::path::Path, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct NoopProvider;
+    #[async_trait::async_trait]
+    impl Provider for NoopProvider {
+        fn model_id(&self) -> &str {
+            "noop"
+        }
+        async fn stream(
+            &self,
+            _system: &str,
+            _messages: &[crate::types::Message],
+            _tools: &[Arc<dyn crate::types::Tool>],
+            _params: &crate::config::LlmParamsConfig,
+            _tail_context: Option<&str>,
+        ) -> Result<ChunkStream, ProviderError> {
+            let _ = StreamChunk::Done;
+            Err(ProviderError::Other("unused in classify_gate tests".into()))
+        }
+    }
+
+    /// A fixed-answer or always-erroring fake, counting how many calls it took.
+    struct FakeClassifier {
+        scores: Option<RiskScores>,
+        calls: Mutex<u32>,
+    }
+    impl FakeClassifier {
+        fn approving() -> Self {
+            Self {
+                scores: Some(RiskScores {
+                    confidentiality_risk: 0.02,
+                    integrity_risk: 0.01,
+                    availability_risk: 0.01,
+                }),
+                calls: Mutex::new(0),
+            }
+        }
+        fn denying() -> Self {
+            Self {
+                scores: Some(RiskScores {
+                    confidentiality_risk: 0.02,
+                    integrity_risk: 0.87,
+                    availability_risk: 0.01,
+                }),
+                calls: Mutex::new(0),
+            }
+        }
+        fn call_count(&self) -> u32 {
+            *self.calls.lock().unwrap()
+        }
+    }
+    #[async_trait::async_trait]
+    impl Classifier for FakeClassifier {
+        async fn classify(&self, _inference: &str, _state: &str) -> Result<RiskScores, ClassifyError> {
+            *self.calls.lock().unwrap() += 1;
+            match &self.scores {
+                Some(s) => Ok(RiskScores {
+                    confidentiality_risk: s.confidentiality_risk,
+                    integrity_risk: s.integrity_risk,
+                    availability_risk: s.availability_risk,
+                }),
+                None => Err(ClassifyError::BadModelString("fake-disabled".into())),
+            }
+        }
+    }
+
+    struct Fixture {
+        _ws: tempfile::TempDir,
+        session: Session,
+        emitter: crate::Recorder,
+        ingestor: Ingestor,
+        provider: Arc<dyn Provider>,
+        hooks: Vec<Box<dyn crate::types::Hook>>,
+        sandbox_cfg: crate::config::SandboxConfig,
+        deny: Vec<String>,
+        daemons: Vec<(String, i32, bool, String)>,
+        system_prompt: String,
+        codebase_hash: String,
+        llm_params: crate::config::LlmParamsConfig,
+        effective_allow: Vec<String>,
+        model: String,
+        mcp_registry: Vec<crate::config::McpToolDef>,
+        mcp_clients: crate::profile::McpClients,
+        plugin_registry: Vec<crate::config::WasmPluginDef>,
+        result_schema: Option<serde_json::Value>,
+    }
+
+    fn fixture() -> Fixture {
+        let ws = tempfile::TempDir::new().unwrap();
+        let session_id = "sclassify01".to_string();
+        let repos = Repos {
+            codebase: Arc::new(crate::git::codebase::GitCodebaseRepo),
+            traces: Arc::new(NoopTrace),
+            checkpoints: Arc::new(MockCheckpointRepo::new()),
+        };
+        let session = Session {
+            id: session_id.clone(),
+            gait_dir: ws.path().to_path_buf(),
+            codebase_path: ws.path().to_path_buf(),
+            assigned_by: None,
+            repos,
+        };
+        Fixture {
+            _ws: ws,
+            session,
+            emitter: crate::Recorder::buffering(),
+            ingestor: Ingestor::from_shared(Arc::new(Mutex::new(Vec::new()))),
+            provider: Arc::new(NoopProvider),
+            hooks: vec![],
+            sandbox_cfg: crate::config::SandboxConfig::default(),
+            deny: vec![],
+            daemons: vec![],
+            system_prompt: "sys".to_string(),
+            codebase_hash: "deadbeef".to_string(),
+            llm_params: crate::config::LlmParamsConfig::default(),
+            effective_allow: vec![],
+            model: "test/model".to_string(),
+            mcp_registry: vec![],
+            mcp_clients: Default::default(),
+            plugin_registry: vec![],
+            result_schema: None,
+        }
+    }
+
+    fn env_from<'a>(
+        fx: &'a Fixture,
+        classify_policy: Option<&'a pb::ClassifyPolicy>,
+        classifier: &'a dyn Classifier,
+    ) -> TurnEnv<'a> {
+        TurnEnv {
+            session: &fx.session,
+            emitter: &fx.emitter,
+            repos: &fx.session.repos,
+            gait_dir: &fx.session.gait_dir,
+            codebase_path: &fx.session.codebase_path,
+            session_id: &fx.session.id,
+            provider: &fx.provider,
+            hooks: &fx.hooks,
+            sandbox_cfg: &fx.sandbox_cfg,
+            sandbox_on: false,
+            cancel: None,
+            deny: &fx.deny,
+            preview_policy: crate::config::PreviewPolicy::default(),
+            auto: false,
+            daemons: &fx.daemons,
+            ingestor: &fx.ingestor,
+            system_prompt: &fx.system_prompt,
+            codebase_hash: &fx.codebase_hash,
+            codebase_dirty: false,
+            llm_params: &fx.llm_params,
+            context_policy: crate::profile::ContextPolicy::TEST,
+            effective_allow: &fx.effective_allow,
+            classify_policy,
+            classifier,
+            relay: None,
+            model: &fx.model,
+            mcp_registry: &fx.mcp_registry,
+            mcp_clients: &fx.mcp_clients,
+            plugin_registry: &fx.plugin_registry,
+            result_schema: &fx.result_schema,
+        }
+    }
+
+    fn unsealed<'a>(fx: &'a Fixture) -> Persistence<'a> {
+        Persistence::Unsealed {
+            repos: &fx.session.repos,
+            gait_dir: &fx.session.gait_dir,
+            session_id: &fx.session.id,
+            codebase_path: &fx.session.codebase_path,
+        }
+    }
+
+    fn bare_state() -> TurnState {
+        TurnState {
+            classify_denial_streak: 0,
+            capability_dispatcher: Arc::new(super::super::capabilities::CapabilityDispatcher::new(
+                std::iter::empty::<Arc<dyn crate::types::Tool>>(),
+                Vec::new(),
+                std::collections::HashMap::new(),
+                std::iter::empty::<String>(),
+                None,
+                Vec::new(),
+            )),
+            total_usage: crate::types::Usage::default(),
+            clarify_signal: None,
+            inform_signal: None,
+            all_turn_text: String::new(),
+            final_step_index: 0,
+            messages: Vec::new(),
+            turn_ctx: None,
+            schema_retries_remaining: 0,
+            done_nudges_remaining: 0,
+            tools: vec![Arc::new(crate::types::ToolDef {
+                name: "test_tool".into(),
+                description: "a no-op test tool".into(),
+                parameters: serde_json::json!({"type": "object"}),
+                execute: Box::new(|_args| {
+                    Box::pin(async move { Ok(serde_json::Value::String("ok".into())) })
+                }),
+                permission: None, // defaults to RequiresApproval([name]) -- always hits Tier 3
+            })],
+            entries: Vec::new(),
+        }
+    }
+
+    fn gate_tool_call() -> ToolCall {
+        ToolCall {
+            tool_call_id: "tc1".into(),
+            tool_name: "test_tool".into(),
+            args: serde_json::json!({}),
+        }
+    }
+
+    fn policy(risk_threshold: f64, max_consecutive_denials: u32) -> pb::ClassifyPolicy {
+        pb::ClassifyPolicy {
+            inference: "fake".into(),
+            risk_threshold,
+            max_consecutive_denials,
+        }
+    }
+
+    #[tokio::test]
+    async fn classify_approve_executes_without_pausing() {
+        let fx = fixture();
+        let fake = FakeClassifier::approving();
+        let policy = policy(0.3, 3);
+        let env = env_from(&fx, Some(&policy), &fake);
+        let mut state = bare_state();
+        let persist = unsealed(&fx);
+
+        let outcome = run_tools(
+            &env,
+            &mut state,
+            &persist,
+            0,
+            String::new(),
+            vec![gate_tool_call()],
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            matches!(outcome, StepOutcome::Continue),
+            "an approved tool call must not pause the turn"
+        );
+        assert_eq!(state.classify_denial_streak, 0);
+        assert_eq!(fake.call_count(), 1);
+        let events = fx.emitter.take_buffer();
+        let decision = events.iter().find_map(|e| match &e.body {
+            Some(crate::proto::gait::log::v1::event::Body::Payload(p)) => match &p.kind {
+                Some(crate::proto::gait::log::v1::payload::Kind::ClassifyDecision(d)) => Some(d.clone()),
+                _ => None,
+            },
+            _ => None,
+        });
+        let decision = decision.expect("a ClassifyDecision event must be recorded");
+        assert!(decision.approved);
+    }
+
+    #[tokio::test]
+    async fn classify_deny_blocks_without_pausing() {
+        let fx = fixture();
+        let fake = FakeClassifier::denying();
+        let policy = policy(0.3, 3);
+        let env = env_from(&fx, Some(&policy), &fake);
+        let mut state = bare_state();
+        let persist = unsealed(&fx);
+
+        let outcome = run_tools(
+            &env,
+            &mut state,
+            &persist,
+            0,
+            String::new(),
+            vec![gate_tool_call()],
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            matches!(outcome, StepOutcome::Continue),
+            "a classifier-denied tool call must not pause the turn either"
+        );
+        assert_eq!(
+            state.classify_denial_streak, 1,
+            "a denial must increment the streak"
+        );
+        let events = fx.emitter.take_buffer();
+        let has_classify_decision = events.iter().any(|e| {
+            matches!(
+                &e.body,
+                Some(crate::proto::gait::log::v1::event::Body::Payload(p))
+                    if matches!(&p.kind, Some(crate::proto::gait::log::v1::payload::Kind::ClassifyDecision(d)) if !d.approved)
+            )
+        });
+        assert!(has_classify_decision, "a denied ClassifyDecision event must be recorded");
+        let has_plain_denial_text = events.iter().any(|e| {
+            matches!(
+                &e.body,
+                Some(crate::proto::gait::log::v1::event::Body::Payload(p))
+                    if matches!(&p.kind, Some(crate::proto::gait::log::v1::payload::Kind::ToolResult(tr)) if tr.output == "permission denied")
+            )
+        });
+        assert!(
+            has_plain_denial_text,
+            "the model-facing deny text must be the plain, unbracketed \"permission denied\" string"
+        );
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_stops_trusting_the_classifier_after_max_consecutive_denials() {
+        let fx = fixture();
+        let fake = FakeClassifier::denying();
+        let policy = policy(0.3, 1); // trips after just 1 denial
+        let env = env_from(&fx, Some(&policy), &fake);
+        let mut state = bare_state();
+        let persist = unsealed(&fx);
+
+        // First call: classifier denies, streak becomes 1 (== max_consecutive_denials).
+        run_tools(
+            &env,
+            &mut state,
+            &persist,
+            0,
+            String::new(),
+            vec![gate_tool_call()],
+            vec![],
+        )
+        .await
+        .unwrap();
+        assert_eq!(state.classify_denial_streak, 1);
+        assert_eq!(fake.call_count(), 1);
+
+        // Second call: circuit breaker must skip the classifier entirely and
+        // fall through to a normal pause instead.
+        let outcome = run_tools(
+            &env,
+            &mut state,
+            &persist,
+            1,
+            String::new(),
+            vec![gate_tool_call()],
+            vec![],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            fake.call_count(),
+            1,
+            "the circuit breaker must skip the classify call once tripped"
+        );
+        assert!(
+            matches!(outcome, StepOutcome::Pause(_)),
+            "once tripped, the item must fall through to a normal pause instead of \
+             being silently continued, got a different StepOutcome variant"
+        );
     }
 }

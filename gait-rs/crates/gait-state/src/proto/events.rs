@@ -325,6 +325,12 @@ pub fn permission_denied(tool_name: &str, resource: &str, pattern: &str) -> pb::
     }))
 }
 
+/// Audit event for a successful classifier decision. The scores use the noul
+/// convention: 0 is confident safe and 1 is confident risk.
+pub fn classify_decision(decision: pb::ClassifyDecision) -> pb::event::Body {
+    wire::body(pb::payload::Kind::ClassifyDecision(decision))
+}
+
 pub fn run_start(run: pb::RunStart) -> pb::event::Body {
     wire::body(pb::payload::Kind::RunStart(run))
 }

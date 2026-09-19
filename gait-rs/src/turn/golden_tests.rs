@@ -271,6 +271,7 @@ fn body_kind(b: &event::Body) -> BodyKind {
         | payload::Kind::SandboxWhitelistMatch(_)
         | payload::Kind::SandboxDenied(_)
         | payload::Kind::PermissionDenied(_)
+        | payload::Kind::ClassifyDecision(_)
         | payload::Kind::LlmCallStarted(_)
         | payload::Kind::LlmCallCompleted(_)
         | payload::Kind::MessageAccept(_) => BodyKind::Unknown,

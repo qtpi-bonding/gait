@@ -458,6 +458,8 @@ mod tests {
             llm_params: &fx.llm_params,
             context_policy: crate::profile::ContextPolicy::TEST,
             effective_allow: &fx.effective_allow,
+            classify_policy: None,
+            classifier: &crate::turn::execute::DisabledClassifier,
             relay: None,
             model: &fx.model,
             mcp_registry: &fx.mcp_registry,

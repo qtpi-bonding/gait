@@ -266,6 +266,8 @@ pub async fn run_turn(
         daemons,
         initial_git: _initial_git,
         agent_whitelist,
+        classify_policy,
+        classifier,
     } = setup::init(session, emitter, caps, input)?;
     let persist = Persistence::from_relay(&relay, &repos, &gait_dir, &session_id, &codebase_path);
     // Synthetic turn context (built once, prepended to every step's outgoing in
@@ -330,6 +332,8 @@ pub async fn run_turn(
         llm_params: &llm_params,
         context_policy,
         effective_allow: &effective_allow,
+        classify_policy: classify_policy.as_ref(),
+        classifier: classifier.as_ref(),
         relay: relay.as_ref(),
         model: &model,
         mcp_registry: &mcp_registry,

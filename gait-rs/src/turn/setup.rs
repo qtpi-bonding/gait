@@ -39,6 +39,8 @@ use crate::session::SessionLock;
 
 /// Everything `run_turn`'s pre-resume setup produces, owned by the caller.
 pub(crate) struct SetupData {
+    pub classify_policy: Option<pb::ClassifyPolicy>,
+    pub classifier: Box<dyn super::execute::Classifier>,
     pub state: TurnState,
     pub agent: crate::proto::gait::log::v1::Agent,
     pub provider: std::sync::Arc<dyn Provider>,
@@ -255,7 +257,7 @@ pub(crate) fn init(
     // session/once grants, folded mutation-aware from the full session via the
     // ActivePermissions projection. Replaces the once-approval temp file entirely:
     // once/session approvals now live in the Log as PermissionsReply events.
-    let (effective_allow, deny): (Vec<String>, Vec<String>) = {
+    let (effective_allow, deny, classify_policy): (Vec<String>, Vec<String>, Option<pb::ClassifyPolicy>) = {
         let evs = ingestor.events()?;
         let mut muts = retrace::active_mutations(&evs);
         retrace::apply_cascade(&mut muts, &evs);
@@ -268,12 +270,13 @@ pub(crate) fn init(
         let deny_session = crate::permissions::grants::effective_deny_session(&evs, &muts);
         let deny: Vec<String> = deny.into_iter().chain(deny_session).collect();
         let mode = retrace::active_mode(&evs, &muts);
-        crate::permissions::grants::overlay_mode_permissions(
+        let overlay = crate::permissions::grants::overlay_mode_permissions(
             ea,
             deny,
             mode.as_ref().map(|m| &m.allow),
             mode.as_ref().map(|m| &m.deny),
-        )
+        );
+        (overlay.0, overlay.1, mode.and_then(|m| m.classify_policy))
     };
 
     // Detect resume after permission approval: last two transcript events are
@@ -319,7 +322,7 @@ pub(crate) fn init(
         agent,
         provider,
         session_id,
-        gait_dir,
+        gait_dir: gait_dir.clone(),
         codebase_path,
         model,
         repos,
@@ -353,6 +356,10 @@ pub(crate) fn init(
         daemons: input.daemons,
         initial_git: input.initial_git,
         agent_whitelist,
+        classify_policy,
+        classifier: Box::new(super::execute::ProductionClassifier {
+            gait_dir: gait_dir.clone(),
+        }),
     })
 }
 
