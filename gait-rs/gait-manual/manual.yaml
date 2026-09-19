@@ -44,6 +44,37 @@ guides:
       Start a fresh session when you want a clean conversation. Use undo when you need to
       restore an earlier turn or inspect available checkpoints.
 
+  - title: Permissions and modes
+    cli_cmds:
+      - "allow"
+      - "unlock"
+      - "mode"
+    repl_cmds: []
+    body: |
+      Every tool call is classified in order: deny (hard floor, wins even under
+      `--auto-approve`) → allow (pattern match) → ask (pauses for a human, or
+      for a client's permission UI). `--allow`/`--deny` on the command line set
+      the per-invocation baseline; `gait.jsonc`'s `allow`/`deny` fields set the
+      persistent global baseline.
+
+      A **mode** (`<gait_dir>/modes/<name>/MODE.yaml`) is a named, switchable
+      overlay of `allow`/`deny`/`steer`/`description` on top of that baseline —
+      `--mode <name>` on `run` activates one for a session; `gait mode
+      select/clear <name> --session <id>` switches it mid-session. `gait mode
+      add <name> --allow <pattern> --deny <pattern> --steer <text>
+      --description <text>` authors a new one; `gait mode list`/`gait mode
+      show <name>` inspect what's authored. A mode's `deny` unions with the
+      baseline deny (deny is always monotonic — nothing ever un-denies);
+      its `allow` unions with the baseline allow. `steer` is a freeform
+      instruction folded into the model's context while the mode is active.
+
+      `gait allow <session-id> --pattern <pattern> --scope <global|mode|session|once>`
+      answers a pending permission gate. `--scope mode` persists to the
+      session's *currently active* mode's `MODE.yaml` — it errors if no mode
+      is active (there is nowhere to write to). `--scope global` persists to
+      `gait.jsonc`. `--scope session`/`--scope once` are log-only, no file
+      write.
+
   - title: Inferences and providers
     cli_cmds:
       - inference
