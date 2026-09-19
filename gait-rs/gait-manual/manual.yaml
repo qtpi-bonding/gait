@@ -68,6 +68,18 @@ guides:
       its `allow` unions with the baseline allow. `steer` is a freeform
       instruction folded into the model's context while the mode is active.
 
+      A mode can also set `classify_policy` (`inference`, `risk_threshold`,
+      `max_consecutive_denials`) to auto-resolve "ask" decisions via a fast
+      external classifier instead of always pausing — scoped to interactive
+      sessions where a human is present as the fallback. It always decides
+      (approve or deny), never falls back to a per-item prompt; the only
+      escalation path is `max_consecutive_denials` consecutive denials,
+      which stops trusting the classifier for the rest of the turn. A denied
+      call shows the same plain "permission denied" text any deny shows the
+      model; the specific axis (`confidentiality_risk`/`integrity_risk`/
+      `availability_risk`) that tripped is recorded in the session log's
+      `ClassifyDecision` event, not in the model-facing text.
+
       `gait allow <session-id> --pattern <pattern> --scope <global|mode|session|once>`
       answers a pending permission gate. `--scope mode` persists to the
       session's *currently active* mode's `MODE.yaml` — it errors if no mode
