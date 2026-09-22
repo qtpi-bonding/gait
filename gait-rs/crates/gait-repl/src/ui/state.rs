@@ -69,6 +69,7 @@ pub struct ReplState {
     /// Set when a `structured_done` ToolCall event is seen — lets `TurnResult`
     /// know to emit a `StructuredResult` pending item for the renderer.
     pub(crate) saw_structured_done: bool,
+    pub(crate) saw_turn_result: bool,
 }
 
 impl Default for ReplState {
@@ -92,16 +93,25 @@ impl ReplState {
             paint_lock: None,
             turn_start: None,
             saw_structured_done: false,
+            saw_turn_result: false,
         }
     }
 
     pub fn begin_turn(&mut self) {
+        self.begin_turn_for_terminal(std::io::stderr().is_terminal());
+    }
+
+    fn begin_turn_for_terminal(&mut self, terminal: bool) {
         let now = Instant::now();
         *self = Self::new();
         self.turn_start = Some(now);
-        let t = Timer::start(now);
-        self.paint_lock = Some(t.paint_lock());
-        self.timer = Some(t);
+        // Timer ticks use terminal cursor controls. Writing them to a pipe or
+        // captured stderr turns each refresh into a new visible line.
+        if terminal {
+            let t = Timer::start(now);
+            self.paint_lock = Some(t.paint_lock());
+            self.timer = Some(t);
+        }
     }
 
     /// Start a turn with the stable context row attached to the spinner
@@ -140,6 +150,50 @@ impl ReplState {
         }
         if let (Some(t), Some(start)) = (&self.timer, self.turn_start) {
             t.draw_overlay(start);
+        }
+    }
+
+    /// Render structured output from the completed run. The spine persists the
+    /// final TurnResult after `end_turn`, so it arrives through TurnSink::result
+    /// rather than through the live event stream.
+    pub(crate) fn apply_run_result(&mut self, result: &pb::RunResult) {
+        // Keep compatibility with sinks that do stream a TurnResult event.
+        if self.saw_turn_result {
+            return;
+        }
+        let Some(turn) = result.turns.last() else {
+            return;
+        };
+        let elapsed_ms = turn
+            .timing
+            .as_ref()
+            .and_then(|t| t.active_duration.as_ref())
+            .map(|d| (d.seconds.max(0) as u64) * 1000 + (d.nanos.max(0) as u64) / 1_000_000)
+            .unwrap_or(0);
+        self.pending.push(ReplItem::TurnSummary {
+            elapsed_ms,
+            output_tokens: turn.usage.as_ref().map(|u| u.output).unwrap_or(0),
+        });
+        let Some(pb::turn_result::Outcome::Done(done)) =
+            result.turns.last().and_then(|turn| turn.outcome.as_ref())
+        else {
+            return;
+        };
+        let Some(pb::turn_done::Output::Structured(out)) = &done.output else {
+            return;
+        };
+        if !out.message.is_empty() {
+            self.pending.push(ReplItem::DoneMessage {
+                content: out.message.clone(),
+            });
+        }
+        if let Some(json) = out
+            .result
+            .as_ref()
+            .and_then(|v| serde_json::to_value(v).ok())
+            .and_then(|v| serde_json::to_string_pretty(&v).ok())
+        {
+            self.pending.push(ReplItem::StructuredResult { json });
         }
     }
 
@@ -261,6 +315,7 @@ impl ReplState {
                 ViewSignal::Continue
             }
             Some(pb::payload::Kind::TurnResult(tc)) => {
+                self.saw_turn_result = true;
                 self.flush_buf();
                 // Stop the status line and emit the final turn summary.
                 if let Some(mut t) = self.timer.take() {
@@ -336,6 +391,21 @@ impl ReplState {
 mod tests {
     use super::*;
     use gait_core::proto::events;
+
+    #[test]
+    fn non_terminal_turn_does_not_emit_repeated_thinking_lines() {
+        let mut state = ReplState::new();
+        state.begin_turn_for_terminal(false);
+
+        assert!(
+            state.timer.is_none(),
+            "captured output must not start periodic thinking ticks"
+        );
+        assert!(
+            state.paint_lock.is_none(),
+            "without a ticker there is no transient status row to coordinate"
+        );
+    }
 
     fn turn_result_body(
         message: &str,

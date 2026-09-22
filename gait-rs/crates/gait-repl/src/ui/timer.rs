@@ -71,7 +71,7 @@ impl Timer {
                     let context = ctx.lock().unwrap().clone();
                     if context.is_empty() {
                         eprint!(
-                            "\r  {} {} ({})",
+                            "\r\x1b[2K  {} {} ({})",
                             FRAMES[frame % FRAMES.len()],
                             current,
                             format_secs(turn_start.elapsed())

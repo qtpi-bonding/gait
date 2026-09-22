@@ -62,6 +62,7 @@ impl TurnSink for ReplSink {
 
     fn result(&mut self, r: &RunResult) {
         use gait_core::proto::gait::log::v1::{turn_result::Outcome, PauseReason};
+        self.shared.borrow_mut().builder.finish_run_result(r);
         match r.turns.last().and_then(|turn| turn.outcome.as_ref()) {
             Some(Outcome::Cancelled(_)) => {
                 self.shared

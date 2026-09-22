@@ -154,10 +154,54 @@ fn turn_result_renders_turn_summary() {
     );
 }
 
-// Matrix row 7 (structured_done → DoneMessage/StructuredResult) is intentionally
-// not duplicated here per the plan — it is covered by the existing state.rs tests
-// `structured_done_message_emitted_as_done_message` and
-// `structured_done_result_emitted_as_json_only_box`.
+#[test]
+fn completed_run_result_renders_structured_completion() {
+    let mut b = builder();
+    let result = pb::RunResult {
+        turns: vec![pb::TurnResult {
+            turn_id: "ui-turn".into(),
+            usage: Some(pb::TurnTokenUsage {
+                output: 42,
+                ..Default::default()
+            }),
+            outcome: Some(pb::turn_result::Outcome::Done(pb::TurnDone {
+                output: Some(pb::turn_done::Output::Structured(pb::StructuredDone {
+                    message: "The task is complete.".into(),
+                    result: events::to_value_opt(&Some(serde_json::json!({"answer": 42}))),
+                })),
+            })),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    // The spine sends this after end_turn through TurnSink::result, rather than
+    // as a live TurnResult event. Exercise that separate completion path.
+    let painted = b.finish_run_result(&result);
+    assert!(
+        painted.iter().any(|v| matches!(v, ReplViewItem::DoneMessage { content } if content == "The task is complete.")),
+        "completed RunResult must render its structured message: {painted:?}"
+    );
+    assert!(
+        painted.iter().any(
+            |v| matches!(v, ReplViewItem::StructuredBox { json } if json.contains("\"answer\": 42"))
+        ),
+        "completed RunResult must render its structured JSON result: {painted:?}"
+    );
+    assert!(
+        painted.iter().any(|v| matches!(
+            v,
+            ReplViewItem::TurnSummary {
+                output_tokens: 42,
+                ..
+            }
+        )),
+        "completed RunResult must render its turn summary: {painted:?}"
+    );
+}
+
+// state.rs also covers the lower-level event-to-pending-item mapping; the test
+// above covers the distinct completed-RunResult callback path used by the sink.
 
 #[cfg(feature = "dev-harness")]
 fn transcript(items: &[pb::StreamItem]) -> String {

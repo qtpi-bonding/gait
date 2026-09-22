@@ -72,6 +72,12 @@ impl ReplBuilder {
         self.renderer.paint(&mut self.state)
     }
 
+    /// Render final structured output delivered separately from streamed items.
+    pub(crate) fn finish_run_result(&mut self, result: &pb::RunResult) -> Vec<ReplViewItem> {
+        self.state.apply_run_result(result);
+        self.renderer.paint(&mut self.state)
+    }
+
     pub fn has_interaction(&self) -> bool {
         self.state.has_interaction()
     }
