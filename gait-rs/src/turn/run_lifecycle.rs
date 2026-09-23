@@ -25,7 +25,7 @@ pub(crate) fn begin_turn(
     log: &crate::turn::SessionLog,
     git: &crate::turn::SessionGit,
     codebase: &std::path::Path,
-    trigger: Vec<crate::port::input::IncomingMessage>,
+    trigger: Vec<crate::port::input::InputEnvelope>,
 ) -> anyhow::Result<StartedTurn> {
     use crate::proto::envelope::EventScope;
 
@@ -99,10 +99,10 @@ pub(crate) fn begin_turn(
     for mut incoming in trigger {
         if incoming.rejected_provenance_claim {
             if let crate::proto::gait::log::v1::event::Body::Payload(payload) = &mut incoming.body {
-                if let Some(crate::proto::gait::log::v1::payload::Kind::UserText(user_text)) =
+                if let Some(crate::proto::gait::log::v1::payload::Kind::IncomingMessage(message)) =
                     payload.kind.as_mut()
                 {
-                    user_text.rejected_provenance_claim = true;
+                    message.rejected_provenance_claim = true;
                 }
             }
         }
@@ -529,6 +529,7 @@ fn scope_is_valid(event: &Event) -> bool {
         Some(payload::Kind::TurnStart(_))
         | Some(payload::Kind::TurnResult(_))
         | Some(payload::Kind::UserText(_))
+        | Some(payload::Kind::IncomingMessage(_))
         | Some(payload::Kind::ClarifyReply(_))
         | Some(payload::Kind::InformReply(_))
         | Some(payload::Kind::PermissionsReply(_))

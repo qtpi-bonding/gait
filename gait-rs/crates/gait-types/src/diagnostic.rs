@@ -71,13 +71,9 @@ pub struct DiagRecord {
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    /// grorg's Agent identity of the turn's triggering message, when it
-    /// arrived via a verified multimatrix delivery
-    /// (`Provenance.attested_author_agent_id`). Field name matches the
-    /// cross-repo convention in
-    /// `an internal design note` so a neighbor's
-    /// `grep agent_id` finds gait's lines alongside multimatrix's/grorg's.
-    /// `None` for ordinary (non-attested) turns.
+    /// Verified external author identity of the triggering message.
+    /// `None` for ordinary prompts and direct-key identities without a
+    /// registered external author id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
 }
@@ -171,7 +167,7 @@ pub fn install_brain_identity() {
 }
 
 /// Set the current turn number, model, and (if the turn's triggering message
-/// arrived via a verified multimatrix delivery) grorg agent id. No-op if not
+/// arrived with a verified external author identity. No-op if not
 /// installed (spine / tests).
 pub fn set_brain_identity(turn: u32, model: &str, agent_id: Option<String>) {
     if let Some(cell) = BRAIN_IDENTITY.get() {

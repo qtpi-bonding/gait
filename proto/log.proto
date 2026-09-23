@@ -37,7 +37,7 @@ message Event {
   optional uint32 turn      = 8;  // 0-indexed turn ordinal within the run
   // Sender/recipient/thread metadata — required whenever an event crosses a
   // party boundary (subagent task injection, cross-session delivery, a
-  // multi-writer room log) or lives in a room log; omitted in an ordinary
+  // multi-writer shared log) or lives in a shared log; omitted in an ordinary
   // single-writer session log, where authorship is implicit in the log's
   // owner. `content_hash` covers only the body arm, by construction — see
   // envelope.rs's doc comment — so `provenance.signature` signs the content
@@ -68,8 +68,8 @@ message Event {
 // recipients followed by each recipient's length and UTF-8 bytes in order,
 // then context's length and UTF-8 bytes. `KeyScheme` lives in `identitycrypto.v1`
 // (imported above), not here -- the discriminant every canonical transcript
-// embeds as a raw byte is shared with grorg/multimatrix, not gait-owned; see
-// an internal design note.
+// embeds as a raw byte is defined by the identity-crypto protocol, not gait-owned;
+// see an internal design note.
 message Provenance {
   bytes                        from            = 1;  // public key bytes
   repeated string              to              = 2;  // specific recipients; empty = the room/log at large
@@ -82,15 +82,14 @@ message Provenance {
   // an internal design note §3.
   optional identitycrypto.v1.DelegationCert delegation_cert = 6;
 
-  // Set only for a message that arrived via a multimatrix-attested
-  // delivery batch (see an internal design note).
-  // Unlike from/signature/scheme above, there is no per-message embedded
-  // signature to verify here -- authenticity was already established once
-  // by verifying the whole DeliveryAttestation's single signature before
-  // this event was ever appended (see gait-core's attestation module).
-  // Mutually exclusive with the direct-signature fields above.
-  optional string attested_author_agent_id = 7;
-  optional identitycrypto.v1.VerificationOutcome attested_verification_outcome = 8;
+  // Set when a trusted ingress has verified an external authorship claim
+  // that is not represented by this event's direct `from`/`signature` pair.
+  // These fields are mutually exclusive with the direct-signature fields.
+  optional string verified_author_id = 9;
+  optional identitycrypto.v1.VerificationOutcome verification_outcome = 10;
+
+  reserved 7, 8;
+  reserved "attested_author_agent_id", "attested_verification_outcome";
 }
 
 
@@ -164,6 +163,7 @@ CancellationSignal cancellation_signal = 55;
     RunCancelled       run_cancelled       = 76;
     RunFailed          run_failed          = 77;
     ClassifyDecision   classify_decision   = 78;
+    IncomingMessage    incoming_message   = 79;
   }
   reserved 16;
   reserved "turn_complete";
@@ -310,9 +310,16 @@ message Agent {                       // the live agent config from this seq for
 
 message UserText {
   string content = 1;
-  // Set when a transport supplied provenance that could not be parsed or
-  // verified. This keeps rejected claims distinguishable from ordinary
-  // provenance-free user text when the durable log is folded later.
+  reserved 2 to 4;
+  reserved "rejected_provenance_claim";
+}
+
+// A message delivered to this session with an external authorship claim.
+// Sender, recipient, context, and signature or verified attribution live on
+// Event.provenance. Rejected claims remain in the audit log but are omitted
+// from the agent-facing fold.
+message IncomingMessage {
+  string content = 1;
   bool rejected_provenance_claim = 2;
   reserved 3, 4;
 }

@@ -13,7 +13,7 @@
 pub use crate::Recorder;
 pub use crate::config::{GaitConfig, load_config};
 pub use crate::git::Repos;
-pub use crate::port::input::{IncomingMessage, TurnSource, TurnStart};
+pub use crate::port::input::{InputEnvelope, TurnSource, TurnStart};
 pub use crate::port::output::{CliSink, Diag, RecordingSink, SinkFrame, TurnSink};
 pub use crate::profile::ResolvedProfile;
 pub use crate::proto::gait::log::v1::{RunResult, StreamItem};

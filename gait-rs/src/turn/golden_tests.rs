@@ -160,6 +160,9 @@ enum BodyKind {
     UserText {
         content: String,
     },
+    IncomingMessage {
+        content: String,
+    },
     AssistantText {
         content: String,
     },
@@ -217,6 +220,9 @@ fn body_kind(b: &event::Body) -> BodyKind {
         payload::Kind::SessionStart(_) => BodyKind::SessionStart,
         payload::Kind::UserText(u) => BodyKind::UserText {
             content: u.content.clone(),
+        },
+        payload::Kind::IncomingMessage(m) => BodyKind::IncomingMessage {
+            content: m.content.clone(),
         },
         payload::Kind::AssistantText(a) => BodyKind::AssistantText {
             content: a.content.clone(),
@@ -309,6 +315,9 @@ fn render_body(b: &BodyKind) -> String {
     match b.clone() {
         BodyKind::SessionStart => "SessionStart".into(),
         BodyKind::UserText { content } => format!(r#"UserText "{}""#, content),
+        BodyKind::IncomingMessage { content } => {
+            format!(r#"IncomingMessage "{}""#, content)
+        }
         BodyKind::AssistantText { content } => format!(r#"AssistantText "{}""#, content),
         BodyKind::ToolCall { call_id, name } => {
             format!(r#"ToolCall "{}" "{}""#, call_id, name)

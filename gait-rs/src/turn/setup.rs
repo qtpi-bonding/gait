@@ -297,7 +297,7 @@ pub(crate) fn init(
                         .iter()
                         .find(|e| e.id == trigger_id)
                         .and_then(|e| e.provenance.first())
-                        .and_then(|p| p.attested_author_agent_id.clone())
+                        .and_then(|p| p.verified_author_id.clone())
                 });
                 Some((event.run?, event.turn?, agent_id))
             }
@@ -313,8 +313,7 @@ pub(crate) fn init(
     // brain's always-on diagnostic ping (no-op outside the brain process, where
     // the identity cell is never installed). Without this the per-phase
     // heartbeat frames carry `turn:0` / `model:""`. `trigger_agent_id` is
-    // `Some` only when this turn was driven by a verified multimatrix
-    // delivery -- see `an internal design note`.
+    // `Some` only when the trigger carried a verified external author id.
     crate::diagnostic::set_brain_identity(current_turn, &model, trigger_agent_id);
 
     Ok(SetupData {

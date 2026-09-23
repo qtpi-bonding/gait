@@ -11,18 +11,15 @@ use identity_crypto::KeyScheme;
 /// never panics. The event remains in the durable log, but model-facing folds
 /// omit user-authored content with a failed check.
 ///
-/// Must NEVER be called with an attested `Provenance` (one where
-/// `attested_author_agent_id`/`attested_verification_outcome` are set) —
-/// there is no per-message embedded signature to check for those; their
-/// authenticity was already established once, by verifying the enclosing
-/// `DeliveryAttestation`'s single signature before the event was ever
-/// appended. Calling this on an attested entry always returns `false`, so a
+/// Must NEVER be called with a `Provenance` carrying a trusted external
+/// authorship assertion (one where `verified_author_id`/`verification_outcome`
+/// are set) — there is no direct signature to check for those; their
+/// authenticity was established by the trusted ingress before the event was
+/// appended. Calling this on such an entry always returns `false`, so a
 /// caller mixing up the two paths fails loudly (as "unverified") rather than
 /// silently misreporting a meaningless check as passed or failed.
 pub fn verify_provenance(provenance: &Provenance, content_hash: &str) -> bool {
-    if provenance.attested_author_agent_id.is_some()
-        || provenance.attested_verification_outcome.is_some()
-    {
+    if provenance.verified_author_id.is_some() || provenance.verification_outcome.is_some() {
         return false;
     }
     let Ok(scheme) = KeyScheme::try_from(provenance.scheme) else {
@@ -45,14 +42,13 @@ pub fn verify_provenance(provenance: &Provenance, content_hash: &str) -> bool {
 mod tests {
     use super::*;
     use crate::{Ed25519Signer, Signer};
-        use gait_proto::envelope::{mint, EventScope};
-        use gait_proto::gait::log::v1::{event, payload, Event, Payload, Provenance, UserText};
+    use gait_proto::envelope::{mint, EventScope};
+    use gait_proto::gait::log::v1::{event, payload, Event, Payload, Provenance, UserText};
 
     fn user_text_event() -> Event {
         let body = event::Body::Payload(Payload {
             kind: Some(payload::Kind::UserText(UserText {
                 content: "hi".into(),
-                rejected_provenance_claim: false,
             })),
         });
         mint(body, None, EventScope::Session)
@@ -74,8 +70,8 @@ mod tests {
             signature,
             scheme: signer.scheme() as i32,
             delegation_cert: None,
-            attested_author_agent_id: None,
-            attested_verification_outcome: None,
+            verified_author_id: None,
+            verification_outcome: None,
         };
         assert!(verify_provenance(&provenance, &ev.content_hash));
     }
@@ -96,8 +92,8 @@ mod tests {
             signature,
             scheme: signer.scheme() as i32,
             delegation_cert: None,
-            attested_author_agent_id: None,
-            attested_verification_outcome: None,
+            verified_author_id: None,
+            verification_outcome: None,
         };
         assert!(!verify_provenance(&provenance, "tampered")); // simulate a corrupted/edited event
     }
@@ -154,8 +150,8 @@ mod tests {
             signature: vec![],
             scheme: 0, // KeyScheme::Unspecified
             delegation_cert: None,
-            attested_author_agent_id: None,
-            attested_verification_outcome: None,
+            verified_author_id: None,
+            verification_outcome: None,
         };
         assert!(!verify_provenance(&provenance, &ev.content_hash));
     }
@@ -168,8 +164,8 @@ mod tests {
         // report a meaningless check as passed.
         let ev = user_text_event();
         let provenance = Provenance {
-            attested_author_agent_id: Some("agent-2".into()),
-            attested_verification_outcome: Some(
+            verified_author_id: Some("agent-2".into()),
+            verification_outcome: Some(
                 identity_crypto::VerificationOutcome::DirectKey as i32,
             ),
             ..Default::default()

@@ -41,6 +41,9 @@ pub fn kind_to_session_update(kind: &payload::Kind) -> Option<SessionUpdate> {
         payload::Kind::UserText(t) => Some(SessionUpdate::UserMessageChunk(text_chunk(
             t.content.clone(),
         ))),
+        payload::Kind::IncomingMessage(m) => Some(SessionUpdate::UserMessageChunk(text_chunk(
+            m.content.clone(),
+        ))),
         payload::Kind::AssistantText(t) => Some(SessionUpdate::AgentMessageChunk(text_chunk(
             t.content.clone(),
         ))),
@@ -305,16 +308,22 @@ impl AcpTurnSource {
         claim: gait_core::port::input::ProvenanceClaim,
     ) -> Self {
         let sid = session_id.0.to_string();
-        // `provenance` (when present) belongs to the user_text body only --
+        // `provenance` (when present) belongs to the message body only --
         // user_turn_events()'s second body (context_status) is spine-derived
         // metadata, not attributable content, so it never carries provenance.
-        let mut bodies: Vec<gait_core::port::input::IncomingMessage> =
+        let incoming = !matches!(&claim, gait_core::port::input::ProvenanceClaim::Absent);
+        let message_body = if incoming {
+            gait_core::proto::events::incoming_message(text.clone())
+        } else {
+            gait_core::proto::events::user_text(text.clone())
+        };
+        let mut bodies: Vec<gait_core::port::input::InputEnvelope> =
             user_turn_events(&repos, &codebase, text)
                 .into_iter()
                 .map(|b| (b, None).into())
                 .collect();
         if let Some(first) = bodies.first_mut() {
-            *first = gait_core::port::input::IncomingMessage::with_claim(first.body.clone(), claim);
+            *first = gait_core::port::input::InputEnvelope::with_claim(message_body, claim);
         }
         Self {
             first: Some(TurnStart::Input { bodies }),
@@ -330,7 +339,7 @@ impl AcpTurnSource {
     /// provenance)` pairs -- one per attested room message -- instead of a
     /// single free-text `task` plus one optional provenance. Used by the
     /// `PromptRequest` handler's attested-delivery branch, where the caller
-    /// (`gait_ops::attestation::verify_and_build_messages`) has already produced the
+    /// (`gait_acp::attestation::verify_and_build_messages`) has already produced the
     /// authoritative bodies and must not re-derive them from `req.prompt`.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_bodies(
@@ -928,8 +937,8 @@ mod tests {
             signature: vec![2u8; 64],
             scheme: gait_identity::KeyScheme::Ed25519 as i32,
             delegation_cert: None,
-            attested_author_agent_id: None,
-            attested_verification_outcome: None,
+            verified_author_id: None,
+            verification_outcome: None,
         };
         use agent_client_protocol::schema::ProtocolVersion;
         use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse};

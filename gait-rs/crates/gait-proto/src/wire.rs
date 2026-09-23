@@ -163,8 +163,8 @@ pub fn append_with_provenance(
         signature,
         scheme,
         delegation_cert: None,
-        attested_author_agent_id: None,
-        attested_verification_outcome: None,
+        verified_author_id: None,
+        verification_outcome: None,
     }];
     write_event(path, ev)
 }
@@ -196,16 +196,16 @@ pub fn append_with_delegated_provenance(
         signature,
         scheme,
         delegation_cert: Some(delegation_cert),
-        attested_author_agent_id: None,
-        attested_verification_outcome: None,
+        verified_author_id: None,
+        verification_outcome: None,
     }];
     write_event(path, ev)
 }
 
 /// Like [`append_with_provenance`], but relays one or more provenances
-/// already signed/established by someone else (a direct signature, or an
-/// attested authorship pair from a verified `DeliveryAttestation` — see
-/// gait-core's `attestation` module). Attaches the values verbatim without
+/// already signed/established by someone else (a direct signature, or a
+/// verified authorship assertion produced by a trusted ingress). Attaches
+/// the values verbatim without
 /// signing or re-verifying. One `Provenance` per trigger body — see
 /// `TurnStart::Input`'s `Vec<(event::Body, Option<Provenance>)>` pairing for
 /// why this is a list rather than a single value.

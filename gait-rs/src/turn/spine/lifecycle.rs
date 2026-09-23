@@ -34,7 +34,7 @@ pub enum TurnMode {
     Persistent {
         /// Normalized core inputs pair each body with provenance and any
         /// malformed-claim marker.
-        trigger: Vec<crate::port::input::IncomingMessage>,
+        trigger: Vec<crate::port::input::InputEnvelope>,
     },
     Ephemeral {
         input: Vec<crate::proto::gait::log::v1::Event>,

@@ -1,7 +1,8 @@
-//! Mandatory verification of a multimatrix DeliveryAttestation, and
-//! conversion into gait's own verified message list. See
+//! ACP-edge verification of delivery attestations and conversion into
+//! Gait's generic verified incoming-message representation. See
 //! an internal design note §3/§3a.
-//! Lives here, not in gait-acp, so any gait entry point benefits.
+//! This protocol-specific code lives at the ACP integration boundary; shared
+//! log folding only sees generic verified-author attribution.
 //!
 //! `VerifiedRoomMessage` carries `body_text`/`room_id`/`message_id`
 //! alongside its `Provenance` -- NOT just the provenance. This is the
@@ -16,8 +17,8 @@
 //! rendering exclusively from this list.
 use anyhow::{anyhow, Context, Result};
 use base64::Engine as _;
-use gait_identity::Signer as _;
 use gait_proto::gait::log::v1::Provenance;
+use gait_identity::Signer as _;
 use prost::Message as _;
 
 const META_KEY: &str = "multimatrix/delivery-attestation";
@@ -44,7 +45,7 @@ pub fn verify_and_build_messages(
     meta: &Option<serde_json::Map<String, serde_json::Value>>,
     own_device_public_key: &[u8],
     trusted_keys: &[TrustedMultimatrixKey],
-    replay_store: &gait_state::attestation_replay::AttestationReplayStore,
+    replay_store: &crate::attestation_replay::AttestationReplayStore,
 ) -> Result<Option<Vec<VerifiedRoomMessage>>> {
     let Some(entry) = meta.as_ref().and_then(|m| m.get(META_KEY)) else {
         return Ok(None);
@@ -59,7 +60,7 @@ pub fn verify_and_build_messages(
         .context("delivery-attestation is not a valid DeliveryAttestation")?;
 
     // Membership, not equality -- recipient_device_public_keys is every
-    // current (non-revoked, as of multimatrix's delivery time) device
+    // current (non-revoked, as of delivery time) device
     // pubkey for the target agent (raw bytes, matching
     // DelegationCert.device_public_key's convention). Gait never held an
     // agent_id to compare against; checking membership of its own device
@@ -101,8 +102,8 @@ pub fn verify_and_build_messages(
             .into_iter()
             .map(|m| VerifiedRoomMessage {
                 provenance: Provenance {
-                    attested_author_agent_id: Some(m.author_agent_id),
-                    attested_verification_outcome: Some(m.verification_outcome),
+                    verified_author_id: Some(m.author_agent_id),
+                    verification_outcome: Some(m.verification_outcome),
                     // Kept for audit trail -- not needed for the trust
                     // decision itself (that's already been made, by
                     // verifying the enclosing DeliveryAttestation as a
@@ -182,7 +183,7 @@ mod tests {
     fn no_meta_key_yields_none() {
         let replay_dir = tempfile::tempdir().unwrap();
         let store =
-            gait_state::attestation_replay::AttestationReplayStore::new(replay_dir.path())
+            crate::attestation_replay::AttestationReplayStore::new(replay_dir.path())
                 .unwrap();
         let result = verify_and_build_messages(&None, &MY_DEVICE_PUBKEY, &[], &store).unwrap();
         assert!(result.is_none());
@@ -199,7 +200,7 @@ mod tests {
         let meta = meta_with(&attestation);
         let replay_dir = tempfile::tempdir().unwrap();
         let store =
-            gait_state::attestation_replay::AttestationReplayStore::new(replay_dir.path())
+            crate::attestation_replay::AttestationReplayStore::new(replay_dir.path())
                 .unwrap();
         let messages = verify_and_build_messages(&meta, &MY_DEVICE_PUBKEY, &[trusted], &store)
             .unwrap()
@@ -212,11 +213,11 @@ mod tests {
         assert_eq!(messages[0].room_id, "room-general");
         assert_eq!(messages[0].message_id, "m1");
         assert_eq!(
-            messages[0].provenance.attested_author_agent_id.as_deref(),
+            messages[0].provenance.verified_author_id.as_deref(),
             Some("agent-2")
         );
         assert_eq!(
-            messages[0].provenance.attested_verification_outcome,
+            messages[0].provenance.verification_outcome,
             Some(identity_crypto::VerificationOutcome::DirectKey as i32)
         );
     }
@@ -237,7 +238,7 @@ mod tests {
         let meta = meta_with(&attestation);
         let replay_dir = tempfile::tempdir().unwrap();
         let store =
-            gait_state::attestation_replay::AttestationReplayStore::new(replay_dir.path())
+            crate::attestation_replay::AttestationReplayStore::new(replay_dir.path())
                 .unwrap();
         assert!(verify_and_build_messages(&meta, &MY_DEVICE_PUBKEY, &[trusted], &store).is_err());
     }
@@ -260,7 +261,7 @@ mod tests {
         let meta = meta_with(&attestation);
         let replay_dir = tempfile::tempdir().unwrap();
         let store =
-            gait_state::attestation_replay::AttestationReplayStore::new(replay_dir.path())
+            crate::attestation_replay::AttestationReplayStore::new(replay_dir.path())
                 .unwrap();
         assert!(verify_and_build_messages(&meta, &MY_DEVICE_PUBKEY, &[trusted], &store)
             .unwrap()
@@ -283,7 +284,7 @@ mod tests {
         let meta = meta_with(&attestation);
         let replay_dir = tempfile::tempdir().unwrap();
         let store =
-            gait_state::attestation_replay::AttestationReplayStore::new(replay_dir.path())
+            crate::attestation_replay::AttestationReplayStore::new(replay_dir.path())
                 .unwrap();
         assert!(
             verify_and_build_messages(&meta, &MY_DEVICE_PUBKEY, &[trusted], &store).is_err(),
@@ -293,7 +294,7 @@ mod tests {
 
     #[test]
     fn a_system_outcome_message_is_carried_through_but_never_rendered_as_cryptographically_verified() {
-        // VERIFICATION_OUTCOME_SYSTEM: an unsigned, multimatrix-vouched-for
+        // VERIFICATION_OUTCOME_SYSTEM: an unsigned, trusted-ingress-vouched-for
         // message (e.g. "agent joined room") -- this function must accept and
         // carry the outcome through opaquely (no exhaustive match here that
         // could fail to compile or silently mishandle a third variant); it is
@@ -315,13 +316,13 @@ mod tests {
         let meta = meta_with(&attestation);
         let replay_dir = tempfile::tempdir().unwrap();
         let store =
-            gait_state::attestation_replay::AttestationReplayStore::new(replay_dir.path())
+            crate::attestation_replay::AttestationReplayStore::new(replay_dir.path())
                 .unwrap();
         let messages = verify_and_build_messages(&meta, &MY_DEVICE_PUBKEY, &[trusted], &store)
             .unwrap()
             .unwrap();
         assert_eq!(
-            messages[0].provenance.attested_verification_outcome,
+            messages[0].provenance.verification_outcome,
             Some(identity_crypto::VerificationOutcome::System as i32)
         );
     }
@@ -337,7 +338,7 @@ mod tests {
         };
         let replay_dir = tempfile::tempdir().unwrap();
         let store =
-            gait_state::attestation_replay::AttestationReplayStore::new(replay_dir.path())
+            crate::attestation_replay::AttestationReplayStore::new(replay_dir.path())
                 .unwrap();
         assert!(verify_and_build_messages(&meta, &MY_DEVICE_PUBKEY, &[wrong_trusted], &store).is_err());
     }
@@ -360,7 +361,7 @@ mod tests {
         let meta = meta_with(&attestation);
         let replay_dir = tempfile::tempdir().unwrap();
         let store =
-            gait_state::attestation_replay::AttestationReplayStore::new(replay_dir.path())
+            crate::attestation_replay::AttestationReplayStore::new(replay_dir.path())
                 .unwrap();
         assert!(
             verify_and_build_messages(&meta, &MY_DEVICE_PUBKEY, &[trusted.clone()], &store)

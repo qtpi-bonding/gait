@@ -1729,7 +1729,6 @@ name = "gait-ops"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
  "ed25519-dalek",
  "gait-auth",
  "gait-identity",
@@ -1739,8 +1738,6 @@ dependencies = [
  "hex",
  "identity-crypto",
  "libc",
- "prost",
- "prost-types",
  "rand 0.8.6",
  "serde",
  "serde_json",

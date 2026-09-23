@@ -20,7 +20,7 @@ use super::hash::content_hash;
 
 /// Current log format generation. Part of the `content_hash` contract — bump
 /// on any breaking change to the body encoding or hash scheme.
-pub const LOG_VERSION: u32 = 2;
+pub const LOG_VERSION: u32 = 3;
 
 /// Canonical bytes signed by direct provenance signatures. Version 2 binds
 /// routing metadata as well as the event body hash. Length-prefixing every

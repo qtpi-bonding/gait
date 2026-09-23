@@ -18,8 +18,6 @@ git2 = "0.20"     # init's commit + undo's transcript git-walk
 libc = "0.2"      # daemon::stop killpg(SIGTERM)
 serde_yaml = "0.9"  # extension's frontmatter helpers
 identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "675d474" }
-base64 = "0.22"
-prost = "0.13"
 
 [dev-dependencies]
 tempfile = "3"
@@ -28,4 +26,3 @@ serial_test = "3"  # GAIT_DIR-env-var-safe tests (link round-trip)
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.8"
 hex = "0.4"
-prost-types = "0.13"

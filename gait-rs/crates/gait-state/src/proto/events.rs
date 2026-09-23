@@ -21,7 +21,12 @@ pub fn session_start(
 /// (codebase stamp, injected files) is now a separate `ContextStatus` event;
 /// `user_text` carries only content — sender attribution lives on Event.provenance.
 pub fn user_text(content: String) -> pb::event::Body {
-    wire::body(pb::payload::Kind::UserText(pb::UserText {
+    wire::body(pb::payload::Kind::UserText(pb::UserText { content }))
+}
+
+/// `IncomingMessage` — message delivered with an external authorship claim.
+pub fn incoming_message(content: String) -> pb::event::Body {
+    wire::body(pb::payload::Kind::IncomingMessage(pb::IncomingMessage {
         content,
         ..Default::default()
     }))

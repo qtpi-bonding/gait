@@ -20,12 +20,12 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::{Agent, Builder, Client, HandleDispatchFrom, NullRun, Responder};
 use std::path::Path;
 
+use crate::attestation::TrustedMultimatrixKey;
 use crate::lifecycle;
 use crate::session_map::{SessionMap, discover_gait_dir_for_cwd};
 use crate::turn_io::{
     AcpTurnSink, AcpTurnSource, content_blocks_to_text, turn_result_to_stop_reason,
 };
-use gait_ops::attestation::TrustedMultimatrixKey;
 
 /// Build the gait-acp agent: registers `initialize` and `session/new` against
 /// the given `SessionMap`. Returns the concrete `Builder` (not just an opaque
@@ -214,9 +214,9 @@ pub fn build_agent_with_attestation(
                         // attestation still gets correctly rejected rather
                         // than silently bypassing the check.
                         let own_device_public_key: Vec<u8> =
-                            gait_ops::attestation::load_own_device_public_key(&gait_dir);
+                            crate::attestation::load_own_device_public_key(&gait_dir);
                         let replay_store =
-                            match gait_state::attestation_replay::AttestationReplayStore::new(&gait_dir) {
+                            match crate::attestation_replay::AttestationReplayStore::new(&gait_dir) {
                                 Ok(store) => store,
                                 Err(e) => {
                                     return responder.respond_with_internal_error(format!(
@@ -224,7 +224,7 @@ pub fn build_agent_with_attestation(
                                     ));
                                 }
                             };
-                        let verified = gait_ops::attestation::verify_and_build_messages(
+                        let verified = crate::attestation::verify_and_build_messages(
                             &req.meta,
                             &own_device_public_key,
                             &trusted_keys,
@@ -239,11 +239,11 @@ pub fn build_agent_with_attestation(
                         // room message, built exclusively from `body_text`,
                         // never from `req.prompt`.
                         enum TurnInput {
-                            Legacy {
+                            Prompt {
                                 text: String,
                                 provenance: gait_core::port::input::ProvenanceClaim,
                             },
-                            Verified {
+                            AttestedMessages {
                                 bodies: Vec<(
                                     gait_core::proto::gait::log::v1::event::Body,
                                     Option<gait_core::proto::gait::log::v1::Provenance>,
@@ -254,19 +254,19 @@ pub fn build_agent_with_attestation(
                             // A supplied but invalid attestation is retained
                             // as rejected user text in the durable log. The
                             // core fold excludes it from model context.
-                            Err(_e) => TurnInput::Legacy {
+                            Err(_e) => TurnInput::Prompt {
                                 text: content_blocks_to_text(&req.prompt),
                                 provenance: gait_core::port::input::ProvenanceClaim::Rejected,
                             },
                             // No attestation present at all.
                             Ok(None) => {
                                 if require_attestation {
-                                    TurnInput::Legacy {
+                                    TurnInput::Prompt {
                                         text: content_blocks_to_text(&req.prompt),
                                         provenance: gait_core::port::input::ProvenanceClaim::Rejected,
                                     }
                                 } else {
-                                    TurnInput::Legacy {
+                                    TurnInput::Prompt {
                                         text: content_blocks_to_text(&req.prompt),
                                         provenance: crate::meta_provenance::provenance_from_meta(
                                             &req.meta,
@@ -281,14 +281,14 @@ pub fn build_agent_with_attestation(
                             // that signs one message but sends different
                             // prompt content must never have that different
                             // text executed.
-                            Ok(Some(messages)) => TurnInput::Verified {
+                            Ok(Some(messages)) => TurnInput::AttestedMessages {
                                 bodies: messages
                                     .into_iter()
                                     .map(|m| {
                                         (
                                             gait_core::proto::wire::body(
-                                                gait_core::proto::gait::log::v1::payload::Kind::UserText(
-                                                    gait_core::proto::gait::log::v1::UserText {
+                                                gait_core::proto::gait::log::v1::payload::Kind::IncomingMessage(
+                                                    gait_core::proto::gait::log::v1::IncomingMessage {
                                                         content: m.body_text,
                                                         ..Default::default()
                                                     },
@@ -335,7 +335,7 @@ pub fn build_agent_with_attestation(
                                 None
                             };
                             let source: AcpTurnSource = match turn_input {
-                                TurnInput::Legacy { text, provenance } => AcpTurnSource::new_with_claim(
+                                TurnInput::Prompt { text, provenance } => AcpTurnSource::new_with_claim(
                                     text,
                                     gait_core::git::Repos::production(),
                                     codebase.clone(),
@@ -345,7 +345,7 @@ pub fn build_agent_with_attestation(
                                     cancel,
                                     provenance,
                                 ),
-                                TurnInput::Verified { bodies } => AcpTurnSource::new_with_bodies(
+                                TurnInput::AttestedMessages { bodies } => AcpTurnSource::new_with_bodies(
                                     bodies,
                                     cx,
                                     session_id,

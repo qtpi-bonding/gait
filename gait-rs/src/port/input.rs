@@ -1,11 +1,11 @@
 use crate::proto::gait::log::v1::{Provenance, event};
 
-/// Core representation of one incoming message after transport parsing.
+/// Core representation of one input message after transport parsing.
 /// Signature verification happens when the durable event is folded, using
 /// the complete event hash and this provenance. `rejected_provenance_claim`
 /// preserves the distinction between absent metadata and an invalid claim.
 #[derive(Debug, Clone)]
-pub struct IncomingMessage {
+pub struct InputEnvelope {
     pub body: event::Body,
     pub provenance: Option<Provenance>,
     pub rejected_provenance_claim: bool,
@@ -18,7 +18,7 @@ pub enum ProvenanceClaim {
     Rejected,
 }
 
-impl IncomingMessage {
+impl InputEnvelope {
     pub fn new(body: event::Body, provenance: Option<Provenance>) -> Self {
         Self {
             body,
@@ -44,7 +44,7 @@ impl IncomingMessage {
     }
 }
 
-impl From<(event::Body, Option<Provenance>)> for IncomingMessage {
+impl From<(event::Body, Option<Provenance>)> for InputEnvelope {
     fn from((body, provenance): (event::Body, Option<Provenance>)) -> Self {
         Self::new(body, provenance)
     }
@@ -60,7 +60,7 @@ pub enum TurnStart {
     Input {
         /// One core input per message; a batch preserves message/provenance
         /// pairing and records malformed claims for later log folding.
-        bodies: Vec<IncomingMessage>,
+        bodies: Vec<InputEnvelope>,
     },
     SessionUpdate(Vec<event::Body>),
     Resume,

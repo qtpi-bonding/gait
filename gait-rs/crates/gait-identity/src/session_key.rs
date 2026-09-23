@@ -3,7 +3,7 @@
 //! whichever device key is currently active (the existing per-gait_dir
 //! keyring), and the delegation certificate travels with every event this
 //! session key signs. The transcript is built by `identity-crypto`, the one
-//! implementation grorg/gait/multimatrix all share -- never reimplemented
+//! implementation of the shared identity model all use -- never reimplemented
 //! here. See an internal design note §3-4.
 //!
 //! Gait never holds, derives, or reasons about an `agent_id` (revised
@@ -28,7 +28,7 @@ pub struct SessionKey {
 impl SessionKey {
     /// Mints a fresh session keypair and signs a delegation certificate for
     /// it using `device`, via `identity_crypto::transcripts::session_delegation_transcript`
-    /// -- the canonical encoding shared with grorg/multimatrix (see Global
+    /// -- the canonical encoding defined by the shared identity protocol (see Global
     /// Constraints). Rejects a zero or overflowing `valid_for` outright
     /// rather than emitting a structurally invalid (`not_before == not_after`,
     /// or wrapped) window a verifier would otherwise have to catch.

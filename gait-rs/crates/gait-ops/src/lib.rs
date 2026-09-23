@@ -22,7 +22,6 @@ pub fn render_json<T: serde::Serialize>(value: &T, pretty: bool) -> String {
 }
 
 // Domain modules — filled in by later tasks. Declared now so the tree exists.
-pub mod attestation;
 pub mod auth;
 pub mod config;
 pub mod daemon;

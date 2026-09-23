@@ -1217,7 +1217,10 @@ fn last_turn_blocks_empty_when_none() {
 fn active_agent_folds_toggle_per_kind() {
     use crate::proto::gait::log::v1::ToggleKind;
     use std::collections::HashMap;
-    let seed = AgentState::default();
+    let seed = AgentState {
+        model: "m".into(),
+        ..AgentState::default()
+    };
     let evs = mint_events(vec![
         wire::body(payload::Kind::Toggle(pb::Toggle {
             kind: ToggleKind::Skill as i32,
@@ -1649,7 +1652,7 @@ fn active_raw_messages_omits_invalid_direct_provenance() {
     let path = dir.path().join("tx.jsonl");
     wire::append_with_given_provenances(
         &path,
-        events::user_text("do the thing".into()),
+        events::incoming_message("do the thing".into()),
         vec![crate::proto::gait::log::v1::Provenance {
             from: pubkey,
             to: vec![],
@@ -1657,8 +1660,8 @@ fn active_raw_messages_omits_invalid_direct_provenance() {
             signature: vec![],
             scheme: gait_identity::KeyScheme::Ed25519 as i32,
             delegation_cert: None,
-            attested_author_agent_id: None,
-            attested_verification_outcome: None,
+            verified_author_id: None,
+            verification_outcome: None,
         }],
         crate::proto::envelope::EventScope::Session,
     )
@@ -1673,10 +1676,10 @@ fn active_raw_messages_omits_invalid_direct_provenance() {
 }
 
 #[test]
-fn active_raw_messages_omits_rejected_provenance_claim() {
+fn active_raw_messages_omits_rejected_incoming_message_claim() {
     use std::collections::HashMap;
-    let body = crate::proto::wire::body(crate::proto::gait::log::v1::payload::Kind::UserText(
-        pb::UserText {
+    let body = crate::proto::wire::body(crate::proto::gait::log::v1::payload::Kind::IncomingMessage(
+        pb::IncomingMessage {
             content: "do not show this".into(),
             rejected_provenance_claim: true,
         },
@@ -1694,11 +1697,27 @@ fn active_raw_messages_omits_rejected_provenance_claim() {
 }
 
 #[test]
+fn active_raw_messages_omits_incoming_message_without_provenance() {
+    use std::collections::HashMap;
+    let body = events::incoming_message("missing attribution must not reach the agent".into());
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("tx.jsonl");
+    wire::append(&path, body).unwrap();
+    let events = read_events(&path).unwrap();
+    assert_eq!(events.len(), 1, "malformed input remains in the durable log");
+    let raw = run_projection(&ActiveRawMessages, &events, &HashMap::new());
+    assert!(
+        raw.base.is_empty(),
+        "IncomingMessage requires acceptable provenance to reach the agent"
+    );
+}
+
+#[test]
 fn valid_direct_provenance_keeps_uniform_attribution() {
     use gait_identity::Signer as _;
     use std::collections::HashMap;
     let signer = gait_identity::Ed25519Signer::generate();
-    let mut ev = scoped_mint(events::user_text("hello".into()), None, 0, 0);
+    let mut ev = scoped_mint(events::incoming_message("hello".into()), None, 0, 0);
     let to = vec!["session-2".to_string()];
     let context = "room-general";
     let signature = signer.sign(&crate::proto::envelope::provenance_signing_bytes(
@@ -1719,7 +1738,7 @@ fn valid_direct_provenance_keeps_uniform_attribution() {
         panic!("expected accepted user message");
     };
     assert_eq!(attribution[0].trust, crate::types::Trust::Verified);
-    assert_eq!(attribution[0].room_id, context);
+    assert_eq!(attribution[0].context, context);
 }
 
 #[test]
@@ -2088,19 +2107,19 @@ fn active_raw_messages_agent_update_uses_provenance_not_session_id() {
 }
 
 #[test]
-fn a_resumed_session_folds_an_attested_message_as_verified_not_unverified() {
+fn a_resumed_session_folds_a_verified_incoming_message_with_attribution() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("tx.jsonl");
-    let attested_provenance = pb::Provenance {
-        attested_author_agent_id: Some("agent-2".into()),
-        attested_verification_outcome: Some(identity_crypto::VerificationOutcome::DirectKey as i32),
+    let verified_provenance = pb::Provenance {
+        verified_author_id: Some("agent-2".into()),
+        verification_outcome: Some(identity_crypto::VerificationOutcome::DirectKey as i32),
         context: "room-general".into(),
         ..Default::default()
     };
     wire::append_with_given_provenances(
         &path,
-        events::user_text("hello from the room".into()),
-        vec![attested_provenance],
+        events::incoming_message("hello from the room".into()),
+        vec![verified_provenance],
         crate::proto::envelope::EventScope::Session,
     )
     .unwrap();
@@ -2117,26 +2136,26 @@ fn a_resumed_session_folds_an_attested_message_as_verified_not_unverified() {
     assert_eq!(
         attribution[0].trust,
         crate::types::Trust::Verified,
-        "an attested message must fold as Verified on resume, not Unverified -- this is the regression the highest-priority round-3 finding was about"
+        "an ingress-verified message must fold as Verified on resume, not Unverified"
     );
-    assert_eq!(attribution[0].author_agent_id, "agent-2");
-    assert_eq!(attribution[0].room_id, "room-general");
+    assert_eq!(attribution[0].author_id, "agent-2");
+    assert_eq!(attribution[0].context, "room-general");
 }
 
 #[test]
-fn a_resumed_session_folds_a_system_outcome_message_as_system_not_verified_or_unverified() {
+fn a_resumed_session_folds_a_system_verified_message_with_distinct_trust() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("tx.jsonl");
-    let attested_provenance = pb::Provenance {
-        attested_author_agent_id: Some("system".into()),
-        attested_verification_outcome: Some(identity_crypto::VerificationOutcome::System as i32),
+    let verified_provenance = pb::Provenance {
+        verified_author_id: Some("system".into()),
+        verification_outcome: Some(identity_crypto::VerificationOutcome::System as i32),
         context: "room-general".into(),
         ..Default::default()
     };
     wire::append_with_given_provenances(
         &path,
-        events::user_text("agent joined the room".into()),
-        vec![attested_provenance],
+        events::incoming_message("agent joined the room".into()),
+        vec![verified_provenance],
         crate::proto::envelope::EventScope::Session,
     )
     .unwrap();
