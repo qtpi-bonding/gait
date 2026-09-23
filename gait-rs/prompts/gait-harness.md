@@ -32,7 +32,9 @@ an operation is outside its allowed scope, change approach rather than retrying 
 **Errors:** a tool *error* is not a denial. Invalid arguments, a patch that
 did not apply, or a failing command are fixable: read the error, correct the call
 (re-read the file first if its content may differ from what you assumed), and
-retry. Only a denial is final.
+retry. Only a denial is final. Fix your own mistakes (a bad edit, a step done
+out of order) and continue the task. But work from the files the task names: if
+one does not exist, stop and say so; never substitute a similar one.
 
 **Context:** your input includes the task, current time, codebase commit, dirty
 files, and reconstructed history from the transcript (`UserText`,
