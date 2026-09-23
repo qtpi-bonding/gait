@@ -98,7 +98,7 @@ impl Tool for ShellTool {
 
     async fn execute(&self, args: Value, rec: &dyn crate::types::Rec) -> Result<Value, ToolError> {
         let params: ShellParams = serde_json::from_value(args)
-            .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
+            .map_err(|e| crate::tools::ToolError::InvalidParams(e.to_string()))?;
 
         // Every call is independent: a relative `cwd` resolves against the codebase
         // root, an absolute `cwd` is used as-is, and an omitted `cwd` IS the root —
@@ -387,12 +387,12 @@ impl Tool for ShellTool {
         );
 
         // Structured process-tool shape: turn.rs reads `output` for the model-facing text,
-        // and lifts `exit_code` into the proto `ProcessResult`. The "exit N (Xms)"
-        // prefix is gone — timing lives in the generic `ToolResult.duration`, exit in `process`.
+        // and lifts `exit_code` into the proto `ProcessResult`. The model sees the exit
+        // code as text too: without it, a failing command reads the same as a passing one.
         let model_output = if self.ctx.output_capture.spool_path().is_some() {
-            format!("[cwd: {}]", cwd.display())
+            format!("[exit {exit_code}] [cwd: {}]", cwd.display())
         } else {
-            format!("{}\n{}", tail_str.trim_end(), note)
+            format!("{}\n[exit {exit_code}] {}", tail_str.trim_end(), note)
         };
         Ok(serde_json::json!({
             "output": model_output,

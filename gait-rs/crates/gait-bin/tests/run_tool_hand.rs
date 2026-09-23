@@ -258,7 +258,7 @@ fn shell_output_and_tmpdir_survive_the_hand_subprocess() {
     let output = structured_output(feedback_from_output(child.wait_with_output().unwrap()));
     assert_eq!(
         output,
-        format!("[cwd: {}]", dir.path().display()),
+        format!("[exit 0] [cwd: {}]", dir.path().display()),
         "a spooling hand returns metadata while the spine owns finalization"
     );
     assert_eq!(

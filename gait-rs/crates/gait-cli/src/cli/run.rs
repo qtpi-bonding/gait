@@ -171,14 +171,15 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
     let args = RunArgs::parse_from(argv);
     let mut sink = CliSink::stdio(false);
 
+    // Always the first stdout line, for new and continued sessions alike, so
+    // callers can rely on a fixed two-line shape.
     let session_id = args.session_id.clone().unwrap_or_else(|| {
-        let id = format!(
+        format!(
             "s{}",
             &uuid::Uuid::new_v4().to_string().replace('-', "")[..8]
-        );
-        sink.session_id(&id);
-        id
+        )
     });
+    sink.session_id(&session_id);
 
     // Entry point: surface gait.jsonc parse errors instead of silently
     // defaulting. CLI args layered on top still take precedence below.

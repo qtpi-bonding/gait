@@ -168,6 +168,8 @@ async fn returns_nonzero_exit_code_on_failure() {
         .and_then(|v| v.as_i64())
         .expect("exit_code field");
     assert_eq!(exit_code, 1, "got: {result}");
+    let output = result.get("output").and_then(|v| v.as_str()).unwrap();
+    assert!(output.contains("[exit 1]"), "model must see the exit code: {output}");
 }
 
 #[tokio::test]

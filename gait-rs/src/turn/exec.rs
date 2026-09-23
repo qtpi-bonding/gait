@@ -226,7 +226,7 @@ pub(super) async fn execute_tool_call(
                     // wrapper — turn.rs is the single place that bridges Value → ToolResult.
                     if let (Some(output), Some(exit_code)) = (v.get("output"), v.get("exit_code")) {
                         let output = output.as_str().unwrap_or("").to_string();
-                        let exit_code = exit_code.as_i64().unwrap_or(0) as i32;
+                        let exit_code = process_exit_code(exit_code);
                         (
                             output,
                             duration,
@@ -249,7 +249,11 @@ pub(super) async fn execute_tool_call(
                     }
                 }
                 Err(e) => {
-                    let value = serde_json::Value::String(format!("error: {e}"));
+                    let text = match e.downcast_ref::<crate::tools::ToolError>() {
+                        Some(tool_error) => tool_error.model_text(&tc.tool_name),
+                        None => format!("error: {e}"),
+                    };
+                    let value = serde_json::Value::String(text);
                     let (value, full_output) = if relay.is_none() {
                         let (value, full_output) = crate::tools::ensure_archived_model_value(
                             value,
@@ -339,6 +343,15 @@ pub(super) fn stream_preview_if_always(
     if let Some(p) = tool.and_then(|t| t.preview(args)) {
         emitter.publish_delta(format!("\n{}\n", p));
     }
+}
+
+/// A process tool's exit code. Values relayed from the hand arrive as protobuf
+/// Values, which carry every number as a float (`1.0`), so `as_i64` alone
+/// would read every relayed exit code as 0.
+fn process_exit_code(v: &serde_json::Value) -> i32 {
+    v.as_i64()
+        .or_else(|| v.as_f64().map(|f| f as i64))
+        .unwrap_or(0) as i32
 }
 
 /// Build and durably record a `ToolExecResult` for a tool-call error.
@@ -432,15 +445,6 @@ pub(crate) fn apply_parse_filter(raw: &str, ops: &serde_json::Value) -> String {
         }
     }
 
-    let in_lines = raw.lines().count();
-    let out_lines = current.lines().count();
-    if out_lines != in_lines {
-        #[allow(clippy::print_stderr)]
-        // tracked debt: sealed-brain stderr bypasses the Nerve/event channel — see docs/superpowers/plans/2026-07-05-repl-stderr-race-fix.md
-        {
-            eprintln!("[gait] parse-filter: {}/{} lines kept", out_lines, in_lines);
-        }
-    }
     current
 }
 
@@ -532,6 +536,16 @@ mod synapse_routing_tests {
     use super::*;
     use crate::types::{Tool, ToolAccess, ToolCall};
     use tempfile::tempdir;
+
+    #[test]
+    fn exit_code_survives_the_relay_float_conversion() {
+        // The hand relays tool values as protobuf Values, which carry every
+        // number as a float: a failing command's exit code arrives as 1.0.
+        assert_eq!(process_exit_code(&serde_json::json!(1.0)), 1);
+        assert_eq!(process_exit_code(&serde_json::json!(101)), 101);
+        assert_eq!(process_exit_code(&serde_json::json!(-9.0)), -9);
+    }
+
 
     struct TouchTool;
     #[async_trait::async_trait]

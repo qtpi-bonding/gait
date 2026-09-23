@@ -500,6 +500,20 @@ pub enum ToolError {
     Internal(#[from] anyhow::Error),
 }
 
+impl ToolError {
+    /// The text the model sees for this error. Bad arguments name the tool so
+    /// the model knows which call to fix.
+    pub fn model_text(&self, tool_name: &str) -> String {
+        match self {
+            ToolError::InvalidParams(msg) => format!(
+                "error: invalid arguments for `{tool_name}`: {msg} — fix the arguments to \
+                 match the tool's parameter schema and retry"
+            ),
+            other => format!("error: {other}"),
+        }
+    }
+}
+
 /// The recorder surface the tool/hook layer is allowed to touch. The concrete
 /// recorder (`gait-core::proto::emitter`) implements this; the foundation names
 /// only this trait so `types` never depends on the high-layer emitter.
@@ -767,6 +781,20 @@ pub enum MessageMutation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_params_model_text_names_the_tool_and_is_not_internal() {
+        let text = ToolError::InvalidParams("missing field `cmd`".into()).model_text("shell");
+        assert!(text.contains("`shell`"), "{text}");
+        assert!(text.contains("missing field `cmd`"), "{text}");
+        assert!(!text.contains("internal"), "{text}");
+    }
+
+    #[test]
+    fn execute_model_text_is_the_plain_message() {
+        let text = ToolError::Execute("hunk context is missing".into()).model_text("apply_patch");
+        assert_eq!(text, "error: hunk context is missing");
+    }
 
     #[test]
     fn renders_one_bounded_tag_per_message_including_context() {

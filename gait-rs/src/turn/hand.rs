@@ -243,7 +243,7 @@ pub async fn run_hand(config: HandConfig) {
     } else {
         match tool.execute(args_json, &rec).await {
             Ok(v) => v,
-            Err(e) => serde_json::Value::String(format!("error: {e}")),
+            Err(e) => serde_json::Value::String(e.model_text(tool.name())),
         }
     };
 
@@ -591,11 +591,11 @@ fn build_network_denial_hint(cmd: &str, shell_whitelist_patterns: &[String]) -> 
             }
         }
         return Some(format!(
-            "sandbox denied network for this command; no shell_whitelist entry matches any segment of \"{cmd}\" — add one to sandbox.shell_whitelist if this should be allowed."
+            "sandbox denied network for this command; no shell_whitelist entry matches any segment of \"{cmd}\" — only the user can add a sandbox.shell_whitelist entry. Do not retry it; if the task needs network access, say so in your result."
         ));
     }
     Some(format!(
-        "sandbox denied network for this command; no shell_whitelist entry matches \"{cmd}\" — add one to sandbox.shell_whitelist if this should be allowed."
+        "sandbox denied network for this command; no shell_whitelist entry matches \"{cmd}\" — only the user can add a sandbox.shell_whitelist entry. Do not retry it; if the task needs network access, say so in your result."
     ))
 }
 
@@ -853,6 +853,10 @@ mod tests {
         assert!(
             hint.contains("no shell_whitelist entry matches"),
             "hint should be the generic no-match message: {hint}"
+        );
+        assert!(
+            !hint.contains("add one to"),
+            "the model can't edit sandbox config, so the hint must not tell it to: {hint}"
         );
     }
 

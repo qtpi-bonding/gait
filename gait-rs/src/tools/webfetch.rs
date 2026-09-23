@@ -221,7 +221,7 @@ impl Tool for WebfetchTool {
 
     async fn execute(&self, args: Value, _rec: &dyn crate::types::Rec) -> Result<Value, ToolError> {
         let params: WebfetchParams = serde_json::from_value(args)
-            .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
+            .map_err(|e| crate::tools::ToolError::InvalidParams(e.to_string()))?;
 
         if !params.url.starts_with("http://") && !params.url.starts_with("https://") {
             return Err(crate::tools::ToolError::Execute(
@@ -466,6 +466,19 @@ mod tests {
             )
             .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn missing_url_is_invalid_params_not_internal() {
+        let tool = WebfetchTool::new();
+        let err = tool
+            .execute(serde_json::json!({}), &crate::Recorder::detached())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, crate::tools::ToolError::InvalidParams(_)),
+            "{err:?}"
+        );
     }
 
     #[test]

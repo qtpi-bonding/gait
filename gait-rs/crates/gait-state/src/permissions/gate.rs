@@ -14,7 +14,7 @@ use crate::types::{Tool, ToolCall, ToolPermission};
 /// the emit site where `find_matched_deny_pattern` is already called.
 pub enum GateDecision {
     /// Tool is allowed. `approval_prefix` is the text to prepend to the tool
-    /// result (e.g. `"[Auto mode.]"` or `"[Auto-approved: shell:*]"`). `None`
+    /// result (e.g. `"[Auto-approved: shell:*]"`). `None`
     /// means no prefix — the tool runs as-is.
     Allow { approval_prefix: Option<String> },
     /// Tool requires user approval. `items` lists the `PermissionItem`s the
@@ -69,12 +69,12 @@ pub fn classify(
                 .all(|req| is_request_approved(&tc.tool_name, req, effective_allow)),
         };
     if is_allowed {
-        // Pick the prefix to stamp on the tool result. In auto mode we
-        // always stamp "[Auto mode.]"; in manual mode we only stamp when
-        // the tool was auto-approved via a specific allow pattern, so the
-        // model can see which pattern let it through.
+        // Pick the prefix to stamp on the tool result. Auto mode stamps
+        // nothing; in manual mode we only stamp when the tool was
+        // auto-approved via a specific allow pattern, so the model can see
+        // which pattern let it through.
         let approval_prefix: Option<String> = if auto {
-            Some("[Auto mode.]".to_string())
+            None
         } else {
             match &perm {
                 ToolPermission::Passthrough => None,
@@ -150,6 +150,37 @@ mod tests {
         }
         fn preview(&self, _args: &serde_json::Value) -> Option<String> {
             Some("--- a/foo\n+++ b/foo\n@@ -1 +1 @@\n-old\n+new".into())
+        }
+    }
+
+    #[test]
+    fn auto_mode_allow_stamps_no_prefix_on_the_result() {
+        // "[Auto mode.]" on every result told the model nothing it could act on.
+        let tc = crate::types::ToolCall {
+            tool_call_id: "tc1".into(),
+            tool_name: "edit".into(),
+            args: serde_json::json!({}),
+        };
+        let tool: &dyn crate::types::Tool = &PreviewTool;
+        match classify(&tc, Some(tool), &[], &[], true) {
+            GateDecision::Allow { approval_prefix } => assert_eq!(approval_prefix, None),
+            _other => panic!("expected GateDecision::Allow"),
+        }
+    }
+
+    #[test]
+    fn manual_mode_allow_names_the_matching_pattern() {
+        let tc = crate::types::ToolCall {
+            tool_call_id: "tc1".into(),
+            tool_name: "edit".into(),
+            args: serde_json::json!({}),
+        };
+        let tool: &dyn crate::types::Tool = &PreviewTool;
+        match classify(&tc, Some(tool), &["edit:*".to_string()], &[], false) {
+            GateDecision::Allow { approval_prefix } => {
+                assert_eq!(approval_prefix.as_deref(), Some("[Auto-approved: edit:*]"))
+            }
+            _other => panic!("expected GateDecision::Allow"),
         }
     }
 

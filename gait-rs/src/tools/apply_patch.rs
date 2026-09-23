@@ -286,7 +286,7 @@ pub fn apply(patch: &Patch, old: Option<&str>) -> anyhow::Result<String> {
                         .collect::<Vec<_>>()
                         .join("\n");
                     anyhow::bail!(
-                        "hunk context is {} in the file (matching is exact — every character, \
+                        "hunk context is {} (matching is exact — every character, \
                          including leading/trailing whitespace and indentation, must match the \
                          current file content verbatim; re-read the file and copy the context \
                          lines exactly). First lines of this hunk's context/deletion block:\n{}",
@@ -349,9 +349,10 @@ impl Tool for ApplyPatchTool {
     async fn execute(&self, args: Value, _rec: &dyn crate::types::Rec) -> Result<Value, ToolError> {
         let params: ApplyPatchParams =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidParams(e.to_string()))?;
-        let patch = parse(&params.patch).map_err(ToolError::Internal)?;
-        let target =
-            resolve_target(&self.ctx.codebase_path, &patch).map_err(ToolError::Internal)?;
+        // Parse, target, and apply failures are all fixable by the model.
+        let fixable = |e: anyhow::Error| ToolError::Execute(e.to_string());
+        let patch = parse(&params.patch).map_err(fixable)?;
+        let target = resolve_target(&self.ctx.codebase_path, &patch).map_err(fixable)?;
         let old = if self.ctx.fs.exists(&target) {
             Some(
                 self.ctx
@@ -362,7 +363,7 @@ impl Tool for ApplyPatchTool {
         } else {
             None
         };
-        let new = apply(&patch, old.as_deref()).map_err(ToolError::Internal)?;
+        let new = apply(&patch, old.as_deref()).map_err(fixable)?;
         if let Some(parent) = target.parent() {
             self.ctx
                 .fs
@@ -438,6 +439,36 @@ impl Tool for ApplyPatchTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn a_patch_that_does_not_apply_is_a_user_facing_error_not_internal() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("x.txt"), "a\nb\n").unwrap();
+        let tool = ApplyPatchTool::new(crate::tools::ToolCtx::new(
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            "test".into(),
+        ));
+        let patch = "*** Begin Patch\n*** Update File: x.txt\n@@\n-zzz\n+y\n*** End Patch";
+        let err = tool
+            .execute(serde_json::json!({ "patch": patch }), &crate::Recorder::detached())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::Execute(_)), "{err:?}");
+    }
+    #[tokio::test]
+    async fn a_malformed_patch_is_a_user_facing_error_not_internal() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let tool = ApplyPatchTool::new(crate::tools::ToolCtx::new(
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            "test".into(),
+        ));
+        let err = tool
+            .execute(serde_json::json!({ "patch": "not a patch" }), &crate::Recorder::detached())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::Execute(_)), "{err:?}");
+    }
     #[test]
     fn add_and_update() {
         let p = parse("*** Begin Patch\n*** Add File: x.txt\n+one\n+two\n*** End Patch").unwrap();

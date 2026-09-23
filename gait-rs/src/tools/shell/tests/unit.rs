@@ -70,3 +70,23 @@ fn schema_has_parse_array_field() {
         params
     );
 }
+
+#[tokio::test]
+async fn missing_required_argument_is_invalid_params_not_internal() {
+    let tool = ShellTool::new(ToolCtx::new(
+        std::path::PathBuf::from("/tmp"),
+        std::path::PathBuf::from("/tmp"),
+        "test".into(),
+    ));
+    let err = tool
+        .execute(
+            serde_json::json!({ "file_path": "src/lib.rs", "offset": 1 }),
+            &crate::Recorder::detached(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, crate::tools::ToolError::InvalidParams(_)),
+        "{err:?}"
+    );
+}
