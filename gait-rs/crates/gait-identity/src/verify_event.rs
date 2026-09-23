@@ -1,5 +1,5 @@
 //! Verifies a direct `Provenance.signature` against an event's
-//! `content_hash`. Lives in `gait-identity`, not `gait-proto`: `gait-proto`
+//! `content_hash` and routing metadata. Lives in `gait-identity`, not `gait-proto`: `gait-proto`
 //! cannot depend on this crate's scheme-dispatched crypto (would cycle).
 
 use gait_proto::gait::log::v1::Provenance;
@@ -8,8 +8,8 @@ use identity_crypto::KeyScheme;
 /// True only if `provenance` is a direct signature that verifies against
 /// `content_hash` under its declared scheme. Any failure mode (unknown
 /// scheme, malformed key/signature bytes, bad signature) returns `false` —
-/// never panics. Callers must treat `false` as "untrusted," not as
-/// "corrupt" — see the design spec §7.
+/// never panics. The event remains in the durable log, but model-facing folds
+/// omit user-authored content with a failed check.
 ///
 /// Must NEVER be called with an attested `Provenance` (one where
 /// `attested_author_agent_id`/`attested_verification_outcome` are set) —
@@ -31,7 +31,11 @@ pub fn verify_provenance(provenance: &Provenance, content_hash: &str) -> bool {
     crate::verify(
         scheme,
         &provenance.from,
-        content_hash.as_bytes(),
+        &gait_proto::envelope::provenance_signing_bytes(
+            content_hash,
+            &provenance.to,
+            &provenance.context,
+        ),
         &provenance.signature,
     )
     .unwrap_or(false)
@@ -41,13 +45,14 @@ pub fn verify_provenance(provenance: &Provenance, content_hash: &str) -> bool {
 mod tests {
     use super::*;
     use crate::{Ed25519Signer, Signer};
-    use gait_proto::envelope::{mint, EventScope};
-    use gait_proto::gait::log::v1::{event, payload, Event, Payload, Provenance, UserText};
+        use gait_proto::envelope::{mint, EventScope};
+        use gait_proto::gait::log::v1::{event, payload, Event, Payload, Provenance, UserText};
 
     fn user_text_event() -> Event {
         let body = event::Body::Payload(Payload {
             kind: Some(payload::Kind::UserText(UserText {
                 content: "hi".into(),
+                rejected_provenance_claim: false,
             })),
         });
         mint(body, None, EventScope::Session)
@@ -57,7 +62,11 @@ mod tests {
     fn genuine_signature_verifies() {
         let signer = Ed25519Signer::generate();
         let ev = user_text_event();
-        let signature = signer.sign(ev.content_hash.as_bytes());
+        let signature = signer.sign(&gait_proto::envelope::provenance_signing_bytes(
+            &ev.content_hash,
+            &[],
+            "",
+        ));
         let provenance = Provenance {
             from: signer.public_key().to_vec(),
             to: vec![],
@@ -75,7 +84,11 @@ mod tests {
     fn tampered_content_hash_fails_verification() {
         let signer = Ed25519Signer::generate();
         let ev = user_text_event();
-        let signature = signer.sign(ev.content_hash.as_bytes());
+        let signature = signer.sign(&gait_proto::envelope::provenance_signing_bytes(
+            &ev.content_hash,
+            &[],
+            "",
+        ));
         let provenance = Provenance {
             from: signer.public_key().to_vec(),
             to: vec![],
@@ -87,6 +100,46 @@ mod tests {
             attested_verification_outcome: None,
         };
         assert!(!verify_provenance(&provenance, "tampered")); // simulate a corrupted/edited event
+    }
+
+    #[test]
+    fn tampered_recipient_and_context_fail_verification() {
+        let signer = Ed25519Signer::generate();
+        let ev = user_text_event();
+        let to = vec!["session-a".to_string()];
+        let signature = signer.sign(&gait_proto::envelope::provenance_signing_bytes(
+            &ev.content_hash,
+            &to,
+            "room-a",
+        ));
+        let mut provenance = Provenance {
+            from: signer.public_key().to_vec(),
+            to,
+            context: "room-a".into(),
+            signature,
+            scheme: signer.scheme() as i32,
+            ..Default::default()
+        };
+        assert!(verify_provenance(&provenance, &ev.content_hash));
+
+        provenance.to[0] = "session-b".into();
+        assert!(!verify_provenance(&provenance, &ev.content_hash));
+        provenance.to[0] = "session-a".into();
+        provenance.context = "room-b".into();
+        assert!(!verify_provenance(&provenance, &ev.content_hash));
+    }
+
+    #[test]
+    fn legacy_content_hash_only_signature_is_not_accepted() {
+        let signer = Ed25519Signer::generate();
+        let ev = user_text_event();
+        let provenance = Provenance {
+            from: signer.public_key().to_vec(),
+            signature: signer.sign(ev.content_hash.as_bytes()),
+            scheme: signer.scheme() as i32,
+            ..Default::default()
+        };
+        assert!(!verify_provenance(&provenance, &ev.content_hash));
     }
 
     #[test]

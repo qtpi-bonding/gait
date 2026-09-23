@@ -22,6 +22,26 @@ use super::hash::content_hash;
 /// on any breaking change to the body encoding or hash scheme.
 pub const LOG_VERSION: u32 = 2;
 
+/// Canonical bytes signed by direct provenance signatures. Version 2 binds
+/// routing metadata as well as the event body hash. Length-prefixing every
+/// variable-size field makes the encoding unambiguous; the domain separator
+/// prevents these signatures from being reused for another Gait purpose.
+pub fn provenance_signing_bytes(content_hash: &str, to: &[String], context: &str) -> Vec<u8> {
+    fn push_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+        out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+        out.extend_from_slice(bytes);
+    }
+
+    let mut out = b"gait-provenance-signature-v2\0".to_vec();
+    push_bytes(&mut out, content_hash.as_bytes());
+    out.extend_from_slice(&(to.len() as u64).to_be_bytes());
+    for recipient in to {
+        push_bytes(&mut out, recipient.as_bytes());
+    }
+    push_bytes(&mut out, context.as_bytes());
+    out
+}
+
 /// Hierarchy coordinates for an event. Presence is semantic: zero is a valid
 /// index, so an absent parent can never be represented by a zero sentinel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

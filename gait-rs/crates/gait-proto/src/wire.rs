@@ -129,8 +129,8 @@ pub fn append(path: &Path, body: event::Body) -> anyhow::Result<Event> {
 /// carries the sender/thread metadata; a subsequent in-memory patch would
 /// silently leave the disk out of sync.
 ///
-/// `sign` is called with the event's freshly-stamped `content_hash` bytes
-/// (i.e. `content_hash.as_bytes()`, the hex string's UTF-8 bytes) AFTER
+/// `sign` is called with the canonical v2 provenance-signature bytes for the
+/// event's freshly-stamped `content_hash` and the supplied route fields AFTER
 /// `mint()` runs — that's the whole reason this takes signing material
 /// (`from`/`scheme`/`sign`) instead of a pre-built `Provenance`: the caller
 /// cannot know `content_hash` before `mint()` executes.
@@ -154,7 +154,8 @@ pub fn append_with_provenance(
 ) -> anyhow::Result<Event> {
     let prev = last_event(path)?;
     let mut ev = mint(body, prev.as_ref(), scope);
-    let signature = sign(ev.content_hash.as_bytes());
+    let signature =
+        sign(crate::envelope::provenance_signing_bytes(&ev.content_hash, &to, &context).as_slice());
     ev.provenance = vec![crate::gait::log::v1::Provenance {
         from,
         to,
@@ -186,7 +187,8 @@ pub fn append_with_delegated_provenance(
 ) -> anyhow::Result<Event> {
     let prev = last_event(path)?;
     let mut ev = mint(body, prev.as_ref(), scope);
-    let signature = sign(ev.content_hash.as_bytes());
+    let signature =
+        sign(crate::envelope::provenance_signing_bytes(&ev.content_hash, &to, &context).as_slice());
     ev.provenance = vec![crate::gait::log::v1::Provenance {
         from,
         to,
@@ -274,6 +276,7 @@ mod tests {
         let body = event::Body::Payload(Payload {
             kind: Some(payload::Kind::UserText(UserText {
                 content: "hi".into(),
+                ..Default::default()
             })),
         });
         let ev = append_with_delegated_provenance(
@@ -424,6 +427,7 @@ mod tests {
             kind: Some(crate::gait::log::v1::payload::Kind::UserText(
                 crate::gait::log::v1::UserText {
                     content: "hi".into(),
+                    ..Default::default()
                 },
             )),
         });
@@ -441,8 +445,14 @@ mod tests {
         .unwrap();
         let provenance = ev.provenance.first().expect("provenance set");
         assert_eq!(provenance.from, from);
-        assert_eq!(provenance.scheme, identity_crypto::KeyScheme::Ed25519 as i32);
-        assert_eq!(provenance.signature, ev.content_hash.as_bytes());
+        assert_eq!(
+            provenance.scheme,
+            identity_crypto::KeyScheme::Ed25519 as i32
+        );
+        assert_eq!(
+            provenance.signature,
+            crate::envelope::provenance_signing_bytes(&ev.content_hash, &[], "")
+        );
         assert_eq!((ev.run, ev.turn, ev.step), (Some(1), Some(2), None));
     }
 
@@ -454,6 +464,7 @@ mod tests {
             kind: Some(crate::gait::log::v1::payload::Kind::UserText(
                 crate::gait::log::v1::UserText {
                     content: "hi".into(),
+                    ..Default::default()
                 },
             )),
         });

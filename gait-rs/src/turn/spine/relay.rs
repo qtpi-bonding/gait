@@ -202,7 +202,7 @@ pub async fn relay_brain_turn(
         TurnMode::Ephemeral { input } => input
             .iter()
             .filter_map(|event| event.body.clone())
-            .map(|body| (body, None))
+            .map(|body| (body, None).into())
             .collect(),
     };
     let started = crate::turn::run_lifecycle::begin_turn(&log, &git, codebase, trigger)?;

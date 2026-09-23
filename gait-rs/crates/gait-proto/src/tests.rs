@@ -26,6 +26,7 @@ fn sample_event() -> Event {
         body: Some(event::Body::Payload(Payload {
             kind: Some(payload::Kind::UserText(UserText {
                 content: "hello".into(),
+                ..Default::default()
             })),
         })),
         provenance: Vec::new(),

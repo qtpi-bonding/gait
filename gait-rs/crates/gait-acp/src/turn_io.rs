@@ -285,19 +285,36 @@ impl AcpTurnSource {
         cancel: tokio_util::sync::CancellationToken,
         provenance: Option<gait_core::proto::gait::log::v1::Provenance>,
     ) -> Self {
+        let claim = provenance
+            .map(gait_core::port::input::ProvenanceClaim::Direct)
+            .unwrap_or(gait_core::port::input::ProvenanceClaim::Absent);
+        Self::new_with_claim(
+            text, repos, codebase, cx, session_id, gait_dir, cancel, claim,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_claim(
+        text: String,
+        repos: Repos,
+        codebase: PathBuf,
+        cx: ConnectionTo<Client>,
+        session_id: SessionId,
+        gait_dir: PathBuf,
+        cancel: tokio_util::sync::CancellationToken,
+        claim: gait_core::port::input::ProvenanceClaim,
+    ) -> Self {
         let sid = session_id.0.to_string();
         // `provenance` (when present) belongs to the user_text body only --
         // user_turn_events()'s second body (context_status) is spine-derived
         // metadata, not attributable content, so it never carries provenance.
-        let mut bodies: Vec<(
-            gait_core::proto::gait::log::v1::event::Body,
-            Option<gait_core::proto::gait::log::v1::Provenance>,
-        )> = user_turn_events(&repos, &codebase, text)
-            .into_iter()
-            .map(|b| (b, None))
-            .collect();
+        let mut bodies: Vec<gait_core::port::input::IncomingMessage> =
+            user_turn_events(&repos, &codebase, text)
+                .into_iter()
+                .map(|b| (b, None).into())
+                .collect();
         if let Some(first) = bodies.first_mut() {
-            first.1 = provenance;
+            *first = gait_core::port::input::IncomingMessage::with_claim(first.body.clone(), claim);
         }
         Self {
             first: Some(TurnStart::Input { bodies }),
@@ -328,7 +345,9 @@ impl AcpTurnSource {
     ) -> Self {
         let sid = session_id.0.to_string();
         Self {
-            first: Some(TurnStart::Input { bodies }),
+            first: Some(TurnStart::Input {
+                bodies: bodies.into_iter().map(Into::into).collect(),
+            }),
             cx,
             session_id,
             sid,
@@ -962,7 +981,7 @@ mod tests {
         match source.next().await.expect("first turn") {
             TurnStart::Input { bodies } => {
                 assert_eq!(
-                    bodies[0].1.as_ref(),
+                    bodies[0].provenance.as_ref(),
                     Some(&provenance),
                     "provenance must be attached to the first (user_text) body"
                 );

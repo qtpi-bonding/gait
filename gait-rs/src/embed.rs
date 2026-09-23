@@ -10,16 +10,16 @@
 
 // One-`use` embedding facade: re-export the port surface so a consumer needs only
 // `use gait_ai::embed::*`.
-pub use crate::config::{load_config, GaitConfig};
+pub use crate::Recorder;
+pub use crate::config::{GaitConfig, load_config};
 pub use crate::git::Repos;
-pub use crate::port::input::{TurnSource, TurnStart};
+pub use crate::port::input::{IncomingMessage, TurnSource, TurnStart};
 pub use crate::port::output::{CliSink, Diag, RecordingSink, SinkFrame, TurnSink};
 pub use crate::profile::ResolvedProfile;
 pub use crate::proto::gait::log::v1::{RunResult, StreamItem};
 pub use crate::session::Session;
-pub use crate::turn::spine::{strip_task_from_args, TurnMode};
+pub use crate::turn::spine::{TurnMode, strip_task_from_args};
 pub use crate::turn::{TurnInput, TurnResult};
-pub use crate::Recorder;
 pub use cascade::CascadeKillHandle;
 
 use std::ops::ControlFlow;

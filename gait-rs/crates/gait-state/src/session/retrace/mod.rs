@@ -761,6 +761,13 @@ impl Projection for ActiveRawMessages {
     fn apply(&self, st: &mut Self::State, ev: &Event, kind: &payload::Kind) {
         match kind {
             payload::Kind::UserText(u) => {
+                // Keep rejected inbound text in the immutable audit log, but
+                // do not fold a malformed claim or an invalid signature into
+                // the model-visible conversation. Provenance-free human
+                // prompts remain visible.
+                if u.rejected_provenance_claim || !event_provenance_is_acceptable(ev) {
+                    return;
+                }
                 let attribution: Attributions = ev
                     .provenance
                     .iter()
@@ -848,6 +855,9 @@ impl Projection for ActiveRawMessages {
                 attribution: Vec::new(),
             }),
             payload::Kind::AgentUpdate(au) => {
+                if !event_provenance_is_acceptable(ev) {
+                    return;
+                }
                 let status = pb::AgentStatus::try_from(au.status)
                     .map(|s| match s {
                         pb::AgentStatus::Done => "done",
@@ -1026,6 +1036,21 @@ impl Projection for ActiveRawMessages {
             _ => {}
         }
     }
+}
+
+fn event_provenance_is_acceptable(ev: &Event) -> bool {
+    ev.provenance.iter().all(|p| {
+        if let Some(outcome) = p.attested_verification_outcome {
+            Trust::from_verification_outcome(outcome) != Trust::Unverified
+                && p.attested_author_agent_id.is_some()
+                && p.from.is_empty()
+                && p.signature.is_empty()
+        } else if p.attested_author_agent_id.is_some() {
+            false
+        } else {
+            gait_identity::verify_provenance(p, &ev.content_hash)
+        }
+    })
 }
 
 /// Merge consecutive tool-call assistant messages and consecutive tool-result

@@ -21,7 +21,10 @@ pub fn session_start(
 /// (codebase stamp, injected files) is now a separate `ContextStatus` event;
 /// `user_text` carries only content — sender attribution lives on Event.provenance.
 pub fn user_text(content: String) -> pb::event::Body {
-    wire::body(pb::payload::Kind::UserText(pb::UserText { content }))
+    wire::body(pb::payload::Kind::UserText(pb::UserText {
+        content,
+        ..Default::default()
+    }))
 }
 
 /// `ContextStatus` — per-turn environment state (codebase stamp + injected

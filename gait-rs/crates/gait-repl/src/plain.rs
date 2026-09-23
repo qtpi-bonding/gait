@@ -800,7 +800,7 @@ impl TurnSource for PlainSource {
             );
             let bodies = user_turn_events(&self.repos, &self.codebase, expanded)
                 .into_iter()
-                .map(|b| (b, None))
+                .map(|b| (b, None).into())
                 .collect();
             self.ran_turn = true;
             return Some(TurnStart::Input { bodies });

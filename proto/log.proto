@@ -40,8 +40,8 @@ message Event {
   // multi-writer room log) or lives in a room log; omitted in an ordinary
   // single-writer session log, where authorship is implicit in the log's
   // owner. `content_hash` covers only the body arm, by construction — see
-  // envelope.rs's doc comment — so `provenance.signature` instead signs
-  // `content_hash` itself (see Provenance's doc comment).
+  // envelope.rs's doc comment — so `provenance.signature` signs the content
+  // hash together with its route fields (see Provenance's doc comment).
   repeated Provenance provenance = 9;
   optional uint32 step      = 10; // 0-indexed step ordinal within the turn
   reserved 11 to 15;             // remaining envelope-field reservation
@@ -60,8 +60,13 @@ message Event {
 // public key, self-certifying — `scheme` says which curve produced it, so
 // verification never needs a separate keyring lookup. `signature` is NOT
 // integrity-covered by content_hash (see field 9's comment on
-// Event.provenance) — it covers content_hash itself (signed independently,
-// after content_hash is stamped). `KeyScheme` lives in `identitycrypto.v1`
+// Event.provenance) — it covers the content_hash plus `to` and `context` in
+// the v2 provenance-signature encoding (signed independently, after
+// content_hash is stamped). Encoding: UTF-8 domain tag
+// `gait-provenance-signature-v2\0`, then an unsigned 64-bit big-endian byte
+// length and bytes for content_hash, an unsigned 64-bit big-endian count of
+// recipients followed by each recipient's length and UTF-8 bytes in order,
+// then context's length and UTF-8 bytes. `KeyScheme` lives in `identitycrypto.v1`
 // (imported above), not here -- the discriminant every canonical transcript
 // embeds as a raw byte is shared with grorg/multimatrix, not gait-owned; see
 // an internal design note.
@@ -69,7 +74,7 @@ message Provenance {
   bytes                        from            = 1;  // public key bytes
   repeated string              to              = 2;  // specific recipients; empty = the room/log at large
   string                       context         = 3;  // room/thread reference — freeform, no enforced vocabulary
-  bytes                        signature       = 4;  // signs content_hash; NOT integrity-covered by content_hash itself
+  bytes                        signature       = 4;  // signs content_hash + to + context; NOT integrity-covered by content_hash itself
   identitycrypto.v1.KeyScheme  scheme          = 5;  // discriminant for `from`/`signature`
   // Present only when `from` is a session key, never registered with grorg --
   // authorizes it to sign on the device key's behalf for a bounded window.
@@ -305,7 +310,11 @@ message Agent {                       // the live agent config from this seq for
 
 message UserText {
   string content = 1;
-  reserved 2, 3, 4;  // from removed (2) — superseded by Event.provenance; 3,4 already reserved
+  // Set when a transport supplied provenance that could not be parsed or
+  // verified. This keeps rejected claims distinguishable from ordinary
+  // provenance-free user text when the durable log is folded later.
+  bool rejected_provenance_claim = 2;
+  reserved 3, 4;
 }
 
 message Inject {

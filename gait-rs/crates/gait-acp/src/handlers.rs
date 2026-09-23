@@ -231,17 +231,17 @@ pub fn build_agent_with_attestation(
                             &replay_store,
                         );
                         // Two ways to build this turn's trigger: the
-                        // fail-open, no-attestation path (today's behavior,
-                        // byte-for-byte unchanged -- text + optional single
-                        // direct provenance, via user_turn_events() so the
-                        // context_status body is still included), or the
+                        // no-attestation path (plain prompts remain visible;
+                        // malformed provenance claims are marked for
+                        // quarantine), via user_turn_events() so the
+                        // context_status body is still included, or the
                         // fix -- one (body, provenance) pair per verified
                         // room message, built exclusively from `body_text`,
                         // never from `req.prompt`.
                         enum TurnInput {
                             Legacy {
                                 text: String,
-                                provenance: Option<gait_core::proto::gait::log::v1::Provenance>,
+                                provenance: gait_core::port::input::ProvenanceClaim,
                             },
                             Verified {
                                 bodies: Vec<(
@@ -251,29 +251,27 @@ pub fn build_agent_with_attestation(
                             },
                         }
                         let turn_input = match verified {
-                            // An attestation was present and invalid (bad
-                            // signature, untrusted key, replay, or this
-                            // device not a listed recipient) -- always a hard
-                            // failure, regardless of session policy. Present-
-                            // but-invalid is never treated as absent.
-                            Err(e) => {
-                                return responder.respond_with_internal_error(format!(
-                                    "delivery-attestation verification failed: {e}"
-                                ));
-                            }
+                            // A supplied but invalid attestation is retained
+                            // as rejected user text in the durable log. The
+                            // core fold excludes it from model context.
+                            Err(_e) => TurnInput::Legacy {
+                                text: content_blocks_to_text(&req.prompt),
+                                provenance: gait_core::port::input::ProvenanceClaim::Rejected,
+                            },
                             // No attestation present at all.
                             Ok(None) => {
                                 if require_attestation {
-                                    return responder.respond_with_internal_error(
-                                        "this session requires a verified delivery-attestation, but none was present"
-                                            .to_string(),
-                                    );
-                                }
-                                TurnInput::Legacy {
-                                    text: content_blocks_to_text(&req.prompt),
-                                    provenance: crate::meta_provenance::provenance_from_meta(
-                                        &req.meta,
-                                    ),
+                                    TurnInput::Legacy {
+                                        text: content_blocks_to_text(&req.prompt),
+                                        provenance: gait_core::port::input::ProvenanceClaim::Rejected,
+                                    }
+                                } else {
+                                    TurnInput::Legacy {
+                                        text: content_blocks_to_text(&req.prompt),
+                                        provenance: crate::meta_provenance::provenance_from_meta(
+                                            &req.meta,
+                                        ),
+                                    }
                                 }
                             }
                             // The fix: build every logged event body -- and
@@ -292,6 +290,7 @@ pub fn build_agent_with_attestation(
                                                 gait_core::proto::gait::log::v1::payload::Kind::UserText(
                                                     gait_core::proto::gait::log::v1::UserText {
                                                         content: m.body_text,
+                                                        ..Default::default()
                                                     },
                                                 ),
                                             ),
@@ -336,7 +335,7 @@ pub fn build_agent_with_attestation(
                                 None
                             };
                             let source: AcpTurnSource = match turn_input {
-                                TurnInput::Legacy { text, provenance } => AcpTurnSource::new(
+                                TurnInput::Legacy { text, provenance } => AcpTurnSource::new_with_claim(
                                     text,
                                     gait_core::git::Repos::production(),
                                     codebase.clone(),

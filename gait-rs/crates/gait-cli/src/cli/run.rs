@@ -124,7 +124,7 @@ impl TurnSource for CliSource {
         self.done = true;
         match self.bodies.take() {
             Some(b) if !b.is_empty() => Some(TurnStart::Input {
-                bodies: b.into_iter().map(|body| (body, None)).collect(),
+                bodies: b.into_iter().map(|body| (body, None).into()).collect(),
             }),
             _ => Some(TurnStart::Resume),
         }

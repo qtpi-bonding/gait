@@ -124,12 +124,16 @@ async fn prompt_request_meta_provenance_lands_on_the_event_and_verifies() {
     let body = serde_json::json!({"payload": {"userText": {"content": text}}});
     let hash = gait_proto::hash::content_hash(gait_proto::envelope::LOG_VERSION, &body);
     let signer = gait_identity::Ed25519Signer::generate();
-    let signature = signer.sign(hash.as_bytes());
+    let signature = signer.sign(&gait_proto::envelope::provenance_signing_bytes(
+        &hash,
+        &[],
+        "",
+    ));
     let from = signer.public_key().to_vec();
     let meta = serde_json::Map::from_iter([(
         "gait/provenance".to_string(),
         serde_json::json!({
-            "v": 1, "scheme": "ed25519",
+            "v": 2, "scheme": "ed25519",
             "from": base64::engine::general_purpose::STANDARD.encode(&from),
             "signature": base64::engine::general_purpose::STANDARD.encode(&signature),
         }),
@@ -169,6 +173,113 @@ async fn prompt_request_meta_provenance_lands_on_the_event_and_verifies() {
         gait_identity::verify_provenance(provenance, &event.content_hash),
         "real signature must verify"
     );
+}
+
+#[tokio::test]
+async fn legacy_provenance_is_logged_but_not_folded_into_agent_context() {
+    set_brain_exe();
+    let (_temp, home, repo) = workspace(Path::new("/tmp"));
+    bake_say_hi(&home);
+    let text = "legacy peer text must not reach the agent";
+    let meta = serde_json::Map::from_iter([(
+        "gait/provenance".to_string(),
+        serde_json::json!({
+            "v": 1,
+            "scheme": "ed25519",
+            "from": base64::engine::general_purpose::STANDARD.encode([1u8; 32]),
+            "signature": base64::engine::general_purpose::STANDARD.encode([2u8; 64]),
+        }),
+    )]);
+
+    let map = gait_acp::session_map::SessionMap::new();
+    let (channel, server) = gait_acp::build_agent(map).into_channel_and_future();
+    tokio::spawn(server);
+    let sid = Client
+        .connect_with(channel, async |cx| {
+            let sid = cx
+                .send_request(NewSessionRequest::new(repo.clone()))
+                .block_task()
+                .await?
+                .session_id;
+            let request = PromptRequest::new(sid.clone(), vec![text.to_string().into()]).meta(meta);
+            let response = cx.send_request(request).block_task().await?;
+            Ok((sid, response.stop_reason))
+        })
+        .await
+        .expect("prompt succeeds")
+        .0;
+
+    let path = gait_state::session::live::log_path(&home, &sid.0);
+    let events = gait_proto::wire::read_events(&path).unwrap();
+    let rejected = events.iter().find_map(|event| match event.body.as_ref() {
+        Some(gait_core::proto::gait::log::v1::event::Body::Payload(payload)) => {
+            match payload.kind.as_ref() {
+                Some(gait_core::proto::gait::log::v1::payload::Kind::UserText(user_text)) => {
+                    Some(user_text.rejected_provenance_claim)
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    });
+    assert_eq!(rejected, Some(true), "the rejected input remains in the log");
+    let messages = gait_state::session::retrace::messages(&events).unwrap();
+    assert!(
+        messages.iter().all(|message| match message {
+            gait_core::types::Message::User {
+                content: gait_core::types::MessageContent::Text(content),
+                ..
+            } => !content.contains(text),
+            _ => true,
+        }),
+        "the rejected body must not be present in folded agent context"
+    );
+}
+
+#[tokio::test]
+async fn invalid_multimatrix_attestation_is_logged_but_not_folded() {
+    set_brain_exe();
+    let (_temp, home, repo) = workspace(Path::new("/tmp"));
+    bake_say_hi(&home);
+    let text = "invalid attestation body must not reach the agent";
+    let meta = serde_json::Map::from_iter([(
+        "multimatrix/delivery-attestation".to_string(),
+        serde_json::json!("not-valid-base64!"),
+    )]);
+
+    let map = gait_acp::session_map::SessionMap::new();
+    let (channel, server) = gait_acp::handlers::build_agent_with_attestation(map, false, Vec::new())
+        .into_channel_and_future();
+    tokio::spawn(server);
+    let sid = Client
+        .connect_with(channel, async |cx| {
+            let sid = cx
+                .send_request(NewSessionRequest::new(repo.clone()))
+                .block_task()
+                .await?
+                .session_id;
+            let request = PromptRequest::new(sid.clone(), vec![text.to_string().into()]).meta(meta);
+            let response = cx.send_request(request).block_task().await?;
+            Ok((sid, response.stop_reason))
+        })
+        .await
+        .expect("prompt succeeds with rejected input quarantined")
+        .0;
+
+    let path = gait_state::session::live::log_path(&home, &sid.0);
+    let events = gait_proto::wire::read_events(&path).unwrap();
+    assert!(events.iter().any(|event| matches!(event.body.as_ref(),
+        Some(gait_core::proto::gait::log::v1::event::Body::Payload(payload)) if
+        matches!(payload.kind.as_ref(), Some(gait_core::proto::gait::log::v1::payload::Kind::UserText(user_text)) if user_text.rejected_provenance_claim)
+    )), "the rejected input should remain in the log");
+    let messages = gait_state::session::retrace::messages(&events).unwrap();
+    assert!(messages.iter().all(|message| match message {
+        gait_core::types::Message::User {
+            content: gait_core::types::MessageContent::Text(content),
+            ..
+        } => !content.contains(text),
+        _ => true,
+    }));
 }
 
 /// End-to-end proof that the attested-delivery path builds the logged event

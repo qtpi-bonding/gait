@@ -25,7 +25,7 @@ pub(crate) fn begin_turn(
     log: &crate::turn::SessionLog,
     git: &crate::turn::SessionGit,
     codebase: &std::path::Path,
-    trigger: Vec<(pb::event::Body, Option<pb::Provenance>)>,
+    trigger: Vec<crate::port::input::IncomingMessage>,
 ) -> anyhow::Result<StartedTurn> {
     use crate::proto::envelope::EventScope;
 
@@ -96,10 +96,19 @@ pub(crate) fn begin_turn(
         },
     )?;
     let mut trigger_id = None;
-    for (body, provenance) in trigger {
-        let event = match provenance {
+    for mut incoming in trigger {
+        if incoming.rejected_provenance_claim {
+            if let crate::proto::gait::log::v1::event::Body::Payload(payload) = &mut incoming.body {
+                if let Some(crate::proto::gait::log::v1::payload::Kind::UserText(user_text)) =
+                    payload.kind.as_mut()
+                {
+                    user_text.rejected_provenance_claim = true;
+                }
+            }
+        }
+        let event = match incoming.provenance {
             Some(p) => log.append_body_with_provenance(
-                body,
+                incoming.body,
                 EventScope::Turn {
                     run: run.index,
                     turn: turn_index,
@@ -107,7 +116,7 @@ pub(crate) fn begin_turn(
                 p,
             )?,
             None => log.append_body(
-                body,
+                incoming.body,
                 EventScope::Turn {
                     run: run.index,
                     turn: turn_index,

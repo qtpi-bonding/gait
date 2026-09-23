@@ -1,4 +1,54 @@
-use crate::proto::gait::log::v1::event;
+use crate::proto::gait::log::v1::{Provenance, event};
+
+/// Core representation of one incoming message after transport parsing.
+/// Signature verification happens when the durable event is folded, using
+/// the complete event hash and this provenance. `rejected_provenance_claim`
+/// preserves the distinction between absent metadata and an invalid claim.
+#[derive(Debug, Clone)]
+pub struct IncomingMessage {
+    pub body: event::Body,
+    pub provenance: Option<Provenance>,
+    pub rejected_provenance_claim: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum ProvenanceClaim {
+    Absent,
+    Direct(Provenance),
+    Rejected,
+}
+
+impl IncomingMessage {
+    pub fn new(body: event::Body, provenance: Option<Provenance>) -> Self {
+        Self {
+            body,
+            provenance,
+            rejected_provenance_claim: false,
+        }
+    }
+
+    pub fn rejected_claim(body: event::Body) -> Self {
+        Self {
+            body,
+            provenance: None,
+            rejected_provenance_claim: true,
+        }
+    }
+
+    pub fn with_claim(body: event::Body, claim: ProvenanceClaim) -> Self {
+        match claim {
+            ProvenanceClaim::Absent => Self::new(body, None),
+            ProvenanceClaim::Direct(provenance) => Self::new(body, Some(provenance)),
+            ProvenanceClaim::Rejected => Self::rejected_claim(body),
+        }
+    }
+}
+
+impl From<(event::Body, Option<Provenance>)> for IncomingMessage {
+    fn from((body, provenance): (event::Body, Option<Provenance>)) -> Self {
+        Self::new(body, provenance)
+    }
+}
 
 /// What the session source wants core to do next.
 ///
@@ -8,15 +58,9 @@ use crate::proto::gait::log::v1::event;
 /// [`TurnSource::next`] means no more work.
 pub enum TurnStart {
     Input {
-        /// One optional provenance per body, not a separate parallel field —
-        /// a batch (e.g. an attested delivery of several room messages) has
-        /// one `Provenance` per message, and pairing them inline can never
-        /// be accidentally mis-aligned in length the way two parallel
-        /// `Vec`/`Option` fields could.
-        bodies: Vec<(
-            event::Body,
-            Option<crate::proto::gait::log::v1::Provenance>,
-        )>,
+        /// One core input per message; a batch preserves message/provenance
+        /// pairing and records malformed claims for later log folding.
+        bodies: Vec<IncomingMessage>,
     },
     SessionUpdate(Vec<event::Body>),
     Resume,
@@ -47,7 +91,7 @@ impl ArgSource {
         Self {
             start: Some(
                 body.map(|b| TurnStart::Input {
-                    bodies: vec![(b, None)],
+                    bodies: vec![(b, None).into()],
                 })
                 .unwrap_or(TurnStart::Resume),
             ),
@@ -71,7 +115,7 @@ mod tests {
         let body = crate::proto::events::user_text("hi".into());
         let mut s = ArgSource::new(Some(body));
         match s.next().await.expect("first yield") {
-            TurnStart::Input { ref bodies } => match &bodies[0].0 {
+            TurnStart::Input { ref bodies } => match &bodies[0].body {
                 event::Body::Payload(p) => {
                     assert!(matches!(p.kind, Some(payload::Kind::UserText(_))))
                 }

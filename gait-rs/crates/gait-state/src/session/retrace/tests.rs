@@ -1009,6 +1009,7 @@ fn replace_substitutes_payload_in_messages() {
     let new_payload = pb::Payload {
         kind: Some(payload::Kind::UserText(pb::UserText {
             content: "new text".into(),
+            ..Default::default()
         })),
     };
     wire::append(&path, replace_body(&user_event.id, new_payload)).unwrap();
@@ -1035,6 +1036,7 @@ fn later_redact_overrides_replace() {
     let new_payload = pb::Payload {
         kind: Some(payload::Kind::UserText(pb::UserText {
             content: "replaced".into(),
+            ..Default::default()
         })),
     };
     wire::append(&path, replace_body(&user_event.id, new_payload)).unwrap();
@@ -1075,9 +1077,10 @@ fn cascade_redact_tool_call_removes_paired_result() {
 
     // Both ToolCall and ToolResult should be Redacted.
     assert_eq!(muts.len(), 2, "cascade should produce 2 Redacts");
-    assert!(muts
-        .values()
-        .all(|m| matches!(m, MutationState::Redacted { .. })));
+    assert!(
+        muts.values()
+            .all(|m| matches!(m, MutationState::Redacted { .. }))
+    );
 
     let msgs = run_projection(&ActiveMessages, &all, &muts).msgs;
     assert!(msgs.is_empty(), "both paired events redacted → no messages");
@@ -1100,7 +1103,7 @@ fn cascade_redact_overrides_orphan_replace() {
     )
     .unwrap();
     wire::append(&path, redact_body(&tc_event.id)).unwrap(); // Redact ToolCall
-                                                             // Replace ToolResult (same seq-space, but cascade must override).
+    // Replace ToolResult (same seq-space, but cascade must override).
     let new_tr = pb::Payload {
         kind: Some(payload::Kind::ToolResult(pb::ToolResult {
             call_id: "cid2".into(),
@@ -1639,49 +1642,84 @@ fn raw_messages_carry_event_ids() {
 }
 
 #[test]
-fn active_raw_messages_populates_attribution_from_provenance() {
+fn active_raw_messages_omits_invalid_direct_provenance() {
     use std::collections::HashMap;
     let pubkey = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04];
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("tx.jsonl");
+    wire::append_with_given_provenances(
+        &path,
+        events::user_text("do the thing".into()),
+        vec![crate::proto::gait::log::v1::Provenance {
+            from: pubkey,
+            to: vec![],
+            context: String::new(),
+            signature: vec![],
+            scheme: gait_identity::KeyScheme::Ed25519 as i32,
+            delegation_cert: None,
+            attested_author_agent_id: None,
+            attested_verification_outcome: None,
+        }],
+        crate::proto::envelope::EventScope::Session,
+    )
+    .unwrap();
+    let events = read_events(&path).unwrap();
+    assert_eq!(events.len(), 1, "rejected input remains in the durable log");
+    let raw = run_projection(&ActiveRawMessages, &events, &HashMap::new());
+    assert!(
+        raw.base.is_empty(),
+        "invalid provenance must not reach the agent"
+    );
+}
 
-    let mut ev = scoped_mint(events::user_text("do the thing".into()), None, 0, 0);
-    ev.provenance = vec![crate::proto::gait::log::v1::Provenance {
-        from: pubkey,
-        to: vec![],
-        context: String::new(),
-        signature: vec![],
-        scheme: gait_identity::KeyScheme::Ed25519 as i32,
-        delegation_cert: None,
-        attested_author_agent_id: None,
-        attested_verification_outcome: None,
+#[test]
+fn active_raw_messages_omits_rejected_provenance_claim() {
+    use std::collections::HashMap;
+    let body = crate::proto::wire::body(crate::proto::gait::log::v1::payload::Kind::UserText(
+        pb::UserText {
+            content: "do not show this".into(),
+            rejected_provenance_claim: true,
+        },
+    ));
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("tx.jsonl");
+    wire::append(&path, body).unwrap();
+    let events = read_events(&path).unwrap();
+    assert_eq!(events.len(), 1, "rejected input remains in the durable log");
+    let raw = run_projection(&ActiveRawMessages, &events, &HashMap::new());
+    assert!(
+        raw.base.is_empty(),
+        "malformed claimed provenance must not reach the agent"
+    );
+}
+
+#[test]
+fn valid_direct_provenance_keeps_uniform_attribution() {
+    use gait_identity::Signer as _;
+    use std::collections::HashMap;
+    let signer = gait_identity::Ed25519Signer::generate();
+    let mut ev = scoped_mint(events::user_text("hello".into()), None, 0, 0);
+    let to = vec!["session-2".to_string()];
+    let context = "room-general";
+    let signature = signer.sign(&crate::proto::envelope::provenance_signing_bytes(
+        &ev.content_hash,
+        &to,
+        context,
+    ));
+    ev.provenance = vec![pb::Provenance {
+        from: signer.public_key().to_vec(),
+        to,
+        context: context.into(),
+        signature,
+        scheme: signer.scheme() as i32,
+        ..Default::default()
     }];
-
     let raw = run_projection(&ActiveRawMessages, &[ev], &HashMap::new());
-
-    match &raw.base[0] {
-        crate::types::Message::User {
-            attribution,
-            content,
-            ..
-        } => {
-            assert_eq!(
-                attribution.len(),
-                1,
-                "provenance-bearing event must carry attribution"
-            );
-            let a = &attribution[0];
-            assert_eq!(a.author_agent_id, "ed25519:deadbeef01020304");
-            assert_eq!(
-                a.trust,
-                crate::types::Trust::Unverified,
-                "placeholder identity must never be marked verified"
-            );
-            match content {
-                crate::types::MessageContent::Text(t) => assert_eq!(t, "do the thing"),
-                _ => panic!("expected text content"),
-            }
-        }
-        _ => panic!("expected User variant"),
-    }
+    let crate::types::Message::User { attribution, .. } = &raw.base[0] else {
+        panic!("expected accepted user message");
+    };
+    assert_eq!(attribution[0].trust, crate::types::Trust::Verified);
+    assert_eq!(attribution[0].room_id, context);
 }
 
 #[test]
@@ -2002,8 +2040,9 @@ fn full_tool_history_survives_a_resumed_turn() {
 
 #[test]
 fn active_raw_messages_agent_update_uses_provenance_not_session_id() {
+    use gait_identity::Signer as _;
     use std::collections::HashMap;
-    let pubkey = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04];
+    let signer = gait_identity::Ed25519Signer::generate();
 
     let body =
         crate::proto::gait::log::v1::event::Body::Payload(crate::proto::gait::log::v1::Payload {
@@ -2018,15 +2057,18 @@ fn active_raw_messages_agent_update_uses_provenance_not_session_id() {
             )),
         });
     let mut ev = scoped_mint(body, None, 0, 0);
+    let signature = signer.sign(&crate::proto::envelope::provenance_signing_bytes(
+        &ev.content_hash,
+        &[],
+        "",
+    ));
     ev.provenance = vec![crate::proto::gait::log::v1::Provenance {
-        from: pubkey.clone(),
+        from: signer.public_key().to_vec(),
         to: vec![],
         context: String::new(),
-        signature: vec![],
-        scheme: gait_identity::KeyScheme::Ed25519 as i32,
-        delegation_cert: None,
-        attested_author_agent_id: None,
-        attested_verification_outcome: None,
+        signature,
+        scheme: signer.scheme() as i32,
+        ..Default::default()
     }];
 
     let raw = run_projection(&ActiveRawMessages, &[ev], &HashMap::new());
@@ -2037,8 +2079,8 @@ fn active_raw_messages_agent_update_uses_provenance_not_session_id() {
             ..
         } => {
             assert!(
-                t.contains("ed25519:deadbeef01020304"),
-                "rendered text must use Provenance.from, got: {t}"
+                t.contains("ed25519:") && !t.contains("s_old_field_ignored"),
+                "rendered text must use the verified Provenance.from, got: {t}"
             );
         }
         _ => panic!("expected User variant"),
