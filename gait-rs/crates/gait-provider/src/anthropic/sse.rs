@@ -5,7 +5,7 @@ use gait_types::types::Usage;
 use std::collections::HashMap;
 
 /// Consume the shared guarded SSE stream into Anthropic chunks. Request
-/// execution, retries, and deadlines have already been handled by SseTransport.
+/// execution, retries, and deadlines have already been handled by ProviderTransport.
 pub fn body_stream(
     guarded_events: impl futures_util::Stream<
             Item = Result<eventsource_stream::Event, crate::provider::ProviderError>,

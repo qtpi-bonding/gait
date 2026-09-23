@@ -69,6 +69,7 @@ pub enum TimeoutPhase {
     Ttfb,
     Idle,
     Absolute,
+    Request,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -89,6 +90,8 @@ pub enum ProviderError {
     Sse(String),
     #[error("stream ended after {received_bytes} bytes with no terminal marker")]
     StreamIncomplete { received_bytes: usize },
+    #[error("JSON response exceeded the {max_bytes}-byte limit")]
+    ResponseTooLarge { max_bytes: usize },
     #[error("Serialization error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("{0}")]
@@ -97,7 +100,7 @@ pub enum ProviderError {
 
 impl ProviderError {
     /// Map a raw `reqwest::Error` into a classified `ProviderError`.
-    /// Raw request execution is centralized in `SseTransport`; keeping the
+    /// Raw request execution is centralized in `ProviderTransport`; keeping the
     /// mapping here preserves the provider-neutral error vocabulary.
     pub fn from_reqwest(e: reqwest::Error) -> Self {
         if e.is_timeout() {

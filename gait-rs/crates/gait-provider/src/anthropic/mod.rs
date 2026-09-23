@@ -39,7 +39,7 @@ pub struct AnthropicProvider {
     pub model: String,
     pub base_url: Option<String>,
     pub cache: bool,
-    transport: crate::transport::SseTransport,
+    transport: crate::transport::ProviderTransport,
 }
 
 impl AnthropicProvider {
@@ -48,7 +48,7 @@ impl AnthropicProvider {
         model: String,
         base_url: Option<String>,
         cache: bool,
-        transport: crate::transport::SseTransport,
+        transport: crate::transport::ProviderTransport,
     ) -> Self {
         Self {
             api_key,

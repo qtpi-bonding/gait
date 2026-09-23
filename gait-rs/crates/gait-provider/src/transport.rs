@@ -8,12 +8,14 @@ use crate::provider::{ProviderError, TimeoutPhase};
 use eventsource_stream::Eventsource;
 use futures_util::{Stream, StreamExt};
 use reqwest::header::{HeaderMap, HeaderValue};
+use serde::de::DeserializeOwned;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
+const MAX_JSON_RESPONSE_BYTES: usize = 64 * 1024;
 
 /// A complete, replayable JSON-over-HTTP request for an SSE endpoint.
 ///
@@ -27,6 +29,23 @@ pub struct SseRequest {
     pub body: serde_json::Value,
 }
 
+/// A one-shot JSON-over-HTTP request.
+///
+/// The request body, URL, and headers are provider-specific. The transport
+/// owns execution, response limits, timeouts, and error handling.
+#[derive(Clone)]
+pub struct JsonRequest {
+    pub url: String,
+    pub headers: HeaderMap,
+    pub body: serde_json::Value,
+}
+
+impl JsonRequest {
+    pub fn new(url: String, headers: HeaderMap, body: serde_json::Value) -> Self {
+        Self { url, headers, body }
+    }
+}
+
 impl SseRequest {
     pub fn new(url: String, headers: HeaderMap, body: serde_json::Value) -> Self {
         Self { url, headers, body }
@@ -34,8 +53,8 @@ impl SseRequest {
 }
 
 /// Mark a credential-bearing header value as sensitive before placing it in an
-/// [`SseRequest`]. Sensitive values are redacted from bounded HTTP error bodies
-/// and reqwest's header debug formatting.
+/// [`SseRequest`] or [`JsonRequest`]. Sensitive values are redacted from
+/// bounded HTTP error bodies and reqwest's header debug formatting.
 pub fn sensitive_header(value: &str) -> Result<HeaderValue, ProviderError> {
     let mut value = HeaderValue::from_str(value)
         .map_err(|error| ProviderError::Other(format!("invalid sensitive header: {error}")))?;
@@ -57,14 +76,14 @@ type RawSseStream = Pin<
     >,
 >;
 
-/// Mandatory HTTP/SSE execution boundary shared by every production adapter.
+/// Mandatory HTTP execution boundary shared by every production adapter.
 #[derive(Clone)]
-pub struct SseTransport {
+pub struct ProviderTransport {
     http: reqwest::Client,
     config: TransportConfig,
 }
 
-impl SseTransport {
+impl ProviderTransport {
     pub fn new(config: TransportConfig) -> Result<Self, ProviderError> {
         let http = reqwest::Client::builder()
             .connect_timeout(config.connect_timeout)
@@ -75,6 +94,49 @@ impl SseTransport {
 
     pub fn config(&self) -> TransportConfig {
         self.config
+    }
+
+    /// Execute one JSON request. Unlike SSE streams, JSON requests are never
+    /// retried; the configured deadline covers sending the request and reading
+    /// the complete response body.
+    pub async fn post_json<T: DeserializeOwned>(
+        &self,
+        request: JsonRequest,
+    ) -> Result<T, ProviderError> {
+        tokio::time::timeout(self.config.json_timeout, self.post_json_inner(request))
+            .await
+            .map_err(|_| ProviderError::Timeout {
+                phase: TimeoutPhase::Request,
+            })?
+    }
+
+    async fn post_json_inner<T: DeserializeOwned>(
+        &self,
+        request: JsonRequest,
+    ) -> Result<T, ProviderError> {
+        let secrets = sensitive_values(&request.headers);
+        let response = self
+            .http
+            .post(&request.url)
+            .headers(request.headers)
+            .json(&request.body)
+            .send()
+            .await
+            .map_err(ProviderError::from_reqwest)?;
+
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let retry_after = parse_retry_after(&response);
+            let body = bounded_error_body(response).await;
+            return Err(ProviderError::Http {
+                status,
+                body: truncate_utf8(redact_secrets(body, &secrets), MAX_ERROR_BODY_BYTES),
+                retry_after,
+            });
+        }
+
+        let body = bounded_success_body(response, MAX_JSON_RESPONSE_BYTES).await?;
+        serde_json::from_slice(&body).map_err(ProviderError::Json)
     }
 
     /// Execute a replayable request and return a stream that has already crossed
@@ -172,6 +234,22 @@ async fn bounded_error_body(response: reqwest::Response) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+async fn bounded_success_body(
+    response: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, ProviderError> {
+    let mut bytes = Vec::with_capacity(max_bytes.min(4096));
+    let mut chunks = response.bytes_stream();
+    while let Some(chunk) = chunks.next().await {
+        let chunk = chunk.map_err(ProviderError::from_reqwest)?;
+        if bytes.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(ProviderError::ResponseTooLarge { max_bytes });
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
 /// All knobs the LLM path cares about. `Default` *is* the production policy.
 #[derive(Debug, Clone, Copy)]
 pub struct TransportConfig {
@@ -183,6 +261,8 @@ pub struct TransportConfig {
     pub idle_timeout: Duration,
     /// Hard ceiling on the whole stream lifecycle, regardless of activity.
     pub absolute_cap: Duration,
+    /// Hard ceiling for one-shot JSON requests, including response-body reads.
+    pub json_timeout: Duration,
     /// Total attempts (1 = no retry).
     pub max_attempts: u8,
     /// Initial exponential-backoff window before jitter is applied.
@@ -198,6 +278,7 @@ impl Default for TransportConfig {
             ttfb_timeout: Duration::from_secs(30),
             idle_timeout: Duration::from_secs(120),
             absolute_cap: Duration::from_secs(600),
+            json_timeout: Duration::from_secs(30),
             max_attempts: 3,
             initial_backoff: Duration::from_millis(500),
             max_backoff: Duration::from_secs(8),
@@ -409,6 +490,7 @@ fn retry_diagnostic(attempt: u32, max_attempts: u8, error: &ProviderError) -> St
             TimeoutPhase::Ttfb => "ttfb_timeout",
             TimeoutPhase::Idle => "idle_timeout",
             TimeoutPhase::Absolute => "absolute_timeout",
+            TimeoutPhase::Request => "request_timeout",
         },
         ProviderError::Http { status, .. } => {
             return format!(
@@ -418,6 +500,7 @@ fn retry_diagnostic(attempt: u32, max_attempts: u8, error: &ProviderError) -> St
         ProviderError::Overloaded => "overloaded",
         ProviderError::Sse(_) => "sse",
         ProviderError::StreamIncomplete { .. } => "stream_incomplete",
+        ProviderError::ResponseTooLarge { .. } => "response_too_large",
         ProviderError::Json(_) => "json",
         ProviderError::Other(_) => "other",
     };
@@ -721,7 +804,7 @@ mod tests {
             connect_timeout: Duration::from_millis(17),
             ..TransportConfig::default()
         };
-        let transport = SseTransport::new(cfg).expect("transport");
+        let transport = ProviderTransport::new(cfg).expect("transport");
         assert_eq!(
             transport.config().connect_timeout,
             Duration::from_millis(17)

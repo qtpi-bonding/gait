@@ -6,7 +6,7 @@ use gait_provider::codex::CodexResponsesProvider;
 use gait_provider::openai::OpenAIProvider;
 use gait_provider::provider::{Provider, ProviderError, StreamChunk};
 use gait_provider::providers::Wire;
-use gait_provider::transport::{SseTransport, TransportConfig};
+use gait_provider::transport::{ProviderTransport, TransportConfig};
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -26,6 +26,11 @@ enum Script {
     Sse {
         body: String,
         hold_open: Duration,
+    },
+    DelayedStatus {
+        status: u16,
+        body: String,
+        delay: Duration,
     },
 }
 
@@ -125,6 +130,19 @@ async fn serve_response(mut socket: TcpStream, script: Script, requests: Arc<Mut
                 tokio::time::sleep(hold_open).await;
             }
         }
+        Script::DelayedStatus {
+            status,
+            body,
+            delay,
+        } => {
+            tokio::time::sleep(delay).await;
+            let headers = format!(
+                "HTTP/1.1 {status} Delayed\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = socket.write_all(headers.as_bytes()).await;
+            let _ = socket.write_all(body.as_bytes()).await;
+        }
     }
     let _ = socket.shutdown().await;
 }
@@ -171,6 +189,7 @@ fn test_config() -> TransportConfig {
         ttfb_timeout: Duration::from_millis(30),
         idle_timeout: Duration::from_millis(30),
         absolute_cap: Duration::from_secs(2),
+        json_timeout: Duration::from_secs(2),
         max_attempts: 2,
         initial_backoff: Duration::ZERO,
         max_backoff: Duration::ZERO,
@@ -194,7 +213,7 @@ fn credential() -> SubscriptionCredential {
 }
 
 fn provider_for(wire: Wire, base_url: &str) -> Box<dyn Provider> {
-    let transport = SseTransport::new(test_config()).expect("test transport");
+    let transport = ProviderTransport::new(test_config()).expect("test transport");
     match wire {
         Wire::Anthropic => Box::new(AnthropicProvider::new(
             SECRET.into(),
@@ -219,6 +238,141 @@ fn provider_for(wire: Wire, base_url: &str) -> Box<dyn Provider> {
             .expect("Codex provider"),
         ),
     }
+}
+
+#[tokio::test]
+async fn json_transport_decodes_bounded_success_response() {
+    let body = r#"{"answers":{"integrity_risk":{"noul":0.25}}}"#;
+    let server = ScriptedServer::start(vec![Script::Status {
+        status: 200,
+        body: body.into(),
+        retry_after: None,
+    }])
+    .await;
+    let transport = ProviderTransport::new(test_config()).expect("transport");
+    let response: serde_json::Value = transport
+        .post_json(gait_provider::transport::JsonRequest::new(
+            format!("{}/systemone", server.base_url),
+            Default::default(),
+            json!({"state":"test"}),
+        ))
+        .await
+        .expect("JSON response");
+
+    assert_eq!(response["answers"]["integrity_risk"]["noul"], 0.25);
+    assert_eq!(server.count(), 1);
+}
+
+#[tokio::test]
+async fn json_transport_preserves_http_error_and_redacts_credentials_without_retry() {
+    let server = ScriptedServer::start(vec![Script::Status {
+        status: 503,
+        body: format!("error mentioning {SECRET}"),
+        retry_after: Some(7),
+    }])
+    .await;
+    let transport = ProviderTransport::new(test_config()).expect("transport");
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::AUTHORIZATION,
+        gait_provider::transport::sensitive_header(&format!("Bearer {SECRET}"))
+            .expect("sensitive auth header"),
+    );
+    let error = transport
+        .post_json::<serde_json::Value>(gait_provider::transport::JsonRequest::new(
+            server.base_url.clone(),
+            headers,
+            json!({"state":"test"}),
+        ))
+        .await
+        .expect_err("503 should be an HTTP error");
+
+    match error {
+        ProviderError::Http {
+            status,
+            body,
+            retry_after,
+        } => {
+            assert_eq!(status, 503);
+            assert_eq!(retry_after, Some(Duration::from_secs(7)));
+            assert!(body.contains("[REDACTED]"));
+            assert!(!body.contains(SECRET));
+        }
+        other => panic!("expected HTTP error, got {other:?}"),
+    }
+    assert_eq!(server.count(), 1, "JSON requests must never be retried");
+}
+
+#[tokio::test]
+async fn json_transport_rejects_invalid_or_oversized_success_bodies() {
+    let server = ScriptedServer::start(vec![
+        Script::Status {
+            status: 200,
+            body: "not json".into(),
+            retry_after: None,
+        },
+        Script::Status {
+            status: 200,
+            body: format!("\"{}\"", "x".repeat(64 * 1024)),
+            retry_after: None,
+        },
+    ])
+    .await;
+    let transport = ProviderTransport::new(test_config()).expect("transport");
+
+    let invalid = transport
+        .post_json::<serde_json::Value>(gait_provider::transport::JsonRequest::new(
+            server.base_url.clone(),
+            Default::default(),
+            json!({}),
+        ))
+        .await
+        .expect_err("invalid JSON should fail decoding");
+    assert!(matches!(invalid, ProviderError::Json(_)));
+
+    let oversized = transport
+        .post_json::<serde_json::Value>(gait_provider::transport::JsonRequest::new(
+            server.base_url.clone(),
+            Default::default(),
+            json!({}),
+        ))
+        .await
+        .expect_err("oversized JSON should fail the body limit");
+    assert!(matches!(
+        oversized,
+        ProviderError::ResponseTooLarge { max_bytes: 65536 }
+    ));
+}
+
+#[tokio::test]
+async fn json_transport_applies_an_overall_request_deadline_without_retry() {
+    let server = ScriptedServer::start(vec![Script::DelayedStatus {
+        status: 200,
+        body: "{}".into(),
+        delay: Duration::from_millis(100),
+    }])
+    .await;
+    let mut config = test_config();
+    config.json_timeout = Duration::from_millis(20);
+    config.max_attempts = 3;
+    let transport = ProviderTransport::new(config).expect("transport");
+
+    let error = transport
+        .post_json::<serde_json::Value>(gait_provider::transport::JsonRequest::new(
+            server.base_url.clone(),
+            Default::default(),
+            json!({}),
+        ))
+        .await
+        .expect_err("delayed response should time out");
+
+    assert!(matches!(
+        error,
+        ProviderError::Timeout {
+            phase: gait_provider::provider::TimeoutPhase::Request
+        }
+    ));
+    assert_eq!(server.count(), 1, "JSON timeout must not trigger a retry");
 }
 
 fn complete_sse(wire: Wire) -> String {

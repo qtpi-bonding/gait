@@ -26,7 +26,7 @@ pub struct CodexResponsesProvider {
     fedramp: bool,
     model: String,
     base_url: String,
-    transport: crate::transport::SseTransport,
+    transport: crate::transport::ProviderTransport,
 }
 
 impl CodexResponsesProvider {
@@ -34,7 +34,7 @@ impl CodexResponsesProvider {
         credential: SubscriptionCredential,
         model: String,
         base_url: Option<String>,
-        transport: crate::transport::SseTransport,
+        transport: crate::transport::ProviderTransport,
     ) -> Result<Self, String> {
         if credential.provider_id != CODEX_PROVIDER_ID {
             return Err("subscription credential belongs to a different provider".into());
@@ -333,7 +333,7 @@ mod tests {
             },
             "gpt-5".into(),
             None,
-            crate::transport::SseTransport::new(Default::default()).expect("transport"),
+            crate::transport::ProviderTransport::new(Default::default()).expect("transport"),
         );
         assert!(matches!(result, Err(error) if error.contains("different provider")));
     }
@@ -354,7 +354,7 @@ mod tests {
             test_credential("access-test"),
             "gpt-5.3-codex-spark".into(),
             None,
-            crate::transport::SseTransport::new(Default::default()).expect("transport"),
+            crate::transport::ProviderTransport::new(Default::default()).expect("transport"),
         )
         .expect("provider");
         let params = gait_types::config::LlmParamsConfig {
@@ -462,7 +462,7 @@ mod tests {
             test_credential("access-test"),
             "gpt-test".into(),
             Some(format!("http://{addr}")),
-            crate::transport::SseTransport::new(crate::transport::TransportConfig {
+            crate::transport::ProviderTransport::new(crate::transport::TransportConfig {
                 initial_backoff: std::time::Duration::ZERO,
                 max_backoff: std::time::Duration::ZERO,
                 ..Default::default()
@@ -491,7 +491,7 @@ mod tests {
             test_credential("access-test"),
             "gpt-5.3-codex".into(),
             None,
-            crate::transport::SseTransport::new(Default::default()).expect("transport"),
+            crate::transport::ProviderTransport::new(Default::default()).expect("transport"),
         )
         .expect("provider");
 

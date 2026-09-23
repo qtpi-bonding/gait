@@ -8,6 +8,7 @@
 //! noul scale: 1 = confident risk detected on that axis, 0 = confident safe.
 //! See docs/superpowers/specs/2026-09-19-classify-policy-design.md.
 
+use reqwest::header::{HeaderMap, AUTHORIZATION};
 use std::collections::HashMap;
 
 #[derive(Debug, thiserror::Error)]
@@ -18,8 +19,8 @@ pub enum ClassifyError {
     UnknownProvider(String),
     #[error("missing API key: set {0}")]
     MissingApiKey(String),
-    #[error("http request failed: {0}")]
-    Http(#[from] reqwest::Error),
+    #[error("classifier transport failed: {0}")]
+    Transport(#[from] crate::provider::ProviderError),
     #[error("classify response missing question '{0}'")]
     MissingAnswer(String),
 }
@@ -113,16 +114,20 @@ pub async fn classify(model: &str, state: &str) -> Result<RiskScores, ClassifyEr
 
     let base_url = spec.base_url.unwrap_or_default();
     let req = build_request(model_id, state);
-    let client = reqwest::Client::new();
-    let resp: ClassifyResponse = client
-        .post(format!("{base_url}/systemone")) // adjust path per the resolved provider's actual endpoint shape — verify against a real call in Task 4's smoke test, this is the best-known shape at plan-writing time, not a guarantee
-        .bearer_auth(api_key)
-        .json(&req)
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        AUTHORIZATION,
+        crate::transport::sensitive_header(&format!("Bearer {api_key}"))?,
+    );
+    let request = crate::transport::JsonRequest::new(
+        format!("{base_url}/systemone"), // This classifier endpoint is separate from the provider's chat-completions endpoint.
+        headers,
+        serde_json::to_value(&req).map_err(crate::provider::ProviderError::from)?,
+    );
+    let transport = crate::transport::ProviderTransport::new(
+        crate::transport::TransportConfig::default(),
+    )?;
+    let resp: ClassifyResponse = transport.post_json(request).await?;
 
     let get = |k: &str| -> Result<f64, ClassifyError> {
         resp.answers

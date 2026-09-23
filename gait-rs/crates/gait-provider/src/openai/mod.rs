@@ -9,7 +9,7 @@ pub struct OpenAIProvider {
     pub api_key: String,
     pub model: String,
     pub base_url: String,
-    transport: crate::transport::SseTransport,
+    transport: crate::transport::ProviderTransport,
 }
 
 impl OpenAIProvider {
@@ -24,7 +24,7 @@ impl OpenAIProvider {
         api_key: String,
         model: String,
         base_url: Option<String>,
-        transport: crate::transport::SseTransport,
+        transport: crate::transport::ProviderTransport,
     ) -> Self {
         Self {
             api_key,

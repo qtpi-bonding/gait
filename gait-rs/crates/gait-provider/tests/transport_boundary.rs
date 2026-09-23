@@ -19,7 +19,7 @@ const FORBIDDEN: &[(&str, &str)] = &[
 ];
 
 #[test]
-fn production_adapters_cannot_bypass_sse_transport() {
+fn production_provider_code_cannot_bypass_transport() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
     collect_rs_files(&src, &mut files);
@@ -49,7 +49,7 @@ fn production_adapters_cannot_bypass_sse_transport() {
             if let Some(offset) = flattened.find(&compact_pattern) {
                 let line = approximate_line(&without_comments, offset);
                 panic!(
-                    "{}:{} violates the provider transport boundary: {explanation}; adapters construct SseRequest values and decode events through SseTransport",
+                    "{}:{} violates the provider transport boundary: {explanation}; provider requests must execute through ProviderTransport",
                     file.display(),
                     line,
                 );

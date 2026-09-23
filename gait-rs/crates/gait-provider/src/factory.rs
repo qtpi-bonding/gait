@@ -83,7 +83,7 @@ pub fn load_provider_with_credential_params_and_gait_dir(
         .ok_or_else(|| FactoryError::UnknownProvider(provider_id.clone()))?;
     let base = base_url_override(&provider_id).or_else(|| spec.base_url.map(String::from));
     let transport =
-        crate::transport::SseTransport::new(crate::transport::TransportConfig::default())
+        crate::transport::ProviderTransport::new(crate::transport::TransportConfig::default())
             .map_err(FactoryError::Transport)?;
 
     match spec.auth_method {
