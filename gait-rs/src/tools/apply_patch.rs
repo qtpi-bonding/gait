@@ -247,13 +247,21 @@ fn split_lines(s: &str) -> Vec<String> {
     s.split('\n').map(ToString::to_string).collect()
 }
 
-pub fn apply(patch: &Patch, old: Option<&str>) -> anyhow::Result<String> {
+/// The patched file text, plus notes the model should see about where
+/// hunks landed.
+#[derive(Debug)]
+pub struct Applied {
+    pub text: String,
+    pub notes: Vec<String>,
+}
+
+pub fn apply(patch: &Patch, old: Option<&str>) -> anyhow::Result<Applied> {
     match patch.operation {
         Operation::Add => {
             if old.is_some() {
                 anyhow::bail!("Add File target already exists")
             }
-            Ok(patch.hunks[0]
+            let text = patch.hunks[0]
                 .lines
                 .iter()
                 .map(|l| match l {
@@ -261,11 +269,16 @@ pub fn apply(patch: &Patch, old: Option<&str>) -> anyhow::Result<String> {
                     _ => "",
                 })
                 .collect::<Vec<_>>()
-                .join("\n"))
+                .join("\n");
+            Ok(Applied {
+                text,
+                notes: vec![],
+            })
         }
         Operation::Update => {
             let old = old.ok_or_else(|| anyhow::anyhow!("Update File target does not exist"))?;
             let mut result = split_lines(old);
+            let mut notes = Vec::new();
             let mut cursor = 0;
             for (index, hunk) in patch.hunks.iter().enumerate() {
                 let before: Vec<String> = hunk
@@ -306,7 +319,27 @@ pub fn apply(patch: &Patch, old: Option<&str>) -> anyhow::Result<String> {
                 let at = match matches.as_slice() {
                     [] => anyhow::bail!(missing_context_error(&result, &before, start)),
                     [only] => *only,
-                    [first, ..] if !must_be_unique => *first,
+                    [first, rest @ ..] if !must_be_unique => {
+                        // Applied silently, a lookalike further down would land
+                        // the edit in the wrong place with no signal to the model.
+                        let after = if index == 0 {
+                            "its '@@' anchor"
+                        } else {
+                            "the previous hunk"
+                        };
+                        let others = match rest.len() {
+                            1 => "1 later location".to_string(),
+                            n => format!("{n} later locations"),
+                        };
+                        notes.push(format!(
+                            "note: hunk {} was applied at line {}, the first match after \
+                             {after}; its context also matches {others}. If that is the \
+                             wrong place, fix it with an '@@ <line>' anchor.",
+                            index + 1,
+                            first + 1,
+                        ));
+                        *first
+                    }
                     many => anyhow::bail!(ambiguous_context_error(&before, many)),
                 };
                 let replacement: Vec<String> = hunk
@@ -320,7 +353,10 @@ pub fn apply(patch: &Patch, old: Option<&str>) -> anyhow::Result<String> {
                 cursor = at + replacement.len();
                 result.splice(at..at + before.len(), replacement);
             }
-            Ok(result.join("\n"))
+            Ok(Applied {
+                text: result.join("\n"),
+                notes,
+            })
         }
     }
 }
@@ -429,7 +465,7 @@ impl Tool for ApplyPatchTool {
         "apply_patch"
     }
     fn description(&self) -> &str {
-        "Apply an Add or Update patch to one relative file. The patch must use the Begin/End markers. Use one call per file; multiple calls may be made in one response. `@@ <line>` anchors a hunk: its context is searched for at or after that line. Each hunk after the first takes the first match after the previous hunk; an unanchored first hunk must match exactly once."
+        "Apply an Add or Update patch to one relative file. The patch must use the Begin/End markers. Use one call per file; multiple calls may be made in one response. `@@ <line>` anchors a hunk: its context is searched for at or after that line. Each hunk after the first takes the first match after the previous hunk; an unanchored first hunk must match exactly once. When a hunk's context also matches further down, the result says where it was applied."
     }
     fn parameters(&self) -> &Value {
         &self.parameters
@@ -451,7 +487,7 @@ impl Tool for ApplyPatchTool {
         } else {
             None
         };
-        let new = apply(&patch, old.as_deref()).map_err(fixable)?;
+        let Applied { text: new, notes } = apply(&patch, old.as_deref()).map_err(fixable)?;
         if let Some(parent) = target.parent() {
             self.ctx
                 .fs
@@ -466,12 +502,17 @@ impl Tool for ApplyPatchTool {
             Operation::Add => format!("Added {}", target.display()),
             Operation::Update => format!("Updated {}", target.display()),
         };
-        Ok(Value::String(format!(
+        let mut out = format!(
             "{summary} ({} bytes)\n{}",
             new.len(),
             crate::tools::preview::diff_preview(old.as_deref().unwrap_or(""), &new)
                 .unwrap_or_else(|| "(no changes)".to_string())
-        )))
+        );
+        for note in notes {
+            out.push('\n');
+            out.push_str(&note);
+        }
+        Ok(Value::String(out))
     }
     fn permission(&self, args: &Value) -> ToolPermission {
         let raw = args
@@ -502,7 +543,8 @@ impl Tool for ApplyPatchTool {
                 None
             },
         )
-        .ok()?;
+        .ok()?
+        .text;
         crate::tools::preview::diff_preview(&old, &new).or(Some(new))
     }
     fn access(&self) -> crate::types::ToolAccess {
@@ -566,10 +608,10 @@ mod tests {
     #[test]
     fn add_and_update() {
         let p = parse("*** Begin Patch\n*** Add File: x.txt\n+one\n+two\n*** End Patch").unwrap();
-        assert_eq!(apply(&p, None).unwrap(), "one\ntwo");
+        assert_eq!(apply(&p, None).unwrap().text, "one\ntwo");
         let p = parse("*** Begin Patch\n*** Update File: x.txt\n@@\n a\n-b\n+B\n c\n*** End Patch")
             .unwrap();
-        assert_eq!(apply(&p, Some("a\nb\nc")).unwrap(), "a\nB\nc");
+        assert_eq!(apply(&p, Some("a\nb\nc")).unwrap().text, "a\nB\nc");
     }
     #[test]
     fn rejects_bad_paths_and_ambiguous_context() {
@@ -592,16 +634,58 @@ mod tests {
         let old = "fn a() {\n}\nfn target() {\n    x();\n}\nfn b() {\n}";
         let p = patch("@@\n fn target() {\n@@\n }\n+fn added() {}");
         assert_eq!(
-            apply(&p, Some(old)).unwrap(),
+            apply(&p, Some(old)).unwrap().text,
             "fn a() {\n}\nfn target() {\n    x();\n}\nfn added() {}\nfn b() {\n}"
         );
+    }
+    #[test]
+    fn first_match_with_lookalikes_below_is_reported() {
+        // foo, bar, baz all end in `Ok(())` / `}`; the second hunk means foo but
+        // follows a hunk in bar, so it lands on bar and must say so.
+        let old = "fn foo() {\n    a();\n    Ok(())\n}\nfn bar() {\n    b();\n    Ok(())\n}\nfn baz() {\n    c();\n    Ok(())\n}";
+        let p = patch("@@\n-    b();\n+    b2();\n@@\n+    log();\n     Ok(())\n }");
+        let applied = apply(&p, Some(old)).unwrap();
+        assert!(applied.text.contains("    b2();\n    log();\n    Ok(())"));
+        assert_eq!(applied.notes.len(), 1, "{:?}", applied.notes);
+        let note = &applied.notes[0];
+        assert!(note.contains("hunk 2 was applied at line 7"), "{note}");
+        assert!(note.contains("also matches 1 later location."), "{note}");
+        assert!(note.contains("@@ <line>"), "{note}");
+    }
+    #[test]
+    fn anchored_first_hunk_with_lookalikes_below_is_reported() {
+        let old = "mod one {\n    v = 1;\n}\nmod two {\n    v = 1;\n    v = 1;\n}";
+        let p = patch("@@ mod two {\n-    v = 1;\n+    v = 2;");
+        let applied = apply(&p, Some(old)).unwrap();
+        assert_eq!(
+            applied.text,
+            "mod one {\n    v = 1;\n}\nmod two {\n    v = 2;\n    v = 1;\n}"
+        );
+        assert_eq!(applied.notes.len(), 1, "{:?}", applied.notes);
+        let note = &applied.notes[0];
+        assert!(
+            note.contains("hunk 1 was applied at line 5, the first match after its '@@' anchor"),
+            "{note}"
+        );
+        assert!(note.contains("also matches 1 later location."), "{note}");
+    }
+    #[test]
+    fn unique_later_match_adds_no_note() {
+        let old = "fn a() {\n    x();\n}\nfn b() {\n    y();\n}";
+        let p = patch("@@\n-    x();\n+    x2();\n@@\n-    y();\n+    y2();");
+        let applied = apply(&p, Some(old)).unwrap();
+        assert_eq!(
+            applied.text,
+            "fn a() {\n    x2();\n}\nfn b() {\n    y2();\n}"
+        );
+        assert!(applied.notes.is_empty(), "{:?}", applied.notes);
     }
     #[test]
     fn anchor_header_narrows_the_search() {
         let old = "mod one {\n    v = 1;\n}\nmod two {\n    v = 1;\n}";
         let p = patch("@@ mod two {\n-    v = 1;\n+    v = 2;");
         assert_eq!(
-            apply(&p, Some(old)).unwrap(),
+            apply(&p, Some(old)).unwrap().text,
             "mod one {\n    v = 1;\n}\nmod two {\n    v = 2;\n}"
         );
     }
@@ -639,13 +723,13 @@ mod tests {
     fn unified_diff_range_header_is_not_an_anchor() {
         let p = patch("@@ -1,2 +1,2 @@\n a\n-b\n+B");
         assert_eq!(p.hunks[0].anchor, None);
-        assert_eq!(apply(&p, Some("a\nb")).unwrap(), "a\nB");
+        assert_eq!(apply(&p, Some("a\nb")).unwrap().text, "a\nB");
     }
     #[test]
     fn hunks_do_not_rematch_text_an_earlier_hunk_inserted() {
         let old = "x\ny";
         let p = patch("@@\n x\n+y\n@@\n y\n+z");
-        assert_eq!(apply(&p, Some(old)).unwrap(), "x\ny\ny\nz");
+        assert_eq!(apply(&p, Some(old)).unwrap().text, "x\ny\ny\nz");
     }
     #[test]
     fn bare_blank_line_in_hunk_is_unchanged_blank_context() {
@@ -654,7 +738,7 @@ mod tests {
         // not rejected as "malformed hunk line: ".
         let p = parse("*** Begin Patch\n*** Update File: x\n@@\n a\n\n-b\n+B\n c\n*** End Patch")
             .unwrap();
-        assert_eq!(apply(&p, Some("a\n\nb\nc")).unwrap(), "a\n\nB\nc");
+        assert_eq!(apply(&p, Some("a\n\nb\nc")).unwrap().text, "a\n\nB\nc");
     }
     #[test]
     fn malformed_hunk_line_error_names_the_offending_line() {
