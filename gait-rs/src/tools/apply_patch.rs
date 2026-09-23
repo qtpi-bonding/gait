@@ -27,6 +27,9 @@ pub struct Patch {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hunk {
+    /// The text after `@@`, when it names a line: the hunk's context is
+    /// searched for at or after that line.
+    pub anchor: Option<String>,
     pub lines: Vec<HunkLine>,
 }
 
@@ -92,6 +95,7 @@ pub fn parse(input: &str) -> anyhow::Result<Patch> {
                 operation,
                 path,
                 hunks: vec![Hunk {
+                    anchor: None,
                     lines: body
                         .iter()
                         .map(|l| HunkLine::Insert(l[1..].to_string()))
@@ -108,8 +112,9 @@ pub fn parse(input: &str) -> anyhow::Result<Patch> {
             }
             let mut hunks = Vec::new();
             let mut current: Option<Vec<HunkLine>> = None;
+            let mut anchor: Option<String> = None;
             for line in body {
-                if line.starts_with("@@") {
+                if let Some(header) = line.strip_prefix("@@") {
                     if let Some(lines) = current.take() {
                         if lines.is_empty() {
                             anyhow::bail!(
@@ -118,8 +123,12 @@ pub fn parse(input: &str) -> anyhow::Result<Patch> {
                                  lines in between"
                             )
                         }
-                        hunks.push(Hunk { lines });
+                        hunks.push(Hunk {
+                            anchor: anchor.take(),
+                            lines,
+                        });
                     }
+                    anchor = parse_anchor(header);
                     current = Some(Vec::new());
                 } else {
                     let h = current.as_mut().ok_or_else(|| {
@@ -156,7 +165,7 @@ pub fn parse(input: &str) -> anyhow::Result<Patch> {
                         "empty hunk: the final '@@' header has no ' '/'-'/'+' lines after it"
                     )
                 }
-                hunks.push(Hunk { lines });
+                hunks.push(Hunk { anchor, lines });
             }
             if hunks.is_empty() {
                 anyhow::bail!(
@@ -258,7 +267,7 @@ pub fn apply(patch: &Patch, old: Option<&str>) -> anyhow::Result<String> {
             let old = old.ok_or_else(|| anyhow::anyhow!("Update File target does not exist"))?;
             let mut result = split_lines(old);
             let mut cursor = 0;
-            for hunk in &patch.hunks {
+            for (index, hunk) in patch.hunks.iter().enumerate() {
                 let before: Vec<String> = hunk
                     .lines
                     .iter()
@@ -275,31 +284,31 @@ pub fn apply(patch: &Patch, old: Option<&str>) -> anyhow::Result<String> {
                          nothing to anchor on"
                     )
                 }
-                let matches: Vec<usize> = (cursor..=result.len().saturating_sub(before.len()))
-                    .filter(|&i| result[i..i + before.len()] == before[..])
-                    .collect();
-                if matches.len() != 1 {
-                    let preview: String = before
-                        .iter()
-                        .take(3)
-                        .map(|l| format!("  {l:?}"))
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    anyhow::bail!(
-                        "hunk context is {} (matching is exact — every character, \
-                         including leading/trailing whitespace and indentation, must match the \
-                         current file content verbatim; re-read the file and copy the context \
-                         lines exactly). First lines of this hunk's context/deletion block:\n{}",
-                        if matches.is_empty() {
-                            "missing: no location in the file matches it"
-                        } else {
-                            "ambiguous: more than one location in the file matches it — add \
-                             more surrounding context lines to disambiguate"
-                        },
-                        preview
-                    )
+                // Codex semantics: an `@@ <line>` anchor moves the search to that
+                // line, and every hunk after the first takes the first match after
+                // the previous one. Only an unanchored first hunk has nothing to
+                // narrow the search, so it alone must match exactly once.
+                let mut start = cursor;
+                if let Some(anchor) = &hunk.anchor {
+                    start = (cursor..result.len())
+                        .find(|&i| result[i].trim() == anchor.as_str())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "hunk anchor not found: no line at or after line {} matches \
+                                 '@@ {anchor}' (compared with surrounding whitespace \
+                                 trimmed); re-read the file and anchor on a line that exists",
+                                cursor + 1
+                            )
+                        })?;
                 }
-                let at = matches[0];
+                let matches = find_all(&result, &before, start);
+                let must_be_unique = index == 0 && hunk.anchor.is_none();
+                let at = match matches.as_slice() {
+                    [] => anyhow::bail!(missing_context_error(&result, &before, start)),
+                    [only] => *only,
+                    [first, ..] if !must_be_unique => *first,
+                    many => anyhow::bail!(ambiguous_context_error(&before, many)),
+                };
                 let replacement: Vec<String> = hunk
                     .lines
                     .iter()
@@ -308,12 +317,91 @@ pub fn apply(patch: &Patch, old: Option<&str>) -> anyhow::Result<String> {
                         _ => None,
                     })
                     .collect();
+                cursor = at + replacement.len();
                 result.splice(at..at + before.len(), replacement);
-                cursor = at;
             }
             Ok(result.join("\n"))
         }
     }
+}
+
+/// `@@ <text>` names an anchor line; a bare `@@` or a unified-diff range
+/// header (`@@ -12,5 +12,6 @@`) does not.
+fn parse_anchor(header: &str) -> Option<String> {
+    let text = header.trim();
+    let is_range = text.starts_with('-') && text.ends_with("@@");
+    (!text.is_empty() && !is_range).then(|| text.to_string())
+}
+
+fn find_all(lines: &[String], needle: &[String], start: usize) -> Vec<usize> {
+    if needle.len() > lines.len() {
+        return vec![];
+    }
+    (start..=lines.len() - needle.len())
+        .filter(|&i| lines[i..i + needle.len()] == needle[..])
+        .collect()
+}
+
+fn hunk_preview(before: &[String]) -> String {
+    before
+        .iter()
+        .take(3)
+        .map(|l| format!("  {l:?}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn line_list(indices: &[usize]) -> String {
+    let shown: Vec<String> = indices
+        .iter()
+        .take(8)
+        .map(|i| (i + 1).to_string())
+        .collect();
+    let more = if indices.len() > 8 { ", ..." } else { "" };
+    format!("{}{more}", shown.join(", "))
+}
+
+fn ambiguous_context_error(before: &[String], matches: &[usize]) -> String {
+    format!(
+        "hunk context is ambiguous: it matches at lines {} — add an '@@ <line>' anchor \
+         naming a unique line above the change (for example the enclosing fn or mod \
+         line), or add more context lines. First lines of this hunk's context/deletion \
+         block:\n{}",
+        line_list(matches),
+        hunk_preview(before)
+    )
+}
+
+fn missing_context_error(lines: &[String], before: &[String], start: usize) -> String {
+    let first = before[0].trim();
+    let near: Vec<usize> = (start..lines.len())
+        .filter(|&i| !first.is_empty() && lines[i].trim() == first)
+        .collect();
+    let hint = match near.as_slice() {
+        [] => String::new(),
+        [one] => format!(
+            " The first context line matches line {} except for whitespace — copy its \
+             indentation exactly.",
+            one + 1
+        ),
+        many => format!(
+            " The first context line matches lines {} except for whitespace — copy the \
+             indentation exactly.",
+            line_list(many)
+        ),
+    };
+    format!(
+        "hunk context is missing: no location{} matches it (matching is exact — every \
+         character, including leading/trailing whitespace and indentation, must match the \
+         current file content verbatim; re-read the file and copy the context lines \
+         exactly).{hint} First lines of this hunk's context/deletion block:\n{}",
+        if start > 0 {
+            format!(" at or after line {}", start + 1)
+        } else {
+            String::new()
+        },
+        hunk_preview(before)
+    )
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -341,7 +429,7 @@ impl Tool for ApplyPatchTool {
         "apply_patch"
     }
     fn description(&self) -> &str {
-        "Apply an Add or Update patch to one relative file. The patch must use the Begin/End markers. Use one call per file; multiple calls may be made in one response."
+        "Apply an Add or Update patch to one relative file. The patch must use the Begin/End markers. Use one call per file; multiple calls may be made in one response. `@@ <line>` anchors a hunk: its context is searched for at or after that line. Each hunk after the first takes the first match after the previous hunk; an unanchored first hunk must match exactly once."
     }
     fn parameters(&self) -> &Value {
         &self.parameters
@@ -450,7 +538,10 @@ mod tests {
         ));
         let patch = "*** Begin Patch\n*** Update File: x.txt\n@@\n-zzz\n+y\n*** End Patch";
         let err = tool
-            .execute(serde_json::json!({ "patch": patch }), &crate::Recorder::detached())
+            .execute(
+                serde_json::json!({ "patch": patch }),
+                &crate::Recorder::detached(),
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::Execute(_)), "{err:?}");
@@ -464,7 +555,10 @@ mod tests {
             "test".into(),
         ));
         let err = tool
-            .execute(serde_json::json!({ "patch": "not a patch" }), &crate::Recorder::detached())
+            .execute(
+                serde_json::json!({ "patch": "not a patch" }),
+                &crate::Recorder::detached(),
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::Execute(_)), "{err:?}");
@@ -484,6 +578,74 @@ mod tests {
         );
         let p = parse("*** Begin Patch\n*** Update File: x\n@@\n-a\n+b\n*** End Patch").unwrap();
         assert!(apply(&p, Some("a\na")).is_err());
+    }
+    fn patch(body: &str) -> Patch {
+        parse(&format!(
+            "*** Begin Patch\n*** Update File: x\n{body}\n*** End Patch"
+        ))
+        .unwrap()
+    }
+    #[test]
+    fn later_hunk_takes_first_match_after_the_previous_hunk() {
+        // The task6 shape: a context-only hunk locates the function, then a
+        // one-line `}` context that appears many times in the file.
+        let old = "fn a() {\n}\nfn target() {\n    x();\n}\nfn b() {\n}";
+        let p = patch("@@\n fn target() {\n@@\n }\n+fn added() {}");
+        assert_eq!(
+            apply(&p, Some(old)).unwrap(),
+            "fn a() {\n}\nfn target() {\n    x();\n}\nfn added() {}\nfn b() {\n}"
+        );
+    }
+    #[test]
+    fn anchor_header_narrows_the_search() {
+        let old = "mod one {\n    v = 1;\n}\nmod two {\n    v = 1;\n}";
+        let p = patch("@@ mod two {\n-    v = 1;\n+    v = 2;");
+        assert_eq!(
+            apply(&p, Some(old)).unwrap(),
+            "mod one {\n    v = 1;\n}\nmod two {\n    v = 2;\n}"
+        );
+    }
+    #[test]
+    fn missing_anchor_is_reported() {
+        let p = patch("@@ mod three {\n-a\n+b");
+        let msg = apply(&p, Some("a")).unwrap_err().to_string();
+        assert!(msg.contains("mod three {"), "{msg}");
+    }
+    #[test]
+    fn unanchored_first_hunk_must_be_unique_and_lists_candidates() {
+        let old = "a\nx\nb\nx\nc";
+        let p = patch("@@\n-x\n+y");
+        let msg = apply(&p, Some(old)).unwrap_err().to_string();
+        assert!(msg.contains("ambiguous"), "{msg}");
+        assert!(
+            msg.contains("lines 2, 4"),
+            "should list candidate line numbers: {msg}"
+        );
+        assert!(msg.contains("@@"), "should suggest an anchor: {msg}");
+    }
+    #[test]
+    fn missing_context_points_at_a_whitespace_only_near_miss() {
+        let old = "fn f() {\n        let v = 1;\n}";
+        let p = patch("@@\n-    let v = 1;\n+    let v = 2;");
+        let msg = apply(&p, Some(old)).unwrap_err().to_string();
+        assert!(msg.contains("missing"), "{msg}");
+        assert!(
+            msg.contains("line 2"),
+            "should point at the near miss: {msg}"
+        );
+        assert!(msg.contains("whitespace"), "{msg}");
+    }
+    #[test]
+    fn unified_diff_range_header_is_not_an_anchor() {
+        let p = patch("@@ -1,2 +1,2 @@\n a\n-b\n+B");
+        assert_eq!(p.hunks[0].anchor, None);
+        assert_eq!(apply(&p, Some("a\nb")).unwrap(), "a\nB");
+    }
+    #[test]
+    fn hunks_do_not_rematch_text_an_earlier_hunk_inserted() {
+        let old = "x\ny";
+        let p = patch("@@\n x\n+y\n@@\n y\n+z");
+        assert_eq!(apply(&p, Some(old)).unwrap(), "x\ny\ny\nz");
     }
     #[test]
     fn bare_blank_line_in_hunk_is_unchanged_blank_context() {

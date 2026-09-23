@@ -134,9 +134,16 @@ fn qwen_tool_prompt(request: &GenerationRequest) -> Result<String, GenerationErr
                                 call.name
                             ))
                         })?;
-                    let call = serde_json::json!({"name": call.name, "arguments": arguments});
+                    // Written by hand so the key order is always Qwen's own
+                    // `name`-then-`arguments`, whether or not serde_json's
+                    // `preserve_order` feature is unified into the build.
+                    let call = format!(
+                        "{{\"name\":{},\"arguments\":{}}}",
+                        serde_json::to_string(&call.name).expect("strings serialize"),
+                        serde_json::to_string(&arguments).expect("JSON values serialize")
+                    );
                     prompt.push_str(QWEN_TOOL_OPEN);
-                    prompt.push_str(&serde_json::to_string(&call).expect("JSON values serialize"));
+                    prompt.push_str(&call);
                     prompt.push_str(QWEN_TOOL_CLOSE);
                 }
                 prompt.push_str("<|im_end|>\n");
@@ -881,7 +888,7 @@ mod tests {
         let rendered = qwen_tool_prompt(&request()).unwrap();
         assert!(rendered.contains("<tools>"));
         assert!(rendered.contains(r#""name":"read_file""#));
-        assert!(rendered.contains("<tool_call>{\"arguments\":{\"path\":\"src/lib.rs\"},\"name\":\"read_file\"}</tool_call>"));
+        assert!(rendered.contains("<tool_call>{\"name\":\"read_file\",\"arguments\":{\"path\":\"src/lib.rs\"}}</tool_call>"));
         assert!(rendered.contains("<tool_response>\npub fn example() {}\n</tool_response>"));
         assert!(rendered.ends_with("<|im_start|>assistant\n"));
     }

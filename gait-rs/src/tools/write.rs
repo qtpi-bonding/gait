@@ -49,6 +49,16 @@ impl Tool for WriteTool {
         } else {
             self.ctx.codebase_path.join(&params.file_path)
         };
+        // The previous size, so the result can say what an overwrite replaced.
+        let old_bytes = if self.ctx.fs.exists(&resolved) {
+            self.ctx
+                .fs
+                .read_to_string(&resolved)
+                .ok()
+                .map(|old| old.len())
+        } else {
+            None
+        };
         if let Some(parent) = resolved.parent() {
             self.ctx
                 .fs
@@ -59,11 +69,10 @@ impl Tool for WriteTool {
             .fs
             .write(&resolved, params.content.as_bytes())
             .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
-        let bytes = params.content.len();
-        Ok(Value::String(format!(
-            "Wrote {} bytes to {}",
-            bytes,
-            resolved.display()
+        Ok(Value::String(write_summary(
+            &resolved,
+            old_bytes,
+            params.content.len(),
         )))
     }
 
@@ -124,6 +133,28 @@ impl Tool for WriteTool {
             self.ctx.codebase_path.join(raw)
         };
         vec![(resolved, crate::types::Dimension::Write)]
+    }
+}
+
+/// What a write did. An overwrite that loses more than half the file warns:
+/// a model that meant to edit part of a file must learn at once that the rest
+/// is gone, while it can still recover it.
+fn write_summary(path: &std::path::Path, old_bytes: Option<usize>, new_bytes: usize) -> String {
+    let path = path.display();
+    match old_bytes {
+        None => format!("Wrote {new_bytes} bytes to {path}"),
+        Some(old) => {
+            let mut summary = format!("Replaced {old} bytes with {new_bytes} bytes in {path}");
+            if new_bytes * 2 < old {
+                summary.push_str(&format!(
+                    "\nWarning: this removed {}% of the file's previous content. `write` \
+                     replaces the whole file; if you meant to change only part of it, the \
+                     rest is gone — restore it, and use apply_patch for partial edits.",
+                    (old - new_bytes) * 100 / old
+                ));
+            }
+            summary
+        }
     }
 }
 
@@ -192,6 +223,51 @@ mod tests {
         .unwrap();
         let content = std::fs::read_to_string(dir.path().join("existing.txt")).unwrap();
         assert_eq!(content, "new");
+    }
+
+    async fn write_message(dir: &TempDir, file: &str, content: &str) -> String {
+        WriteTool::new(make_ctx(dir))
+            .execute(
+                serde_json::json!({ "file_path": file, "content": content }),
+                &crate::Recorder::detached(),
+            )
+            .await
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn overwrite_reports_the_size_change() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "0123456789").unwrap();
+        let msg = write_message(&dir, "f.txt", "01234567").await;
+        assert!(msg.contains("Replaced 10 bytes with 8 bytes"), "{msg}");
+        assert!(
+            !msg.contains("Warning"),
+            "a small shrink is not a warning: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn large_shrink_warns_that_content_is_gone() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "x".repeat(1000)).unwrap();
+        let msg = write_message(&dir, "f.txt", "").await;
+        assert!(msg.contains("Replaced 1000 bytes with 0 bytes"), "{msg}");
+        assert!(msg.contains("Warning"), "{msg}");
+        assert!(
+            msg.contains("apply_patch"),
+            "should point at partial edits: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn new_file_reports_bytes_written() {
+        let dir = TempDir::new().unwrap();
+        let msg = write_message(&dir, "new.txt", "abc").await;
+        assert!(msg.starts_with("Wrote 3 bytes to"), "{msg}");
     }
 
     #[test]
