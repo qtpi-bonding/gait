@@ -26,7 +26,7 @@ use crate::proto::events;
 use crate::proto::gait::log::v1 as pb;
 use crate::types::{
     AssistantContent, AssistantPart, ExecutionMode, ExecutionSignal, HookAction, HookContext,
-    Message, ToolCall, ToolPermission, ToolResult, ToolResultKind,
+    Message, Tool, ToolCall, ToolPermission, ToolResult, ToolResultKind,
 };
 
 use super::exec::{
@@ -64,14 +64,24 @@ fn classify_approves(scores: &gait_provider::classify::RiskScores, threshold: f6
 
 #[async_trait::async_trait]
 impl Classifier for DisabledClassifier {
-    async fn classify(&self, _inference: &str, _state: &str) -> Result<gait_provider::classify::RiskScores, gait_provider::classify::ClassifyError> {
-        Err(gait_provider::classify::ClassifyError::BadModelString("disabled".into()))
+    async fn classify(
+        &self,
+        _inference: &str,
+        _state: &str,
+    ) -> Result<gait_provider::classify::RiskScores, gait_provider::classify::ClassifyError> {
+        Err(gait_provider::classify::ClassifyError::BadModelString(
+            "disabled".into(),
+        ))
     }
 }
 
 #[async_trait::async_trait]
 impl Classifier for ProductionClassifier {
-    async fn classify(&self, inference: &str, state: &str) -> Result<gait_provider::classify::RiskScores, gait_provider::classify::ClassifyError> {
+    async fn classify(
+        &self,
+        inference: &str,
+        state: &str,
+    ) -> Result<gait_provider::classify::RiskScores, gait_provider::classify::ClassifyError> {
         let profile = gait_state::inferences::load_inference(&self.gait_dir, inference)
             .map_err(|e| gait_provider::classify::ClassifyError::BadModelString(e.to_string()))?;
         gait_provider::classify::classify(&profile.model, state).await
@@ -141,8 +151,10 @@ pub(crate) async fn run_tools(
                 let mut resolved = false;
                 if let Some(policy) = env.classify_policy {
                     if state.classify_denial_streak < policy.max_consecutive_denials {
-                        let mut scored: Vec<(pb::PermissionItem, gait_provider::classify::RiskScores)> =
-                            Vec::with_capacity(items.len());
+                        let mut scored: Vec<(
+                            pb::PermissionItem,
+                            gait_provider::classify::RiskScores,
+                        )> = Vec::with_capacity(items.len());
                         let mut call_failed = false;
                         for item in &items {
                             let state_text = format!(
@@ -151,7 +163,11 @@ pub(crate) async fn run_tools(
                                 tc.args,
                                 item.patterns.join(", ")
                             );
-                            match env.classifier.classify(&policy.inference, &state_text).await {
+                            match env
+                                .classifier
+                                .classify(&policy.inference, &state_text)
+                                .await
+                            {
                                 Ok(scores) => scored.push((item.clone(), scores)),
                                 Err(_) => {
                                     call_failed = true;
@@ -164,22 +180,26 @@ pub(crate) async fn run_tools(
                                 .iter()
                                 .all(|(_, s)| classify_approves(s, policy.risk_threshold));
                             for (item, scores) in &scored {
-                                env.emitter.record(events::classify_decision(pb::ClassifyDecision {
-                                    permission_item_id: item.id.clone(),
-                                    tool_name: item.tool_name.clone(),
-                                    cmd: item.cmd.clone(),
-                                    approved: tc_approved,
-                                    confidentiality_risk: scores.confidentiality_risk,
-                                    integrity_risk: scores.integrity_risk,
-                                    availability_risk: scores.availability_risk,
-                                    inference: policy.inference.clone(),
-                                }))?;
+                                env.emitter.record(events::classify_decision(
+                                    pb::ClassifyDecision {
+                                        permission_item_id: item.id.clone(),
+                                        tool_name: item.tool_name.clone(),
+                                        cmd: item.cmd.clone(),
+                                        approved: tc_approved,
+                                        confidentiality_risk: scores.confidentiality_risk,
+                                        integrity_risk: scores.integrity_risk,
+                                        availability_risk: scores.availability_risk,
+                                        inference: policy.inference.clone(),
+                                    },
+                                ))?;
                             }
                             if tc_approved {
                                 state.classify_denial_streak = 0;
                                 gated_ids.remove(&tc.tool_call_id);
-                                tool_approval_prefixes
-                                    .insert(tc.tool_call_id.clone(), "[Classifier-approved]".into());
+                                tool_approval_prefixes.insert(
+                                    tc.tool_call_id.clone(),
+                                    "[Classifier-approved]".into(),
+                                );
                             } else {
                                 state.classify_denial_streak =
                                     state.classify_denial_streak.saturating_add(1);
@@ -539,58 +559,30 @@ pub(crate) async fn run_tools(
                         .to_string();
                     let result = tc.args.get("result").cloned();
 
-                    // Validate result against schema if configured.
-                    if let Some(schema) = env.result_schema {
-                        let value_to_validate = result.clone().unwrap_or(serde_json::Value::Null);
-                        if let Err(errors) = validate_against_schema(schema, &value_to_validate) {
-                            if state.schema_retries_remaining > 0 {
-                                state.schema_retries_remaining -= 1;
-                                env.emitter.record(events::tool_call(
-                                    tc.tool_call_id.clone(),
-                                    tc.tool_name.clone(),
-                                    &tc.args,
-                                ))?;
-                                let error_msg = format!(
-                                    "result schema validation failed ({} retries remaining):\n{}",
-                                    state.schema_retries_remaining, errors
-                                );
-                                env.emitter.record(events::tool_result(
-                                    tc.tool_call_id.clone(),
-                                    error_msg,
-                                    None,
-                                    None,
-                                ))?;
-                                return Ok(StepOutcome::Continue);
-                            } else {
-                                anyhow::bail!(
-                                    "result schema validation failed after all retries:\n{}",
-                                    errors
-                                );
-                            }
-                        }
-                    }
-
-                    // Emit call+result pair for transcript auditability before ending the turn.
+                    // Emit the structured_done tool call for transcript auditability.
                     env.emitter.record(events::tool_call(
                         tc.tool_call_id.clone(),
                         tc.tool_name.clone(),
                         &tc.args,
                     ))?;
-                    let recorded = "recorded".to_string();
-                    env.emitter.record(events::tool_result(
-                        tc.tool_call_id.clone(),
-                        recorded,
-                        None,
-                        None,
-                    ))?;
+
+                    // Publish any post-tool text before the completion gate
                     for t in post_tool_text.drain(..) {
                         env.emitter.publish_delta(t);
                     }
-                    return Ok(StepOutcome::Done {
+
+                    // Route through the shared completion gate
+                    return verify_completion(
+                        &env,
+                        &mut *state,
+                        &persist,
+                        step_index,
                         message,
                         result,
-                        implicit: false,
-                    });
+                        false, // explicit structured_done, not implicit
+                        tc.tool_call_id.clone(),
+                    )
+                    .await;
                 }
                 ExecutionSignal::Clarify => {
                     let items: Vec<pb::ClarifyItem> = tc
@@ -726,6 +718,301 @@ pub(crate) async fn run_tools(
     Ok(StepOutcome::Continue)
 }
 
+/// Shared completion gate: check structured-result validity and verifier status,
+/// building one combined feedback response before continuing or completing the turn.
+///
+/// Returns:
+/// - `Ok(StepOutcome::Done)` when both checks pass (or when disabled/not configured)
+/// - `Ok(StepOutcome::Continue)` when any check fails, with combined feedback in transcript
+/// - `Ok(StepOutcome::Pause(...))` when permission/sandbox approval is needed
+/// - `Err(...)` when retries exhausted
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn verify_completion(
+    env: &TurnEnv<'_>,
+    state: &mut TurnState,
+    _persist: &Persistence<'_>,
+    _step_index: usize,
+    completion_message: String,
+    completion_result: Option<serde_json::Value>,
+    completion_implicit: bool,
+    tool_call_id: String,
+) -> anyhow::Result<StepOutcome> {
+    let mut feedback_messages = Vec::new();
+    let mut schema_failure = false;
+    let mut verifier_failure = false;
+    let mut execution_error = false;
+
+    // Step 1-2: Check structured-result validity and implicit-without-schema requirement
+    // When schema is required and we have implicit completion, that's a special case
+    if env.result_schema.is_some() && completion_implicit {
+        // Plain-text completion when schema is required - emit the nudge message
+        schema_failure = true;
+        feedback_messages.push(
+            "You must finish by calling `structured_done` with a `result` matching \
+             the declared schema. Plain-text completion is not accepted for this task."
+                .to_string(),
+        );
+    } else if let Some(schema) = env.result_schema {
+        // Schema is required and completion is explicit (structured_done) - validate the result
+        let value_to_validate = completion_result.clone().unwrap_or(serde_json::Value::Null);
+        if let Err(errors) = validate_against_schema(schema, &value_to_validate) {
+            schema_failure = true;
+            feedback_messages.push(format!("result schema validation failed:\n{}", errors));
+        }
+    }
+
+    // Step 3: Run verifier if configured
+    let mut verifier_output = String::new();
+    if let Some(ref verified_goal) = state.verified_goal {
+        // Increment attempt counter and generate attempt ID
+        state.verifier_attempt_counter += 1;
+        let attempt_id = format!("attempt-{}", state.verifier_attempt_counter);
+
+        // Find the shell tool, or create one if not found
+        let shell_tool = state
+            .tools
+            .iter()
+            .find(|t| t.name() == "shell")
+            .cloned()
+            .or_else(|| {
+                // If shell tool is not in state.tools (e.g., in tests with minimal setup),
+                // create one on-the-fly using the turn's context
+                use crate::tools::{ShellTool, ToolCtx};
+                Some(
+                    ShellTool::new(ToolCtx::new(
+                        env.gait_dir.to_path_buf(),
+                        env.codebase_path.to_path_buf(),
+                        env.session_id.to_string(),
+                    ))
+                    .arced(),
+                )
+            });
+
+        if let Some(shell_tool) = shell_tool {
+            // Dispatch the verifier through the normal permission gate
+            match super::exec::dispatch_verifier(
+                verified_goal,
+                shell_tool.as_ref(),
+                env.emitter,
+                env.relay,
+                env.effective_allow,
+                env.deny,
+                env.auto,
+                env.classifier,
+                env.classify_policy,
+            )
+            .await
+            {
+                Ok(super::exec::VerifierDispatchOutcome::Executed(exec_result)) => {
+                    verifier_output = exec_result.output.clone();
+
+                    // Record the verification attempt
+                    let completion = serde_json::json!({
+                        "message": completion_message,
+                        "result": completion_result,
+                        "implicit": completion_implicit,
+                    });
+
+                    let status = if exec_result.exit_code == Some(0) {
+                        "passed"
+                    } else {
+                        "failed"
+                    };
+
+                    env.emitter.record(events::verified_goal(
+                        &attempt_id,
+                        status,
+                        verified_goal,
+                        exec_result.exit_code,
+                        &exec_result.output,
+                        completion,
+                    ))?;
+
+                    // Check for verifier failure
+                    if exec_result.exit_code != Some(0) {
+                        verifier_failure = true;
+                        feedback_messages.push(format!(
+                            "verified_goal command failed:\nCommand: {}\nStatus: exit code {}\nOutput:\n{}",
+                            verified_goal,
+                            exec_result.exit_code.unwrap_or(-1),
+                            verifier_output
+                        ));
+                    }
+                }
+                Ok(super::exec::VerifierDispatchOutcome::NeedsPermission(items)) => {
+                    // Store pending completion for resumption after approval
+                    state.pending_verifier_attempt = Some(super::exec::PendingVerifierAttempt {
+                        attempt_id: attempt_id.clone(),
+                        command: verified_goal.clone(),
+                        completion_message: completion_message.clone(),
+                        completion_result: completion_result.clone(),
+                        completion_implicit,
+                        schema_diagnostics: if schema_failure {
+                            Some(feedback_messages.join("\n"))
+                        } else {
+                            None
+                        },
+                        pause_kind: "permission".to_string(),
+                        schema_retries_remaining: state.schema_retries_remaining,
+                        done_nudges_remaining: state.done_nudges_remaining,
+                        verified_goal_retries_remaining: state.verified_goal_retries_remaining,
+                    });
+
+                    // Emit pending verified_goal event
+                    let completion = serde_json::json!({
+                        "message": completion_message,
+                        "result": completion_result,
+                        "implicit": completion_implicit,
+                    });
+
+                    env.emitter.record(events::verified_goal(
+                        &attempt_id,
+                        "pending",
+                        verified_goal,
+                        None,
+                        "",
+                        completion,
+                    ))?;
+
+                    // Record permissions and pause
+                    let mut pending = items;
+                    attach_near_miss_hints(&mut pending, env.effective_allow);
+                    env.emitter.record(events::permissions(&pending))?;
+                    return Ok(StepOutcome::Pause(PauseKind::Permissions));
+                }
+                Ok(super::exec::VerifierDispatchOutcome::NeedsSandboxUnlock(denial)) => {
+                    // Store pending completion for resumption after sandbox unlock
+                    state.pending_verifier_attempt = Some(super::exec::PendingVerifierAttempt {
+                        attempt_id: attempt_id.clone(),
+                        command: verified_goal.clone(),
+                        completion_message: completion_message.clone(),
+                        completion_result: completion_result.clone(),
+                        completion_implicit,
+                        schema_diagnostics: if schema_failure {
+                            Some(feedback_messages.join("\n"))
+                        } else {
+                            None
+                        },
+                        pause_kind: "sandbox".to_string(),
+                        schema_retries_remaining: state.schema_retries_remaining,
+                        done_nudges_remaining: state.done_nudges_remaining,
+                        verified_goal_retries_remaining: state.verified_goal_retries_remaining,
+                    });
+
+                    // Emit pending verified_goal event
+                    let completion = serde_json::json!({
+                        "message": completion_message,
+                        "result": completion_result,
+                        "implicit": completion_implicit,
+                    });
+
+                    env.emitter.record(events::verified_goal(
+                        &attempt_id,
+                        "pending",
+                        verified_goal,
+                        None,
+                        "",
+                        completion,
+                    ))?;
+
+                    return Ok(StepOutcome::Pause(PauseKind::SandboxUnlock(vec![denial])));
+                }
+                Err(e) => {
+                    // Dispatch error becomes execution_error
+                    execution_error = true;
+                    verifier_failure = true;
+                    feedback_messages.push(format!("verified_goal dispatch error: {}", e));
+
+                    // Record the execution error
+                    let completion = serde_json::json!({
+                        "message": completion_message,
+                        "result": completion_result,
+                        "implicit": completion_implicit,
+                    });
+
+                    env.emitter.record(events::verified_goal(
+                        &attempt_id,
+                        "execution_error",
+                        verified_goal,
+                        None,
+                        &format!("dispatch error: {}", e),
+                        completion,
+                    ))?;
+                }
+            }
+        }
+    }
+
+    // Step 4: Check retries before decrementing
+    let mut has_retries = true;
+    if schema_failure && state.schema_retries_remaining == 0 {
+        has_retries = false;
+    }
+    if verifier_failure && state.verified_goal_retries_remaining == 0 {
+        has_retries = false;
+    }
+
+    // Step 5: If both checks pass, complete successfully
+    if !schema_failure && !verifier_failure {
+        // Emit the successful tool_result only for explicit (structured_done) completions
+        // For implicit completions without schema, no tool result was ever called, so don't emit one
+        if tool_call_id != "implicit_done" {
+            let recorded = "recorded".to_string();
+            env.emitter.record(events::tool_result(
+                tool_call_id.clone(),
+                recorded,
+                None,
+                None,
+            ))?;
+        }
+        return Ok(StepOutcome::Done {
+            message: completion_message,
+            result: completion_result,
+            implicit: completion_implicit,
+        });
+    }
+
+    // Step 6: If any check failed and we're out of retries, fail the turn
+    if !has_retries {
+        let error_msg = feedback_messages.join("\n");
+        anyhow::bail!(error_msg);
+    }
+
+    // Step 7: Decrement applicable retry counters
+    if schema_failure {
+        state.schema_retries_remaining = state.schema_retries_remaining.saturating_sub(1);
+    }
+    if verifier_failure && !execution_error {
+        state.verified_goal_retries_remaining =
+            state.verified_goal_retries_remaining.saturating_sub(1);
+    } else if verifier_failure && execution_error {
+        // Execution error also counts against verified_goal retries
+        state.verified_goal_retries_remaining =
+            state.verified_goal_retries_remaining.saturating_sub(1);
+    }
+    if env.result_schema.is_some() && completion_implicit && !schema_failure {
+        // Only decrement done_nudges if we had the structured_done requirement failure
+        // (not already counted in schema_failure)
+    }
+
+    // Step 8: Send combined feedback and continue turn
+    let feedback = feedback_messages.join("\n\n");
+
+    // For implicit completion, emit UserText feedback; for explicit completion, emit ToolResult
+    if tool_call_id == "implicit_done" {
+        env.emitter.record(events::user_text(feedback))?;
+    } else {
+        env.emitter.record(events::tool_result(
+            tool_call_id.clone(),
+            feedback,
+            None,
+            None,
+        ))?;
+    }
+
+    Ok(StepOutcome::Continue)
+}
+
 /// Appends a near-miss `--allow` suggestion to each item's `reason` when the
 /// gated command almost matches an existing allow pattern (e.g. missing the
 /// trailing space before `*`). Mutates in place so the hint rides the same
@@ -824,7 +1111,11 @@ mod classify_gate_tests {
         ) -> anyhow::Result<()> {
             Ok(())
         }
-        fn remove_branch_worktree(&self, _: &std::path::Path, _: &std::path::Path) -> anyhow::Result<()> {
+        fn remove_branch_worktree(
+            &self,
+            _: &std::path::Path,
+            _: &std::path::Path,
+        ) -> anyhow::Result<()> {
             Ok(())
         }
         fn merge_branch_ff(&self, _: &std::path::Path, _: &str, _: &str) -> anyhow::Result<()> {
@@ -886,7 +1177,11 @@ mod classify_gate_tests {
     }
     #[async_trait::async_trait]
     impl Classifier for FakeClassifier {
-        async fn classify(&self, _inference: &str, _state: &str) -> Result<RiskScores, ClassifyError> {
+        async fn classify(
+            &self,
+            _inference: &str,
+            _state: &str,
+        ) -> Result<RiskScores, ClassifyError> {
             *self.calls.lock().unwrap() += 1;
             match &self.scores {
                 Some(s) => Ok(RiskScores {
@@ -1025,6 +1320,7 @@ mod classify_gate_tests {
             turn_ctx: None,
             schema_retries_remaining: 0,
             done_nudges_remaining: 0,
+            verified_goal_retries_remaining: 0,
             tools: vec![Arc::new(crate::types::ToolDef {
                 name: "test_tool".into(),
                 description: "a no-op test tool".into(),
@@ -1035,6 +1331,9 @@ mod classify_gate_tests {
                 permission: None, // defaults to RequiresApproval([name]) -- always hits Tier 3
             })],
             entries: Vec::new(),
+            verified_goal: None,
+            pending_verifier_attempt: None,
+            verifier_attempt_counter: 0,
         }
     }
 
@@ -1084,7 +1383,9 @@ mod classify_gate_tests {
         let events = fx.emitter.take_buffer();
         let decision = events.iter().find_map(|e| match &e.body {
             Some(crate::proto::gait::log::v1::event::Body::Payload(p)) => match &p.kind {
-                Some(crate::proto::gait::log::v1::payload::Kind::ClassifyDecision(d)) => Some(d.clone()),
+                Some(crate::proto::gait::log::v1::payload::Kind::ClassifyDecision(d)) => {
+                    Some(d.clone())
+                }
                 _ => None,
             },
             _ => None,
@@ -1130,7 +1431,10 @@ mod classify_gate_tests {
                     if matches!(&p.kind, Some(crate::proto::gait::log::v1::payload::Kind::ClassifyDecision(d)) if !d.approved)
             )
         });
-        assert!(has_classify_decision, "a denied ClassifyDecision event must be recorded");
+        assert!(
+            has_classify_decision,
+            "a denied ClassifyDecision event must be recorded"
+        );
         let has_plain_denial_text = events.iter().any(|e| {
             matches!(
                 &e.body,

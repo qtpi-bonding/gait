@@ -114,6 +114,7 @@ async fn degenerate_graph_with_profile_override_stays_lazy() {
                 max_iter: None,
                 result_schema: None,
                 auto: None,
+                verified_goal: None,
             }),
             ..Default::default()
         },

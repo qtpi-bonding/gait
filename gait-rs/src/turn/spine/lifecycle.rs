@@ -2,6 +2,7 @@
 //! teardown sequence (drain → orphan-repair → EOF → reap → checkpoint → commit).
 
 use crate::git::codebase::CodebaseRepo;
+use gait_ops;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -12,6 +13,7 @@ use std::sync::Arc;
 /// agent/model/allow/deny handling.
 #[derive(Clone)]
 pub struct ProfileInputs {
+    pub verified_goal: Option<String>,
     pub agent_name: Option<String>,
     pub inference_override: Option<String>,
     /// Already validated immutable snapshot, used by ephemeral consumers that
@@ -122,6 +124,7 @@ pub fn build_turn_profile(
         ),
     };
     profile.hands_free = inputs.hands_free;
+    profile.verified_goal = gait_ops::verified_goal::resolve(inputs.verified_goal.as_deref());
     profile
 }
 
@@ -743,6 +746,7 @@ mod tests {
             deny: vec![],
             result_schema: Some(schema.clone()),
             hands_free: false,
+            verified_goal: None,
         };
         let p = build_turn_profile(ws.path(), ws.path(), &inputs);
         assert_eq!(p.result_schema, Some(schema));
@@ -768,6 +772,7 @@ mod tests {
             deny: vec![],
             result_schema: None,
             hands_free: false,
+            verified_goal: None,
         };
         let p = build_turn_profile(dir.path(), dir.path(), &inputs);
         assert_eq!(p.model, "anthropic/x");
@@ -788,6 +793,7 @@ mod tests {
             deny: vec![],
             result_schema: None,
             hands_free: false,
+            verified_goal: None,
         };
         // Should panic: no model in config and no model_override supplied.
         let _ = build_turn_profile(dir.path(), dir.path(), &inputs);

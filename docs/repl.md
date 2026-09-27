@@ -88,3 +88,15 @@ Global credentials and the models cache do not live in the gait-dir. They use
 to `~/.gait-home`.
 
 If the REPL dies mid-turn, the turn is committed to the log and the brain subprocess is reaped by the OS. Re-running `gait -i --session <id>` continues from where the log left off.
+
+## Configured verifiers
+
+Pass `--verified-goal <command>` at REPL startup to set a verifier for the session. When configured, the verifier runs after every completion attempt to gate the turn. The command is resolved at session startup and remains fixed for all turns in that session — so a session that starts with a verifier keeps it, and one that starts without keeps that snapshot too.
+
+For example:
+
+```bash
+gait -i --verified-goal "cargo test -p my-crate"
+```
+
+means every turn in that REPL session will require `cargo test -p my-crate` to exit 0 before allowing completion. Verifier failures produce same-turn feedback describing the failure, and the model can continue generating to address it.

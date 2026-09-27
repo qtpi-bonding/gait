@@ -286,6 +286,11 @@ pub async fn run_turn(
         &codebase_hash,
         &dirty_files,
         &daemons,
+        &effective_allow,
+        &deny,
+        auto,
+        classifier.as_ref(),
+        classify_policy.as_ref(),
     )
     .await?;
 
@@ -631,32 +636,29 @@ pub async fn run_turn(
         }
 
         // No tool calls → auto-wrap the text as an implicit output() call.
-        // output() is always the turn-completion path; plain text is just a short-hand.
-        // Exception: when a result_schema is configured the agent MUST call structured_done.
-        // Nudge it back into generation until done_nudges_remaining is exhausted.
-        if step_tool_calls.is_empty() && result_schema.is_some() {
-            if state.done_nudges_remaining > 0 {
-                state.done_nudges_remaining -= 1;
-                emitter.record(events::user_text(
-                    "You must finish by calling `structured_done` with a `result` matching \
-                     the declared schema. Plain-text completion is not accepted for this task."
-                        .into(),
-                ))?;
-                step_index += 1;
-                continue 'turn;
-            } else {
-                break 'turn finalize::StepOutcome::Fail(anyhow::anyhow!(
-                    "subagent ended without calling structured_done after all nudges"
-                ));
-            }
-        }
+        // Route through the shared completion gate to check schema and verifier.
         if step_tool_calls.is_empty() {
             let message = step_text.clone();
-            break 'turn finalize::StepOutcome::Done {
+            match execute::verify_completion(
+                &env,
+                &mut state,
+                &persist,
+                step_index,
                 message,
-                result: None,
-                implicit: true,
-            };
+                None,                        // implicit completion has no structured result
+                true,                        // this is implicit (plain text)
+                "implicit_done".to_string(), // synthetic tool_call_id for implicit completion
+            )
+            .await
+            {
+                Ok(finalize::StepOutcome::Continue) => {
+                    // Gate returned Continue; nudge back into generation
+                    step_index += 1;
+                    continue 'turn;
+                }
+                Ok(other) => break 'turn other,
+                Err(e) => break 'turn finalize::StepOutcome::Fail(e),
+            }
         }
 
         // Scope pre-check (supervised mode + sandbox on only): for each world-touching

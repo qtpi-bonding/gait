@@ -45,6 +45,9 @@ pub struct Cli {
     /// Named inference selection.
     #[arg(long)]
     pub inference: Option<String>,
+    /// Verified goal: fixed command run when a turn attempts completion to verify its goal.
+    #[arg(long)]
+    pub verified_goal: Option<String>,
     /// Agent file to load
     #[arg(long, short = 'a')]
     pub agent: Option<String>,

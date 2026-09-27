@@ -60,6 +60,7 @@ async fn main() {
             agent_name: cli.agent,
             session_id: cli.session,
             model_override: cli.inference,
+            verified_goal: cli.verified_goal,
         };
         if let Err(e) = gait_repl::plain::run_plain_repl(args).await {
             eprintln!("[gait] error: {}", e);
@@ -113,9 +114,11 @@ async fn main() {
             // `gait-min manual print` writes to stdout only; it creates no
             // files, so it needs no gait-dir resolution (unlike full
             // `gait manual install`).
-            if let Err(e) =
-                gait_bin::manual::print(args, MinCli::command(), gait_repl::plain::MIN_REPL_COMMANDS)
-            {
+            if let Err(e) = gait_bin::manual::print(
+                args,
+                MinCli::command(),
+                gait_repl::plain::MIN_REPL_COMMANDS,
+            ) {
                 eprintln!("[gait] error: {e}");
                 std::process::exit(1);
             }

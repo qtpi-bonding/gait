@@ -23,6 +23,7 @@ use gait_core::Session;
 /// longer workflow-specific, so this driver no longer lives under
 /// `gait-workflow`.
 struct SealedTurnDriver {
+    verified_goal: Option<String>,
     codebase: PathBuf,
     /// Named inference selected for this turn.
     inference: String,
@@ -94,6 +95,7 @@ impl TurnDriver for SealedTurnDriver {
             self.deny.clone(),
             self.result_schema.clone(),
         );
+        bl.profile_inputs.verified_goal = self.verified_goal.clone();
         bl.fs_delegate = self.fs_delegate.clone();
         bl.allow_intree = self.allow_intree;
         bl
@@ -257,6 +259,7 @@ impl TurnSource for LiveWithSessionUpdates {
 /// effectively already final.
 #[derive(Clone)]
 pub struct TurnProfileOverride {
+    pub verified_goal: Option<String>,
     pub inference: Option<String>,
     /// Whether `inference` is an explicit caller override rather than a
     /// resolved workflow/config model passed across the driver boundary.
@@ -355,47 +358,50 @@ fn run_result_to_outcome(run_result: RunResult) -> TurnRunOutcome {
         .turns
         .last()
         .and_then(|turn| turn.outcome.as_ref());
-    let (text, json, exit_code, opened): (Option<String>, Option<serde_json::Value>, Option<i32>, bool) =
-        match outcome {
-            Some(turn_result::Outcome::Done(done)) => match done.output.as_ref() {
-                Some(turn_done::Output::Text(text)) => (Some(text.message.clone()), None, None, false),
-                Some(turn_done::Output::Structured(output)) => (
-                    Some(output.message.clone()),
-                    output
-                        .result
-                        .as_ref()
-                        .and_then(|value| serde_json::to_value(value).ok()),
-                    None,
-                    false,
-                ),
-                None => (None, None, None, true),
-            },
-            Some(turn_result::Outcome::Pause(pause))
-                if pause.reason == PauseReason::Permissions as i32 =>
-            {
-                (Some("(permissions required)".into()), None, None, false)
-            }
-            Some(turn_result::Outcome::Pause(pause))
-                if pause.reason == PauseReason::Clarify as i32 =>
-            {
-                (Some("(paused for clarification)".into()), None, None, false)
-            }
-            Some(turn_result::Outcome::Pause(pause))
-                if pause.reason == PauseReason::Inform as i32 =>
-            {
-                (Some("(paused to inform user)".into()), None, None, false)
-            }
-            Some(turn_result::Outcome::Pause(_)) => {
-                (Some("(paused for sandbox unlock)".into()), None, None, false)
-            }
-            Some(turn_result::Outcome::Cancelled(_)) => {
-                (Some("(turn cancelled by user)".into()), None, None, false)
-            }
-            Some(turn_result::Outcome::Failed(failed)) => {
-                (Some(failed.message.clone()), None, Some(1), false)
-            }
+    let (text, json, exit_code, opened): (
+        Option<String>,
+        Option<serde_json::Value>,
+        Option<i32>,
+        bool,
+    ) = match outcome {
+        Some(turn_result::Outcome::Done(done)) => match done.output.as_ref() {
+            Some(turn_done::Output::Text(text)) => (Some(text.message.clone()), None, None, false),
+            Some(turn_done::Output::Structured(output)) => (
+                Some(output.message.clone()),
+                output
+                    .result
+                    .as_ref()
+                    .and_then(|value| serde_json::to_value(value).ok()),
+                None,
+                false,
+            ),
             None => (None, None, None, true),
-        };
+        },
+        Some(turn_result::Outcome::Pause(pause))
+            if pause.reason == PauseReason::Permissions as i32 =>
+        {
+            (Some("(permissions required)".into()), None, None, false)
+        }
+        Some(turn_result::Outcome::Pause(pause)) if pause.reason == PauseReason::Clarify as i32 => {
+            (Some("(paused for clarification)".into()), None, None, false)
+        }
+        Some(turn_result::Outcome::Pause(pause)) if pause.reason == PauseReason::Inform as i32 => {
+            (Some("(paused to inform user)".into()), None, None, false)
+        }
+        Some(turn_result::Outcome::Pause(_)) => (
+            Some("(paused for sandbox unlock)".into()),
+            None,
+            None,
+            false,
+        ),
+        Some(turn_result::Outcome::Cancelled(_)) => {
+            (Some("(turn cancelled by user)".into()), None, None, false)
+        }
+        Some(turn_result::Outcome::Failed(failed)) => {
+            (Some(failed.message.clone()), None, Some(1), false)
+        }
+        None => (None, None, None, true),
+    };
     TurnRunOutcome {
         completed: !opened,
         opened,
@@ -472,6 +478,8 @@ async fn run_sealed_turn(
     let agent_name = ov.and_then(|p| p.agent.clone());
     let max_iter = ov.and_then(|p| p.max_iter);
     let result_schema = ov.and_then(|p| p.result_schema.clone());
+    let verified_goal =
+        gait_ops::verified_goal::resolve(ov.and_then(|p| p.verified_goal.as_deref()));
     let auto = TurnProfileOverride::resolve_auto(false, ov);
     let sandbox_on = sandbox_on.unwrap_or(true);
 
@@ -482,6 +490,7 @@ async fn run_sealed_turn(
     )?);
 
     let mut driver = SealedTurnDriver {
+        verified_goal,
         codebase,
         inference,
         explicit_inference_override,
@@ -638,6 +647,7 @@ mod tests {
         }
 
         let mut driver = SealedTurnDriver {
+            verified_goal: None,
             codebase: PathBuf::from("/tmp/cb"),
             inference: "test".into(),
             explicit_inference_override: false,
@@ -682,6 +692,7 @@ mod tests {
     #[test]
     fn sealed_turn_driver_holds_paths() {
         let driver = SealedTurnDriver {
+            verified_goal: None,
             codebase: PathBuf::from("/tmp/cb"),
             inference: "test".into(),
             explicit_inference_override: false,
@@ -720,6 +731,7 @@ mod tests {
         }
 
         let driver = SealedTurnDriver {
+            verified_goal: None,
             codebase: std::path::PathBuf::from("/tmp/x"),
             inference: "test".into(),
             explicit_inference_override: false,
@@ -747,6 +759,7 @@ mod tests {
     #[test]
     fn cli_auto_override_wins_over_node_default() {
         let on = TurnProfileOverride {
+            verified_goal: None,
             inference: None,
             explicit_inference_override: false,
             session_updates: vec![],
@@ -758,6 +771,7 @@ mod tests {
             auto: Some(true),
         };
         let off = TurnProfileOverride {
+            verified_goal: None,
             inference: None,
             explicit_inference_override: false,
             session_updates: vec![],
@@ -789,6 +803,7 @@ mod tests {
 
     fn empty_profile(allow: Vec<String>) -> TurnProfileOverride {
         TurnProfileOverride {
+            verified_goal: None,
             inference: None,
             explicit_inference_override: false,
             session_updates: vec![],

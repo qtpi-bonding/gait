@@ -35,6 +35,15 @@ struct ShellOutput {
     exit_code: i32,
 }
 
+/// Result of bounded shell execution (for verified_goal and internal verifier).
+#[derive(Debug, Clone)]
+pub struct ShellExecution {
+    /// Exit code if the process spawned and ran; None for spawn/timeout errors.
+    pub exit_code: Option<i32>,
+    /// Bounded captured output (stdout + stderr).
+    pub output: String,
+}
+
 pub struct ShellTool {
     ctx: ToolCtx,
     parameters: Value,
@@ -411,6 +420,160 @@ impl Tool for ShellTool {
 
     fn output_capture_mode(&self) -> crate::types::OutputCaptureMode {
         crate::types::OutputCaptureMode::Spool
+    }
+}
+
+// Non-trait methods for verified_goal and internal verifier execution
+impl ShellTool {
+    /// Run a fixed command (for verified_goal verifier) through the same bounded
+    /// shell execution as model-proposed commands. Returns structured execution
+    /// result with optional exit code and bounded output. Spawn/timeout errors
+    /// produce exit_code: None. The command is always run from the codebase root
+    /// with the configured timeout, clean environment, and output bounding.
+    pub async fn run_configured(
+        &self,
+        command: &str,
+        rec: &dyn crate::types::Rec,
+    ) -> Result<ShellExecution, ToolError> {
+        let root = &self.ctx.codebase_path;
+        let cwd = root.clone();
+
+        let out_path = if let Some(path) = self.ctx.output_capture.spool_path() {
+            path.to_path_buf()
+        } else {
+            let output_dir =
+                crate::session::live::outputs_dir(&self.ctx.gait_dir, &self.ctx.session_id)
+                    .join("shell");
+            std::fs::create_dir_all(&output_dir)
+                .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
+            let run_id = {
+                let s = uuid::Uuid::new_v4().to_string().replace('-', "");
+                s[..8].to_string()
+            };
+            output_dir.join(format!("shell-{run_id}.txt"))
+        };
+
+        let timeout_secs = crate::config::load_config(&self.ctx.gait_dir).shell_timeout_secs;
+
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", command])
+            .current_dir(&cwd)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .env_clear()
+            .envs(std::env::vars().filter(|(k, _)| {
+                matches!(
+                    k.as_str(),
+                    "PATH" | "HOME" | "USER" | "SHELL" | "LANG" | "LC_ALL" | "TMPDIR"
+                )
+            }))
+            .env("TERM", "dumb")
+            .env("NO_COLOR", "1");
+        crate::process::scope::configure_own_group(&mut cmd);
+        let mut child = cmd.spawn().map_err(|e| {
+            // Spawn error: no exit code
+            crate::tools::ToolError::Internal(e.into())
+        })?;
+        let child_pid = child.id().map(|p| p as i32).unwrap_or(0);
+        let scope = crate::process::scope::Scope::from_leader_pid(child_pid);
+        crate::process::scope::set_active(child_pid);
+
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut out_file = tokio::fs::File::create(&out_path)
+            .await
+            .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
+        let stdout = child.stdout.take().expect("piped");
+        let stderr = child.stderr.take().expect("piped");
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+
+        let h1 = tokio::spawn({
+            let tx = tx.clone();
+            async move {
+                let mut r = stdout;
+                let mut buf = [0u8; 8192];
+                loop {
+                    match r.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            let _ = tx.send(buf[..n].to_vec()).await;
+                        }
+                    }
+                }
+            }
+        });
+        let h2 = tokio::spawn({
+            let tx = tx.clone();
+            async move {
+                let mut r = stderr;
+                let mut buf = [0u8; 8192];
+                loop {
+                    match r.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            let _ = tx.send(buf[..n].to_vec()).await;
+                        }
+                    }
+                }
+            }
+        });
+        drop(tx);
+
+        let drain_and_wait = async {
+            let mut tail = std::collections::VecDeque::<u8>::new();
+            while let Some(chunk) = rx.recv().await {
+                out_file
+                    .write_all(&chunk)
+                    .await
+                    .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
+                rec.publish_delta(String::from_utf8_lossy(&chunk).into_owned());
+                tail.extend(&chunk);
+                while tail.len() > crate::tools::MODEL_TOOL_OUTPUT_MAX_BYTES {
+                    tail.pop_front();
+                }
+            }
+            h1.await.expect("stdout drain task panicked");
+            h2.await.expect("stderr drain task panicked");
+            out_file.flush().await.ok();
+            let status = child
+                .wait()
+                .await
+                .map_err(|e| crate::tools::ToolError::Internal(e.into()))?;
+            Ok::<_, ToolError>(status)
+        };
+
+        let outcome = tokio::select! {
+            r = drain_and_wait => Some(r),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(timeout_secs)) => None,
+        };
+        crate::process::scope::clear_active();
+
+        let status = match outcome {
+            Some(r) => r?,
+            None => {
+                // Timeout: SIGKILL and return exit code 124
+                scope.kill();
+                return Ok(ShellExecution {
+                    exit_code: Some(124),
+                    output: format!("[verifier: killed after {timeout_secs}s due to timeout]"),
+                });
+            }
+        };
+
+        let exit_code = status.code();
+        // Read back the output file and bound it to MODEL_TOOL_OUTPUT_MAX_BYTES
+        let tail_bytes = std::fs::read(&out_path).unwrap_or_default();
+        let output_slice = if tail_bytes.len() > crate::tools::MODEL_TOOL_OUTPUT_MAX_BYTES {
+            &tail_bytes[tail_bytes.len() - crate::tools::MODEL_TOOL_OUTPUT_MAX_BYTES..]
+        } else {
+            &tail_bytes[..]
+        };
+        let tail_str = strip_ansi(&String::from_utf8_lossy(output_slice));
+
+        Ok(ShellExecution {
+            exit_code,
+            output: tail_str.to_string(),
+        })
     }
 }
 

@@ -20,10 +20,10 @@
 
 use std::path::PathBuf;
 
+use gait_core::embed::{Diag, TurnSink};
 use gait_core::proto::envelope;
 use gait_core::proto::gait::log::v1 as pb;
 use gait_core::proto::gait::sandbox::v1::{signal, Append, FinalizedTurn, Signal};
-use gait_core::embed::{Diag, TurnSink};
 use gait_turn_runner::{
     run_single_prompt, run_turn_source, OneTurnSource, TurnProfileOverride, TurnRunOpts,
 };
@@ -275,6 +275,7 @@ async fn caller_supplied_inference_override_satisfies_resolve_checked_with_no_di
 
     let mut opts = test_opts("run-4", "s4", &gait_dir);
     opts.profile = Some(TurnProfileOverride {
+        verified_goal: None,
         inference: Some("mock".to_string()),
         explicit_inference_override: true,
         session_updates: vec![],

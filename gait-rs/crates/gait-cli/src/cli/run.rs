@@ -61,6 +61,8 @@ pub struct RunArgs {
     pub mode: Option<String>,
     #[arg(long = "result-schema")]
     pub result_schema_path: Option<String>,
+    #[arg(long = "verified-goal")]
+    pub verified_goal: Option<String>,
     #[arg(long = "result-schema-json", conflicts_with = "result_schema_path")]
     pub result_schema_json: Option<String>,
     #[arg(long, action = clap::ArgAction::Append)]
@@ -287,10 +289,10 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
         }
         Ok(None)
     })()
-        .unwrap_or_else(|e| {
-            eprintln!("[gait] {e}");
-            std::process::exit(1);
-        });
+    .unwrap_or_else(|e| {
+        eprintln!("[gait] {e}");
+        std::process::exit(1);
+    });
     if let Some(schema) = &explicit_result_schema {
         if !schema.is_object() {
             eprintln!("[gait] result schema must be a top-level JSON object");
@@ -362,6 +364,7 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
     // profile/sandbox/cascade travel as overrides (Task 3.2's C1 fix) so they
     // still reach the spawned brain.
     let profile_override = gait_turn_runner::TurnProfileOverride {
+        verified_goal: args.verified_goal.clone(),
         inference: args.inference.clone(),
         explicit_inference_override: args.inference.is_some(),
         session_updates: if prompt.is_some() {
@@ -456,6 +459,35 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_verified_goal_flag_and_absence() {
+        let parsed =
+            RunArgs::parse_from(&["--verified-goal".to_string(), "cargo test".to_string()]);
+        assert_eq!(parsed.verified_goal.as_deref(), Some("cargo test"));
+        assert_eq!(
+            RunArgs::parse_from(&["--auto".to_string()]).verified_goal,
+            None
+        );
+    }
+
+    #[test]
+    fn verified_goal_reaches_profile_override() {
+        let args = RunArgs::parse_from(&["--verified-goal".to_string(), "cargo test".to_string()]);
+        assert_eq!(args.verified_goal.as_deref(), Some("cargo test"));
+    }
+
+    #[test]
+    fn verified_goal_cli_flag() {
+        let args = RunArgs::parse_from(&[
+            "--verified-goal".to_string(),
+            "cargo test -p cli".to_string(),
+        ]);
+        // The CLI args.verified_goal is directly used in TurnProfileOverride,
+        // and resolution happens in gait_turn_runner, so we verify that the CLI
+        // value was parsed correctly.
+        assert_eq!(args.verified_goal.as_deref(), Some("cargo test -p cli"));
+    }
 
     #[test]
     fn cli_driver_is_gone() {

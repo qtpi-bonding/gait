@@ -36,6 +36,7 @@ pub(super) async fn apply_curate_filter(
         repos: repos.clone(),
     };
     let caps = crate::profile::ResolvedProfile {
+        verified_goal: None,
         provider,
         permissioned: crate::tools::RegisteredTools(vec![AnnotateTool::new().arced()])
             .into_enabled()

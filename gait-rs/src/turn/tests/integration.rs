@@ -306,6 +306,17 @@ async fn min_dynamic_catalog_lists_skills_but_not_mcp() {
 struct MockProvider {
     responses: Arc<Vec<Vec<StreamChunk>>>,
     call_idx: Arc<AtomicUsize>,
+    captured_messages: Arc<std::sync::Mutex<Vec<Vec<Message>>>>,
+}
+
+impl Default for MockProvider {
+    fn default() -> Self {
+        Self {
+            responses: Arc::new(vec![]),
+            call_idx: Arc::new(AtomicUsize::new(0)),
+            captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -316,7 +327,7 @@ impl Provider for MockProvider {
     async fn stream(
         &self,
         _system: &str,
-        _messages: &[Message],
+        messages: &[Message],
         _tools: &[Arc<dyn Tool>],
         _params: &crate::config::LlmParamsConfig,
         _tail_context: Option<&str>,
@@ -327,6 +338,11 @@ impl Provider for MockProvider {
         ProviderError,
     > {
         let idx = self.call_idx.fetch_add(1, Ordering::SeqCst);
+        // Capture the messages for inspection by the test
+        self.captured_messages
+            .lock()
+            .unwrap()
+            .push(messages.to_vec());
         let chunks = self.responses.get(idx).map(|v| v.as_slice()).unwrap_or(&[]);
         let chunks_vec: Vec<StreamChunk> = chunks.to_vec();
         Ok(Box::pin(stream! {
@@ -390,6 +406,62 @@ impl Provider for FakeProvider {
     }
 }
 
+/// Helper to create a MockProvider with message capture
+fn make_mock_provider(
+    responses: Vec<Vec<StreamChunk>>,
+) -> (Arc<MockProvider>, Arc<std::sync::Mutex<Vec<Vec<Message>>>>) {
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let provider = Arc::new(MockProvider {
+        responses: Arc::new(responses),
+        call_idx: Arc::new(AtomicUsize::new(0)),
+        captured_messages: captured.clone(),
+    });
+    (provider, captured)
+}
+
+/// Helper to create a ResolvedProfile with verified_goal and result_schema
+fn make_resolved_profile_with_verifier(
+    provider: std::sync::Arc<dyn Provider>,
+    tools: Vec<Arc<dyn Tool>>,
+    allow: Vec<String>,
+    deny: Vec<String>,
+    verified_goal: Option<String>,
+    result_schema: Option<serde_json::Value>,
+) -> crate::profile::ResolvedProfile {
+    let mut caps = crate::profile::ResolvedProfile::for_test_with_schema(
+        provider,
+        tools,
+        allow,
+        deny,
+        result_schema,
+    );
+    caps.verified_goal = verified_goal;
+    caps
+}
+
+/// Helper to run a turn with a pre-built ResolvedProfile
+#[allow(clippy::too_many_arguments)]
+async fn run_turn_test_call_with_profile(
+    gait_dir: std::path::PathBuf,
+    codebase_path: std::path::PathBuf,
+    session_id: String,
+    caps: crate::profile::ResolvedProfile,
+    input: TurnInput,
+    repos: crate::git::Repos,
+) -> anyhow::Result<TurnResult> {
+    let session = crate::session::Session {
+        id: session_id,
+        gait_dir,
+        codebase_path,
+        assigned_by: None,
+        repos,
+    };
+    let (tx, _rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::proto::gait::log::v1::StreamItem>();
+    let emitter = Recorder::for_session(&session.gait_dir, &session.id, tx);
+    run_turn(&session, &emitter, caps, input).await
+}
+
 #[tokio::test]
 async fn run_turn_writes_brain_events_without_coordinator_lifecycle() {
     let ws = TempDir::new().unwrap();
@@ -415,6 +487,7 @@ async fn run_turn_writes_brain_events_without_coordinator_lifecycle() {
             ],
         ]),
         call_idx: Arc::new(AtomicUsize::new(0)),
+        captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
     });
 
     let read_tool = ToolDef {
@@ -564,6 +637,7 @@ async fn output_tool_result_used_in_turn_result() {
             StreamChunk::Done,
         ]]),
         call_idx: Arc::new(AtomicUsize::new(0)),
+        captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
     });
 
     let output_tool = StructuredDoneTool::new();
@@ -619,6 +693,7 @@ async fn output_tool_exempt_from_permission_gating() {
             StreamChunk::Done,
         ]]),
         call_idx: Arc::new(AtomicUsize::new(0)),
+        captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
     });
 
     let output_tool = StructuredDoneTool::new();
@@ -678,6 +753,7 @@ async fn permission_gating_pauses_turn_in_non_auto_mode() {
             StreamChunk::Done,
         ]]),
         call_idx: Arc::new(AtomicUsize::new(0)),
+        captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
     });
 
     run_turn_test_call(
@@ -729,6 +805,7 @@ async fn run_turn_returns_done_result_on_completion() {
             StreamChunk::Text("I finished the task.".into()),
             StreamChunk::Done,
         ]]),
+        captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
         call_idx: Arc::new(AtomicUsize::new(0)),
     });
 
@@ -781,6 +858,7 @@ async fn run_turn_returns_permissions_when_paused() {
             StreamChunk::Done,
         ]]),
         call_idx: Arc::new(AtomicUsize::new(0)),
+        captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
     });
 
     let result = run_turn_test_call(
@@ -825,6 +903,7 @@ async fn streaming_text_does_not_produce_extra_transcript_events() {
             StreamChunk::Text("world".into()),
             StreamChunk::Done,
         ]]),
+        captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
         call_idx: Arc::new(AtomicUsize::new(0)),
     });
 
@@ -891,6 +970,7 @@ async fn denied_tool_gets_blocked_result_without_prompting() {
             ],
         ]),
         call_idx: Arc::new(AtomicUsize::new(0)),
+        captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
     });
 
     let shell_tool = crate::tools::ShellTool::new(crate::tools::ToolCtx::new(
@@ -983,6 +1063,7 @@ async fn deny_wins_when_tool_in_both_allow_and_deny() {
             ],
         ]),
         call_idx: Arc::new(AtomicUsize::new(0)),
+        captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
     });
 
     let shell_tool = crate::tools::ShellTool::new(crate::tools::ToolCtx::new(
@@ -1664,6 +1745,7 @@ async fn run_turn_persists_codebase_path_in_session_start() {
             StreamChunk::Text("all done".into()),
             StreamChunk::Done,
         ]]),
+        captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
         call_idx: Arc::new(AtomicUsize::new(0)),
     });
 
@@ -1730,6 +1812,7 @@ async fn load_skill_emits_toggle_event() {
             ],
         ]),
         call_idx: Arc::new(AtomicUsize::new(0)),
+        captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
     });
 
     let skill = crate::config::SkillDef {
@@ -1840,6 +1923,7 @@ async fn enable_rejects_skill_outside_agent_whitelist() {
             ],
         ]),
         call_idx: Arc::new(AtomicUsize::new(0)),
+        captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
     });
 
     let skill = crate::config::SkillDef {
@@ -1934,6 +2018,7 @@ async fn config_enabled_union_does_not_bypass_skill_whitelist_at_seed() {
             StreamChunk::Done,
         ]]),
         call_idx: Arc::new(AtomicUsize::new(0)),
+        captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
     });
 
     // Disk-enabled skill (mirrors a real `Profile::resolve` where an
@@ -2032,6 +2117,7 @@ async fn supervised_write_outside_ceiling_pauses_with_unlock() {
             StreamChunk::Done,
         ]]),
         call_idx: Arc::new(AtomicUsize::new(0)),
+        captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
     });
 
     let write_tool = crate::tools::WriteTool::new(crate::tools::ToolCtx::new(
@@ -2119,6 +2205,7 @@ async fn supervised_write_inside_codebase_returns_done() {
             vec![StreamChunk::Text("wrote foo.txt".into()), StreamChunk::Done],
         ]),
         call_idx: Arc::new(AtomicUsize::new(0)),
+        captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
     });
 
     let write_tool = crate::tools::WriteTool::new(crate::tools::ToolCtx::new(
@@ -2204,6 +2291,7 @@ async fn auto_mode_shell_denial_propagates_as_tool_failure() {
             vec![StreamChunk::Text("done".into()), StreamChunk::Done],
         ]),
         call_idx: Arc::new(AtomicUsize::new(0)),
+        captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
     });
 
     let shell_tool = crate::tools::ShellTool::new(crate::tools::ToolCtx::new(
@@ -2279,6 +2367,7 @@ async fn shell_eacces_supervised_pause() {
             StreamChunk::Done,
         ]]),
         call_idx: Arc::new(AtomicUsize::new(0)),
+        captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
     });
 
     let shell_tool = crate::tools::ShellTool::new(crate::tools::ToolCtx::new(
@@ -2358,6 +2447,7 @@ async fn supervised_read_outside_ceiling_pauses_with_unlock() {
             StreamChunk::Done,
         ]]),
         call_idx: Arc::new(AtomicUsize::new(0)),
+        captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
     });
 
     let read_tool = crate::tools::ReadTool::new(crate::tools::ToolCtx::new(
@@ -2476,6 +2566,7 @@ async fn schema_bound_plain_text_then_structured_done_succeeds() {
             ],
         ]),
         call_idx: Arc::new(AtomicUsize::new(0)),
+        captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
     });
 
     let schema = serde_json::json!({
@@ -2539,6 +2630,7 @@ async fn schema_bound_plain_text_always_errors_after_nudges() {
 
     let provider = Arc::new(MockProvider {
         responses: Arc::new(responses),
+        captured_messages: Arc::new(std::sync::Mutex::new(Vec::new())),
         call_idx: Arc::new(AtomicUsize::new(0)),
     });
 
@@ -3043,4 +3135,502 @@ async fn shell_command_not_matching_whitelist_carries_no_match_items() {
         "non-matching command must not carry any whitelist_match_items, got: {:?}",
         feedback.whitelist_match_items
     );
+}
+
+/// Test 1: verified_goal fails on first attempt, then succeeds on second in the same turn
+#[tokio::test]
+async fn verified_goal_failure_nudges_then_success_finishes_same_turn() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+
+    // Create a stateful verifier script that fails on first call, succeeds on second
+    let verifier_script = ws.path().join("verifier.sh");
+    std::fs::write(
+        &verifier_script,
+        "#!/bin/bash\nCOUNTER_FILE=\".verifier_counter\"\nif [ -f \"$COUNTER_FILE\" ]; then\n  exit 0\nelse\n  touch \"$COUNTER_FILE\"\n  exit 1\nfi\n",
+    )
+    .unwrap();
+    std::process::Command::new("chmod")
+        .arg("+x")
+        .arg(&verifier_script)
+        .output()
+        .unwrap();
+
+    let verifier_cmd = format!("bash {}", verifier_script.display());
+
+    // ModelProvider that attempts completion (implicit text) twice
+    let (provider, _captured) = make_mock_provider(vec![
+        // First attempt: model returns text (implicit completion)
+        vec![StreamChunk::Text("Task done".into()), StreamChunk::Done],
+        // Second attempt: model returns text again (implicit completion)
+        vec![
+            StreamChunk::Text("Task done for real".into()),
+            StreamChunk::Done,
+        ],
+    ]);
+
+    let caps = make_resolved_profile_with_verifier(
+        provider.clone(),
+        vec![],
+        vec!["shell".into()],
+        vec![],
+        Some(verifier_cmd),
+        None,
+    );
+
+    let result = run_turn_test_call_with_profile(
+        ws.path().to_path_buf(),
+        ws.path().to_path_buf(),
+        "stest_verified_goal_1".into(),
+        caps,
+        TurnInput {
+            auto: true,
+            max_iter: None,
+            preview_policy: crate::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: true,
+            sandbox_cfg: crate::config::SandboxConfig::default(),
+            relay: None,
+            initial_git: None,
+            daemons: vec![],
+        },
+        crate::git::Repos::production(),
+    )
+    .await
+    .unwrap();
+
+    // Assert turn completed successfully
+    assert!(
+        matches!(result, TurnResult::Done { .. }),
+        "expected Done, got: {:?}",
+        result
+    );
+
+    // Check the event log for verified_goal events
+    let tx_path = crate::session::live::log_path(ws.path(), "stest_verified_goal_1");
+    let events = read_events(&tx_path).unwrap();
+
+    let verified_goal_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            if let Some(payload::Kind::Raw(raw)) = event_kind(e) {
+                if raw.r#type == "verified_goal" {
+                    return Some(raw);
+                }
+            }
+            None
+        })
+        .collect();
+
+    assert_eq!(
+        verified_goal_events.len(),
+        2,
+        "expected exactly 2 verified_goal events"
+    );
+
+    // First should be failed
+    let first = &verified_goal_events[0];
+    if let Some(status_val) = first.payload.as_ref().and_then(|p| p.fields.get("status")) {
+        if let Some(pbjson_types::value::Kind::StringValue(s)) = &status_val.kind {
+            assert_eq!(s, "failed");
+        }
+    }
+
+    // Second should be passed
+    let second = &verified_goal_events[1];
+    if let Some(status_val) = second.payload.as_ref().and_then(|p| p.fields.get("status")) {
+        if let Some(pbjson_types::value::Kind::StringValue(s)) = &status_val.kind {
+            assert_eq!(s, "passed");
+        }
+    }
+}
+
+/// Test 2: verified_goal exhausts retries and fails the turn
+#[tokio::test]
+async fn verified_goal_exhaustion_fails_turn() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+
+    // Create a verifier script that always fails
+    let verifier_script = ws.path().join("always_fail.sh");
+    std::fs::write(&verifier_script, "#!/bin/bash\nexit 7\n").unwrap();
+    std::process::Command::new("chmod")
+        .arg("+x")
+        .arg(&verifier_script)
+        .output()
+        .unwrap();
+
+    let verifier_cmd = format!("bash {}", verifier_script.display());
+
+    // ModelProvider that attempts completion twice
+    let (provider, _captured) = make_mock_provider(vec![
+        // First attempt: model returns text
+        vec![StreamChunk::Text("First try".into()), StreamChunk::Done],
+        // Second attempt: model returns text again
+        vec![StreamChunk::Text("Second try".into()), StreamChunk::Done],
+    ]);
+
+    let caps = make_resolved_profile_with_verifier(
+        provider.clone(),
+        vec![],
+        vec!["shell".into()],
+        vec![],
+        Some(verifier_cmd),
+        None,
+    );
+
+    let result = run_turn_test_call_with_profile(
+        ws.path().to_path_buf(),
+        ws.path().to_path_buf(),
+        "stest_verified_goal_2".into(),
+        caps,
+        TurnInput {
+            auto: true,
+            max_iter: Some(2),
+            preview_policy: crate::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: true,
+            sandbox_cfg: crate::config::SandboxConfig::default(),
+            relay: None,
+            initial_git: None,
+            daemons: vec![],
+        },
+        crate::git::Repos::production(),
+    )
+    .await
+    .unwrap();
+
+    // Assert turn hit max iterations or failed
+    match result {
+        TurnResult::Done { .. } => panic!("expected turn to fail, but got Done"),
+        TurnResult::Permissions => panic!("expected turn to fail, but got Permissions"),
+        TurnResult::Failed { ended, .. } => {
+            // This is expected (max_steps or error)
+            assert!(!ended.is_empty());
+        }
+        other => {
+            panic!("unexpected result: {:?}", other)
+        }
+    }
+
+    // Check the event log for exactly 2 failed verified_goal events
+    let tx_path = crate::session::live::log_path(ws.path(), "stest_verified_goal_2");
+    let events = read_events(&tx_path).unwrap();
+
+    let verified_goal_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            if let Some(payload::Kind::Raw(raw)) = event_kind(e) {
+                if raw.r#type == "verified_goal" {
+                    return Some(raw);
+                }
+            }
+            None
+        })
+        .collect();
+
+    assert_eq!(
+        verified_goal_events.len(),
+        2,
+        "expected 2 verified_goal events, got: {}",
+        verified_goal_events.len()
+    );
+
+    // Both should be failed
+    for (i, event) in verified_goal_events.iter().enumerate() {
+        if let Some(status_val) = event.payload.as_ref().and_then(|p| p.fields.get("status")) {
+            if let Some(pbjson_types::value::Kind::StringValue(s)) = &status_val.kind {
+                assert_eq!(s, "failed", "verified_goal event {} should be failed", i);
+            }
+        }
+        if let Some(exit_val) = event
+            .payload
+            .as_ref()
+            .and_then(|p| p.fields.get("exit_code"))
+        {
+            if let Some(pbjson_types::value::Kind::NumberValue(n)) = &exit_val.kind {
+                assert_eq!(
+                    *n as i32, 7,
+                    "verified_goal event {} should have exit code 7",
+                    i
+                );
+            }
+        }
+    }
+}
+
+/// Test 3: schema validation failure combined with verifier failure in one attempt
+#[tokio::test]
+async fn verified_goal_schema_and_verifier_failure_combined() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+
+    // Create a stateful verifier script that fails on first call, succeeds on second
+    let verifier_script = ws.path().join("fail.sh");
+    std::fs::write(
+        &verifier_script,
+        "#!/bin/bash\nCOUNTER_FILE=\".verifier_counter_3\"\nif [ -f \"$COUNTER_FILE\" ]; then\n  exit 0\nelse\n  touch \"$COUNTER_FILE\"\n  exit 1\nfi\n",
+    )
+    .unwrap();
+    std::process::Command::new("chmod")
+        .arg("+x")
+        .arg(&verifier_script)
+        .output()
+        .unwrap();
+
+    let verifier_cmd = format!("bash {}", verifier_script.display());
+
+    // Define a result schema that requires a 'count' field
+    let result_schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "count": { "type": "integer" }
+        },
+        "required": ["count"]
+    });
+
+    // ModelProvider that attempts:
+    // 1. Invalid structured_done (missing required 'count' field) -> fails schema AND verifier
+    // 2. Valid structured_done -> passes everything
+    let (provider, _captured) = make_mock_provider(vec![
+        // First attempt: invalid structured_done (empty result object)
+        vec![
+            StreamChunk::ToolCallComplete {
+                tool_call_id: "tc1".into(),
+                tool_name: "structured_done".into(),
+                args: serde_json::json!({ "message": "done", "result": {} }),
+            },
+            StreamChunk::Done,
+        ],
+        // Second attempt: valid structured_done with required field
+        vec![
+            StreamChunk::ToolCallComplete {
+                tool_call_id: "tc2".into(),
+                tool_name: "structured_done".into(),
+                args: serde_json::json!({ "message": "done properly", "result": { "count": 5 } }),
+            },
+            StreamChunk::Done,
+        ],
+    ]);
+
+    let output_tool = StructuredDoneTool::new();
+
+    let caps = make_resolved_profile_with_verifier(
+        provider.clone(),
+        vec![output_tool.arced()],
+        vec!["shell".into()],
+        vec![],
+        Some(verifier_cmd),
+        Some(result_schema),
+    );
+
+    let result = run_turn_test_call_with_profile(
+        ws.path().to_path_buf(),
+        ws.path().to_path_buf(),
+        "stest_verified_goal_3".into(),
+        caps,
+        TurnInput {
+            auto: true,
+            max_iter: None,
+            preview_policy: crate::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: true,
+            sandbox_cfg: crate::config::SandboxConfig::default(),
+            relay: None,
+            initial_git: None,
+            daemons: vec![],
+        },
+        crate::git::Repos::production(),
+    )
+    .await
+    .unwrap();
+
+    // Assert turn completed successfully on second attempt
+    match result {
+        TurnResult::Done {
+            result: Some(r), ..
+        } => {
+            assert_eq!(r.get("count").and_then(|v| v.as_i64()), Some(5));
+        }
+        other => panic!("expected structured Done with result, got: {:?}", other),
+    }
+
+    // Check the event log
+    let tx_path = crate::session::live::log_path(ws.path(), "stest_verified_goal_3");
+    let events = read_events(&tx_path).unwrap();
+
+    let verified_goal_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            if let Some(payload::Kind::Raw(raw)) = event_kind(e) {
+                if raw.r#type == "verified_goal" {
+                    return Some(raw);
+                }
+            }
+            None
+        })
+        .collect();
+
+    assert_eq!(
+        verified_goal_events.len(),
+        2,
+        "expected 2 verified_goal events, got: {}",
+        verified_goal_events.len()
+    );
+
+    // First should be failed
+    let first = &verified_goal_events[0];
+    if let Some(status_val) = first.payload.as_ref().and_then(|p| p.fields.get("status")) {
+        if let Some(pbjson_types::value::Kind::StringValue(s)) = &status_val.kind {
+            assert_eq!(s, "failed");
+        }
+    }
+
+    // Second should be passed
+    let second = &verified_goal_events[1];
+    if let Some(status_val) = second.payload.as_ref().and_then(|p| p.fields.get("status")) {
+        if let Some(pbjson_types::value::Kind::StringValue(s)) = &status_val.kind {
+            assert_eq!(s, "passed");
+        }
+    }
+}
+
+/// Test 4: Plain-text completion with schema requirement plus verifier failure
+#[tokio::test]
+async fn verified_goal_implicit_with_schema_and_verifier() {
+    let ws = TempDir::new().unwrap();
+    init_git_repo(ws.path());
+
+    // Create a stateful verifier script that fails on first call, succeeds on second
+    let verifier_script = ws.path().join("fail2.sh");
+    std::fs::write(
+        &verifier_script,
+        "#!/bin/bash\nCOUNTER_FILE=\".verifier_counter_4\"\nif [ -f \"$COUNTER_FILE\" ]; then\n  exit 0\nelse\n  touch \"$COUNTER_FILE\"\n  exit 1\nfi\n",
+    )
+    .unwrap();
+    std::process::Command::new("chmod")
+        .arg("+x")
+        .arg(&verifier_script)
+        .output()
+        .unwrap();
+
+    let verifier_cmd = format!("bash {}", verifier_script.display());
+
+    // Define a result schema that requires structured completion
+    let result_schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "status": { "type": "string" }
+        },
+        "required": ["status"]
+    });
+
+    // ModelProvider that:
+    // 1. Returns plain-text completion (should fail schema requirement)
+    // 2. Returns valid structured_done
+    let (provider, _captured) = make_mock_provider(vec![
+        // First attempt: implicit text when schema is required
+        vec![
+            StreamChunk::Text("done with text".into()),
+            StreamChunk::Done,
+        ],
+        // Second attempt: valid structured_done
+        vec![
+            StreamChunk::ToolCallComplete {
+                tool_call_id: "tc1".into(),
+                tool_name: "structured_done".into(),
+                args: serde_json::json!({ "message": "done properly", "result": { "status": "success" } }),
+            },
+            StreamChunk::Done,
+        ],
+    ]);
+
+    let output_tool = StructuredDoneTool::new();
+
+    let caps = make_resolved_profile_with_verifier(
+        provider.clone(),
+        vec![output_tool.arced()],
+        vec!["shell".into()],
+        vec![],
+        Some(verifier_cmd),
+        Some(result_schema),
+    );
+
+    let result = run_turn_test_call_with_profile(
+        ws.path().to_path_buf(),
+        ws.path().to_path_buf(),
+        "stest_verified_goal_4".into(),
+        caps,
+        TurnInput {
+            auto: true,
+            max_iter: None,
+            preview_policy: crate::config::PreviewPolicy::default(),
+            cancel: None,
+            sandbox_on: true,
+            sandbox_cfg: crate::config::SandboxConfig::default(),
+            relay: None,
+            initial_git: None,
+            daemons: vec![],
+        },
+        crate::git::Repos::production(),
+    )
+    .await
+    .unwrap();
+
+    // Assert turn completed successfully on second attempt
+    match result {
+        TurnResult::Done {
+            result: Some(r), ..
+        } => {
+            assert_eq!(r.get("status").and_then(|v| v.as_str()), Some("success"));
+        }
+        other => panic!("expected structured Done, got: {:?}", other),
+    }
+
+    // Check the event log
+    let tx_path = crate::session::live::log_path(ws.path(), "stest_verified_goal_4");
+    let events = read_events(&tx_path).unwrap();
+
+    let verified_goal_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| {
+            if let Some(payload::Kind::Raw(raw)) = event_kind(e) {
+                if raw.r#type == "verified_goal" {
+                    return Some(raw);
+                }
+            }
+            None
+        })
+        .collect();
+
+    assert_eq!(verified_goal_events.len(), 2);
+
+    // First should be failed
+    let first = &verified_goal_events[0];
+    if let Some(status_val) = first.payload.as_ref().and_then(|p| p.fields.get("status")) {
+        if let Some(pbjson_types::value::Kind::StringValue(s)) = &status_val.kind {
+            assert_eq!(s, "failed");
+        }
+    }
+    if let Some(compl_val) = first
+        .payload
+        .as_ref()
+        .and_then(|p| p.fields.get("completion"))
+    {
+        if let Some(pbjson_types::value::Kind::StructValue(s)) = &compl_val.kind {
+            if let Some(implicit_val) = s.fields.get("implicit") {
+                if let Some(pbjson_types::value::Kind::BoolValue(b)) = &implicit_val.kind {
+                    assert_eq!(*b, true);
+                }
+            }
+        }
+    }
+
+    // Second should be passed
+    let second = &verified_goal_events[1];
+    if let Some(status_val) = second.payload.as_ref().and_then(|p| p.fields.get("status")) {
+        if let Some(pbjson_types::value::Kind::StringValue(s)) = &status_val.kind {
+            assert_eq!(s, "passed");
+        }
+    }
 }
