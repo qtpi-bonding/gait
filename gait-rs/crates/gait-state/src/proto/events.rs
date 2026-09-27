@@ -73,6 +73,33 @@ pub fn cwd(path: &str) -> pb::event::Body {
     }))
 }
 
+/// Verified goal execution attempt. Records the verifier command status, output,
+/// and completion outcome. Emitted once per completion attempt when a verified_goal
+/// is configured. The `completion` object carries the completion message, result,
+/// and whether it was implicit (plain text) or explicit (structured_done).
+/// On pending completion (paused for permission or sandbox), also records diagnostic
+/// output and snapshots of all three retry counters.
+pub fn verified_goal(
+    attempt_id: &str,
+    status: &str, // "pending", "passed", "failed", "execution_error"
+    command: &str,
+    exit_code: Option<i32>,
+    output: &str,
+    completion: serde_json::Value, // {"message": "...", "result": null/obj, "implicit": bool}
+) -> pb::event::Body {
+    wire::raw(
+        "verified_goal",
+        serde_json::json!({
+            "attempt_id": attempt_id,
+            "status": status,
+            "command": command,
+            "exit_code": exit_code,
+            "output": output,
+            "completion": completion,
+        }),
+    )
+}
+
 /// Turn cancellation signal — emitted when the user presses Esc mid-turn.
 /// Retrace folds this into `[turn interrupted by user]` in the next transcript.
 pub fn cancellation_signal() -> pb::event::Body {
@@ -1211,6 +1238,59 @@ mod tests {
                     assert_eq!(s.codebase_path.as_deref(), Some("/code"));
                 }
                 other => panic!("expected SessionStart, got {other:?}"),
+            },
+            other => panic!("expected Payload body, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verified_goal_serializes_with_all_fields() {
+        let body = super::verified_goal(
+            "attempt-1",
+            "failed",
+            "cargo test -p example",
+            Some(1),
+            "test output",
+            serde_json::json!({"message": "done", "result": null, "implicit": true}),
+        );
+        match body {
+            crate::proto::gait::log::v1::event::Body::Payload(p) => match p.kind {
+                Some(crate::proto::gait::log::v1::payload::Kind::Raw(r)) => {
+                    assert_eq!(r.r#type, "verified_goal");
+                    let payload = r.payload.as_ref().expect("payload exists");
+                    // Check that the Struct contains the required fields
+                    assert!(payload.fields.contains_key("attempt_id"));
+                    assert!(payload.fields.contains_key("status"));
+                    assert!(payload.fields.contains_key("command"));
+                    assert!(payload.fields.contains_key("exit_code"));
+                    assert!(payload.fields.contains_key("output"));
+                    assert!(payload.fields.contains_key("completion"));
+                }
+                other => panic!("expected Raw, got {other:?}"),
+            },
+            other => panic!("expected Payload body, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verified_goal_handles_null_exit_code() {
+        let body = super::verified_goal(
+            "attempt-2",
+            "execution_error",
+            "cargo test",
+            None,
+            "spawn failed",
+            serde_json::json!({"message": "retry", "result": null, "implicit": false}),
+        );
+        match body {
+            crate::proto::gait::log::v1::event::Body::Payload(p) => match p.kind {
+                Some(crate::proto::gait::log::v1::payload::Kind::Raw(r)) => {
+                    assert_eq!(r.r#type, "verified_goal");
+                    let payload = r.payload.as_ref().expect("payload exists");
+                    let json = serde_json::to_value(payload).expect("serialize to json");
+                    assert_eq!(json["exit_code"], serde_json::Value::Null);
+                }
+                other => panic!("expected Raw, got {other:?}"),
             },
             other => panic!("expected Payload body, got {other:?}"),
         }

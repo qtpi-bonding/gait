@@ -65,6 +65,7 @@ gait-sandbox    = { path = "crates/gait-sandbox" }
 gait-proto      = { path = "crates/gait-proto" }
 gait-identity   = { path = "crates/gait-identity" }
 gait-state      = { path = "crates/gait-state" }
+gait-ops        = { path = "crates/gait-ops" }
 gait-codemode   = { path = "crates/gait-codemode", optional = true }
 prost          = "0.13"
 pbjson-types   = "0.7"

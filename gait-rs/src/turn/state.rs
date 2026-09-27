@@ -99,6 +99,11 @@ pub(crate) struct TurnState {
     /// as `schema_retries_remaining` today.
     pub done_nudges_remaining: u8,
 
+    /// Remaining retries for verifier command failures. Seeded from
+    /// `caps.output_schema_retries` (same budget as schema_retries and done_nudges).
+    /// Decremented when the verified_goal command exits nonzero or has an execution error.
+    pub verified_goal_retries_remaining: u8,
+
     /// Active tool list. Built in `setup` (caps + projection-driven loadables)
     /// and mutated in-loop by `ExecutionSignal::LoadContext` (MCP server
     /// enable/disable). Read by `provider.stream` each step and by the gate
@@ -109,6 +114,17 @@ pub(crate) struct TurnState {
     /// once in setup and read every step by
     /// `prompt::build_loadable_enabled_state`.
     pub entries: Vec<LoadableEntry>,
+
+    /// User's verified goal for this turn, if any.
+    /// Seeded from `caps.verified_goal` in `TurnState::new`.
+    pub verified_goal: Option<String>,
+
+    /// Pending verifier attempt waiting for permission or sandbox approval, if any.
+    /// Restored during resume from a saved pending-verification event.
+    pub pending_verifier_attempt: Option<super::exec::PendingVerifierAttempt>,
+
+    /// Counter for generating unique attempt IDs for verified_goal events.
+    pub verifier_attempt_counter: u32,
 }
 
 /// Read-only borrows into the `run_turn()` frame, used by future phase modules.
@@ -202,8 +218,12 @@ impl TurnState {
             turn_ctx: None,
             schema_retries_remaining: caps.output_schema_retries,
             done_nudges_remaining: caps.output_schema_retries,
+            verified_goal_retries_remaining: caps.output_schema_retries,
             tools: Vec::new(),
             entries: Vec::new(),
+            verified_goal: caps.verified_goal.clone(),
+            pending_verifier_attempt: None,
+            verifier_attempt_counter: 0,
         }
     }
 }
@@ -250,6 +270,7 @@ mod tests {
         let st = TurnState::new(&caps);
         assert_eq!(st.schema_retries_remaining, 3);
         assert_eq!(st.done_nudges_remaining, 3);
+        assert_eq!(st.verified_goal_retries_remaining, 3);
         assert!(st.messages.is_empty());
         assert!(st.entries.is_empty());
         assert!(st.tools.is_empty());
@@ -258,5 +279,8 @@ mod tests {
         assert!(st.turn_ctx.is_none());
         assert_eq!(st.final_step_index, 0);
         assert!(st.all_turn_text.is_empty());
+        assert!(st.verified_goal.is_none());
+        assert!(st.pending_verifier_attempt.is_none());
+        assert_eq!(st.verifier_attempt_counter, 0);
     }
 }

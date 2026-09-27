@@ -96,6 +96,7 @@ pub async fn run_chat(
     agent_name: Option<String>,
     session_id: Option<String>,
     model_override: Option<String>,
+    verified_goal: Option<String>,
 ) -> anyhow::Result<()> {
     let agent_path: Option<PathBuf> = match agent_name.as_deref() {
         Some(n) => Some(gait_core::agent_frontmatter::resolve_markdown_context_path(
@@ -234,6 +235,14 @@ pub async fn run_chat(
     let base_allow = loaded_config.allow.clone();
     let base_deny = loaded_config.deny.clone();
 
+    // Capture the startup resolved verified_goal to preserve it across all
+    // turns in this session. An absent verifier is represented as Some("") so
+    // the session's settings remain stable regardless of later changes.
+    let startup_verified_goal =
+        gait_ops::verified_goal::resolve(verified_goal.as_deref()).or_else(|| Some(String::new()));
+    let startup_result_schema = loaded_config.result_schema.clone();
+    let startup_max_iter = loaded_config.max_iter;
+
     loop {
         let shell_history_path = gait_dir
             .join("tmp")
@@ -271,22 +280,21 @@ pub async fn run_chat(
                 sandbox_on: None,
                 cascade_group_arg: None,
                 cascade: None,
-                profile: model_override.clone().map(|model| {
-                    gait_turn_runner::TurnProfileOverride {
-                        inference: Some(model),
-                        explicit_inference_override: true,
-                        session_updates: Vec::new(),
-                        // Presence-based resolution (gait-turn-runner C3):
-                        // any `Some(profile)` speaks for `allow`/`deny`
-                        // literally, so carry the real disk-config lists
-                        // through rather than leaving them empty.
-                        allow: base_allow.clone(),
-                        deny: base_deny.clone(),
-                        agent: None,
-                        max_iter: None,
-                        result_schema: None,
-                        auto: None,
-                    }
+                profile: Some(gait_turn_runner::TurnProfileOverride {
+                    verified_goal: startup_verified_goal.clone(),
+                    inference: model_override.clone(),
+                    explicit_inference_override: model_override.is_some(),
+                    session_updates: Vec::new(),
+                    // Presence-based resolution (gait-turn-runner C3):
+                    // any `Some(profile)` speaks for `allow`/`deny`
+                    // literally, so carry the real disk-config lists
+                    // through rather than leaving them empty.
+                    allow: base_allow.clone(),
+                    deny: base_deny.clone(),
+                    agent: None,
+                    max_iter: startup_max_iter,
+                    result_schema: startup_result_schema.clone(),
+                    auto: None,
                 }),
                 fs_delegate: None,
                 allow_intree: false,

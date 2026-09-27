@@ -188,6 +188,7 @@ pub async fn exec_prompt_node(
     let sandbox_on = ctx.sandbox_on.unwrap_or(true); // workflow nodes default sandboxed
 
     let turn_profile = gait_turn_runner::TurnProfileOverride {
+        verified_goal: None,
         inference: Some(inference),
         explicit_inference_override,
         session_updates,

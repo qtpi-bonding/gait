@@ -31,6 +31,7 @@ pub mod inference;
 pub mod interaction;
 pub mod mode;
 pub mod permission;
+pub mod verified_goal;
 
 pub mod session;
 pub mod workspace;

@@ -24,8 +24,8 @@ use gait_core::proto::gait::log::v1::{
 use gait_core::proto::{events, wire};
 
 use crate::repl::commands::{self as cmd, ReplCommand, ReplCommandId};
-use crate::repl::{LineReader, ReedlineReader};
 use crate::repl::prompt::GaitPrompt;
+use crate::repl::{LineReader, ReedlineReader};
 
 /// Filtered subset of `repl::commands::COMMANDS`: the session-control
 /// commands the plain REPL supports. `gait-manual/manual.yaml`'s ungated
@@ -64,6 +64,7 @@ pub struct PlainReplArgs {
     pub agent_name: Option<String>,
     pub session_id: Option<String>,
     pub model_override: Option<String>,
+    pub verified_goal: Option<String>,
 }
 
 /// A session-control signal the source raises to end the current
@@ -185,6 +186,7 @@ pub async fn run_plain_script_fresh(
         agent_name: None,
         session_id: Some(gait_core::session::new_session_id()),
         model_override: None,
+        verified_goal: None,
     };
     run_plain_loop(
         args,
@@ -214,6 +216,7 @@ async fn run_plain_loop(
         agent_name,
         session_id,
         model_override,
+        verified_goal,
     } = args;
 
     let agent_path: Option<PathBuf> = match agent_name.as_deref() {
@@ -258,6 +261,14 @@ async fn run_plain_loop(
     let base_allow = loaded_config.allow.clone();
     let base_deny = loaded_config.deny.clone();
 
+    // Capture the startup resolved verified_goal to preserve it across all
+    // turns in this session. An absent verifier is represented as Some("") so
+    // the session's settings remain stable regardless of later changes.
+    let startup_verified_goal =
+        gait_ops::verified_goal::resolve(verified_goal.as_deref()).or_else(|| Some(String::new()));
+    let startup_result_schema = loaded_config.result_schema.clone();
+    let startup_max_iter = loaded_config.max_iter;
+
     // One reader for the process lifetime; `/n` only resets session-local
     // state, not the editor (the plain REPL has no themed history styling to
     // reset for).
@@ -294,18 +305,17 @@ async fn run_plain_loop(
                 sandbox_on: None,
                 cascade_group_arg: None,
                 cascade: None,
-                profile: model_override.clone().map(|model| {
-                    gait_turn_runner::TurnProfileOverride {
-                        inference: Some(model),
-                        explicit_inference_override: true,
-                        session_updates: Vec::new(),
-                        allow: base_allow.clone(),
-                        deny: base_deny.clone(),
-                        agent: None,
-                        max_iter: None,
-                        result_schema: None,
-                        auto: None,
-                    }
+                profile: Some(gait_turn_runner::TurnProfileOverride {
+                    verified_goal: startup_verified_goal.clone(),
+                    inference: model_override.clone(),
+                    explicit_inference_override: model_override.is_some(),
+                    session_updates: Vec::new(),
+                    allow: base_allow.clone(),
+                    deny: base_deny.clone(),
+                    agent: None,
+                    max_iter: startup_max_iter,
+                    result_schema: startup_result_schema.clone(),
+                    auto: None,
                 }),
                 fs_delegate: None,
                 allow_intree: false,
@@ -514,7 +524,11 @@ impl PlainSource {
                 for item in &items {
                     self.eprintln(&item.content);
                     let raw = self.read_line_raw();
-                    let content = if raw.is_empty() { "understood".into() } else { raw };
+                    let content = if raw.is_empty() {
+                        "understood".into()
+                    } else {
+                        raw
+                    };
                     replies.push(pb::InformReplyItem {
                         id: item.id.clone(),
                         content,
@@ -540,10 +554,8 @@ impl PlainSource {
                     let choice = if cancelled {
                         gait_core::permissions::PermissionChoice::Deny
                     } else {
-                        match crate::ui::permission::parse_permission_response(
-                            &raw,
-                            &item.patterns,
-                        ) {
+                        match crate::ui::permission::parse_permission_response(&raw, &item.patterns)
+                        {
                             Some(c) => c,
                             None => {
                                 cancelled = true;
@@ -555,7 +567,11 @@ impl PlainSource {
                         &choice,
                         &self.gait_dir,
                         &self.session_id,
-                        gait_ops::permission::resolve_active_mode_name(&self.gait_dir, &self.session_id).as_deref(),
+                        gait_ops::permission::resolve_active_mode_name(
+                            &self.gait_dir,
+                            &self.session_id,
+                        )
+                        .as_deref(),
                     ) {
                         self.eprintln(&format!("[gait] warning: could not save permission: {e}"));
                     }
@@ -727,7 +743,11 @@ impl TurnSource for PlainSource {
                 }
                 let on = args != "off";
                 self.shared.borrow_mut().sandbox_on = on;
-                self.eprintln(if on { "sandbox enabled" } else { "sandbox disabled" });
+                self.eprintln(if on {
+                    "sandbox enabled"
+                } else {
+                    "sandbox disabled"
+                });
                 continue;
             }
 
@@ -878,18 +898,23 @@ impl PlainSource {
         if let Some(args) = arg.strip_prefix("add ") {
             let parts: Vec<&str> = args.splitn(3, char::is_whitespace).collect();
             if parts.len() != 3 || parts.iter().any(|p| p.is_empty()) {
-                self.eprintln(
-                    "[gait] /inference add <name> <provider/id> <context-window-tokens>",
-                );
+                self.eprintln("[gait] /inference add <name> <provider/id> <context-window-tokens>");
                 return None;
             }
             let Ok(compaction_threshold_tokens) = parts[2].parse() else {
                 self.eprintln("[gait] context-window-tokens must be a positive integer");
                 return None;
             };
-            match gait_ops::inference::add(&self.gait_dir, parts[0], parts[1], compaction_threshold_tokens)
-            {
-                Ok(i) => self.eprintln(&format!("  added inference '{}' -> model {}", i.name, i.model)),
+            match gait_ops::inference::add(
+                &self.gait_dir,
+                parts[0],
+                parts[1],
+                compaction_threshold_tokens,
+            ) {
+                Ok(i) => self.eprintln(&format!(
+                    "  added inference '{}' -> model {}",
+                    i.name, i.model
+                )),
                 Err(e) => self.eprintln(&format!("[gait] /inference: {e}")),
             }
             return None;
@@ -939,13 +964,17 @@ impl PlainSource {
 
     fn dispatch_skill(&mut self, rest: &str) {
         if rest.is_empty() {
-            self.eprintln(&crate::repl::skill::list_text(&self.gait_dir, &self.session_id));
+            self.eprintln(&crate::repl::skill::list_text(
+                &self.gait_dir,
+                &self.session_id,
+            ));
             return;
         }
         let mut parts = rest.splitn(2, char::is_whitespace);
         let verb = parts.next().unwrap_or("");
         let name = parts.next().unwrap_or("").trim();
-        if let Err(msg) = crate::repl::skill::load_or_unload(&self.gait_dir, &self.session_id, verb, name)
+        if let Err(msg) =
+            crate::repl::skill::load_or_unload(&self.gait_dir, &self.session_id, verb, name)
         {
             self.eprintln(&format!("[gait] {msg}"));
         }
@@ -1125,8 +1154,16 @@ mod tests {
     fn min_repl_commands_covers_every_ungated_manual_guide() {
         let slugs: Vec<_> = MIN_REPL_COMMANDS.iter().map(|c| c.slug).collect();
         for s in [
-            "/help", "/info", "/new", "/undo", "/unlock", "/inference", "/auth", "/sandbox",
-            "/skill", "/exit",
+            "/help",
+            "/info",
+            "/new",
+            "/undo",
+            "/unlock",
+            "/inference",
+            "/auth",
+            "/sandbox",
+            "/skill",
+            "/exit",
         ] {
             assert!(slugs.contains(&s), "MIN_REPL_COMMANDS missing {s}");
         }

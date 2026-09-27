@@ -11,11 +11,69 @@ use grep_searcher::{Searcher, Sink, SinkMatch};
 use crate::config::PreviewPolicy;
 use crate::proto::gait::log::v1 as pb;
 use crate::proto::{events, Recorder};
+use crate::tools::shell::ShellExecution;
 use crate::types::{
     AssistantPart, Hook, HookContext, Rec, Tool, ToolCall, ToolResult, ToolResultKind,
 };
 
 use super::curate::apply_curate_filter;
+
+/// Helper function to deserialize u8 from either integer or float
+fn deserialize_u8_from_number<'de, D>(deserializer: D) -> Result<u8, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{self, Deserialize};
+    use serde_json::Value;
+
+    match Value::deserialize(deserializer)? {
+        Value::Number(n) => {
+            if let Some(i) = n.as_u64() {
+                u8::try_from(i).map_err(de::Error::custom)
+            } else if let Some(f) = n.as_f64() {
+                // Handle floats like 2.0
+                if f.fract() == 0.0 && f >= 0.0 && f <= 255.0 {
+                    Ok(f as u8)
+                } else {
+                    Err(de::Error::custom("number is not a valid u8"))
+                }
+            } else {
+                Err(de::Error::custom("number is not a valid u8"))
+            }
+        }
+        _ => Err(de::Error::custom("expected a number")),
+    }
+}
+
+/// Serializable pending-verification state for a verifier command that
+/// was paused waiting for permission or sandbox approval. Contains all
+/// information needed to resume execution and restore turn state.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub(super) struct PendingVerifierAttempt {
+    /// Unique attempt identifier (e.g., "attempt-1", "attempt-2", ...)
+    pub attempt_id: String,
+    /// The fixed verifier command that is pending execution
+    pub command: String,
+    /// Completion candidate: message text
+    pub completion_message: String,
+    /// Completion candidate: result (null or a value)
+    pub completion_result: Option<serde_json::Value>,
+    /// Completion candidate: whether it was implicit (plain text) or explicit (structured_done)
+    pub completion_implicit: bool,
+    /// Any structured-result validation diagnostics from the completion attempt
+    pub schema_diagnostics: Option<String>,
+    /// What kind of pause this is: "permission" or "sandbox"
+    pub pause_kind: String,
+    /// Snapshot of schema_retries_remaining at pause time
+    #[serde(deserialize_with = "deserialize_u8_from_number")]
+    pub schema_retries_remaining: u8,
+    /// Snapshot of done_nudges_remaining at pause time
+    #[serde(deserialize_with = "deserialize_u8_from_number")]
+    pub done_nudges_remaining: u8,
+    /// Snapshot of verified_goal_retries_remaining at pause time
+    #[serde(deserialize_with = "deserialize_u8_from_number")]
+    pub verified_goal_retries_remaining: u8,
+}
 
 /// Output of one tool execution: the parts for the in-memory message, the
 /// in-memory result, and the log event ID so a Replace can target it later.
@@ -384,6 +442,124 @@ pub(super) fn error_tool_result(
     })
 }
 
+/// Outcome of verifier dispatch through the permission gate and Synapse.
+/// Indicates whether execution succeeded (with ShellExecution result) or requires
+/// a pause for permission/sandbox approval.
+#[derive(Debug)]
+pub(super) enum VerifierDispatchOutcome {
+    /// Verifier executed successfully; contains the shell execution result.
+    Executed(ShellExecution),
+    /// Permission gate requires user approval; contains the permission items.
+    NeedsPermission(Vec<pb::PermissionItem>),
+    /// Sandbox unlock required; contains the unlock item.
+    NeedsSandboxUnlock(pb::SandboxUnlockItem),
+}
+
+/// Dispatch a fixed verifier command through the same permission gate and Synapse
+/// hand used for model-proposed shell calls. Returns either the execution result
+/// or a pause outcome indicating what approval is required.
+///
+/// This internal-only dispatch path:
+/// - Takes the resolved command string (never from model input)
+/// - Routes through the same allow/deny/classify decision as model shell calls
+/// - Uses Synapse::fire to enforce sandbox and permission policies
+/// - Never registers a visible `verified_goal` tool
+/// - Reuses `ShellTool::run_configured` as the actual execution once approved
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn dispatch_verifier(
+    command: &str,
+    tool: &dyn Tool,
+    emitter: &dyn Rec,
+    relay: Option<&crate::turn::nerve::NerveWriter>,
+    effective_allow: &[String],
+    deny: &[String],
+    auto: bool,
+    _classifier: &dyn super::execute::Classifier,
+    _classify_policy: Option<&pb::ClassifyPolicy>,
+) -> anyhow::Result<VerifierDispatchOutcome> {
+    use crate::permissions::gate::{classify as gate_classify, GateDecision};
+
+    // Construct shell arguments for the verifier command
+    let shell_args = serde_json::json!({
+        "cmd": command,
+        "reason": "[verified_goal verifier]"
+    });
+
+    // Build a synthetic tool call to check permissions
+    let synthetic_call = ToolCall {
+        tool_call_id: "verified_goal".into(),
+        tool_name: "shell".into(),
+        args: shell_args.clone(),
+    };
+
+    // Apply the permission gate: check allow/deny/classify
+    match gate_classify(&synthetic_call, Some(tool), effective_allow, deny, auto) {
+        GateDecision::Deny => {
+            return Ok(VerifierDispatchOutcome::NeedsPermission(vec![
+                pb::PermissionItem {
+                    id: "verified_goal".into(),
+                    tool_name: "shell".into(),
+                    cmd: command.to_string(),
+                    reason: "[verified_goal verifier]".into(),
+                    patterns: vec!["shell:verified_goal".into()],
+                    tool_args: None,
+                    preview: None,
+                },
+            ]));
+        }
+        GateDecision::Allow { .. } => {
+            // Allowed to proceed; execute through Synapse
+        }
+        GateDecision::Gate { items } => {
+            // Requires classification or approval; return pause outcome
+            return Ok(VerifierDispatchOutcome::NeedsPermission(items));
+        }
+    }
+
+    // Execute through the normal capability path (Synapse::fire)
+    match execute_capability_raw(
+        tool,
+        shell_args,
+        emitter,
+        relay,
+        crate::types::OutputPresentation::ModelPreview,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            // Check for sandbox denial
+            if let Some(denied) = &outcome.denied {
+                return Ok(VerifierDispatchOutcome::NeedsSandboxUnlock(denied.clone()));
+            }
+
+            // Extract shell execution result from the tool output
+            if let (Some(output), Some(exit_code)) =
+                (outcome.value.get("output"), outcome.value.get("exit_code"))
+            {
+                let output_str = output.as_str().unwrap_or("").to_string();
+                let exit_code_i32 = process_exit_code(exit_code);
+                Ok(VerifierDispatchOutcome::Executed(ShellExecution {
+                    exit_code: Some(exit_code_i32),
+                    output: output_str,
+                }))
+            } else {
+                // Unexpected tool output shape
+                Ok(VerifierDispatchOutcome::Executed(ShellExecution {
+                    exit_code: None,
+                    output: "verifier: unexpected tool output shape".into(),
+                }))
+            }
+        }
+        Err(e) => {
+            // Execution error (spawn/timeout/etc)
+            Ok(VerifierDispatchOutcome::Executed(ShellExecution {
+                exit_code: None,
+                output: format!("verifier error: {}", e),
+            }))
+        }
+    }
+}
+
 /// Run a pipeline of rg (grep) and sd-style (find/replace) operations on `raw` in-process.
 /// `ops` is a JSON array of `{"rg": "<pattern>"}` and/or `{"sd": ["<from>", "<to>"]}` items.
 /// No subprocess, no shell injection surface — pure in-process regex, linear time, no backtracking.
@@ -545,7 +721,6 @@ mod synapse_routing_tests {
         assert_eq!(process_exit_code(&serde_json::json!(101)), 101);
         assert_eq!(process_exit_code(&serde_json::json!(-9.0)), -9);
     }
-
 
     struct TouchTool;
     #[async_trait::async_trait]
@@ -906,6 +1081,138 @@ mod synapse_routing_tests {
             .await
             .unwrap();
         assert_eq!(nested, serde_json::json!("second"));
+    }
+
+    // ── Verified Goal Dispatch Tests ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn verified_goal_auto_approved_runs_through_synapse() {
+        let dir = tempdir().unwrap();
+        let id = "svg-auto-1";
+        std::fs::create_dir_all(
+            crate::session::live::log_path(dir.path(), id)
+                .parent()
+                .unwrap(),
+        )
+        .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let rec = crate::proto::Recorder::for_session(dir.path(), id, tx);
+
+        // Build a minimal shell tool
+        let shell_tool = crate::tools::ShellTool::new(crate::tools::ToolCtx::new(
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            id.to_string(),
+        ));
+
+        // In auto mode with no deny list, the verifier should execute
+        let outcome = dispatch_verifier(
+            "printf ready",
+            &shell_tool as &dyn Tool,
+            &rec,
+            None,
+            &[],  // effective_allow
+            &[],  // deny
+            true, // auto
+            &super::super::execute::DisabledClassifier,
+            None,
+        )
+        .await
+        .unwrap();
+
+        match outcome {
+            VerifierDispatchOutcome::Executed(execution) => {
+                assert_eq!(execution.exit_code, Some(0));
+                assert!(execution.output.contains("ready"));
+            }
+            other => panic!("expected Executed, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn verified_goal_denied_returns_permission_pause() {
+        let dir = tempdir().unwrap();
+        let id = "svg-deny-1";
+        std::fs::create_dir_all(
+            crate::session::live::log_path(dir.path(), id)
+                .parent()
+                .unwrap(),
+        )
+        .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let rec = crate::proto::Recorder::for_session(dir.path(), id, tx);
+
+        let shell_tool = crate::tools::ShellTool::new(crate::tools::ToolCtx::new(
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            id.to_string(),
+        ));
+
+        // In supervised mode with shell denied, should pause for permission
+        let outcome = dispatch_verifier(
+            "printf test",
+            &shell_tool as &dyn Tool,
+            &rec,
+            None,
+            &[],                      // effective_allow
+            &["shell:*".to_string()], // deny shell:*
+            false,                    // not auto
+            &super::super::execute::DisabledClassifier,
+            None,
+        )
+        .await
+        .unwrap();
+
+        match outcome {
+            VerifierDispatchOutcome::NeedsPermission(items) => {
+                assert!(!items.is_empty());
+                assert_eq!(items[0].tool_name, "shell");
+            }
+            other => panic!("expected NeedsPermission, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn verified_goal_nonzero_exit_preserved() {
+        let dir = tempdir().unwrap();
+        let id = "svg-exit-1";
+        std::fs::create_dir_all(
+            crate::session::live::log_path(dir.path(), id)
+                .parent()
+                .unwrap(),
+        )
+        .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let rec = crate::proto::Recorder::for_session(dir.path(), id, tx);
+
+        let shell_tool = crate::tools::ShellTool::new(crate::tools::ToolCtx::new(
+            dir.path().to_path_buf(),
+            dir.path().to_path_buf(),
+            id.to_string(),
+        ));
+
+        // Run a command that exits with a nonzero code
+        let outcome = dispatch_verifier(
+            "printf failed; exit 7",
+            &shell_tool as &dyn Tool,
+            &rec,
+            None,
+            &[],  // effective_allow
+            &[],  // deny
+            true, // auto
+            &super::super::execute::DisabledClassifier,
+            None,
+        )
+        .await
+        .unwrap();
+
+        match outcome {
+            VerifierDispatchOutcome::Executed(execution) => {
+                assert_eq!(execution.exit_code, Some(7));
+                assert!(execution.output.contains("failed"));
+            }
+            other => panic!("expected Executed, got {:?}", other),
+        }
     }
 
     #[tokio::test]

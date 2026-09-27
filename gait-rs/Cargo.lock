@@ -1895,6 +1895,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "gait-core",
+ "gait-ops",
  "gait-testkit",
  "git2",
  "prost",

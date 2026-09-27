@@ -39,6 +39,8 @@ impl ContextPolicy {
 /// built from gait_dir `GaitConfig` and (optionally) an agent `.md` file.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Profile {
+    #[serde(default)]
+    pub verified_goal: Option<String>,
     pub model: String,        // "provider/model-id"
     pub instructions: String, // composed system prompt (preamble + agent body)
     pub allow: Vec<String>,
@@ -67,6 +69,7 @@ pub struct Profile {
 /// which is the single place that wires up the model API, MCP discovery,
 /// built-in tools, and config-defined tools.
 pub struct ResolvedProfile {
+    pub verified_goal: Option<String>,
     pub(crate) provider: std::sync::Arc<dyn gait_provider::provider::Provider>,
     pub(crate) permissioned: crate::tools::PermissionedTools,
     pub model: String,
@@ -326,6 +329,7 @@ impl Profile {
         let agent_whitelist = crate::registry::AgentWhitelist::from_agent_path(agent_path);
 
         Profile {
+            verified_goal: None,
             model,
             instructions,
             allow,
@@ -474,6 +478,7 @@ impl Profile {
             .with_permissions(allow, deny);
 
         Ok(ResolvedProfile {
+            verified_goal: self.verified_goal,
             provider,
             permissioned,
             model: self.model,
@@ -516,6 +521,7 @@ impl ResolvedProfile {
             .into_enabled()
             .with_permissions(allow, deny);
         ResolvedProfile {
+            verified_goal: None,
             provider,
             permissioned,
             model: "test/model".into(),
@@ -628,6 +634,7 @@ mod tests {
     async fn resolve_with_no_mcp_builds_provider_and_builtin_tools() {
         use std::collections::HashSet;
         let profile = Profile {
+            verified_goal: None,
             model: "anthropic/claude-x".into(),
             instructions: "sys".into(),
             allow: vec!["read".into()],
@@ -673,6 +680,7 @@ mod tests {
         // is "anthropic/x"; with mode model=None or cleared, it is the base model.
         let base = "anthropic/base".to_string();
         let mut profile = Profile {
+            verified_goal: None,
             model: base.clone(),
             instructions: String::new(),
             allow: vec![],
@@ -831,6 +839,7 @@ mod tests {
     #[test]
     fn profile_round_trips_through_json() {
         let p = Profile {
+            verified_goal: None,
             model: "anthropic/claude-x".into(),
             instructions: "sys".into(),
             allow: vec!["read".into()],
@@ -859,6 +868,7 @@ mod tests {
     async fn hands_free_resolves_only_structured_done() {
         let schema = serde_json::json!({ "type": "object" });
         let profile = Profile {
+            verified_goal: None,
             model: "anthropic/claude-haiku-4-5-20251001".into(),
             instructions: String::new(),
             allow: vec![],

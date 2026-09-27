@@ -257,7 +257,11 @@ pub(crate) fn init(
     // session/once grants, folded mutation-aware from the full session via the
     // ActivePermissions projection. Replaces the once-approval temp file entirely:
     // once/session approvals now live in the Log as PermissionsReply events.
-    let (effective_allow, deny, classify_policy): (Vec<String>, Vec<String>, Option<pb::ClassifyPolicy>) = {
+    let (effective_allow, deny, classify_policy): (
+        Vec<String>,
+        Vec<String>,
+        Option<pb::ClassifyPolicy>,
+    ) = {
         let evs = ingestor.events()?;
         let mut muts = retrace::active_mutations(&evs);
         retrace::apply_cascade(&mut muts, &evs);
@@ -532,8 +536,10 @@ pub(crate) fn finish_after_resume(
     #[cfg(feature = "mcp")]
     {
         // Group MCP tool defs by server name so we can show one entry per server.
-        let mut mcp_tools_by_server: std::collections::HashMap<&str, Vec<&crate::config::McpToolDef>> =
-            std::collections::HashMap::new();
+        let mut mcp_tools_by_server: std::collections::HashMap<
+            &str,
+            Vec<&crate::config::McpToolDef>,
+        > = std::collections::HashMap::new();
         for def in mcp_registry {
             mcp_tools_by_server
                 .entry(def.server_name.as_str())
@@ -727,6 +733,9 @@ pub(crate) async fn build_test_turn_state(
         agent_whitelist,
         ingestor,
         system_prompt,
+        auto,
+        classifier,
+        classify_policy,
         ..
     } = data;
     super::resume::apply_if_pending(
@@ -742,6 +751,11 @@ pub(crate) async fn build_test_turn_state(
         &codebase_hash,
         &dirty_files,
         &daemons,
+        &effective_allow,
+        &deny,
+        auto,
+        classifier.as_ref(),
+        classify_policy.as_ref(),
     )
     .await?;
     finish_after_resume(

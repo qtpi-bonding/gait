@@ -46,6 +46,7 @@ gait "<task>" --codebase .    # runs from any directory inside the repo
 
 ```bash
 gait "<task>" [top-level flags]
+gait "implement the parser" --verified-goal "cargo test"
 ```
 
 Each completed turn is committed to the session's git branch. Interrupted turns are also committed — state is never lost.
@@ -78,6 +79,7 @@ See [docs/repl.md](repl.md).
 | `--max-iter <n>` | `-n` | Cap agentic tool-use steps. |
 | `--result-schema <file>` | `-R` | JSON Schema file — force structured output. |
 | `--result-schema-json <json>` |  | Inline JSON Schema — force structured output. |
+| `--verified-goal <command>` | | A shell command that gates turn completion; runs from the codebase root. |
 | `--mode <name>` | | Activate a mode overlay for this turn. |
 | `--sandbox` | | Force the sandbox on (overrides config). |
 | `--no-sandbox` | | Force the sandbox off (overrides config). |
