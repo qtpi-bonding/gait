@@ -12,8 +12,7 @@
 //! provenance_material)` pair the first time it's seen; a later fold's
 //! genuine duplicate is a no-op that leaves the original timestamp
 //! untouched. `lookup` is the read side the authorization check consults --
-//! it never itself reads a clock. See
-//! an internal design note §5.
+//! it never itself reads a clock.
 //!
 //! The receipt is bound to `content_hash` (the event's actual signed
 //! content, once verified) plus `provenance_material` (the signature bytes

@@ -68,8 +68,7 @@ message Event {
 // recipients followed by each recipient's length and UTF-8 bytes in order,
 // then context's length and UTF-8 bytes. `KeyScheme` lives in `identitycrypto.v1`
 // (imported above), not here -- the discriminant every canonical transcript
-// embeds as a raw byte is defined by the identity-crypto protocol, not gait-owned;
-// see an internal design note.
+// embeds as a raw byte is defined by the identity-crypto protocol, not gait-owned.
 message Provenance {
   bytes                        from            = 1;  // public key bytes
   repeated string              to              = 2;  // specific recipients; empty = the room/log at large
@@ -78,8 +77,7 @@ message Provenance {
   identitycrypto.v1.KeyScheme  scheme          = 5;  // discriminant for `from`/`signature`
   // Present only when `from` is a session key, never registered with grorg --
   // authorizes it to sign on the device key's behalf for a bounded window.
-  // Travels WITH the event rather than being pre-registered anywhere. See
-  // an internal design note §3.
+  // Travels WITH the event rather than being pre-registered anywhere.
   optional identitycrypto.v1.DelegationCert delegation_cert = 6;
 
   // Set when a trusted ingress has verified an external authorship claim

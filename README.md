@@ -141,7 +141,6 @@ Plus subcommands (`gait <subcommand>`) for everything else. See [docs/cli.md](do
 - **[gait-rs/docs/architecture.md](gait-rs/docs/architecture.md)** — engine internals: crate layout, event log, projections, ops boundary, embedding API.
 - **[gait-rs/docs/gait-min.md](gait-rs/docs/gait-min.md)** — the `gait-min` compile-time composition: what's in, what's out, and how it's verified.
 - **[gait-rs/docs/embedding.md](gait-rs/docs/embedding.md)** — driving gait from another program over the Turn I/O Boundary.
-- **[gait-rs/CLAUDE.md](gait-rs/CLAUDE.md)** — development notes for contributors.
 
 ## Config: `gait.jsonc`
 

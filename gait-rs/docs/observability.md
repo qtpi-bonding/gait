@@ -1,10 +1,6 @@
 # Observability
 
-gait-rs's own action items from
-[`an internal design note`](an internal design note)
-(a cross-repo discipline convention shared with grorg, archegraph, and
-multimatrix — see that doc's "gait input" section for the full reasoning).
-This page is where that convention's per-repo checklist actually landed.
+gait-rs's own logging and observability conventions.
 
 ## Checking whether a gait-acp turn is still alive
 
@@ -43,8 +39,8 @@ before completing, which is expected, not a gap.
 `agent_id` is populated only when the turn's triggering message arrived via
 a verified multimatrix delivery (`Provenance.attested_author_agent_id`) —
 it lets a neighbor's `grep agent_id` line up gait's diagnostic lines with
-multimatrix's and grorg's own logs for the same causal chain, per the
-correlation-id convention in the concordat doc. Ordinary (non-delivery)
+multimatrix's and grorg's own logs for the same causal chain, per a
+shared correlation-id convention. Ordinary (non-delivery)
 turns omit the field entirely.
 
 `diagnostic.jsonl` is off by default and never created unless `GAIT_DEBUG`
@@ -58,9 +54,8 @@ creating and growing a file per session forever.
 JSON-RPC transport to whatever client is driving it (multimatrix-bridge, an
 editor, etc.). Writing log lines there would corrupt the protocol stream,
 not supplement it. Any gait-acp logging goes to stderr or to
-`diagnostic.jsonl`, never stdout — this rules out the "long-lived binaries
-emit JSON to stdout" half of the cross-repo convention for gait
-specifically; see the concordat doc for the full reasoning.
+`diagnostic.jsonl`, never stdout — this rules out the usual "long-lived binaries
+emit JSON to stdout" practice for gait specifically.
 
 ## `RUST_LOG`
 

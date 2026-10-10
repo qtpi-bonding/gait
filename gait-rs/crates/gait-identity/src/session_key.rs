@@ -4,7 +4,7 @@
 //! keyring), and the delegation certificate travels with every event this
 //! session key signs. The transcript is built by `identity-crypto`, the one
 //! implementation of the shared identity model all use -- never reimplemented
-//! here. See an internal design note §3-4.
+//! here.
 //!
 //! Gait never holds, derives, or reasons about an `agent_id` (revised
 //! 2026-09-02 -- see the plan's Architecture section). A cert minted here

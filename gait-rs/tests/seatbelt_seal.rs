@@ -70,8 +70,8 @@ mod confined_read_tests {
     ///
     /// Resolution order:
     /// 1. `GAIT_BIN` env var — explicit override (useful in CI / custom installs)
-    /// 2. `<CARGO_MANIFEST_DIR>/../target/debug/gait` and the custom target-dir
-    ///    `/home/user/develop/cargo-target/debug/gait` — built by `cargo build -p gait-bin`
+    /// 2. `<CARGO_MANIFEST_DIR>/target/debug/gait` — built by `cargo build -p gait-bin`
+    ///    (set `GAIT_BIN` if your cargo target-dir is elsewhere)
     /// 3. `gait` on PATH — last resort (the `make install` path)
     ///
     /// The binary MUST understand `__run-tool`; an old installed binary (from a
@@ -83,8 +83,6 @@ mod confined_read_tests {
         // Try workspace-relative target/debug first.
         let manifest = env!("CARGO_MANIFEST_DIR");
         let candidates = [
-            // cargo target-dir override (detected from ~/.cargo/config.toml)
-            std::path::PathBuf::from("/home/user/develop/cargo-target/debug/gait"),
             // standard target dir (no config override)
             std::path::PathBuf::from(manifest).join("target/debug/gait"),
         ];
@@ -274,7 +272,7 @@ mod confined_read_tests {
     fn confined_out_of_scope_read_denied() {
         // Write the secret BEFORE the hand is sealed.
         // Use the home dir — it's outside all platform_read_defaults() subtrees.
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".to_string());
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         let secret_path = format!("{home}/.gait-secret-test-{}", std::process::id());
         std::fs::write(&secret_path, b"s3cr3t").expect("pre-test secret write must succeed");
 

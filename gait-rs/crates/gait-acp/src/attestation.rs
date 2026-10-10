@@ -1,6 +1,5 @@
 //! ACP-edge verification of delivery attestations and conversion into
-//! Gait's generic verified incoming-message representation. See
-//! an internal design note §3/§3a.
+//! Gait's generic verified incoming-message representation.
 //! This protocol-specific code lives at the ACP integration boundary; shared
 //! log folding only sees generic verified-author attribution.
 //!

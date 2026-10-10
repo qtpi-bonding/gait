@@ -1,5 +1,4 @@
-//! Durable replay protection for multimatrix DeliveryAttestations. See
-//! an internal design note §3a.
+//! Durable replay protection for multimatrix DeliveryAttestations.
 //! Keyed only by multimatrix's key_id -- once gait checks membership of
 //! its own device pubkey in the attestation's recipient list (gait-core's
 //! attestation module), membership alone already establishes "this is for
