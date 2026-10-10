@@ -53,6 +53,7 @@ pub(crate) struct ProductionClassifier {
     pub gait_dir: std::path::PathBuf,
 }
 
+#[cfg(test)]
 pub(crate) struct DisabledClassifier;
 
 fn classify_approves(scores: &gait_provider::classify::RiskScores, threshold: f64) -> bool {
@@ -62,6 +63,7 @@ fn classify_approves(scores: &gait_provider::classify::RiskScores, threshold: f6
         && scores.availability_risk < threshold
 }
 
+#[cfg(test)]
 #[async_trait::async_trait]
 impl Classifier for DisabledClassifier {
     async fn classify(
@@ -762,7 +764,6 @@ pub(crate) async fn verify_completion(
     }
 
     // Step 3: Run verifier if configured
-    let mut verifier_output = String::new();
     if let Some(ref verified_goal) = state.verified_goal {
         // Increment attempt counter and generate attempt ID
         state.verifier_attempt_counter += 1;
@@ -804,8 +805,6 @@ pub(crate) async fn verify_completion(
             .await
             {
                 Ok(super::exec::VerifierDispatchOutcome::Executed(exec_result)) => {
-                    verifier_output = exec_result.output.clone();
-
                     // Record the verification attempt
                     let completion = serde_json::json!({
                         "message": completion_message,
@@ -835,7 +834,7 @@ pub(crate) async fn verify_completion(
                             "verified_goal command failed:\nCommand: {}\nStatus: exit code {}\nOutput:\n{}",
                             verified_goal,
                             exec_result.exit_code.unwrap_or(-1),
-                            verifier_output
+                            exec_result.output
                         ));
                     }
                 }

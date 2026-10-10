@@ -25,6 +25,7 @@ pub mod min_cli;
 #[command(
     name = "gait",
     about = "AI coding agent",
+    version,
     args_conflicts_with_subcommands = true
 )]
 pub struct Cli {

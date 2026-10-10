@@ -97,6 +97,12 @@ and session history.
 
 Driving gait from another coding agent (as a dispatched subagent) or a human REPL session? See [`skills/gait-agent/SKILL.md`](skills/gait-agent/SKILL.md) — a portable, agent-agnostic skill covering both.
 
+## Checkpoints and undo
+
+Every turn is reversible. gait snapshots your codebase's working tree at the start and end of each turn and commits the transcript to git alongside it, so you can roll the code, the transcript, or both back to any earlier turn.
+
+Snapshots live in a bare shadow repository inside the session directory, not in your project's `.git`. gait never writes to your repository's git history, branches or index. The command is `gait undo`; see [docs/cli.md](docs/cli.md) for its options and [docs/repl.md](docs/repl.md) for the REPL equivalents. The on-disk layout is in [gait-rs/docs/architecture.md](gait-rs/docs/architecture.md).
+
 ## Modes
 
 | Invocation | Mode |

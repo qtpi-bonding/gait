@@ -30,6 +30,7 @@ use crate::manual;
 #[command(
     name = "gait-min",
     about = "AI coding agent (minimal build)",
+    version,
     args_conflicts_with_subcommands = true
 )]
 pub struct MinCli {
