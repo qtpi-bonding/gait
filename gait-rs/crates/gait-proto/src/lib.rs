@@ -36,8 +36,12 @@ pub mod gait {
 
 pub mod envelope;
 pub mod hash;
+pub mod textproto;
 pub mod wire;
 pub mod workflow_envelope;
 
 #[cfg(test)]
 mod tests;
+
+/// Encoded `FileDescriptorSet` from build.rs, including imports and source info.
+pub const DESCRIPTOR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/proto_descriptor.bin"));

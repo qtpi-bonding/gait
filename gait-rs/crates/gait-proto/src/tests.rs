@@ -148,6 +148,7 @@ fn llm_params_round_trips_via_json() {
             top_k: Some(10),
             effort: Some("high".into()),
             thinking: None,
+            strict_tools: None,
         })),
     };
 

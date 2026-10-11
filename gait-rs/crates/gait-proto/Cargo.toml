@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 prost        = "0.13"
 prost-types  = "0.13"
+prost-reflect = { version = "0.14", features = ["text-format"] }
 pbjson       = "0.7"
 pbjson-types = "0.7"
 serde        = { version = "1", features = ["derive"] }

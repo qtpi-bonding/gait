@@ -204,13 +204,13 @@ message MessageAccept {
 // A complete model selection. An empty name is the session-selection clear
 // sentinel; model is required for authored and selected snapshots.
 message Inference {
-  string name = 1;
-  string model = 2;
-  optional LlmParams llm_params = 3;
-  uint64 compaction_threshold_tokens = 4;
+  string name = 1;  // profile name; normally comes from its directory
+  string model = 2;  // provider/model-id to invoke
+  optional LlmParams llm_params = 3;  // provider-specific request settings
+  uint64 compaction_threshold_tokens = 4;  // token budget before compaction
 }
 message ClassifyPolicy {
-  string inference               = 1;  // named inference profile to call (an INFERENCE.yaml entry)
+  string inference               = 1;  // named inference profile to call (an inference.textproto entry)
   double risk_threshold          = 2;  // deny if any *_risk noul >= this value
   uint32 max_consecutive_denials = 3;  // circuit breaker: stop trusting the classifier and fall back to a real pause after this many denials in a row this turn
 }
@@ -700,15 +700,16 @@ message LlmParams {
 // never infers, downloads, or mutates a developer-owned GGUF merely because a
 // local inference was selected.
 message LocalLlmParams {
-  string model_path = 1;
-  optional uint32 context_tokens = 2;
-  optional uint32 gpu_layers = 3;
+  string model_path = 1;  // filesystem path to the developer-owned model
+  optional uint32 context_tokens = 2;  // model context window in tokens
+  optional uint32 gpu_layers = 3;  // number of layers to offload to the GPU
 }
 
 message AnthropicLlmParams {
   optional uint32            top_k    = 1;
   optional string            effort   = 2;  // "low"|"medium"|"high"|"xhigh"|"max"
   optional AnthropicThinking thinking = 3;
+  optional bool strict_tools = 4;  // require strict tool-schema handling
 }
 
 message AnthropicThinking {
@@ -732,10 +733,11 @@ enum AnthropicThinkingDisplay {
 
 message OpenAILlmParams {
   optional string reasoning_effort  = 1;  // "none"|"minimal"|"low"|"medium"|"high"|"xhigh"
-  optional float  frequency_penalty = 2;
-  optional float  presence_penalty  = 3;
-  optional int64  seed              = 4;
-  repeated string stop              = 5;
+  optional float  frequency_penalty = 2;  // penalize repeated tokens
+  optional float  presence_penalty  = 3;  // penalize tokens already present
+  optional int64  seed              = 4;  // deterministic sampling seed
+  repeated string stop              = 5;  // stop sequences
+  optional bool   strict_tools      = 6;  // require strict tool-schema handling
 }
 
 message GeminiLlmParams {

@@ -627,7 +627,7 @@ pub fn llm_params_from_proto(p: &pb::LlmParams) -> anyhow::Result<crate::config:
                         _ => None,
                     },
                 }),
-                strict_tools: None,
+                strict_tools: a.strict_tools,
             });
         }
         Some(ProviderParams::Openai(o)) => {
@@ -637,7 +637,7 @@ pub fn llm_params_from_proto(p: &pb::LlmParams) -> anyhow::Result<crate::config:
                 presence_penalty: o.presence_penalty,
                 seed: o.seed,
                 stop: o.stop.clone(),
-                strict_tools: None,
+                strict_tools: o.strict_tools,
             });
         }
         Some(ProviderParams::Gemini(g)) => {
@@ -693,6 +693,7 @@ fn anthropic_llm_params_to_proto(
             budget_tokens: t.budget_tokens,
             display: thinking_display_to_proto(t.display.as_deref()) as i32,
         }),
+        strict_tools: a.strict_tools,
     }
 }
 
@@ -720,6 +721,7 @@ fn openai_llm_params_to_proto(o: &crate::config::OpenAILlmParamsConfig) -> pb::O
         presence_penalty: o.presence_penalty,
         seed: o.seed,
         stop: o.stop.clone(),
+        strict_tools: o.strict_tools,
     }
 }
 
