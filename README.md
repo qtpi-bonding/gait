@@ -2,7 +2,7 @@
 
 A turn-based AI coding agent. State lives in an append-only JSONL log committed to git after every turn — there is no daemon, no server, no UI process holding your session in RAM.
 
-The name is a backronym: **g**AI**t**. Also just a word for the way something moves.
+The word gait is the way something moves, and gait allows you to commit at your cadence while still allowing undo per agent step. (The name is also a backronym: **g**AI**t**.)
 
 ![gait REPL: two turns edit main.py, then /undo 1 rolls the second one back](docs/demo/demo.gif)
 
@@ -105,7 +105,7 @@ Driving gait from another coding agent (as a dispatched subagent) or a human REP
 
 Every turn is reversible. gait snapshots your codebase's working tree at the start and end of each turn and commits the transcript to git alongside it, so you can roll the code, the transcript, or both back to any earlier turn.
 
-Snapshots live in a bare shadow repository inside the session directory, not in your project's `.git`. gait never writes to your repository's git history, branches or index. The command is `gait undo`; see [docs/cli.md](docs/cli.md) for its options and [docs/repl.md](docs/repl.md) for the REPL equivalents. The on-disk layout is in [gait-rs/docs/architecture.md](gait-rs/docs/architecture.md).
+Snapshots live in a bare shadow repository inside the session directory, not in your project's `.git`. gait never writes to your repository's git history, branches or index. The command is `gait undo`; see the [manual](docs/manual.md) for its options and the REPL equivalents (`/undo`, `/uc`, `/ut`). The on-disk layout is in [gait-rs/docs/architecture.md](gait-rs/docs/architecture.md).
 
 ## Modes
 
@@ -115,34 +115,15 @@ Snapshots live in a bare shadow repository inside the session directory, not in 
 | `gait -i` / `gait --interactive` | Interactive REPL — iterate turn-by-turn in one process. |
 | `gait -e "<prompt>"` / `gait --exec "<prompt>"` | Ephemeral one-off: no session, no git commit. |
 
-Plus subcommands (`gait <subcommand>`) for everything else. See [docs/cli.md](docs/cli.md) for the full command reference.
+Plus subcommands (`gait <subcommand>`) for everything else. See the [manual](docs/manual.md) for the full command reference.
 
-### Top-level flags (apply to `gait <task>` and `gait -i`)
-
-| Flag | Description |
-|---|---|
-| `-s, --session <id>` | Continue an existing session by id. |
-| `-m, --model <id>` | Model override (`provider/model`). |
-| `-a, --agent <name>` | Agent file to load. |
-| `--auto-approve` | Auto-approve all tool-permission prompts. The sandbox ceiling still applies (kernel-enforced). |
-| `--allow <pat>` | Pre-approve a tool pattern (repeatable). |
-| `--deny <pat>` | Pre-deny a tool pattern (repeatable). |
-| `--unlock <path>` | Pre-grant sandbox path access (repeatable). |
-| `-n, --max-iter <n>` | Cap agentic tool-use steps. |
-| `-R, --result-schema <file>` | JSON Schema file — force structured output for this turn. |
-| `--inference <name>` | Pick a named inference profile (see [docs/providers.md](docs/providers.md)). |
-| `--mode <name>` | Activate a mode overlay for this turn. |
-| `--sandbox` / `--no-sandbox` | Force the sandbox on/off for this turn. (Off by config default only — `--sandbox-locked` overrides either, set by parent processes.) |
-| `--allow-intree` | Run even if the gait-dir is inside the codebase. Use sparingly. |
-
-`--gait-dir`/`--codebase` are hidden flags — they default to `$GAIT_DIR`/`$CODEBASE`/cwd, and most subcommands below take them explicitly.
+Flags (`--session`, `--inference`, `--allow`, `--unlock`, `--result-schema`, and the rest) are in the [manual](docs/manual.md), which is generated from the live `--help` and checked by a test. `gait manual install` writes the same manual into a gait-dir for a model driving gait.
 
 ---
 
 ## Documentation
 
-- **[docs/cli.md](docs/cli.md)** — every subcommand, every flag, including the ones not on the top-level.
-- **[docs/repl.md](docs/repl.md)** — REPL slash-commands and input syntax.
+- **[docs/manual.md](docs/manual.md)** — every command, flag and REPL slash-command, plus input syntax, undo, and where things live. Generated from the binary.
 - **[docs/providers.md](docs/providers.md)** — provider registry, model strings, local models, named inference profiles.
 - **[docs/hooks.md](docs/hooks.md)** — lifecycle hooks, the `GAIT_*` env vars they see, event semantics.
 - **[docs/workflows.md](docs/workflows.md)** — workflow YAML reference: node types, variable substitution, loops, gates, resume.
@@ -172,8 +153,6 @@ JSONC (JSON with `//` and `/* */` comments). The full schema lives in
 }
 ```
 
-Other fields that exist but have no user-facing example above (all optional, with sane defaults): `compaction_threshold`, `max_iter`, `output_schema_retries` (default 3), `preview` (`on-ask` | `always` | `off`), `result_schema`, `shell_timeout_secs` / `tool_timeout_secs` (default 300s each), `llm_params` (temperature/max_tokens/top_p plus per-provider extras), `show_thinking`.
-
 **Heads up:** several `gait register`/`enable`/`disable` operations rewrite this file as plain JSON and strip comments in the process. Use `gait config set <key> <value>` to mutate a single key without losing comments.
 
 See [docs/sandbox.md](docs/sandbox.md) for the full sandbox schema, including `sandbox.tools` (per-tool floor) and `sandbox.shell_whitelist` (auto-grant shell patterns).
@@ -186,6 +165,7 @@ All tools go through the permission gate. Tools in `allow` run immediately; othe
 |---|---|
 | `read` | Read a file |
 | `write` | Write a file (creates or overwrites) |
+| `apply_patch` | Apply a patch to one or more files |
 | `glob` | Glob file paths |
 | `grep` | Regex search over file contents |
 | `ls` | List a directory |
