@@ -3,7 +3,7 @@
 -include Makefile.local
 INSTALL_DIR ?= /usr/local/bin
 
-.PHONY: build install fmt lint test check check-min hooks
+.PHONY: build install fmt lint test manual check check-min hooks
 
 build:
 	cargo build --release -p gait-bin
@@ -30,6 +30,10 @@ lint:
 
 test:
 	cargo test --workspace
+
+# Regenerate docs/manual.md (the `committed_manual_is_current` test checks it).
+manual:
+	GAIT_UPDATE_MANUAL=1 cargo test -p gait-bin committed_manual_is_current
 
 # Run the same checks the pre-commit hook enforces.
 check: lint test

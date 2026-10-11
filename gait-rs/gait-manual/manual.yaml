@@ -44,6 +44,23 @@ guides:
       Start a fresh session when you want a clean conversation. Use undo when you need to
       restore an earlier turn or inspect available checkpoints.
 
+      A session's worktree lives under `<gait-dir>/.active/<id>/` until `gait persist` merges
+      it onto `main` or `gait discard` tears it down without merging (unrecoverable).
+      `gait ps` shows each mounted session's live state: `idle`, `awaiting-permission`,
+      `awaiting-clarify`, `awaiting-inform` or `awaiting-unlock`. `gait daemons` lists the
+      background processes the agent started, which are separate from the turn's own
+      processes.
+
+      **Undo.** A "turn" in undo is one request you sent, and turn N is the state right
+      after that request finished, so restoring to turn 2 after three requests rolls back
+      the third. Gait snapshots the codebase at the start and end of each request in a
+      shadow repository inside the session directory; it never writes to your project's
+      `.git`. Undo can restore the code, the transcript, or both. Turn 0 restores the code
+      to before the first request and is code-only, because the transcript has nothing
+      earlier to go back to. In the REPL an undo never starts a model turn; after a
+      code-only undo (`/uc`) the next message you send carries a one-line note
+      (`[undo] code restored to turn N`) so the model knows the files changed under it.
+
   - title: Permissions and modes
     cli_cmds:
       - "allow"
@@ -102,6 +119,20 @@ guides:
       Use the CLI for durable configuration and the REPL commands for inspecting or changing
       the current interactive session.
 
+      API keys and non-secret external-source bindings live in `$GAIT_HOME/auth.json`
+      (`GAIT_HOME` defaults to `~/.gait-home`). That home is machine-local and separate from
+      the gait-dir, which is the Git-backed workspace holding configuration and sessions.
+      Keys can also come from environment variables such as `ANTHROPIC_API_KEY` and
+      `OPENAI_API_KEY`. Subscription login (`openai-codex`) uses a device-code flow instead
+      of a key; linking it to `codex` stores only a pointer, and the credentials stay in
+      Codex's own `$CODEX_HOME/auth.json`. `gait models` caches the models.dev catalog in
+      `$GAIT_HOME/cache/models.json`.
+
+      `gait config set <key> <value>` edits one key of `gait.jsonc` and keeps its comments.
+      The value is parsed as JSON (`50` is a number, `true` a bool, `[...]` an array) and
+      falls back to a plain string. Registering and enabling extensions rewrite the file as
+      plain JSON and drop comments, so prefer `config set` for single keys.
+
   - title: Workflows and extensions
     requires: [workflow, extensions]
     cli_cmds:
@@ -114,9 +145,57 @@ guides:
       Workflows run repeatable sequences of prompts and operations. MCP tools and plugins can
       be enabled for a session when they are available in the configured Gait directory.
 
+      `gait register` always adds an entry disabled; run `gait enable` to activate it. WASM
+      plugins are registered and toggled but not executed today: the manifest loads and
+      there is no execution path, so treat plugins as scaffolding.
+
+      `gait workflow continue --force` resumes the originally logged graph even if the YAML
+      on disk has changed; without it an edited YAML is a hard error. `--force-rerun
+      <node-id>` accepts re-running a shell node that an interrupted run left `Running`;
+      its earlier side effects are not undone. `gait workflow list` and `log` only see runs
+      started by `gait workflow run`, never ordinary tasks or REPL turns. `gait workflow
+      run` exits 2 when paused at a gate node and 0 when paused at an interactive prompt
+      node.
+
       `enable`/`disable`/`register`/`unregister`/`load`/`unload` also accept a `skill` kind —
       that usage works in every Gait build (see the Skills guide), since skills are not part of
       this extensions capability.
+
+  - title: The REPL
+    cli_cmds: []
+    repl_cmds: []
+    body: |
+      `gait -i` starts a fresh session (or resumes one with `--session <id>`) and runs
+      request by request in one process. The REPL holds no session state of its own; each
+      turn runs in a fresh process and the log in the gait-dir is the source of truth, so
+      if the REPL dies mid-turn, `gait -i --session <id>` continues from the log.
+
+      Input syntax, expanded before the message is sent:
+
+      - `!cmd` runs a shell command locally and captures its output into shell history.
+      - `$(N)` pastes shell history entry N; `$(cmd)` runs `cmd` and inlines its output.
+      - `>(N)` quotes line N of the last agent response; `>(N-M)` quotes a range.
+      - `@path` inlines the contents of a file.
+
+      `--verified-goal <command>` sets a verifier for the session. It runs after every
+      completion attempt and must exit 0 before the turn can complete; a failure feeds back
+      into the same turn so the model can fix it. The command is fixed at session start.
+
+  - title: Where things live
+    cli_cmds: []
+    repl_cmds: []
+    body: |
+      `--gait-dir` and `--codebase` resolve in this order: the explicit flag, then the
+      `GAIT_DIR` / `CODEBASE` environment variable, then a `.gaitref` file found by walking
+      up from the current directory (`gait link` writes these), then the current directory.
+      If no gait-dir is found, commands that need one exit 1 with `no gait dir: pass
+      --gait-dir <path> or set $GAIT_DIR`.
+
+      Most commands exit 0 on success and 1 on a user or runtime error. A clap usage error
+      (for example a missing argument) exits 2.
+
+      A session's log is `<gait-dir>/sessions/<id>/log.jsonl`, its in-flight worktree is
+      `<gait-dir>/.active/<id>/`, and configuration is `<gait-dir>/gait.jsonc`.
 
   - title: Skills
     # No `requires` — skills are available in both full and min builds.

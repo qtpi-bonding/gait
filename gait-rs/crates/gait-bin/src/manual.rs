@@ -281,7 +281,11 @@ pub fn install(args: ManualArgs, gait_dir: &Path) -> anyhow::Result<()> {
 
 /// `gait-min manual print` — writes the generated Markdown to stdout only.
 /// Creates no files.
-pub fn print(args: MinManualArgs, cli: Command, repl_commands: &[ReplCommand]) -> anyhow::Result<()> {
+pub fn print(
+    args: MinManualArgs,
+    cli: Command,
+    repl_commands: &[ReplCommand],
+) -> anyhow::Result<()> {
     let MinManualCommand::Print = args.command;
     let content = render_manual(ManualInput {
         program_name: "gait-min",
@@ -410,6 +414,26 @@ mod tests {
             repl_commands: COMMANDS,
             flavor: ManualFlavor::Full,
         }
+    }
+
+    /// `docs/manual.md` is the published copy of `gait manual install`. This
+    /// fails when a flag, command or guide changes without regenerating it;
+    /// `GAIT_UPDATE_MANUAL=1 cargo test -p gait-bin committed_manual` (or
+    /// `make manual`) rewrites the file.
+    #[cfg(feature = "full")]
+    #[test]
+    fn committed_manual_is_current() {
+        let rendered = render_manual(full_input(crate::cli())).unwrap();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/manual.md");
+        if std::env::var_os("GAIT_UPDATE_MANUAL").is_some() {
+            std::fs::write(&path, &rendered).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == rendered,
+            "docs/manual.md is out of date: run `make -C gait-rs manual` and commit the result"
+        );
     }
 
     #[test]
