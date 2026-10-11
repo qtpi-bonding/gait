@@ -4,6 +4,10 @@ A turn-based AI coding agent. State lives in an append-only JSONL log committed 
 
 The name is a backronym: **g**AI**t**. Also just a word for the way something moves.
 
+![gait REPL: two turns edit main.py, then /undo 1 rolls the second one back](docs/demo/demo.gif)
+
+*Two turns in the REPL, then `/undo 1` restores the code and the transcript to the end of turn 1. Recorded with [`docs/demo/demo.tape`](docs/demo/demo.tape).*
+
 ---
 
 ## Why it's shaped this way
