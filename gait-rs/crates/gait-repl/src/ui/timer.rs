@@ -28,6 +28,36 @@ fn format_secs(d: Duration) -> String {
 
 const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+// Overlay cursor protocol. With a context row the overlay is two rows (spinner
+// at row R, context at R+1) and the cursor rests at R+2, below it; without one
+// it is a single row and the cursor rests at the end of row R. Draw, tick and
+// erase must all agree on that, or the overlay drifts down a row per tick.
+
+/// Erase the overlay from its resting cursor position, leaving the cursor on
+/// the overlay's first row.
+fn overlay_erase_seq(has_context: bool) -> &'static str {
+    if has_context {
+        "\x1b[1A\r\x1b[2K\x1b[1A\r\x1b[2K"
+    } else {
+        "\r\x1b[2K"
+    }
+}
+
+/// First paint of the overlay, starting on its first row.
+fn overlay_draw_seq(frame: &str, activity: &str, elapsed: &str, context: &str) -> String {
+    let mut seq = format!("  {frame} {activity} ({elapsed})");
+    if !context.is_empty() {
+        seq.push_str(&format!("\r\n  {context}\r\n"));
+    }
+    seq
+}
+
+/// Repaint a two-row overlay in place: back up over both rows, rewrite them,
+/// and leave the cursor below them again.
+fn overlay_tick_seq(frame: &str, activity: &str, elapsed: &str, context: &str) -> String {
+    format!("\x1b[2A\r\x1b[2K  {frame} {activity} ({elapsed})\r\n\x1b[2K  {context}\r\n")
+}
+
 fn try_paint_tick<F>(lock: &Mutex<()>, paint: F) -> bool
 where
     F: FnOnce(),
@@ -55,12 +85,8 @@ impl Timer {
             let mut frame = 0usize;
             loop {
                 if flag.load(Ordering::Relaxed) {
-                    if !ctx.lock().unwrap().is_empty() {
-                        // The cursor is below the two-line overlay.
-                        eprint!("\x1b[1A\r\x1b[2K\x1b[1A\r\x1b[2K");
-                    } else {
-                        eprint!("\r\x1b[2K");
-                    }
+                    let has_context = !ctx.lock().unwrap().is_empty();
+                    eprint!("{}", overlay_erase_seq(has_context));
                     let _ = std::io::stderr().flush();
                     return;
                 }
@@ -77,13 +103,14 @@ impl Timer {
                             format_secs(turn_start.elapsed())
                         );
                     } else {
-                        // Redraw both managed rows, leaving the cursor beneath them.
                         eprint!(
-                            "\x1b[1A\r\x1b[2K  {} {} ({})\r\n\x1b[2K  {}\r\n",
-                            FRAMES[frame % FRAMES.len()],
-                            current,
-                            format_secs(turn_start.elapsed()),
-                            context
+                            "{}",
+                            overlay_tick_seq(
+                                FRAMES[frame % FRAMES.len()],
+                                &current,
+                                &format_secs(turn_start.elapsed()),
+                                &context,
+                            )
                         );
                     }
                     let _ = std::io::stderr().flush();
@@ -117,27 +144,24 @@ impl Timer {
     /// Erase the overlay while the caller owns `paint_lock`. The cursor ends
     /// at the row where the spinner began, ready for permanent output.
     pub(crate) fn erase_overlay(&self) {
-        if self.context.lock().unwrap().is_empty() {
-            eprint!("\r\x1b[2K");
-        } else {
-            eprint!("\x1b[1A\r\x1b[2K\x1b[1A\r\x1b[2K");
-        }
+        let has_context = !self.context.lock().unwrap().is_empty();
+        eprint!("{}", overlay_erase_seq(has_context));
     }
 
-    /// Draw the overlay from its starting row, leaving the cursor below it.
+    /// Draw the overlay from its starting row, leaving the cursor at its resting
+    /// position (see the cursor protocol above).
     pub(crate) fn draw_overlay(&self, turn_start: Instant) {
         let context = self.context.lock().unwrap().clone();
         let activity = self.activity.lock().unwrap().clone();
         eprint!(
-            "  {} {} ({})",
-            FRAMES[0],
-            activity,
-            format_secs(turn_start.elapsed())
+            "{}",
+            overlay_draw_seq(
+                FRAMES[0],
+                &activity,
+                &format_secs(turn_start.elapsed()),
+                &context,
+            )
         );
-        if !context.is_empty() {
-            eprint!("\r\n  {}", context);
-        }
-        eprint!("\r\n");
     }
 
     /// Access the lock shared with `ReplRenderer` so `paint` can hold it.
@@ -242,5 +266,56 @@ mod tests {
             "the timer must hold paint_lock while emitting a tick"
         );
         t.stop();
+    }
+
+    /// Net rows the cursor moves down while `seq` is printed: +1 per `\r\n`,
+    /// -n per `ESC [ n A`. Other escapes (erase-line) don't move it.
+    fn cursor_row_delta(seq: &str) -> i32 {
+        let mut delta = 0;
+        let mut rest = seq;
+        while let Some(i) = rest.find(['\r', '\x1b']) {
+            rest = &rest[i..];
+            if let Some(after) = rest.strip_prefix("\r\n") {
+                delta += 1;
+                rest = after;
+            } else if let Some(after) = rest.strip_prefix("\x1b[") {
+                let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+                let tail = &after[digits.len()..];
+                if let Some(t) = tail.strip_prefix('A') {
+                    delta -= digits.parse::<i32>().unwrap_or(1);
+                    rest = t;
+                } else {
+                    rest = tail;
+                }
+            } else {
+                rest = &rest[1..];
+            }
+        }
+        delta
+    }
+
+    #[test]
+    fn two_row_overlay_does_not_drift_across_ticks() {
+        let mut total = cursor_row_delta(&overlay_draw_seq("f", "thinking…", "0s", "ctx"));
+        assert_eq!(total, 2, "draw leaves the cursor two rows below the overlay start");
+        for _ in 0..50 {
+            total += cursor_row_delta(&overlay_tick_seq("f", "thinking…", "1s", "ctx"));
+        }
+        assert_eq!(total, 2, "ticks must repaint in place, not creep down");
+        total += cursor_row_delta(overlay_erase_seq(true));
+        assert_eq!(total, 0, "erase returns the cursor to the overlay's first row");
+    }
+
+    #[test]
+    fn tick_backs_up_over_both_rows() {
+        let seq = overlay_tick_seq("f", "thinking…", "1s", "ctx");
+        assert!(seq.starts_with("\x1b[2A\r\x1b[2K"));
+        assert_eq!(seq.matches("\x1b[2K").count(), 2);
+    }
+
+    #[test]
+    fn one_row_overlay_rests_on_its_row() {
+        assert_eq!(cursor_row_delta(&overlay_draw_seq("f", "thinking…", "0s", "")), 0);
+        assert_eq!(cursor_row_delta(overlay_erase_seq(false)), 0);
     }
 }

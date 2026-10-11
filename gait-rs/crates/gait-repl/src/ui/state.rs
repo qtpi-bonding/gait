@@ -126,9 +126,15 @@ impl ReplState {
             return;
         }
         if let Some(t) = &self.timer {
-            t.set_context(status);
+            // Hold the paint lock from before `set_context` until the overlay is
+            // drawn: the timer thread is already ticking, and a two-row tick that
+            // fires before the overlay exists would back up over earlier output.
             let _guard = self.paint_lock.as_ref().and_then(|l| l.lock().ok());
+            t.set_context(status);
             if let Some(start) = self.turn_start {
+                // A single-row tick may have fired before the lock was taken;
+                // clear it so the overlay starts on a clean row.
+                eprint!("\r\x1b[2K");
                 t.draw_overlay(start);
                 let _ = std::io::stderr().flush();
             }
