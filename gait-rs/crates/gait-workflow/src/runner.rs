@@ -985,7 +985,6 @@ pub async fn run_workflow(
                         if let Some(routed_to) = &out.routed_to {
                             let _ = routed_to;
                             sync_completed(&mut completed, &state, &wf.nodes);
-                            // Enqueue the branch target (supports cycles: re-enqueue even if completed)
                             if let Some(target_idx) =
                                 wf.nodes.iter().position(|n| &n.id == routed_to)
                             {
