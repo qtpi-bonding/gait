@@ -9,6 +9,7 @@ sessions/
 tmp/
 .gait-ws.lock
 .worktrees/
+/refs/
 
 # Competitive research scratch (not tracked)
 competitive-research/
