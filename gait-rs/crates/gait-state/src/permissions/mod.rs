@@ -32,7 +32,7 @@
 //! | Scope    | Persisted where                                         | Enters via                                                    | Lifetime                                                       |
 //! |----------|---------------------------------------------------------|---------------------------------------------------------------|----------------------------------------------------------------|
 //! | `Global` | config (`gait.jsonc` `allow[]`)                         | the `seed` passed to [`grants::effective_allow`]              | until removed from config                                      |
-//! | `Mode`   | `modes/<name>/MODE.yaml` `allow[]`                      | [`grants::overlay_mode_permissions`], applied after `effective_allow` is resolved | while the mode is active / until changed                       |
+//! | `Mode`   | `modes/<name>/MODE.md` `allow[]`                      | [`grants::overlay_mode_permissions`], applied after `effective_allow` is resolved | while the mode is active / until changed                       |
 //! | `Session`| log (`PermissionsReply` events)                         | `retrace::ActivePermissions` fold (session bucket)            | the current session                                            |
 //! | `Once`   | log (`PermissionsReply` events)                         | `retrace::ActivePermissions` fold (once bucket)               | one turn — cleared at `RunComplete`                           |
 //!

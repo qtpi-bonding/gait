@@ -23,7 +23,7 @@ pub enum GrantScope {
     Global,
     /// Save pattern to the agent's frontmatter (`allow[]`).
     Agent,
-    /// Save pattern to the currently active mode's MODE.yaml (`allow[]`).
+    /// Save pattern to the currently active mode's MODE.md (`allow[]`).
     Mode,
     /// Log-only, lifetime = session. No file write.
     Session,

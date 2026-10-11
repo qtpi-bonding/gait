@@ -36,7 +36,7 @@ use crate::turn_io::{
 /// Advertise the reserved `default` baseline plus every authored mode.
 /// `current_mode_id` is always "default" for a freshly minted session
 /// (gait-acp mints a new session per `session/new`; no mode is restored).
-/// A mode whose `MODE.yaml` fails to parse is still listed (by name) with no
+/// A mode whose `MODE.md` fails to parse is still listed (by name) with no
 /// description — advertisement must never fail `session/new`.
 pub fn advertise_modes(gait_dir: &Path) -> SessionModeState {
     let mut modes = vec![
@@ -513,11 +513,11 @@ mod tests {
         let write = |name: &str, body: &str| {
             let d = gd.join("modes").join(name);
             std::fs::create_dir_all(&d).unwrap();
-            std::fs::write(d.join("MODE.yaml"), body).unwrap();
+            std::fs::write(d.join("MODE.md"), body).unwrap();
         };
-        write("plan", "deny: [write]\ndescription: Plan only\n");
-        write("code", "steer: go\n"); // no description
-        write("broken", "deny: [unclosed\n"); // malformed YAML
+        write("plan", "---\ndeny: [write]\ndescription: Plan only\n---\n");
+        write("code", "---\n---\ngo\n"); // no description
+        write("broken", "---\ndeny: [unclosed\n---\n"); // malformed YAML
 
         let state = advertise_modes(gd);
         assert_eq!(state.current_mode_id.0.as_ref(), "default");

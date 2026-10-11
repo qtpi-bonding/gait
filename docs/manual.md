@@ -1,7 +1,7 @@
 ---
 name: gait-manual
 description: Explain how to use and configure Gait.
-manual-source-hash: 0d942d0a5e383d9393949e9b73b658f6b183f86445ca727317edf964eb705276
+manual-source-hash: c4c7961c5e790ba5de657051144547adb6d25aa1963bce6583dfd5b7cb72bdab
 ---
 
 # Gait Manual
@@ -209,7 +209,7 @@ for a client's permission UI). `--allow`/`--deny` on the command line set
 the per-invocation baseline; `gait.jsonc`'s `allow`/`deny` fields set the
 persistent global baseline.
 
-A **mode** (`<gait_dir>/modes/<name>/MODE.yaml`) is a named, switchable
+A **mode** (`<gait_dir>/modes/<name>/MODE.md`) is a named, switchable
 overlay of `allow`/`deny`/`steer`/`description` on top of that baseline —
 `--mode <name>` on `run` activates one for a session; `gait mode
 select/clear <name> --session <id>` switches it mid-session. `gait mode
@@ -219,6 +219,8 @@ show <name>` inspect what's authored. A mode's `deny` unions with the
 baseline deny (deny is always monotonic — nothing ever un-denies);
 its `allow` unions with the baseline allow. `steer` is a freeform
 instruction folded into the model's context while the mode is active.
+The file is markdown: YAML frontmatter holds `description`, `allow`,
+`deny` and `classify_policy`; the body is the `steer`.
 
 A mode can also set `classify_policy` (`inference`, `risk_threshold`,
 `max_consecutive_denials`) to auto-resolve "ask" decisions via a fast
@@ -234,7 +236,7 @@ model; the specific axis (`confidentiality_risk`/`integrity_risk`/
 
 `gait allow <session-id> --pattern <pattern> --scope <global|mode|session|once>`
 answers a pending permission gate. `--scope mode` persists to the
-session's *currently active* mode's `MODE.yaml` — it errors if no mode
+session's *currently active* mode's `MODE.md` — it errors if no mode
 is active (there is nowhere to write to). `--scope global` persists to
 `gait.jsonc`. `--scope session`/`--scope once` are log-only, no file
 write.

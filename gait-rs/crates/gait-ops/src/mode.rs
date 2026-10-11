@@ -32,7 +32,7 @@ pub fn resolve_selection(
         .map_err(|e| OpError::NotFound(format!("mode '{name}' not found: {e}")))
 }
 
-/// Author a new mode at `<gait_dir>/modes/<name>/MODE.yaml`. Refuses overwrite
+/// Author a new mode at `<gait_dir>/modes/<name>/MODE.md`. Refuses overwrite
 /// (mirrors `inference::add`).
 pub fn add(
     gait_dir: &Path,

@@ -1,5 +1,5 @@
 //! Session-log activation for user-defined mode overlays. File I/O
-//! (`ModeFile`, `load_mode`, `list_modes`, `write_mode`, `append_mode_allow`,
+//! (`load_mode`, `list_modes`, `write_mode`, `append_mode_allow`,
 //! `resolve_selection`) lives in `gait_state::modes` — see that module's doc
 //! comment. This file keeps only `activate_mode`, which appends directly to
 //! a session's transcript log (a top-level-crate concern, alongside the
@@ -8,8 +8,8 @@
 //! unchanged.
 
 pub use gait_state::modes::{
-    append_mode_allow, clear_mode, list_modes, load_mode, resolve_selection, write_mode,
-    ClassifyPolicyArgs, ModeFile, ModeInfo, ResolvedModeSelection,
+    append_mode_allow, clear_mode, list_modes, load_mode, resolve_selection, write_mode, ModeInfo,
+    ResolvedModeSelection,
 };
 
 use std::path::Path;
@@ -21,7 +21,14 @@ pub fn activate_mode(log_path: &Path, gait_dir: &Path, name: &str) -> anyhow::Re
         crate::proto::events::mode("", vec![], vec![], "", "", None)
     } else {
         let m = load_mode(gait_dir, name)?;
-        crate::proto::events::mode(&m.name, m.deny, m.allow, &m.steer, &m.description, m.classify_policy)
+        crate::proto::events::mode(
+            &m.name,
+            m.deny,
+            m.allow,
+            &m.steer,
+            &m.description,
+            m.classify_policy,
+        )
     };
     // Callers may activate a mode before the session's worktree/log directory
     // has otherwise been created (e.g. `--mode` on a brand-new CLI session).
@@ -50,7 +57,7 @@ mod tests {
         let t = TempDir::new().unwrap();
         let modes_dir = t.path().join("modes").join("plan");
         std::fs::create_dir_all(&modes_dir).unwrap();
-        std::fs::write(modes_dir.join("MODE.yaml"), "deny: [write]\n").unwrap();
+        std::fs::write(modes_dir.join("MODE.md"), "---\ndeny: [write]\n---\n").unwrap();
         let log = t.path().join("s.log");
         activate_mode(&log, t.path(), "plan").unwrap();
         assert!(log.exists());

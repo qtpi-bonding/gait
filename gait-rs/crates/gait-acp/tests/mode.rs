@@ -49,8 +49,8 @@ fn workspace() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
     let md = gait_dir.join("modes").join("plan");
     std::fs::create_dir_all(&md).unwrap();
     std::fs::write(
-        md.join("MODE.yaml"),
-        "deny: [write]\ndescription: Plan only\n",
+        md.join("MODE.md"),
+        "---\ndeny: [write]\ndescription: Plan only\n---\n",
     )
     .unwrap();
     (t, gait_dir, repo)

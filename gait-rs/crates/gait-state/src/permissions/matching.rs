@@ -7,7 +7,7 @@ use gait_types::sandbox_grant::SandboxGrant;
 pub enum PermissionChoice {
     /// Save pattern to gait.jsonc (persists across sessions).
     Global(String),
-    /// Save pattern to the session's currently active mode's MODE.yaml.
+    /// Save pattern to the session's currently active mode's MODE.md.
     Mode(String),
     /// Approve once (log-derived; no temp file).
     Once(String),

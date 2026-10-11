@@ -34,7 +34,7 @@ use super::matching::{is_request_approved, AllowParams, AllowScope, PermissionCh
 ///
 /// * `Global(pattern)` → appends to `<gait_dir>/gait.jsonc`
 /// * `Mode(pattern)`   → appends to the session's currently active mode's
-///   `modes/<name>/MODE.yaml` `allow` list, via this module's own
+///   `modes/<name>/MODE.md` `allow` list, via this module's own
 ///   `append_mode_allow`. A no-op (with no error) if there is no active mode — callers should
 ///   warn the user rather than silently drop the grant; see
 ///   `gait-ops::permission::allow`.
@@ -150,11 +150,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn save_choice_mode_scope_appends_to_mode_yaml() {
+    fn save_choice_mode_scope_appends_to_mode_md() {
         let t = tempfile::TempDir::new().unwrap();
         let choice = PermissionChoice::Mode("shell:git *".to_string());
         save_choice(&choice, t.path(), "s", Some("write")).unwrap();
-        let text = std::fs::read_to_string(t.path().join("modes/write/MODE.yaml")).unwrap();
+        let text = std::fs::read_to_string(t.path().join("modes/write/MODE.md")).unwrap();
         assert!(text.contains("shell:git *"));
     }
 
