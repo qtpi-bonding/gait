@@ -933,14 +933,19 @@ impl TurnSource for ReplSource {
                             list: false,
                         }) {
                             Ok(_outcome) => {}
-                            Err(_e) => {
-                                self.shared.borrow_mut().builder.write_raw(&format!(
-                                    "[undo] failed — is there a turn {n} for this session?\r\n"
-                                ));
+                            Err(e) => {
+                                self.shared
+                                    .borrow_mut()
+                                    .builder
+                                    .write_raw(&format!("[undo] {e}\r\n"));
                                 continue;
                             }
                         }
-                        format!("[undo] restored {label} to turn {n}")
+                        if n == 0 {
+                            format!("[undo] restored {label} to before the first turn")
+                        } else {
+                            format!("[undo] restored {label} to turn {n}")
+                        }
                     } else {
                         self.shared.borrow_mut().builder.write_raw(&format!(
                             "{}\r\n",

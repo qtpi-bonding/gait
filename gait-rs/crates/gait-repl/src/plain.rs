@@ -1010,9 +1010,7 @@ impl PlainSource {
                 list: false,
             }) {
                 Ok(_) => self.eprintln(&format!("[undo] restored both to turn {n}")),
-                Err(_) => self.eprintln(&format!(
-                    "[undo] failed — is there a turn {n} for this session?"
-                )),
+                Err(e) => self.eprintln(&format!("[undo] {e}")),
             },
             Err(_) => self.eprintln("usage: /undo [N]"),
         }

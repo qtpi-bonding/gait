@@ -305,7 +305,19 @@ impl UndoOutcome {
 /// Port of `cmd_undo`'s two modes. `list: true` returns the turn list (no
 /// mutation). Otherwise `turn` is required; default scope (no `code`/`transcript`
 /// flag) acts on both axes. The op takes the `SessionLock` itself.
+///
+/// "Turn N" is the Nth completed *run* (one user request): its code target is
+/// that run's final checkpoint and its transcript target is the newest session
+/// commit of that run. `turn 0` is the state before the first request and
+/// restores code only (see `undo_with`).
 pub fn undo(params: UndoParams) -> Result<UndoOutcome, OpError> {
+    undo_with(params, gait_state::git::Repos::production().checkpoints.as_ref())
+}
+
+fn undo_with(
+    params: UndoParams,
+    checkpoints: &dyn gait_state::git::checkpoint::CheckpointRepo,
+) -> Result<UndoOutcome, OpError> {
     use gait_state::proto::gait::log::v1::{event, payload};
     use gait_state::session::log::read_events;
 
@@ -319,24 +331,46 @@ pub fn undo(params: UndoParams) -> Result<UndoOutcome, OpError> {
     let events = read_events(&tx_path).map_err(anyhow::Error::from)?;
 
     // Join each completed run's terminal checkpoint with its final TurnResult.
+    // `turns[i]` is user-facing turn i+1; `run_ids[i]` is that run's ordinal
+    // (a run that was cancelled, failed or paused has no RunComplete, so the
+    // turn number and the run ordinal can differ).
     let mut turns: Vec<UndoTurn> = Vec::new();
     let mut full_shas: Vec<Option<String>> = Vec::new();
+    let mut run_ids: Vec<u32> = Vec::new();
+    // Baseline checkpoint of the earliest run: the state before the first request.
+    let mut first_baseline: Option<(u32, Option<String>)> = None;
     for e in &events {
         if let Some(event::Body::Payload(p)) = &e.body {
-            if let Some(payload::Kind::RunComplete(complete)) = &p.kind {
-                let idx = turns.len() as u32 + 1;
-                let message = turn_done_message_before(&events, e.seq, e.run);
-                let full = complete
-                    .final_state
-                    .as_ref()
-                    .and_then(|state| state.checkpoint.clone());
-                let checkpoint_short = full.as_deref().map(|s| s[..s.len().min(8)].to_string());
-                turns.push(UndoTurn {
-                    turn: idx,
-                    summary: message,
-                    checkpoint_short,
-                });
-                full_shas.push(full);
+            match &p.kind {
+                Some(payload::Kind::RunStart(start)) => {
+                    if first_baseline.as_ref().is_none_or(|(i, _)| start.index < *i) {
+                        first_baseline = Some((
+                            start.index,
+                            start.baseline_checkpoint.clone().filter(|s| !s.is_empty()),
+                        ));
+                    }
+                }
+                Some(payload::Kind::RunComplete(complete)) => {
+                    let run = e.run.ok_or_else(|| {
+                        OpError::Conflict("RunComplete event has no run ordinal".to_string())
+                    })?;
+                    let idx = turns.len() as u32 + 1;
+                    let message = turn_done_message_before(&events, e.seq, e.run);
+                    let full = complete
+                        .final_state
+                        .as_ref()
+                        .and_then(|state| state.checkpoint.clone());
+                    let checkpoint_short =
+                        full.as_deref().map(|s| s[..s.len().min(8)].to_string());
+                    turns.push(UndoTurn {
+                        turn: idx,
+                        summary: message,
+                        checkpoint_short,
+                    });
+                    full_shas.push(full);
+                    run_ids.push(run);
+                }
+                _ => {}
             }
         }
     }
@@ -353,20 +387,60 @@ pub fn undo(params: UndoParams) -> Result<UndoOutcome, OpError> {
     let turn = params
         .turn
         .ok_or_else(|| OpError::Conflict("--turn <n> is required (or use --list)".to_string()))?;
-    let turn_idx = (turn as usize)
-        .checked_sub(1)
-        .ok_or_else(|| OpError::Conflict(format!("turn index must be >= 1, got {}", turn)))?;
-    if turn_idx >= turns.len() {
-        return Err(OpError::NotFound(format!(
-            "no turn {} in session {}",
-            turn, params.session_id
-        )));
-    }
-    let turn_row = turns[turn_idx].clone();
-    let full_sha = full_shas[turn_idx].clone();
 
     let do_code = params.code || !params.transcript;
     let do_transcript = params.transcript || !params.code;
+
+    // Resolve every target before touching anything, so a missing transcript
+    // commit cannot leave the code restored and the transcript not.
+    let (full_sha, checkpoint_short, transcript_target) = if turn == 0 {
+        // Before the first request. The transcript cannot go back that far:
+        // the session's init commit has an empty tree, so resetting to it
+        // would delete log.jsonl, which the log writer cannot recreate.
+        if do_transcript {
+            return Err(OpError::Conflict(
+                "turn 0 (before the first request) restores code only: use \
+                 `gait undo <session> --turn 0 --code` (REPL: /uc 0)"
+                    .to_string(),
+            ));
+        }
+        let sha = first_baseline.and_then(|(_, sha)| sha).ok_or_else(|| {
+            OpError::Conflict("no baseline checkpoint recorded before the first request".to_string())
+        })?;
+        let short = Some(sha[..sha.len().min(8)].to_string());
+        (Some(sha), short, None)
+    } else {
+        let turn_idx = turn as usize - 1;
+        if turn_idx >= turns.len() {
+            return Err(OpError::NotFound(format!(
+                "no turn {} in session {}",
+                turn, params.session_id
+            )));
+        }
+        let target = if do_transcript {
+            let dir = gait_state::session::live::worktree_dir(&params.gait_dir, &params.session_id);
+            Some(find_transcript_commit(&dir, &params.session_id, run_ids[turn_idx])?)
+        } else {
+            None
+        };
+        (
+            full_shas[turn_idx].clone(),
+            turns[turn_idx].checkpoint_short.clone(),
+            target,
+        )
+    };
+
+    let codebase = match (do_code, full_sha.as_deref()) {
+        (true, Some(_)) => Some(
+            gait_state::session::read_session_meta(&params.gait_dir, &params.session_id)?
+                .codebase_path
+                .map(std::path::PathBuf::from)
+                .ok_or_else(|| {
+                    OpError::Conflict("session has no codebase_path; cannot undo code".to_string())
+                })?,
+        ),
+        _ => None,
+    };
 
     // Acquire the lock; refuse if a turn is in progress.
     let session_dir = gait_state::session::live::worktree_dir(&params.gait_dir, &params.session_id);
@@ -377,27 +451,13 @@ pub fn undo(params: UndoParams) -> Result<UndoOutcome, OpError> {
     let mut code_undone = false;
     let mut transcript_undone = false;
 
-    if do_code {
-        if let Some(sha) = full_sha.as_deref() {
-            let codebase =
-                gait_state::session::read_session_meta(&params.gait_dir, &params.session_id)?
-                    .codebase_path
-                    .map(std::path::PathBuf::from)
-                    .ok_or_else(|| {
-                        OpError::Conflict(
-                            "session has no codebase_path; cannot undo code".to_string(),
-                        )
-                    })?;
-            let repos = gait_state::git::Repos::production();
-            repos
-                .checkpoints
-                .restore_to(&params.gait_dir, &params.session_id, &codebase, sha)?;
-            code_undone = true;
-        }
+    if let (Some(codebase), Some(sha)) = (codebase.as_deref(), full_sha.as_deref()) {
+        checkpoints.restore_to(&params.gait_dir, &params.session_id, codebase, sha)?;
+        code_undone = true;
     }
 
-    if do_transcript {
-        undo_transcript_to_turn(&params.gait_dir, &params.session_id, turn)?;
+    if let Some(oid) = transcript_target {
+        reset_transcript_to(&session_dir, oid)?;
         transcript_undone = true;
     }
 
@@ -405,31 +465,33 @@ pub fn undo(params: UndoParams) -> Result<UndoOutcome, OpError> {
         turns: Vec::new(),
         transcript_undone,
         code_undone,
-        checkpoint_short: turn_row.checkpoint_short,
+        checkpoint_short,
     })
 }
 
-fn undo_transcript_to_turn(gait_dir: &Path, session_id: &str, turn: u32) -> Result<(), OpError> {
-    let session_dir = gait_state::session::live::worktree_dir(gait_dir, session_id);
-    let repo = git2::Repository::open(&session_dir).map_err(anyhow::Error::from)?;
-    let needle = format!("session({}): turn {}", session_id, turn);
+/// The newest session commit of run `run`: `session(<id>): run <run> turn <t>`.
+/// A run spans one commit per turn process (a pause and resume add another),
+/// and the newest holds the log as it stood when the run ended. The trailing
+/// space keeps run 1 from matching run 10.
+fn find_transcript_commit(dir: &Path, session_id: &str, run: u32) -> Result<git2::Oid, OpError> {
+    let repo = git2::Repository::open(dir).map_err(anyhow::Error::from)?;
+    let prefix = format!("session({session_id}): run {run} turn ");
     let mut walk = repo.revwalk().map_err(anyhow::Error::from)?;
     walk.push_head().map_err(anyhow::Error::from)?;
-    let mut target: Option<git2::Oid> = None;
     for oid in walk {
         let oid = oid.map_err(anyhow::Error::from)?;
         let commit = repo.find_commit(oid).map_err(anyhow::Error::from)?;
-        if commit.summary() == Some(needle.as_str()) {
-            target = Some(oid);
-            break;
+        if commit.summary().is_some_and(|s| s.starts_with(&prefix)) {
+            return Ok(oid);
         }
     }
-    let oid = target.ok_or_else(|| {
-        OpError::NotFound(format!(
-            "no commit for turn {} in session {} (transcript undo applies to interactive turn sessions, not workflows)",
-            turn, session_id
-        ))
-    })?;
+    Err(OpError::NotFound(format!(
+        "no transcript commit for run {run} in session {session_id}"
+    )))
+}
+
+fn reset_transcript_to(dir: &Path, oid: git2::Oid) -> Result<(), OpError> {
+    let repo = git2::Repository::open(dir).map_err(anyhow::Error::from)?;
     let obj = repo.find_object(oid, None).map_err(anyhow::Error::from)?;
     repo.reset(&obj, git2::ResetType::Hard, None)
         .map_err(anyhow::Error::from)?;
@@ -1192,6 +1254,305 @@ mod tests {
         })
         .unwrap_err();
         assert!(matches!(err, OpError::Conflict(_)));
+    }
+
+    // -- undo (real restores) --
+    //
+    // Fixtures mirror what the engine writes: RunStart/RunComplete events in the
+    // session log, and one `session(<id>): run <K> turn <T>` commit per turn
+    // process (src/turn/spine/lifecycle.rs). A stub CheckpointRepo records which
+    // shas would be restored, so the code half can be asserted without a codebase.
+
+    use gait_proto::envelope::EventScope;
+    use gait_state::git::checkpoint::{CheckpointBoundary, CheckpointRepo};
+    use gait_state::proto::gait::log::v1 as pb;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct StubCheckpoints {
+        restored: Mutex<Vec<String>>,
+    }
+
+    impl CheckpointRepo for StubCheckpoints {
+        fn init(&self, _: &Path, _: &str, _: &Path) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn checkpoint(
+            &self,
+            _: &Path,
+            _: &str,
+            _: &Path,
+            _: CheckpointBoundary,
+        ) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+        fn restore_to(&self, _: &Path, _: &str, _: &Path, sha: &str) -> anyhow::Result<()> {
+            self.restored.lock().unwrap().push(sha.to_string());
+            Ok(())
+        }
+        fn remove(&self, _: &Path, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn diff_between(
+            &self,
+            _: &Path,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> anyhow::Result<Option<pb::ChangeSummary>> {
+            Ok(None)
+        }
+    }
+
+    enum End {
+        Complete,
+        Cancelled,
+    }
+
+    /// Write the SessionStart event (carries `codebase_path`) and commit nothing.
+    fn start_session_log(ws: &Path, id: &str) {
+        use gait_state::session::log::{init_session, InitSessionOpts};
+        let log_path = gait_state::session::live::log_path(ws, id);
+        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        init_session(InitSessionOpts {
+            log_path,
+            id: id.to_string(),
+            model: String::new(),
+            codebase_hash: String::new(),
+            codebase_dirty: false,
+            assigned_by: None,
+            codebase_path: Some("/code".to_string()),
+            notify_done: false,
+        })
+        .unwrap();
+    }
+
+    fn log_run_start(ws: &Path, id: &str, run: u32, baseline: Option<&str>) {
+        gait_proto::wire::write_to_transcript(
+            &gait_state::session::live::log_path(ws, id),
+            gait_state::proto::events::run_start(pb::RunStart {
+                run_id: format!("r{run}"),
+                index: run,
+                baseline_checkpoint: baseline.map(str::to_string),
+            }),
+            EventScope::Run { run },
+        )
+        .unwrap();
+    }
+
+    fn log_run_end(ws: &Path, id: &str, run: u32, end: End, final_sha: Option<&str>) {
+        let final_state = Some(pb::RunEndState {
+            codebase: None,
+            checkpoint: final_sha.map(str::to_string),
+        });
+        let body = match end {
+            End::Complete => gait_state::proto::events::run_complete(pb::RunComplete {
+                final_state,
+                summary: None,
+            }),
+            End::Cancelled => {
+                gait_state::proto::events::run_cancelled(pb::RunCancelled { final_state })
+            }
+        };
+        gait_proto::wire::write_to_transcript(
+            &gait_state::session::live::log_path(ws, id),
+            body,
+            EventScope::Run { run },
+        )
+        .unwrap();
+    }
+
+    fn commit_turn(ws: &Path, id: &str, run: u32, turn: u32) {
+        Repos::production()
+            .traces
+            .commit_session(ws, id, &format!("session({id}): run {run} turn {turn}"))
+            .unwrap();
+    }
+
+    fn head_summary(ws: &Path, id: &str) -> String {
+        let repo =
+            git2::Repository::open(gait_state::session::live::worktree_dir(ws, id)).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        head.summary().unwrap().to_string()
+    }
+
+    fn undo_params(ws: &Path, id: &str, turn: u32, code: bool, transcript: bool) -> UndoParams {
+        UndoParams {
+            gait_dir: ws.to_path_buf(),
+            session_id: id.to_string(),
+            turn: Some(turn),
+            code,
+            transcript,
+            list: false,
+        }
+    }
+
+    #[test]
+    fn undo_transcript_resets_to_the_newest_commit_of_the_run() {
+        let ws = ws_with_session("sundo10");
+        let id = "sundo10";
+        start_session_log(ws.path(), id);
+        // Run 0 spans two turn commits (a pause then a resume); run 1 follows.
+        log_run_start(ws.path(), id, 0, Some("base0"));
+        commit_turn(ws.path(), id, 0, 0);
+        log_run_end(ws.path(), id, 0, End::Complete, Some("end0"));
+        commit_turn(ws.path(), id, 0, 1);
+        log_run_start(ws.path(), id, 1, Some("end0"));
+        log_run_end(ws.path(), id, 1, End::Complete, Some("end1"));
+        commit_turn(ws.path(), id, 1, 0);
+
+        let cp = StubCheckpoints::default();
+        let out = undo_with(undo_params(ws.path(), id, 1, false, true), &cp).unwrap();
+
+        assert!(out.transcript_undone && !out.code_undone);
+        assert_eq!(head_summary(ws.path(), id), format!("session({id}): run 0 turn 1"));
+        // The log really went back: run 1's events are gone.
+        let events =
+            gait_state::session::log::read_events(&gait_state::session::live::log_path(ws.path(), id))
+                .unwrap();
+        let starts = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    &e.body,
+                    Some(gait_state::proto::gait::log::v1::event::Body::Payload(p))
+                        if matches!(p.kind, Some(gait_state::proto::gait::log::v1::payload::Kind::RunStart(_)))
+                )
+            })
+            .count();
+        assert_eq!(starts, 1);
+        assert!(cp.restored.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn undo_run_prefix_does_not_match_a_longer_run_number() {
+        let ws = ws_with_session("sundo11");
+        let id = "sundo11";
+        start_session_log(ws.path(), id);
+        log_run_start(ws.path(), id, 1, None);
+        log_run_end(ws.path(), id, 1, End::Complete, None);
+        commit_turn(ws.path(), id, 1, 0);
+        log_run_start(ws.path(), id, 10, None);
+        log_run_end(ws.path(), id, 10, End::Complete, None);
+        commit_turn(ws.path(), id, 10, 0);
+
+        // Turn 1 is run 1; the newer "run 10 turn 0" commit must not satisfy it.
+        undo_with(undo_params(ws.path(), id, 1, false, true), &StubCheckpoints::default()).unwrap();
+        assert_eq!(head_summary(ws.path(), id), format!("session({id}): run 1 turn 0"));
+    }
+
+    #[test]
+    fn undo_turn_number_counts_completed_runs_not_run_ordinals() {
+        let ws = ws_with_session("sundo12");
+        let id = "sundo12";
+        start_session_log(ws.path(), id);
+        log_run_start(ws.path(), id, 0, None);
+        log_run_end(ws.path(), id, 0, End::Complete, None);
+        commit_turn(ws.path(), id, 0, 0);
+        log_run_start(ws.path(), id, 1, None);
+        log_run_end(ws.path(), id, 1, End::Cancelled, None); // no RunComplete
+        commit_turn(ws.path(), id, 1, 0);
+        log_run_start(ws.path(), id, 2, None);
+        log_run_end(ws.path(), id, 2, End::Complete, None);
+        commit_turn(ws.path(), id, 2, 0);
+        // Move HEAD off run 2 so the reset is observable.
+        log_run_start(ws.path(), id, 3, None);
+        commit_turn(ws.path(), id, 3, 0);
+
+        // The second completed run is run 2, not run 1.
+        undo_with(undo_params(ws.path(), id, 2, false, true), &StubCheckpoints::default()).unwrap();
+        assert_eq!(head_summary(ws.path(), id), format!("session({id}): run 2 turn 0"));
+    }
+
+    #[test]
+    fn undo_missing_transcript_commit_fails_before_restoring_code() {
+        let ws = ws_with_session("sundo13");
+        let id = "sundo13";
+        start_session_log(ws.path(), id);
+        log_run_start(ws.path(), id, 0, Some("base0"));
+        log_run_end(ws.path(), id, 0, End::Complete, Some("end0"));
+        // No `run 0 turn N` commit exists (the engine ignores a failed commit).
+
+        let cp = StubCheckpoints::default();
+        let err = undo_with(undo_params(ws.path(), id, 1, false, false), &cp).unwrap_err();
+
+        assert!(matches!(err, OpError::NotFound(_)), "{err:?}");
+        assert!(
+            cp.restored.lock().unwrap().is_empty(),
+            "code must not be restored when the transcript target is missing"
+        );
+    }
+
+    #[test]
+    fn undo_code_only_restores_the_runs_final_checkpoint() {
+        let ws = ws_with_session("sundo14");
+        let id = "sundo14";
+        start_session_log(ws.path(), id);
+        log_run_start(ws.path(), id, 0, Some("base0"));
+        log_run_end(ws.path(), id, 0, End::Complete, Some("end0"));
+
+        let cp = StubCheckpoints::default();
+        let out = undo_with(undo_params(ws.path(), id, 1, true, false), &cp).unwrap();
+
+        assert!(out.code_undone && !out.transcript_undone);
+        assert_eq!(*cp.restored.lock().unwrap(), vec!["end0".to_string()]);
+    }
+
+    #[test]
+    fn undo_turn_zero_restores_the_first_baseline_code_only() {
+        let ws = ws_with_session("sundo15");
+        let id = "sundo15";
+        start_session_log(ws.path(), id);
+        log_run_start(ws.path(), id, 0, Some("base0"));
+        log_run_end(ws.path(), id, 0, End::Complete, Some("end0"));
+        log_run_start(ws.path(), id, 1, Some("end0"));
+        log_run_end(ws.path(), id, 1, End::Complete, Some("end1"));
+
+        let cp = StubCheckpoints::default();
+        let out = undo_with(undo_params(ws.path(), id, 0, true, false), &cp).unwrap();
+        assert!(out.code_undone && !out.transcript_undone);
+        assert_eq!(*cp.restored.lock().unwrap(), vec!["base0".to_string()]);
+
+        // Default scope and --transcript would reset the transcript past its
+        // first commit, which deletes log.jsonl: refused, nothing restored.
+        let cp = StubCheckpoints::default();
+        for (code, transcript) in [(false, false), (false, true)] {
+            let err = undo_with(undo_params(ws.path(), id, 0, code, transcript), &cp).unwrap_err();
+            assert!(matches!(err, OpError::Conflict(_)), "{err:?}");
+        }
+        assert!(cp.restored.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn undo_turn_zero_without_a_recorded_baseline_is_a_conflict() {
+        let ws = ws_with_session("sundo16");
+        let id = "sundo16";
+        start_session_log(ws.path(), id);
+        log_run_start(ws.path(), id, 0, None);
+        log_run_end(ws.path(), id, 0, End::Complete, Some("end0"));
+
+        let err = undo_with(
+            undo_params(ws.path(), id, 0, true, false),
+            &StubCheckpoints::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, OpError::Conflict(_)), "{err:?}");
+    }
+
+    #[test]
+    fn undo_turn_beyond_the_last_is_not_found() {
+        let ws = ws_with_session("sundo17");
+        let id = "sundo17";
+        start_session_log(ws.path(), id);
+        log_run_start(ws.path(), id, 0, None);
+        log_run_end(ws.path(), id, 0, End::Complete, None);
+
+        let err = undo_with(
+            undo_params(ws.path(), id, 2, true, true),
+            &StubCheckpoints::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, OpError::NotFound(_)), "{err:?}");
     }
 
     // -- shared renderer (golden tests) --

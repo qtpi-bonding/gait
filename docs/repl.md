@@ -46,7 +46,7 @@ Source of truth: `crates/gait-repl/src/repl/commands.rs::COMMANDS`. The REPL and
 | `/uc [N]` | Restore code only to the end of turn N. |
 | `/ut [N]` | Restore transcript only to the end of turn N. |
 
-Turn N is the state after that turn finished, so `/undo 2` after three turns rolls back turn 3. The first turn cannot be rolled back to the state before it.
+A turn here is one request you sent, and turn N is the state right after it finished, so `/undo 2` after three turns rolls back turn 3. `/uc 0` restores the code to before the first turn; `0` is code-only, because the transcript has nothing earlier to go back to.
 
 ### External authentication
 
