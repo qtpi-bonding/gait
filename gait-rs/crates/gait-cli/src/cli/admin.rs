@@ -304,7 +304,7 @@ pub fn cmd_inference(args: InferenceArgs) {
             });
             let compaction_threshold_tokens =
                 args.compaction_threshold_tokens.unwrap_or_else(|| {
-                    eprintln!("[gait] --context-window-tokens is required for inference add");
+                    eprintln!("[gait] --compaction-threshold-tokens is required for inference add");
                     std::process::exit(2)
                 });
             match gait_ops::inference::add(&args.gait_dir, name, model, compaction_threshold_tokens)
