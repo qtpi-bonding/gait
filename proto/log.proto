@@ -209,13 +209,18 @@ message Inference {
   optional LlmParams llm_params = 3;  // provider-specific request settings
   uint64 compaction_threshold_tokens = 4;  // token budget before compaction
 }
+// Auto-resolves "ask" permission decisions with a fast classifier instead of pausing.
 message ClassifyPolicy {
   string inference               = 1;  // named inference profile to call (an inference.textproto entry)
   double risk_threshold          = 2;  // deny if any *_risk noul >= this value
   uint32 max_consecutive_denials = 3;  // circuit breaker: stop trusting the classifier and fall back to a real pause after this many denials in a row this turn
 }
 
-message Mode {                          // active mode from this seq forward; "" name = default/none
+// A permission-and-steering overlay. In an event: active from this seq
+// forward, and an empty name means default/none. On disk it is MODE.md: the
+// frontmatter holds description, allow, deny and classify_policy, and the
+// markdown body is the steer.
+message Mode {
   string name          = 1;
   repeated string deny  = 2;
   string steer         = 3;

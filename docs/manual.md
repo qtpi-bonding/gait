@@ -547,3 +547,95 @@ List, load, or unload skills/mcp/plugins
 - `show_thinking` — Whether to render thinking/reasoning blocks in the terminal output. This is a pure UI preference — ThinkingBlock events are ALWAYS written to the session log regardless of this flag. Default: false.
 - `tool_timeout_secs` — Wall-clock timeout (seconds) for a single ripgrep subprocess invocation backed by grep/codesearch/ls. On expiry the tool returns an error result instead of blocking the turn on a hung `rg` process — the same unbounded-subprocess risk `shell_timeout_secs` guards against, so it shares that default. NOT sized to preempt the spine's watchdog: the watchdog's phase-duration cap is already suppressed while tools are running (see `SpinePhase::HandsPhase` in `watchdog_breach`, `turn/spine.rs`) and its only live check during a tool call is brain ping-liveness, which is unaffected by how long a tool takes. User-set only; the agent never picks it.
 - `tools` — Config-defined shell-command tools.
+
+### Inference profile: `inferences/<name>/inference.textproto`
+
+A protobuf text-format `gait.log.v1.Inference`. The profile name is the directory name; do not set `name`.
+
+```
+model: "anthropic/claude-sonnet-4-6"
+compaction_threshold_tokens: 128000
+llm_params { anthropic { effort: "high" } }
+```
+
+- `model` (string) — provider/model-id to invoke
+- `llm_params` (LlmParams, optional) — provider-specific request settings
+- `compaction_threshold_tokens` (uint64) — token budget before compaction
+
+`llm_params`:
+
+- `max_tokens` (uint32, optional) — universal override; Anthropic: max_tokens; OpenAI: max_completion_tokens
+- `temperature` (float, optional) — Anthropic: 0-1; OpenAI/Gemini: 0-2
+- `top_p` (float, optional) — 0-1; all providers
+- `anthropic` (AnthropicLlmParams, one of `provider_params`)
+- `openai` (OpenAILlmParams, one of `provider_params`)
+- `gemini` (GeminiLlmParams, one of `provider_params`)
+- `local` (LocalLlmParams, one of `provider_params`)
+
+`llm_params.anthropic`:
+
+- `top_k` (uint32, optional)
+- `effort` (string, optional) — "low"|"medium"|"high"|"xhigh"|"max"
+- `thinking` (AnthropicThinking, optional)
+- `strict_tools` (bool, optional) — require strict tool-schema handling
+
+`llm_params.openai`:
+
+- `reasoning_effort` (string, optional) — "none"|"minimal"|"low"|"medium"|"high"|"xhigh"
+- `frequency_penalty` (float, optional) — penalize repeated tokens
+- `presence_penalty` (float, optional) — penalize tokens already present
+- `seed` (int64, optional) — deterministic sampling seed
+- `stop` (string, repeated) — stop sequences
+- `strict_tools` (bool, optional) — require strict tool-schema handling
+
+`llm_params.gemini`:
+
+- `top_k` (int32, optional)
+- `candidate_count` (int32, optional)
+- `stop_sequences` (string, repeated)
+- `seed` (int32, optional)
+- `frequency_penalty` (float, optional)
+- `presence_penalty` (float, optional)
+- `thinking` (GeminiThinking, optional)
+
+`llm_params.anthropic.thinking`:
+
+- `type` (AnthropicThinkingType) — Values: `ANTHROPIC_THINKING_TYPE_UNSPECIFIED`, `ANTHROPIC_THINKING_TYPE_ADAPTIVE`, `ANTHROPIC_THINKING_TYPE_DISABLED`, `ANTHROPIC_THINKING_TYPE_ENABLED`.
+- `budget_tokens` (uint32, optional)
+- `display` (AnthropicThinkingDisplay) — Values: `ANTHROPIC_THINKING_DISPLAY_UNSPECIFIED`, `ANTHROPIC_THINKING_DISPLAY_SUMMARIZED`, `ANTHROPIC_THINKING_DISPLAY_OMITTED`.
+
+`llm_params.gemini.thinking`:
+
+- `include_thoughts` (bool, optional)
+- `budget` (int32, one of `depth`)
+- `level` (GeminiThinkingLevel, one of `depth`) — Values: `GEMINI_THINKING_LEVEL_UNSPECIFIED`, `GEMINI_THINKING_LEVEL_MINIMAL`, `GEMINI_THINKING_LEVEL_LOW`, `GEMINI_THINKING_LEVEL_MEDIUM`, `GEMINI_THINKING_LEVEL_HIGH`.
+
+`llm_params.local`:
+
+- `model_path` (string) — filesystem path to the developer-owned model
+- `context_tokens` (uint32, optional) — model context window in tokens
+- `gpu_layers` (uint32, optional) — number of layers to offload to the GPU
+
+### Mode: `modes/<name>/MODE.md`
+
+Markdown with YAML frontmatter. The frontmatter keys below are `gait.log.v1.Mode` fields; the markdown body is the steer.
+
+```
+---
+description: Read-only review
+allow: [read, glob]
+deny: ["shell:git push *"]
+---
+Review the code. Do not edit files.
+```
+
+- `deny` (string, repeated)
+- `description` (string) — human-readable label for UIs; behaviorally inert
+- `allow` (string, repeated) — permission-gate allow patterns, unioned into effective_allow
+- `classify_policy` (ClassifyPolicy, optional)
+
+`classify_policy`:
+
+- `inference` (string) — named inference profile to call (an inference.textproto entry)
+- `risk_threshold` (double) — deny if any *_risk noul >= this value
+- `max_consecutive_denials` (uint32) — circuit breaker: stop trusting the classifier and fall back to a real pause after this many denials in a row this turn

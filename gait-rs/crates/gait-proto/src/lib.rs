@@ -36,6 +36,7 @@ pub mod gait {
 
 pub mod envelope;
 pub mod hash;
+pub mod schema_doc;
 pub mod textproto;
 pub mod wire;
 pub mod workflow_envelope;

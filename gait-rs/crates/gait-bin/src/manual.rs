@@ -84,6 +84,94 @@ fn render_config_fields(out: &mut String, flavor: ManualFlavor) {
     }
 }
 
+/// One authored file format, rendered from its proto message: the field list
+/// (name, type, cardinality, doc comment) comes from `proto/log.proto` via the
+/// embedded descriptor set, so it cannot drift from what the loader accepts.
+fn render_message_fields(out: &mut String, full_name: &str, skip: &[&str]) {
+    use gait_proto::schema_doc::{enum_values, message_doc, Label};
+    let doc = message_doc(full_name).unwrap_or_else(|| panic!("{full_name} in descriptor set"));
+    for field in doc
+        .fields
+        .iter()
+        .filter(|f| !skip.contains(&f.name.as_str()))
+    {
+        let label = match field.label {
+            Label::Optional => ", optional",
+            Label::Repeated => ", repeated",
+            Label::Singular => "",
+        };
+        let oneof = field
+            .oneof
+            .as_ref()
+            .map(|o| format!(", one of `{o}`"))
+            .unwrap_or_default();
+        let package = full_name.rsplit_once('.').map_or("", |(p, _)| p);
+        let values = enum_values(&format!("{package}.{}", field.ty))
+            .map(|v| {
+                format!(
+                    "Values: {}.",
+                    v.iter()
+                        .map(|n| format!("`{n}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
+            .unwrap_or_default();
+        let sep = if field.doc.is_empty() && values.is_empty() {
+            ""
+        } else {
+            " — "
+        };
+        let _ = writeln!(
+            out,
+            "- `{}` ({}{label}{oneof}){sep}{}{}{values}",
+            field.name,
+            field.ty,
+            field.doc,
+            if field.doc.is_empty() || values.is_empty() {
+                ""
+            } else {
+                " "
+            }
+        );
+    }
+}
+
+const INFERENCE_EXAMPLE: &str = "model: \"anthropic/claude-sonnet-4-6\"\ncompaction_threshold_tokens: 128000\nllm_params { anthropic { effort: \"high\" } }\n";
+const MODE_EXAMPLE: &str = "---\ndescription: Read-only review\nallow: [read, glob]\ndeny: [\"shell:git push *\"]\n---\nReview the code. Do not edit files.\n";
+
+fn render_file_formats(out: &mut String, flavor: ManualFlavor) {
+    out.push_str("\n### Inference profile: `inferences/<name>/inference.textproto`\n\n");
+    out.push_str("A protobuf text-format `gait.log.v1.Inference`. The profile name is the directory name; do not set `name`.\n\n```\n");
+    out.push_str(INFERENCE_EXAMPLE);
+    out.push_str("```\n\n");
+    render_message_fields(out, "gait.log.v1.Inference", &["name"]);
+    out.push_str("\n`llm_params`:\n\n");
+    render_message_fields(out, "gait.log.v1.LlmParams", &[]);
+    let mut providers = vec![
+        ("anthropic", "gait.log.v1.AnthropicLlmParams"),
+        ("openai", "gait.log.v1.OpenAILlmParams"),
+        ("gemini", "gait.log.v1.GeminiLlmParams"),
+    ];
+    providers.push(("anthropic.thinking", "gait.log.v1.AnthropicThinking"));
+    providers.push(("gemini.thinking", "gait.log.v1.GeminiThinking"));
+    if requires_met(&["local"], flavor) {
+        providers.push(("local", "gait.log.v1.LocalLlmParams"));
+    }
+    for (name, message) in providers {
+        let _ = write!(out, "\n`llm_params.{name}`:\n\n");
+        render_message_fields(out, message, &[]);
+    }
+
+    out.push_str("\n### Mode: `modes/<name>/MODE.md`\n\n");
+    out.push_str("Markdown with YAML frontmatter. The frontmatter keys below are `gait.log.v1.Mode` fields; the markdown body is the steer.\n\n```\n");
+    out.push_str(MODE_EXAMPLE);
+    out.push_str("```\n\n");
+    render_message_fields(out, "gait.log.v1.Mode", &["name", "steer"]);
+    out.push_str("\n`classify_policy`:\n\n");
+    render_message_fields(out, "gait.log.v1.ClassifyPolicy", &[]);
+}
+
 #[derive(Debug, Parser)]
 pub struct ManualArgs {
     #[command(subcommand)]
@@ -238,6 +326,7 @@ fn render_manual_with_manifest(
         }
     }
     render_config_fields(&mut body, flavor);
+    render_file_formats(&mut body, flavor);
     while body.ends_with('\n') {
         body.pop();
     }
@@ -414,6 +503,20 @@ mod tests {
             repl_commands: COMMANDS,
             flavor: ManualFlavor::Full,
         }
+    }
+
+    #[cfg(feature = "full")]
+    #[test]
+    fn documented_examples_load() {
+        let inference = gait_proto::textproto::parse_inference_text(INFERENCE_EXAMPLE).unwrap();
+        assert_eq!(inference.compaction_threshold_tokens, 128000);
+        let dir = tempfile::tempdir().unwrap();
+        let mode_dir = dir.path().join("modes/review");
+        std::fs::create_dir_all(&mode_dir).unwrap();
+        std::fs::write(mode_dir.join("MODE.md"), MODE_EXAMPLE).unwrap();
+        let mode = gait_state::modes::load_mode(dir.path(), "review").unwrap();
+        assert_eq!(mode.allow, vec!["read", "glob"]);
+        assert_eq!(mode.steer, "Review the code. Do not edit files.");
     }
 
     /// `docs/manual.md` is the published copy of `gait manual install`. This
