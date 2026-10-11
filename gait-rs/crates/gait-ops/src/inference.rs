@@ -56,12 +56,12 @@ pub fn resolve_selection(
     })
 }
 
-/// Author a new named inference at `<gait_dir>/inferences/<name>/INFERENCE.yaml`
-/// with a bare `model: <provider/id>` line (no `llm_params` block). Returns the
+/// Author a new named inference at `<gait_dir>/inferences/<name>/inference.textproto`
+/// as textproto: the `model` and the given `compaction_threshold_tokens` (no `llm_params` block). Returns the
 /// `InferenceInfo { name, model }` it just wrote so callers can echo it back.
 ///
 /// Refuses overwrite — see `gait_state::inferences::write_inference`. To tune
-/// llm_params or anything else after creation, edit the YAML in place.
+/// llm_params or anything else after creation, edit the textproto in place.
 pub fn add(
     gait_dir: &Path,
     name: &str,
@@ -109,8 +109,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("inferences/codex")).unwrap();
         std::fs::write(
-            dir.path().join("inferences/codex/INFERENCE.yaml"),
-            "model: openai-codex/gpt-test\ncompaction_threshold_tokens: 128000\nllm_params:\n  openai:\n    reasoning_effort: high\n",
+            dir.path().join("inferences/codex/inference.textproto"),
+            "model: \"openai-codex/gpt-test\"\ncompaction_threshold_tokens: 128000\nllm_params { openai { reasoning_effort: \"high\" } }\n",
         )
         .unwrap();
 

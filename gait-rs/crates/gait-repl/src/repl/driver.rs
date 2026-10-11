@@ -1727,8 +1727,8 @@ mod command_tests {
         let d = temp_gait_dir();
         std::fs::create_dir_all(d.path().join("inferences/deep")).unwrap();
         std::fs::write(
-            d.path().join("inferences/deep/INFERENCE.yaml"),
-            "model: prov/mdl\ncompaction_threshold_tokens: 128000\n",
+            d.path().join("inferences/deep/inference.textproto"),
+            "model: \"prov/mdl\"\ncompaction_threshold_tokens: 128000\n",
         )
         .unwrap();
         let (mut src, _s) = source_with(d.path(), &["/inference deep", "/q"]);
@@ -1750,19 +1750,20 @@ mod command_tests {
     /// the CLI/REPL symmetry contract: both paths route through
     /// `gait_ops::inference::add`, which calls `gait_state::inferences::write_inference`.
     #[tokio::test]
-    async fn slash_inference_add_writes_inference_yaml() {
+    async fn slash_inference_add_writes_inference_textproto() {
         let d = temp_gait_dir();
         let (mut src, _s) = source_with(
             d.path(),
             &["/inference add opencode opencode/kimi-k2.6 128000", "/q"],
         );
         let _ = src.next().await; // processes /inference add; /q ends
-        let inf_file = d.path().join("inferences/opencode/INFERENCE.yaml");
+        let inf_file = d.path().join("inferences/opencode/inference.textproto");
         let content = std::fs::read_to_string(&inf_file)
-            .expect("/inference add must write inferences/<name>/INFERENCE.yaml");
+            .expect("/inference add must write inferences/<name>/inference.textproto");
         assert_eq!(
-            content, "model: opencode/kimi-k2.6\ncompaction_threshold_tokens: 128000\n",
-            "REPL /inference add must produce the same explicit-policy YAML as the CLI op"
+            content,
+            "# proto-file: proto/log.proto\n# proto-message: gait.log.v1.Inference\nmodel: \"opencode/kimi-k2.6\"\ncompaction_threshold_tokens: 128000\n",
+            "REPL /inference add must produce the same explicit-policy textproto as the CLI op"
         );
     }
 
@@ -1783,9 +1784,10 @@ mod command_tests {
         let (mut src, _s) = source_with(d.path(), &lines);
         let _ = src.next().await; // consumes all three lines
         let content =
-            std::fs::read_to_string(d.path().join("inferences/p/INFERENCE.yaml")).unwrap();
+            std::fs::read_to_string(d.path().join("inferences/p/inference.textproto")).unwrap();
         assert_eq!(
-            content, "model: anthropic/claude-3-5-sonnet\ncompaction_threshold_tokens: 128000\n",
+            content,
+            "# proto-file: proto/log.proto\n# proto-message: gait.log.v1.Inference\nmodel: \"anthropic/claude-3-5-sonnet\"\ncompaction_threshold_tokens: 128000\n",
             "second /inference add must NOT clobber the first file"
         );
     }
@@ -1804,8 +1806,8 @@ mod command_tests {
         let d = temp_gait_dir();
         std::fs::create_dir_all(d.path().join("inferences/deep")).unwrap();
         std::fs::write(
-            d.path().join("inferences/deep/INFERENCE.yaml"),
-            "model: prov/mdl\ncompaction_threshold_tokens: 128000\n",
+            d.path().join("inferences/deep/inference.textproto"),
+            "model: \"prov/mdl\"\ncompaction_threshold_tokens: 128000\n",
         )
         .unwrap();
         let (mut src, shared) = source_with(d.path(), &["/inference show deep", "/q"]);

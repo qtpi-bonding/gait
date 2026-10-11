@@ -102,8 +102,8 @@ fn setup_gait_dir_with_jsonc(jsonc: &str) -> tempfile::TempDir {
     std::fs::create_dir_all(gait_dir.join(".active")).unwrap();
     std::fs::create_dir_all(gait_dir.join("inferences/mock")).unwrap();
     std::fs::write(
-        gait_dir.join("inferences/mock/INFERENCE.yaml"),
-        "model: mock/model\ncompaction_threshold_tokens: 128000\n",
+        gait_dir.join("inferences/mock/inference.textproto"),
+        "model: \"mock/model\"\ncompaction_threshold_tokens: 128000\n",
     )
     .unwrap();
     std::fs::write(gait_dir.join("gait.jsonc"), jsonc).unwrap();

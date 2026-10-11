@@ -119,7 +119,7 @@ pub(crate) fn scaffold_gait_dir(gait_dir: &Path) -> std::io::Result<()> {
             r#"{{
   // gait configuration
   // Pick a provider via the named-inference system: "inference" holds a
-  // name that resolves through inferences/<name>/INFERENCE.yaml to the
+  // name that resolves through inferences/<name>/inference.textproto to the
   // actual provider/model-id string. The default below is bootstrap-scaffolded
   // by scaffold_gait_dir alongside this file. See `gait inference --help`.
   "inference": "minimax-m3",
@@ -167,11 +167,11 @@ pub(crate) fn scaffold_gait_dir(gait_dir: &Path) -> std::io::Result<()> {
     // `minimax/MiniMax-M3`. Idempotent — never clobbers a hand-edited file.
     let inf_dir = gait_dir.join("inferences").join("minimax-m3");
     std::fs::create_dir_all(&inf_dir)?;
-    let inf_file = inf_dir.join("INFERENCE.yaml");
+    let inf_file = inf_dir.join("inference.textproto");
     if !inf_file.exists() {
         std::fs::write(
             &inf_file,
-            "model: minimax/MiniMax-M3\ncompaction_threshold_tokens: 128000\n",
+            "model: \"minimax/MiniMax-M3\"\ncompaction_threshold_tokens: 128000\n",
         )?;
     }
 

@@ -114,7 +114,7 @@ promise. For normal local use, prefer Ollama or LM Studio above.
 
 ## Named inference profiles
 
-A *named inference* is a saved `(provider, model, llm_params)` triple, stored in `gait.jsonc` under the `inferences` key. Selecting one for a session injects an `Inference` event into the log, so the choice is replay-complete (a resumed session re-derives the same model and params from the log, not from ambient state).
+A *named inference* is a saved `(provider, model, llm_params)` triple, stored in `<gait-dir>/inferences/<name>/inference.textproto`. Selecting one for a session injects an `Inference` event into the log, so the choice is replay-complete (a resumed session re-derives the same model and params from the log, not from ambient state).
 
 Use them when:
 

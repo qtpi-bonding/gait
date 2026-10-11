@@ -242,14 +242,14 @@ mod tests {
         init_git_repo(ws.path());
         std::fs::create_dir_all(ws.path().join("inferences/parent")).unwrap();
         std::fs::write(
-            ws.path().join("inferences/parent/INFERENCE.yaml"),
-            "model: minimax/MiniMax-M3\ncompaction_threshold_tokens: 128000\n",
+            ws.path().join("inferences/parent/inference.textproto"),
+            "model: \"minimax/MiniMax-M3\"\ncompaction_threshold_tokens: 128000\n",
         )
         .unwrap();
         std::fs::create_dir_all(ws.path().join("inferences/child")).unwrap();
         std::fs::write(
-            ws.path().join("inferences/child/INFERENCE.yaml"),
-            "model: anthropic/child\ncompaction_threshold_tokens: 128000\n",
+            ws.path().join("inferences/child/inference.textproto"),
+            "model: \"anthropic/child\"\ncompaction_threshold_tokens: 128000\n",
         )
         .unwrap();
         std::fs::write(
@@ -341,8 +341,8 @@ mod tests {
         init_git_repo(ws.path());
         std::fs::create_dir_all(ws.path().join("inferences/parent")).unwrap();
         std::fs::write(
-            ws.path().join("inferences/parent/INFERENCE.yaml"),
-            "model: minimax/MiniMax-M3\ncompaction_threshold_tokens: 128000\n",
+            ws.path().join("inferences/parent/inference.textproto"),
+            "model: \"minimax/MiniMax-M3\"\ncompaction_threshold_tokens: 128000\n",
         )
         .unwrap();
         std::fs::write(
@@ -377,8 +377,8 @@ mod tests {
         init_git_repo(ws.path());
         std::fs::create_dir_all(ws.path().join("inferences/parent")).unwrap();
         std::fs::write(
-            ws.path().join("inferences/parent/INFERENCE.yaml"),
-            "model: minimax/MiniMax-M3\ncompaction_threshold_tokens: 128000\n",
+            ws.path().join("inferences/parent/inference.textproto"),
+            "model: \"minimax/MiniMax-M3\"\ncompaction_threshold_tokens: 128000\n",
         )
         .unwrap();
         std::fs::write(
@@ -432,14 +432,14 @@ mod tests {
         init_git_repo(ws.path());
         std::fs::create_dir_all(ws.path().join("inferences/parent")).unwrap();
         std::fs::write(
-            ws.path().join("inferences/parent/INFERENCE.yaml"),
-            "model: minimax/MiniMax-M3\ncompaction_threshold_tokens: 128000\n",
+            ws.path().join("inferences/parent/inference.textproto"),
+            "model: \"minimax/MiniMax-M3\"\ncompaction_threshold_tokens: 128000\n",
         )
         .unwrap();
         std::fs::create_dir_all(ws.path().join("inferences/child")).unwrap();
         std::fs::write(
-            ws.path().join("inferences/child/INFERENCE.yaml"),
-            "model: anthropic/child\ncompaction_threshold_tokens: 128000\n",
+            ws.path().join("inferences/child/inference.textproto"),
+            "model: \"anthropic/child\"\ncompaction_threshold_tokens: 128000\n",
         )
         .unwrap();
         std::fs::write(

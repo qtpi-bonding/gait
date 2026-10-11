@@ -1,5 +1,5 @@
 //! User-defined **mode** overlays: `<gait_dir>/modes/<name>/MODE.yaml` (parallel
-//! to `<gait_dir>/inferences/<name>/INFERENCE.yaml` — see `inferences.rs`, whose
+//! to `<gait_dir>/inferences/<name>/inference.textproto` — see `inferences.rs`, whose
 //! shape this file mirrors). A mode is a `{allow, deny, steer, description}`
 //! safety lens. `default` is reserved (the no-op baseline; never read from
 //! disk, never a valid name to author over).
@@ -139,7 +139,10 @@ pub fn append_mode_allow(gait_dir: &Path, mode_name: &str, pattern: &str) -> any
         f.allow.push(pattern.to_string());
     }
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(&path, serde_yaml::to_string(&SerializableModeFile::from(&f))?)?;
+    std::fs::write(
+        &path,
+        serde_yaml::to_string(&SerializableModeFile::from(&f))?,
+    )?;
     Ok(())
 }
 
@@ -250,7 +253,11 @@ mod tests {
     #[test]
     fn loads_full_mode() {
         let t = TempDir::new().unwrap();
-        write_mode_file(t.path(), "plan", "allow: [read]\ndeny: [write]\nsteer: no edits\n");
+        write_mode_file(
+            t.path(),
+            "plan",
+            "allow: [read]\ndeny: [write]\nsteer: no edits\n",
+        );
         let m = load_mode(t.path(), "plan").unwrap();
         assert_eq!(m.name, "plan");
         assert_eq!(m.allow, vec!["read"]);
@@ -367,7 +374,10 @@ mod tests {
     fn classify_policy_defaults_to_none_when_absent() {
         let t = TempDir::new().unwrap();
         write_mode_file(t.path(), "bare", "deny: [write]\n");
-        assert!(load_mode(t.path(), "bare").unwrap().classify_policy.is_none());
+        assert!(load_mode(t.path(), "bare")
+            .unwrap()
+            .classify_policy
+            .is_none());
     }
 
     #[test]

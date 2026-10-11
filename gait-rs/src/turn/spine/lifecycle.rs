@@ -731,8 +731,8 @@ mod tests {
         let ws = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(ws.path().join("inferences/mock")).unwrap();
         std::fs::write(
-            ws.path().join("inferences/mock/INFERENCE.yaml"),
-            "model: mock/model\ncompaction_threshold_tokens: 128000\n",
+            ws.path().join("inferences/mock/inference.textproto"),
+            "model: \"mock/model\"\ncompaction_threshold_tokens: 128000\n",
         )
         .unwrap();
         std::fs::write(ws.path().join("gait.jsonc"), r#"{"inference":"mock"}"#).unwrap();
@@ -758,8 +758,8 @@ mod tests {
         // Write a minimal gait.jsonc so load_config picks up a known model.
         std::fs::create_dir_all(dir.path().join("inferences/mock")).unwrap();
         std::fs::write(
-            dir.path().join("inferences/mock/INFERENCE.yaml"),
-            "model: anthropic/x\ncompaction_threshold_tokens: 128000\n",
+            dir.path().join("inferences/mock/inference.textproto"),
+            "model: \"anthropic/x\"\ncompaction_threshold_tokens: 128000\n",
         )
         .unwrap();
         std::fs::write(dir.path().join("gait.jsonc"), r#"{"inference":"mock"}"#).unwrap();

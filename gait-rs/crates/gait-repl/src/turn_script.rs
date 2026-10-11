@@ -247,8 +247,8 @@ fn frame_to_signal(frame: &Frame) -> Signal {
 pub(crate) fn write_numbered_frames(gait_dir: &Path, turns: &[Turn]) -> anyhow::Result<()> {
     std::fs::create_dir_all(gait_dir.join("inferences/mock"))?;
     std::fs::write(
-        gait_dir.join("inferences/mock/INFERENCE.yaml"),
-        "model: mock/model\ncompaction_threshold_tokens: 128000\n",
+        gait_dir.join("inferences/mock/inference.textproto"),
+        "model: \"mock/model\"\ncompaction_threshold_tokens: 128000\n",
     )?;
     for (n, turn) in turns
         .iter()

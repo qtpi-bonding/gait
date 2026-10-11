@@ -14,8 +14,8 @@ async fn run_one_off_resolves_named_inference_from_gait_dir() {
     let gait_dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(gait_dir.path().join("inferences/test")).unwrap();
     std::fs::write(
-        gait_dir.path().join("inferences/test/INFERENCE.yaml"),
-        "model: anthropic/claude-haiku-4-5-20251001\ncompaction_threshold_tokens: 128000\n",
+        gait_dir.path().join("inferences/test/inference.textproto"),
+        "model: \"anthropic/claude-haiku-4-5-20251001\"\ncompaction_threshold_tokens: 128000\n",
     )
     .unwrap();
     let r = gait_cli::cli::exec::run_one_off(
@@ -117,8 +117,8 @@ mod full_one_shot {
     fn write_frames(gait_dir: &std::path::Path, signals: &[Signal]) {
         std::fs::create_dir_all(gait_dir.join("inferences/mock")).unwrap();
         std::fs::write(
-            gait_dir.join("inferences/mock/INFERENCE.yaml"),
-            "model: mock/model\ncompaction_threshold_tokens: 128000\n",
+            gait_dir.join("inferences/mock/inference.textproto"),
+            "model: \"mock/model\"\ncompaction_threshold_tokens: 128000\n",
         )
         .unwrap();
         let mut blob = Vec::new();

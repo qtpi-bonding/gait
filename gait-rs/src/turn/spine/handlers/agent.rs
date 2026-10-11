@@ -311,8 +311,8 @@ mod tests {
         crate::test_utils::init_git_repo(ws.path());
         std::fs::create_dir_all(ws.path().join("inferences/mock")).unwrap();
         std::fs::write(
-            ws.path().join("inferences/mock/INFERENCE.yaml"),
-            "model: minimax/MiniMax-M3\ncompaction_threshold_tokens: 128000\n",
+            ws.path().join("inferences/mock/inference.textproto"),
+            "model: \"minimax/MiniMax-M3\"\ncompaction_threshold_tokens: 128000\n",
         )
         .unwrap();
         std::fs::write(
@@ -369,8 +369,8 @@ mod tests {
         crate::test_utils::init_git_repo(ws.path());
         std::fs::create_dir_all(ws.path().join("inferences/mock")).unwrap();
         std::fs::write(
-            ws.path().join("inferences/mock/INFERENCE.yaml"),
-            "model: minimax/MiniMax-M3\ncompaction_threshold_tokens: 128000\n",
+            ws.path().join("inferences/mock/inference.textproto"),
+            "model: \"minimax/MiniMax-M3\"\ncompaction_threshold_tokens: 128000\n",
         )
         .unwrap();
         std::fs::write(

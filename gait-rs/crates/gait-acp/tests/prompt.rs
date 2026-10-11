@@ -219,8 +219,8 @@ async fn prompt_streams_agent_message_and_ends_turn() {
     // Resolve a model so ConfigResolver::resolve_checked passes; mock brain ignores it.
     std::fs::create_dir_all(gait_dir.join("inferences/mock")).unwrap();
     std::fs::write(
-        gait_dir.join("inferences/mock/INFERENCE.yaml"),
-        "model: mock/model\ncompaction_threshold_tokens: 128000\n",
+        gait_dir.join("inferences/mock/inference.textproto"),
+        "model: \"mock/model\"\ncompaction_threshold_tokens: 128000\n",
     )
     .unwrap();
     std::fs::write(gait_dir.join("gait.jsonc"), r#"{ "inference": "mock" }"#).unwrap();
@@ -310,8 +310,8 @@ fn make_workspace(root: &Path, name: &str) -> (std::path::PathBuf, std::path::Pa
     .unwrap();
     std::fs::create_dir_all(gait_dir.join("inferences/mock")).unwrap();
     std::fs::write(
-        gait_dir.join("inferences/mock/INFERENCE.yaml"),
-        "model: mock/model\ncompaction_threshold_tokens: 128000\n",
+        gait_dir.join("inferences/mock/inference.textproto"),
+        "model: \"mock/model\"\ncompaction_threshold_tokens: 128000\n",
     )
     .unwrap();
     std::fs::write(gait_dir.join("gait.jsonc"), r#"{ "inference": "mock" }"#).unwrap();

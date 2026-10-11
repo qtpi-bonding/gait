@@ -34,10 +34,11 @@ directory. `gait config` reads or updates `gait.jsonc`.
 ## Inference profiles
 
 An inference profile is stored in
-`inferences/<inference-name>/INFERENCE.yaml`:
+`inferences/<inference-name>/inference.textproto`:
 
-```yaml
-model: <provider>/<model-id>
+```textproto
+model: "<provider>/<model-id>"
+compaction_threshold_tokens: 128000
 ```
 
 ```bash
