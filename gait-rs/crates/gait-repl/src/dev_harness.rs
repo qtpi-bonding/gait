@@ -63,6 +63,7 @@ pub async fn run_script(
         model_override: None,
         last_blocks: Vec::new(),
         ran_turn: false,
+        undo_note: None,
     };
     let mut sink = crate::repl::ReplSink {
         shared: shared.clone(),

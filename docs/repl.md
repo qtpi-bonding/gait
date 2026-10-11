@@ -48,6 +48,8 @@ Source of truth: `crates/gait-repl/src/repl/commands.rs::COMMANDS`. The REPL and
 
 A turn here is one request you sent, and turn N is the state right after it finished, so `/undo 2` after three turns rolls back turn 3. `/uc 0` restores the code to before the first turn; `0` is code-only, because the transcript has nothing earlier to go back to.
 
+An undo never starts a model turn. After `/uc` the transcript still describes work the files no longer have, so the next message you send carries a one-line note (`[undo] code restored to turn N`) for the model; `/undo` and `/ut` leave nothing to reconcile and send no note.
+
 ### External authentication
 
 The REPL uses the same non-secret auth-source operations as the CLI:

@@ -124,6 +124,37 @@ pub struct ReplSource {
     pub model_override: Option<String>,
     pub last_blocks: Vec<String>,
     pub ran_turn: bool,
+    /// One-line notice queued by `/uc`, prepended to the next message sent to
+    /// the model (see `undo_follow_up`). Never sent on its own.
+    pub undo_note: Option<String>,
+}
+
+/// What the REPL reports after a successful undo, and the note (if any) the
+/// model needs on its next turn. A code-only undo leaves the transcript saying
+/// the work was done, so the model must be told the files moved; a transcript
+/// undo or a full undo leaves nothing to reconcile. No undo starts a model turn.
+fn undo_follow_up(code: bool, transcript: bool, n: u32) -> (String, Option<String>) {
+    let to = if n == 0 {
+        "before the first turn".to_string()
+    } else {
+        format!("turn {n}")
+    };
+    match (code, transcript) {
+        (true, false) => {
+            let msg = format!("[undo] code restored to {to}");
+            (msg.clone(), Some(msg))
+        }
+        (false, true) => (format!("[undo] transcript restored to {to}"), None),
+        _ => (format!("[undo] restored both to {to}"), None),
+    }
+}
+
+/// Prefix a user message with the queued undo note, if any.
+fn with_undo_note(note: Option<String>, line: String) -> String {
+    match note {
+        Some(note) => format!("{note}\n\n{line}"),
+        None => line,
+    }
 }
 
 impl ReplSource {
@@ -888,10 +919,10 @@ impl TurnSource for ReplSource {
                     | cmd::ReplCommandId::UndoTranscript),
                     arg,
                 )) => {
-                    let (code, transcript, label) = match id {
-                        cmd::ReplCommandId::UndoCode => (true, false, "code"),
-                        cmd::ReplCommandId::UndoTranscript => (false, true, "transcript"),
-                        cmd::ReplCommandId::Undo => (true, true, "both"),
+                    let (code, transcript) = match id {
+                        cmd::ReplCommandId::UndoCode => (true, false),
+                        cmd::ReplCommandId::UndoTranscript => (false, true),
+                        cmd::ReplCommandId::Undo => (true, true),
                         _ => unreachable!(),
                     };
                     let arg = arg.to_owned();
@@ -941,11 +972,19 @@ impl TurnSource for ReplSource {
                                 continue;
                             }
                         }
-                        if n == 0 {
-                            format!("[undo] restored {label} to before the first turn")
-                        } else {
-                            format!("[undo] restored {label} to turn {n}")
+                        let (shown, note) = undo_follow_up(code, transcript, n);
+                        self.shared
+                            .borrow_mut()
+                            .builder
+                            .write_raw(&format!("{shown}\r\n"));
+                        match (code, transcript) {
+                            (true, false) => self.undo_note = note,
+                            // Code and transcript agree again: an older note is stale.
+                            (true, true) => self.undo_note = None,
+                            (false, true) => {}
+                            (false, false) => {}
                         }
+                        continue;
                     } else {
                         self.shared.borrow_mut().builder.write_raw(&format!(
                             "{}\r\n",
@@ -956,6 +995,8 @@ impl TurnSource for ReplSource {
                 }
                 _ => line,
             };
+
+            let line = with_undo_note(self.undo_note.take(), line);
 
             // Reedline records history automatically on Signal::Success; no manual add needed.
             // Unified expansion (identical to the CLI path): $(cmd)/$(N), @path, >(N).
@@ -1548,8 +1589,42 @@ mod command_tests {
             model_override: None,
             last_blocks: Vec::new(),
             ran_turn: false,
+            undo_note: None,
         };
         (src, shared)
+    }
+
+    #[test]
+    fn undo_code_only_reports_and_queues_the_same_note() {
+        let (shown, note) = undo_follow_up(true, false, 3);
+        assert_eq!(shown, "[undo] code restored to turn 3");
+        assert_eq!(note.as_deref(), Some("[undo] code restored to turn 3"));
+    }
+
+    #[test]
+    fn undo_code_only_to_zero_says_before_the_first_turn() {
+        let (shown, note) = undo_follow_up(true, false, 0);
+        assert_eq!(shown, "[undo] code restored to before the first turn");
+        assert_eq!(note.as_deref(), Some(shown.as_str()));
+    }
+
+    #[test]
+    fn undo_transcript_only_and_full_undo_queue_no_note() {
+        let (shown, note) = undo_follow_up(false, true, 2);
+        assert_eq!(shown, "[undo] transcript restored to turn 2");
+        assert_eq!(note, None);
+        let (shown, note) = undo_follow_up(true, true, 2);
+        assert_eq!(shown, "[undo] restored both to turn 2");
+        assert_eq!(note, None);
+    }
+
+    #[test]
+    fn queued_undo_note_prefixes_the_next_message_once() {
+        assert_eq!(
+            with_undo_note(Some("[undo] code restored to turn 1".into()), "carry on".into()),
+            "[undo] code restored to turn 1\n\ncarry on"
+        );
+        assert_eq!(with_undo_note(None, "carry on".into()), "carry on");
     }
 
     #[test]

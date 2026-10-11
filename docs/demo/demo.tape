@@ -40,12 +40,7 @@ Type "/undo" Enter
 Sleep 3s
 
 Type "/undo 1" Enter
-Sleep 4s
-# Every undo also tells the model what changed, so it answers; wait that out.
-Hide
-Sleep 30s
-Show
-Sleep 1s
+Sleep 3s
 
 Type "!git diff --stat" Enter
 Sleep 4s

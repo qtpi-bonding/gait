@@ -259,6 +259,7 @@ pub async fn run_chat(
             model_override: model_override.clone(),
             last_blocks: Vec::new(),
             ran_turn: false,
+            undo_note: None,
         };
 
         // Drive the interactive REPL session through the shared sealed-turn
