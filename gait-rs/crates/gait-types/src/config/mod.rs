@@ -7,11 +7,16 @@ pub mod resolver;
 
 pub use resolver::{ConfigResolver, Overrides};
 
+/// A config-defined shell-command tool exposed to the model.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ConfigTool {
+    /// Name used to invoke the tool.
     pub name: String,
+    /// Description shown to the model.
     pub description: String,
+    /// Shell command to run.
     pub cmd: String,
+    /// Working directory for the command; defaults to `codebase`.
     #[serde(default = "default_cwd")]
     pub cwd: String,
 }
@@ -87,16 +92,15 @@ pub struct WasmPluginDef {
     #[serde(default)]
     pub allow_fs: Vec<String>,
 }
-/// One entry in the `gait.jsonc` `"hooks"` array.
-/// `event` is the lifecycle point: "pre_turn" | "pre_step" | "post_step" | "pre_tool" | "post_tool" | "post_turn".
-/// `tool` filters to a specific tool name (pre_tool / post_tool only); absent means all tools.
-/// `run` is a shell command. All `GAIT_*` env vars are set before execution — see docs/hooks.md.
-
+/// One entry in the `gait.jsonc` `"hooks"` array, running a shell command at a lifecycle event.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HookDef {
+    /// Lifecycle event: `pre_turn`, `pre_step`, `post_step`, `pre_tool`, `post_tool`, or `post_turn`.
     pub event: String,
+    /// Optional tool-name filter, applicable to `pre_tool` and `post_tool`; absent means all tools.
     #[serde(default)]
     pub tool: Option<String>,
+    /// Shell command to run; all `GAIT_*` environment variables are set before execution.
     pub run: String,
 }
 
@@ -167,7 +171,7 @@ impl serde::Serialize for NetworkConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SandboxConfig {
     /// Whether the sandbox is engaged. Default: true (strict).
     #[serde(default = "default_true")]
@@ -178,8 +182,9 @@ pub struct SandboxConfig {
     /// Paths the sandbox allows writing to.
     #[serde(default)]
     pub writable: Vec<String>,
-    /// Network policy applied to sandboxed processes.
+    /// Network policy applied to sandboxed processes: `false`/`off` disables, `*` allows all, or an array of hostnames.
     #[serde(default)]
+    #[schemars(with = "serde_json::Value")]
     pub network: NetworkConfig,
     /// Shell-only command patterns pre-authorized for extra sandbox scope.
     /// Grants may also include `unsandbox` to run the matching hand without its
@@ -215,7 +220,7 @@ pub struct SandboxConfig {
 /// enumerate without parsing shell syntax. Populating this list is real and
 /// effective for `read`/`write`/`apply_patch`; don't assume it's a hard
 /// kernel-level boundary or that it covers `shell`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DenyConfig {
     /// Patterns denied within the read scope. This list IS the effective list —
     /// no hidden merge with built-in defaults once present in a user's config.
@@ -235,21 +240,29 @@ impl Default for DenyConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// A shell command pattern and the extra sandbox scope it grants when matched.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SandboxWhitelistEntry {
+    /// Shell command pattern to match.
     pub pattern: String,
+    /// Extra scope granted by a match, e.g. `network`; `unsandbox` runs the matching hand without its kernel seal.
     #[serde(default)]
     pub grants: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Per-tool overrides for the built-in sandbox access floor.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ToolAccessOverride {
+    /// Override whether this tool may read when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reads: Option<bool>,
+    /// Override whether this tool may write when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub writes: Option<bool>,
+    /// Override whether this tool may use the network when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<bool>,
+    /// Override whether this tool may use local bind when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_bind: Option<bool>,
 }
@@ -461,12 +474,7 @@ pub struct GaitConfig {
     /// Sandbox policy for shell/process/file execution. Strict-by-default
     /// (`on: true`, empty allow-lists, network off) so that engagement is
     /// safe unless the user explicitly opts in.
-    // `SandboxConfig` embeds `NetworkConfig`, whose custom (de)serialize isn't
-    // schema-derivable — represent it as opaque JSON for manual-generation
-    // purposes; the field's own doc comment above still becomes its schema
-    // `description`, which is all `render_config_fields` reads.
     #[serde(default)]
-    #[schemars(with = "serde_json::Value")]
     pub sandbox: SandboxConfig,
 }
 
@@ -699,3 +707,41 @@ pub fn append_sandbox_network_host(gait_dir: &Path, host: &str) -> anyhow::Resul
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod schema_tests {
+    use super::GaitConfig;
+
+    #[test]
+    fn nested_config_schema_documents_every_sandbox_field() {
+        let schema = schemars::schema_for!(GaitConfig);
+
+        for type_name in [
+            "SandboxConfig",
+            "DenyConfig",
+            "ConfigTool",
+            "HookDef",
+            "SandboxWhitelistEntry",
+            "ToolAccessOverride",
+        ] {
+            let definition = schema
+                .definitions
+                .get(type_name)
+                .unwrap_or_else(|| panic!("missing schema definition for {type_name}"));
+            let definition = serde_json::to_value(definition).expect("schema definition JSON");
+            let properties = definition
+                .get("properties")
+                .and_then(serde_json::Value::as_object)
+                .unwrap_or_else(|| panic!("missing properties for {type_name}"));
+            for (field_name, field) in properties {
+                assert!(
+                    field
+                        .get("description")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some(),
+                    "missing description for {type_name}.{field_name}"
+                );
+            }
+        }
+    }
+}

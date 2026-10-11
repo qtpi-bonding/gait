@@ -1569,6 +1569,7 @@ dependencies = [
  "gait-proto",
  "gait-repl",
  "gait-state",
+ "gait-types",
  "gait-workflow",
  "git2",
  "pbjson-types",

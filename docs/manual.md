@@ -537,16 +537,38 @@ List, load, or unload skills/mcp/plugins
 - `allow` — Tool-name / pattern allowlist.
 - `deny` — Tool-name / pattern denylist.
 - `hooks` — Lifecycle hook definitions (event, tool filter, shell command).
+- `hooks[].event` — Lifecycle event: `pre_turn`, `pre_step`, `post_step`, `pre_tool`, `post_tool`, or `post_turn`.
+- `hooks[].run` — Shell command to run; all `GAIT_*` environment variables are set before execution.
+- `hooks[].tool` — Optional tool-name filter, applicable to `pre_tool` and `post_tool`; absent means all tools.
 - `inference` — The selected model, e.g. "anthropic/claude-sonnet-4-6".
 - `max_iter` — Max turn iterations before giving up. Defaults to 100 when absent.
 - `output_schema_retries` — Max retries when an LLM result fails output_schema validation.
 - `preview` — When to render edit/write previews. Defaults to on-ask.
 - `result_schema` — JSON Schema that `result` in `structured_done` must conform to. If set, harness validates and retries on mismatch (up to output_schema_retries).
 - `sandbox` — Sandbox policy for shell/process/file execution. Strict-by-default (`on: true`, empty allow-lists, network off) so that engagement is safe unless the user explicitly opts in.
+- `sandbox.deny` — Deny patterns layered inside `readable`/`writable`. Present in a user's `gait.jsonc` (scaffolded by `gait init`), authoritative once there — see spec §3. Missing sub-fields (not present at all, distinct from an empty array) fall back to `default_deny_patterns()` via the function-based serde default above.
+- `sandbox.deny.read` — Patterns denied within the read scope. This list IS the effective list — no hidden merge with built-in defaults once present in a user's config.
+- `sandbox.deny.write` — Patterns denied within the write scope.
+- `sandbox.network` — Network policy applied to sandboxed processes: `false`/`off` disables, `*` allows all, or an array of hostnames.
+- `sandbox.on` — Whether the sandbox is engaged. Default: true (strict).
+- `sandbox.readable` — Paths the sandbox allows reading from.
+- `sandbox.shell_whitelist` — Shell-only command patterns pre-authorized for extra sandbox scope. Grants may also include `unsandbox` to run the matching hand without its kernel seal; the brain remains sandboxed. Only `shell` tool calls are ever checked against this list — see `whitelist_match` in gait-state::permissions::matching.
+- `sandbox.shell_whitelist[].grants` — Extra scope granted by a match, e.g. `network`; `unsandbox` runs the matching hand without its kernel seal.
+- `sandbox.shell_whitelist[].pattern` — Shell command pattern to match.
+- `sandbox.tools` — Per-tool overrides of the built-in sandbox floor (see `gait_sandbox::ceiling::access_for_tool` for the defaults each tool gets when not listed here). Unset fields on an entry keep the built-in default for that dimension.
+- `sandbox.tools.<name>.local_bind` — Override whether this tool may use local bind when set.
+- `sandbox.tools.<name>.network` — Override whether this tool may use the network when set.
+- `sandbox.tools.<name>.reads` — Override whether this tool may read when set.
+- `sandbox.tools.<name>.writes` — Override whether this tool may write when set.
+- `sandbox.writable` — Paths the sandbox allows writing to.
 - `shell_timeout_secs` — Wall-clock timeout (seconds) for a foreground `shell` command. On expiry the command's process subtree is SIGKILLed and the tool returns exit 124 with a nudge to use `detached:true`. User-set only; the agent never picks it.
 - `show_thinking` — Whether to render thinking/reasoning blocks in the terminal output. This is a pure UI preference — ThinkingBlock events are ALWAYS written to the session log regardless of this flag. Default: false.
 - `tool_timeout_secs` — Wall-clock timeout (seconds) for a single ripgrep subprocess invocation backed by grep/codesearch/ls. On expiry the tool returns an error result instead of blocking the turn on a hung `rg` process — the same unbounded-subprocess risk `shell_timeout_secs` guards against, so it shares that default. NOT sized to preempt the spine's watchdog: the watchdog's phase-duration cap is already suppressed while tools are running (see `SpinePhase::HandsPhase` in `watchdog_breach`, `turn/spine.rs`) and its only live check during a tool call is brain ping-liveness, which is unaffected by how long a tool takes. User-set only; the agent never picks it.
 - `tools` — Config-defined shell-command tools.
+- `tools[].cmd` — Shell command to run.
+- `tools[].cwd` — Working directory for the command; defaults to `codebase`.
+- `tools[].description` — Description shown to the model.
+- `tools[].name` — Name used to invoke the tool.
 
 ### Inference profile: `inferences/<name>/inference.textproto`
 
@@ -639,3 +661,20 @@ Review the code. Do not edit files.
 - `inference` (string) — named inference profile to call (an inference.textproto entry)
 - `risk_threshold` (double) — deny if any *_risk noul >= this value
 - `max_consecutive_denials` (uint32) — circuit breaker: stop trusting the classifier and fall back to a real pause after this many denials in a row this turn
+
+### Agent file: `agents/<name>/AGENT.md`
+
+YAML frontmatter, then the markdown body (the agent's role prompt).
+
+- `inference` — Name of an inference profile the agent runs with.
+- `mcp` — Whitelist of registered MCP servers the agent may see (default-deny: absent means none).
+- `plugins` — Whitelist of registered plugins the agent may see (default-deny: absent means none).
+- `skills` — Whitelist of registered skills the agent may see (default-deny: absent means none).
+
+### Skill file: `skills/<name>/SKILL.md`
+
+YAML frontmatter, then the markdown body (the skill's instructions; a skill with an empty body is ignored).
+
+- `description` — Description shown to the model.
+- `model_invocable` — Whether the model may invoke this skill; omitted values default to true.
+- `name` — Required non-empty skill name.

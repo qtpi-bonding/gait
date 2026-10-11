@@ -56,6 +56,7 @@ local = [
 
 [dependencies]
 gait-core = { path = "../.." }
+gait-types = { path = "../gait-types" }
 gait-llama-cpp = { path = "../gait-llama-cpp", optional = true }
 gait-workflow = { path = "../gait-workflow", optional = true }
 gait-repl = { path = "../gait-repl", default-features = false }

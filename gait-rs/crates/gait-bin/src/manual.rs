@@ -64,24 +64,86 @@ fn requires_met(requires: &[&str], flavor: ManualFlavor) -> bool {
 /// for the one thing a schema can't carry (capability gating).
 fn render_config_fields(out: &mut String, flavor: ManualFlavor) {
     out.push_str("\n### Config fields\n\n");
-    let schema = schemars::schema_for!(gait_core::config::GaitConfig);
-    let object = schema
-        .schema
-        .object
-        .as_ref()
-        .expect("GaitConfig derives JsonSchema as an object schema");
-    for (name, subschema) in &object.properties {
-        if !requires_met(config_field_requires(name), flavor) {
+    let schema = schema_json(&schemars::schema_for!(gait_core::config::GaitConfig));
+    render_schema_fields(out, &schema, &schema, "", &|name| {
+        requires_met(config_field_requires(name), flavor)
+    });
+}
+
+fn schema_json(schema: &schemars::schema::RootSchema) -> serde_json::Value {
+    serde_json::to_value(schema).expect("schema serializes to JSON")
+}
+
+/// The definition a schema node refers to, plus the path suffix that reaches
+/// its fields from the node (`[]` for array items, `.<key>` for map values).
+fn schema_target<'a>(
+    root: &'a serde_json::Value,
+    node: &'a serde_json::Value,
+) -> Option<(&'a serde_json::Value, &'static str)> {
+    if let Some(r) = node.get("$ref").and_then(|r| r.as_str()) {
+        let name = r.strip_prefix("#/definitions/")?;
+        return Some((root.get("definitions")?.get(name)?, ""));
+    }
+    for key in ["allOf", "anyOf", "oneOf"] {
+        if let Some(found) = node
+            .get(key)
+            .and_then(|v| v.as_array())
+            .and_then(|items| items.iter().find_map(|i| schema_target(root, i)))
+        {
+            return Some(found);
+        }
+    }
+    if let Some(items) = node.get("items") {
+        return schema_target(root, items).map(|(d, _)| (d, "[]"));
+    }
+    if let Some(extra) = node.get("additionalProperties") {
+        return schema_target(root, extra).map(|(d, _)| (d, ".<name>"));
+    }
+    None
+}
+
+/// Print one bullet per property of `node` (an object schema) with its doc
+/// comment, then recurse into object-typed properties under a dotted path.
+/// Descriptions are the Rust doc comments of the derived `JsonSchema` types.
+fn render_schema_fields(
+    out: &mut String,
+    root: &serde_json::Value,
+    node: &serde_json::Value,
+    prefix: &str,
+    visible: &dyn Fn(&str) -> bool,
+) {
+    let Some(props) = node.get("properties").and_then(|p| p.as_object()) else {
+        return;
+    };
+    for (name, sub) in props {
+        if prefix.is_empty() && !visible(name) {
             continue;
         }
-        let desc = subschema
-            .clone()
-            .into_object()
-            .metadata
-            .and_then(|m| m.description)
+        let desc = sub
+            .get("description")
+            .and_then(|d| d.as_str())
             .unwrap_or_default();
-        let _ = writeln!(out, "- `{name}` — {desc}");
+        let path = format!("{prefix}{name}");
+        let _ = writeln!(out, "- `{path}` — {desc}");
+        if let Some((def, suffix)) = schema_target(root, sub) {
+            render_schema_fields(out, root, def, &format!("{path}{suffix}."), &|_| true);
+        }
     }
+}
+
+fn render_markdown_file_formats(out: &mut String) {
+    out.push_str("\n### Agent file: `agents/<name>/AGENT.md`\n\n");
+    out.push_str("YAML frontmatter, then the markdown body (the agent's role prompt).\n\n");
+    let agent = schema_json(&schemars::schema_for!(
+        gait_types::frontmatter::AgentFrontmatter
+    ));
+    render_schema_fields(out, &agent, &agent, "", &|_| true);
+    out.push_str("\n### Skill file: `skills/<name>/SKILL.md`\n\n");
+    out.push_str("YAML frontmatter, then the markdown body (the skill's instructions; a skill with an empty body is ignored).\n\n");
+    let skill = schema_json(&schemars::schema_for!(
+        gait_types::frontmatter::SkillFrontmatter
+    ));
+    render_schema_fields(out, &skill, &skill, "", &|_| true);
 }
 
 /// One authored file format, rendered from its proto message: the field list
@@ -327,6 +389,7 @@ fn render_manual_with_manifest(
     }
     render_config_fields(&mut body, flavor);
     render_file_formats(&mut body, flavor);
+    render_markdown_file_formats(&mut body);
     while body.ends_with('\n') {
         body.pop();
     }
@@ -502,6 +565,23 @@ mod tests {
             cli,
             repl_commands: COMMANDS,
             flavor: ManualFlavor::Full,
+        }
+    }
+
+    #[cfg(feature = "full")]
+    #[test]
+    fn manual_documents_nested_config_and_markdown_frontmatter() {
+        let rendered = render_manual(full_input(crate::cli())).unwrap();
+        for needle in [
+            "`sandbox.deny.read`",
+            "`sandbox.shell_whitelist[].pattern`",
+            "`sandbox.tools.<name>.reads`",
+            "`hooks[].event`",
+            "### Agent file: `agents/<name>/AGENT.md`",
+            "`skills` —",
+            "`model_invocable` —",
+        ] {
+            assert!(rendered.contains(needle), "manual is missing {needle}");
         }
     }
 

@@ -1,5 +1,6 @@
 use crate::agent_frontmatter::split_frontmatter;
 use crate::config::SkillDef;
+use gait_types::frontmatter::SkillFrontmatter;
 use std::path::Path;
 
 /// Scan `<gait_dir>/skills/*/SKILL.md` and return one `SkillDef` per valid file.
@@ -49,22 +50,14 @@ fn parse_skill_file(path: &Path) -> Option<SkillDef> {
     if fm.is_empty() {
         return None;
     }
-    let yaml: serde_yaml::Value = serde_yaml::from_str(fm).ok()?;
-    let name = yaml
-        .get("name")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())?
-        .to_string();
-    let description = yaml
-        .get("description")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    let frontmatter = SkillFrontmatter::parse(fm)?;
+    let name = (!frontmatter.name.is_empty()).then_some(frontmatter.name)?;
+    let description = frontmatter.description;
     let body = body.trim_end().to_string();
     if body.is_empty() {
         return None;
     }
-    let model_invocable = match yaml.get("model_invocable") {
+    let model_invocable = match frontmatter.model_invocable {
         None => true,
         Some(v) => match v.as_bool() {
             Some(b) => b,

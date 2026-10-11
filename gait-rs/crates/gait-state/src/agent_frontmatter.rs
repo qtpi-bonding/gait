@@ -1,3 +1,4 @@
+use gait_types::frontmatter::AgentFrontmatter;
 use std::path::PathBuf;
 
 const FENCE: &str = "---";
@@ -11,8 +12,7 @@ pub fn read_agent_skills(path: PathBuf) -> anyhow::Result<Vec<String>> {
     if fm.is_empty() {
         return Ok(vec![]);
     }
-    let yaml: serde_yaml::Value = serde_yaml::from_str(fm).unwrap_or(serde_yaml::Value::Null);
-    Ok(extract_string_list(&yaml, "skills"))
+    Ok(AgentFrontmatter::parse(fm).skills)
 }
 
 /// Parse the YAML frontmatter from an agent .md file and return the `mcp`
@@ -23,8 +23,7 @@ pub fn read_agent_mcp(path: PathBuf) -> anyhow::Result<Vec<String>> {
     if fm.is_empty() {
         return Ok(vec![]);
     }
-    let yaml: serde_yaml::Value = serde_yaml::from_str(fm).unwrap_or(serde_yaml::Value::Null);
-    Ok(extract_string_list(&yaml, "mcp"))
+    Ok(AgentFrontmatter::parse(fm).mcp)
 }
 
 /// Parse the YAML frontmatter from an agent .md file and return the `plugins`
@@ -36,8 +35,7 @@ pub fn read_agent_plugins(path: PathBuf) -> anyhow::Result<Vec<String>> {
     if fm.is_empty() {
         return Ok(vec![]);
     }
-    let yaml: serde_yaml::Value = serde_yaml::from_str(fm).unwrap_or(serde_yaml::Value::Null);
-    Ok(extract_string_list(&yaml, "plugins"))
+    Ok(AgentFrontmatter::parse(fm).plugins)
 }
 
 /// Read the optional named inference reference from an agent's frontmatter.
@@ -47,10 +45,7 @@ pub fn read_agent_inference(path: &std::path::Path) -> Option<String> {
     if fm.is_empty() {
         return None;
     }
-    let yaml: serde_yaml::Value = serde_yaml::from_str(fm).ok()?;
-    yaml.get("inference")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+    AgentFrontmatter::parse(fm).inference
 }
 
 /// Return the markdown body of an agent file (everything after the frontmatter).
@@ -116,17 +111,6 @@ pub fn split_frontmatter(content: &str) -> (&str, &str) {
     } else {
         ("", content)
     }
-}
-
-fn extract_string_list(yaml: &serde_yaml::Value, key: &str) -> Vec<String> {
-    yaml.get(key)
-        .and_then(|v| v.as_sequence())
-        .map(|seq| {
-            seq.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
