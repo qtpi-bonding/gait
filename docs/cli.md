@@ -102,7 +102,7 @@ See [docs/repl.md](repl.md).
 | `gait persist [<id> | --all] --gait-dir <path> [--yes] [--json]` | Merge a session's worktree onto `main` and tear down its `.active/` mount. `--all` persists every idle session. |
 | `gait discard [<id> | --all] --gait-dir <path> [--yes] [--force] [--json]` | Tear down a session **without** merging — the inverse of `persist`, unrecoverable. `discard --all` always prints the full list of sessions it would discard first; if more than one is eligible, it then refuses unless `--force` is also passed (`--yes` alone only skips the interactive y/N prompt, it is not a bulk acknowledgment). |
 | `gait stop <id> --gait-dir <path> [--json]` | **Currently a stub** — prints "stop not yet implemented" and exits 1. |
-| `gait undo <id> [--turn N | --list] [--code] [--transcript] --gait-dir <path> [--json]` | Restore the codebase, the transcript, or both to a past turn. `--list` prints all turns with checkpoint SHAs. Without `--turn`, defaults to the last turn. |
+| `gait undo <id> [--turn N | --list] [--code] [--transcript] --gait-dir <path> [--json]` | Restore the codebase, the transcript, or both to a past turn. `--list` prints all turns with checkpoint SHAs. `--turn N` (required unless `--list`) restores to the checkpoint at the end of turn N; turn 0 is not accepted. |
 | `gait stats <id> --gait-dir <path> [--json]` | Print token usage (`input`, `output`, `cache_read`, `cache_write`, `total`). |
 | `gait reply <id> <message> --gait-dir <path> [--json]` | Answer a pending clarify/inform exchange from outside a running session. |
 

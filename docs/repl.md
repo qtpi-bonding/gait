@@ -42,9 +42,11 @@ Source of truth: `crates/gait-repl/src/repl/commands.rs::COMMANDS`. The REPL and
 
 | Command | What it does |
 |---|---|
-| `/undo` (`/u`) | Undo the last turn (code + transcript). |
-| `/uc` | Undo checkpoint (code only). |
-| `/ut` | Undo turn (transcript only). |
+| `/undo [N]` (`/u`) | Restore code and transcript to the end of turn N. With no N, list the turns and change nothing. |
+| `/uc [N]` | Restore code only to the end of turn N. |
+| `/ut [N]` | Restore transcript only to the end of turn N. |
+
+Turn N is the state after that turn finished, so `/undo 2` after three turns rolls back turn 3. The first turn cannot be rolled back to the state before it.
 
 ### External authentication
 
