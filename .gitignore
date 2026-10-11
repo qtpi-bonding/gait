@@ -14,28 +14,50 @@ tmp/
 # Competitive research scratch (not tracked)
 competitive-research/
 
-# Internal AI planning / workflow docs — kept out of the public tree.
-# (architecture.md and embedding.md under gait-rs/docs/ ARE tracked.)
-docs/superpowers/
-docs/plans/
-docs/specs/
-docs/feedback/
-docs/notes/
-gait-rs/docs/plans/
-gait-rs/docs/specs/
-gait-rs/docs/superpowers/
+# Internal design / planning / research docs — kept out of the public tree, at
+# any depth. (architecture.md, embedding.md and the other reference docs under
+# docs/ and gait-rs/docs/ ARE tracked; add new public docs by name.)
+**/superpowers/
+**/plans/
+**/specs/
+**/design/
+**/designs/
+**/rfcs/
+**/notes/
+**/feedback/
+**/brainstorm*/
+**/scratch/
 
 # Subagent-driven-development scratch ledgers (briefs/reports/progress).
 .superpowers/
 
-# Claude Code / AI assistant artifacts — kept local, never committed.
-# Solo project: the whole .claude/ workspace stays out of the tree. If you ever
-# want to share config with contributors, un-ignore specific files below,
-# e.g. add `!.claude/settings.json` or `!.claude/commands/`.
+# AI assistant artifacts and instruction files — kept local, never committed.
 .claude/
 CLAUDE.md
 CLAUDE.local.md
 AGENTS.md
 GEMINI.md
+.gemini/
+.codex/
+.cursor/
+.cursorrules
+.windsurf/
+.windsurfrules
+.aider*
+.continue/
+.cline/
+.clinerules
+.roo/
+.roomodes
+.github/copilot-instructions.md
 .mcp.json
 Makefile.local
+
+# Local environment and editor noise.
+.env
+.env.*
+!.env.example
+.DS_Store
+.idea/
+.vscode/
+*.swp
