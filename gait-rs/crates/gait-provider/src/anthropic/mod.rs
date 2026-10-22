@@ -170,21 +170,27 @@ impl Provider for AnthropicProvider {
 
         let want_strict =
             self.resolve_strict(params.anthropic.as_ref().and_then(|a| a.strict_tools));
+        const MAX_ANTHROPIC_STRICT_TOOLS: usize = 20;
+        let mut strict_tool_count = 0;
         let mut oai_tools: Vec<AnthropicTool> = tools
             .iter()
             .map(|t| {
                 let base = t.parameters().clone();
-                let (schema, strict) = if want_strict {
-                    match crate::strict::to_strict_schema(
-                        &base,
-                        crate::strict::StrictDialect::Anthropic,
-                    ) {
-                        Some(s) => (s, Some(true)),
-                        None => (base, None), // un-strictifiable tool falls back individually
-                    }
-                } else {
-                    (base, None)
-                };
+                let (schema, strict) =
+                    if want_strict && strict_tool_count < MAX_ANTHROPIC_STRICT_TOOLS {
+                        match crate::strict::to_strict_schema(
+                            &base,
+                            crate::strict::StrictDialect::Anthropic,
+                        ) {
+                            Some(s) => {
+                                strict_tool_count += 1;
+                                (s, Some(true))
+                            }
+                            None => (base, None), // un-strictifiable tool falls back individually
+                        }
+                    } else {
+                        (base, None)
+                    };
                 AnthropicTool {
                     name: t.name().to_string(),
                     description: gait_types::types::render_description(t.as_ref()),

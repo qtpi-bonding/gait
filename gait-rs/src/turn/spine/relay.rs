@@ -219,8 +219,10 @@ pub async fn relay_brain_turn(
         use crate::session::retrace::{active_inference, active_mutations, apply_cascade};
         let mut muts = active_mutations(&events);
         apply_cascade(&mut muts, &events);
-        if let Some(inference) = active_inference(&events, &muts) {
-            profile.overlay_inference(&inference)?;
+        if !profile_inputs.explicit_inference_override {
+            if let Some(inference) = active_inference(&events, &muts) {
+                profile.overlay_inference(&inference)?;
+            }
         }
     }
     let credential_lease = crate::auth::resolve_credential_lease_result(

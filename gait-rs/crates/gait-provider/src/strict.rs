@@ -4,7 +4,8 @@
 //!
 //! Why per-dialect: OpenAI strict requires every property in `required`
 //! (optionals expressed as `["T","null"]`) and rejects `format`; Anthropic
-//! strict allows real optionals and keeps `format`. Both reject
+//! strict allows real optionals and supports a subset of `format` values, but
+//! rejects several schema constraints. Both reject
 //! `$ref`/`anyOf`/`oneOf`/`allOf` — and our schemas are already `$ref`-free
 //! via `make_schema`'s `inline_subschemas`.
 
@@ -22,17 +23,74 @@ pub fn to_strict_schema(base: &Value, dialect: StrictDialect) -> Option<Value> {
     if contains_unsupported(base) {
         return None;
     }
+    if dialect == StrictDialect::Anthropic && contains_anthropic_open_object(base) {
+        // Strict Anthropic schemas require additionalProperties:false on every
+        // object. An object with no declared properties is an open map; don't
+        // close it because that would change its meaning. Send this tool plain.
+        return None;
+    }
     if base.get("type").and_then(|t| t.as_str()) != Some("object") {
         return None; // strict tool input must be an object at the root
     }
     Some(transform(base, dialect))
 }
 
+/// Find schemas Anthropic strict can't represent without changing their
+/// meaning: open objects and property schemas with no concrete JSON type.
+fn contains_anthropic_open_object(v: &Value) -> bool {
+    let Value::Object(map) = v else { return false };
+    let schema_type = map.get("type").and_then(Value::as_str);
+    if (map.contains_key("properties") && schema_type != Some("object"))
+        || (map.contains_key("items") && schema_type != Some("array"))
+    {
+        // JSON Schema keywords are annotations when their matching type isn't
+        // declared. Strict transformation would otherwise narrow the schema.
+        return true;
+    }
+    if schema_type == Some("object") {
+        let has_properties = map.contains_key("properties");
+        let additional_properties = map.get("additionalProperties");
+        if (has_properties && additional_properties != Some(&Value::Bool(false)))
+            || (!has_properties && additional_properties.and_then(Value::as_bool) != Some(false))
+        {
+            return true;
+        }
+    }
+    if !map.keys().any(|key| {
+        matches!(
+            key.as_str(),
+            "type"
+                | "properties"
+                | "items"
+                | "enum"
+                | "const"
+                | "$ref"
+                | "anyOf"
+                | "oneOf"
+                | "allOf"
+        )
+    }) {
+        // Annotation-only schemas (e.g. schemars' `Option<serde_json::Value>`)
+        // are not concrete input types for Anthropic strict mode.
+        return true;
+    }
+    if let Some(Value::Object(props)) = map.get("properties") {
+        if props.values().any(contains_anthropic_open_object) {
+            return true;
+        }
+    }
+    if let Some(items) = map.get("items") {
+        if contains_anthropic_open_object(items) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Keywords schemars emits that OpenAI strict does NOT accept and that we
 /// don't need for our goal (preventing type/format violations). Notably
 /// `format:"uint64"` is emitted on EVERY unsigned-integer field, and `minimum`
-/// on unsigned ints — both must be stripped for OpenAI. Conservative denylist;
-/// re-confirm against the live API during T6. (Anthropic keeps all of these.)
+/// on unsigned ints — both must be stripped for OpenAI.
 const OPENAI_STRIP_KEYWORDS: &[&str] = &[
     "format",
     "minimum",
@@ -44,6 +102,46 @@ const OPENAI_STRIP_KEYWORDS: &[&str] = &[
     "maxLength",
     "pattern",
 ];
+
+/// Constraints unsupported by Anthropic strict tool schemas. The local tool
+/// schema remains unchanged, so runtime deserialization/validation is intact.
+const ANTHROPIC_STRIP_KEYWORDS: &[&str] = &[
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "multipleOf",
+    "minLength",
+    "maxLength",
+    "maxItems",
+    "uniqueItems",
+    "contains",
+    "minContains",
+    "maxContains",
+    "pattern",
+];
+
+const ANTHROPIC_SUPPORTED_FORMATS: &[&str] = &[
+    "date-time",
+    "time",
+    "date",
+    "duration",
+    "email",
+    "hostname",
+    "uri",
+    "ipv4",
+    "ipv6",
+    "uuid",
+];
+
+fn anthropic_keyword_is_unsupported(keyword: &str, value: &Value) -> bool {
+    ANTHROPIC_STRIP_KEYWORDS.contains(&keyword)
+        || (keyword == "minItems" && value.as_u64().is_some_and(|count| count > 1))
+        || (keyword == "format"
+            && !value
+                .as_str()
+                .is_some_and(|format| ANTHROPIC_SUPPORTED_FORMATS.contains(&format)))
+}
 
 /// Reject schemas with constructs neither provider can constrain. Position-
 /// aware: only a *property value* or `items` that is a bare bool/`{}` is
@@ -86,8 +184,11 @@ fn transform(v: &Value, dialect: StrictDialect) -> Value {
             let mut out = Map::new();
             let has_props = map.contains_key("properties");
             for (k, val) in map {
-                if dialect == StrictDialect::OpenAi && OPENAI_STRIP_KEYWORDS.contains(&k.as_str()) {
-                    continue; // strip keyword OpenAI strict rejects
+                if (dialect == StrictDialect::OpenAi && OPENAI_STRIP_KEYWORDS.contains(&k.as_str()))
+                    || (dialect == StrictDialect::Anthropic
+                        && anthropic_keyword_is_unsupported(k, val))
+                {
+                    continue; // strip keyword/format unsupported by this strict dialect
                 }
                 out.insert(k.clone(), transform(val, dialect));
             }
@@ -198,6 +299,7 @@ mod tests {
     fn anthropic_keeps_optionals_and_format() {
         let base = json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "city": {"type": "string"},
                 "when": {"type": "string", "format": "date"}
@@ -208,6 +310,129 @@ mod tests {
         assert_eq!(out["additionalProperties"], json!(false));
         assert_eq!(out["required"], json!(["city"])); // optional stays optional
         assert_eq!(out["properties"]["when"]["format"], json!("date")); // format kept
+    }
+
+    #[test]
+    fn anthropic_strips_unsupported_numeric_and_string_constraints() {
+        let base = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "offset": {
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0.0
+                },
+                "label": {"type": "string", "minLength": 1, "maxLength": 20}
+            },
+            "required": ["offset"]
+        });
+        let out = to_strict_schema(&base, StrictDialect::Anthropic).unwrap();
+        assert_eq!(out["properties"]["offset"]["type"], json!("integer"));
+        assert!(out["properties"]["offset"].get("format").is_none());
+        assert!(out["properties"]["offset"].get("minimum").is_none());
+        assert!(out["properties"]["label"].get("minLength").is_none());
+        assert!(out["properties"]["label"].get("maxLength").is_none());
+    }
+
+    #[test]
+    fn anthropic_falls_back_for_open_object_schemas() {
+        let base = json!({
+            "type": "object",
+            "properties": {
+                "parse": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "description": "An operation with provider-defined keys"
+                    }
+                }
+            },
+            "required": ["parse"]
+        });
+        assert!(to_strict_schema(&base, StrictDialect::Anthropic).is_none());
+
+        for additional_properties in [json!(true), json!({ "type": "string" })] {
+            let base = json!({
+                "type": "object",
+                "properties": {"meta": {"type": "object", "properties": {"x": {"type": "string"}},
+                    "additionalProperties": additional_properties}},
+                "required": ["meta"]
+            });
+            assert!(to_strict_schema(&base, StrictDialect::Anthropic).is_none());
+        }
+
+        let base = json!({
+            "type": "object",
+            "properties": {"meta": {"type": "object", "properties": {"x": {"type": "string"}}}},
+            "required": ["meta"]
+        });
+        assert!(to_strict_schema(&base, StrictDialect::Anthropic).is_none());
+    }
+
+    #[test]
+    fn anthropic_falls_back_for_untyped_property_schemas() {
+        let base = json!({
+            "type": "object",
+            "properties": {
+                "result": {"description": "Arbitrary structured result"}
+            },
+            "required": ["result"]
+        });
+        assert!(to_strict_schema(&base, StrictDialect::Anthropic).is_none());
+    }
+
+    #[test]
+    fn anthropic_falls_back_when_properties_or_items_lack_matching_type() {
+        for child in [
+            json!({"properties": {"x": {"type": "string"}}, "additionalProperties": false}),
+            json!({"items": {"type": "string"}}),
+        ] {
+            let base = json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {"value": child},
+                "required": ["value"]
+            });
+            assert!(to_strict_schema(&base, StrictDialect::Anthropic).is_none());
+        }
+    }
+
+    #[test]
+    fn anthropic_strips_unsupported_array_constraints_and_formats() {
+        let base = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {"type": "string", "pattern": "^x"},
+                    "minItems": 2,
+                    "maxItems": 8,
+                    "uniqueItems": true,
+                    "contains": {"type": "string"},
+                    "minContains": 1,
+                    "maxContains": 4
+                },
+                "id": {"type": "string", "format": "uint32"},
+                "optional": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1
+                }
+            },
+            "required": ["items", "id", "optional"]
+        });
+        let out = to_strict_schema(&base, StrictDialect::Anthropic).unwrap();
+        assert!(out["properties"]["items"].get("minItems").is_none());
+        assert!(out["properties"]["items"].get("maxItems").is_none());
+        assert!(out["properties"]["items"].get("uniqueItems").is_none());
+        assert!(out["properties"]["items"].get("contains").is_none());
+        assert!(out["properties"]["items"].get("minContains").is_none());
+        assert!(out["properties"]["items"].get("maxContains").is_none());
+        assert!(out["properties"]["items"]["items"].get("pattern").is_none());
+        assert!(out["properties"]["id"].get("format").is_none());
+        assert_eq!(out["properties"]["optional"]["minItems"], json!(1));
     }
 
     #[test]
@@ -317,8 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn does_not_set_additional_properties_on_schemaless_object() {
-        // an object with no `properties` key (free-form map) must be left untouched for Anthropic
+    fn anthropic_falls_back_for_free_form_map_objects() {
         let base = json!({
             "type": "object",
             "properties": {
@@ -326,10 +550,6 @@ mod tests {
             },
             "required": ["meta"]
         });
-        let out = to_strict_schema(&base, StrictDialect::Anthropic).unwrap();
-        // meta has no `properties` -> we must NOT force additionalProperties:false (would forbid all keys)
-        assert!(out["properties"]["meta"]
-            .get("additionalProperties")
-            .is_none());
+        assert!(to_strict_schema(&base, StrictDialect::Anthropic).is_none());
     }
 }

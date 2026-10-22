@@ -173,15 +173,25 @@ impl ReplSource {
     /// Short model name: the part after the first `/` in the resolved model string,
     /// e.g. `"anthropic/claude-haiku-..."` → `"claude-haiku-..."`, `"minimax/m3"` → `"m3"`.
     fn active_inference(&self) -> Option<gait_core::proto::gait::log::v1::Inference> {
+        if let Some(name) = self.model_override.as_deref() {
+            return gait_core::inferences::load_inference(&self.gait_dir, name).ok();
+        }
+        if let Some(inference) =
+            gait_core::session::Ingestor::from_session(&self.gait_dir, &self.session_id)
+                .events()
+                .ok()
+                .and_then(|events| {
+                    let mutations = gait_core::session::retrace::active_mutations(&events);
+                    gait_core::session::retrace::active_inference(&events, &mutations)
+                })
+        {
+            return Some(inference);
+        }
         let cfg = gait_core::config::load_config(&self.gait_dir);
-        let base = cfg.inference.unwrap_or_default();
-        gait_core::inferences::load_inference(&self.gait_dir, &base).ok()
+        gait_core::inferences::load_inference(&self.gait_dir, cfg.inference.as_deref()?).ok()
     }
 
     fn model_short(&self) -> String {
-        if let Some(model) = &self.model_override {
-            return status_short_model(model);
-        }
         self.active_inference()
             .map(|i| status_short_model(&i.model))
             .unwrap_or_else(|| "?".into())
