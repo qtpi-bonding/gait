@@ -1,7 +1,7 @@
 use serde_json::{Map, Value};
 use std::fs::{self, File, OpenOptions};
-use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::io::{Error, ErrorKind};
+use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -9,7 +9,6 @@ use crate::auth::AuthError;
 
 pub struct AuthFileLock {
     file: File,
-    path: PathBuf,
 }
 
 impl AuthFileLock {
@@ -19,12 +18,17 @@ impl AuthFileLock {
             .ok_or_else(|| AuthError::NoParent(auth_path.to_owned()))?;
         fs::create_dir_all(parent)?;
         let path = auth_path.with_file_name("auth.lock");
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(file) => {
-                restrict_permissions(&file)?;
-                Ok(Some(Self { file, path }))
-            }
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(None),
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&path)?;
+        match fs2::FileExt::try_lock_exclusive(&file) {
+            Ok(()) => Ok(Some(Self { file })),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => Ok(None),
             Err(error) => Err(error.into()),
         }
     }
@@ -45,21 +49,8 @@ impl AuthFileLock {
 
 impl Drop for AuthFileLock {
     fn drop(&mut self) {
-        let _ = self.file.sync_all();
-        let _ = fs::remove_file(&self.path);
+        let _ = fs2::FileExt::unlock(&self.file);
     }
-}
-
-#[cfg(unix)]
-fn restrict_permissions(file: &File) -> Result<(), AuthError> {
-    use std::os::unix::fs::PermissionsExt;
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn restrict_permissions(_file: &File) -> Result<(), AuthError> {
-    Ok(())
 }
 
 pub fn load_auth_map(path: &Path) -> Result<Map<String, Value>, AuthError> {
@@ -83,21 +74,30 @@ pub fn store_auth_map(path: &Path, map: &Map<String, Value>) -> Result<(), AuthE
         .ok_or_else(|| AuthError::NoParent(path.to_owned()))?;
     fs::create_dir_all(parent)?;
     let temp_path = parent.join(format!(".auth.{}.tmp", std::process::id()));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&temp_path)?;
-    restrict_permissions(&file)?;
-    let bytes = serde_json::to_vec_pretty(map).map_err(|error| AuthError::Corrupt {
-        path: path.to_owned(),
-        detail: error.to_string(),
+    let cleanup_path = temp_path.clone();
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temp_path)?;
+    let bytes = serde_json::to_vec_pretty(map).map_err(|error| {
+        let _ = fs::remove_file(&cleanup_path);
+        AuthError::Io(Error::new(ErrorKind::InvalidData, error))
     })?;
     use std::io::Write;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
+    if let Err(error) = file.write_all(&bytes).and_then(|_| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(&cleanup_path);
+        return Err(error.into());
+    }
     drop(file);
-    fs::rename(&temp_path, path)?;
+    if let Err(error) = fs::rename(&temp_path, path) {
+        let _ = fs::remove_file(&cleanup_path);
+        return Err(error.into());
+    }
     Ok(())
 }
 
@@ -107,8 +107,11 @@ pub fn update_auth_file<T>(
 ) -> Result<T, AuthError> {
     let _lock = AuthFileLock::acquire_blocking(path, Duration::from_secs(30))?;
     let mut map = load_auth_map(path)?;
+    let original = map.clone();
     let result = f(&mut map)?;
-    store_auth_map(path, &map)?;
+    if map != original {
+        store_auth_map(path, &map)?;
+    }
     Ok(result)
 }
 
@@ -196,5 +199,27 @@ mod tests {
         let _first = AuthFileLock::try_acquire(&path).unwrap().unwrap();
         let result = AuthFileLock::acquire_blocking(&path, Duration::from_millis(100));
         assert!(matches!(result, Err(AuthError::LockTimeout)));
+    }
+
+    #[test]
+    fn stale_lock_file_does_not_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        fs::write(dir.path().join("auth.lock"), b"stale").unwrap();
+        assert!(AuthFileLock::try_acquire(&path).unwrap().is_some());
+    }
+
+    #[test]
+    fn failed_store_leaves_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        fs::create_dir(&path).unwrap();
+        let result = store_auth_map(&path, &Map::new());
+        assert!(result.is_err());
+        let files: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(files, vec![std::ffi::OsString::from("auth.json")]);
     }
 }

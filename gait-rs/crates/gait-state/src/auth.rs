@@ -142,9 +142,15 @@ pub fn resolve_credential_lease_with(
         }));
     }
     let map = crate::auth_file::load_auth_map(&auth_path)?;
-    let entry = map
-        .get(provider)
-        .and_then(|value| serde_json::from_value::<AuthEntry>(value.clone()).ok());
+    let entry = match map.get(provider) {
+        Some(value) => Some(
+            serde_json::from_value::<AuthEntry>(value.clone()).map_err(|_| AuthError::Corrupt {
+                path: auth_path.clone(),
+                detail: format!("entry for '{provider}' is invalid"),
+            })?,
+        ),
+        None => None,
+    };
     match entry.as_ref() {
         Some(AuthEntry::External { source, home }) => {
             resolve_external(platform, provider, source, home.as_deref())
@@ -295,9 +301,8 @@ pub fn write_subscription_credential_to(
             account_label: credential.account_label.clone(),
             secret: credential.secret.clone(),
         })
-        .map_err(|error| AuthError::Corrupt {
-            path: path.to_owned(),
-            detail: error.to_string(),
+        .map_err(|error| {
+            AuthError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
         })?;
         data.insert(provider.to_string(), value);
         Ok(())
@@ -331,9 +336,8 @@ pub fn write_external_binding_to(
             source: source.to_string(),
             home: home.map(Path::to_path_buf),
         })
-        .map_err(|error| AuthError::Corrupt {
-            path: path.to_owned(),
-            detail: error.to_string(),
+        .map_err(|error| {
+            AuthError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
         })?;
         data.insert(provider.to_string(), value);
         Ok(())
@@ -813,5 +817,39 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(credential.api_key(), Some("sk-valid"));
+    }
+
+    #[test]
+    fn malformed_entry_for_requested_provider_is_an_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(".gait-home/auth.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "openai": { "type": "api", "key": 42 }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let platform = FakePlatform {
+            home: dir.path().to_path_buf(),
+            env: HashMap::new(),
+        };
+
+        let result = resolve_credential_lease_with(&platform, "openai");
+        assert!(matches!(
+            result,
+            Err(AuthError::Corrupt { path: error_path, detail })
+                if error_path == path && detail.contains("entry for 'openai' is invalid")
+        ));
+    }
+
+    #[test]
+    fn noop_unlink_does_not_create_auth_json() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("auth.json");
+        unlink_external_binding_from(&path, "openai").unwrap();
+        assert!(!path.exists());
     }
 }
