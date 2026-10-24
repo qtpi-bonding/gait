@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 
 pub const SIGNIN_PROVIDER_ID: &str = "openai-signin";
 pub const SIGNIN_METHOD_ID: &str = "chatgpt-signin";
+pub const DYNAMIC_CLIENT_ID: &str = "dynamic_agent_client";
 pub const SCOPES: &str =
     "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct";
 pub const RESOURCE: &str = "https://api.openai.com/v1";
@@ -59,7 +60,7 @@ impl std::fmt::Debug for SignInTokens {
             .field("access_token", &"<redacted>")
             .field("refresh_token", &"<redacted>")
             .field("id_token", &"<redacted>")
-            .field("scopes", &self.scopes)
+            .field("scopes", &"<redacted>")
             .field("expires_at_unix_s", &self.expires_at_unix_s)
             .field(
                 "earliest_refresh_at_unix_s",
@@ -109,7 +110,10 @@ pub fn new_pending(client_id: Option<&str>, host_id: &str, now: u64) -> PendingL
         nonce: random_string(&mut rng),
         code_verifier: random_string(&mut rng),
         redirect_uri: format!("http://127.0.0.1:{port}/auth/callback"),
-        client_id: client_id.unwrap_or("dynamic_agent_client").into(),
+        client_id: client_id
+            .filter(|id| !id.is_empty())
+            .unwrap_or(DYNAMIC_CLIENT_ID)
+            .into(),
         host_id: host_id.into(),
         created_at_unix_s: now,
     }
@@ -131,7 +135,7 @@ pub fn authorization_url(endpoints: &Endpoints, pending: &PendingLogin) -> Strin
         .append_pair("code_challenge_method", "S256")
         .append_pair("code_challenge", &challenge)
         .append_pair("ext_agent_host_id", &pending.host_id);
-    if pending.client_id == "dynamic_agent_client" {
+    if pending.client_id == DYNAMIC_CLIENT_ID {
         u.query_pairs_mut().append_pair("agent_name_hint", "gait");
     }
     u.to_string()
@@ -191,7 +195,16 @@ pub fn parse_callback(
         return Err(CallbackError::StateMismatch);
     }
     if let Some(x) = m.get("error") {
-        return Err(CallbackError::Denied(x.clone()));
+        let safe: String = x
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | ' ' | '-'))
+            .take(64)
+            .collect();
+        return Err(CallbackError::Denied(if safe.is_empty() {
+            "provider denied login".into()
+        } else {
+            safe
+        }));
     }
     let code = m
         .get("code")
@@ -199,7 +212,7 @@ pub fn parse_callback(
     let id = m
         .get("client_id")
         .ok_or_else(|| CallbackError::Malformed("missing client_id".into()))?;
-    if id == "dynamic_agent_client"
+    if id == DYNAMIC_CLIENT_ID
         || id.is_empty()
         || id.len() > 200
         || !id
@@ -230,16 +243,22 @@ pub struct IdClaims {
     pub sub: String,
     pub email: Option<String>,
 }
+/// Validates claims only; the signature is NOT verified because this token was
+/// received directly from the token endpoint over TLS, which OIDC Core permits.
+/// JWKS verification is deferred, and the raw token is retained for adding it later.
 pub fn validate_id_token(token: &str, e: &IdExpect<'_>) -> Result<IdClaims, AuthError> {
-    let part = token
-        .split('.')
-        .nth(1)
-        .ok_or_else(|| AuthError::Other("invalid id token".into()))?;
+    let segments: Vec<&str> = token.split('.').collect();
+    if segments.len() != 3 || segments.iter().any(|segment| segment.is_empty()) {
+        return Err(AuthError::Other("invalid id token structure".into()));
+    }
+    let part = segments[1];
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(part)
-        .map_err(|_| AuthError::Other("invalid id token".into()))?;
-    let c: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|_| AuthError::Other("invalid id token".into()))?;
+        .map_err(|_| AuthError::Other("invalid id token encoding".into()))?;
+    let text =
+        String::from_utf8(bytes).map_err(|_| AuthError::Other("invalid id token UTF-8".into()))?;
+    let c: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|_| AuthError::Other("invalid id token JSON".into()))?;
     if c["iss"] != "https://auth.openai.com" || c["exp"].as_u64().is_none_or(|x| x <= e.now) {
         return Err(AuthError::Other("invalid id token claims".into()));
     }
@@ -291,8 +310,8 @@ mod tests {
     use crate::store::PendingLogin;
     fn pending() -> PendingLogin {
         PendingLogin {
-            state: "state".into(),
-            nonce: "nonce".into(),
+            state: "state-value".into(),
+            nonce: "nonce-value".into(),
             code_verifier: "verifier".into(),
             redirect_uri: "http://127.0.0.1:50000/auth/callback".into(),
             client_id: "dynamic_agent_client".into(),
@@ -310,19 +329,32 @@ mod tests {
     #[test]
     fn authorization_url_first_registration() {
         let p = new_pending(None, "urn:uuid:test", 1);
-        let u = authorization_url(&Endpoints::openai(), &p);
-        assert!(
-            u.contains("client_id=dynamic_agent_client")
-                && u.contains("agent_name_hint=gait")
-                && u.contains("resource=https%3A%2F%2Fapi.openai.com%2Fv1")
-                && u.contains("code_challenge_method=S256")
-                && p.redirect_uri.starts_with("http://127.0.0.1:")
-        );
+        let url = reqwest::Url::parse(&authorization_url(&Endpoints::openai(), &p)).unwrap();
+        let query: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(query["client_id"], DYNAMIC_CLIENT_ID);
+        assert_eq!(query["response_type"], "code");
+        assert_eq!(query["redirect_uri"], p.redirect_uri);
+        assert_eq!(query["scope"], SCOPES);
+        assert_eq!(query["resource"], RESOURCE);
+        assert_eq!(query["state"], p.state);
+        assert_eq!(query["nonce"], p.nonce);
+        assert_eq!(query["code_challenge_method"], "S256");
+        assert_eq!(query["code_challenge"], pkce_challenge(&p.code_verifier));
+        assert_eq!(query["ext_agent_host_id"], p.host_id);
+        assert_eq!(query["agent_name_hint"], "gait");
     }
     #[test]
     fn authorization_url_returning_has_no_name_hint() {
         let p = new_pending(Some("oaiapp_x"), "h", 1);
-        assert!(!authorization_url(&Endpoints::openai(), &p).contains("agent_name_hint"));
+        let url = reqwest::Url::parse(&authorization_url(&Endpoints::openai(), &p)).unwrap();
+        let query: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(query["client_id"], "oaiapp_x");
+        assert_eq!(query["ext_agent_host_id"], "h");
+        assert!(!query.contains_key("agent_name_hint"));
+    }
+    #[test]
+    fn empty_client_id_uses_dynamic_client() {
+        assert_eq!(new_pending(Some(""), "h", 0).client_id, DYNAMIC_CLIENT_ID);
     }
     #[test]
     fn pending_port_never_1455_and_in_range() {
@@ -340,19 +372,20 @@ mod tests {
     fn callback_ok() {
         let x = parse_callback(
             &pending(),
-            "http://127.0.0.1:50000/auth/callback?state=state&code=abc&client_id=oaiapp_x",
+            "http://127.0.0.1:50000/auth/callback?state=state-value&code=abc&client_id=oaiapp_x",
             None,
         )
         .unwrap();
         assert_eq!(x.code, "abc");
+        assert_eq!(x.client_id, "oaiapp_x");
     }
     #[test]
     fn callback_wrong_path_host_port_or_scheme_is_typo() {
         for x in [
-            "https://127.0.0.1:50000/auth/callback?state=state&code=x&client_id=oaiapp_x",
-            "http://localhost:50000/auth/callback?state=state&code=x&client_id=oaiapp_x",
-            "http://127.0.0.1:50001/auth/callback?state=state&code=x&client_id=oaiapp_x",
-            "http://127.0.0.1:50000/no?state=state&code=x&client_id=oaiapp_x",
+            "https://127.0.0.1:50000/auth/callback?state=state-value&code=x&client_id=oaiapp_x",
+            "http://localhost:50000/auth/callback?state=state-value&code=x&client_id=oaiapp_x",
+            "http://127.0.0.1:50001/auth/callback?state=state-value&code=x&client_id=oaiapp_x",
+            "http://127.0.0.1:50000/no?state=state-value&code=x&client_id=oaiapp_x",
         ] {
             assert!(matches!(
                 parse_callback(&pending(), x, None),
@@ -362,7 +395,7 @@ mod tests {
     }
     #[test]
     fn callback_duplicate_params_malformed() {
-        assert!(matches!(parse_callback(&pending(),"http://127.0.0.1:50000/auth/callback?state=state&state=state&code=x&client_id=oaiapp_x",None),Err(CallbackError::Malformed(_))));
+        assert!(matches!(parse_callback(&pending(),"http://127.0.0.1:50000/auth/callback?state=state-value&state=state-value&code=x&client_id=oaiapp_x",None),Err(CallbackError::Malformed(_))));
     }
     #[test]
     fn callback_state_mismatch() {
@@ -380,17 +413,69 @@ mod tests {
         assert!(matches!(
             parse_callback(
                 &pending(),
-                "http://127.0.0.1:50000/auth/callback?state=state&error=access_denied",
+                "http://127.0.0.1:50000/auth/callback?state=state-value&error=access_denied",
                 None
             ),
             Err(CallbackError::Denied(_))
         ));
     }
     #[test]
+    fn callback_denied_error_is_bounded() {
+        let hostile = "!@#$%^&*".repeat(40);
+        let url = format!("http://127.0.0.1:50000/auth/callback?state=state-value&error={hostile}");
+        let Err(CallbackError::Denied(value)) = parse_callback(&pending(), &url, None) else {
+            panic!("expected denied")
+        };
+        assert!(value.len() <= 64);
+        assert!(value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | ' ' | '-')));
+    }
+    #[test]
+    fn callback_missing_code_or_client_id_is_malformed() {
+        assert!(matches!(
+            parse_callback(
+                &pending(),
+                "http://127.0.0.1:50000/auth/callback?state=state-value&client_id=oaiapp_x",
+                None
+            ),
+            Err(CallbackError::Malformed(_))
+        ));
+        assert!(matches!(
+            parse_callback(
+                &pending(),
+                "http://127.0.0.1:50000/auth/callback?state=state-value&code=x",
+                None
+            ),
+            Err(CallbackError::Malformed(_))
+        ));
+    }
+    #[test]
+    fn callback_matching_saved_client_id_is_ok() {
+        assert!(parse_callback(
+            &pending(),
+            "http://127.0.0.1:50000/auth/callback?state=state-value&code=x&client_id=oaiapp_x",
+            Some("oaiapp_x")
+        )
+        .is_ok());
+    }
+    #[test]
+    fn callback_error_with_bad_state_is_state_mismatch() {
+        assert!(matches!(
+            parse_callback(
+                &pending(),
+                "http://127.0.0.1:50000/auth/callback?state=bad&error=access_denied",
+                None
+            ),
+            Err(CallbackError::StateMismatch)
+        ));
+    }
+    #[test]
     fn callback_rejects_dynamic_agent_client_and_bad_charset() {
         for x in ["dynamic_agent_client", "bad!id"] {
-            let u =
-                format!("http://127.0.0.1:50000/auth/callback?state=state&code=x&client_id={x}");
+            let u = format!(
+                "http://127.0.0.1:50000/auth/callback?state=state-value&code=x&client_id={x}"
+            );
             assert!(matches!(
                 parse_callback(&pending(), &u, None),
                 Err(CallbackError::Malformed(_))
@@ -402,7 +487,7 @@ mod tests {
         assert!(matches!(
             parse_callback(
                 &pending(),
-                "http://127.0.0.1:50000/auth/callback?state=state&code=x&client_id=oaiapp_new",
+                "http://127.0.0.1:50000/auth/callback?state=state-value&code=x&client_id=oaiapp_new",
                 Some("oaiapp_old")
             ),
             Err(CallbackError::Malformed(_))
@@ -433,16 +518,77 @@ mod tests {
         let mut x = c.clone();
         x["aud"] = serde_json::json!(["other", "client"]);
         assert!(validate_id_token(&f(x), &e).is_ok());
+        let mut x = c.clone();
+        x["aud"] = serde_json::json!(["other"]);
+        assert!(
+            matches!(validate_id_token(&f(x), &e), Err(AuthError::Other(message)) if message == "invalid id token claims")
+        );
+        let expected = IdExpect {
+            subject: Some("subject"),
+            ..e
+        };
+        assert!(validate_id_token(&f(c.clone()), &expected).is_ok());
+        let mut x = c.clone();
+        x["sub"] = serde_json::json!("different");
+        assert!(
+            matches!(validate_id_token(&f(x), &expected), Err(AuthError::Other(message)) if message == "id token subject mismatch")
+        );
+        for (token, message) in [
+            ("one.two", "invalid id token structure"),
+            ("one..three", "invalid id token structure"),
+            ("one.!not-base64!.three", "invalid id token encoding"),
+            ("one.bm90IGpzb24.three", "invalid id token JSON"),
+            ("one._w.three", "invalid id token UTF-8"),
+        ] {
+            assert!(
+                matches!(validate_id_token(token, &e), Err(AuthError::Other(actual)) if actual == message)
+            );
+        }
     }
     #[test]
     fn secret_debug_is_redacted() {
+        let tokens = SignInTokens {
+            access_token: "access-distinct".into(),
+            refresh_token: "refresh-distinct".into(),
+            id_token: "id-distinct".into(),
+            scopes: vec!["email-looking@example.com".into()],
+            expires_at_unix_s: 1,
+            earliest_refresh_at_unix_s: Some(2),
+        };
         let x = SignInSecret {
             client_id: Some("client-secret".into()),
             host_id: "host-secret".into(),
             subject: Some("sub-secret".into()),
-            tokens: None,
+            tokens: Some(tokens.clone()),
         };
-        assert!(!format!("{x:?}").contains("secret"));
+        let brain = BrainSecret {
+            tokens: Some(BrainTokens {
+                access_token: "brain-access-distinct".into(),
+                expires_at_unix_s: 1,
+            }),
+        };
+        let callback = Callback {
+            code: "callback-code-distinct".into(),
+            client_id: "callback-client-distinct".into(),
+        };
+        for debug in [
+            format!("{x:?}"),
+            format!("{tokens:?}"),
+            format!("{brain:?}"),
+            format!("{:?}", brain.tokens.as_ref().unwrap()),
+            format!("{callback:?}"),
+        ] {
+            for value in [
+                "access-distinct",
+                "refresh-distinct",
+                "id-distinct",
+                "email-looking@example.com",
+                "callback-code-distinct",
+                "callback-client-distinct",
+            ] {
+                assert!(!debug.contains(value));
+            }
+        }
     }
     #[test]
     fn brain_projection_drops_refresh_id_email_and_registration() {
@@ -454,7 +600,14 @@ mod tests {
             account_label: Some("email@example.com".into()),
             secret: serde_json::json!({"client_id":"client_id","host_id":"host_id","subject":"subject","tokens":{"access_token":"access","refresh_token":"refresh_token","id_token":"id_token","scopes":[],"expires_at_unix_s":1}}),
         };
-        let x = brain_projection(&c).unwrap().secret.to_string();
+        let projected = brain_projection(&c).unwrap();
+        assert_eq!(projected.account_label, None);
+        assert_eq!(projected.expires_at_unix_s, None);
+        let brain: BrainSecret = serde_json::from_value(projected.secret.clone()).unwrap();
+        let brain_tokens = brain.tokens.unwrap();
+        assert_eq!(brain_tokens.access_token, "access");
+        assert_eq!(brain_tokens.expires_at_unix_s, 1);
+        let x = projected.secret.to_string();
         for v in [
             "refresh_token",
             "id_token",

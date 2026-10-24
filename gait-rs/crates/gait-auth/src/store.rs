@@ -34,8 +34,8 @@ pub struct PendingLogin {
 impl std::fmt::Debug for PendingLogin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PendingLogin")
-            .field("state", &self.state)
-            .field("nonce", &self.nonce)
+            .field("state", &"<redacted>")
+            .field("nonce", &"<redacted>")
             .field("code_verifier", &"<redacted>")
             .field("redirect_uri", &self.redirect_uri)
             .field("client_id", &self.client_id)
@@ -60,6 +60,9 @@ mod tests {
             host_id: "host".into(),
             created_at_unix_s: 1,
         };
-        assert!(!format!("{pending:?}").contains("secret-verifier"));
+        let debug = format!("{pending:?}");
+        assert!(!debug.contains("secret-verifier"));
+        assert!(!debug.contains("state-value"));
+        assert!(!debug.contains("nonce-value"));
     }
 }
