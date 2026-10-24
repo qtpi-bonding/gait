@@ -351,6 +351,9 @@ pub async fn run_loop(
 /// Resolve a live profile for embedders that already hold a typed credential.
 /// Raw API keys are represented only as `ResolvedCredential::ApiKey`; callers
 /// cannot accidentally bypass subscription-aware provider construction.
+/// Embedders supplying an `openai-signin` credential must call the same
+/// `ensure_fresh` preparation used by the spine before calling this function;
+/// this API does not access the credential store or refresh credentials.
 #[allow(clippy::too_many_arguments)]
 pub async fn resolve_profile(
     config: &crate::config::GaitConfig,

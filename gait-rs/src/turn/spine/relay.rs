@@ -19,6 +19,58 @@ use super::lifecycle::{self, brain_argv, ProfileInputs, TurnMode};
 use super::preview::enrich_permissions_preview;
 use super::watchdog::{SpinePhase, Watchdog};
 
+fn is_signin_credential(provider: &str, credential: &gait_auth::ResolvedCredential) -> bool {
+    matches!(
+        credential,
+        gait_auth::ResolvedCredential::Subscription(subscription)
+            if provider == gait_auth::signin::SIGNIN_PROVIDER_ID
+                && subscription.method_id == gait_auth::signin::SIGNIN_METHOD_ID
+    )
+}
+
+/// Prepare the credential at the spine boundary.  Sign-in credentials are
+/// refreshed while the store lock is held, then reduced to the access-token
+/// projection understood by the brain.
+pub async fn prepare_credential_with(
+    provider: &str,
+    lease: Option<gait_auth::CredentialLease>,
+    method: &dyn gait_auth::AuthMethod,
+    store: &dyn gait_auth::store::CredentialStore,
+) -> anyhow::Result<Option<gait_auth::ResolvedCredential>> {
+    let Some(lease) = lease else { return Ok(None) };
+    if !is_signin_credential(provider, &lease.credential) {
+        return Ok(Some(lease.credential));
+    }
+    let fresh = gait_ops::auth::ensure_fresh_with(method, store, provider)
+        .await
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    let gait_auth::ResolvedCredential::Subscription(subscription) = fresh else {
+        return Err(anyhow::anyhow!("sign-in returned an API key credential"));
+    };
+    Ok(Some(gait_auth::ResolvedCredential::Subscription(
+        gait_auth::signin::brain_projection(&subscription)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+    )))
+}
+
+/// File-backed convenience wrapper used by the turn spine.
+pub async fn prepare_credential(
+    provider: &str,
+    lease: Option<gait_auth::CredentialLease>,
+) -> anyhow::Result<Option<gait_auth::ResolvedCredential>> {
+    if lease
+        .as_ref()
+        .is_none_or(|lease| !is_signin_credential(provider, &lease.credential))
+    {
+        return Ok(lease.map(|lease| lease.credential));
+    }
+    let method = gait_ops::auth::auth_method_for(provider)
+        .ok_or_else(|| anyhow::anyhow!("no authentication method for provider"))?;
+    let store = gait_state::auth_store::FileCredentialStore::resolve()
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+    prepare_credential_with(provider, lease, method.as_ref(), &store).await
+}
+
 /// Encode credential material exclusively for the private first BrainInit
 /// frame. This must never be reused for events, diagnostics, or environment.
 fn credential_to_wire_json(credential: &gait_auth::ResolvedCredential) -> anyhow::Result<String> {
@@ -225,13 +277,13 @@ pub async fn relay_brain_turn(
             }
         }
     }
-    let credential_lease = crate::auth::resolve_credential_lease_result(
-        profile
-            .model
-            .split_once('/')
-            .map(|(provider, _)| provider)
-            .unwrap_or(""),
-    )?;
+    let provider = profile
+        .model
+        .split_once('/')
+        .map(|(provider, _)| provider)
+        .unwrap_or("");
+    let credential_lease = crate::auth::resolve_credential_lease_result(provider)?;
+    let credential = prepare_credential(provider, credential_lease).await?;
 
     // ── Spawn brain (enrolled as cascade group leader) ──────────────────────
     let mut child = {
@@ -317,9 +369,9 @@ pub async fn relay_brain_turn(
             }),
             profile_json,
             daemons,
-            credential_json: credential_lease
+            credential_json: credential
                 .as_ref()
-                .map(|lease| credential_to_wire_json(&lease.credential))
+                .map(credential_to_wire_json)
                 .transpose()?
                 .unwrap_or_default(),
         };
@@ -737,5 +789,236 @@ mod tests {
         };
         record_tool_result(&mut state, &tr);
         assert!(!state.completed_mutations.contains_key("call-2"));
+    }
+
+    #[tokio::test]
+    async fn prepare_credential_is_noop_for_api_keys_and_codex() {
+        let store = gait_state::auth_store::FileCredentialStore::new(
+            tempfile::tempdir().unwrap().path().join("auth.json"),
+        );
+        let method = gait_auth::signin::ChatGptSignIn::new();
+        let api = gait_auth::CredentialLease {
+            credential: gait_auth::ResolvedCredential::ApiKey("api-secret".into()),
+            source_id: "test".into(),
+            location: gait_auth::AuthLocation::Synthetic,
+            revision: None,
+        };
+        let codex = gait_auth::CredentialLease {
+            credential: gait_auth::ResolvedCredential::Subscription(
+                gait_auth::SubscriptionCredential {
+                    provider_id: "openai-codex".into(),
+                    method_id: "codex-subscription".into(),
+                    version: 1,
+                    expires_at_unix_s: Some(10),
+                    account_label: Some("account".into()),
+                    secret: serde_json::json!({"opaque":"value"}),
+                },
+            ),
+            source_id: "test".into(),
+            location: gait_auth::AuthLocation::Synthetic,
+            revision: None,
+        };
+        assert_eq!(
+            prepare_credential_with("openai", Some(api.clone()), &method, &store)
+                .await
+                .unwrap(),
+            Some(api.credential)
+        );
+        assert_eq!(
+            prepare_credential_with("openai-codex", Some(codex.clone()), &method, &store)
+                .await
+                .unwrap(),
+            Some(codex.credential)
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_credential_refreshes_and_strips_secrets() {
+        use gait_auth::signin::{ChatGptSignIn, Endpoints, SignInSecret, SignInTokens};
+        use gait_auth::store::CredentialStore;
+        use gait_auth::testing::{MemoryStore, StubServer};
+        use std::sync::Arc;
+
+        let server = StubServer::new().await;
+        server.respond(
+            "/token",
+            200,
+            r#"{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600,"scope":"openid chatgpt.tokens.use.direct"}"#,
+        );
+        let endpoints = Endpoints {
+            authorize: format!("{}/authorize", server.base_url()),
+            token: format!("{}/token", server.base_url()),
+            revoke: format!("{}/revoke", server.base_url()),
+        };
+        let method = ChatGptSignIn::for_tests(endpoints, Arc::new(|| 100));
+        let store = MemoryStore::new();
+        let old = gait_auth::SubscriptionCredential {
+            provider_id: "openai-signin".into(),
+            method_id: "chatgpt-signin".into(),
+            version: 1,
+            expires_at_unix_s: Some(1000),
+            account_label: Some("person@example.test".into()),
+            secret: serde_json::to_value(SignInSecret {
+                client_id: Some("client-id".into()),
+                host_id: "host-id".into(),
+                subject: Some("subject-id".into()),
+                tokens: Some(SignInTokens {
+                    access_token: "old-access".into(),
+                    refresh_token: "old-refresh".into(),
+                    id_token: "old-id-token".into(),
+                    scopes: vec!["openid".into()],
+                    expires_at_unix_s: 1000,
+                    earliest_refresh_at_unix_s: None,
+                }),
+            })
+            .unwrap(),
+        };
+        let mut guard = store.lock().await.unwrap();
+        guard.write("openai-signin", &old).unwrap();
+        drop(guard);
+        let lease = gait_auth::CredentialLease {
+            credential: gait_auth::ResolvedCredential::Subscription(old),
+            source_id: "gait".into(),
+            location: gait_auth::AuthLocation::Synthetic,
+            revision: None,
+        };
+        let result = prepare_credential_with("openai-signin", Some(lease), &method, &store)
+            .await
+            .unwrap()
+            .unwrap();
+        let wire = credential_to_wire_json(&result).unwrap();
+        assert!(wire.contains("new-access"));
+        for secret in [
+            "old-refresh",
+            "new-refresh",
+            "old-id-token",
+            "person@example.test",
+            "host-id",
+            "client-id",
+            "subject-id",
+        ] {
+            assert!(!wire.contains(secret), "wire leaked {secret}");
+        }
+    }
+
+    #[tokio::test]
+    async fn logged_out_entry_is_login_required() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        let credential = gait_auth::SubscriptionCredential {
+            provider_id: "openai-signin".into(),
+            method_id: "chatgpt-signin".into(),
+            version: 1,
+            expires_at_unix_s: None,
+            account_label: Some("person@example.test".into()),
+            secret: serde_json::json!({
+                "client_id":"client", "host_id":"host", "subject":"subject", "tokens":null
+            }),
+        };
+        gait_state::auth::write_subscription_credential_to(&path, "openai-signin", &credential)
+            .unwrap();
+        let store = gait_state::auth_store::FileCredentialStore::new(path);
+        let method = gait_auth::signin::ChatGptSignIn::new();
+        let lease = gait_auth::CredentialLease {
+            credential: gait_auth::ResolvedCredential::Subscription(credential),
+            source_id: "gait".into(),
+            location: gait_auth::AuthLocation::Synthetic,
+            revision: None,
+        };
+        let error = prepare_credential_with("openai-signin", Some(lease), &method, &store)
+            .await
+            .expect_err("logged-out entries must stop the turn before brain spawn");
+        assert!(error.to_string().contains("gait auth login openai-signin"));
+    }
+
+    #[tokio::test]
+    async fn prepare_credential_logged_out_error_does_not_leak_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        let credential = gait_auth::SubscriptionCredential {
+            provider_id: "openai-signin".into(),
+            method_id: "chatgpt-signin".into(),
+            version: 1,
+            expires_at_unix_s: None,
+            account_label: Some("private@example.test".into()),
+            secret: serde_json::json!({
+                "client_id":"private-client-id", "host_id":"private-host-id",
+                "subject":"private-subject", "tokens":null
+            }),
+        };
+        gait_state::auth::write_subscription_credential_to(&path, "openai-signin", &credential)
+            .unwrap();
+        let lease = gait_auth::CredentialLease {
+            credential: gait_auth::ResolvedCredential::Subscription(credential),
+            source_id: "gait".into(),
+            location: gait_auth::AuthLocation::Synthetic,
+            revision: None,
+        };
+        let method = gait_auth::signin::ChatGptSignIn::new();
+        let store = gait_state::auth_store::FileCredentialStore::new(path);
+        let error = prepare_credential_with("openai-signin", Some(lease), &method, &store)
+            .await
+            .expect_err("logged-out credential must require login");
+        let text = error.to_string();
+        assert!(text.contains("gait auth login openai-signin"));
+        for secret in ["private-client-id", "private-host-id", "private-subject"] {
+            assert!(!text.contains(secret), "error leaked {secret}");
+        }
+    }
+
+    #[tokio::test]
+    async fn prepare_credential_propagates_retryable_without_spawning() {
+        use gait_auth::signin::{ChatGptSignIn, Endpoints, SignInSecret, SignInTokens};
+        use gait_auth::store::CredentialStore;
+        use gait_auth::testing::{MemoryStore, StubServer};
+        use std::sync::Arc;
+
+        let server = StubServer::new().await;
+        server.respond("/token", 503, "temporarily unavailable");
+        let method = ChatGptSignIn::for_tests(
+            Endpoints {
+                authorize: format!("{}/authorize", server.base_url()),
+                token: format!("{}/token", server.base_url()),
+                revoke: format!("{}/revoke", server.base_url()),
+            },
+            Arc::new(|| 100),
+        );
+        let store = MemoryStore::new();
+        let credential = gait_auth::SubscriptionCredential {
+            provider_id: "openai-signin".into(),
+            method_id: "chatgpt-signin".into(),
+            version: 1,
+            expires_at_unix_s: Some(101),
+            account_label: Some("private@example.test".into()),
+            secret: serde_json::to_value(SignInSecret {
+                client_id: Some("private-client-id".into()),
+                host_id: "private-host-id".into(),
+                subject: Some("private-subject".into()),
+                tokens: Some(SignInTokens {
+                    access_token: "private-access-token".into(),
+                    refresh_token: "private-refresh-token".into(),
+                    id_token: "private-id-token".into(),
+                    scopes: vec!["openid".into()],
+                    expires_at_unix_s: 101,
+                    earliest_refresh_at_unix_s: None,
+                }),
+            })
+            .unwrap(),
+        };
+        let mut guard = store.lock().await.unwrap();
+        guard.write("openai-signin", &credential).unwrap();
+        drop(guard);
+        let lease = gait_auth::CredentialLease {
+            credential: gait_auth::ResolvedCredential::Subscription(credential),
+            source_id: "gait".into(),
+            location: gait_auth::AuthLocation::Synthetic,
+            revision: None,
+        };
+        let error = prepare_credential_with("openai-signin", Some(lease), &method, &store)
+            .await
+            .expect_err("503 refresh must remain an error");
+        let text = error.to_string();
+        assert!(!text.contains("private-access-token"));
+        assert!(!text.contains("private-refresh-token"));
     }
 }

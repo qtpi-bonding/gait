@@ -116,19 +116,31 @@ pub fn resolve_credential_lease_with(
     platform: &dyn Platform,
     provider: &str,
 ) -> Result<Option<CredentialLease>, AuthError> {
+    // ChatGPT plan credentials are deliberately never discoverable through an
+    // environment variable: only the registered file credential is valid.
+    if provider == "openai-signin" {
+        let auth_path = auth_path_for(platform)?;
+        if !auth_path.exists() {
+            return Err(AuthError::Source(gait_auth::AuthError::LoginRequired(
+                "openai-signin uses ChatGPT sign-in; run `gait auth login openai-signin`".into(),
+            )));
+        }
+    }
     // 1. Check env var (ANTHROPIC_API_KEY, MINIMAX_API_KEY, OPENAI_API_KEY, etc.)
     let env_var = format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"));
-    if let Some(key) = platform
-        .env(&env_var)
-        .and_then(|value| value.into_string().ok())
-    {
-        if !key.is_empty() {
-            return Ok(Some(CredentialLease {
-                credential: ResolvedCredential::ApiKey(key),
-                source_id: "environment".into(),
-                location: AuthLocation::Environment(env_var),
-                revision: None,
-            }));
+    if provider != "openai-signin" {
+        if let Some(key) = platform
+            .env(&env_var)
+            .and_then(|value| value.into_string().ok())
+        {
+            if !key.is_empty() {
+                return Ok(Some(CredentialLease {
+                    credential: ResolvedCredential::ApiKey(key),
+                    source_id: "environment".into(),
+                    location: AuthLocation::Environment(env_var),
+                    revision: None,
+                }));
+            }
         }
     }
     // 2. Check auth.json
@@ -142,6 +154,11 @@ pub fn resolve_credential_lease_with(
         }));
     }
     let map = crate::auth_file::load_auth_map(&auth_path)?;
+    if provider == "openai-signin" && !map.contains_key(provider) {
+        return Err(AuthError::Source(gait_auth::AuthError::LoginRequired(
+            "openai-signin uses ChatGPT sign-in; run `gait auth login openai-signin`".into(),
+        )));
+    }
     let entry = match map.get(provider) {
         Some(value) => Some(
             serde_json::from_value::<AuthEntry>(value.clone()).map_err(|_| AuthError::Corrupt {
@@ -586,6 +603,25 @@ mod tests {
                 .map(String::as_str),
             Some("sk-test-...")
         );
+    }
+
+    #[test]
+    fn env_var_cannot_stand_in_for_signin() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut env = HashMap::new();
+        env.insert(
+            "OPENAI_SIGNIN_API_KEY".to_string(),
+            OsString::from("must-not-be-used"),
+        );
+        let platform = FakePlatform {
+            home: dir.path().to_path_buf(),
+            env,
+        };
+        let error = resolve_credential_lease_with(&platform, "openai-signin")
+            .expect_err("environment credentials must not satisfy sign-in");
+        let text = error.to_string();
+        assert!(text.contains("gait auth login openai-signin"), "{text}");
+        assert!(!text.contains("must-not-be-used"));
     }
 
     #[test]
