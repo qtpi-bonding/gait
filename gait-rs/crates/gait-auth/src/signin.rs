@@ -220,9 +220,13 @@ pub fn parse_callback(
     let code = m
         .get("code")
         .ok_or_else(|| CallbackError::Malformed("missing code".into()))?;
-    let id = m
-        .get("client_id")
-        .ok_or_else(|| CallbackError::Malformed("missing client_id".into()))?;
+    // A returning client reuses its issued id, and the provider then omits `client_id`
+    // from the redirect; the pending login already carries it.
+    let id = match m.get("client_id") {
+        Some(id) => id,
+        None if p.client_id != DYNAMIC_CLIENT_ID => &p.client_id,
+        None => return Err(CallbackError::Malformed("missing client_id".into())),
+    };
     if id == DYNAMIC_CLIENT_ID
         || id.is_empty()
         || id.len() > 200
@@ -2444,6 +2448,29 @@ mod tests {
         .unwrap();
         assert_eq!(x.code, "abc");
         assert_eq!(x.client_id, "oaiapp_x");
+    }
+    #[test]
+    fn callback_without_client_id_uses_returning_clients_registration() {
+        let mut p = pending();
+        p.client_id = "oaiapp_x".into();
+        let x = parse_callback(
+            &p,
+            "http://127.0.0.1:50000/auth/callback?state=state-value&code=abc",
+            Some("oaiapp_x"),
+        )
+        .unwrap();
+        assert_eq!(x.client_id, "oaiapp_x");
+    }
+    #[test]
+    fn callback_without_client_id_on_first_login_is_malformed() {
+        assert!(matches!(
+            parse_callback(
+                &pending(),
+                "http://127.0.0.1:50000/auth/callback?state=state-value&code=abc",
+                None
+            ),
+            Err(CallbackError::Malformed(_))
+        ));
     }
     #[test]
     fn callback_wrong_path_host_port_or_scheme_is_typo() {
