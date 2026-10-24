@@ -4,22 +4,11 @@ use std::path::PathBuf;
 
 /// How much trust a `Message::User`'s attribution carries, computed once at
 /// fold time from the durable `Provenance` on the log. Deliberately a
-/// tri-state, not a bool: `VerificationOutcome::System` records an assertion
-/// made by a trusted ingress without an author signature to check, so it is
-/// rendered distinctly from a directly verified signature.
+/// Two-state rendering of message attribution.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Trust {
-    /// A real signature was checked (VerificationOutcome::DirectKey or
-    /// DelegatedKey, or a direct Provenance whose signature verified) — the
-    /// strongest claim this renders.
     Verified,
-    /// VerificationOutcome::System -- unsigned, a trusted ingress vouches
-    /// for it. Deliberately never collapsed into Verified:
-    /// there is no signature to check for these at all.
-    System,
-    /// A direct Provenance whose signature didn't verify, or no attribution
-    /// present.
     Unverified,
 }
 
@@ -27,34 +16,14 @@ impl Trust {
     pub fn as_str(self) -> &'static str {
         match self {
             Trust::Verified => "verified",
-            Trust::System => "system",
             Trust::Unverified => "unverified",
-        }
-    }
-
-    /// Maps an `identity_crypto::VerificationOutcome` discriminant (as
-    /// stored in `Provenance.verification_outcome`) to a
-    /// rendering-level `Trust`. `DirectKey`/`DelegatedKey` -> `Verified` (a
-    /// real signature was checked); `System` -> `System` (never `Verified`
-    /// -- there is no signature to check for these at all). Any value this
-    /// doesn't recognize (a future outcome variant this code hasn't been
-    /// updated for yet) maps to `Unverified` -- fail toward the weakest
-    /// claim, never silently treat an unknown outcome as a real verified
-    /// signature.
-    pub fn from_verification_outcome(outcome: i32) -> Trust {
-        match identity_crypto::VerificationOutcome::try_from(outcome) {
-            Ok(identity_crypto::VerificationOutcome::DirectKey)
-            | Ok(identity_crypto::VerificationOutcome::DelegatedKey) => Trust::Verified,
-            Ok(identity_crypto::VerificationOutcome::System) => Trust::System,
-            _ => Trust::Unverified,
         }
     }
 }
 
 /// The model-facing summary of one `Provenance` entry — computed once, at
 /// fold time, from the durable `Provenance` on the log (either via
-/// `gait_identity::verify_provenance` for a direct signature, or via
-/// `Trust::from_verification_outcome` for an ingress-verified entry). NOT itself
+/// `gait_identity::verify_provenance` for a direct signature). NOT itself
 /// persisted; recomputed from the log on every fold.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Attribution {
@@ -811,21 +780,19 @@ mod tests {
     }
 
     #[test]
-    fn renders_system_trust_distinctly_from_verified_and_unverified() {
-        let attributions = vec![Attribution {
-            author_id: "system".into(),
-            context: "room-general".into(),
-            trust: Trust::System,
-        }];
-        let rendered = render_attributed_messages(
-            &attributions,
-            &["agent joined the room".to_string()],
-        )
-        .unwrap();
-        assert!(
-            rendered.contains("trust=\"system\""),
-            "System must render its own distinct label, not collapse into verified or unverified"
-        );
+    fn trust_renders_only_verified_or_unverified() {
+        for trust in [Trust::Verified, Trust::Unverified] {
+            let rendered = render_attributed_messages(
+                &vec![Attribution {
+                    author_id: "agent".into(),
+                    context: "room-general".into(),
+                    trust,
+                }],
+                &["message".to_string()],
+            )
+            .unwrap();
+            assert!(!rendered.contains("system"), "{rendered}");
+        }
     }
 
     #[test]

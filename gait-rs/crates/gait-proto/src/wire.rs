@@ -123,86 +123,22 @@ pub fn append(path: &Path, body: event::Body) -> anyhow::Result<Event> {
     write_to_transcript(path, body, EventScope::Session)
 }
 
-/// Like [`append`], but signs and stamps `provenance` onto the minted event
-/// before it's written to disk. Provenance is set BEFORE the durable append
-/// (never after — the append is one-shot) so the on-disk line already
-/// carries the sender/thread metadata; a subsequent in-memory patch would
-/// silently leave the disk out of sync.
-///
-/// `sign` is called with the canonical v2 provenance-signature bytes for the
-/// event's freshly-stamped `content_hash` and the supplied route fields AFTER
-/// `mint()` runs — that's the whole reason this takes signing material
-/// (`from`/`scheme`/`sign`) instead of a pre-built `Provenance`: the caller
-/// cannot know `content_hash` before `mint()` executes.
-///
-/// Takes signing as a closure, not a `Signer` trait object: `gait-proto`
-/// stays free of any `gait-*` dependency (`gait-identity` depends on
-/// `gait-proto`, so the reverse would cycle).
-///
-/// Used by the few call sites that cross a party boundary (subagent task
-/// injection, generalized `notify_parent` delivery).
-#[allow(clippy::too_many_arguments)] // from/scheme/sign/to/context are the closure-based Provenance shape (see doc comment above) — bundling them into a struct would just move the same 5 fields, not reduce them.
-pub fn append_with_provenance(
+/// Mint an event, pass that exact event to `sign`, attach the returned
+/// provenance, and durably append it.
+pub fn append_with_signed(
     path: &Path,
     body: event::Body,
-    from: Vec<u8>,
-    scheme: i32,
-    sign: impl FnOnce(&[u8]) -> Vec<u8>,
-    to: Vec<String>,
-    context: String,
     scope: EventScope,
+    sign: impl FnOnce(&Event) -> anyhow::Result<crate::gait::log::v1::Provenance>,
 ) -> anyhow::Result<Event> {
     let prev = last_event(path)?;
     let mut ev = mint(body, prev.as_ref(), scope);
-    let signature =
-        sign(crate::envelope::provenance_signing_bytes(&ev.content_hash, &to, &context).as_slice());
-    ev.provenance = vec![crate::gait::log::v1::Provenance {
-        from,
-        to,
-        context,
-        signature,
-        scheme,
-        delegation_cert: None,
-        verified_author_id: None,
-        verification_outcome: None,
-    }];
+    let prov = sign(&ev)?;
+    ev.provenance = vec![prov];
     write_event(path, ev)
 }
 
-/// Like [`append_with_provenance`], but for a session key signing under a
-/// `DelegationCert` from its device key -- attaches the cert to the minted
-/// event's `Provenance` alongside the signature. `append_with_provenance`'s
-/// own signature stays stable for its existing (non-delegating) callers.
-#[allow(clippy::too_many_arguments)]
-pub fn append_with_delegated_provenance(
-    path: &Path,
-    body: event::Body,
-    from: Vec<u8>,
-    scheme: i32,
-    sign: impl FnOnce(&[u8]) -> Vec<u8>,
-    to: Vec<String>,
-    context: String,
-    scope: EventScope,
-    delegation_cert: identity_crypto::DelegationCert,
-) -> anyhow::Result<Event> {
-    let prev = last_event(path)?;
-    let mut ev = mint(body, prev.as_ref(), scope);
-    let signature =
-        sign(crate::envelope::provenance_signing_bytes(&ev.content_hash, &to, &context).as_slice());
-    ev.provenance = vec![crate::gait::log::v1::Provenance {
-        from,
-        to,
-        context,
-        signature,
-        scheme,
-        delegation_cert: Some(delegation_cert),
-        verified_author_id: None,
-        verification_outcome: None,
-    }];
-    write_event(path, ev)
-}
-
-/// Like [`append_with_provenance`], but relays one or more provenances
+/// Relays one or more provenances
 /// already signed/established by someone else (a direct signature, or a
 /// verified authorship assertion produced by a trusted ingress). Attaches
 /// the values verbatim without
@@ -257,41 +193,6 @@ mod tests {
         body(payload::Kind::AssistantText(AssistantText {
             content: "hi".into(),
         }))
-    }
-
-    #[test]
-    fn append_with_delegated_provenance_persists_the_cert() {
-        use crate::gait::log::v1::{event, payload, Payload, UserText};
-        use identity_crypto::DelegationCert;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("session.jsonl");
-        let cert = DelegationCert {
-            agent_id: "ed25519:test".into(),
-            device_public_key: vec![1; 32],
-            session_public_key: vec![2; 32],
-            not_before_unix_seconds: 100,
-            not_after_unix_seconds: 200,
-            signature: vec![3; 64],
-        };
-        let body = event::Body::Payload(Payload {
-            kind: Some(payload::Kind::UserText(UserText {
-                content: "hi".into(),
-                ..Default::default()
-            })),
-        });
-        let ev = append_with_delegated_provenance(
-            &path,
-            body,
-            vec![2; 32],
-            1,
-            |msg| msg.to_vec(),
-            vec![],
-            String::new(),
-            EventScope::Session,
-            cert.clone(),
-        )
-        .unwrap();
-        assert_eq!(ev.provenance[0].delegation_cert, Some(cert));
     }
 
     #[test]
@@ -420,40 +321,50 @@ mod tests {
     }
 
     #[test]
-    fn append_with_provenance_stamps_provenance_field() {
-        let dir = tempfile::TempDir::new().unwrap();
+    fn append_with_signed_passes_the_minted_event_to_the_signer() {
+        let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("log.jsonl");
-        let body = crate::gait::log::v1::event::Body::Payload(crate::gait::log::v1::Payload {
-            kind: Some(crate::gait::log::v1::payload::Kind::UserText(
-                crate::gait::log::v1::UserText {
-                    content: "hi".into(),
-                    ..Default::default()
-                },
-            )),
-        });
-        let from = b"pretend-pubkey".to_vec();
-        let ev = append_with_provenance(
-            &path,
-            body,
-            from.clone(),
-            identity_crypto::KeyScheme::Ed25519 as i32,
-            |msg| msg.to_vec(),
-            vec![],
-            String::new(),
-            EventScope::Turn { run: 1, turn: 2 },
-        )
-        .unwrap();
-        let provenance = ev.provenance.first().expect("provenance set");
-        assert_eq!(provenance.from, from);
-        assert_eq!(
-            provenance.scheme,
-            identity_crypto::KeyScheme::Ed25519 as i32
-        );
-        assert_eq!(
-            provenance.signature,
-            crate::envelope::provenance_signing_bytes(&ev.content_hash, &[], "")
-        );
-        assert_eq!((ev.run, ev.turn, ev.step), (Some(1), Some(2), None));
+        let expected = crate::gait::log::v1::Provenance {
+            context: "signed".into(),
+            ..Default::default()
+        };
+        let expected_copy = expected.clone();
+        let ev = append_with_signed(&path, simple_body(), EventScope::Session, |minted| {
+            assert!(!minted.id.is_empty());
+            assert!(minted.ts > 0);
+            assert!(!minted.content_hash.is_empty());
+            Ok(expected_copy)
+        }).unwrap();
+        assert_eq!(ev.provenance, vec![expected]);
+    }
+
+    #[test]
+    fn old_provenance_json_with_removed_fields_fails_to_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.jsonl");
+        let event = append(&path, simple_body()).unwrap();
+        let json = serde_json::to_value(&event).unwrap();
+        let removed_fields = [
+            ("signature", serde_json::json!("b2xk")),
+            ("scheme", serde_json::json!(0)),
+            ("verificationOutcome", serde_json::json!(0)),
+            ("delegationCert", serde_json::json!({})),
+            ("from", serde_json::json!("b2xk")),
+        ];
+        for (field, value) in removed_fields {
+            let mut old = json.clone();
+            let mut provenance = serde_json::Map::new();
+            provenance.insert(field.to_string(), value);
+            old["provenance"] = serde_json::Value::Array(vec![serde_json::Value::Object(provenance)]);
+            let error = serde_json::from_value::<Event>(old).expect_err(field);
+            assert!(!error.to_string().is_empty());
+        }
+
+        let mut current = json;
+        let mut provenance = serde_json::Map::new();
+        provenance.insert("context".into(), serde_json::json!("room"));
+        current["provenance"] = serde_json::Value::Array(vec![serde_json::Value::Object(provenance)]);
+        serde_json::from_value::<Event>(current).expect("context remains a valid provenance field");
     }
 
     #[test]

@@ -14,7 +14,6 @@ schemars   = { version = "0.8", features = ["derive"] }
 thiserror  = "1"
 anyhow     = "1"
 async-trait = "0.1"
-identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "675d474" }
 
 [dev-dependencies]
 tokio    = { version = "1", features = ["full"] }

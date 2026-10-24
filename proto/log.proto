@@ -56,38 +56,21 @@ message Event {
 }
 
 
-// Sender/recipient/thread metadata carried on Event.provenance. `from` is a
-// public key, self-certifying — `scheme` says which curve produced it, so
-// verification never needs a separate keyring lookup. `signature` is NOT
-// integrity-covered by content_hash (see field 9's comment on
-// Event.provenance) — it covers the content_hash plus `to` and `context` in
-// the v2 provenance-signature encoding (signed independently, after
-// content_hash is stamped). Encoding: UTF-8 domain tag
-// `gait-provenance-signature-v2\0`, then an unsigned 64-bit big-endian byte
-// length and bytes for content_hash, an unsigned 64-bit big-endian count of
-// recipients followed by each recipient's length and UTF-8 bytes in order,
-// then context's length and UTF-8 bytes. `KeyScheme` lives in `identitycrypto.v1`
-// (imported above), not here -- the discriminant every canonical transcript
-// embeds as a raw byte is defined by the identity-crypto protocol, not gait-owned.
+// Provenance for direct events carries a SignedMessage over DirectEventDigest;
+// attested events carry verified_author_id and context only. Neither is
+// covered by content_hash.
 message Provenance {
-  bytes                        from            = 1;  // public key bytes
-  repeated string              to              = 2;  // specific recipients; empty = the room/log at large
   string                       context         = 3;  // room/thread reference — freeform, no enforced vocabulary
-  bytes                        signature       = 4;  // signs content_hash + to + context; NOT integrity-covered by content_hash itself
-  identitycrypto.v1.KeyScheme  scheme          = 5;  // discriminant for `from`/`signature`
-  // Present only when `from` is a session key, never registered with grorg --
-  // authorizes it to sign on the device key's behalf for a bounded window.
-  // Travels WITH the event rather than being pre-registered anywhere.
-  optional identitycrypto.v1.DelegationCert delegation_cert = 6;
-
-  // Set when a trusted ingress has verified an external authorship claim
-  // that is not represented by this event's direct `from`/`signature` pair.
-  // These fields are mutually exclusive with the direct-signature fields.
   optional string verified_author_id = 9;
-  optional identitycrypto.v1.VerificationOutcome verification_outcome = 10;
+  optional identitycrypto.v1.SignedMessage signed_message = 11;
 
-  reserved 7, 8;
+  reserved 1, 2, 4, 5, 6, 7, 8, 10;
+  reserved "from", "to", "signature", "scheme", "delegation_cert", "verification_outcome";
   reserved "attested_author_agent_id", "attested_verification_outcome";
+}
+
+message DirectEventDigest {
+  string content_hash = 1;
 }
 
 

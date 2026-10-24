@@ -24,7 +24,7 @@ fn main() {
         .file_descriptor_set_path(&descriptor_path)
         .compile_well_known_types()
         .extern_path(".google.protobuf", "::pbjson_types")
-        .extern_path(".identitycrypto.v1", "::identity_crypto::proto::identitycrypto::v1");
+        .extern_path(".identitycrypto.v1", "::identity_crypto::pb");
 
     config
         .compile_protos(
@@ -37,7 +37,7 @@ fn main() {
     pbjson_build::Builder::new()
         .register_descriptors(&descriptor_set)
         .expect("register descriptors")
-        .extern_path(".identitycrypto.v1", "::identity_crypto::proto::identitycrypto::v1")
+        .extern_path(".identitycrypto.v1", "::identity_crypto::pb")
         .build(&[".gait"])
         .expect("build pbjson serde");
 }
