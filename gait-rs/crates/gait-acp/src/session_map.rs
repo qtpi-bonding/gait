@@ -191,6 +191,15 @@ impl SessionMap {
         }
     }
 
+    /// Release a recorded `key` for `session_id`, for a turn that failed before
+    /// its trigger became durable: the prompt never ran, so a retry carrying
+    /// the same key must be accepted.
+    pub fn forget_idempotency_key(&self, session_id: &str, key: &str) {
+        if let Some(entry) = self.0.lock().unwrap().get_mut(session_id) {
+            entry.seen_idempotency_keys.remove(key);
+        }
+    }
+
     /// Store the turn's joinable thread so `drain` can reap it on teardown.
     pub fn set_turn_thread(&self, session_id: &str, join: std::thread::JoinHandle<()>) {
         if let Some(e) = self.0.lock().unwrap().get_mut(session_id) {
@@ -528,6 +537,17 @@ mod tests {
         assert!(!m.has_seen_idempotency_key("s", "k1"));
         m.record_idempotency_key("s", "k1");
         assert!(m.has_seen_idempotency_key("s", "k1"));
+    }
+
+    #[test]
+    fn forget_idempotency_key_releases_only_that_key() {
+        let m = SessionMap::new();
+        m.insert(PathBuf::from("/g/.gait"), "s".into(), PathBuf::from("/c"));
+        m.record_idempotency_key("s", "k1");
+        m.record_idempotency_key("s", "k2");
+        m.forget_idempotency_key("s", "k1");
+        assert!(!m.has_seen_idempotency_key("s", "k1"));
+        assert!(m.has_seen_idempotency_key("s", "k2"));
     }
 
     #[test]

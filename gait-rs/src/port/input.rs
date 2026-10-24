@@ -1,9 +1,10 @@
 use crate::proto::gait::log::v1::{Provenance, event};
 
 /// Core representation of one input message after transport parsing.
-/// Signature verification happens when the durable event is folded, using
-/// the complete event hash and this provenance. `rejected_provenance_claim`
-/// preserves the distinction between absent metadata and an invalid claim.
+/// Input provenance is attested only (a verified author id from ingress);
+/// direct signatures are made later, over the durable event, by the agent
+/// itself. `rejected_provenance_claim` preserves the distinction between
+/// absent metadata and an invalid claim.
 #[derive(Debug, Clone)]
 pub struct InputEnvelope {
     pub body: event::Body,

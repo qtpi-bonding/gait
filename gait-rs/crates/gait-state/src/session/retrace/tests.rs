@@ -1759,7 +1759,7 @@ fn active_raw_messages_omits_incoming_message_without_provenance() {
 }
 
 #[test]
-fn valid_direct_provenance_keeps_uniform_attribution() {
+fn valid_direct_provenance_never_renders_unsigned_context() {
     let now = wall_clock();
     let (_agent, ctx) = agent_fixture(now);
     let mut msg = scoped_mint(events::incoming_message("hello".into()), None, 0, 0);
@@ -1775,7 +1775,10 @@ fn valid_direct_provenance_keeps_uniform_attribution() {
     assert_eq!(attribution.len(), 1);
     assert_eq!(attribution[0].trust, Trust::Verified);
     assert_eq!(attribution[0].author_id, ctx.agent_id().to_string());
-    assert_eq!(attribution[0].context, "room-general");
+    assert_eq!(
+        attribution[0].context, "",
+        "context is unsigned, so a signed entry must not render it"
+    );
 }
 
 #[test]
@@ -2198,6 +2201,96 @@ fn active_raw_messages_agent_update_uses_provenance_not_session_id() {
     assert!(
         t.contains(&format!("[agent:{principal}]")) && !t.contains("s_old_field_ignored"),
         "rendered text must use the verified principal id, got: {t}"
+    );
+}
+
+#[test]
+fn signed_agent_update_without_a_verifier_folds_with_an_unverified_label() {
+    let now = wall_clock();
+    let (_agent, ctx) = agent_fixture(now);
+    let mut ev = scoped_mint(agent_update_body("child", "build finished"), None, 0, 0);
+    direct_signed(&ctx, &mut ev, "room-session", now);
+
+    let mut evs = session_log("room-session");
+    evs.push(ev);
+    let no_verifier = ActiveRawMessages {
+        verifier: None,
+        ..ActiveRawMessages::default()
+    };
+    let raw = run_projection(&no_verifier, &evs, &HashMap::new());
+
+    assert_eq!(raw.base.len(), 1, "an unverifiable signed update must be folded, not dropped");
+    let t = agent_update_text(&raw, 0);
+    assert!(
+        t.starts_with("[agent:unverified] status: done"),
+        "an unverifiable update renders the unverified label, got: {t}"
+    );
+    assert!(!t.contains(&ctx.agent_id().to_string()), "no principal id without a verdict, got: {t}");
+}
+
+#[test]
+fn signed_agent_update_with_a_verifier_folds_with_the_principal_id() {
+    let now = wall_clock();
+    let (_agent, ctx) = agent_fixture(now);
+    let mut ev = scoped_mint(agent_update_body("child", "build finished"), None, 0, 0);
+    direct_signed(&ctx, &mut ev, "room-session", now);
+
+    let mut evs = session_log("room-session");
+    evs.push(ev);
+    let raw = run_projection(&verifying_projection(&ctx), &evs, &HashMap::new());
+
+    let t = agent_update_text(&raw, 0);
+    assert!(
+        t.starts_with(&format!("[agent:{}] status: done", ctx.agent_id())),
+        "a verified update renders its principal id, got: {t}"
+    );
+}
+
+#[test]
+fn signed_daemon_update_without_a_verifier_folds_labelled_unverified() {
+    let now = wall_clock();
+    let (_agent, ctx) = agent_fixture(now);
+    let mut ev = scoped_mint(
+        events::daemon_update("svc".into(), 0, "done", "/tmp/svc.log".into(), "svc@1".into()),
+        None,
+        0,
+        0,
+    );
+    direct_signed(&ctx, &mut ev, "room-session", now);
+
+    let mut evs = session_log("room-session");
+    evs.push(ev);
+    let no_verifier = ActiveRawMessages {
+        verifier: None,
+        ..ActiveRawMessages::default()
+    };
+    let raw = run_projection(&no_verifier, &evs, &HashMap::new());
+
+    assert_eq!(raw.base.len(), 1, "an unverifiable signed daemon update must be folded");
+    let Message::User { content: MessageContent::Text(t), .. } = &raw.base[0] else {
+        panic!("expected a user message");
+    };
+    assert!(t.contains("[daemon:svc] [unverified]"), "got: {t}");
+
+    let raw = run_projection(&verifying_projection(&ctx), &evs, &HashMap::new());
+    let Message::User { content: MessageContent::Text(t), .. } = &raw.base[0] else {
+        panic!("expected a user message");
+    };
+    assert!(t.starts_with("[daemon:svc] done"), "verified update has no unverified label, got: {t}");
+}
+
+#[test]
+fn verdict_cache_is_keyed_by_session() {
+    let now = wall_clock();
+    let (_agent, ctx) = agent_fixture(now);
+    let mut ev = scoped_mint(events::incoming_message("x".into()), None, 0, 0);
+    direct_signed(&ctx, &mut ev, "room-session", now);
+    let projection = verifying_projection(&ctx);
+
+    assert!(projection.verified_author(&ev, "room-session").is_some());
+    assert!(
+        projection.verified_author(&ev, "other-session").is_none(),
+        "a verdict for one session must not be reused for another"
     );
 }
 

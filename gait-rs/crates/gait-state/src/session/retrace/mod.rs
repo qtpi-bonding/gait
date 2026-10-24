@@ -204,10 +204,10 @@ pub struct AgentState {
     pub session_plugins: std::collections::HashSet<String>,
     /// Per-session cross-message accept-policy delta, folded as an OR-Set from
     /// `MessageAccept` events (same shape/pattern as `Registry` above). A
-    /// sender is accepted for cross-session `Provenance.to` delivery either
-    /// because it's in this set (explicit grant) or because it's an
-    /// established spawn-hierarchy relation (checked separately by the
-    /// caller — see `accepts_sender`).
+    /// sender is accepted either because it's in this set (explicit grant) or
+    /// because it's an established spawn-hierarchy relation (checked
+    /// separately by the caller — see `accepts_sender`). Open design item:
+    /// `Provenance.to` is gone, so this set is slated for deletion or retyping.
     pub accepted_senders: std::collections::HashSet<Vec<u8>>,
 }
 
@@ -328,8 +328,8 @@ impl Projection for ActiveAgent {
                 }
             }
             // MessageAccept is a per-session accept-policy OR-Set delta —
-            // same shape as Registry above, gating cross-session
-            // `Provenance.to` delivery instead of loadable registration.
+            // same shape as Registry above, gating cross-session delivery
+            // instead of loadable registration.
             payload::Kind::MessageAccept(m) => {
                 if m.granted {
                     st.accepted_senders.insert(m.sender.clone());
@@ -342,7 +342,7 @@ impl Projection for ActiveAgent {
     }
 }
 
-/// Default accept-policy for cross-session `Provenance.to` delivery: a
+/// Default accept-policy for cross-session delivery: a
 /// session accepts, without any `MessageAccept` entries, only from its own
 /// spawn-hierarchy relations (established via `SessionStart.assigned_by`,
 /// checked by the caller and passed in as `is_spawn_relation`) — anything
@@ -549,13 +549,10 @@ impl MessagesState {
                 pb::AgentStatus::Unspecified => "unspecified",
             })
             .unwrap_or("unspecified");
-        // Task 6 (cross-session message attribution): source the rendered
-        // sender from Event.provenance when present (the new durable identity
-        // field), falling back to the (now-vestigial, slated for removal in
-        // Task 9) au.session_id only when no provenance is attached. The
-        // Provenance.from is raw public-key bytes; render_sender() hex-encodes it
-        // with a scheme label.
-        // (e.g. "agent:s1234abcd"); see the plan's Global Constraints.
+        // Source the rendered sender from Event.provenance when present (the
+        // ingress-attested author id), falling back to the (vestigial)
+        // au.session_id only when no provenance is attached. This test-only
+        // projection does not verify signatures; see ActiveRawMessages.
         let sender = ev
             .provenance
             .first()
@@ -769,13 +766,13 @@ impl Projection for ActiveMessages {
 ///
 /// `verifier` decides whether a signed event (`Provenance.signed_message`) was
 /// really signed for this session. `verdicts` caches that decision per
-/// `(event.id, content_hash)` for one fold, so each event is verified once.
+/// `(event.id, content_hash, session_id)` for one fold, so each event is verified once.
 pub struct ActiveRawMessages {
     pub verifier: Option<Arc<dyn gait_identity::ProvenanceVerifier>>,
     /// The `SessionStart` session id, mirrored here because a `Summary`
     /// checkpoint replaces the whole state and would otherwise drop it.
     session_id: RefCell<String>,
-    verdicts: RefCell<HashMap<(String, String), Option<String>>>,
+    verdicts: RefCell<HashMap<(String, String, String), Option<String>>>,
     warned: Cell<bool>,
 }
 
@@ -794,7 +791,8 @@ impl ActiveRawMessages {
     /// The principal id the verifier derives for a signed event, or `None` when
     /// there is no verifier or the signature does not verify for `session_id`.
     fn verified_author(&self, ev: &Event, session_id: &str) -> Option<String> {
-        let key = (ev.id.clone(), ev.content_hash.clone());
+        // The verdict also depends on the audience, so the session id is part of the key.
+        let key = (ev.id.clone(), ev.content_hash.clone(), session_id.to_string());
         if let Some(cached) = self.verdicts.borrow().get(&key) {
             return cached.clone();
         }
@@ -824,11 +822,12 @@ impl ActiveRawMessages {
         }
     }
 
-    /// Whole-event gate for AgentUpdate/DaemonUpdate: a signed event that does
-    /// not verify is not folded. Unsigned provenance passes as before.
-    fn event_provenance_is_acceptable(&self, ev: &Event, session_id: &str) -> bool {
+    /// True for a signed event whose signature does not verify (or has no
+    /// verifier). AgentUpdate/DaemonUpdate still fold such an event, labelled
+    /// `unverified`, so the model sees that something reported in.
+    fn is_unverifiable_signed(&self, ev: &Event, session_id: &str) -> bool {
         let signed = ev.provenance.iter().any(|p| p.signed_message.is_some());
-        !signed || self.verified_author(ev, session_id).is_some()
+        signed && self.verified_author(ev, session_id).is_none()
     }
 
     fn fold_user_text(
@@ -850,7 +849,12 @@ impl ActiveRawMessages {
             let trust = if author.is_some() { Trust::Verified } else { Trust::Unverified };
             attribution.push(Attribution {
                 author_id: author.unwrap_or_else(|| "unverified".to_string()),
-                context: p.context.clone(),
+                // `context` is unsigned, so a signed entry never renders it.
+                context: if p.signed_message.is_some() {
+                    String::new()
+                } else {
+                    p.context.clone()
+                },
                 trust,
             });
         }
@@ -940,9 +944,6 @@ impl Projection for ActiveRawMessages {
                 attribution: Vec::new(),
             }),
             payload::Kind::AgentUpdate(au) => {
-                if !self.event_provenance_is_acceptable(ev, &st.session_id) {
-                    return;
-                }
                 let status = pb::AgentStatus::try_from(au.status)
                     .map(|s| match s {
                         pb::AgentStatus::Done => "done",
@@ -951,16 +952,18 @@ impl Projection for ActiveRawMessages {
                         pb::AgentStatus::Unspecified => "unspecified",
                     })
                     .unwrap_or("unspecified");
-                // Cross-session message attribution: source the rendered sender from
-                // Event.provenance when present (the durable identity field),
-                // falling back to the (now-vestigial, slated for removal) au.session_id
-                // only when no provenance is attached. Provenance.from is raw
-                // public-key bytes; render_sender() hex-encodes it with a scheme label.
+                // Cross-session message attribution: the sender is the verified
+                // principal id, the ingress-attested author id, `unverified` for a
+                // signed entry that does not verify, and the (vestigial)
+                // au.session_id only when no provenance is attached.
                 let sender = ev
                     .provenance
                     .first()
                     .map(|p| {
                         let principal = self.trusted_author(ev, p, &st.session_id);
+                        if p.signed_message.is_some() && principal.is_none() {
+                            return "unverified".to_string();
+                        }
                         render_sender(p, principal.as_deref())
                     })
                     .unwrap_or_else(|| au.session_id.clone());
@@ -979,9 +982,7 @@ impl Projection for ActiveRawMessages {
                 });
             }
             payload::Kind::DaemonUpdate(du) => {
-                if !self.event_provenance_is_acceptable(ev, &st.session_id) {
-                    return;
-                }
+                let unverified = self.is_unverifiable_signed(ev, &st.session_id);
                 let status = pb::DaemonStatus::try_from(du.status)
                     .map(|s| match s {
                         pb::DaemonStatus::Done => "done",
@@ -989,9 +990,10 @@ impl Projection for ActiveRawMessages {
                         pb::DaemonStatus::Unspecified => "unspecified",
                     })
                     .unwrap_or("unspecified");
+                let label = if unverified { " [unverified]" } else { "" };
                 let content = format!(
-                    "[daemon:{}] {} — exit {} — log: {}",
-                    du.name, status, du.exit_code, du.log_path
+                    "[daemon:{}]{} {} — exit {} — log: {}",
+                    du.name, label, status, du.exit_code, du.log_path
                 );
                 st.base.push(Message::User {
                     content: MessageContent::Text(content),

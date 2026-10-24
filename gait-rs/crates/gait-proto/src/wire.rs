@@ -43,7 +43,8 @@ pub fn read_events(path: &Path) -> anyhow::Result<Vec<Event>> {
         if line.trim().is_empty() {
             continue;
         }
-        let event = serde_json::from_str::<Event>(line)?;
+        let event = serde_json::from_str::<Event>(line)
+            .map_err(|error| explain_parse_error(error, events.len() + 1))?;
         if event.version != LOG_VERSION {
             anyhow::bail!(
                 "unsupported event log version {} at line {}; expected {}",
@@ -61,6 +62,21 @@ pub fn read_events(path: &Path) -> anyhow::Result<Vec<Event>> {
         events.push(event);
     }
     Ok(events)
+}
+
+/// A log line that names a removed `Provenance` field (`signature`, `scheme`,
+/// `from`, ...) was written by the pre-p256 identity format. Say so, and say
+/// what to do, instead of surfacing a bare "unknown field" parse error.
+fn explain_parse_error(error: serde_json::Error, line: usize) -> anyhow::Error {
+    let text = error.to_string();
+    let provenance_field = text.contains("signedMessage") || text.contains("verifiedAuthorId");
+    if text.contains("unknown field") && provenance_field {
+        return anyhow::anyhow!(
+            "session log uses a removed identity format (line {line}: {text}); \
+             wipe the gait workspace (pre-MVP, no migration)"
+        );
+    }
+    anyhow::Error::new(error)
 }
 
 /// The last event in the file, or `None` if empty/absent.
@@ -365,6 +381,29 @@ mod tests {
         provenance.insert("context".into(), serde_json::json!("room"));
         current["provenance"] = serde_json::Value::Array(vec![serde_json::Value::Object(provenance)]);
         serde_json::from_value::<Event>(current).expect("context remains a valid provenance field");
+    }
+
+    #[test]
+    fn read_events_explains_a_log_with_a_removed_identity_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.jsonl");
+        let event = append(&path, simple_body()).unwrap();
+        let mut json = serde_json::to_value(&event).unwrap();
+        json["provenance"] = serde_json::json!([{ "signature": "b2xk", "scheme": 1 }]);
+        std::fs::write(&path, format!("{}\n", json)).unwrap();
+
+        let error = read_events(&path).expect_err("a removed provenance field must not parse");
+        let message = error.to_string();
+        assert!(
+            message.contains("session log uses a removed identity format")
+                && message.contains("wipe the gait workspace"),
+            "the error must be actionable, got: {message}"
+        );
+
+        // An unrelated parse failure keeps its own error.
+        std::fs::write(&path, "not json\n").unwrap();
+        let message = read_events(&path).unwrap_err().to_string();
+        assert!(!message.contains("removed identity format"), "got: {message}");
     }
 
     #[test]

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 /// How much trust a `Message::User`'s attribution carries, computed once at
 /// fold time from the durable `Provenance` on the log. Deliberately a
-/// Two-state rendering of message attribution.
+/// two-state rendering of message attribution.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Trust {
@@ -22,9 +22,9 @@ impl Trust {
 }
 
 /// The model-facing summary of one `Provenance` entry — computed once, at
-/// fold time, from the durable `Provenance` on the log (either via
-/// `gait_identity::verify_provenance` for a direct signature). NOT itself
-/// persisted; recomputed from the log on every fold.
+/// fold time, from the durable `Provenance` on the log (a direct signature
+/// verified by `gait_identity::ProvenanceVerifier`, or an ingress-attested
+/// author id). NOT itself persisted; recomputed from the log on every fold.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Attribution {
     pub author_id: String,

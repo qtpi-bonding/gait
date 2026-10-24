@@ -560,8 +560,10 @@ impl BrainDriver {
         let profile = self.profile.take().ok_or_else(|| {
             anyhow::anyhow!("BrainDriver::resolve_profile called more than once (single-shot)")
         })?;
-        // The sealed brain is a process entry: it owns the agent dir.
-        let identity = gait_identity::IdentityContext::from_env()?.map(std::sync::Arc::new);
+        // The sealed brain must not touch the agent dir: it is outside the seal's
+        // read scope. Verification uses the public-only DirectVerifier snapshot the
+        // process entry built before sealing, and sealed spawns/notifies sign in
+        // the spine through its TurnCtx identity, so no identity is passed here.
         profile
             .resolve(
                 self.codebase.clone(),
@@ -569,7 +571,7 @@ impl BrainDriver {
                 self.gait_dir.clone(),
                 self.repos.clone(),
                 self.credential.clone(),
-                identity,
+                None,
             )
             .await
     }

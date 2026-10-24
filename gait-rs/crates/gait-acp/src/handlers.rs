@@ -198,11 +198,9 @@ pub fn build_agent_with_attestation(
                                 "session already has an in-flight turn: {sid}"
                             ));
                         }
-                        // Verify the attestation before recording the key: the
-                        // key is recorded at the same point the replay sequence
-                        // is confirmed (once the batch is durable, below).
-                        // Verification records nothing; the confirmation travels
-                        // with the batch as its `on_durable` closure.
+                        // Verification records nothing; the replay-sequence
+                        // confirmation travels with the batch as its
+                        // `on_durable` closure.
                         let verified = crate::attestation::verify_prompt(
                             attestor.as_deref(),
                             &req.meta,
@@ -210,7 +208,12 @@ pub fn build_agent_with_attestation(
                         // Only now -- past every admission check, committed to
                         // actually running this turn -- record the idempotency
                         // key. Recording earlier would permanently blacklist a
-                        // key whose prompt was rejected above and never ran.
+                        // key whose prompt was rejected above and never ran. If
+                        // the turn then fails before its trigger is durable the
+                        // key is released again (see the turn thread below), so
+                        // a retry with the same key is accepted.
+                        let batch_durable =
+                            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                         if let Some(key) = &idempotency_key {
                             map.record_idempotency_key(&sid, key);
                         }
@@ -265,7 +268,16 @@ pub fn build_agent_with_attestation(
                             // prompt content must never have that different
                             // text executed.
                             Ok(Some(batch)) => {
-                                let (messages, on_durable) = batch.into_parts();
+                                let (messages, confirm) = batch.into_parts();
+                                let durable_flag = batch_durable.clone();
+                                let on_durable: gait_core::port::input::OnDurable =
+                                    Box::new(move || {
+                                        // The batch is in the log from here on, so its
+                                        // idempotency key must stay recorded.
+                                        durable_flag
+                                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                                        confirm()
+                                    });
                                 TurnInput::AttestedMessages {
                                     bodies: messages
                                         .into_iter()
@@ -294,6 +306,8 @@ pub fn build_agent_with_attestation(
                         map.set_cancel(&sid, cancel.clone());
                         let map_thread = map.clone();
                         let sid_thread = sid.clone();
+                        let key_thread = idempotency_key.clone();
+                        let durable_thread = batch_durable.clone();
                         let caps_thread = caps.clone();
                         let join = std::thread::spawn(move || {
                             // The TurnSource is created AND driven entirely on this
@@ -366,6 +380,15 @@ pub fn build_agent_with_attestation(
                                 ),
                             );
                             map_thread.take_cascade(&sid_thread);
+                            // A failed turn whose trigger never became durable did not
+                            // run, so release its idempotency key for the retry.
+                            if outcome.is_err()
+                                && !durable_thread.load(std::sync::atomic::Ordering::SeqCst)
+                            {
+                                if let Some(key) = &key_thread {
+                                    map_thread.forget_idempotency_key(&sid_thread, key);
+                                }
+                            }
                             let stop = if map_thread.was_cancelled(&sid_thread) {
                                 // Cancel wins over whatever the sink captured (or didn't):
                                 // spec requires Cancelled "even if cancellation causes

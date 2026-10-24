@@ -49,22 +49,24 @@ fn parse_attestation_flags(
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let raw: Vec<String> = std::env::args().collect();
+    // The identity and process verifier are installed BEFORE role dispatch: a
+    // turn spawns `current_exe() __brain`, and the brain folds signed events.
+    let identity = gait_identity::IdentityContext::from_env()?;
+    if let Some(ctx) = &identity {
+        gait_state::session::retrace::install_process_verifier(Arc::new(
+            gait_identity::DirectVerifier::from_context(ctx)?,
+        ));
+    }
     if raw.len() >= 2 && gait_core::is_role_argv(&raw[1..]) {
         gait_core::__dispatch_role(&raw[1..]).await;
         return Ok(());
     }
     let (require_attestation, trusted_keys) = parse_attestation_flags(&raw[1..])?;
-    let identity = gait_identity::IdentityContext::from_env()?;
     if require_attestation && identity.is_none() {
         bail!("--require-attestation needs an agent identity: set GAIT_AGENT_DIR to the agent directory");
     }
     let attestor = match identity {
-        Some(ctx) => {
-            gait_state::session::retrace::install_process_verifier(Arc::new(
-                gait_identity::DirectVerifier::from_context(&ctx)?,
-            ));
-            Some(Arc::new(Attestor::open(ctx.agent_dir(), trusted_keys)?))
-        }
+        Some(ctx) => Some(Arc::new(Attestor::open(ctx.agent_dir(), trusted_keys)?)),
         None => None,
     };
     gait_acp::run_with_attestation(require_attestation, attestor).await

@@ -29,7 +29,7 @@ use identity_crypto::jwk_duo::{KeyDuoSerializer, ValidationService};
 use identity_crypto::{PrincipalId, PublicKey};
 use message_attestation::{
     AttestationError, AttestationPolicy, DEFAULT_META_KEY, FileReplayStore, PendingSequence,
-    Verified, confirm, verify_attestation,
+    ReplayStore, Verified, confirm, verify_attestation,
 };
 
 /// The per-agent replay store, inside the agent directory. One file per agent,
@@ -125,6 +125,17 @@ impl Attestor {
         &self,
         meta: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Option<VerifiedBatch>> {
+        self.verify_with_gap(meta, || {})
+    }
+
+    /// [`Attestor::verify`] with a hook that runs between reading the replay
+    /// store and claiming the sequence, so a test can interleave another
+    /// session's confirmation exactly there.
+    fn verify_with_gap(
+        &self,
+        meta: &serde_json::Map<String, serde_json::Value>,
+        between_read_and_claim: impl FnOnce(),
+    ) -> Result<Option<VerifiedBatch>> {
         let keys = identity_keyfile::AgentKeys::load(&self.agent_dir)
             .with_context(|| format!("load agent identity from {}", self.agent_dir.display()))?;
         let own_devices = identity_keyfile::device_keys_at(&keys, now_unix());
@@ -142,7 +153,20 @@ impl Attestor {
         else {
             return Ok(None);
         };
+        between_read_and_claim();
         let claim = self.claim(&delivery.key_id, delivery.batch_sequence)?;
+        // Another session may have confirmed this sequence (and dropped its claim)
+        // after the replay read above and before our claim. Re-read under the
+        // claim: from here on no other session can confirm it concurrently.
+        if let Some(last) = self.replay.last_seen(&self.scope, &delivery.key_id)? {
+            if delivery.batch_sequence <= last {
+                bail!(
+                    "attested batch {}#{} was already confirmed (last {last}); replay rejected",
+                    delivery.key_id,
+                    delivery.batch_sequence
+                );
+            }
+        }
         let messages = delivery
             .messages
             .into_iter()
@@ -457,6 +481,41 @@ mod tests {
                 .verify(&batch_meta(&central, &old_device, 2))
                 .is_err(),
             "a batch addressed to a device retired before now is rejected"
+        );
+    }
+
+    #[test]
+    fn a_batch_confirmed_between_the_replay_read_and_the_claim_is_rejected() {
+        let now = now_unix();
+        let agent = TempAgentDir::new(now, 86_400);
+        let (central, trusted) = trusted_central();
+        let attestor = Attestor::open(agent.path(), vec![trusted]).unwrap();
+        let device = identity_keyfile::device_keys_at(&agent.load().unwrap(), now)[0].clone();
+        let meta = batch_meta(&central, &device, 1);
+
+        // Session A claims the batch and will confirm it.
+        let (_messages, a_confirm) = attestor
+            .verify(&meta)
+            .unwrap()
+            .expect("the batch verifies")
+            .into_parts();
+        let mut a_confirm = Some(a_confirm);
+
+        // Session B has read the replay store (nothing confirmed yet) when A
+        // confirms and releases its claim; only then does B try to claim.
+        let error = attestor
+            .verify_with_gap(&meta, || {
+                (a_confirm.take().unwrap())().unwrap();
+            })
+            .err()
+            .expect("a batch confirmed after the replay read must not be accepted again");
+        assert!(
+            error.to_string().contains("already confirmed"),
+            "the rejection names the replay: {error}"
+        );
+        assert!(
+            attestor.verify(&meta).is_err(),
+            "the claim B took is released, and the sequence stays burned"
         );
     }
 

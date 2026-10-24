@@ -67,14 +67,6 @@ impl NativeHarnessBackend {
         self.notify_tx = Some(tx);
         self
     }
-
-    pub fn with_identity(
-        mut self,
-        identity: Option<std::sync::Arc<gait_identity::IdentityContext>>,
-    ) -> Self {
-        self.identity = identity;
-        self
-    }
 }
 
 #[async_trait::async_trait]

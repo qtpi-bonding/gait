@@ -500,6 +500,58 @@ async fn confirm_not_called_when_append_fails() {
     assert_eq!(fixture.replay_last_seen(), Some(1));
 }
 
+/// A prompt whose trigger could not be appended never ran, so a redelivery that
+/// carries the SAME `gait/idempotency_key` must not be refused as already seen.
+#[tokio::test]
+async fn idempotency_key_is_released_when_the_append_fails() {
+    set_brain_exe();
+    let (_temp, home, repo) = workspace(Path::new("/tmp"));
+    bake_say_hi(&home);
+    let mut meta = Map::new();
+    meta.insert("gait/idempotency_key".to_string(), Value::String("retry-k1".into()));
+
+    let map = SessionMap::new();
+    let (channel, server) =
+        gait_acp::handlers::build_agent_with_attestation(map.clone(), false, None)
+            .into_channel_and_future();
+    tokio::spawn(server);
+    let probe = map.clone();
+    let (first_ok, seen_after_failure, retry_error) = Client
+        .connect_with(channel, async |cx| {
+            let sid = cx
+                .send_request(NewSessionRequest::new(repo.clone()))
+                .block_task()
+                .await?
+                .session_id;
+            // A directory sits where the session log goes: the append fails.
+            let path = gait_state::session::live::log_path(&home, &sid.0);
+            std::fs::create_dir_all(&path).unwrap();
+            let request = PromptRequest::new(sid.clone(), vec!["hello".to_string().into()])
+                .meta(meta.clone());
+            let first_ok = cx.send_request(request.clone()).block_task().await.is_ok();
+            let seen_after_failure = probe.has_seen_idempotency_key(&sid.0, "retry-k1");
+
+            std::fs::remove_dir_all(&path).unwrap();
+            let retry_error = cx.send_request(request).block_task().await.err();
+            Ok((first_ok, seen_after_failure, retry_error))
+        })
+        .await
+        .expect("connection stays up");
+    assert!(!first_ok, "the prompt fails when its trigger cannot be appended");
+    assert!(
+        !seen_after_failure,
+        "a prompt that never ran must not keep its idempotency key"
+    );
+    if let Some(error) = retry_error {
+        // -32001 is idempotency::ALREADY_SEEN_ERROR_CODE.
+        assert_ne!(
+            i32::from(error.code),
+            -32001,
+            "the retry must not be refused as already seen: {error:?}"
+        );
+    }
+}
+
 /// The same batch delivered to two sessions of one process, concurrently, is
 /// accepted once. Whichever arrives second is rejected, either by the
 /// in-flight claim (if the first is not yet durable) or by replay.

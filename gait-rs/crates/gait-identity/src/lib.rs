@@ -76,20 +76,53 @@ pub trait ProvenanceVerifier: Send + Sync {
     fn verify_direct(&self, ev: &Event, session_id: &str) -> Option<PrincipalId>;
 }
 
+/// A public-only snapshot of the device set, built once at construction.
+///
+/// It holds no private key material and touches no file afterwards, so a process
+/// can build it before sealing its sandbox and keep verifying inside the seal.
 pub struct DirectVerifier {
-    agent_dir: PathBuf,
+    agent_id: PrincipalId,
+    current_device: PublicKey,
+    /// Retired signing public keys with their `retired_at_unix_seconds`.
+    retired: Vec<(PublicKey, i64)>,
 }
 
 impl DirectVerifier {
     pub fn from_context(ctx: &IdentityContext) -> Result<Self> {
-        ctx.keys()?;
-        Ok(Self { agent_dir: ctx.agent_dir.clone() })
+        let keys = ctx.keys()?;
+        let current_device = identity_crypto::signing_public(&keys.device);
+        let mut retired = Vec::new();
+        for entry in &keys.retired {
+            // An unparsable or missing retired key is dropped (fail closed), the
+            // same as identity_keyfile::device_keys_at.
+            let Some(wire) = &entry.signing else {
+                continue;
+            };
+            let Ok(public) = PublicKey::try_from(wire) else {
+                continue;
+            };
+            retired.push((public, entry.retired_at_unix_seconds));
+        }
+        Ok(Self { agent_id: keys.agent_id, current_device, retired })
+    }
+
+    /// The accepted device set at `at` seconds; same rule as
+    /// `identity_keyfile::device_keys_at` (retired devices count up to and
+    /// including their retirement second).
+    fn devices_at(&self, at: i64) -> Vec<PublicKey> {
+        let mut devices = vec![self.current_device.clone()];
+        for (public, retired_at) in &self.retired {
+            if *retired_at < at || devices.contains(public) {
+                continue;
+            }
+            devices.push(public.clone());
+        }
+        devices
     }
 
     fn verify(&self, ev: &Event, session_id: &str) -> Option<PrincipalId> {
-        let keys = identity_keyfile::AgentKeys::load(&self.agent_dir).ok()?;
-        let devices = identity_keyfile::device_keys_at(&keys, (ev.ts / 1000) as i64);
-        verify_direct_provenance(ev, &devices, session_id)
+        let devices = self.devices_at((ev.ts / 1000) as i64);
+        verify_direct_provenance(ev, self.agent_id.genesis(), &devices, session_id)
     }
 }
 
@@ -99,9 +132,11 @@ impl ProvenanceVerifier for DirectVerifier {
     }
 }
 
-/// Verify a direct signed event against the receiver's accepted device set.
+/// Verify a direct signed event against the receiver's own principal genesis and
+/// accepted device set. The author genesis is never read from the message.
 pub fn verify_direct_provenance(
     ev: &Event,
+    author_genesis: &PublicKey,
     devices: &[PublicKey],
     session_id: &str,
 ) -> Option<PrincipalId> {
@@ -114,16 +149,10 @@ pub fn verify_direct_provenance(
     if digest.content_hash != ev.content_hash || msg.nonce != message_nonce(&ev.id) {
         return None;
     }
-    let signer = msg.signer.as_ref()?.chain.as_ref()?;
-    let cert = match signer {
-        identity_crypto::pb::signer_chain::Chain::SelfRooted(s) => s.session.as_ref()?,
-        _ => return None,
-    };
-    let genesis = identity_crypto::PublicKey::try_from(cert.principal_genesis.as_ref()?).ok()?;
     let verified = verify_signed_message_trusted_devices(
         msg,
         session_id,
-        AuthorDevices { author_genesis: &genesis, devices },
+        AuthorDevices { author_genesis, devices },
         When::Accepted(AcceptedAt::from_receiver_record((ev.ts / 1000) as i64)),
     ).ok()?;
     Some(PrincipalId::from_genesis(verified.author_genesis().clone()))
@@ -236,8 +265,8 @@ mod tests {
             60,
         );
         let devices = identity_keyfile::device_keys_at(&fixture.load().unwrap(), now - 31);
-        assert!(verify_direct_provenance(&too_early, &devices, "s").is_none());
-        assert!(verify_direct_provenance(&inside, &devices, "s").is_some());
+        assert!(verify_direct_provenance(&too_early, ctx.agent_id().genesis(), &devices, "s").is_none());
+        assert!(verify_direct_provenance(&inside, ctx.agent_id().genesis(), &devices, "s").is_some());
     }
 
     #[test]
@@ -265,8 +294,8 @@ mod tests {
             ttl,
         );
         let devices = identity_keyfile::device_keys_at(&fixture.load().unwrap(), now + ttl);
-        assert!(verify_direct_provenance(&too_late, &devices, "s").is_none());
-        assert!(verify_direct_provenance(&at_end, &devices, "s").is_some());
+        assert!(verify_direct_provenance(&too_late, ctx.agent_id().genesis(), &devices, "s").is_none());
+        assert!(verify_direct_provenance(&at_end, ctx.agent_id().genesis(), &devices, "s").is_some());
     }
 
     #[test]
@@ -275,8 +304,8 @@ mod tests {
         let ctx = IdentityContext::new(fixture.path()).unwrap();
         let ev = signed(&ctx, "event-session", 1_000_000, "hash", "right", 1_000, 60);
         let devices = identity_keyfile::device_keys_at(&fixture.load().unwrap(), 1_000);
-        assert!(verify_direct_provenance(&ev, &devices, "wrong").is_none());
-        assert!(verify_direct_provenance(&ev, &devices, "right").is_some());
+        assert!(verify_direct_provenance(&ev, ctx.agent_id().genesis(), &devices, "wrong").is_none());
+        assert!(verify_direct_provenance(&ev, ctx.agent_id().genesis(), &devices, "right").is_some());
     }
 
     #[test]
@@ -286,7 +315,7 @@ mod tests {
         let mut ev = signed(&ctx, "event-hash", 1_000_000, "original", "s", 1_000, 60);
         let devices = identity_keyfile::device_keys_at(&fixture.load().unwrap(), 1_000);
         ev.content_hash = "tampered".into();
-        assert!(verify_direct_provenance(&ev, &devices, "s").is_none());
+        assert!(verify_direct_provenance(&ev, ctx.agent_id().genesis(), &devices, "s").is_none());
     }
 
     #[test]
@@ -296,7 +325,7 @@ mod tests {
         let mut ev = signed(&ctx, "event-nonce", 1_000_000, "hash", "s", 1_000, 60);
         let devices = identity_keyfile::device_keys_at(&fixture.load().unwrap(), 1_000);
         ev.id = "different-id".into();
-        assert!(verify_direct_provenance(&ev, &devices, "s").is_none());
+        assert!(verify_direct_provenance(&ev, ctx.agent_id().genesis(), &devices, "s").is_none());
     }
 
     #[test]
@@ -307,19 +336,65 @@ mod tests {
         let ev = signed(&ctx, "event-device", 1_000_000, "hash", "s", 1_000, 60);
         let real = identity_keyfile::device_keys_at(&fixture.load().unwrap(), 1_000);
         let unrelated = identity_keyfile::device_keys_at(&other.load().unwrap(), 1_000);
-        assert!(verify_direct_provenance(&ev, &[], "s").is_none());
-        assert!(verify_direct_provenance(&ev, &unrelated, "s").is_none());
-        assert!(verify_direct_provenance(&ev, &real, "s").is_some());
+        assert!(verify_direct_provenance(&ev, ctx.agent_id().genesis(), &[], "s").is_none());
+        assert!(verify_direct_provenance(&ev, ctx.agent_id().genesis(), &unrelated, "s").is_none());
+        assert!(verify_direct_provenance(&ev, ctx.agent_id().genesis(), &real, "s").is_some());
     }
 
     #[test]
     fn other_principals_genesis_is_rejected() {
-        let first = TempAgentDir::new(1_000, 3_600);
-        let second = TempAgentDir::new(1_000, 3_600);
-        let ctx = IdentityContext::new(first.path()).unwrap();
-        let ev = signed(&ctx, "event-principal", 1_000_000, "hash", "s", 1_000, 60);
-        let devices = identity_keyfile::device_keys_at(&second.load().unwrap(), 1_000);
-        assert!(verify_direct_provenance(&ev, &devices, "s").is_none());
+        let fixture = TempAgentDir::new(1_000, 3_600);
+        let ctx = IdentityContext::new(fixture.path()).unwrap();
+        let keys = ctx.keys().unwrap();
+        // The own device signs a session under ANOTHER principal's genesis.
+        let other = TempAgentDir::new(1_000, 3_600);
+        let other_genesis = other.load().unwrap().agent_id.genesis().clone();
+        assert_ne!(&other_genesis, ctx.agent_id().genesis());
+        let ev = Event {
+            id: "event-principal".into(),
+            ts: 1_000_000,
+            content_hash: "hash".into(),
+            ..Default::default()
+        };
+        let session = mint_session(keys.device.signing_key_pair(), &other_genesis, 1_000, 1_060)
+            .unwrap();
+        let digest = DirectEventDigest { content_hash: ev.content_hash.clone() };
+        let message = session
+            .sign_message(
+                Some(keys.delegation.clone()),
+                "s",
+                message_nonce(&ev.id),
+                1_000,
+                None,
+                DIRECT_BODY_TYPE,
+                &digest.encode_to_vec(),
+            )
+            .unwrap();
+        let forged = Event {
+            provenance: vec![Provenance { signed_message: Some(message), ..Default::default() }],
+            ..ev
+        };
+        let devices = identity_keyfile::device_keys_at(&keys, 1_000);
+        assert!(verify_direct_provenance(&forged, ctx.agent_id().genesis(), &devices, "s").is_none());
+        let verifier = DirectVerifier::from_context(&ctx).unwrap();
+        assert!(verifier.verify_direct(&forged, "s").is_none());
+    }
+
+    #[test]
+    fn verifier_works_after_the_agent_dir_becomes_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = TempAgentDir::new(1_000, 3_600);
+        let ctx = IdentityContext::new(fixture.path()).unwrap();
+        let ev = signed(&ctx, "event-sealed", 1_000_000, "hash", "s", 1_000, 60);
+        let verifier = DirectVerifier::from_context(&ctx).unwrap();
+        let original = std::fs::metadata(fixture.path()).unwrap().permissions();
+        std::fs::set_permissions(fixture.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
+        let sealed = identity_keyfile::AgentKeys::load(fixture.path()).is_err();
+        let verified = verifier.verify_direct(&ev, "s");
+        std::fs::set_permissions(fixture.path(), original).unwrap();
+        assert!(sealed, "chmod 000 must make the agent dir unloadable (tests do not run as root)");
+        assert_eq!(verified, Some(ctx.agent_id().clone()));
     }
 
     #[test]
@@ -331,7 +406,7 @@ mod tests {
         identity_keyfile::AgentKeys::renew(fixture.path(), t + 100, 3_600, true).unwrap();
         let reloaded = fixture.load().unwrap();
         let devices = identity_keyfile::device_keys_at(&reloaded, t);
-        assert_eq!(verify_direct_provenance(&ev, &devices, "s"), Some(ctx.agent_id().clone()));
+        assert_eq!(verify_direct_provenance(&ev, ctx.agent_id().genesis(), &devices, "s"), Some(ctx.agent_id().clone()));
     }
 
     #[test]
@@ -343,7 +418,7 @@ mod tests {
         identity_keyfile::AgentKeys::renew(fixture.path(), t + 100, 3_600, true).unwrap();
         let reloaded = fixture.load().unwrap();
         let devices = identity_keyfile::device_keys_at(&reloaded, t + 101);
-        assert!(verify_direct_provenance(&ev, &devices, "s").is_none());
+        assert!(verify_direct_provenance(&ev, ctx.agent_id().genesis(), &devices, "s").is_none());
     }
 
     #[test]
@@ -361,7 +436,7 @@ mod tests {
             "type.googleapis.com/other.Body",
         );
         let devices = identity_keyfile::device_keys_at(&fixture.load().unwrap(), 1_000);
-        assert!(verify_direct_provenance(&ev, &devices, "s").is_none());
+        assert!(verify_direct_provenance(&ev, ctx.agent_id().genesis(), &devices, "s").is_none());
     }
 
     #[test]
@@ -373,8 +448,8 @@ mod tests {
         let mut garbage = signed(&ctx, "event-garbage", 1_000_000, "hash", "s", 1_000, 60);
         garbage.provenance[0].signed_message.as_mut().unwrap().body = vec![0xff, 0x00, 0x7f];
         let devices = identity_keyfile::device_keys_at(&fixture.load().unwrap(), 1_000);
-        assert!(verify_direct_provenance(&empty, &devices, "s").is_none());
-        assert!(verify_direct_provenance(&garbage, &devices, "s").is_none());
+        assert!(verify_direct_provenance(&empty, ctx.agent_id().genesis(), &devices, "s").is_none());
+        assert!(verify_direct_provenance(&garbage, ctx.agent_id().genesis(), &devices, "s").is_none());
     }
 
     #[test]
@@ -383,7 +458,7 @@ mod tests {
         let ctx = IdentityContext::new(fixture.path()).unwrap();
         let ev = signed(&ctx, "event-author", 1_000_000, "hash", "s", 1_000, 60);
         let devices = identity_keyfile::device_keys_at(&fixture.load().unwrap(), 1_000);
-        let author = verify_direct_provenance(&ev, &devices, "s").unwrap();
+        let author = verify_direct_provenance(&ev, ctx.agent_id().genesis(), &devices, "s").unwrap();
         assert_eq!(&author, ctx.agent_id());
         assert!(author.to_string().starts_with("p256:"));
     }
