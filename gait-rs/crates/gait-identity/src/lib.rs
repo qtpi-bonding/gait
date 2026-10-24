@@ -34,6 +34,10 @@ impl IdentityContext {
         &self.agent_id
     }
 
+    pub fn agent_dir(&self) -> &std::path::Path {
+        &self.agent_dir
+    }
+
     fn keys(&self) -> Result<identity_keyfile::AgentKeys> {
         identity_keyfile::AgentKeys::load(&self.agent_dir)
             .with_context(|| format!("load agent identity from {}", self.agent_dir.display()))

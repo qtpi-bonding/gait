@@ -19,8 +19,9 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::{Agent, Builder, Client, HandleDispatchFrom, NullRun, Responder};
 use std::path::Path;
+use std::sync::Arc;
 
-use crate::attestation::TrustedMultimatrixKey;
+use crate::attestation::Attestor;
 use crate::lifecycle;
 use crate::session_map::{SessionMap, discover_gait_dir_for_cwd};
 use crate::turn_io::{
@@ -54,24 +55,24 @@ pub fn advertise_modes(gait_dir: &Path) -> SessionModeState {
 }
 
 pub fn build_agent(map: SessionMap) -> Builder<Agent, impl HandleDispatchFrom<Client>, NullRun> {
-    build_agent_with_attestation(map, false, Vec::new())
+    build_agent_with_attestation(map, false, None)
 }
 
 /// Like [`build_agent`], but with the attestation-verification policy that
 /// governs `session/prompt`: `require_attestation` is a single process-wide
 /// `bool` (not per-session state -- the trust decision has to be rooted in
 /// how the process itself was launched, e.g. by `multimatrix-bridge`, not a
-/// runtime `_meta` claim), and `trusted_keys` pins which multimatrix service
-/// keys a `DeliveryAttestation` may be signed by.
+/// runtime `_meta` claim), and `attestor` holds the agent's trusted delivery
+/// keys and own devices. `None` means this process has no agent identity, so
+/// no attestation can be verified.
 pub fn build_agent_with_attestation(
     map: SessionMap,
     require_attestation: bool,
-    trusted_keys: Vec<TrustedMultimatrixKey>,
+    attestor: Option<Arc<Attestor>>,
 ) -> Builder<Agent, impl HandleDispatchFrom<Client>, NullRun> {
     // Connection-level: written by the `initialize` handler below, read by each
     // `session/prompt` before it installs the fs delegate (design §1).
     let caps = std::sync::Arc::new(crate::fs_delegate::ClientFsCaps::default());
-    let trusted_keys = std::sync::Arc::new(trusted_keys);
     Agent
         .builder()
         .name("gait-acp")
@@ -153,13 +154,13 @@ pub fn build_agent_with_attestation(
             {
                 let map = map.clone();
                 let caps = caps.clone();
-                let trusted_keys = trusted_keys.clone();
+                let attestor = attestor.clone();
                 move |req: PromptRequest,
                       responder: Responder<PromptResponse>,
                       cx: agent_client_protocol::ConnectionTo<Client>| {
                     let map = map.clone();
                     let caps = caps.clone();
-                    let trusted_keys = trusted_keys.clone();
+                    let attestor = attestor.clone();
                     async move {
                         let session_id = req.session_id.clone();
                         let sid = session_id.0.to_string();
@@ -197,6 +198,15 @@ pub fn build_agent_with_attestation(
                                 "session already has an in-flight turn: {sid}"
                             ));
                         }
+                        // Verify the attestation before recording the key: the
+                        // key is recorded at the same point the replay sequence
+                        // is confirmed (once the batch is durable, below).
+                        // Verification records nothing; the confirmation travels
+                        // with the batch as its `on_durable` closure.
+                        let verified = crate::attestation::verify_prompt(
+                            attestor.as_deref(),
+                            &req.meta,
+                        );
                         // Only now -- past every admission check, committed to
                         // actually running this turn -- record the idempotency
                         // key. Recording earlier would permanently blacklist a
@@ -204,32 +214,6 @@ pub fn build_agent_with_attestation(
                         if let Some(key) = &idempotency_key {
                             map.record_idempotency_key(&sid, key);
                         }
-                        // Mandatory attestation check. `own_device_public_key`
-                        // is loaded unconditionally (cheap, and
-                        // verify_and_build_messages returns Ok(None) before
-                        // ever touching it when `_meta` carries no
-                        // attestation at all) -- an empty fallback on a
-                        // keyring-load failure is safe: it simply can never
-                        // match a real recipient list, so a genuine
-                        // attestation still gets correctly rejected rather
-                        // than silently bypassing the check.
-                        let own_device_public_key: Vec<u8> =
-                            crate::attestation::load_own_device_public_key(&gait_dir);
-                        let replay_store =
-                            match crate::attestation_replay::AttestationReplayStore::new(&gait_dir) {
-                                Ok(store) => store,
-                                Err(e) => {
-                                    return responder.respond_with_internal_error(format!(
-                                        "opening attestation replay store: {e}"
-                                    ));
-                                }
-                            };
-                        let verified = crate::attestation::verify_and_build_messages(
-                            &req.meta,
-                            &own_device_public_key,
-                            &trusted_keys,
-                            &replay_store,
-                        );
                         // Two ways to build this turn's trigger: the
                         // no-attestation path (plain prompts remain visible;
                         // malformed provenance claims are marked for
@@ -248,6 +232,7 @@ pub fn build_agent_with_attestation(
                                     gait_core::proto::gait::log::v1::event::Body,
                                     Option<gait_core::proto::gait::log::v1::Provenance>,
                                 )>,
+                                on_durable: gait_core::port::input::OnDurable,
                             },
                         }
                         let turn_input = match verified {
@@ -279,24 +264,28 @@ pub fn build_agent_with_attestation(
                             // that signs one message but sends different
                             // prompt content must never have that different
                             // text executed.
-                            Ok(Some(messages)) => TurnInput::AttestedMessages {
-                                bodies: messages
-                                    .into_iter()
-                                    .map(|m| {
-                                        (
-                                            gait_core::proto::wire::body(
-                                                gait_core::proto::gait::log::v1::payload::Kind::IncomingMessage(
-                                                    gait_core::proto::gait::log::v1::IncomingMessage {
-                                                        content: m.body_text,
-                                                        ..Default::default()
-                                                    },
+                            Ok(Some(batch)) => {
+                                let (messages, on_durable) = batch.into_parts();
+                                TurnInput::AttestedMessages {
+                                    bodies: messages
+                                        .into_iter()
+                                        .map(|m| {
+                                            (
+                                                gait_core::proto::wire::body(
+                                                    gait_core::proto::gait::log::v1::payload::Kind::IncomingMessage(
+                                                        gait_core::proto::gait::log::v1::IncomingMessage {
+                                                            content: m.body_text,
+                                                            ..Default::default()
+                                                        },
+                                                    ),
                                                 ),
-                                            ),
-                                            Some(m.provenance),
-                                        )
-                                    })
-                                    .collect(),
-                            },
+                                                Some(m.provenance),
+                                            )
+                                        })
+                                        .collect(),
+                                    on_durable,
+                                }
+                            }
                         };
 
                         let handle = gait_core::embed::CascadeKillHandle::new();
@@ -343,8 +332,9 @@ pub fn build_agent_with_attestation(
                                     cancel,
                                     provenance,
                                 ),
-                                TurnInput::AttestedMessages { bodies } => AcpTurnSource::new_with_bodies(
+                                TurnInput::AttestedMessages { bodies, on_durable } => AcpTurnSource::new_with_bodies(
                                     bodies,
+                                    on_durable,
                                     cx,
                                     session_id,
                                     gait_dir.clone(),

@@ -4,7 +4,6 @@
 //! and MUST be `pub` so the integration tests under `tests/` can import them.
 //! See docs/plans/2026-07-09-acp-adapter-design.md.
 pub mod attestation;
-mod attestation_replay;
 pub mod fs_delegate;
 pub mod handlers;
 mod idempotency;
@@ -17,20 +16,21 @@ pub use session_map::SessionMap;
 
 /// Serve the gait-acp agent over real stdio. This is the binary's entry point.
 pub async fn run() -> anyhow::Result<()> {
-    run_with_attestation(false, Vec::new()).await
+    run_with_attestation(false, None).await
 }
 
 /// Like [`run`], but with the attestation-verification policy for
 /// `session/prompt` -- see [`handlers::build_agent_with_attestation`].
 /// `require_attestation` is the process-level trust boundary: it is set by
 /// however this process was launched (e.g. `multimatrix-bridge` passing
-/// `--require-attestation`), never by a runtime `_meta` claim.
+/// `--require-attestation`), never by a runtime `_meta` claim. `attestor` is
+/// built once at process start from the agent identity and the trusted keys.
 pub async fn run_with_attestation(
     require_attestation: bool,
-    trusted_keys: Vec<attestation::TrustedMultimatrixKey>,
+    attestor: Option<std::sync::Arc<attestation::Attestor>>,
 ) -> anyhow::Result<()> {
     let map = SessionMap::new();
-    let result = handlers::build_agent_with_attestation(map.clone(), require_attestation, trusted_keys)
+    let result = handlers::build_agent_with_attestation(map.clone(), require_attestation, attestor)
         .connect_to(agent_client_protocol::Stdio::new())
         .await;
     // Connection closed (editor disconnected): reap every in-flight turn so no

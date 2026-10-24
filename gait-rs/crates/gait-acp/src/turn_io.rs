@@ -331,7 +331,10 @@ impl AcpTurnSource {
             *first = gait_core::port::input::InputEnvelope::with_claim(message_body, claim);
         }
         Self {
-            first: Some(TurnStart::Input { bodies }),
+            first: Some(TurnStart::Input {
+                bodies,
+                on_durable: None,
+            }),
             cx,
             session_id,
             sid,
@@ -344,14 +347,17 @@ impl AcpTurnSource {
     /// provenance)` pairs -- one per attested room message -- instead of a
     /// single free-text `task` plus one optional provenance. Used by the
     /// `PromptRequest` handler's attested-delivery branch, where the caller
-    /// (`gait_acp::attestation::verify_and_build_messages`) has already produced the
+    /// (`gait_acp::attestation::verify_prompt`) has already produced the
     /// authoritative bodies and must not re-derive them from `req.prompt`.
+    /// `on_durable` confirms the batch's replay sequence once the core has
+    /// appended the batch to the log.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_bodies(
         bodies: Vec<(
             gait_core::proto::gait::log::v1::event::Body,
             Option<gait_core::proto::gait::log::v1::Provenance>,
         )>,
+        on_durable: gait_core::port::input::OnDurable,
         cx: ConnectionTo<Client>,
         session_id: SessionId,
         gait_dir: PathBuf,
@@ -361,6 +367,7 @@ impl AcpTurnSource {
         Self {
             first: Some(TurnStart::Input {
                 bodies: bodies.into_iter().map(Into::into).collect(),
+                on_durable: Some(on_durable),
             }),
             cx,
             session_id,
