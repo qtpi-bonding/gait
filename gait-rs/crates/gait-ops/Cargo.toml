@@ -9,7 +9,6 @@ repository.workspace = true
 gait-state = { path = "../gait-state" }
 gait-auth = { path = "../gait-auth" }
 gait-proto = { path = "../gait-proto" }
-gait-identity = { path = "../gait-identity" }
 anyhow = "1"
 thiserror = "1"
 serde = { version = "1", features = ["derive"] }
@@ -17,13 +16,9 @@ serde_json = { version = "1", features = ["preserve_order"] }
 git2 = "0.20"     # init's commit + undo's transcript git-walk
 libc = "0.2"      # daemon::stop killpg(SIGTERM)
 serde_yaml = "0.9"  # extension's frontmatter helpers
-identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "675d474" }
 
 [dev-dependencies]
 tempfile = "3"
 gait-auth = { path = "../gait-auth", features = ["testing"] }
 tokio = { version = "1", features = ["macros", "rt"] }  # models() async test
 serial_test = "3"  # GAIT_DIR-env-var-safe tests (link round-trip)
-ed25519-dalek = { version = "2", features = ["rand_core"] }
-rand = "0.8"
-hex = "0.4"
