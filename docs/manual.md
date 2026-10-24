@@ -1,7 +1,7 @@
 ---
 name: gait-manual
 description: Explain how to use and configure Gait.
-manual-source-hash: c4c7961c5e790ba5de657051144547adb6d25aa1963bce6583dfd5b7cb72bdab
+manual-source-hash: a2699d424cbfce636cd0ea07f40604a924e4692545b54dce47c5d4fa0c64b4bf
 ---
 
 # Gait Manual
@@ -311,9 +311,15 @@ API keys and non-secret external-source bindings live in `$GAIT_HOME/auth.json`
 (`GAIT_HOME` defaults to `~/.gait-home`). That home is machine-local and separate from
 the gait-dir, which is the Git-backed workspace holding configuration and sessions.
 Keys can also come from environment variables such as `ANTHROPIC_API_KEY` and
-`OPENAI_API_KEY`. Subscription login (`openai-codex`) uses a device-code flow instead
-of a key; linking it to `codex` stores only a pointer, and the credentials stay in
-Codex's own `$CODEX_HOME/auth.json`. `gait models` caches the models.dev catalog in
+`OPENAI_API_KEY`. Official ChatGPT plan sign-in uses `openai-signin`:
+run `gait auth login openai-signin`, open the authorization URL, and paste the
+resulting callback URL when prompted. For a later process, use
+`gait auth login openai-signin --complete <url>` (or `--complete -` to read one
+trimmed line from stdin). Sign out with `gait auth logout openai-signin`, adding
+`--forget` when switching accounts. If the provider cannot revoke a session, disconnect
+the app in ChatGPT Settings. The legacy `openai-codex` device-code path is unofficial;
+linking it to `codex` stores only a pointer, and the credentials stay in Codex's own
+`$CODEX_HOME/auth.json`. `gait models` caches the models.dev catalog in
 `$GAIT_HOME/cache/models.json`.
 
 `gait config set <key> <value>` edits one key of `gait.jsonc` and keeps its comments.
@@ -366,9 +372,11 @@ Arguments:
   [SOURCE]    External source name (used with link)
 
 Options:
-      --home <HOME>  Override the external CLI's home directory
+      --home <HOME>          Override the external CLI's home directory
       --pretty
-  -h, --help         Print help
+      --complete <COMPLETE>
+      --forget
+  -h, --help                 Print help
 ```
 
 #### `gait models`
