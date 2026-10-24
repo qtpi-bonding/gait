@@ -6,9 +6,9 @@ use crate::provider::Provider;
 use crate::providers::{AuthMethod, ProviderSpec, Wire};
 use gait_auth::ResolvedCredential;
 
-pub(crate) fn transport_config_for(_wire: Wire) -> crate::transport::TransportConfig {
+pub(crate) fn transport_config_for(wire: Wire) -> crate::transport::TransportConfig {
     let mut config = crate::transport::TransportConfig::default();
-    if matches!(_wire, Wire::ResponsesPlan) {
+    if matches!(wire, Wire::ResponsesPlan) {
         config.retry_429 = false;
     }
     config
@@ -41,6 +41,20 @@ pub enum FactoryError {
 fn base_url_override(provider_id: &str) -> Option<String> {
     let env_var = format!("{}_BASE_URL", provider_id.to_uppercase().replace('-', "_"));
     std::env::var(&env_var).ok().filter(|v| !v.is_empty())
+}
+
+/// Chooses the base URL for a provider. `ResponsesPlan` carries the user's
+/// subscription token, so it always uses the spec's hardcoded base and never
+/// the environment override (which could otherwise send the token to any host).
+fn effective_base_url(
+    wire: Wire,
+    spec_base: Option<&str>,
+    env_override: Option<String>,
+) -> Option<String> {
+    if wire == Wire::ResponsesPlan {
+        return spec_base.map(String::from);
+    }
+    env_override.or_else(|| spec_base.map(String::from))
 }
 
 pub fn load_provider(
@@ -90,11 +104,7 @@ pub fn load_provider_with_credential_params_and_gait_dir(
     }
     let spec = crate::providers::lookup(&provider_id)
         .ok_or_else(|| FactoryError::UnknownProvider(provider_id.clone()))?;
-    let base = if spec.wire == Wire::ResponsesPlan {
-        spec.base_url.map(String::from)
-    } else {
-        base_url_override(&provider_id).or_else(|| spec.base_url.map(String::from))
-    };
+    let base = effective_base_url(spec.wire, spec.base_url, base_url_override(&provider_id));
     let transport = crate::transport::ProviderTransport::new(transport_config_for(spec.wire))
         .map_err(FactoryError::Transport)?;
 
@@ -353,19 +363,56 @@ mod tests {
         }
     }
 
-    struct EnvGuard(&'static str);
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            unsafe { std::env::remove_var(self.0) };
+    #[test]
+    fn env_base_url_override_is_ignored() {
+        let hardcoded = Some("https://api.openai.com/v1");
+        let evil = Some("https://evil.example".to_string());
+        // ResponsesPlan ignores the env override entirely.
+        assert_eq!(
+            effective_base_url(Wire::ResponsesPlan, hardcoded, evil.clone()),
+            Some("https://api.openai.com/v1".to_string())
+        );
+        // Other wires honour the override, matching the pre-existing behaviour.
+        for wire in [Wire::Anthropic, Wire::OpenAI, Wire::CodexResponses] {
+            assert_eq!(
+                effective_base_url(wire, hardcoded, evil.clone()),
+                Some("https://evil.example".to_string()),
+                "wire {wire:?} must honour the override"
+            );
         }
     }
 
     #[test]
-    fn env_base_url_override_is_ignored() {
-        let variable = "GAIT_TEST_ENV_BASE_URL_OVERRIDE_IGNORED_8";
-        unsafe { std::env::set_var(variable, "http://127.0.0.1:9/not-used") };
-        let _guard = EnvGuard(variable);
+    fn effective_base_url_without_override_uses_spec_base() {
+        for wire in Wire::ALL {
+            assert_eq!(
+                effective_base_url(*wire, Some("https://spec.example/v1"), None),
+                Some("https://spec.example/v1".to_string()),
+                "wire {wire:?} without override"
+            );
+            assert_eq!(effective_base_url(*wire, None, None), None);
+        }
+    }
+
+    #[test]
+    fn effective_base_url_override_applies_to_non_plan_wires_only() {
+        for wire in Wire::ALL {
+            let got = effective_base_url(
+                *wire,
+                Some("https://spec.example/v1"),
+                Some("http://127.0.0.1:9/override".into()),
+            );
+            let expected = if *wire == Wire::ResponsesPlan {
+                "https://spec.example/v1"
+            } else {
+                "http://127.0.0.1:9/override"
+            };
+            assert_eq!(got.as_deref(), Some(expected), "wire {wire:?}");
+        }
+    }
+
+    #[test]
+    fn signin_provider_loads_with_subscription_credential() {
         let credential = gait_auth::SubscriptionCredential {
             provider_id: gait_auth::signin::SIGNIN_PROVIDER_ID.into(),
             method_id: gait_auth::signin::SIGNIN_METHOD_ID.into(),
@@ -384,7 +431,6 @@ mod tests {
             lookup("openai-signin").and_then(|spec| spec.base_url),
             Some("https://api.openai.com/v1")
         );
-        assert_eq!(base_url_override("openai-signin"), None);
     }
 
     #[test]

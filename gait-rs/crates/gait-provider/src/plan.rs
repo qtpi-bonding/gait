@@ -176,7 +176,7 @@ pub fn map_plan_error(
             "configuration error: ChatGPT plan configuration is not supported".into()
         }
         Some("subscription_sharing_invalid_user") => format_request_id(
-            "invalid subscription user; run `gait auth login openai-signin`",
+            "invalid subscription user; the next turn refreshes the credential",
             request_id,
         ),
         _ if status == Some(401) => {
@@ -228,6 +228,7 @@ mod tests {
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
@@ -246,9 +247,18 @@ mod tests {
         credential(json!({"tokens": {"access_token": "plan-access", "expires_at_unix_s": 1}}))
     }
 
-    async fn stub(
+    /// One canned response: status, extra header lines (each ending in `\r\n`), body.
+    struct Canned {
         status: u16,
+        headers: &'static str,
         body: &'static str,
+    }
+
+    /// Serves one canned response per accepted connection, in order. The
+    /// recorded bytes are the most recent request; the count is the number of
+    /// requests received.
+    async fn stub_sequence(
+        responses: Vec<Canned>,
     ) -> (
         String,
         Arc<Mutex<Vec<u8>>>,
@@ -262,47 +272,71 @@ mod tests {
         let output = Arc::clone(&recorded);
         let observed = Arc::clone(&count);
         let task = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.expect("accept");
-            observed.fetch_add(1, Ordering::SeqCst);
-            let mut bytes = Vec::new();
-            let mut chunk = [0u8; 4096];
-            let mut expected = None;
-            loop {
-                let n = socket.read(&mut chunk).await.expect("read");
-                if n == 0 {
-                    break;
-                }
-                bytes.extend_from_slice(&chunk[..n]);
-                if expected.is_none() {
-                    if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
-                        let head = String::from_utf8_lossy(&bytes[..end]);
-                        let length = head
-                            .lines()
-                            .find_map(|line| {
-                                let (name, value) = line.split_once(':')?;
-                                name.eq_ignore_ascii_case("content-length")
-                                    .then(|| value.trim().parse().ok())
-                                    .flatten()
-                            })
-                            .unwrap_or(0);
-                        expected = Some(end + 4 + length);
+            for Canned {
+                status,
+                headers,
+                body,
+            } in responses
+            {
+                let (mut socket, _) = listener.accept().await.expect("accept");
+                observed.fetch_add(1, Ordering::SeqCst);
+                let mut bytes = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let mut expected = None;
+                loop {
+                    let n = socket.read(&mut chunk).await.expect("read");
+                    if n == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&chunk[..n]);
+                    if expected.is_none() {
+                        if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let head = String::from_utf8_lossy(&bytes[..end]);
+                            let length = head
+                                .lines()
+                                .find_map(|line| {
+                                    let (name, value) = line.split_once(':')?;
+                                    name.eq_ignore_ascii_case("content-length")
+                                        .then(|| value.trim().parse().ok())
+                                        .flatten()
+                                })
+                                .unwrap_or(0);
+                            expected = Some(end + 4 + length);
+                        }
+                    }
+                    if expected.is_some_and(|len| bytes.len() >= len) {
+                        break;
                     }
                 }
-                if expected.is_some_and(|len| bytes.len() >= len) {
-                    break;
-                }
+                *output.lock().expect("record") = bytes;
+                let response = format!(
+                    "HTTP/1.1 {status} Error\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n{body}",
+                    body.len()
+                );
+                socket
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("response");
             }
-            *output.lock().expect("record") = bytes;
-            let response = format!(
-                "HTTP/1.1 {status} Error\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            socket
-                .write_all(response.as_bytes())
-                .await
-                .expect("response");
         });
         (format!("http://{address}"), recorded, count, task)
+    }
+
+    async fn stub(
+        status: u16,
+        body: &'static str,
+    ) -> (
+        String,
+        Arc<Mutex<Vec<u8>>>,
+        Arc<AtomicUsize>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        stub_sequence(vec![Canned {
+            status,
+            headers: "",
+            body,
+        }])
+        .await
     }
 
     fn recorded_parts(bytes: &[u8]) -> (String, Value) {
@@ -382,10 +416,11 @@ mod tests {
 
     #[tokio::test]
     async fn usage_limit_429_is_one_request() {
-        let (base, _, count, task) = stub(
-            429,
-            r#"{"error":{"code":"subscription_sharing_usage_limit_exceeded"}}"#,
-        )
+        let (base, _, count, task) = stub_sequence(vec![Canned {
+            status: 429,
+            headers: "x-request-id: req_429\r\n",
+            body: r#"{"error":{"code":"subscription_sharing_usage_limit_exceeded"}}"#,
+        }])
         .await;
         let provider = PlanResponsesProvider::new(
             test_credential(),
@@ -406,7 +441,57 @@ mod tests {
         };
         task.await.unwrap();
         assert_eq!(count.load(Ordering::SeqCst), 1);
+        match &error {
+            ProviderError::Http {
+                status,
+                request_id,
+                body,
+                ..
+            } => {
+                assert_eq!(*status, 429);
+                assert_eq!(request_id.as_deref(), Some("req_429"));
+                assert!(body.contains("ChatGPT Settings > Usage"), "body: {body}");
+            }
+            other => panic!("expected Http error, got {other:?}"),
+        }
         assert!(error.to_string().contains("Usage"));
+    }
+
+    #[tokio::test]
+    async fn responses_plan_503_still_retries() {
+        let (base, _, count, task) = stub_sequence(vec![
+            Canned {
+                status: 503,
+                headers: "",
+                body: "{}",
+            },
+            Canned {
+                status: 200,
+                headers: "",
+                body: "event: response.completed\ndata: {\"response\":{}}\n\n",
+            },
+        ])
+        .await;
+        let mut config =
+            crate::factory::transport_config_for(crate::providers::Wire::ResponsesPlan);
+        config.initial_backoff = Duration::from_millis(1);
+        config.max_backoff = Duration::from_millis(1);
+        let provider = PlanResponsesProvider::new(
+            test_credential(),
+            "gpt-test".into(),
+            Some(base),
+            ProviderTransport::new(config).unwrap(),
+        )
+        .unwrap();
+        let mut stream = provider
+            .stream("", &[], &[], &Default::default(), None)
+            .await
+            .expect("503 is retried and the 200 succeeds");
+        while let Some(item) = stream.next().await {
+            item.expect("retried stream yields no error");
+        }
+        task.await.unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 2);
     }
 
     #[test]
@@ -437,6 +522,7 @@ mod tests {
 
     #[test]
     fn error_mapping_table() {
+        // One exact-string assertion per row of the spec's error table.
         assert_eq!(
             map_plan_error(
                 Some(403),
@@ -447,16 +533,15 @@ mod tests {
             ),
             "not available for this account/workspace"
         );
-        assert_eq!(
-            map_plan_error(
-                Some(429),
-                Some("subscription_sharing_usage_limit_exceeded"),
-                None,
-                None,
-                None
-            ),
-            "plan limit reached; see ChatGPT Settings > Usage"
+        let usage = map_plan_error(
+            Some(429),
+            Some("subscription_sharing_usage_limit_exceeded"),
+            None,
+            None,
+            None,
         );
+        assert_eq!(usage, "plan limit reached; see ChatGPT Settings > Usage");
+        assert!(usage.contains("Usage") && usage.contains("ChatGPT Settings"));
         assert_eq!(
             map_plan_error(
                 Some(503),
@@ -465,6 +550,20 @@ mod tests {
                 None,
                 None
             ),
+            "plan service temporarily unavailable; retry"
+        );
+        assert_eq!(
+            map_plan_error(
+                Some(503),
+                Some("subscription_sharing_user_unavailable"),
+                None,
+                None,
+                None
+            ),
+            "plan service temporarily unavailable; retry"
+        );
+        assert_eq!(
+            map_plan_error(Some(503), None, None, None, None),
             "plan service temporarily unavailable; retry"
         );
         assert_eq!(
@@ -478,12 +577,75 @@ mod tests {
             "unsupported capability: vision"
         );
         assert_eq!(
+            map_plan_error(
+                Some(403),
+                Some("subscription_sharing_route_not_supported"),
+                None,
+                None,
+                None
+            ),
+            "configuration error: route not supported"
+        );
+        assert_eq!(
+            map_plan_error(Some(403), Some("chatpass_v2_entitlement"), None, None, None),
+            "configuration error: ChatGPT plan configuration is not supported"
+        );
+        assert_eq!(
+            map_plan_error(
+                Some(401),
+                Some("subscription_sharing_invalid_user"),
+                None,
+                None,
+                Some("req_user_1")
+            ),
+            "invalid subscription user; the next turn refreshes the credential (request id: req_user_1)"
+        );
+        assert_eq!(
             map_plan_error(Some(401), None, None, None, None),
             "credential expired mid-turn; the next turn refreshes it"
         );
         assert_eq!(
             map_plan_error(Some(400), None, None, Some("detail text"), None),
             "detail text"
+        );
+    }
+
+    #[test]
+    fn unknown_code_falls_back_without_echoing_body() {
+        let body = r#"{"error":{"code":"mystery_code"},"extra":"LEAKED-VALUE"}"#;
+        let got = map_http_error(400, body, Some("req_unknown"));
+        assert_eq!(got, "mystery_code (request id: req_unknown)");
+        assert!(!got.contains("LEAKED-VALUE"), "body echoed: {got}");
+        assert!(!got.contains('{'), "raw body echoed: {got}");
+    }
+
+    #[test]
+    fn non_json_error_body_does_not_panic() {
+        assert_eq!(
+            map_http_error(500, "<html>upstream exploded</html>", None),
+            "request failed"
+        );
+        assert_eq!(
+            map_http_error(500, "not json at all", Some("req_text")),
+            "request failed (request id: req_text)"
+        );
+    }
+
+    #[test]
+    fn map_http_error_parses_openai_style_code_and_param() {
+        let body =
+            r#"{"error":{"code":"subscription_sharing_unsupported_capability","param":"vision"}}"#;
+        assert_eq!(
+            map_http_error(400, body, None),
+            "unsupported capability: vision"
+        );
+    }
+
+    #[test]
+    fn map_http_error_handles_detail_body() {
+        assert_eq!(
+            map_http_error(400, r#"{"detail":"Unsupported model"}"#, Some("req_9")),
+            "Unsupported model (request id: req_9)"
         );
     }
 
