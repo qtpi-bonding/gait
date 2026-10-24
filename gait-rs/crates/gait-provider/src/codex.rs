@@ -6,13 +6,11 @@
 //! `codex-rs/model-provider/src/bearer_auth_provider.rs`. See
 //! `THIRD_PARTY_NOTICES.md` for the complete attribution.
 
-use crate::provider::{ChunkStream, Provider, ProviderError, RequestKind, StreamChunk};
-use futures_util::StreamExt;
+use crate::provider::{ChunkStream, Provider, ProviderError, RequestKind};
 use gait_auth::codex::{credential_details, CODEX_PROVIDER_ID};
 use gait_auth::{ResolvedCredential, SubscriptionCredential};
-use gait_types::types::{AssistantContent, AssistantPart, Message, MessageContent, Tool, Usage};
-use serde_json::{json, Value};
-use std::collections::HashMap;
+use gait_types::types::{Message, MessageContent, Tool};
+use serde_json::Value;
 use std::sync::Arc;
 
 const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
@@ -59,83 +57,7 @@ impl CodexResponsesProvider {
         params: &gait_types::config::LlmParamsConfig,
         kind: RequestKind,
     ) -> Value {
-        let mut input = Vec::new();
-        for message in messages {
-            match message {
-                Message::User { content, attribution, .. } => input.push(json!({
-                    "role": "user", "content": [{"type": "input_text", "text": gait_types::types::render_user_text(attribution, &text_content(content))}]
-                })),
-                Message::Assistant { content, .. } => {
-                    let mut content_items = Vec::new();
-                    let mut calls = Vec::new();
-                    match content {
-                        AssistantContent::Text(text) => content_items.push(json!({"type":"output_text", "text":text})),
-                        AssistantContent::Parts(parts) => for part in parts {
-                            match part {
-                                AssistantPart::Text { text } => content_items.push(json!({"type":"output_text", "text":text})),
-                                AssistantPart::Thinking { content, .. } => content_items.push(json!({"type":"output_text", "text":content})),
-                                AssistantPart::ToolCall(call) => calls.push(json!({
-                                    "type": "function_call", "call_id": call.tool_call_id,
-                                    "name": call.tool_name,
-                                    "arguments": crate::provider::coerce_tool_input(call.args.clone()).to_string(),
-                                })),
-                            }
-                        },
-                    }
-                    if !content_items.is_empty() {
-                        input.push(json!({"role":"assistant", "content":content_items}));
-                    }
-                    input.extend(calls);
-                }
-                Message::ToolResult { content, .. } => input.extend(content.iter().map(|result| json!({
-                    "type": "function_call_output", "call_id": result.tool_call_id,
-                    "output": result.result.to_string(),
-                }))),
-            }
-        }
-        let functions: Vec<Value> = tools
-            .iter()
-            .map(|tool| {
-                json!({
-                    "type": "function", "name": tool.name(),
-                    "description": gait_types::types::render_description(tool.as_ref()),
-                    "parameters": tool.parameters(),
-                })
-            })
-            .collect();
-        let mut body = json!({
-            "model": self.model, "input": input, "stream": true,
-            "store": false, "parallel_tool_calls": false,
-        });
-        if !system.is_empty() {
-            body["instructions"] = Value::String(system.to_string());
-        }
-        if !functions.is_empty() {
-            body["tools"] = Value::Array(functions);
-        }
-        // The ChatGPT subscription backend currently rejects
-        // `max_output_tokens` for Spark compaction requests. Ordinary turns
-        // retain the existing mapping; compaction's semantic request kind
-        // lets this adapter omit the unsupported wire parameter.
-        if kind == RequestKind::Turn {
-            if let Some(max_tokens) = params.max_tokens {
-                body["max_output_tokens"] = Value::from(max_tokens);
-            }
-        }
-        body
-    }
-}
-
-fn text_content(content: &MessageContent) -> String {
-    match content {
-        MessageContent::Text(text) => text.clone(),
-        MessageContent::Parts(parts) => parts
-            .iter()
-            .map(|part| match part {
-                gait_types::types::ContentPart::Text { text } => text.as_str(),
-            })
-            .collect::<Vec<_>>()
-            .join(""),
+        crate::responses_wire::request_body(&self.model, system, messages, tools, params, kind)
     }
 }
 
@@ -204,8 +126,9 @@ impl Provider for CodexResponsesProvider {
             headers,
             body,
         );
-        Ok(Box::pin(response_stream(
+        Ok(Box::pin(crate::responses_wire::response_stream(
             self.transport.stream(request).await?,
+            codex_failure_format,
         )))
     }
 
@@ -214,75 +137,31 @@ impl Provider for CodexResponsesProvider {
     }
 }
 
-fn response_stream(
-    events: impl futures_util::Stream<Item = Result<eventsource_stream::Event, ProviderError>>
-        + Send
-        + 'static,
-) -> impl futures_util::Stream<Item = Result<StreamChunk, ProviderError>> + Send + 'static {
-    async_stream::try_stream! {
-        tokio::pin!(events);
-        let mut calls: HashMap<String, (String, String)> = HashMap::new();
-        let mut terminal = false;
-        let mut received_bytes = 0usize;
-        while let Some(event) = events.next().await {
-            let event = event?;
-            let value: Value = match serde_json::from_str(&event.data) { Ok(value) => value, Err(_) => continue };
-            match event.event.as_str() {
-                "response.output_text.delta" => if let Some(delta) = value.get("delta").and_then(Value::as_str) {
-                    received_bytes += delta.len();
-                    yield StreamChunk::Text(delta.to_string());
-                },
-                "response.output_item.added" => {
-                    let item = value.get("item").unwrap_or(&Value::Null);
-                    if item.get("type").and_then(Value::as_str) == Some("function_call") {
-                        if let (Some(call_id), Some(name)) = (item.get("call_id").and_then(Value::as_str), item.get("name").and_then(Value::as_str)) {
-                            calls.insert(call_id.to_string(), (name.to_string(), item.get("arguments").and_then(Value::as_str).unwrap_or("").to_string()));
-                        }
-                    }
-                }
-                "response.function_call_arguments.delta" => if let (Some(call_id), Some(delta)) = (value.get("call_id").and_then(Value::as_str), value.get("delta").and_then(Value::as_str)) {
-                    let entry = calls.entry(call_id.to_string()).or_insert_with(|| (value.get("name").and_then(Value::as_str).unwrap_or("").to_string(), String::new()));
-                    entry.1.push_str(delta);
-                    yield StreamChunk::ToolCallDelta { tool_call_id: call_id.to_string(), tool_name: entry.0.clone(), args_delta: delta.to_string() };
-                },
-                "response.output_item.done" => {
-                    let item = value.get("item").unwrap_or(&Value::Null);
-                    if item.get("type").and_then(Value::as_str) == Some("function_call") {
-                        if let (Some(call_id), Some(name)) = (item.get("call_id").and_then(Value::as_str), item.get("name").and_then(Value::as_str)) {
-                            let args = item.get("arguments").and_then(Value::as_str).or_else(|| calls.get(call_id).map(|(_, args)| args.as_str())).unwrap_or("");
-                            yield StreamChunk::ToolCallComplete { tool_call_id: call_id.to_string(), tool_name: name.to_string(), args: crate::provider::parse_tool_args(args) };
-                        }
-                    }
-                }
-                "response.completed" => {
-                    if let Some(usage) = value.get("response").and_then(|r| r.get("usage")) {
-                        yield StreamChunk::StepUsage(Usage { input_tokens: usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0) as u32, output_tokens: usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(0) as u32, cache_read_tokens: cached_input_tokens(usage), cache_write_tokens: 0 });
-                    }
-                    yield StreamChunk::Done;
-                    terminal = true;
-                    break;
-                }
-                "response.failed" => Err(ProviderError::Other(codex_failure_message(&value)))?,
-                _ => {}
-            }
-        }
-        if !terminal { Err(ProviderError::StreamIncomplete { received_bytes })?; }
-    }
-}
-
+#[cfg(test)]
 fn codex_failure_message(value: &Value) -> String {
     let error = value
         .get("response")
         .and_then(|response| response.get("error"))
         .or_else(|| value.get("error"));
-    let code = error
-        .and_then(|error| error.get("code"))
-        .and_then(Value::as_str);
-    let message = error
-        .and_then(|error| error.get("message"))
-        .and_then(Value::as_str);
+    let failure = crate::responses_wire::ResponsesFailure {
+        code: error
+            .and_then(|e| e.get("code"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        param: error
+            .and_then(|e| e.get("param"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        message: error
+            .and_then(|e| e.get("message"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    };
+    codex_failure_format(&failure)
+}
 
-    match (code, message) {
+fn codex_failure_format(failure: &crate::responses_wire::ResponsesFailure) -> String {
+    match (failure.code.as_deref(), failure.message.as_deref()) {
         (Some(code), Some(message)) => {
             format!("Codex Responses request failed ({code}): {message}")
         }
@@ -292,6 +171,7 @@ fn codex_failure_message(value: &Value) -> String {
     }
 }
 
+#[cfg(test)]
 fn cached_input_tokens(usage: &Value) -> u32 {
     usage
         .get("input_tokens_details")
@@ -303,6 +183,9 @@ fn cached_input_tokens(usage: &Value) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::StreamChunk;
+    use gait_types::types::AssistantContent;
+    use serde_json::json;
 
     fn test_credential(access_token: &str) -> SubscriptionCredential {
         SubscriptionCredential {
@@ -521,6 +404,50 @@ mod tests {
         assert_eq!(
             input_content,
             "<incoming-message from=\"agent-2\" context=\"room-general\" trust=\"unverified\">hello world</incoming-message>\n"
+        );
+    }
+
+    #[test]
+    fn request_body_matches_codex_golden() {
+        let provider = CodexResponsesProvider::new(
+            test_credential("access-test"),
+            "gpt-5.3-codex".into(),
+            None,
+            crate::transport::ProviderTransport::new(Default::default()).expect("transport"),
+        )
+        .expect("provider");
+        let messages = vec![
+            Message::User {
+                content: MessageContent::Text("user question".into()),
+                id: "user-1".into(),
+                attribution: Vec::new(),
+            },
+            Message::Assistant {
+                content: AssistantContent::Text("assistant answer".into()),
+                id: "assistant-1".into(),
+            },
+        ];
+        let params = gait_types::config::LlmParamsConfig {
+            max_tokens: Some(123),
+            ..Default::default()
+        };
+        let body =
+            provider.request_body("system prompt", &messages, &[], &params, RequestKind::Turn);
+        println!("golden request body: {body}");
+        assert_eq!(
+            body,
+            json!({
+                "model": "gpt-5.3-codex",
+                "input": [
+                    {"role": "user", "content": [{"type": "input_text", "text": "user question"}]},
+                    {"role": "assistant", "content": [{"type": "output_text", "text": "assistant answer"}]}
+                ],
+                "stream": true,
+                "store": false,
+                "parallel_tool_calls": false,
+                "instructions": "system prompt",
+                "max_output_tokens": 123
+            })
         );
     }
 }

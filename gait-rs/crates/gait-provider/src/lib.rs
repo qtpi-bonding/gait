@@ -7,5 +7,6 @@ pub mod local;
 pub mod openai;
 pub mod provider;
 pub mod providers;
+pub(crate) mod responses_wire;
 pub mod strict;
 pub mod transport;
