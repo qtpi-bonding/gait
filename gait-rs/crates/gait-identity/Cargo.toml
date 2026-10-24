@@ -1,6 +1,6 @@
 [package]
 name = "gait-identity"
-description = "Agent identity: pluggable signing schemes (Signer trait, KeyScheme dispatch, keyring)."
+description = "Identity-keyfile glue for gait direct provenance."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,13 +8,11 @@ repository.workspace = true
 
 [dependencies]
 gait-proto = { path = "../gait-proto" }
-identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "675d474" }
+identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "7a074a677142e8fd6027e6c2ed8c8d41b1a1f39a" }
+identity-keyfile = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "7a074a677142e8fd6027e6c2ed8c8d41b1a1f39a" }
 anyhow = "1"
-ed25519-dalek = { version = "2", features = ["rand_core"] }
-rand = "0.8"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-hex = "0.4"
+prost = "0.13"
 
 [dev-dependencies]
-tempfile = "3"
+identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "7a074a677142e8fd6027e6c2ed8c8d41b1a1f39a", features = ["testkit"] }
+identity-keyfile = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "7a074a677142e8fd6027e6c2ed8c8d41b1a1f39a", features = ["testkit"] }
