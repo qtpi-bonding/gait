@@ -127,11 +127,13 @@ impl ProviderTransport {
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let retry_after = parse_retry_after(&response);
+            let request_id = request_id(&response);
             let body = bounded_error_body(response).await;
             return Err(ProviderError::Http {
                 status,
                 body: truncate_utf8(redact_secrets(body, &secrets), MAX_ERROR_BODY_BYTES),
                 retry_after,
+                request_id,
             });
         }
 
@@ -168,16 +170,28 @@ impl ProviderTransport {
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let retry_after = parse_retry_after(&response);
+            let request_id = request_id(&response);
             let body = bounded_error_body(response).await;
             return Err(ProviderError::Http {
                 status,
                 body: truncate_utf8(redact_secrets(body, &secrets), MAX_ERROR_BODY_BYTES),
                 retry_after,
+                request_id,
             });
         }
 
         Ok(Box::pin(response.bytes_stream().eventsource()))
     }
+}
+
+const MAX_REQUEST_ID_BYTES: usize = 128;
+
+fn request_id(response: &reqwest::Response) -> Option<String> {
+    response
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| truncate_utf8(value.to_owned(), MAX_REQUEST_ID_BYTES))
 }
 
 fn sensitive_values(headers: &HeaderMap) -> Vec<String> {
@@ -265,6 +279,8 @@ pub struct TransportConfig {
     pub json_timeout: Duration,
     /// Total attempts (1 = no retry).
     pub max_attempts: u8,
+    /// Whether pre-event HTTP 429 responses may be retried.
+    pub retry_429: bool,
     /// Initial exponential-backoff window before jitter is applied.
     pub initial_backoff: Duration,
     /// Backoff never exceeds this value.
@@ -280,6 +296,7 @@ impl Default for TransportConfig {
             absolute_cap: Duration::from_secs(600),
             json_timeout: Duration::from_secs(30),
             max_attempts: 3,
+            retry_429: true,
             initial_backoff: Duration::from_millis(500),
             max_backoff: Duration::from_secs(8),
         }
@@ -447,7 +464,10 @@ where
             Ok(pair) => break pair,
             Err(e) => {
                 let attempts_used = attempt + 1;
-                if !e.is_retryable() || attempts_used >= cfg.max_attempts as u32 {
+                if !e.is_retryable()
+                    || (!cfg.retry_429 && matches!(e, ProviderError::Http { status: 429, .. }))
+                    || attempts_used >= cfg.max_attempts as u32
+                {
                     return Err(e);
                 }
                 let delay = e
@@ -511,6 +531,202 @@ fn retry_diagnostic(attempt: u32, max_attempts: u8, error: &ProviderError) -> St
 mod tests {
     use super::*;
     use crate::provider::{ProviderError, TimeoutPhase};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    /// Reads one request head plus any Content-Length body before the stub
+    /// answers. Closing a socket with unread request bytes can send an RST that
+    /// discards the client's response, so the stub drains the request first.
+    async fn read_request(socket: &mut TcpStream) {
+        const MAX_REQUEST_BYTES: usize = 64 * 1024;
+        let mut bytes = Vec::new();
+        let mut chunk = [0u8; 1024];
+        let mut expected_len: Option<usize> = None;
+        loop {
+            let read = socket.read(&mut chunk).await.expect("read request");
+            if read == 0 || bytes.len() >= MAX_REQUEST_BYTES {
+                break;
+            }
+            bytes.extend_from_slice(&chunk[..read]);
+            if expected_len.is_none() {
+                if let Some(head_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n")
+                {
+                    let head = String::from_utf8_lossy(&bytes[..head_end]);
+                    let content_len = head
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    expected_len = Some(head_end + 4 + content_len);
+                }
+            }
+            if expected_len.is_some_and(|expected| bytes.len() >= expected) {
+                break;
+            }
+        }
+    }
+
+    async fn http_error_server(
+        status: u16,
+        request_id: Option<&str>,
+        expected_requests: usize,
+    ) -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind stub server");
+        let address = listener.local_addr().expect("stub server address");
+        let count = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&count);
+        let request_id = request_id.map(str::to_owned);
+        let task = tokio::spawn(async move {
+            for _ in 0..expected_requests {
+                let (mut socket, _) = listener.accept().await.expect("accept request");
+                read_request(&mut socket).await;
+                observed.fetch_add(1, Ordering::SeqCst);
+                let request_header = request_id
+                    .as_deref()
+                    .map(|id| format!("x-request-id: {id}\r\n"))
+                    .unwrap_or_default();
+                let body = if status == 429 {
+                    r#"{"error":{"code":"subscription_sharing_usage_limit_exceeded"}}"#
+                } else {
+                    "error"
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} Error\r\n{request_header}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write response");
+            }
+        });
+        (format!("http://{address}"), count, task)
+    }
+
+    fn tiny_retry_config(retry_429: bool) -> TransportConfig {
+        TransportConfig {
+            retry_429,
+            max_attempts: 3,
+            initial_backoff: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(1),
+            ..TransportConfig::default()
+        }
+    }
+
+    async fn stream_error(
+        config: TransportConfig,
+        url: String,
+    ) -> Result<GuardedSseStream, ProviderError> {
+        ProviderTransport::new(config)
+            .expect("transport")
+            .stream(SseRequest::new(
+                url,
+                HeaderMap::new(),
+                serde_json::json!({}),
+            ))
+            .await
+    }
+
+    #[tokio::test]
+    async fn retry_429_false_makes_single_request() {
+        let (url, count, server) = http_error_server(429, None, 1).await;
+        let error = match stream_error(tiny_retry_config(false), url).await {
+            Err(error) => error,
+            Ok(_) => panic!("429 must be terminal when retry_429 is false"),
+        };
+        assert!(matches!(error, ProviderError::Http { status: 429, .. }));
+        server.await.expect("stub server");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn retry_429_default_still_retries() {
+        let (url, count, server) = http_error_server(429, None, 3).await;
+        let error = match stream_error(
+            TransportConfig {
+                initial_backoff: Duration::from_millis(1),
+                max_backoff: Duration::from_millis(1),
+                ..TransportConfig::default()
+            },
+            url,
+        )
+        .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("default policy retries 429 until max_attempts"),
+        };
+        assert!(matches!(error, ProviderError::Http { status: 429, .. }));
+        server.await.expect("stub server");
+        assert_eq!(count.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn retry_503_still_retries_when_429_disabled() {
+        let (url, count, server) = http_error_server(503, None, 3).await;
+        let error = match stream_error(tiny_retry_config(false), url).await {
+            Err(error) => error,
+            Ok(_) => panic!("503 remains retryable when 429 retry is disabled"),
+        };
+        assert!(matches!(error, ProviderError::Http { status: 503, .. }));
+        server.await.expect("stub server");
+        assert_eq!(count.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn http_error_carries_request_id() {
+        let (url, count, server) = http_error_server(400, Some("req_123"), 1).await;
+        let error = match stream_error(tiny_retry_config(true), url).await {
+            Err(error) => error,
+            Ok(_) => panic!("400 must be returned"),
+        };
+        match error {
+            ProviderError::Http { request_id, .. } => {
+                assert_eq!(request_id.as_deref(), Some("req_123"));
+            }
+            other => panic!("expected HTTP error, got {other:?}"),
+        }
+        server.await.expect("stub server");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+
+        let (url, count, server) = http_error_server(400, None, 1).await;
+        let error = match stream_error(tiny_retry_config(true), url).await {
+            Err(error) => error,
+            Ok(_) => panic!("400 must be returned"),
+        };
+        match error {
+            ProviderError::Http { request_id, .. } => assert_eq!(request_id, None),
+            other => panic!("expected HTTP error, got {other:?}"),
+        }
+        server.await.expect("stub server");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn request_id_is_truncated_to_128_bytes() {
+        let long_id = "r".repeat(300);
+        let (url, count, server) = http_error_server(400, Some(&long_id), 1).await;
+        let error = match stream_error(tiny_retry_config(true), url).await {
+            Err(error) => error,
+            Ok(_) => panic!("400 must be returned"),
+        };
+        match error {
+            ProviderError::Http {
+                request_id: Some(request_id),
+                ..
+            } => assert!(request_id.len() <= 128, "len was {}", request_id.len()),
+            other => panic!("expected HTTP error with request id, got {other:?}"),
+        }
+        server.await.expect("stub server");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn retryable_classification() {
@@ -518,19 +734,22 @@ mod tests {
         assert!(ProviderError::Http {
             status: 429,
             body: "".into(),
-            retry_after: None
+            retry_after: None,
+            request_id: None,
         }
         .is_retryable());
         assert!(ProviderError::Http {
             status: 503,
             body: "".into(),
-            retry_after: None
+            retry_after: None,
+            request_id: None,
         }
         .is_retryable());
         assert!(!ProviderError::Http {
             status: 400,
             body: "".into(),
-            retry_after: None
+            retry_after: None,
+            request_id: None,
         }
         .is_retryable());
         assert!(ProviderError::Timeout {
@@ -779,6 +998,7 @@ mod tests {
             status: 503,
             body: "top-secret-token".into(),
             retry_after: Some(Duration::ZERO),
+            request_id: None,
         };
         let diagnostic = retry_diagnostic(1, 3, &error);
         assert_eq!(

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -12,6 +13,12 @@ use crate::gait_home::{GaitHome, GaitHomeError};
 pub enum AuthError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("corrupt authentication file {path}: {detail}")]
+    Corrupt { path: PathBuf, detail: String },
+    #[error("timed out waiting for authentication file lock")]
+    LockTimeout,
+    #[error("authentication is managed elsewhere: {0}")]
+    ManagedElsewhere(String),
     #[error("path has no parent: {0}")]
     NoParent(PathBuf),
     #[error("unsupported authentication source '{0}'")]
@@ -110,19 +117,31 @@ pub fn resolve_credential_lease_with(
     platform: &dyn Platform,
     provider: &str,
 ) -> Result<Option<CredentialLease>, AuthError> {
+    // ChatGPT plan credentials are deliberately never discoverable through an
+    // environment variable: only the registered file credential is valid.
+    if provider == "openai-signin" {
+        let auth_path = auth_path_for(platform)?;
+        if !auth_path.exists() {
+            return Err(AuthError::Source(gait_auth::AuthError::LoginRequired(
+                "openai-signin uses ChatGPT sign-in; run `gait auth login openai-signin`".into(),
+            )));
+        }
+    }
     // 1. Check env var (ANTHROPIC_API_KEY, MINIMAX_API_KEY, OPENAI_API_KEY, etc.)
     let env_var = format!("{}_API_KEY", provider.to_uppercase().replace('-', "_"));
-    if let Some(key) = platform
-        .env(&env_var)
-        .and_then(|value| value.into_string().ok())
-    {
-        if !key.is_empty() {
-            return Ok(Some(CredentialLease {
-                credential: ResolvedCredential::ApiKey(key),
-                source_id: "environment".into(),
-                location: AuthLocation::Environment(env_var),
-                revision: None,
-            }));
+    if provider != "openai-signin" {
+        if let Some(key) = platform
+            .env(&env_var)
+            .and_then(|value| value.into_string().ok())
+        {
+            if !key.is_empty() {
+                return Ok(Some(CredentialLease {
+                    credential: ResolvedCredential::ApiKey(key),
+                    source_id: "environment".into(),
+                    location: AuthLocation::Environment(env_var),
+                    revision: None,
+                }));
+            }
         }
     }
     // 2. Check auth.json
@@ -135,10 +154,22 @@ pub fn resolve_credential_lease_with(
             revision: None,
         }));
     }
-    let text = std::fs::read_to_string(&auth_path)?;
-    let map = serde_json::from_str::<HashMap<String, AuthEntry>>(&text)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    match map.get(provider) {
+    let map = crate::auth_file::load_auth_map(&auth_path)?;
+    if provider == "openai-signin" && !map.contains_key(provider) {
+        return Err(AuthError::Source(gait_auth::AuthError::LoginRequired(
+            "openai-signin uses ChatGPT sign-in; run `gait auth login openai-signin`".into(),
+        )));
+    }
+    let entry = match map.get(provider) {
+        Some(value) => Some(
+            serde_json::from_value::<AuthEntry>(value.clone()).map_err(|_| AuthError::Corrupt {
+                path: auth_path.clone(),
+                detail: format!("entry for '{provider}' is invalid"),
+            })?,
+        ),
+        None => None,
+    };
+    match entry.as_ref() {
         Some(AuthEntry::External { source, home }) => {
             resolve_external(platform, provider, source, home.as_deref())
         }
@@ -246,11 +277,16 @@ fn read_raw_auth(path: &std::path::Path) -> HashMap<String, serde_json::Value> {
     serde_json::from_str(&text).unwrap_or_default()
 }
 
-fn restrict_auth_file_permissions(path: &std::path::Path) -> Result<(), AuthError> {
-    #[cfg(unix)]
+fn reject_signin_writer(data: &Map<String, Value>, provider: &str) -> Result<(), AuthError> {
+    if data
+        .get(provider)
+        .and_then(|v| v.get("method_id"))
+        .and_then(Value::as_str)
+        == Some("chatgpt-signin")
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        return Err(AuthError::ManagedElsewhere(
+            "use `gait auth login openai-signin`".into(),
+        ));
     }
     Ok(())
 }
@@ -260,22 +296,14 @@ pub fn write_api_key_to(
     provider: &str,
     key: &str,
 ) -> Result<(), AuthError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| AuthError::NoParent(path.to_owned()))?;
-    std::fs::create_dir_all(parent)?;
-    let mut data = read_raw_auth(path);
-    data.insert(
-        provider.to_string(),
-        serde_json::json!({ "type": "api", "key": key }),
-    );
-    std::fs::write(
-        path,
-        serde_json::to_string_pretty(&data)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
-    )?;
-    restrict_auth_file_permissions(path)?;
-    Ok(())
+    crate::auth_file::update_auth_file(path, |data| {
+        reject_signin_writer(data, provider)?;
+        data.insert(
+            provider.to_string(),
+            serde_json::json!({ "type": "api", "key": key }),
+        );
+        Ok(())
+    })
 }
 
 pub fn write_api_key(provider: &str, key: &str) -> Result<(), AuthError> {
@@ -297,14 +325,9 @@ pub fn write_subscription_credential_to(
     provider: &str,
     credential: &gait_auth::SubscriptionCredential,
 ) -> Result<(), AuthError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| AuthError::NoParent(path.to_owned()))?;
-    std::fs::create_dir_all(parent)?;
-    let mut data = read_raw_auth(path);
-    data.insert(
-        provider.to_string(),
-        serde_json::to_value(AuthEntry::Subscription {
+    crate::auth_file::update_auth_file(path, |data| {
+        reject_signin_writer(data, provider)?;
+        let value = serde_json::to_value(AuthEntry::Subscription {
             provider_id: credential.provider_id.clone(),
             method_id: credential.method_id.clone(),
             version: credential.version,
@@ -312,15 +335,12 @@ pub fn write_subscription_credential_to(
             account_label: credential.account_label.clone(),
             secret: credential.secret.clone(),
         })
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
-    );
-    std::fs::write(
-        path,
-        serde_json::to_string_pretty(&data)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
-    )?;
-    restrict_auth_file_permissions(path)?;
-    Ok(())
+        .map_err(|error| {
+            AuthError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        })?;
+        data.insert(provider.to_string(), value);
+        Ok(())
+    })
 }
 
 pub fn write_subscription_credential(
@@ -345,26 +365,18 @@ pub fn write_external_binding_to(
     source: &str,
     home: Option<&Path>,
 ) -> Result<(), AuthError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| AuthError::NoParent(path.to_owned()))?;
-    std::fs::create_dir_all(parent)?;
-    let mut data = read_raw_auth(path);
-    data.insert(
-        provider.to_string(),
-        serde_json::to_value(AuthEntry::External {
+    crate::auth_file::update_auth_file(path, |data| {
+        reject_signin_writer(data, provider)?;
+        let value = serde_json::to_value(AuthEntry::External {
             source: source.to_string(),
             home: home.map(Path::to_path_buf),
         })
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,
-    );
-    std::fs::write(
-        path,
-        serde_json::to_string_pretty(&data)
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,
-    )?;
-    restrict_auth_file_permissions(path)?;
-    Ok(())
+        .map_err(|error| {
+            AuthError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        })?;
+        data.insert(provider.to_string(), value);
+        Ok(())
+    })
 }
 
 pub fn write_external_binding(
@@ -404,20 +416,15 @@ pub fn external_binding_with(
 }
 
 pub fn unlink_external_binding_from(path: &Path, provider: &str) -> Result<(), AuthError> {
-    let mut data = read_raw_auth(path);
-    match data.get(provider).and_then(|value| value.get("type")) {
-        None => return Ok(()),
-        Some(kind) if kind.as_str() == Some("external") => {}
-        Some(_) => return Err(AuthError::NotExternalBinding(provider.to_string())),
-    }
-    data.remove(provider);
-    std::fs::write(
-        path,
-        serde_json::to_string_pretty(&data)
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,
-    )?;
-    restrict_auth_file_permissions(path)?;
-    Ok(())
+    crate::auth_file::update_auth_file(path, |data| {
+        match data.get(provider).and_then(|value| value.get("type")) {
+            None => return Ok(()),
+            Some(kind) if kind.as_str() == Some("external") => {}
+            Some(_) => return Err(AuthError::NotExternalBinding(provider.to_string())),
+        }
+        data.remove(provider);
+        Ok(())
+    })
 }
 
 pub fn unlink_external_binding(provider: &str) -> Result<(), AuthError> {
@@ -432,15 +439,25 @@ pub fn unlink_external_binding_with(
 }
 
 pub fn remove_api_key_from(path: &std::path::Path, provider: &str) -> Result<(), AuthError> {
-    let mut data = read_raw_auth(path);
-    data.remove(provider);
-    std::fs::write(
-        path,
-        serde_json::to_string_pretty(&data)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
-    )?;
-    restrict_auth_file_permissions(path)?;
-    Ok(())
+    crate::auth_file::update_auth_file(path, |data| {
+        if data
+            .get(provider)
+            .and_then(|value| value.get("type"))
+            .and_then(|value| value.as_str())
+            == Some("subscription")
+            && data
+                .get(provider)
+                .and_then(|value| value.get("method_id"))
+                .and_then(|value| value.as_str())
+                == Some("chatgpt-signin")
+        {
+            return Err(AuthError::ManagedElsewhere(
+                "use `gait auth logout openai-signin --forget`".into(),
+            ));
+        }
+        data.remove(provider);
+        Ok(())
+    })
 }
 
 pub fn remove_api_key(provider: &str) -> Result<(), AuthError> {
@@ -466,6 +483,23 @@ pub fn list_credentials_from(path: &std::path::Path) -> HashMap<String, String> 
                 }
                 Some("oauth") => "oauth".to_string(),
                 Some("wellknown") => "wellknown".to_string(),
+                Some("subscription")
+                    if v.get("method_id").and_then(|m| m.as_str()) == Some("chatgpt-signin") =>
+                {
+                    let label = v
+                        .get("account_label")
+                        .and_then(|label| label.as_str())
+                        .unwrap_or("unknown");
+                    let has_tokens = v
+                        .get("secret")
+                        .and_then(|s| s.get("tokens"))
+                        .is_some_and(|t| !t.is_null());
+                    if has_tokens {
+                        format!("subscription ({label})")
+                    } else {
+                        "registered (logged out)".to_string()
+                    }
+                }
                 Some("subscription") => v
                     .get("account_label")
                     .and_then(|label| label.as_str())
@@ -590,6 +624,25 @@ mod tests {
     }
 
     #[test]
+    fn env_var_cannot_stand_in_for_signin() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut env = HashMap::new();
+        env.insert(
+            "OPENAI_SIGNIN_API_KEY".to_string(),
+            OsString::from("must-not-be-used"),
+        );
+        let platform = FakePlatform {
+            home: dir.path().to_path_buf(),
+            env,
+        };
+        let error = resolve_credential_lease_with(&platform, "openai-signin")
+            .expect_err("environment credentials must not satisfy sign-in");
+        let text = error.to_string();
+        assert!(text.contains("gait auth login openai-signin"), "{text}");
+        assert!(!text.contains("must-not-be-used"));
+    }
+
+    #[test]
     fn api_and_wellknown_entries_resolve_to_api_key_credentials() {
         assert_eq!(
             credential_from_entry(
@@ -702,6 +755,60 @@ mod tests {
     }
 
     #[test]
+    fn list_shows_logged_out_registration() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("auth.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "openai-signin": {
+                    "type": "subscription",
+                    "provider_id": "openai-signin",
+                    "method_id": "chatgpt-signin",
+                    "version": 1,
+                    "account_label": "ada@example.test",
+                    "secret": {"client_id": "oaiapp_test", "tokens": null}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            list_credentials_from(&path).get("openai-signin"),
+            Some(&"registered (logged out)".to_string())
+        );
+    }
+
+    #[test]
+    fn remove_refuses_signin_entry_and_still_removes_api_keys() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("auth.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "openai-signin": {
+                    "type": "subscription",
+                    "provider_id": "openai-signin",
+                    "method_id": "chatgpt-signin",
+                    "version": 1,
+                    "secret": {"tokens": null}
+                },
+                "openai": {"type": "api", "key": "sk-test"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            remove_api_key_from(&path, "openai-signin"),
+            Err(AuthError::ManagedElsewhere(message)) if message.contains("logout openai-signin --forget")
+        ));
+        remove_api_key_from(&path, "openai").unwrap();
+        let map = crate::auth_file::load_auth_map(&path).unwrap();
+        assert!(map.contains_key("openai-signin"));
+        assert!(!map.contains_key("openai"));
+    }
+
+    #[test]
     fn list_credentials_masks_keys() {
         let dir = tempfile::TempDir::new().unwrap();
         let auth_path = dir.path().join("auth.json");
@@ -796,5 +903,134 @@ mod tests {
             lease.location,
             AuthLocation::Environment("OPENAI_API_KEY".into())
         );
+    }
+
+    #[test]
+    fn writers_refuse_corrupt_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("auth.json");
+        let original = b"{not json";
+        std::fs::write(&path, original).unwrap();
+        let credential = gait_auth::SubscriptionCredential {
+            provider_id: "openai".into(),
+            method_id: "test".into(),
+            version: 1,
+            expires_at_unix_s: None,
+            account_label: None,
+            secret: serde_json::json!({}),
+        };
+
+        let results = [
+            write_api_key_to(&path, "openai", "key"),
+            write_subscription_credential_to(&path, "openai", &credential),
+            write_external_binding_to(&path, "openai", "codex", None),
+            unlink_external_binding_from(&path, "openai"),
+            remove_api_key_from(&path, "openai"),
+        ];
+
+        for result in results {
+            assert!(matches!(result, Err(AuthError::Corrupt { .. })));
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn writers_refuse_signin_entry() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("auth.json");
+        let original_value = serde_json::json!({
+            "openai-signin": {
+                "type": "subscription",
+                "provider_id": "openai-signin",
+                "method_id": "chatgpt-signin",
+                "version": 1,
+                "secret": {"tokens": {"refresh_token": "refresh-secret"}}
+            }
+        });
+        std::fs::write(&path, serde_json::to_vec(&original_value).unwrap()).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let other = gait_auth::SubscriptionCredential {
+            provider_id: "openai-signin".into(),
+            method_id: "other-method".into(),
+            version: 1,
+            expires_at_unix_s: None,
+            account_label: None,
+            secret: serde_json::json!({"opaque": "value"}),
+        };
+        assert!(matches!(
+            write_api_key_to(&path, "openai-signin", "api-secret"),
+            Err(AuthError::ManagedElsewhere(_))
+        ));
+        assert!(matches!(
+            write_subscription_credential_to(&path, "openai-signin", &other),
+            Err(AuthError::ManagedElsewhere(_))
+        ));
+        assert!(matches!(
+            write_external_binding_to(&path, "openai-signin", "codex", None),
+            Err(AuthError::ManagedElsewhere(_))
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        write_api_key_to(&path, "other-provider", "api-key").unwrap();
+        write_subscription_credential_to(&path, "other-subscription", &other).unwrap();
+        write_external_binding_to(&path, "other-external", "codex", None).unwrap();
+    }
+
+    #[test]
+    fn unknown_type_entry_does_not_break_resolution() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(".gait-home/auth.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "future": { "type": "future", "value": 1 },
+                "openai": { "type": "api", "key": "sk-valid" }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let platform = FakePlatform {
+            home: dir.path().to_path_buf(),
+            env: HashMap::new(),
+        };
+
+        let credential = resolve_credential_with(&platform, "openai")
+            .unwrap()
+            .unwrap();
+        assert_eq!(credential.api_key(), Some("sk-valid"));
+    }
+
+    #[test]
+    fn malformed_entry_for_requested_provider_is_an_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(".gait-home/auth.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "openai": { "type": "api", "key": 42 }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let platform = FakePlatform {
+            home: dir.path().to_path_buf(),
+            env: HashMap::new(),
+        };
+
+        let result = resolve_credential_lease_with(&platform, "openai");
+        assert!(matches!(
+            result,
+            Err(AuthError::Corrupt { path: error_path, detail })
+                if error_path == path && detail.contains("entry for 'openai' is invalid")
+        ));
+    }
+
+    #[test]
+    fn noop_unlink_does_not_create_auth_json() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("auth.json");
+        unlink_external_binding_from(&path, "openai").unwrap();
+        assert!(!path.exists());
     }
 }

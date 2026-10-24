@@ -7,12 +7,18 @@ pub enum Wire {
     Anthropic,
     OpenAI,
     CodexResponses,
+    ResponsesPlan,
 }
 
 impl Wire {
     /// Every production SSE schema. Conformance tests match this list
     /// exhaustively so adding a wire requires an explicit fixture.
-    pub const ALL: &'static [Self] = &[Self::Anthropic, Self::OpenAI, Self::CodexResponses];
+    pub const ALL: &'static [Self] = &[
+        Self::Anthropic,
+        Self::OpenAI,
+        Self::CodexResponses,
+        Self::ResponsesPlan,
+    ];
 }
 
 /// How a provider authenticates. Kept separate from `Wire` because the
@@ -55,6 +61,16 @@ pub const PROVIDERS: &[ProviderSpec] = &[
         auth_method: AuthMethod::ApiKey,
         base_url: None,
         env_var: Some("ANTHROPIC_API_KEY"),
+        requires_auth: true,
+    },
+    ProviderSpec {
+        // This namespace is separate from `openai` because it uses plan usage,
+        // not API-key billing.
+        id: "openai-signin",
+        wire: Wire::ResponsesPlan,
+        auth_method: AuthMethod::Subscription,
+        base_url: Some("https://api.openai.com/v1"),
+        env_var: None,
         requires_auth: true,
     },
     ProviderSpec {
@@ -258,6 +274,21 @@ mod tests {
         assert_eq!(spec.wire, Wire::CodexResponses);
         assert_eq!(spec.auth_method, AuthMethod::Subscription);
         assert_eq!(spec.env_var, None);
+    }
+
+    #[test]
+    fn providers_table_row() {
+        let rows: Vec<_> = PROVIDERS
+            .iter()
+            .filter(|row| row.id == "openai-signin")
+            .collect();
+        assert_eq!(rows.len(), 1);
+        let row = rows[0];
+        assert_eq!(row.wire, Wire::ResponsesPlan);
+        assert_eq!(row.auth_method, AuthMethod::Subscription);
+        assert_eq!(row.base_url, Some("https://api.openai.com/v1"));
+        assert_eq!(row.env_var, None);
+        assert_ne!(row.id, "openai");
     }
 
     #[test]

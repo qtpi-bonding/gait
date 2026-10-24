@@ -37,4 +37,5 @@ testing = []
 
 [dev-dependencies]
 tempfile = "3"
+gait-auth = { path = "../gait-auth", features = ["testing"] }
 identity-crypto = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "675d474" }

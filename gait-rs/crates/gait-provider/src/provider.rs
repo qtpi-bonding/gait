@@ -83,6 +83,7 @@ pub enum ProviderError {
         status: u16,
         body: String,
         retry_after: Option<std::time::Duration>,
+        request_id: Option<String>,
     },
     #[error("server overloaded")]
     Overloaded,

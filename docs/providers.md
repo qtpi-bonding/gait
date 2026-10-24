@@ -24,6 +24,7 @@ This is the actual list shipped in the binary. Adding a new OpenAI-compatible pr
 | `minimax` | Anthropic | `https://api.minimax.io/anthropic/v1` | `MINIMAX_API_KEY` | yes |
 | `openai` | OpenAI | (default) | `OPENAI_API_KEY` | yes |
 | `openai-codex` | Codex Responses | `https://chatgpt.com/backend-api/codex` | subscription | yes |
+| `openai-signin` | Responses (plan) | `https://api.openai.com/v1` | subscription | yes |
 | `groq` | OpenAI | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | yes |
 | `mistral` | OpenAI | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | yes |
 | `openrouter` | OpenAI | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | yes |
@@ -53,6 +54,44 @@ Gait's own credential map and external-source pointers live at
 `GAIT_DIR` workspace.
 
 `ollama` and `lmstudio` are local servers that don't check the `Authorization` header. `gait auth add` is not required for them — set the URL below if you're not on the default port.
+
+### openai-signin
+
+`openai-signin` signs in with a ChatGPT plan through OpenAI's official "Sign in with ChatGPT" flow. Requests go to the public Responses API at `https://api.openai.com/v1` with a bearer token. No API key is needed, and usage counts against the ChatGPT plan's limits rather than API billing. Use model strings of the form `openai-signin/<model>`.
+
+A single turn longer than the access token's remaining life (about an hour) can fail with an expired-credential error; the next turn refreshes it. Because this provider's model slugs are missing from the bundled model metadata snapshot, set `compaction_threshold_tokens` explicitly in `gait.jsonc` for long sessions.
+
+```bash
+gait auth login openai-signin
+```
+
+The interactive login prints a URL. Open it in any browser and sign in. The browser then ends on a connection error page; that is expected. Paste the address the browser ends on back into the prompt.
+
+When stdin is not a terminal, the login is two-step:
+
+```bash
+gait auth login openai-signin                        # prints JSON containing authorization_url
+gait auth login openai-signin --complete '<pasted url>'
+gait auth login openai-signin --complete -           # read the pasted URL from stdin
+```
+
+A pending login expires after 10 minutes. Tokens refresh automatically before each turn.
+
+```bash
+gait auth status openai-signin
+gait auth logout openai-signin            # remove the login
+gait auth logout openai-signin --forget   # also remove the saved app registration; needed to switch ChatGPT accounts
+```
+
+When the plan's usage limit is reached, the request fails with a message pointing to ChatGPT Settings > Usage. gait never falls back silently to another provider, and it does not retry usage-limit errors.
+
+`openai-codex` above reuses the Codex CLI login and is the older, unofficial path. `openai-signin` is the supported one.
+
+**Where credentials live.** Credentials are stored in `$GAIT_HOME/auth.json` (default `~/.gait-home`), mode 0600, with a lock file `auth.lock` and a short-lived pending-login file under `$GAIT_HOME/auth-pending/`. Never copy `auth.json` to another machine or into a repo: refresh tokens rotate, so a copy stops working as soon as either side refreshes. The model-facing `__brain` process receives only a short-lived access token, never the refresh token.
+
+**Containers.** A login done inside a container is lost when the container exits, because gaitainer does not mount `$GAIT_HOME`. Log in on the host, or mount a persistent `GAIT_HOME` deliberately.
+
+**Known limitation.** Tool sandboxes can currently read `$GAIT_HOME`, so a model-directed shell command could read `auth.json`. Do not use this provider on untrusted prompts with shell access until this is closed.
 
 ## Listing available models
 

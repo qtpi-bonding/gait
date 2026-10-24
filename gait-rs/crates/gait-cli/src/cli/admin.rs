@@ -18,6 +18,12 @@ pub struct AuthArgs {
     pub home: Option<PathBuf>,
     #[arg(long)]
     pub pretty: bool,
+    /// Complete a pending openai-signin login with a callback URL (or `-` for stdin).
+    #[arg(long)]
+    pub complete: Option<String>,
+    /// Forget the openai-signin registration when logging out.
+    #[arg(long)]
+    pub forget: bool,
 }
 
 /// `gait models [filter]`
@@ -606,6 +612,49 @@ pub fn parse_flags(args: &[String]) -> std::collections::HashMap<String, String>
     map
 }
 
+pub fn read_callback_arg<R: std::io::Read>(arg: &str, mut stdin: R) -> anyhow::Result<String> {
+    if arg != "-" {
+        return Ok(arg.to_string());
+    }
+    let mut line = String::new();
+    let mut reader = std::io::BufReader::new(&mut stdin);
+    std::io::BufRead::read_line(&mut reader, &mut line)?;
+    let value = line.trim().to_string();
+    if value.is_empty() {
+        anyhow::bail!("no callback URL provided on stdin");
+    }
+    Ok(value)
+}
+
+fn default_provider(provider: Option<&str>) -> &str {
+    provider.unwrap_or("openai-codex")
+}
+
+fn validate_auth_flags(
+    action: &str,
+    provider: Option<&str>,
+    complete: Option<&str>,
+    forget: bool,
+) -> Result<(), String> {
+    if complete.is_some() && !(action == "login" && provider == Some("openai-signin")) {
+        return Err("--complete is only valid with `gait auth login openai-signin`".to_string());
+    }
+    if forget && !(action == "logout" && provider == Some("openai-signin")) {
+        return Err("--forget is only valid with `gait auth logout openai-signin`".to_string());
+    }
+    Ok(())
+}
+
+fn print_login_success(out: gait_ops::auth::AuthWriteOutcome, pretty: bool) {
+    println!(
+        "{}",
+        gait_ops::render_json(
+            &serde_json::json!({"provider": out.provider, "display": out.display, "action": "saved"}),
+            pretty
+        )
+    );
+}
+
 /// `gait auth <list|add|remove> [<provider>]`. Thin adapter over
 /// `gait_ops::auth`. The `add` branch keeps its own stdin read of the API
 /// key (per design §4: fixed-value prompts → value passed as a param, but
@@ -620,6 +669,12 @@ pub async fn cmd_auth(args: AuthArgs) {
         .unwrap_or("list");
     let provider = args.provider.as_deref();
     let pretty = args.pretty;
+    if let Err(message) =
+        validate_auth_flags(action, provider, args.complete.as_deref(), args.forget)
+    {
+        eprintln!("[gait] {message}");
+        std::process::exit(1);
+    }
     match action {
         "list" => {
             let creds = match gait_ops::auth::list() {
@@ -642,6 +697,10 @@ pub async fn cmd_auth(args: AuthArgs) {
                     std::process::exit(1);
                 }
             };
+            if provider == "openai-signin" {
+                eprintln!("uses ChatGPT sign-in; run gait auth login openai-signin");
+                std::process::exit(1);
+            }
             if provider == "openai-codex" {
                 eprintln!(
                     "openai-codex uses a ChatGPT subscription; run: gait auth login openai-codex"
@@ -672,7 +731,60 @@ pub async fn cmd_auth(args: AuthArgs) {
             }
         }
         "login" => {
-            let provider = provider.unwrap_or("openai-codex");
+            let provider = default_provider(provider);
+            if provider == "openai-signin" {
+                if let Some(arg) = args.complete.as_deref() {
+                    let callback = match read_callback_arg(arg, std::io::stdin()) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            eprintln!("[gait] error: {error}");
+                            std::process::exit(1);
+                        }
+                    };
+                    match gait_ops::auth::login_complete(provider, callback).await {
+                        Ok(out) => print_login_success(out, pretty),
+                        Err(error) => {
+                            eprintln!("[gait] error: {error}");
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    let start = match gait_ops::auth::login_begin(provider).await {
+                        Ok(value) => value,
+                        Err(error) => {
+                            eprintln!("[gait] error: {error}");
+                            std::process::exit(1);
+                        }
+                    };
+                    if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                        eprintln!("{}", start.authorization_url);
+                        eprint!("Paste the URL you were redirected to: ");
+                        let callback = match read_callback_arg("-", std::io::stdin()) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                eprintln!("[gait] error: {error}");
+                                std::process::exit(1);
+                            }
+                        };
+                        match gait_ops::auth::login_complete(provider, callback).await {
+                            Ok(out) => print_login_success(out, pretty),
+                            Err(error) => {
+                                eprintln!("[gait] error: {error}");
+                                std::process::exit(1);
+                            }
+                        }
+                    } else {
+                        println!(
+                            "{}",
+                            gait_ops::render_json(
+                                &serde_json::json!({"provider": start.provider, "authorization_url": start.authorization_url, "expires_in_seconds": start.expires_in_seconds}),
+                                pretty
+                            )
+                        );
+                    }
+                }
+                return;
+            }
             if provider != "openai-codex" {
                 eprintln!("subscription login is currently available only for openai-codex");
                 std::process::exit(1);
@@ -692,13 +804,7 @@ pub async fn cmd_auth(args: AuthArgs) {
             })
             .await
             {
-                Ok(out) => println!(
-                    "{}",
-                    gait_ops::render_json(
-                        &serde_json::json!({"provider": out.provider, "display": out.display, "action": "saved"}),
-                        pretty
-                    )
-                ),
+                Ok(out) => print_login_success(out, pretty),
                 Err(error) => {
                     eprintln!("[gait] error: {error}");
                     std::process::exit(1);
@@ -779,7 +885,28 @@ pub async fn cmd_auth(args: AuthArgs) {
             }
         }
         "logout" => {
-            let provider = provider.unwrap_or("openai-codex");
+            let provider = default_provider(provider);
+            if provider == "openai-signin" {
+                match gait_ops::auth::logout_signin(args.forget).await {
+                    Ok(out) => {
+                        println!(
+                            "{}",
+                            gait_ops::render_json(
+                                &serde_json::json!({"provider": out.provider, "action": "logged_out", "revoked": out.revoked}),
+                                pretty
+                            )
+                        );
+                        if !out.revoked {
+                            eprintln!("Disconnect the app in ChatGPT Settings.");
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("[gait] error: {error}");
+                        std::process::exit(1);
+                    }
+                }
+                return;
+            }
             if provider != "openai-codex" {
                 eprintln!("subscription logout is currently available only for openai-codex; use `gait auth remove {provider}` for API keys");
                 std::process::exit(1);
@@ -1066,6 +1193,99 @@ pub fn cmd_config(args: ConfigArgs) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clap_parses_complete_and_forget() {
+        let login = AuthArgs::try_parse_from([
+            "gait-auth",
+            "login",
+            "openai-signin",
+            "--complete",
+            "https://callback",
+        ])
+        .unwrap();
+        assert_eq!(login.complete.as_deref(), Some("https://callback"));
+        assert!(!login.forget);
+        let stdin =
+            AuthArgs::try_parse_from(["gait-auth", "login", "openai-signin", "--complete", "-"])
+                .unwrap();
+        assert_eq!(stdin.complete.as_deref(), Some("-"));
+        let logout =
+            AuthArgs::try_parse_from(["gait-auth", "logout", "openai-signin", "--forget"]).unwrap();
+        assert!(logout.forget);
+    }
+
+    #[test]
+    fn read_callback_arg_dash_reads_stdin_and_trims() {
+        let result = read_callback_arg(
+            "-",
+            std::io::Cursor::new(b"  https://callback.example/x  \nrest\n"),
+        )
+        .unwrap();
+        assert_eq!(result, "https://callback.example/x");
+    }
+
+    #[test]
+    fn read_callback_arg_literal_passthrough() {
+        let value = "https://callback.example/code?state=secret";
+        assert_eq!(
+            read_callback_arg(value, std::io::Cursor::new(b"ignored\n")).unwrap(),
+            value
+        );
+    }
+
+    #[test]
+    fn read_callback_arg_dash_rejects_empty_line_and_eof() {
+        assert!(read_callback_arg("-", std::io::Cursor::new(b"\n")).is_err());
+        assert!(read_callback_arg("-", std::io::Cursor::new(b"")).is_err());
+        assert!(read_callback_arg("-", std::io::Cursor::new(b"  \t\r\n")).is_err());
+    }
+
+    #[test]
+    fn read_callback_arg_dash_handles_crlf_and_missing_newline() {
+        assert_eq!(
+            read_callback_arg("-", std::io::Cursor::new(b" https://callback\r\n")).unwrap(),
+            "https://callback"
+        );
+        assert_eq!(
+            read_callback_arg("-", std::io::Cursor::new(b"https://callback")).unwrap(),
+            "https://callback"
+        );
+    }
+
+    #[test]
+    fn default_login_provider_is_still_codex() {
+        assert_eq!(default_provider(None), "openai-codex");
+        assert_eq!(default_provider(Some("openai-signin")), "openai-signin");
+    }
+
+    #[test]
+    fn auth_flag_validation_table() {
+        let actions = ["login", "logout", "add", "remove", "status", "list"];
+        let providers = [
+            None,
+            Some("openai-signin"),
+            Some("openai-codex"),
+            Some("anthropic"),
+        ];
+        for action in actions {
+            for provider in providers {
+                let complete_ok = action == "login" && provider == Some("openai-signin");
+                let forget_ok = action == "logout" && provider == Some("openai-signin");
+                assert_eq!(
+                    validate_auth_flags(action, provider, Some("x"), false).is_ok(),
+                    complete_ok,
+                    "complete: {action} {provider:?}"
+                );
+                assert_eq!(
+                    validate_auth_flags(action, provider, None, true).is_ok(),
+                    forget_ok,
+                    "forget: {action} {provider:?}"
+                );
+                assert!(validate_auth_flags(action, provider, None, false).is_ok());
+            }
+        }
+    }
 
     #[test]
     fn auth_link_parses_source_and_home() {
