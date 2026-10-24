@@ -5,7 +5,7 @@
 //! hits `models.dev` (with disk-cache fallback); the pure `filter_models`
 //! helper stays in gait-core and we just delegate here.
 use crate::OpError;
-use gait_auth::signin::{ChatGptSignIn, SIGNIN_PROVIDER_ID};
+use gait_auth::signin::{ChatGptSignIn, PENDING_TTL_SECONDS, SIGNIN_PROVIDER_ID};
 use gait_auth::sources::codex::{CodexAuthSource, CODEX_SOURCE_ID};
 use gait_auth::store::CredentialStore;
 use gait_auth::{
@@ -51,8 +51,6 @@ pub struct LogoutOutcome {
     pub revoked: bool,
 }
 
-const LOGIN_TTL_SECONDS: u64 = 600;
-
 /// Return the auth method owned by this ops layer, if any.
 pub fn auth_method_for(provider_id: &str) -> Option<Box<dyn AuthMethod>> {
     (provider_id == SIGNIN_PROVIDER_ID)
@@ -66,7 +64,7 @@ fn map_auth_error(error: gait_auth::AuthError) -> OpError {
             let message = if message.contains("gait auth login") {
                 message
             } else {
-                "run: gait auth login openai-signin".to_string()
+                format!("run: gait auth login openai-signin ({message})")
             };
             OpError::Conflict(message)
         }
@@ -111,7 +109,7 @@ pub async fn login_begin_with(
     Ok(LoginStart {
         provider: provider.to_string(),
         authorization_url,
-        expires_in_seconds: LOGIN_TTL_SECONDS,
+        expires_in_seconds: PENDING_TTL_SECONDS,
     })
 }
 
@@ -275,24 +273,24 @@ pub fn add(provider: &str, api_key: String) -> Result<AuthWriteOutcome, OpError>
 /// Remove `provider` from the credential store. Idempotent: removing a
 /// provider that isn't present still succeeds, mirroring the original
 /// `cmd_auth remove` behavior (it called `remove_api_key` and reported
-/// success unconditionally).
+/// success unconditionally). A stored ChatGPT sign-in entry is owned by its
+/// login flow, so the state layer refuses it and it surfaces as a conflict.
 pub fn remove(provider: &str) -> Result<AuthRemoveOutcome, OpError> {
+    remove_using(provider, gait_state::auth::remove_api_key)
+}
+
+fn remove_using(
+    provider: &str,
+    remove_entry: impl FnOnce(&str) -> Result<(), gait_state::auth::AuthError>,
+) -> Result<AuthRemoveOutcome, OpError> {
     if provider.is_empty() {
         return Err(OpError::Conflict("provider name is required".to_string()));
     }
-    if provider == SIGNIN_PROVIDER_ID {
-        return Err(OpError::Conflict(
+    remove_entry(provider).map_err(|error| match error {
+        gait_state::auth::AuthError::ManagedElsewhere(_) => OpError::Conflict(
             "openai-signin is managed by ChatGPT sign-in; run `gait auth logout openai-signin --forget`"
                 .to_string(),
-        ));
-    }
-    gait_state::auth::remove_api_key(provider).map_err(|error| match error {
-        gait_state::auth::AuthError::ManagedElsewhere(_) if provider == SIGNIN_PROVIDER_ID => {
-            OpError::Conflict(
-                "openai-signin is managed by ChatGPT sign-in; run `gait auth logout openai-signin --forget`"
-                    .to_string(),
-            )
-        }
+        ),
         error => OpError::Other(error.into()),
     })?;
     Ok(AuthRemoveOutcome {
@@ -422,7 +420,7 @@ pub async fn models(filter: Option<&str>) -> Result<ModelsOutcome, OpError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gait_auth::signin::Endpoints;
+    use gait_auth::signin::{Endpoints, SIGNIN_METHOD_ID};
     use gait_auth::store::CredentialStore;
     use gait_auth::testing::{fake_jwt, StubServer};
     use gait_state::auth_store::FileCredentialStore;
@@ -444,7 +442,9 @@ mod tests {
         )
     }
 
-    fn store(dir: &tempfile::TempDir) -> FileCredentialStore {
+    /// Opens the credential store at `<dir>/auth.json`. Every call builds a new
+    /// handle, so tests can re-read what an earlier handle wrote.
+    fn open_store(dir: &tempfile::TempDir) -> FileCredentialStore {
         FileCredentialStore::new(dir.path().join("auth.json"))
     }
 
@@ -458,10 +458,6 @@ mod tests {
             .unwrap()
     }
 
-    fn fresh(dir: &tempfile::TempDir) -> FileCredentialStore {
-        FileCredentialStore::new(dir.path().join("auth.json"))
-    }
-
     fn callback(p: &gait_auth::store::PendingLogin, client: &str) -> String {
         format!(
             "{}?state={}&code=code&client_id={}",
@@ -471,9 +467,22 @@ mod tests {
 
     #[test]
     fn auth_method_for_only_knows_signin() {
-        assert!(auth_method_for(SIGNIN_PROVIDER_ID).is_some());
+        let method = auth_method_for(SIGNIN_PROVIDER_ID).expect("signin method");
+        assert_eq!(method.method_id(), gait_auth::signin::SIGNIN_METHOD_ID);
         assert!(auth_method_for("openai-codex").is_none());
         assert!(auth_method_for("unknown").is_none());
+    }
+
+    #[test]
+    fn map_auth_error_keeps_original_login_required_text() {
+        let error = map_auth_error(gait_auth::AuthError::LoginRequired(
+            "session was revoked".into(),
+        ));
+        assert!(matches!(
+            &error,
+            OpError::Conflict(message)
+                if message.contains("session was revoked") && message.contains("gait auth login")
+        ));
     }
 
     #[tokio::test]
@@ -482,7 +491,7 @@ mod tests {
         let method = test_method(&server);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("auth.json");
-        let store = FileCredentialStore::new(path.clone());
+        let store = open_store(&dir);
         let result = login_begin_with(&method, &store, SIGNIN_PROVIDER_ID)
             .await
             .unwrap();
@@ -490,14 +499,8 @@ mod tests {
         assert!(result
             .authorization_url
             .starts_with(&format!("{}/authorize?", server.base_url())));
-        assert_eq!(result.expires_in_seconds, 600);
-        let p = fresh(&dir)
-            .lock()
-            .await
-            .unwrap()
-            .peek_pending(SIGNIN_PROVIDER_ID)
-            .unwrap()
-            .unwrap();
+        assert_eq!(result.expires_in_seconds, PENDING_TTL_SECONDS);
+        let p = pending(&store).await;
         assert!(result.authorization_url.contains(&p.state));
         assert!(path.exists());
     }
@@ -507,7 +510,7 @@ mod tests {
         let server = StubServer::new().await;
         let method = test_method(&server);
         let dir = tempfile::tempdir().unwrap();
-        let store = store(&dir);
+        let store = open_store(&dir);
         let _ = login_begin_with(&method, &store, SIGNIN_PROVIDER_ID)
             .await
             .unwrap();
@@ -529,7 +532,7 @@ mod tests {
             .requests()
             .iter()
             .any(|r| r.path == "/token" && r.body.contains("grant_type=authorization_code")));
-        let saved = fresh(&dir)
+        let saved = open_store(&dir)
             .lock()
             .await
             .unwrap()
@@ -545,7 +548,7 @@ mod tests {
         let server = StubServer::new().await;
         let method = test_method(&server);
         let dir = tempfile::tempdir().unwrap();
-        let store = store(&dir);
+        let store = open_store(&dir);
         let mut g = store.lock().await.unwrap();
         let cred = gait_auth::SubscriptionCredential {
             provider_id: SIGNIN_PROVIDER_ID.into(),
@@ -565,7 +568,7 @@ mod tests {
             .requests()
             .iter()
             .any(|r| r.path == "/token" && r.body.contains("refresh_token=refresh")));
-        let saved = fresh(&dir)
+        let saved = open_store(&dir)
             .lock()
             .await
             .unwrap()
@@ -581,7 +584,7 @@ mod tests {
         let server = StubServer::new().await;
         let method = test_method(&server);
         let dir = tempfile::tempdir().unwrap();
-        let store = store(&dir);
+        let store = open_store(&dir);
         let mut g = store.lock().await.unwrap();
         let cred = gait_auth::SubscriptionCredential {
             provider_id: SIGNIN_PROVIDER_ID.into(),
@@ -600,7 +603,7 @@ mod tests {
             .requests()
             .iter()
             .any(|r| r.path == "/revoke" && r.body.contains("token=r")));
-        let saved = fresh(&dir)
+        let saved = open_store(&dir)
             .lock()
             .await
             .unwrap()
@@ -610,12 +613,103 @@ mod tests {
         assert!(saved.secret["tokens"].is_null());
     }
 
+    /// Writes a live-looking ChatGPT sign-in entry into the store at `store`.
+    async fn seed_signin(store: &FileCredentialStore) {
+        let cred = gait_auth::SubscriptionCredential {
+            provider_id: SIGNIN_PROVIDER_ID.into(),
+            method_id: SIGNIN_METHOD_ID.into(),
+            version: 1,
+            expires_at_unix_s: None,
+            account_label: None,
+            secret: serde_json::json!({"client_id":"oaiapp_x","host_id":"h","subject":"s","tokens":{"access_token":"a","refresh_token":"r","id_token":"i","scopes":[],"expires_at_unix_s":1,"earliest_refresh_at_unix_s":null}}),
+        };
+        store
+            .lock()
+            .await
+            .unwrap()
+            .write(SIGNIN_PROVIDER_ID, &cred)
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn logout_with_revoke_failure_reports_unconfirmed() {
+        let server = StubServer::new().await;
+        let method = test_method(&server);
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        seed_signin(&store).await;
+        server.respond("/revoke", 500, "boom");
+        let out = logout_signin_with(&method, &store, false).await.unwrap();
+        assert!(!out.revoked);
+        assert!(server.requests().iter().any(|r| r.path == "/revoke"));
+        let saved = open_store(&dir)
+            .lock()
+            .await
+            .unwrap()
+            .read(SIGNIN_PROVIDER_ID)
+            .unwrap()
+            .unwrap();
+        assert!(saved.secret["tokens"].is_null());
+    }
+
+    #[tokio::test]
+    async fn logout_forget_removes_entry() {
+        let server = StubServer::new().await;
+        let method = test_method(&server);
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir);
+        seed_signin(&store).await;
+        server.respond("/revoke", 200, "ok");
+        let out = logout_signin_with(&method, &store, true).await.unwrap();
+        assert!(out.revoked);
+        let saved = open_store(&dir)
+            .lock()
+            .await
+            .unwrap()
+            .read(SIGNIN_PROVIDER_ID)
+            .unwrap();
+        assert!(saved.is_none(), "forget must delete the entry");
+    }
+
     #[test]
     fn remove_signin_is_conflict_naming_forget() {
-        let error = remove(SIGNIN_PROVIDER_ID).unwrap_err();
-        assert!(
-            matches!(error, OpError::Conflict(message) if message.contains("gait auth logout openai-signin --forget"))
-        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        let cred = gait_auth::SubscriptionCredential {
+            provider_id: SIGNIN_PROVIDER_ID.into(),
+            method_id: SIGNIN_METHOD_ID.into(),
+            version: 1,
+            expires_at_unix_s: None,
+            account_label: None,
+            secret: serde_json::json!({"tokens": null}),
+        };
+        gait_state::auth::write_subscription_credential_to(&path, SIGNIN_PROVIDER_ID, &cred)
+            .unwrap();
+        let error = remove_using(SIGNIN_PROVIDER_ID, |provider| {
+            gait_state::auth::remove_api_key_from(&path, provider)
+        })
+        .unwrap_err();
+        assert!(matches!(
+            &error,
+            OpError::Conflict(message) if message.contains("logout openai-signin --forget")
+        ));
+        assert!(gait_state::auth::list_credentials_from(&path).contains_key(SIGNIN_PROVIDER_ID));
+    }
+
+    #[test]
+    fn remove_other_provider_api_key_still_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        gait_state::auth::write_api_key_to(&path, "openai", "sk-test").unwrap();
+        gait_state::auth::write_api_key_to(&path, "anthropic", "sk-keep").unwrap();
+        let out = remove_using("openai", |provider| {
+            gait_state::auth::remove_api_key_from(&path, provider)
+        })
+        .unwrap();
+        assert_eq!(out.provider, "openai");
+        let listed = gait_state::auth::list_credentials_from(&path);
+        assert!(!listed.contains_key("openai"));
+        assert!(listed.contains_key("anthropic"));
     }
 
     // -- add --

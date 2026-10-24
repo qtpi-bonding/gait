@@ -17,7 +17,7 @@ pub const DYNAMIC_CLIENT_ID: &str = "dynamic_agent_client";
 pub const SCOPES: &str =
     "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct";
 pub const RESOURCE: &str = "https://api.openai.com/v1";
-const PENDING_TTL: u64 = 600;
+pub const PENDING_TTL_SECONDS: u64 = 600;
 const PLAN_SCOPE: &str = "chatgpt.tokens.use.direct";
 pub const REFRESH_THRESHOLD_S: u64 = 45 * 60;
 
@@ -531,7 +531,7 @@ impl AuthMethod for ChatGptSignIn {
             .peek_pending(provider)?
             .ok_or_else(|| AuthError::Other("no pending login, start again".into()))?;
         let now = (self.now)();
-        if now.saturating_sub(pending.created_at_unix_s) > PENDING_TTL {
+        if now.saturating_sub(pending.created_at_unix_s) > PENDING_TTL_SECONDS {
             guard.clear_pending(provider)?;
             return Err(AuthError::Other(
                 "pending login expired; start again".into(),
