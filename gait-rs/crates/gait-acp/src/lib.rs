@@ -9,7 +9,6 @@ pub mod fs_delegate;
 pub mod handlers;
 mod idempotency;
 pub mod lifecycle;
-mod meta_provenance;
 pub mod session_map;
 pub mod turn_io;
 

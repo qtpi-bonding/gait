@@ -14,7 +14,6 @@ pub struct InputEnvelope {
 #[derive(Debug, Clone)]
 pub enum ProvenanceClaim {
     Absent,
-    Direct(Provenance),
     Rejected,
 }
 
@@ -38,7 +37,6 @@ impl InputEnvelope {
     pub fn with_claim(body: event::Body, claim: ProvenanceClaim) -> Self {
         match claim {
             ProvenanceClaim::Absent => Self::new(body, None),
-            ProvenanceClaim::Direct(provenance) => Self::new(body, Some(provenance)),
             ProvenanceClaim::Rejected => Self::rejected_claim(body),
         }
     }

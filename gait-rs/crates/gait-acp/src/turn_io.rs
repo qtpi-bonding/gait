@@ -242,7 +242,9 @@ pub fn build_permission_options(
         &mut map,
         "Reject this session".to_string(),
         PermissionOptionKind::RejectAlways,
-        segs.iter().map(|s| deny_session(&s.id, &broad(s))).collect(),
+        segs.iter()
+            .map(|s| deny_session(&s.id, &broad(s)))
+            .collect(),
     );
 
     // Session-granular: single-segment only (per-rung is ambiguous for compounds).
@@ -286,13 +288,16 @@ impl AcpTurnSource {
         session_id: SessionId,
         gait_dir: PathBuf,
         cancel: tokio_util::sync::CancellationToken,
-        provenance: Option<gait_core::proto::gait::log::v1::Provenance>,
     ) -> Self {
-        let claim = provenance
-            .map(gait_core::port::input::ProvenanceClaim::Direct)
-            .unwrap_or(gait_core::port::input::ProvenanceClaim::Absent);
         Self::new_with_claim(
-            text, repos, codebase, cx, session_id, gait_dir, cancel, claim,
+            text,
+            repos,
+            codebase,
+            cx,
+            session_id,
+            gait_dir,
+            cancel,
+            gait_core::port::input::ProvenanceClaim::Absent,
         )
     }
 
@@ -928,77 +933,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn acp_turn_source_carries_provenance_from_construction() {
-        let provenance = gait_core::proto::gait::log::v1::Provenance {
-            from: vec![1u8; 32],
-            to: vec![],
-            context: String::new(),
-            signature: vec![2u8; 64],
-            scheme: gait_identity::KeyScheme::Ed25519 as i32,
-            delegation_cert: None,
-            verified_author_id: None,
-            verification_outcome: None,
-        };
-        use agent_client_protocol::schema::ProtocolVersion;
-        use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse};
-        use agent_client_protocol::{Agent, Client, ConnectTo};
-        let (cx_tx, cx_rx) = tokio::sync::oneshot::channel();
-        let cx_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(cx_tx)));
-        let server = Agent.builder().on_receive_request(
-            move |_req: InitializeRequest,
-                  responder: agent_client_protocol::Responder<InitializeResponse>,
-                  cx: agent_client_protocol::ConnectionTo<Client>| {
-                let cx_tx = cx_tx.clone();
-                async move {
-                    cx_tx
-                        .lock()
-                        .unwrap()
-                        .take()
-                        .expect("only one request")
-                        .send(cx)
-                        .unwrap();
-                    responder.respond(InitializeResponse::new(ProtocolVersion::V1))
-                }
-            },
-            agent_client_protocol::on_receive_request!(),
-        );
-        let (channel, server_future) = server.into_channel_and_future();
-        tokio::spawn(server_future);
-        Client
-            .connect_with(channel, async |cx| {
-                cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
-                    .block_task()
-                    .await
-                    .map(|_| ())
-            })
-            .await
-            .expect("connection should run");
-        let cx = cx_rx
-            .await
-            .expect("server callback must provide connection");
-        let mut source = AcpTurnSource::new(
-            "hello".into(),
-            Repos::production(),
-            PathBuf::from("."),
-            cx,
-            SessionId::new("s1"),
-            PathBuf::from("."),
-            tokio_util::sync::CancellationToken::new(),
-            Some(provenance.clone()),
-        );
-        match source.next().await.expect("first turn") {
-            TurnStart::Input { bodies } => {
-                assert_eq!(
-                    bodies[0].provenance.as_ref(),
-                    Some(&provenance),
-                    "provenance must be attached to the first (user_text) body"
-                );
-            }
-            _ => panic!("expected Input with provenance"),
-        }
-    }
-
     fn item(id: &str, cmd: &str, patterns: &[&str]) -> PermissionItem {
         PermissionItem {
             id: id.to_string(),
@@ -1133,9 +1067,9 @@ mod tests {
             .unwrap();
         let choices = &map[&reject_session.option_id];
         assert_eq!(choices.len(), 2, "one choice per segment");
-        assert!(choices
-            .iter()
-            .all(|c| c.id == "tc9" && c.decision == Decision::Deny && c.scope == GrantScope::Session));
+        assert!(choices.iter().all(|c| c.id == "tc9"
+            && c.decision == Decision::Deny
+            && c.scope == GrantScope::Session));
         let pats: std::collections::HashSet<&str> = choices
             .iter()
             .filter_map(|c| c.pattern.as_deref())
@@ -1284,7 +1218,6 @@ mod tests {
             SessionId::new("s1"),
             PathBuf::from("."),
             tokio_util::sync::CancellationToken::new(),
-            None,
         );
         let answer = source
             .resume_clarify_or_inform("which db?", Some("ambiguous config"))
@@ -1344,7 +1277,6 @@ mod tests {
             SessionId::new("s1"),
             PathBuf::from("."),
             tokio_util::sync::CancellationToken::new(),
-            None,
         );
         assert!(
             source
@@ -1415,7 +1347,6 @@ mod tests {
             SessionId::new("s1"),
             PathBuf::from("."),
             tokio_util::sync::CancellationToken::new(),
-            None,
         );
         let scope = source.resume_sandbox_unlock().await;
         assert_eq!(scope, Some(gait_ops::permission::GrantScope::Session));

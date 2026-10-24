@@ -1,6 +1,5 @@
 //! Dedup for `PromptRequest`s carrying a `"gait/idempotency_key"` `_meta`
-//! entry — a generic, gait-owned ACP extension (same pattern as
-//! `meta_provenance.rs`'s `gait/provenance`), not tied to any specific
+//! entry — a generic, gait-owned ACP extension, not tied to any specific
 //! client's redelivery semantics. A client that resends the same logical
 //! prompt (e.g. after a dropped connection, unsure whether the first attempt
 //! was received) tags both attempts with the same key; gait-acp answers the
@@ -14,9 +13,8 @@ const META_KEY: &str = "gait/idempotency_key";
 pub const ALREADY_SEEN_ERROR_CODE: i32 = -32001;
 
 /// Extract the idempotency key from `PromptRequest._meta`, if present and
-/// well-formed. Fails open (`None`) on anything malformed or absent — same
-/// philosophy as `meta_provenance::provenance_from_meta`: a client that
-/// doesn't send this key (or sends it malformed) must not be blocked from
+/// well-formed. Fails open (`None`) on anything malformed or absent: a client
+/// that doesn't send this key (or sends it malformed) must not be blocked from
 /// prompting; dedup simply doesn't apply to that request.
 pub fn idempotency_key_from_meta(
     meta: &Option<serde_json::Map<String, serde_json::Value>>,
@@ -68,19 +66,6 @@ mod tests {
             serde_json::json!({"not": "a string"}),
         )]);
         assert!(idempotency_key_from_meta(&Some(meta)).is_none());
-    }
-    #[test]
-    fn a_second_gait_extension_key_in_the_same_meta_does_not_interfere() {
-        // _meta is a generic bag: gait/provenance and gait/idempotency_key can
-        // coexist on the same request without either parser noticing the other.
-        let meta = serde_json::Map::from_iter([
-            ("gait/idempotency_key".to_string(), serde_json::json!("k1")),
-            ("gait/provenance".to_string(), serde_json::json!({"v": 1})),
-        ]);
-        assert_eq!(
-            idempotency_key_from_meta(&Some(meta)).as_deref(),
-            Some("k1")
-        );
     }
     #[test]
     fn already_seen_error_has_the_documented_shape() {

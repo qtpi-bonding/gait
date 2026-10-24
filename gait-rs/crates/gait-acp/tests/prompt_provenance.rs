@@ -116,27 +116,14 @@ fn bake_say_hi(home: &Path) {
 }
 
 #[tokio::test]
-async fn prompt_request_meta_provenance_lands_on_the_event_and_verifies() {
+async fn gait_provenance_meta_key_is_ignored_as_plain_user_text() {
     set_brain_exe();
     let (_temp, home, repo) = workspace(Path::new("/tmp"));
     bake_say_hi(&home);
-    let text = "peer message via multimatrix";
-    let body = serde_json::json!({"payload": {"incomingMessage": {"content": text}}});
-    let hash = gait_proto::hash::content_hash(gait_proto::envelope::LOG_VERSION, &body);
-    let signer = gait_identity::Ed25519Signer::generate();
-    let signature = signer.sign(&gait_proto::envelope::provenance_signing_bytes(
-        &hash,
-        &[],
-        "",
-    ));
-    let from = signer.public_key().to_vec();
+    let text = "metadata claim is ordinary user text";
     let meta = serde_json::Map::from_iter([(
         "gait/provenance".to_string(),
-        serde_json::json!({
-            "v": 2, "scheme": "ed25519",
-            "from": base64::engine::general_purpose::STANDARD.encode(&from),
-            "signature": base64::engine::general_purpose::STANDARD.encode(&signature),
-        }),
+        serde_json::json!({"v": 2, "scheme": "ed25519"}),
     )]);
 
     let map = gait_acp::session_map::SessionMap::new();
@@ -151,51 +138,6 @@ async fn prompt_request_meta_provenance_lands_on_the_event_and_verifies() {
                 .session_id;
             let request = PromptRequest::new(sid.clone(), vec![text.to_string().into()]).meta(meta);
             let response = cx.send_request(request).block_task().await?;
-            Ok((sid, response.stop_reason))
-        })
-        .await
-        .expect("prompt succeeds")
-        .0;
-
-    let path = gait_state::session::live::log_path(&home, &sid.0);
-    let events = gait_proto::wire::read_events(&path).unwrap();
-    let event = events.iter().find(|event| matches!(event.body.as_ref(),
-        Some(gait_proto::gait::log::v1::event::Body::Payload(payload)) if
-        matches!(payload.kind.as_ref(), Some(gait_proto::gait::log::v1::payload::Kind::IncomingMessage(_)))
-    )).expect("logged IncomingMessage");
-    let provenance = event
-        .provenance
-        .first()
-        .expect("provenance lands on IncomingMessage");
-    assert_eq!(provenance.from, from);
-    assert_eq!(provenance.signature, signature);
-    assert!(
-        gait_identity::verify_provenance(provenance, &event.content_hash),
-        "real signature must verify"
-    );
-}
-
-#[tokio::test]
-async fn plain_prompt_without_provenance_remains_user_text() {
-    set_brain_exe();
-    let (_temp, home, repo) = workspace(Path::new("/tmp"));
-    bake_say_hi(&home);
-    let text = "ordinary user prompt";
-
-    let map = gait_acp::session_map::SessionMap::new();
-    let (channel, server) = gait_acp::build_agent(map).into_channel_and_future();
-    tokio::spawn(server);
-    let sid = Client
-        .connect_with(channel, async |cx| {
-            let sid = cx
-                .send_request(NewSessionRequest::new(repo.clone()))
-                .block_task()
-                .await?
-                .session_id;
-            let response = cx
-                .send_request(PromptRequest::new(sid.clone(), vec![text.to_string().into()]))
-                .block_task()
-                .await?;
             Ok((sid, response.stop_reason))
         })
         .await
@@ -207,71 +149,19 @@ async fn plain_prompt_without_provenance_remains_user_text() {
     assert!(events.iter().any(|event| matches!(event.body.as_ref(),
         Some(gait_proto::gait::log::v1::event::Body::Payload(payload)) if
         matches!(payload.kind.as_ref(), Some(gait_proto::gait::log::v1::payload::Kind::UserText(message)) if message.content == text)
-    )), "a plain prompt remains UserText");
+    )), "the deprecated metadata claim is ignored and remains UserText");
     assert!(!events.iter().any(|event| matches!(event.body.as_ref(),
         Some(gait_proto::gait::log::v1::event::Body::Payload(payload)) if
         matches!(payload.kind.as_ref(), Some(gait_proto::gait::log::v1::payload::Kind::IncomingMessage(message)) if message.content == text)
-    )), "a plain prompt does not become IncomingMessage");
-}
-
-#[tokio::test]
-async fn unsupported_provenance_version_is_logged_but_not_folded_into_agent_context() {
-    set_brain_exe();
-    let (_temp, home, repo) = workspace(Path::new("/tmp"));
-    bake_say_hi(&home);
-    let text = "legacy peer text must not reach the agent";
-    let meta = serde_json::Map::from_iter([(
-        "gait/provenance".to_string(),
-        serde_json::json!({
-            "v": 1,
-            "scheme": "ed25519",
-            "from": base64::engine::general_purpose::STANDARD.encode([1u8; 32]),
-            "signature": base64::engine::general_purpose::STANDARD.encode([2u8; 64]),
-        }),
-    )]);
-
-    let map = gait_acp::session_map::SessionMap::new();
-    let (channel, server) = gait_acp::build_agent(map).into_channel_and_future();
-    tokio::spawn(server);
-    let sid = Client
-        .connect_with(channel, async |cx| {
-            let sid = cx
-                .send_request(NewSessionRequest::new(repo.clone()))
-                .block_task()
-                .await?
-                .session_id;
-            let request = PromptRequest::new(sid.clone(), vec![text.to_string().into()]).meta(meta);
-            let response = cx.send_request(request).block_task().await?;
-            Ok((sid, response.stop_reason))
-        })
-        .await
-        .expect("prompt succeeds")
-        .0;
-
-    let path = gait_state::session::live::log_path(&home, &sid.0);
-    let events = gait_proto::wire::read_events(&path).unwrap();
-    let rejected = events.iter().find_map(|event| match event.body.as_ref() {
-        Some(gait_core::proto::gait::log::v1::event::Body::Payload(payload)) => {
-            match payload.kind.as_ref() {
-                Some(gait_core::proto::gait::log::v1::payload::Kind::IncomingMessage(message)) => {
-                    Some(message.rejected_provenance_claim)
-                }
-                _ => None,
-            }
-        }
-        _ => None,
-    });
-    assert_eq!(rejected, Some(true), "the rejected input remains in the log");
+    )), "the deprecated metadata claim does not create IncomingMessage");
     let messages = gait_state::session::retrace::messages(&events).unwrap();
     assert!(
-        messages.iter().all(|message| match message {
+        messages.iter().any(|message| matches!(message,
             gait_core::types::Message::User {
-                content: gait_core::types::MessageContent::Text(content),
-                ..
-            } => !content.contains(text),
-            _ => true,
-        }),
-        "the rejected body must not be present in folded agent context"
+                content: gait_core::types::MessageContent::Text(content), ..
+            } if content.contains(text)
+        )),
+        "ignored metadata prompt is folded into context"
     );
 }
 
@@ -287,8 +177,9 @@ async fn invalid_multimatrix_attestation_is_logged_but_not_folded() {
     )]);
 
     let map = gait_acp::session_map::SessionMap::new();
-    let (channel, server) = gait_acp::handlers::build_agent_with_attestation(map, false, Vec::new())
-        .into_channel_and_future();
+    let (channel, server) =
+        gait_acp::handlers::build_agent_with_attestation(map, false, Vec::new())
+            .into_channel_and_future();
     tokio::spawn(server);
     let sid = Client
         .connect_with(channel, async |cx| {
@@ -422,7 +313,8 @@ async fn attested_delivery_uses_verified_body_text_never_the_differing_prompt() 
     let Some(gait_proto::gait::log::v1::event::Body::Payload(payload)) = &event.body else {
         panic!("expected Payload body");
     };
-    let Some(gait_proto::gait::log::v1::payload::Kind::IncomingMessage(user_text)) = &payload.kind else {
+    let Some(gait_proto::gait::log::v1::payload::Kind::IncomingMessage(user_text)) = &payload.kind
+    else {
         panic!("expected IncomingMessage kind");
     };
     assert_eq!(
@@ -439,8 +331,5 @@ async fn attested_delivery_uses_verified_body_text_never_the_differing_prompt() 
         .provenance
         .first()
         .expect("IncomingMessage must carry provenance");
-    assert_eq!(
-        provenance.verified_author_id.as_deref(),
-        Some("agent-2")
-    );
+    assert_eq!(provenance.verified_author_id.as_deref(), Some("agent-2"));
 }

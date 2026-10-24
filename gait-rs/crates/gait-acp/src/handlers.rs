@@ -268,9 +268,7 @@ pub fn build_agent_with_attestation(
                                 } else {
                                     TurnInput::Prompt {
                                         text: content_blocks_to_text(&req.prompt),
-                                        provenance: crate::meta_provenance::provenance_from_meta(
-                                            &req.meta,
-                                        ),
+                                        provenance: gait_core::port::input::ProvenanceClaim::Absent,
                                     }
                                 }
                             }
