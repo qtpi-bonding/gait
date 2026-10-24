@@ -405,6 +405,21 @@ pub fn unlink_external_binding_with(
 
 pub fn remove_api_key_from(path: &std::path::Path, provider: &str) -> Result<(), AuthError> {
     crate::auth_file::update_auth_file(path, |data| {
+        if data
+            .get(provider)
+            .and_then(|value| value.get("type"))
+            .and_then(|value| value.as_str())
+            == Some("subscription")
+            && data
+                .get(provider)
+                .and_then(|value| value.get("method_id"))
+                .and_then(|value| value.as_str())
+                == Some("chatgpt-signin")
+        {
+            return Err(AuthError::ManagedElsewhere(
+                "use `gait auth logout openai-signin --forget`".into(),
+            ));
+        }
         data.remove(provider);
         Ok(())
     })
@@ -433,6 +448,23 @@ pub fn list_credentials_from(path: &std::path::Path) -> HashMap<String, String> 
                 }
                 Some("oauth") => "oauth".to_string(),
                 Some("wellknown") => "wellknown".to_string(),
+                Some("subscription")
+                    if v.get("method_id").and_then(|m| m.as_str()) == Some("chatgpt-signin") =>
+                {
+                    let label = v
+                        .get("account_label")
+                        .and_then(|label| label.as_str())
+                        .unwrap_or("unknown");
+                    let has_tokens = v
+                        .get("secret")
+                        .and_then(|s| s.get("tokens"))
+                        .is_some_and(|t| !t.is_null());
+                    if has_tokens {
+                        format!("subscription ({label})")
+                    } else {
+                        "registered (logged out)".to_string()
+                    }
+                }
                 Some("subscription") => v
                     .get("account_label")
                     .and_then(|label| label.as_str())
@@ -666,6 +698,60 @@ mod tests {
         let list = list_credentials_from(&auth_path);
         assert!(!list.contains_key("openai"), "openai should be removed");
         assert!(list.contains_key("anthropic"), "anthropic should remain");
+    }
+
+    #[test]
+    fn list_shows_logged_out_registration() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("auth.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "openai-signin": {
+                    "type": "subscription",
+                    "provider_id": "openai-signin",
+                    "method_id": "chatgpt-signin",
+                    "version": 1,
+                    "account_label": "ada@example.test",
+                    "secret": {"client_id": "oaiapp_test", "tokens": null}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            list_credentials_from(&path).get("openai-signin"),
+            Some(&"registered (logged out)".to_string())
+        );
+    }
+
+    #[test]
+    fn remove_refuses_signin_entry_and_still_removes_api_keys() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("auth.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "openai-signin": {
+                    "type": "subscription",
+                    "provider_id": "openai-signin",
+                    "method_id": "chatgpt-signin",
+                    "version": 1,
+                    "secret": {"tokens": null}
+                },
+                "openai": {"type": "api", "key": "sk-test"}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            remove_api_key_from(&path, "openai-signin"),
+            Err(AuthError::ManagedElsewhere(message)) if message.contains("logout openai-signin --forget")
+        ));
+        remove_api_key_from(&path, "openai").unwrap();
+        let map = crate::auth_file::load_auth_map(&path).unwrap();
+        assert!(map.contains_key("openai-signin"));
+        assert!(!map.contains_key("openai"));
     }
 
     #[test]

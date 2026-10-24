@@ -62,6 +62,10 @@ impl GaitHome {
         self.root.join("auth.json")
     }
 
+    pub fn auth_pending_dir(&self) -> PathBuf {
+        self.root.join("auth-pending")
+    }
+
     pub fn models_cache_file(&self) -> PathBuf {
         self.root.join("cache").join("models.json")
     }
