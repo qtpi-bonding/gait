@@ -137,29 +137,6 @@ impl Provider for CodexResponsesProvider {
     }
 }
 
-#[cfg(test)]
-fn codex_failure_message(value: &Value) -> String {
-    let error = value
-        .get("response")
-        .and_then(|response| response.get("error"))
-        .or_else(|| value.get("error"));
-    let failure = crate::responses_wire::ResponsesFailure {
-        code: error
-            .and_then(|e| e.get("code"))
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        param: error
-            .and_then(|e| e.get("param"))
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-        message: error
-            .and_then(|e| e.get("message"))
-            .and_then(Value::as_str)
-            .map(str::to_owned),
-    };
-    codex_failure_format(&failure)
-}
-
 fn codex_failure_format(failure: &crate::responses_wire::ResponsesFailure) -> String {
     match (failure.code.as_deref(), failure.message.as_deref()) {
         (Some(code), Some(message)) => {
@@ -172,19 +149,12 @@ fn codex_failure_format(failure: &crate::responses_wire::ResponsesFailure) -> St
 }
 
 #[cfg(test)]
-fn cached_input_tokens(usage: &Value) -> u32 {
-    usage
-        .get("input_tokens_details")
-        .and_then(|details| details.get("cached_tokens"))
-        .and_then(Value::as_u64)
-        .unwrap_or(0) as u32
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::provider::StreamChunk;
-    use gait_types::types::AssistantContent;
+    use gait_types::types::{
+        AssistantContent, AssistantPart, ToolCall, ToolDef, ToolResult, ToolResultKind,
+    };
     use serde_json::json;
 
     fn test_credential(access_token: &str) -> SubscriptionCredential {
@@ -228,7 +198,7 @@ mod tests {
             "output_tokens": 30,
             "input_tokens_details": {"cached_tokens": 900}
         });
-        assert_eq!(cached_input_tokens(&usage), 900);
+        assert_eq!(crate::responses_wire::cached_input_tokens(&usage), 900);
     }
 
     #[test]
@@ -264,7 +234,7 @@ mod tests {
             }
         });
         assert_eq!(
-            codex_failure_message(&event),
+            codex_failure_format(&crate::responses_wire::failure_from_value(&event, false)),
             "Codex Responses request failed (server_error): model backend unavailable"
         );
     }
@@ -447,6 +417,80 @@ mod tests {
                 "parallel_tool_calls": false,
                 "instructions": "system prompt",
                 "max_output_tokens": 123
+            })
+        );
+    }
+
+    #[test]
+    fn request_body_golden_with_tools_and_tool_results() {
+        let provider = CodexResponsesProvider::new(
+            test_credential("access-test"),
+            "gpt-5.3-codex".into(),
+            None,
+            crate::transport::ProviderTransport::new(Default::default()).expect("transport"),
+        )
+        .expect("provider");
+        let tool = ToolDef {
+            name: "read_file".into(),
+            description: "Read a file".into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"]
+            }),
+            execute: Box::new(|_| Box::pin(async { Ok(json!(null)) })),
+            permission: None,
+        };
+        let messages = vec![
+            Message::Assistant {
+                content: AssistantContent::Parts(vec![AssistantPart::ToolCall(ToolCall {
+                    tool_call_id: "call-1".into(),
+                    tool_name: "read_file".into(),
+                    args: json!({"path": "notes.txt"}),
+                })]),
+                id: "assistant-1".into(),
+            },
+            Message::ToolResult {
+                content: vec![ToolResult {
+                    kind: ToolResultKind::ToolResult,
+                    tool_call_id: "call-1".into(),
+                    result: json!("contents"),
+                }],
+                id: "tool-1".into(),
+            },
+        ];
+        let params = gait_types::config::LlmParamsConfig {
+            max_tokens: Some(321),
+            ..Default::default()
+        };
+        let body = provider.request_body(
+            "",
+            &messages,
+            &[tool.arced()],
+            &params,
+            RequestKind::Compaction,
+        );
+        assert_eq!(
+            body,
+            json!({
+                "model": "gpt-5.3-codex",
+                "input": [
+                    {"type": "function_call", "call_id": "call-1", "name": "read_file", "arguments": "{\"path\":\"notes.txt\"}"},
+                    {"type": "function_call_output", "call_id": "call-1", "output": "\"contents\""}
+                ],
+                "stream": true,
+                "store": false,
+                "parallel_tool_calls": false,
+                "tools": [{
+                    "type": "function",
+                    "name": "read_file",
+                    "description": "Read a file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"]
+                    }
+                }]
             })
         );
     }

@@ -79,6 +79,7 @@ pub fn request_body(
 pub struct ResponsesFailure {
     pub code: Option<String>,
     #[allow(dead_code)]
+    // Task 8 consumes the parameter for plan-error mapping.
     pub param: Option<String>,
     pub message: Option<String>,
 }
@@ -133,11 +134,11 @@ pub fn response_stream(
                     break;
                 }
                 "response.failed" => {
-                    let failure = failure_from_value(&value);
+                    let failure = failure_from_value(&value, false);
                     Err(ProviderError::Other(fmt(&failure)))?;
                 }
                 "error" => {
-                    let failure = failure_from_value(&value);
+                    let failure = failure_from_value(&value, true);
                     Err(ProviderError::Other(fmt(&failure)))?;
                 }
                 "response.incomplete" => {
@@ -155,25 +156,35 @@ pub fn response_stream(
     }
 }
 
-fn failure_from_value(value: &Value) -> ResponsesFailure {
-    let error = value
-        .get("response")
-        .and_then(|response| response.get("error"))
-        .or_else(|| value.get("error"));
+pub(crate) fn failure_from_value(value: &Value, top_level_error: bool) -> ResponsesFailure {
+    let error = if top_level_error {
+        value.get("error").unwrap_or(value)
+    } else {
+        value
+            .get("response")
+            .and_then(|response| response.get("error"))
+            .or_else(|| value.get("error"))
+            .unwrap_or(&Value::Null)
+    };
     ResponsesFailure {
-        code: error
-            .and_then(|error| error.get("code"))
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        code: error.get("code").and_then(Value::as_str).map(str::to_owned),
         param: error
-            .and_then(|error| error.get("param"))
+            .get("param")
             .and_then(Value::as_str)
             .map(str::to_owned),
         message: error
-            .and_then(|error| error.get("message"))
+            .get("message")
             .and_then(Value::as_str)
             .map(str::to_owned),
     }
+}
+
+pub(crate) fn cached_input_tokens(usage: &Value) -> u32 {
+    usage
+        .get("input_tokens_details")
+        .and_then(|details| details.get("cached_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as u32
 }
 
 pub fn text_content(content: &MessageContent) -> String {
@@ -187,14 +198,6 @@ pub fn text_content(content: &MessageContent) -> String {
             .collect::<Vec<_>>()
             .join(""),
     }
-}
-
-fn cached_input_tokens(usage: &Value) -> u32 {
-    usage
-        .get("input_tokens_details")
-        .and_then(|details| details.get("cached_tokens"))
-        .and_then(Value::as_u64)
-        .unwrap_or(0) as u32
 }
 
 #[cfg(test)]
@@ -233,6 +236,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn error_event_top_level_shape_carries_code_param_message() {
+        let events = stream::iter([Ok(event(
+            "error",
+            json!({"type": "error", "code": "bad_request", "param": "model", "message": "invalid model"}),
+        ))]);
+        let output = response_stream(events, |failure| {
+            format!(
+                "Codex Responses request failed ({}): {} (param={})",
+                failure.code.as_deref().unwrap_or("missing"),
+                failure.message.as_deref().unwrap_or("missing"),
+                failure.param.as_deref().unwrap_or("missing")
+            )
+        });
+        tokio::pin!(output);
+        let result = output.next().await.expect("error event result");
+        assert!(
+            matches!(result, Err(ProviderError::Other(message)) if message == "Codex Responses request failed (bad_request): invalid model (param=model)")
+        );
+    }
+
+    #[tokio::test]
     async fn incomplete_event_is_terminal_error_with_reason() {
         let events = stream::iter([Ok(event(
             "response.incomplete",
@@ -243,6 +267,17 @@ mod tests {
         let result = output.next().await.expect("incomplete event result");
         assert!(
             matches!(result, Err(ProviderError::Other(message)) if message.contains("max_output_tokens"))
+        );
+    }
+
+    #[tokio::test]
+    async fn incomplete_event_without_reason_has_sane_text() {
+        let events = stream::iter([Ok(event("response.incomplete", json!({"response": {}})))]);
+        let output = response_stream(events, |_| "unexpected".to_string());
+        tokio::pin!(output);
+        let result = output.next().await.expect("incomplete event result");
+        assert!(
+            matches!(result, Err(ProviderError::Other(message)) if message == "Responses request incomplete: unknown")
         );
     }
 
