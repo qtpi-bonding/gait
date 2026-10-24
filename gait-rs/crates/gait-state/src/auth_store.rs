@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use gait_auth::store::{CredentialStore, PendingLogin, StoreGuard};
 use gait_auth::{AuthError, SubscriptionCredential};
 use serde_json::Value;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -175,6 +175,10 @@ fn write_pending(dir: &Path, provider: &str, pending: &PendingLogin) -> Result<(
         drop(file);
         fs::rename(&temp, pending_path(dir, provider))
             .map_err(|e| AuthError::Other(e.to_string()))?;
+        #[cfg(unix)]
+        if let Ok(directory) = File::open(dir) {
+            let _ = directory.sync_all();
+        }
         Ok(())
     })();
     if result.is_err() {

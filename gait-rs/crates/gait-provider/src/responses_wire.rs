@@ -78,8 +78,8 @@ pub fn request_body(
 
 pub struct ResponsesFailure {
     pub code: Option<String>,
-    #[allow(dead_code)]
-    // Task 8 consumes the parameter for plan-error mapping.
+    // Compaction requests intentionally omit max_output_tokens: Responses uses
+    // that field as a completion cap, while compaction needs the full budget.
     pub param: Option<String>,
     pub message: Option<String>,
 }

@@ -403,7 +403,6 @@ mod tests {
         };
         let body =
             provider.request_body("system prompt", &messages, &[], &params, RequestKind::Turn);
-        println!("golden request body: {body}");
         assert_eq!(
             body,
             json!({

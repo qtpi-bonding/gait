@@ -59,6 +59,8 @@ Gait's own credential map and external-source pointers live at
 
 `openai-signin` signs in with a ChatGPT plan through OpenAI's official "Sign in with ChatGPT" flow. Requests go to the public Responses API at `https://api.openai.com/v1` with a bearer token. No API key is needed, and usage counts against the ChatGPT plan's limits rather than API billing. Use model strings of the form `openai-signin/<model>`.
 
+A single turn longer than the access token's remaining life (about an hour) can fail with an expired-credential error; the next turn refreshes it. Because this provider's model slugs are missing from the bundled model metadata snapshot, set `compaction_threshold_tokens` explicitly in `gait.jsonc` for long sessions.
+
 ```bash
 gait auth login openai-signin
 ```

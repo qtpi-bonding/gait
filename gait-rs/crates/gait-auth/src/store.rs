@@ -52,17 +52,18 @@ mod tests {
     #[test]
     fn pending_debug_is_redacted() {
         let pending = PendingLogin {
-            state: "state".into(),
-            nonce: "nonce".into(),
-            code_verifier: "secret-verifier".into(),
+            state: "state-secret-value".into(),
+            nonce: "nonce-secret-value".into(),
+            code_verifier: "code-verifier-secret-value".into(),
             redirect_uri: "http://127.0.0.1:1/callback".into(),
             client_id: "client".into(),
             host_id: "host".into(),
             created_at_unix_s: 1,
         };
         let debug = format!("{pending:?}");
-        assert!(!debug.contains("secret-verifier"));
-        assert!(!debug.contains("state-value"));
-        assert!(!debug.contains("nonce-value"));
+        assert!(!debug.contains("code-verifier-secret-value"));
+        assert!(!debug.contains("state-secret-value"));
+        assert!(!debug.contains("nonce-secret-value"));
+        assert!(debug.contains("<redacted>"));
     }
 }

@@ -98,6 +98,10 @@ pub fn store_auth_map(path: &Path, map: &Map<String, Value>) -> Result<(), AuthE
         let _ = fs::remove_file(&cleanup_path);
         return Err(error.into());
     }
+    #[cfg(unix)]
+    if let Ok(directory) = File::open(parent) {
+        let _ = directory.sync_all();
+    }
     Ok(())
 }
 

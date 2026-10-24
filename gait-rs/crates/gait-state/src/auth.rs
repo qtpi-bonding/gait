@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -276,12 +277,27 @@ fn read_raw_auth(path: &std::path::Path) -> HashMap<String, serde_json::Value> {
     serde_json::from_str(&text).unwrap_or_default()
 }
 
+fn reject_signin_writer(data: &Map<String, Value>, provider: &str) -> Result<(), AuthError> {
+    if data
+        .get(provider)
+        .and_then(|v| v.get("method_id"))
+        .and_then(Value::as_str)
+        == Some("chatgpt-signin")
+    {
+        return Err(AuthError::ManagedElsewhere(
+            "use `gait auth login openai-signin`".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub fn write_api_key_to(
     path: &std::path::Path,
     provider: &str,
     key: &str,
 ) -> Result<(), AuthError> {
     crate::auth_file::update_auth_file(path, |data| {
+        reject_signin_writer(data, provider)?;
         data.insert(
             provider.to_string(),
             serde_json::json!({ "type": "api", "key": key }),
@@ -310,6 +326,7 @@ pub fn write_subscription_credential_to(
     credential: &gait_auth::SubscriptionCredential,
 ) -> Result<(), AuthError> {
     crate::auth_file::update_auth_file(path, |data| {
+        reject_signin_writer(data, provider)?;
         let value = serde_json::to_value(AuthEntry::Subscription {
             provider_id: credential.provider_id.clone(),
             method_id: credential.method_id.clone(),
@@ -349,6 +366,7 @@ pub fn write_external_binding_to(
     home: Option<&Path>,
 ) -> Result<(), AuthError> {
     crate::auth_file::update_auth_file(path, |data| {
+        reject_signin_writer(data, provider)?;
         let value = serde_json::to_value(AuthEntry::External {
             source: source.to_string(),
             home: home.map(Path::to_path_buf),
@@ -914,6 +932,47 @@ mod tests {
             assert!(matches!(result, Err(AuthError::Corrupt { .. })));
         }
         assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn writers_refuse_signin_entry() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("auth.json");
+        let original_value = serde_json::json!({
+            "openai-signin": {
+                "type": "subscription",
+                "provider_id": "openai-signin",
+                "method_id": "chatgpt-signin",
+                "version": 1,
+                "secret": {"tokens": {"refresh_token": "refresh-secret"}}
+            }
+        });
+        std::fs::write(&path, serde_json::to_vec(&original_value).unwrap()).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        let other = gait_auth::SubscriptionCredential {
+            provider_id: "openai-signin".into(),
+            method_id: "other-method".into(),
+            version: 1,
+            expires_at_unix_s: None,
+            account_label: None,
+            secret: serde_json::json!({"opaque": "value"}),
+        };
+        assert!(matches!(
+            write_api_key_to(&path, "openai-signin", "api-secret"),
+            Err(AuthError::ManagedElsewhere(_))
+        ));
+        assert!(matches!(
+            write_subscription_credential_to(&path, "openai-signin", &other),
+            Err(AuthError::ManagedElsewhere(_))
+        ));
+        assert!(matches!(
+            write_external_binding_to(&path, "openai-signin", "codex", None),
+            Err(AuthError::ManagedElsewhere(_))
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        write_api_key_to(&path, "other-provider", "api-key").unwrap();
+        write_subscription_credential_to(&path, "other-subscription", &other).unwrap();
+        write_external_binding_to(&path, "other-external", "codex", None).unwrap();
     }
 
     #[test]

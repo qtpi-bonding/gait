@@ -20,6 +20,7 @@ pub const RESOURCE: &str = "https://api.openai.com/v1";
 pub const PENDING_TTL_SECONDS: u64 = 600;
 const PLAN_SCOPE: &str = "chatgpt.tokens.use.direct";
 pub const REFRESH_THRESHOLD_S: u64 = 45 * 60;
+const REVOKE_TIMEOUT_SECONDS: u64 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Endpoints {
@@ -108,12 +109,13 @@ fn random_string(rng: &mut rand::rngs::ThreadRng) -> String {
     rng.fill(&mut b);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)
 }
+fn new_host_id() -> String {
+    format!("urn:uuid:{}", uuid::Uuid::new_v4())
+}
 pub fn new_pending(client_id: Option<&str>, host_id: &str, now: u64) -> PendingLogin {
     let mut rng = rand::thread_rng();
-    let mut port = rng.gen_range(49152..=65535);
-    while port == 1455 {
-        port = rng.gen_range(49152..=65535);
-    }
+    // The dynamic callback port is selected from the OS ephemeral range.
+    let port = rng.gen_range(49152..=65535);
     PendingLogin {
         state: random_string(&mut rng),
         nonce: random_string(&mut rng),
@@ -415,8 +417,10 @@ struct TokenResponse {
     access_token: String,
     id_token: String,
     refresh_token: Option<String>,
+    #[serde(deserialize_with = "deserialize_lenient_u64", default)]
     expires_in: Option<u64>,
     scope: Option<String>,
+    #[serde(deserialize_with = "deserialize_lenient_u64", default)]
     earliest_refresh_at: Option<u64>,
 }
 
@@ -425,9 +429,23 @@ struct RefreshResponse {
     access_token: String,
     id_token: Option<String>,
     refresh_token: Option<String>,
+    #[serde(deserialize_with = "deserialize_lenient_u64", default)]
     expires_in: Option<u64>,
     scope: Option<String>,
+    #[serde(deserialize_with = "deserialize_lenient_u64", default)]
     earliest_refresh_at: Option<u64>,
+}
+
+fn deserialize_lenient_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match value {
+        serde_json::Value::Number(n) => n.as_u64().or_else(|| n.as_f64().map(|v| v as u64)),
+        serde_json::Value::String(s) => s.parse::<f64>().ok().map(|v| v as u64),
+        _ => None,
+    })
 }
 
 async fn response_body(response: reqwest::Response) -> Result<(u16, String), AuthError> {
@@ -447,6 +465,7 @@ async fn revoke(http: &reqwest::Client, endpoint: &str, client_id: &str, token: 
             ("token_type_hint", "refresh_token"),
             ("client_id", client_id),
         ])
+        .timeout(Duration::from_secs(REVOKE_TIMEOUT_SECONDS))
         .send()
         .await;
 }
@@ -492,14 +511,9 @@ impl AuthMethod for ChatGptSignIn {
             .map(|c| serde_json::from_value(c.secret.clone()))
             .transpose()
             .map_err(|_| AuthError::IncompatibleCredential(SIGNIN_METHOD_ID))?
-            .unwrap_or_else(|| {
-                empty_secret(format!(
-                    "urn:uuid:{}",
-                    random_string(&mut rand::thread_rng())
-                ))
-            });
+            .unwrap_or_else(|| empty_secret(new_host_id()));
         if secret.host_id.is_empty() {
-            secret.host_id = format!("urn:uuid:{}", random_string(&mut rand::thread_rng()));
+            secret.host_id = new_host_id();
         }
         let pending = new_pending(secret.client_id.as_deref(), &secret.host_id, (self.now)());
         let old = existing.as_ref().and_then(|c| c.account_label.clone());
@@ -715,10 +729,7 @@ impl AuthMethod for ChatGptSignIn {
         }
         if let Some(earliest) = tokens.earliest_refresh_at_unix_s {
             if earliest <= tokens.expires_at_unix_s && now < earliest {
-                if now < tokens.expires_at_unix_s {
-                    return Ok(ResolvedCredential::Subscription(stored));
-                }
-                return Err(AuthError::Retryable("refresh not yet permitted".into()));
+                return Ok(ResolvedCredential::Subscription(stored));
             }
         }
         let response = self
@@ -857,6 +868,7 @@ impl AuthMethod for ChatGptSignIn {
             }
             if forget {
                 guard.delete(provider)?;
+                guard.clear_pending(provider)?;
             } else {
                 let mut cleared: SignInSecret = serde_json::from_value(stored.secret)
                     .map_err(|_| AuthError::IncompatibleCredential(SIGNIN_METHOD_ID))?;
@@ -953,20 +965,77 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn begin_creates_entry_with_host_id_and_null_client_id_and_stores_pending() {
+    async fn host_id_is_uuid_v4() {
         let store = MemoryStore::new();
         let auth = ChatGptSignIn::for_tests(Endpoints::openai(), clock(100));
         let (_, pending) = begin(&auth, &store).await;
         let guard = store.lock().await.unwrap();
         let entry = guard.read(SIGNIN_PROVIDER_ID).unwrap().unwrap();
         let secret: SignInSecret = serde_json::from_value(entry.secret).unwrap();
-        assert!(secret.host_id.starts_with("urn:uuid:"));
+        let uuid =
+            uuid::Uuid::parse_str(secret.host_id.strip_prefix("urn:uuid:").unwrap()).unwrap();
+        assert_eq!(uuid.get_version_num(), 4);
         assert_eq!(secret.client_id, None);
         assert_eq!(secret.tokens, None);
         assert_eq!(
             guard.peek_pending(SIGNIN_PROVIDER_ID).unwrap().unwrap(),
             pending
         );
+        drop(guard);
+        let other_store = MemoryStore::new();
+        let other_auth = ChatGptSignIn::for_tests(Endpoints::openai(), clock(100));
+        begin(&other_auth, &other_store).await;
+        assert_ne!(secret.host_id, persisted_secret(&other_store).await.host_id);
+        begin(&auth, &store).await;
+        assert_eq!(secret.host_id, persisted_secret(&store).await.host_id);
+    }
+
+    #[test]
+    fn login_tolerates_unobserved_earliest_refresh_types() {
+        let cases = [
+            ("1234", Some(1234)),
+            ("1234.0", Some(1234)),
+            ("\"1234\"", Some(1234)),
+            ("\"2026-10-24T10:00:00Z\"", None),
+            ("null", None),
+            ("absent", None),
+        ];
+        for (raw, expected) in cases {
+            let body = if raw == "absent" {
+                r#"{"access_token":"a","id_token":"i","expires_in":"bad"}"#.to_owned()
+            } else {
+                format!(
+                    r#"{{"access_token":"a","id_token":"i","earliest_refresh_at":{raw},"expires_in":"bad"}}"#
+                )
+            };
+            let parsed: TokenResponse = serde_json::from_str(&body).unwrap();
+            assert_eq!(parsed.earliest_refresh_at, expected);
+            assert_eq!(parsed.expires_in.unwrap_or(3600), 3600);
+        }
+    }
+
+    #[test]
+    fn refresh_tolerates_unobserved_earliest_refresh_types() {
+        let cases = [
+            ("1234", Some(1234)),
+            ("1234.0", Some(1234)),
+            ("\"1234\"", Some(1234)),
+            ("\"2026-10-24T10:00:00Z\"", None),
+            ("null", None),
+            ("absent", None),
+        ];
+        for (raw, expected) in cases {
+            let body = if raw == "absent" {
+                r#"{"access_token":"a","expires_in":"garbage"}"#.to_owned()
+            } else {
+                format!(
+                    r#"{{"access_token":"a","earliest_refresh_at":{raw},"expires_in":"garbage"}}"#
+                )
+            };
+            let parsed: RefreshResponse = serde_json::from_str(&body).unwrap();
+            assert_eq!(parsed.earliest_refresh_at, expected);
+            assert_eq!(parsed.expires_in.unwrap_or(3600), 3600);
+        }
     }
 
     #[tokio::test]
@@ -1482,7 +1551,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn earliest_refresh_in_future_and_expired_is_retryable() {
+    async fn earliest_refresh_in_future_and_expired_is_refreshed() {
         let server = StubServer::new().await;
         server.respond(
             "/token",
@@ -1560,7 +1629,7 @@ mod tests {
         server.respond(
             "/token",
             200,
-            r#"{"access_token":"new","refresh_token":"issued-refresh","expires_in":"bad"}"#,
+            r#"{"refresh_token":"issued-refresh","expires_in":"bad"}"#,
         );
         server.respond("/revoke", 200, "ok");
         let auth = ChatGptSignIn::for_tests(test_endpoints(&server), clock(100));
@@ -1745,12 +1814,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn logout_forget_deletes_entry() {
+    async fn logout_forget_clears_pending_login() {
         let server = StubServer::new().await;
         server.respond("/revoke", 200, "ok");
         let auth = ChatGptSignIn::for_tests(test_endpoints(&server), clock(100));
         let store = MemoryStore::new();
         save(&store, live_credential("oaiapp_x", "subject")).await;
+        let (_, pending) = begin(&auth, &store).await;
         auth.logout_with(SIGNIN_PROVIDER_ID, true, &AuthContext { store: &store })
             .await
             .unwrap();
@@ -1769,6 +1839,22 @@ mod tests {
             .read(SIGNIN_PROVIDER_ID)
             .unwrap()
             .is_none());
+        assert!(store
+            .lock()
+            .await
+            .unwrap()
+            .peek_pending(SIGNIN_PROVIDER_ID)
+            .unwrap()
+            .is_none());
+        let error = auth
+            .complete_login_with(
+                SIGNIN_PROVIDER_ID,
+                LoginCompletion::CallbackUrl(callback(&pending, "oaiapp_x", "code")),
+                &AuthContext { store: &store },
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("no pending login"));
     }
 
     #[tokio::test]
@@ -1917,6 +2003,64 @@ mod tests {
         )
         .unwrap();
         assert_eq!(saved.tokens.unwrap().refresh_token, "old-refresh");
+    }
+
+    #[tokio::test]
+    async fn revoke_has_its_own_short_timeout() {
+        let server = StubServer::new().await;
+        let hanging = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let revoke = format!("http://{}/revoke", hanging.local_addr().unwrap());
+        tokio::spawn(async move {
+            let mut sockets = Vec::new();
+            while let Ok((socket, _)) = hanging.accept().await {
+                sockets.push(socket);
+            }
+        });
+        let endpoints = Endpoints {
+            authorize: format!("{}/authorize", server.base_url()),
+            token: format!("{}/token", server.base_url()),
+            revoke,
+        };
+        let auth = ChatGptSignIn::for_tests(endpoints, clock(100));
+        let store = MemoryStore::new();
+        save(&store, live_credential("oaiapp_x", "subject")).await;
+        let (_, pending) = begin(&auth, &store).await;
+        server.respond("/token", 200, serde_json::json!({"access_token":"new","id_token":claims("oaiapp_x", &pending.nonce, "subject"),"refresh_token":"new-refresh","scope":"openid email"}).to_string());
+        let ctx = AuthContext { store: &store };
+        let started = std::time::Instant::now();
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(9),
+            auth.complete_login_with(
+                SIGNIN_PROVIDER_ID,
+                LoginCompletion::CallbackUrl(callback(&pending, "oaiapp_x", "code")),
+                &ctx,
+            ),
+        )
+        .await
+        .expect("login must not wait for the hanging revoke beyond its own timeout");
+        let elapsed = started.elapsed();
+        match outcome {
+            Err(AuthError::Other(message)) => assert_eq!(
+                message,
+                "signed in but plan usage was not granted; re-run login"
+            ),
+            other => panic!(
+                "expected missing plan scope error, got {:?}",
+                other.map(|_| ())
+            ),
+        }
+        assert!(
+            elapsed >= Duration::from_secs(4),
+            "login returned in {elapsed:?}; the revoke was not attempted or gave up early"
+        );
+        assert!(
+            elapsed < Duration::from_secs(9),
+            "login took {elapsed:?}; the revoke waited past its own timeout"
+        );
+        let saved = persisted_secret(&store).await;
+        let tokens = saved.tokens.unwrap();
+        assert_eq!(tokens.access_token, "old-access");
+        assert_eq!(tokens.refresh_token, "old-refresh");
     }
 
     #[tokio::test]

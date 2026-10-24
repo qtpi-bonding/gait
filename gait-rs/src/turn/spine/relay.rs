@@ -38,6 +38,15 @@ pub async fn prepare_credential_with(
     store: &dyn gait_auth::store::CredentialStore,
 ) -> anyhow::Result<Option<gait_auth::ResolvedCredential>> {
     let Some(lease) = lease else { return Ok(None) };
+    if provider == gait_auth::signin::SIGNIN_PROVIDER_ID
+        && !matches!(&lease.credential,
+            gait_auth::ResolvedCredential::Subscription(c)
+                if c.method_id == gait_auth::signin::SIGNIN_METHOD_ID)
+    {
+        return Err(anyhow::anyhow!(
+            "use `gait auth login openai-signin` for this provider"
+        ));
+    }
     if !is_signin_credential(provider, &lease.credential) {
         return Ok(Some(lease.credential));
     }
@@ -830,6 +839,26 @@ mod tests {
                 .unwrap(),
             Some(codex.credential)
         );
+    }
+
+    #[tokio::test]
+    async fn prepare_credential_rejects_non_signin_credential_for_signin_provider() {
+        let store = gait_state::auth_store::FileCredentialStore::new(
+            tempfile::tempdir().unwrap().path().join("auth.json"),
+        );
+        let method = gait_auth::signin::ChatGptSignIn::new();
+        let lease = gait_auth::CredentialLease {
+            credential: gait_auth::ResolvedCredential::ApiKey("api-secret".into()),
+            source_id: "test".into(),
+            location: gait_auth::AuthLocation::Synthetic,
+            revision: None,
+        };
+        let error = prepare_credential_with("openai-signin", Some(lease), &method, &store)
+            .await
+            .expect_err("non-sign-in credentials must not reach the provider");
+        let text = error.to_string();
+        assert!(text.contains("gait auth login openai-signin"));
+        assert!(!text.contains("api-secret"));
     }
 
     #[tokio::test]

@@ -203,7 +203,6 @@ pub trait AuthMethod: Send + Sync {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     let mut difference = a.len() ^ b.len();
     for index in 0..a.len().max(b.len()) {
