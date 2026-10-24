@@ -2280,6 +2280,27 @@ fn signed_daemon_update_without_a_verifier_folds_labelled_unverified() {
 }
 
 #[test]
+fn unsigned_daemon_update_folds_labelled_unverified() {
+    let now = wall_clock();
+    let (_agent, ctx) = agent_fixture(now);
+    let ev = scoped_mint(
+        events::daemon_update("svc".into(), 0, "done", "/tmp/svc.log".into(), "svc@1".into()),
+        None,
+        0,
+        0,
+    );
+    let mut evs = session_log("room-session");
+    evs.push(ev);
+    let raw = run_projection(&verifying_projection(&ctx), &evs, &HashMap::new());
+
+    assert_eq!(raw.base.len(), 1, "an unsigned daemon update must be folded, not dropped");
+    let Message::User { content: MessageContent::Text(t), .. } = &raw.base[0] else {
+        panic!("expected a user message");
+    };
+    assert!(t.starts_with("[daemon:svc] [unverified] done"), "got: {t}");
+}
+
+#[test]
 fn verdict_cache_is_keyed_by_session() {
     let now = wall_clock();
     let (_agent, ctx) = agent_fixture(now);

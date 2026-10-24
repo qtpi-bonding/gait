@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use crate::session::completion::{notify_parent, Completion, WakeRequest};
+use crate::session::completion::{notify_parent_unsigned, Completion, WakeRequest};
 use crate::session::daemons;
 
 /// Args parsed from `argv[1..]` (with `no_binary_name`) when `argv[0]` is `__daemon-exit`.
@@ -76,23 +76,11 @@ pub fn cmd_daemon_exit(args: DaemonExitArgs) -> anyhow::Result<Option<WakeReques
         idempotency_key,
     };
     let repos = crate::git::Repos::production();
-    // The agent identity is read once, here at the process entry; state code
-    // never reads the environment itself. Without it notify_parent returns
-    // NoParent, so the completion is not recorded.
-    let context = match gait_identity::IdentityContext::from_env() {
-        Ok(context) => context,
-        Err(e) => {
-            eprintln!("[gait] daemon-exit: loading agent identity: {e}");
-            None
-        }
-    };
-    let now = || {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64
-    };
-    let wake = match notify_parent(&args.gait_dir, &repos, &args.session, &c, context.as_ref(), &now) {
+    // KNOWN GAP: this notice is sent unsigned. The hook runs in the sandboxed
+    // hand, which cannot read the agent dir, so it cannot sign; the receiver
+    // folds it as Unverified. Planned fix: a supervisor outside the sandbox
+    // runs the hook.
+    let wake = match notify_parent_unsigned(&args.gait_dir, &repos, &args.session, &c) {
         crate::session::completion::NotifyOutcome::Woke(req) => Some(req),
         _ => None,
     };

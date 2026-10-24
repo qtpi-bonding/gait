@@ -201,20 +201,10 @@ impl Tool for ShellTool {
             // fragment (it must run the user's command, capture `$?`, *then*
             // fire the hook) — `to_shell_fragment` sources the quoted
             // fragment from the launcher instead of an inline `format!`.
-            // The hook needs the agent identity dir to sign the parent wake. It
-            // gets it as a per-command assignment on the hook line only; the
-            // user's command runs without it.
-            let agent_dir = self
-                .ctx
-                .identity
-                .as_ref()
-                .map(|id| id.agent_dir().to_path_buf())
-                .or_else(|| std::env::var_os("GAIT_AGENT_DIR").map(std::path::PathBuf::from));
             let wrapped = crate::launch::DaemonExitLaunch {
                 gait_dir: self.ctx.gait_dir.clone(),
                 session: self.ctx.session_id.clone(),
                 name: name.clone(),
-                agent_dir,
             }
             .to_shell_fragment(&exe.to_string_lossy(), &params.cmd);
 

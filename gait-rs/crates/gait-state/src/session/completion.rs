@@ -98,6 +98,32 @@ pub fn notify_parent(
     ctx: Option<&gait_identity::IdentityContext>,
     now: &dyn Fn() -> i64,
 ) -> NotifyOutcome {
+    let Some(ctx) = ctx else {
+        eprintln!("[gait] notify_parent: no agent identity configured");
+        return NotifyOutcome::NoParent;
+    };
+    notify(gait_dir, repos, parent_session, c, Some((ctx, now)))
+}
+
+/// Like [`notify_parent`] but the appended event carries no provenance, so the
+/// receiver folds it as `Unverified`. Only for the detached-daemon exit hook,
+/// which runs in the sandboxed hand and cannot read the agent dir to sign.
+pub fn notify_parent_unsigned(
+    gait_dir: &Path,
+    repos: &crate::git::Repos,
+    parent_session: &str,
+    c: &Completion,
+) -> NotifyOutcome {
+    notify(gait_dir, repos, parent_session, c, None)
+}
+
+fn notify(
+    gait_dir: &Path,
+    repos: &crate::git::Repos,
+    parent_session: &str,
+    c: &Completion,
+    signer: Option<(&gait_identity::IdentityContext, &dyn Fn() -> i64)>,
+) -> NotifyOutcome {
     let target_dir = crate::session::live::worktree_dir(gait_dir, parent_session);
     if !target_dir.exists() {
         return NotifyOutcome::NoParent;
@@ -128,16 +154,17 @@ pub fn notify_parent(
     // Append the *_update event + commit. We hold the lock, so writing
     // directly via `wire::append` is the legal path (NOT SessionLog::open,
     // which would re-acquire and deadlock). Mirrors harness.rs:118-128.
-    let Some(ctx) = ctx else {
-        eprintln!("[gait] notify_parent: no agent identity configured");
-        return NotifyOutcome::NoParent;
+    let appended = match signer {
+        Some((ctx, now)) => crate::proto::wire::append_with_signed(
+            &tx_path,
+            c.body(),
+            crate::proto::envelope::EventScope::Session,
+            |ev| gait_identity::sign_direct_event(ctx, ev, parent_session, 60, now),
+        )
+        .map(|_| ()),
+        None => crate::proto::wire::append(&tx_path, c.body()).map(|_| ()),
     };
-    if let Err(e) = crate::proto::wire::append_with_signed(
-        &tx_path,
-        c.body(),
-        crate::proto::envelope::EventScope::Session,
-        |ev| gait_identity::sign_direct_event(ctx, ev, parent_session, 60, now),
-    ) {
+    if let Err(e) = appended {
         // Log the append failure as a diagnostic warn — silently dropping
         // would leave the caller with no signal that the completion was lost.
         eprintln!("[gait] notify_parent: append to {tx_path:?} failed: {e}");
@@ -275,6 +302,31 @@ mod tests {
             Some(ctx.agent_id().clone()),
             "the appended completion must verify as this agent for the parent session"
         );
+    }
+
+    #[test]
+    fn notify_parent_unsigned_appends_an_event_without_provenance_and_wakes() {
+        let dir = TempDir::new().unwrap();
+        let gait_dir = dir.path();
+        init_parent(gait_dir, "parent-unsigned");
+
+        let c = Completion {
+            payload: crate::proto::events::daemon_update(
+                "svc".to_string(),
+                0,
+                "done",
+                "/tmp/svc.log".to_string(),
+                "svc@1".to_string(),
+            ),
+            idempotency_key: "svc@1".to_string(),
+        };
+        let repos = crate::git::Repos::production();
+        let outcome = notify_parent_unsigned(gait_dir, &repos, "parent-unsigned", &c);
+        assert!(matches!(outcome, NotifyOutcome::Woke(_)), "got {outcome:?}");
+
+        let tx_path = crate::session::live::log_path(gait_dir, "parent-unsigned");
+        let events = crate::proto::wire::read_events(&tx_path).unwrap();
+        assert!(events.last().unwrap().provenance.is_empty());
     }
 
     #[test]

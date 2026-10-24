@@ -1,7 +1,7 @@
 ---
 name: gait-manual
 description: Explain how to use and configure Gait.
-manual-source-hash: f21c9cbe2475dd7794c486b5e6bb9a49ca37dbebf92953ca14949b4d4bf0746d
+manual-source-hash: 2a10f1ec05fbb99543136690640d480252c929093228f873ceb7066e9ba13332
 ---
 
 # Gait Manual
@@ -523,9 +523,14 @@ If no gait-dir is found, commands that need one exit 1 with `no gait dir: pass
 --gait-dir <path> or set $GAIT_DIR`.
 
 `--agent-dir <path>` names the agent identity directory whose keys sign direct events.
-It sets `GAIT_AGENT_DIR` for the process and every child it spawns, so brain and
-daemon-exit processes read the same identity. If the directory cannot be loaded, gait
-exits 1 at startup and names the directory.
+It sets `GAIT_AGENT_DIR` for the process and every child it spawns, so brain
+processes read the same identity. If the directory cannot be loaded, gait exits 1 at
+startup and names the directory.
+
+Known gap: the detached-daemon exit hook runs in the sandboxed hand, which cannot read
+the agent directory, so it cannot sign. Its completion notice is appended unsigned; it
+still wakes an idle parent, and the parent shows it as `[daemon:<name>] [unverified]`.
+The planned fix is a supervisor outside the sandbox that runs the hook and signs.
 
 Most commands exit 0 on success and 1 on a user or runtime error. A clap usage error
 (for example a missing argument) exits 2.

@@ -982,7 +982,10 @@ impl Projection for ActiveRawMessages {
                 });
             }
             payload::Kind::DaemonUpdate(du) => {
-                let unverified = self.is_unverifiable_signed(ev, &st.session_id);
+                // The detached-daemon exit hook cannot sign, so a daemon notice
+                // with no provenance at all is unverified too.
+                let unverified = ev.provenance.is_empty()
+                    || self.is_unverifiable_signed(ev, &st.session_id);
                 let status = pb::DaemonStatus::try_from(du.status)
                     .map(|s| match s {
                         pb::DaemonStatus::Done => "done",
