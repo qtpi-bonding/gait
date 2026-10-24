@@ -714,7 +714,7 @@ impl AuthMethod for ChatGptSignIn {
             return Ok(ResolvedCredential::Subscription(stored));
         }
         if let Some(earliest) = tokens.earliest_refresh_at_unix_s {
-            if now < earliest {
+            if earliest <= tokens.expires_at_unix_s && now < earliest {
                 if now < tokens.expires_at_unix_s {
                     return Ok(ResolvedCredential::Subscription(stored));
                 }
@@ -745,14 +745,35 @@ impl AuthMethod for ChatGptSignIn {
             }
             return Err(error);
         }
-        let response: RefreshResponse = serde_json::from_str(&body)
-            .map_err(|_| AuthError::Other("invalid token response".into()))?;
+        let response_value: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        let issued_refresh = response_value
+            .get("refresh_token")
+            .and_then(|value| value.as_str())
+            .map(str::to_owned);
+        let response: RefreshResponse = match serde_json::from_value(response_value) {
+            Ok(response) => response,
+            Err(_) => {
+                if let (Some(client_id), Some(refresh)) =
+                    (secret.client_id.as_deref(), issued_refresh.as_deref())
+                {
+                    revoke(&self.http, &self.endpoints.revoke, client_id, refresh).await;
+                }
+                secret.tokens = None;
+                let _ = guard.write(
+                    provider,
+                    &credential(&secret, stored.account_label.clone(), None),
+                );
+                return Err(AuthError::LoginRequired(
+                    "refresh response unusable; re-login is required".into(),
+                ));
+            }
+        };
         let id_token = response
             .id_token
             .clone()
             .unwrap_or_else(|| tokens.id_token.clone());
         if response.id_token.is_some() {
-            validate_id_token(
+            if let Err(error) = validate_id_token(
                 &id_token,
                 &IdExpect {
                     client_id: secret.client_id.as_deref().unwrap_or_default(),
@@ -760,7 +781,22 @@ impl AuthMethod for ChatGptSignIn {
                     subject: secret.subject.as_deref(),
                     now,
                 },
-            )?;
+            ) {
+                if let (Some(client_id), Some(refresh)) = (
+                    secret.client_id.as_deref(),
+                    response.refresh_token.as_deref(),
+                ) {
+                    revoke(&self.http, &self.endpoints.revoke, client_id, refresh).await;
+                }
+                secret.tokens = None;
+                let _ = guard.write(
+                    provider,
+                    &credential(&secret, stored.account_label.clone(), None),
+                );
+                return Err(AuthError::LoginRequired(format!(
+                    "refresh response unusable; re-login is required ({error})"
+                )));
+            }
         }
         let expiry = now.saturating_add(response.expires_in.unwrap_or(3600));
         tokens.access_token = response.access_token;
@@ -802,7 +838,7 @@ impl AuthMethod for ChatGptSignIn {
         }
         let mut guard = ctx.store.lock().await?;
         let stored = guard.read(provider)?;
-        let mut revoked = true;
+        let mut revoked = false;
         if let Some(stored) = stored {
             let secret: SignInSecret = serde_json::from_value(stored.secret.clone())
                 .map_err(|_| AuthError::IncompatibleCredential(SIGNIN_METHOD_ID))?;
@@ -1197,6 +1233,33 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(result, ResolvedCredential::Subscription(_)));
+        let returned: SignInSecret = match result {
+            ResolvedCredential::Subscription(c) => serde_json::from_value(c.secret).unwrap(),
+            _ => unreachable!(),
+        };
+        assert_eq!(returned.tokens.unwrap().access_token, "old-access");
+        assert!(requests(&server).await.iter().all(|r| r.path != "/token"));
+    }
+
+    #[tokio::test]
+    async fn min_45_left_makes_no_request() {
+        let server = StubServer::new().await;
+        let auth = ChatGptSignIn::for_tests(test_endpoints(&server), clock(100));
+        let store = MemoryStore::new();
+        let mut current = live_credential("oaiapp_x", "subject");
+        let mut secret: SignInSecret = serde_json::from_value(current.secret).unwrap();
+        secret.tokens.as_mut().unwrap().expires_at_unix_s = 2800;
+        current.secret = serde_json::to_value(secret).unwrap();
+        save(&store, current).await;
+        let result = auth
+            .ensure_fresh(SIGNIN_PROVIDER_ID, &AuthContext { store: &store })
+            .await
+            .unwrap();
+        let returned: SignInSecret = match result {
+            ResolvedCredential::Subscription(c) => serde_json::from_value(c.secret).unwrap(),
+            _ => unreachable!(),
+        };
+        assert_eq!(returned.tokens.unwrap().access_token, "old-access");
         assert!(requests(&server).await.iter().all(|r| r.path != "/token"));
     }
 
@@ -1226,6 +1289,10 @@ mod tests {
                 .count(),
             1
         );
+        assert_eq!(
+            persisted_secret(&store).await.tokens.unwrap().access_token,
+            "new-access"
+        );
     }
 
     #[tokio::test]
@@ -1235,13 +1302,57 @@ mod tests {
         let auth = ChatGptSignIn::for_tests(test_endpoints(&server), clock(100));
         let store = MemoryStore::new();
         save(&store, live_credential("oaiapp_x", "subject")).await;
+        let returned = auth
+            .ensure_fresh(SIGNIN_PROVIDER_ID, &AuthContext { store: &store })
+            .await
+            .unwrap();
+        let persisted = persisted_secret(&store).await;
+        let tokens = persisted.tokens.unwrap();
+        assert_eq!(tokens.access_token, "rotated");
+        assert_eq!(tokens.refresh_token, "rotated-refresh");
+        assert_eq!(tokens.id_token, "old-id");
+        assert_eq!(tokens.scopes, vec!["openid", PLAN_SCOPE]);
+        assert_eq!(tokens.expires_at_unix_s, 3700);
+        assert_eq!(tokens.earliest_refresh_at_unix_s, None);
+        let returned_secret = match returned {
+            ResolvedCredential::Subscription(c) => c.secret,
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            serde_json::to_value(tokens).unwrap(),
+            returned_secret["tokens"]
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_request_form_pairs_are_exact() {
+        let server = StubServer::new().await;
+        server.respond(
+            "/token",
+            200,
+            r#"{"access_token":"new-access","expires_in":3600}"#,
+        );
+        let auth = ChatGptSignIn::for_tests(test_endpoints(&server), clock(100));
+        let store = MemoryStore::new();
+        save(&store, live_credential("oaiapp_x", "subject")).await;
         auth.ensure_fresh(SIGNIN_PROVIDER_ID, &AuthContext { store: &store })
             .await
             .unwrap();
-        assert_eq!(
-            persisted_secret(&store).await.tokens.unwrap().refresh_token,
-            "rotated-refresh"
-        );
+        let request = requests(&server)
+            .await
+            .into_iter()
+            .find(|r| r.path == "/token")
+            .unwrap();
+        let mut actual = form_pairs(&request.body);
+        let mut expected = vec![
+            ("grant_type".into(), "refresh_token".into()),
+            ("client_id".into(), "oaiapp_x".into()),
+            ("refresh_token".into(), "old-refresh".into()),
+            ("resource".into(), RESOURCE.into()),
+        ];
+        actual.sort();
+        expected.sort();
+        assert_eq!(actual, expected);
     }
 
     #[tokio::test]
@@ -1291,13 +1402,13 @@ mod tests {
             200,
             r#"{"access_token":"after","expires_in":3600}"#,
         );
-        let auth = ChatGptSignIn::for_tests(test_endpoints(&server), clock(5000));
+        let auth = ChatGptSignIn::for_tests(test_endpoints(&server), clock(100));
         let store = store_for_test();
         let mut c = live_credential("oaiapp_x", "subject");
         let mut s: SignInSecret = serde_json::from_value(c.secret).unwrap();
         let t = s.tokens.as_mut().unwrap();
-        t.expires_at_unix_s = 4000;
-        t.earliest_refresh_at_unix_s = Some(4500);
+        t.expires_at_unix_s = 2000;
+        t.earliest_refresh_at_unix_s = Some(2500);
         c.secret = serde_json::to_value(s).unwrap();
         save(&store, c).await;
         auth.ensure_fresh(SIGNIN_PROVIDER_ID, &AuthContext { store: &store })
@@ -1314,6 +1425,36 @@ mod tests {
         assert_eq!(
             persisted_secret(&store).await.tokens.unwrap().access_token,
             "after"
+        );
+
+        let server = StubServer::new().await;
+        server.respond(
+            "/token",
+            200,
+            r#"{"access_token":"expired-after","expires_in":3600}"#,
+        );
+        let auth = ChatGptSignIn::for_tests(test_endpoints(&server), clock(3000));
+        let store = MemoryStore::new();
+        let mut c = live_credential("oaiapp_x", "subject");
+        let mut s: SignInSecret = serde_json::from_value(c.secret).unwrap();
+        s.tokens.as_mut().unwrap().expires_at_unix_s = 2000;
+        s.tokens.as_mut().unwrap().earliest_refresh_at_unix_s = Some(4000);
+        c.secret = serde_json::to_value(s).unwrap();
+        save(&store, c).await;
+        auth.ensure_fresh(SIGNIN_PROVIDER_ID, &AuthContext { store: &store })
+            .await
+            .unwrap();
+        assert_eq!(
+            requests(&server)
+                .await
+                .iter()
+                .filter(|r| r.path == "/token")
+                .count(),
+            1
+        );
+        assert_eq!(
+            persisted_secret(&store).await.tokens.unwrap().access_token,
+            "expired-after"
         );
     }
 
@@ -1343,6 +1484,11 @@ mod tests {
     #[tokio::test]
     async fn earliest_refresh_in_future_and_expired_is_retryable() {
         let server = StubServer::new().await;
+        server.respond(
+            "/token",
+            200,
+            r#"{"access_token":"expired-refresh","expires_in":3600}"#,
+        );
         let auth = ChatGptSignIn::for_tests(test_endpoints(&server), clock(1000));
         let store = MemoryStore::new();
         let mut c = live_credential("oaiapp_x", "subject");
@@ -1351,10 +1497,21 @@ mod tests {
         s.tokens.as_mut().unwrap().earliest_refresh_at_unix_s = Some(1100);
         c.secret = serde_json::to_value(s).unwrap();
         save(&store, c).await;
-        assert!(
-            matches!(auth.ensure_fresh(SIGNIN_PROVIDER_ID,&AuthContext{store:&store}).await,Err(AuthError::Retryable(message)) if message=="refresh not yet permitted")
+        auth.ensure_fresh(SIGNIN_PROVIDER_ID, &AuthContext { store: &store })
+            .await
+            .unwrap();
+        assert_eq!(
+            requests(&server)
+                .await
+                .iter()
+                .filter(|r| r.path == "/token")
+                .count(),
+            1
         );
-        assert!(requests(&server).await.iter().all(|r| r.path != "/token"));
+        assert_eq!(
+            persisted_secret(&store).await.tokens.unwrap().access_token,
+            "expired-refresh"
+        );
     }
 
     #[tokio::test]
@@ -1380,17 +1537,46 @@ mod tests {
     #[tokio::test]
     async fn refreshed_id_token_with_other_sub_is_rejected() {
         let server = StubServer::new().await;
-        server.respond("/token",200,serde_json::json!({"access_token":"new","id_token":claims("oaiapp_x","unused","other"),"expires_in":3600}).to_string());
+        server.respond("/token",200,serde_json::json!({"access_token":"new","id_token":claims("oaiapp_x","unused","other"),"refresh_token":"new-refresh","expires_in":3600}).to_string());
         let auth = ChatGptSignIn::for_tests(test_endpoints(&server), clock(100));
         let store = MemoryStore::new();
         save(&store, live_credential("oaiapp_x", "subject")).await;
         assert!(
-            matches!(auth.ensure_fresh(SIGNIN_PROVIDER_ID,&AuthContext{store:&store}).await,Err(AuthError::Other(message)) if message=="id token subject mismatch")
+            matches!(auth.ensure_fresh(SIGNIN_PROVIDER_ID,&AuthContext{store:&store}).await,Err(AuthError::LoginRequired(message)) if message.contains("re-login is required"))
         );
-        assert_eq!(
-            persisted_secret(&store).await.tokens.unwrap().access_token,
-            "old-access"
+        let saved = persisted_secret(&store).await;
+        assert!(saved.tokens.is_none());
+        assert_eq!(saved.client_id.as_deref(), Some("oaiapp_x"));
+        assert_eq!(saved.subject.as_deref(), Some("subject"));
+        assert!(requests(&server)
+            .await
+            .iter()
+            .any(|r| r.path == "/revoke" && r.body.contains("new-refresh")));
+    }
+
+    #[tokio::test]
+    async fn unparseable_refresh_body_nulls_tokens_and_revokes_issued_token() {
+        let server = StubServer::new().await;
+        server.respond(
+            "/token",
+            200,
+            r#"{"access_token":"new","refresh_token":"issued-refresh","expires_in":"bad"}"#,
         );
+        server.respond("/revoke", 200, "ok");
+        let auth = ChatGptSignIn::for_tests(test_endpoints(&server), clock(100));
+        let store = MemoryStore::new();
+        save(&store, live_credential("oaiapp_x", "subject")).await;
+        assert!(
+            matches!(auth.ensure_fresh(SIGNIN_PROVIDER_ID, &AuthContext { store: &store }).await, Err(AuthError::LoginRequired(message)) if message.contains("re-login is required"))
+        );
+        let saved = persisted_secret(&store).await;
+        assert!(saved.tokens.is_none());
+        assert_eq!(saved.client_id.as_deref(), Some("oaiapp_x"));
+        assert_eq!(saved.subject.as_deref(), Some("subject"));
+        assert!(requests(&server)
+            .await
+            .iter()
+            .any(|r| r.path == "/revoke" && r.body.contains("issued-refresh")));
     }
 
     #[tokio::test]
@@ -1423,15 +1609,56 @@ mod tests {
                 .await,
             Err(AuthError::Retryable(_))
         ));
-        assert!(persisted_secret(&store).await.tokens.is_some());
+        assert_eq!(
+            persisted_secret(&store).await.tokens.unwrap().refresh_token,
+            "old-refresh"
+        );
     }
 
-    #[test]
-    fn invalid_client_message_names_forget() {
-        let e = classify_oauth_error(400, r#"{"error":"invalid_client"}"#);
-        assert!(e
+    #[tokio::test]
+    async fn rate_limited_refresh_keeps_tokens_and_is_retryable() {
+        let server = StubServer::new().await;
+        server.respond("/token", 429, r#"{"error":"busy"}"#);
+        let auth = ChatGptSignIn::for_tests(test_endpoints(&server), clock(100));
+        let store = MemoryStore::new();
+        save(&store, live_credential("oaiapp_x", "subject")).await;
+        assert!(matches!(
+            auth.ensure_fresh(SIGNIN_PROVIDER_ID, &AuthContext { store: &store })
+                .await,
+            Err(AuthError::Retryable(_))
+        ));
+        assert_eq!(
+            persisted_secret(&store).await.tokens.unwrap().refresh_token,
+            "old-refresh"
+        );
+        assert_eq!(
+            requests(&server)
+                .await
+                .iter()
+                .filter(|r| r.path == "/token")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_client_message_names_forget() {
+        let server = StubServer::new().await;
+        server.respond("/token", 400, r#"{"error":"invalid_client"}"#);
+        let auth = ChatGptSignIn::for_tests(test_endpoints(&server), clock(100));
+        let store = MemoryStore::new();
+        save(&store, live_credential("oaiapp_x", "subject")).await;
+        let error = auth
+            .ensure_fresh(SIGNIN_PROVIDER_ID, &AuthContext { store: &store })
+            .await
+            .unwrap_err();
+        assert!(error
             .to_string()
             .contains("gait auth logout openai-signin --forget"));
+        assert_eq!(
+            persisted_secret(&store).await.tokens.unwrap().refresh_token,
+            "old-refresh"
+        );
     }
 
     #[tokio::test]
@@ -1486,6 +1713,20 @@ mod tests {
             1
         );
         assert!(persisted_secret(&store).await.tokens.is_none());
+        let request = requests(&server)
+            .await
+            .into_iter()
+            .find(|r| r.path == "/revoke")
+            .unwrap();
+        let mut actual = form_pairs(&request.body);
+        let mut expected = vec![
+            ("token".into(), "old-refresh".into()),
+            ("token_type_hint".into(), "refresh_token".into()),
+            ("client_id".into(), "oaiapp_x".into()),
+        ];
+        actual.sort();
+        expected.sort();
+        assert_eq!(actual, expected);
     }
 
     #[tokio::test]
@@ -1513,6 +1754,14 @@ mod tests {
         auth.logout_with(SIGNIN_PROVIDER_ID, true, &AuthContext { store: &store })
             .await
             .unwrap();
+        assert_eq!(
+            requests(&server)
+                .await
+                .iter()
+                .filter(|r| r.path == "/revoke")
+                .count(),
+            1
+        );
         assert!(store
             .lock()
             .await
@@ -1520,6 +1769,35 @@ mod tests {
             .read(SIGNIN_PROVIDER_ID)
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn logout_absent_entry_reports_unconfirmed() {
+        let server = StubServer::new().await;
+        let auth = ChatGptSignIn::for_tests(test_endpoints(&server), clock(100));
+        let store = MemoryStore::new();
+        let report = auth
+            .logout_with(SIGNIN_PROVIDER_ID, false, &AuthContext { store: &store })
+            .await
+            .unwrap();
+        assert!(!report.revoked);
+        assert!(requests(&server).await.iter().all(|r| r.path != "/revoke"));
+    }
+
+    #[tokio::test]
+    async fn logout_already_logged_out_reports_unconfirmed() {
+        let server = StubServer::new().await;
+        let auth = ChatGptSignIn::for_tests(test_endpoints(&server), clock(100));
+        let store = MemoryStore::new();
+        let secret = empty_secret("urn:uuid:host".into());
+        save(&store, credential(&secret, None, None)).await;
+        let report = auth
+            .logout_with(SIGNIN_PROVIDER_ID, false, &AuthContext { store: &store })
+            .await
+            .unwrap();
+        assert!(!report.revoked);
+        assert!(persisted_secret(&store).await.tokens.is_none());
+        assert!(requests(&server).await.iter().all(|r| r.path != "/revoke"));
     }
 
     #[tokio::test]
