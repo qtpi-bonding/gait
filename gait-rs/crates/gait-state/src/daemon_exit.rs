@@ -76,7 +76,23 @@ pub fn cmd_daemon_exit(args: DaemonExitArgs) -> anyhow::Result<Option<WakeReques
         idempotency_key,
     };
     let repos = crate::git::Repos::production();
-    let wake = match notify_parent(&args.gait_dir, &repos, &args.session, &c) {
+    // The agent identity is read once, here at the process entry; state code
+    // never reads the environment itself. Without it notify_parent returns
+    // NoParent, so the completion is not recorded.
+    let context = match gait_identity::IdentityContext::from_env() {
+        Ok(context) => context,
+        Err(e) => {
+            eprintln!("[gait] daemon-exit: loading agent identity: {e}");
+            None
+        }
+    };
+    let now = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    };
+    let wake = match notify_parent(&args.gait_dir, &repos, &args.session, &c, context.as_ref(), &now) {
         crate::session::completion::NotifyOutcome::Woke(req) => Some(req),
         _ => None,
     };

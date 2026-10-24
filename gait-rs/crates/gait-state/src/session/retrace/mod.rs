@@ -13,10 +13,12 @@
 use crate::proto::gait::log::v1::{self as pb, event, payload, ClarifyKind, Event};
 use crate::session::{log::read_events, SessionError};
 use crate::types::{
-    AssistantContent, AssistantPart, Attribution, Attributions, Message, MessageContent, ToolCall,
+    AssistantContent, AssistantPart, Attribution, Message, MessageContent, ToolCall,
     ToolResult, ToolResultKind, Trust,
 };
 use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::sync::{Arc, OnceLock};
 use std::path::Path;
 
 /// Proto `Struct` tool input → `serde_json::Value` object (or Null).
@@ -35,18 +37,29 @@ fn clarify_kind_str(k: i32) -> &'static str {
     }
 }
 
-/// Render `Provenance.from` as a scheme-labeled hexadecimal public key -- or,
-/// when the ingress verified an external author id, render that id directly.
-fn render_sender(p: &pb::Provenance) -> String {
-    if let Some(author) = &p.verified_author_id {
-        return format!("verified:{author}");
+/// Sender label for `[agent:<sender>]`: the verified principal id when the
+/// caller has one, else the ingress-attested author id, else `unknown`.
+fn render_sender(p: &pb::Provenance, principal: Option<&str>) -> String {
+    if let Some(principal) = principal {
+        return principal.to_string();
     }
-    let scheme_label = match gait_identity::KeyScheme::try_from(p.scheme) {
-        Ok(gait_identity::KeyScheme::Ed25519) => "ed25519",
-        Ok(gait_identity::KeyScheme::Secp256k1Schnorr) => "secp256k1-schnorr",
-        Ok(gait_identity::KeyScheme::Unspecified) | Err(_) => "unspecified",
-    };
-    format!("{scheme_label}:{}", hex::encode(&p.from))
+    if let Some(author) = &p.verified_author_id {
+        return author.clone();
+    }
+    "unknown".to_string()
+}
+
+/// Verifier used by [`ActiveRawMessages::default`]. Installed once per process
+/// by the entry point that owns the agent identity; a second install is ignored.
+static PROCESS_VERIFIER: OnceLock<Arc<dyn gait_identity::ProvenanceVerifier>> = OnceLock::new();
+
+pub fn install_process_verifier(v: Arc<dyn gait_identity::ProvenanceVerifier>) {
+    let _ = PROCESS_VERIFIER.set(v);
+}
+
+/// Only unsigned provenance is acceptable when no verifier is consulted.
+fn provenance_unsigned(ev: &Event) -> bool {
+    ev.provenance.iter().all(|p| p.signed_message.is_none())
 }
 
 /// The converged mutation state for a single target event (LWW winner).
@@ -69,7 +82,7 @@ pub enum MutationState {
 pub fn transcript(all_events: &[Event]) -> Result<Vec<Message>, SessionError> {
     let mut muts = active_mutations(all_events);
     apply_cascade(&mut muts, all_events);
-    let raw = run_projection(&ActiveRawMessages, all_events, &muts);
+    let raw = run_projection(&ActiveRawMessages::default(), all_events, &muts);
     Ok(coalesce(raw.base))
 }
 
@@ -92,7 +105,7 @@ pub fn messages_from_path(path: &Path) -> Result<Vec<Message>, SessionError> {
 pub fn outgoing_for_step(all_events: &[Event], _turn: u32) -> Result<Vec<Message>, SessionError> {
     let mut muts = active_mutations(all_events);
     apply_cascade(&mut muts, all_events);
-    let raw = run_projection(&ActiveRawMessages, all_events, &muts);
+    let raw = run_projection(&ActiveRawMessages::default(), all_events, &muts);
     Ok(coalesce(raw.base))
 }
 
@@ -411,6 +424,7 @@ enum MsgPhase {
 /// inject/summary event itself, not a fold reset.
 pub struct RawMessagesState {
     pub base: Vec<Message>,
+    pub session_id: String,
 }
 impl RawMessagesState {
     fn with_summary(summary: &str, id: &str) -> Self {
@@ -420,6 +434,7 @@ impl RawMessagesState {
                 id: id.to_string(),
                 attribution: Vec::new(),
             }],
+            session_id: String::new(),
         }
     }
 }
@@ -544,7 +559,7 @@ impl MessagesState {
         let sender = ev
             .provenance
             .first()
-            .map(render_sender)
+            .map(|p| render_sender(p, None))
             .unwrap_or_else(|| au.session_id.clone());
         let mut content = format!(
             "[agent:{}] status: {}\nsummary: {}",
@@ -688,13 +703,13 @@ impl Projection for ActiveMessages {
             // run, or appended to an ongoing result run. An orphan result (phase
             // Other) is silently skipped — see coalesce_tool_result.
             payload::Kind::ToolResult(tr) => st.coalesce_tool_result(tr, &ev.id),
-            payload::Kind::UserText(u) if event_provenance_is_acceptable(ev) => {
+            payload::Kind::UserText(u) if provenance_unsigned(ev) => {
                 st.push_user(u.content.clone(), &ev.id)
             }
             payload::Kind::IncomingMessage(m)
                 if !m.rejected_provenance_claim
                     && !ev.provenance.is_empty()
-                    && event_provenance_is_acceptable(ev) =>
+                    && provenance_unsigned(ev) =>
             {
                 st.push_user(m.content.clone(), &ev.id)
             }
@@ -751,17 +766,115 @@ impl Projection for ActiveMessages {
 /// log while restarting only this model-facing projection. The downstream
 /// `coalesce()` merges consecutive `ToolCall` assistant messages and consecutive
 /// `ToolResult` messages before they hit the provider.
-pub struct ActiveRawMessages;
+///
+/// `verifier` decides whether a signed event (`Provenance.signed_message`) was
+/// really signed for this session. `verdicts` caches that decision per
+/// `(event.id, content_hash)` for one fold, so each event is verified once.
+pub struct ActiveRawMessages {
+    pub verifier: Option<Arc<dyn gait_identity::ProvenanceVerifier>>,
+    /// The `SessionStart` session id, mirrored here because a `Summary`
+    /// checkpoint replaces the whole state and would otherwise drop it.
+    session_id: RefCell<String>,
+    verdicts: RefCell<HashMap<(String, String), Option<String>>>,
+    warned: Cell<bool>,
+}
+
+impl Default for ActiveRawMessages {
+    fn default() -> Self {
+        Self {
+            verifier: PROCESS_VERIFIER.get().cloned(),
+            session_id: RefCell::new(String::new()),
+            verdicts: RefCell::new(HashMap::new()),
+            warned: Cell::new(false),
+        }
+    }
+}
+
+impl ActiveRawMessages {
+    /// The principal id the verifier derives for a signed event, or `None` when
+    /// there is no verifier or the signature does not verify for `session_id`.
+    fn verified_author(&self, ev: &Event, session_id: &str) -> Option<String> {
+        let key = (ev.id.clone(), ev.content_hash.clone());
+        if let Some(cached) = self.verdicts.borrow().get(&key) {
+            return cached.clone();
+        }
+        let verdict = self
+            .verifier
+            .as_ref()
+            .and_then(|v| v.verify_direct(ev, session_id))
+            .map(|p| p.to_string());
+        if verdict.is_none() && !self.warned.replace(true) {
+            eprintln!(
+                "[gait] signed provenance could not be verified for session {session_id:?}; \
+                 folding it as unverified"
+            );
+        }
+        self.verdicts.borrow_mut().insert(key, verdict.clone());
+        verdict
+    }
+
+    /// Trust decision for one provenance entry. A signed entry is trusted only
+    /// through the verifier, and the stored `verified_author_id` is ignored.
+    /// An unsigned entry is trusted when ingress attested an author id.
+    fn trusted_author(&self, ev: &Event, p: &pb::Provenance, session_id: &str) -> Option<String> {
+        if p.signed_message.is_some() {
+            self.verified_author(ev, session_id)
+        } else {
+            p.verified_author_id.clone()
+        }
+    }
+
+    /// Whole-event gate for AgentUpdate/DaemonUpdate: a signed event that does
+    /// not verify is not folded. Unsigned provenance passes as before.
+    fn event_provenance_is_acceptable(&self, ev: &Event, session_id: &str) -> bool {
+        let signed = ev.provenance.iter().any(|p| p.signed_message.is_some());
+        !signed || self.verified_author(ev, session_id).is_some()
+    }
+
+    fn fold_user_text(
+        &self,
+        st: &mut RawMessagesState,
+        ev: &Event,
+        content: &str,
+        rejected_claim: bool,
+        provenance_required: bool,
+    ) {
+        if rejected_claim || (provenance_required && ev.provenance.is_empty()) {
+            return;
+        }
+        // An unverifiable signed message is still folded, as Unverified, so
+        // the model sees that someone spoke. Dropping it would be silent.
+        let mut attribution = Vec::new();
+        for p in &ev.provenance {
+            let author = self.trusted_author(ev, p, &st.session_id);
+            let trust = if author.is_some() { Trust::Verified } else { Trust::Unverified };
+            attribution.push(Attribution {
+                author_id: author.unwrap_or_else(|| "unverified".to_string()),
+                context: p.context.clone(),
+                trust,
+            });
+        }
+        st.base.push(Message::User {
+            content: MessageContent::Text(content.to_owned()),
+            id: ev.id.clone(),
+            attribution,
+        });
+    }
+}
+
 impl Projection for ActiveRawMessages {
     type State = RawMessagesState;
 
     fn seed(&self) -> Self::State {
-        RawMessagesState { base: Vec::new() }
+        self.session_id.borrow_mut().clear();
+        RawMessagesState { base: Vec::new(), session_id: String::new() }
     }
 
     fn checkpoint(&self, event: &Event, kind: &payload::Kind) -> Option<Self::State> {
         if let payload::Kind::Summary(summary) = kind {
-            Some(RawMessagesState::with_summary(&summary.summary, &event.id))
+            let mut st = RawMessagesState::with_summary(&summary.summary, &event.id);
+            st.session_id = self.session_id.borrow().clone();
+            Some(st)
         } else {
             None
         }
@@ -769,11 +882,15 @@ impl Projection for ActiveRawMessages {
 
     fn apply(&self, st: &mut Self::State, ev: &Event, kind: &payload::Kind) {
         match kind {
+            payload::Kind::SessionStart(ss) => {
+                st.session_id = ss.session_id.clone();
+                *self.session_id.borrow_mut() = ss.session_id.clone();
+            }
             payload::Kind::UserText(u) => {
-                fold_user_text(st, ev, &u.content, false, false);
+                self.fold_user_text(st, ev, &u.content, false, false);
             }
             payload::Kind::IncomingMessage(m) => {
-                fold_user_text(st, ev, &m.content, m.rejected_provenance_claim, true);
+                self.fold_user_text(st, ev, &m.content, m.rejected_provenance_claim, true);
             }
             payload::Kind::AssistantText(a) => st.base.push(Message::Assistant {
                 content: AssistantContent::Text(a.content.clone()),
@@ -823,7 +940,7 @@ impl Projection for ActiveRawMessages {
                 attribution: Vec::new(),
             }),
             payload::Kind::AgentUpdate(au) => {
-                if !event_provenance_is_acceptable(ev) {
+                if !self.event_provenance_is_acceptable(ev, &st.session_id) {
                     return;
                 }
                 let status = pb::AgentStatus::try_from(au.status)
@@ -842,7 +959,10 @@ impl Projection for ActiveRawMessages {
                 let sender = ev
                     .provenance
                     .first()
-                    .map(render_sender)
+                    .map(|p| {
+                        let principal = self.trusted_author(ev, p, &st.session_id);
+                        render_sender(p, principal.as_deref())
+                    })
                     .unwrap_or_else(|| au.session_id.clone());
                 let mut content = format!(
                     "[agent:{}] status: {}\nsummary: {}",
@@ -859,6 +979,9 @@ impl Projection for ActiveRawMessages {
                 });
             }
             payload::Kind::DaemonUpdate(du) => {
+                if !self.event_provenance_is_acceptable(ev, &st.session_id) {
+                    return;
+                }
                 let status = pb::DaemonStatus::try_from(du.status)
                     .map(|s| match s {
                         pb::DaemonStatus::Done => "done",
@@ -1004,66 +1127,6 @@ impl Projection for ActiveRawMessages {
             _ => {}
         }
     }
-}
-
-fn event_provenance_is_acceptable(ev: &Event) -> bool {
-    ev.provenance.iter().all(|p| {
-        if let Some(outcome) = p.verification_outcome {
-            Trust::from_verification_outcome(outcome) != Trust::Unverified
-                && p.verified_author_id.is_some()
-                && p.from.is_empty()
-                && p.signature.is_empty()
-        } else if p.verified_author_id.is_some() {
-            false
-        } else {
-            gait_identity::verify_provenance(p, &ev.content_hash)
-        }
-    })
-}
-
-fn fold_user_text(
-    st: &mut RawMessagesState,
-    ev: &Event,
-    content: &str,
-    rejected_claim: bool,
-    provenance_required: bool,
-) {
-    // Keep rejected inbound text in the immutable audit log, but do not fold a
-    // malformed claim or invalid signature into model-visible conversation.
-    if rejected_claim
-        || (provenance_required && ev.provenance.is_empty())
-        || !event_provenance_is_acceptable(ev)
-    {
-        return;
-    }
-    let attribution: Attributions = ev
-        .provenance
-        .iter()
-        .map(|p| {
-            if let Some(outcome) = p.verification_outcome {
-                Attribution {
-                    author_id: p.verified_author_id.clone().unwrap_or_default(),
-                    context: p.context.clone(),
-                    trust: Trust::from_verification_outcome(outcome),
-                }
-            } else {
-                Attribution {
-                    author_id: render_sender(p),
-                    context: p.context.clone(),
-                    trust: if gait_identity::verify_provenance(p, &ev.content_hash) {
-                        Trust::Verified
-                    } else {
-                        Trust::Unverified
-                    },
-                }
-            }
-        })
-        .collect();
-    st.base.push(Message::User {
-        content: MessageContent::Text(content.to_owned()),
-        id: ev.id.clone(),
-        attribution,
-    });
 }
 
 /// Merge consecutive tool-call assistant messages and consecutive tool-result

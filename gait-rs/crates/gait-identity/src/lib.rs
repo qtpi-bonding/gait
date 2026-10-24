@@ -69,30 +69,29 @@ pub fn sign_direct_event(
 }
 
 pub trait ProvenanceVerifier: Send + Sync {
-    fn verify_direct(&self, ev: &Event) -> Option<PrincipalId>;
+    fn verify_direct(&self, ev: &Event, session_id: &str) -> Option<PrincipalId>;
 }
 
 pub struct DirectVerifier {
     agent_dir: PathBuf,
-    session_id: String,
 }
 
 impl DirectVerifier {
-    pub fn from_context(ctx: &IdentityContext, session_id: impl Into<String>) -> Result<Self> {
+    pub fn from_context(ctx: &IdentityContext) -> Result<Self> {
         ctx.keys()?;
-        Ok(Self { agent_dir: ctx.agent_dir.clone(), session_id: session_id.into() })
+        Ok(Self { agent_dir: ctx.agent_dir.clone() })
     }
 
-    fn verify(&self, ev: &Event) -> Option<PrincipalId> {
+    fn verify(&self, ev: &Event, session_id: &str) -> Option<PrincipalId> {
         let keys = identity_keyfile::AgentKeys::load(&self.agent_dir).ok()?;
         let devices = identity_keyfile::device_keys_at(&keys, (ev.ts / 1000) as i64);
-        verify_direct_provenance(ev, &devices, &self.session_id)
+        verify_direct_provenance(ev, &devices, session_id)
     }
 }
 
 impl ProvenanceVerifier for DirectVerifier {
-    fn verify_direct(&self, ev: &Event) -> Option<PrincipalId> {
-        self.verify(ev)
+    fn verify_direct(&self, ev: &Event, session_id: &str) -> Option<PrincipalId> {
+        self.verify(ev, session_id)
     }
 }
 
@@ -205,8 +204,8 @@ mod tests {
         let fixture = TempAgentDir::new(1_000, 3_600);
         let ctx = IdentityContext::new(fixture.path()).unwrap();
         let signed = signed(&ctx, "event-own", 1_000_000, "hash", "session", 1_000, 60);
-        let verifier = DirectVerifier::from_context(&ctx, "session").unwrap();
-        assert_eq!(verifier.verify_direct(&signed), Some(ctx.agent_id().clone()));
+        let verifier = DirectVerifier::from_context(&ctx).unwrap();
+        assert_eq!(verifier.verify_direct(&signed, "session"), Some(ctx.agent_id().clone()));
     }
 
     #[test]

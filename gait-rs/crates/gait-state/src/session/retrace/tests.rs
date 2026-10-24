@@ -1,5 +1,6 @@
 use super::*;
 use crate::proto::{events, wire};
+use identity_keyfile::testkit::TempAgentDir;
 use tempfile::TempDir;
 
 fn write_events(dir: &std::path::Path, bodies: Vec<event::Body>) -> std::path::PathBuf {
@@ -782,7 +783,7 @@ fn active_raw_messages_checkpoint_keeps_only_latest_summary_and_later_pairs() {
         events::tool_call("new-call".into(), "read".into(), &serde_json::Value::Null),
         events::tool_result("new-call".into(), "new result".into(), None, None),
     ]);
-    let raw = run_projection(&ActiveRawMessages, &evs, &HashMap::new());
+    let raw = run_projection(&ActiveRawMessages::default(), &evs, &HashMap::new());
     assert_eq!(raw.base.len(), 3, "summary plus the later complete pair");
     assert!(
         matches!(&raw.base[0], Message::User { content: MessageContent::Text(text), .. } if text.contains("checkpoint"))
@@ -1638,41 +1639,86 @@ fn raw_messages_carry_event_ids() {
         scoped_mint(events::user_text("hello".into()), None, 0, 0),
         scoped_mint(events::assistant_text("hi".into()), None, 0, 0),
     ];
-    let raw = run_projection(&ActiveRawMessages, &evs, &HashMap::new());
+    let raw = run_projection(&ActiveRawMessages::default(), &evs, &HashMap::new());
     assert_eq!(raw.base.len(), 2);
     assert_eq!(raw.base[0].id(), evs[0].id.as_str());
     assert_eq!(raw.base[1].id(), evs[1].id.as_str());
 }
 
+/// Agent identity fixture, minted at `now` so that events stamped at `now`
+/// fall inside its device key window. Keep the fixture alive while using `ctx`.
+fn agent_fixture(now: i64) -> (TempAgentDir, gait_identity::IdentityContext) {
+    let agent = TempAgentDir::new(now, 3_600);
+    let ctx = gait_identity::IdentityContext::new(agent.path()).unwrap();
+    (agent, ctx)
+}
+
+fn wall_clock() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+/// Attach a real direct signature to `ev`, made for `audience` at `now`.
+/// The event timestamp is pinned to `now`, so verification places the event
+/// inside the device window. The content hash covers the body only, so this
+/// does not disturb it.
+fn direct_signed(ctx: &gait_identity::IdentityContext, ev: &mut Event, audience: &str, now: i64) {
+    ev.ts = (now as u64) * 1_000;
+    let provenance = gait_identity::sign_direct_event(ctx, ev, audience, 60, &|| now).unwrap();
+    ev.provenance = vec![provenance];
+}
+
+/// A log opened by `SessionStart`, which names the session that signatures
+/// must be made for.
+fn session_log(session_id: &str) -> Vec<Event> {
+    vec![scoped_mint(
+        events::session_start(session_id.into(), None, None, false),
+        None,
+        0,
+        0,
+    )]
+}
+
+/// A raw projection that verifies signatures with `ctx`'s agent directory.
+fn verifying_projection(ctx: &gait_identity::IdentityContext) -> ActiveRawMessages {
+    ActiveRawMessages {
+        verifier: Some(Arc::new(
+            gait_identity::DirectVerifier::from_context(ctx).unwrap(),
+        )),
+        ..ActiveRawMessages::default()
+    }
+}
+
 #[test]
-fn active_raw_messages_omits_invalid_direct_provenance() {
-    use std::collections::HashMap;
-    let pubkey = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04];
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("tx.jsonl");
-    wire::append_with_given_provenances(
-        &path,
-        events::incoming_message("do the thing".into()),
-        vec![crate::proto::gait::log::v1::Provenance {
-            from: pubkey,
-            to: vec![],
-            context: String::new(),
-            signature: vec![],
-            scheme: gait_identity::KeyScheme::Ed25519 as i32,
-            delegation_cert: None,
-            verified_author_id: None,
-            verification_outcome: None,
-        }],
-        crate::proto::envelope::EventScope::Session,
-    )
-    .unwrap();
-    let events = read_events(&path).unwrap();
-    assert_eq!(events.len(), 1, "rejected input remains in the durable log");
-    let raw = run_projection(&ActiveRawMessages, &events, &HashMap::new());
-    assert!(
-        raw.base.is_empty(),
-        "invalid provenance must not reach the agent"
+fn signed_event_from_another_session_log_is_unverified() {
+    let now = wall_clock();
+    let (_agent, ctx) = agent_fixture(now);
+
+    let mut msg = scoped_mint(events::incoming_message("from elsewhere".into()), None, 0, 0);
+    direct_signed(&ctx, &mut msg, "other-session", now);
+
+    let mut in_other_log = session_log("other-session");
+    in_other_log.push(msg.clone());
+    let raw = run_projection(&verifying_projection(&ctx), &in_other_log, &HashMap::new());
+    let Message::User { attribution, .. } = &raw.base[0] else {
+        panic!("expected a folded user message");
+    };
+    assert_eq!(
+        attribution[0].trust,
+        Trust::Verified,
+        "control: the same signature verifies in the session it was made for"
     );
+
+    let mut in_room_log = session_log("room-session");
+    in_room_log.push(msg);
+    let raw = run_projection(&verifying_projection(&ctx), &in_room_log, &HashMap::new());
+    let Message::User { attribution, .. } = &raw.base[0] else {
+        panic!("a signed message must still be folded, not dropped");
+    };
+    assert_eq!(attribution[0].trust, Trust::Unverified);
+    assert_eq!(attribution[0].author_id, "unverified");
 }
 
 #[test]
@@ -1689,7 +1735,7 @@ fn active_raw_messages_omits_rejected_incoming_message_claim() {
     wire::append(&path, body).unwrap();
     let events = read_events(&path).unwrap();
     assert_eq!(events.len(), 1, "rejected input remains in the durable log");
-    let raw = run_projection(&ActiveRawMessages, &events, &HashMap::new());
+    let raw = run_projection(&ActiveRawMessages::default(), &events, &HashMap::new());
     assert!(
         raw.base.is_empty(),
         "malformed claimed provenance must not reach the agent"
@@ -1705,7 +1751,7 @@ fn active_raw_messages_omits_incoming_message_without_provenance() {
     wire::append(&path, body).unwrap();
     let events = read_events(&path).unwrap();
     assert_eq!(events.len(), 1, "malformed input remains in the durable log");
-    let raw = run_projection(&ActiveRawMessages, &events, &HashMap::new());
+    let raw = run_projection(&ActiveRawMessages::default(), &events, &HashMap::new());
     assert!(
         raw.base.is_empty(),
         "IncomingMessage requires acceptable provenance to reach the agent"
@@ -1714,31 +1760,86 @@ fn active_raw_messages_omits_incoming_message_without_provenance() {
 
 #[test]
 fn valid_direct_provenance_keeps_uniform_attribution() {
-    use gait_identity::Signer as _;
-    use std::collections::HashMap;
-    let signer = gait_identity::Ed25519Signer::generate();
-    let mut ev = scoped_mint(events::incoming_message("hello".into()), None, 0, 0);
-    let to = vec!["session-2".to_string()];
-    let context = "room-general";
-    let signature = signer.sign(&crate::proto::envelope::provenance_signing_bytes(
-        &ev.content_hash,
-        &to,
-        context,
-    ));
-    ev.provenance = vec![pb::Provenance {
-        from: signer.public_key().to_vec(),
-        to,
-        context: context.into(),
-        signature,
-        scheme: signer.scheme() as i32,
-        ..Default::default()
-    }];
-    let raw = run_projection(&ActiveRawMessages, &[ev], &HashMap::new());
-    let crate::types::Message::User { attribution, .. } = &raw.base[0] else {
+    let now = wall_clock();
+    let (_agent, ctx) = agent_fixture(now);
+    let mut msg = scoped_mint(events::incoming_message("hello".into()), None, 0, 0);
+    direct_signed(&ctx, &mut msg, "room-session", now);
+    msg.provenance[0].context = "room-general".into();
+
+    let mut evs = session_log("room-session");
+    evs.push(msg);
+    let raw = run_projection(&verifying_projection(&ctx), &evs, &HashMap::new());
+    let Message::User { attribution, .. } = &raw.base[0] else {
         panic!("expected accepted user message");
     };
-    assert_eq!(attribution[0].trust, crate::types::Trust::Verified);
-    assert_eq!(attribution[0].context, context);
+    assert_eq!(attribution.len(), 1);
+    assert_eq!(attribution[0].trust, Trust::Verified);
+    assert_eq!(attribution[0].author_id, ctx.agent_id().to_string());
+    assert_eq!(attribution[0].context, "room-general");
+}
+
+#[test]
+fn signed_event_without_verifier_is_unverified_not_dropped() {
+    let now = wall_clock();
+    let (_agent, ctx) = agent_fixture(now);
+    let mut msg = scoped_mint(events::incoming_message("signed, no verifier".into()), None, 0, 0);
+    direct_signed(&ctx, &mut msg, "room-session", now);
+
+    let mut evs = session_log("room-session");
+    evs.push(msg);
+    let raw = run_projection(&ActiveRawMessages::default(), &evs, &HashMap::new());
+    assert_eq!(raw.base.len(), 1, "a signed message with no verifier is still folded");
+    let Message::User {
+        content: MessageContent::Text(text),
+        attribution,
+        ..
+    } = &raw.base[0]
+    else {
+        panic!("expected a user message");
+    };
+    assert_eq!(text, "signed, no verifier", "the folded message carries its own text");
+    assert_eq!(attribution[0].trust, Trust::Unverified);
+    assert_eq!(attribution[0].author_id, "unverified");
+}
+
+#[test]
+fn forged_verified_author_id_with_signed_message_is_not_trusted() {
+    let now = wall_clock();
+    let (_agent, ctx) = agent_fixture(now);
+    let forged = "agent-forged";
+
+    // Signature made for a different session, plus a claimed author id.
+    let mut bad = scoped_mint(events::incoming_message("forged bad".into()), None, 0, 0);
+    direct_signed(&ctx, &mut bad, "other-session", now);
+    bad.provenance[0].verified_author_id = Some(forged.into());
+
+    // Valid signature for this session, with the same forged claimed author id.
+    let mut good = scoped_mint(events::incoming_message("forged good".into()), None, 0, 0);
+    direct_signed(&ctx, &mut good, "room-session", now);
+    good.provenance[0].verified_author_id = Some(forged.into());
+
+    let mut evs = session_log("room-session");
+    evs.push(bad);
+    evs.push(good);
+    let raw = run_projection(&verifying_projection(&ctx), &evs, &HashMap::new());
+    assert_eq!(raw.base.len(), 2);
+
+    let Message::User { attribution: bad_attr, .. } = &raw.base[0] else {
+        panic!("expected the forged-but-unsigned-for-this-session message to fold");
+    };
+    assert_eq!(bad_attr[0].trust, Trust::Unverified);
+    assert_eq!(bad_attr[0].author_id, "unverified", "the stored id must not be trusted");
+
+    let Message::User { attribution: good_attr, .. } = &raw.base[1] else {
+        panic!("expected the validly signed message to fold");
+    };
+    assert_eq!(good_attr[0].trust, Trust::Verified);
+    assert_eq!(
+        good_attr[0].author_id,
+        ctx.agent_id().to_string(),
+        "a verified signature yields the principal id, never the stored id"
+    );
+    assert_ne!(good_attr[0].author_id, forged);
 }
 
 #[test]
@@ -1770,7 +1871,7 @@ fn coalesce_merges_consecutive_tool_calls() {
             0,
         ),
     ];
-    let raw = run_projection(&ActiveRawMessages, &evs, &HashMap::new());
+    let raw = run_projection(&ActiveRawMessages::default(), &evs, &HashMap::new());
     let coalesced = coalesce(raw.base);
     assert_eq!(coalesced.len(), 2);
     if let Message::Assistant {
@@ -1799,7 +1900,7 @@ fn inject_appears_in_base() {
     use std::collections::HashMap;
     let ev = scoped_mint(events::inject("user", "injected".into()), None, 1, 0);
     let raw = run_projection(
-        &ActiveRawMessages,
+        &ActiveRawMessages::default(),
         std::slice::from_ref(&ev),
         &HashMap::new(),
     );
@@ -1958,7 +2059,7 @@ fn daemon_update_raw_messages_includes_user_message() {
         "/var/log/svc.log".into(),
         "svc-x@1".into(),
     )]);
-    let raw = run_projection(&ActiveRawMessages, &evs, &HashMap::new());
+    let raw = run_projection(&ActiveRawMessages::default(), &evs, &HashMap::new());
     assert_eq!(raw.base.len(), 1);
     match &raw.base[0] {
         Message::User {
@@ -2057,53 +2158,71 @@ fn full_tool_history_survives_a_resumed_turn() {
     } if t.starts_with("Answer to your question"))));
 }
 
+fn agent_update_body(session_id: &str, summary: &str) -> event::Body {
+    crate::proto::gait::log::v1::event::Body::Payload(crate::proto::gait::log::v1::Payload {
+        kind: Some(crate::proto::gait::log::v1::payload::Kind::AgentUpdate(
+            crate::proto::gait::log::v1::AgentUpdate {
+                session_id: session_id.into(),
+                status: crate::proto::gait::log::v1::AgentStatus::Done as i32,
+                summary: summary.into(),
+                items: None,
+                idempotency_key: "s1234abcd-evt1".into(),
+            },
+        )),
+    })
+}
+
+fn agent_update_text(raw: &RawMessagesState, index: usize) -> String {
+    match &raw.base[index] {
+        Message::User {
+            content: MessageContent::Text(t),
+            ..
+        } => t.clone(),
+        other => panic!("expected a User message, got {other:?}"),
+    }
+}
+
 #[test]
 fn active_raw_messages_agent_update_uses_provenance_not_session_id() {
-    use gait_identity::Signer as _;
-    use std::collections::HashMap;
-    let signer = gait_identity::Ed25519Signer::generate();
+    let now = wall_clock();
+    let (_agent, ctx) = agent_fixture(now);
+    let mut ev = scoped_mint(agent_update_body("s_old_field_ignored", "tests pass"), None, 0, 0);
+    direct_signed(&ctx, &mut ev, "room-session", now);
 
-    let body =
-        crate::proto::gait::log::v1::event::Body::Payload(crate::proto::gait::log::v1::Payload {
-            kind: Some(crate::proto::gait::log::v1::payload::Kind::AgentUpdate(
-                crate::proto::gait::log::v1::AgentUpdate {
-                    session_id: "s_old_field_ignored".into(),
-                    status: crate::proto::gait::log::v1::AgentStatus::Done as i32,
-                    summary: "tests pass".into(),
-                    items: None,
-                    idempotency_key: "s1234abcd-evt1".into(),
-                },
-            )),
-        });
-    let mut ev = scoped_mint(body, None, 0, 0);
-    let signature = signer.sign(&crate::proto::envelope::provenance_signing_bytes(
-        &ev.content_hash,
-        &[],
-        "",
-    ));
-    ev.provenance = vec![crate::proto::gait::log::v1::Provenance {
-        from: signer.public_key().to_vec(),
-        to: vec![],
-        context: String::new(),
-        signature,
-        scheme: signer.scheme() as i32,
-        ..Default::default()
-    }];
+    let mut evs = session_log("room-session");
+    evs.push(ev);
+    let raw = run_projection(&verifying_projection(&ctx), &evs, &HashMap::new());
 
-    let raw = run_projection(&ActiveRawMessages, &[ev], &HashMap::new());
+    let t = agent_update_text(&raw, 0);
+    let principal = ctx.agent_id().to_string();
+    assert!(
+        t.contains(&format!("[agent:{principal}]")) && !t.contains("s_old_field_ignored"),
+        "rendered text must use the verified principal id, got: {t}"
+    );
+}
 
-    match &raw.base[0] {
-        crate::types::Message::User {
-            content: crate::types::MessageContent::Text(t),
-            ..
-        } => {
-            assert!(
-                t.contains("ed25519:") && !t.contains("s_old_field_ignored"),
-                "rendered text must use the verified Provenance.from, got: {t}"
-            );
-        }
-        _ => panic!("expected User variant"),
-    }
+#[test]
+fn daemon_authored_attested_message_renders_verified_with_its_principal_id() {
+    // A daemon-side agent update: signed for the parent session, and also
+    // carrying the principal id in verified_author_id, as ingress does.
+    // Both are present, so the signature decides and the stored id is ignored.
+    let now = wall_clock();
+    let (_agent, ctx) = agent_fixture(now);
+    let principal = ctx.agent_id().to_string();
+    let mut ev = scoped_mint(agent_update_body("daemon-claimed", "build finished"), None, 0, 0);
+    direct_signed(&ctx, &mut ev, "room-session", now);
+    ev.provenance[0].verified_author_id = Some(principal.clone());
+
+    let mut evs = session_log("room-session");
+    evs.push(ev);
+    let raw = run_projection(&verifying_projection(&ctx), &evs, &HashMap::new());
+
+    let t = agent_update_text(&raw, 0);
+    assert!(
+        t.starts_with(&format!("[agent:{principal}] status: done")),
+        "a verified daemon-side update renders its principal id, got: {t}"
+    );
+    assert!(!t.contains("daemon-claimed"), "the session field must not leak, got: {t}");
 }
 
 #[test]
@@ -2112,7 +2231,6 @@ fn a_resumed_session_folds_a_verified_incoming_message_with_attribution() {
     let path = dir.path().join("tx.jsonl");
     let verified_provenance = pb::Provenance {
         verified_author_id: Some("agent-2".into()),
-        verification_outcome: Some(identity_crypto::VerificationOutcome::DirectKey as i32),
         context: "room-general".into(),
         ..Default::default()
     };
@@ -2143,12 +2261,11 @@ fn a_resumed_session_folds_a_verified_incoming_message_with_attribution() {
 }
 
 #[test]
-fn a_resumed_session_folds_a_system_verified_message_with_distinct_trust() {
+fn a_resumed_session_folds_an_attested_system_message_as_verified() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("tx.jsonl");
     let verified_provenance = pb::Provenance {
         verified_author_id: Some("system".into()),
-        verification_outcome: Some(identity_crypto::VerificationOutcome::System as i32),
         context: "room-general".into(),
         ..Default::default()
     };
@@ -2168,7 +2285,8 @@ fn a_resumed_session_folds_a_system_verified_message_with_distinct_trust() {
     };
     assert_eq!(
         attribution[0].trust,
-        crate::types::Trust::System,
-        "a System-outcome message must render its own distinct trust level, not collapse into Verified or Unverified"
+        crate::types::Trust::Verified,
+        "an ingress-attested author id folds as Verified; there is no separate system trust level"
     );
+    assert_eq!(attribution[0].author_id, "system");
 }

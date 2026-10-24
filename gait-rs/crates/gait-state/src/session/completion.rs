@@ -95,6 +95,8 @@ pub fn notify_parent(
     repos: &crate::git::Repos,
     parent_session: &str,
     c: &Completion,
+    ctx: Option<&gait_identity::IdentityContext>,
+    now: &dyn Fn() -> i64,
 ) -> NotifyOutcome {
     let target_dir = crate::session::live::worktree_dir(gait_dir, parent_session);
     if !target_dir.exists() {
@@ -126,37 +128,15 @@ pub fn notify_parent(
     // Append the *_update event + commit. We hold the lock, so writing
     // directly via `wire::append` is the legal path (NOT SessionLog::open,
     // which would re-acquire and deadlock). Mirrors harness.rs:118-128.
-    let device_signer = match gait_identity::Keyring::load(gait_dir).and_then(|kr| kr.signer()) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!(
-                "[gait] notify_parent: loading keyring at {}: {e}",
-                gait_dir.display()
-            );
-            return NotifyOutcome::NoParent;
-        }
+    let Some(ctx) = ctx else {
+        eprintln!("[gait] notify_parent: no agent identity configured");
+        return NotifyOutcome::NoParent;
     };
-    use gait_identity::Signer as _;
-    let session = match gait_identity::SessionKey::mint(
-        &device_signer,
-        std::time::Duration::from_secs(60),
-    ) {
-        Ok(session) => session,
-        Err(e) => {
-            eprintln!("[gait] notify_parent: minting session key failed: {e}");
-            return NotifyOutcome::NoParent;
-        }
-    };
-    if let Err(e) = crate::proto::wire::append_with_delegated_provenance(
+    if let Err(e) = crate::proto::wire::append_with_signed(
         &tx_path,
         c.body(),
-        session.signer().public_key().to_vec(),
-        session.signer().scheme() as i32,
-        |msg| session.signer().sign(msg),
-        vec![],
-        String::new(),
         crate::proto::envelope::EventScope::Session,
-        session.delegation_cert().clone(),
+        |ev| gait_identity::sign_direct_event(ctx, ev, parent_session, 60, now),
     ) {
         // Log the append failure as a diagnostic warn — silently dropping
         // would leave the caller with no signal that the completion was lost.
@@ -209,7 +189,24 @@ pub fn notify_parent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use identity_keyfile::testkit::TempAgentDir;
     use tempfile::TempDir;
+
+    /// A real agent identity in its own directory, separate from the gait dir.
+    /// The returned fixture must stay alive for as long as the context is used.
+    fn identity_fixture() -> (TempAgentDir, gait_identity::IdentityContext) {
+        let now = wall_clock();
+        let agent = TempAgentDir::new(now, 3_600);
+        let ctx = gait_identity::IdentityContext::new(agent.path()).unwrap();
+        (agent, ctx)
+    }
+
+    fn wall_clock() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
 
     #[test]
     fn completion_carries_idempotency_key_not_derived_from_payload_values() {
@@ -235,9 +232,18 @@ mod tests {
     }
 
     fn init_parent(gait_dir: &std::path::Path, id: &str) {
-        gait_identity::Keyring::generate().save(gait_dir).unwrap();
         let dir = crate::session::live::worktree_dir(gait_dir, id);
         std::fs::create_dir_all(&dir).unwrap();
+    }
+
+    /// Verifier for the agent in `ctx`, checking a signature made for `session`.
+    fn verify_as(
+        ctx: &gait_identity::IdentityContext,
+        ev: &crate::proto::gait::log::v1::Event,
+        session: &str,
+    ) -> Option<identity_crypto::PrincipalId> {
+        let verifier = gait_identity::DirectVerifier::from_context(ctx).unwrap();
+        gait_identity::ProvenanceVerifier::verify_direct(&verifier, ev, session)
     }
 
     #[test]
@@ -245,6 +251,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let gait_dir = dir.path();
         init_parent(gait_dir, "parent1");
+        let (_agent, ctx) = identity_fixture();
 
         let c = Completion {
             payload: crate::proto::events::agent_update(
@@ -257,21 +264,70 @@ mod tests {
             idempotency_key: "child1-evt1".to_string(),
         };
         let repos = crate::git::Repos::production();
-        let outcome = notify_parent(gait_dir, &repos, "parent1", &c);
+        let outcome = notify_parent(gait_dir, &repos, "parent1", &c, Some(&ctx), &wall_clock);
         assert!(matches!(outcome, NotifyOutcome::Woke(_)));
 
         let tx_path = crate::session::live::log_path(gait_dir, "parent1");
         let events = crate::proto::wire::read_events(&tx_path).unwrap();
         let appended = events.last().unwrap();
-        let provenance = appended
-            .provenance
-            .first()
-            .expect("notify_parent must stamp provenance");
-        assert!(gait_identity::verify_provenance(
-            provenance,
-            &appended.content_hash
-        ));
-        assert_eq!(provenance.scheme, gait_identity::KeyScheme::Ed25519 as i32);
+        assert_eq!(
+            verify_as(&ctx, appended, "parent1"),
+            Some(ctx.agent_id().clone()),
+            "the appended completion must verify as this agent for the parent session"
+        );
+    }
+
+    #[test]
+    fn notify_parent_signs_with_audience_of_the_parent_session() {
+        let dir = TempDir::new().unwrap();
+        let gait_dir = dir.path();
+        init_parent(gait_dir, "parent-aud");
+        let (_agent, ctx) = identity_fixture();
+
+        let c = agent_completion("child-aud", "done", "audience check");
+        let repos = crate::git::Repos::production();
+        let outcome = notify_parent(gait_dir, &repos, "parent-aud", &c, Some(&ctx), &wall_clock);
+        assert!(matches!(outcome, NotifyOutcome::Woke(_)), "got {outcome:?}");
+
+        let tx_path = crate::session::live::log_path(gait_dir, "parent-aud");
+        let events = crate::proto::wire::read_events(&tx_path).unwrap();
+        let appended = events.last().unwrap();
+        assert_eq!(
+            verify_as(&ctx, appended, "parent-aud"),
+            Some(ctx.agent_id().clone()),
+            "the signature must be bound to the parent session"
+        );
+        assert_eq!(
+            verify_as(&ctx, appended, "some-other-session"),
+            None,
+            "a completion signed for one parent must not verify for another session"
+        );
+    }
+
+    #[test]
+    fn notify_parent_returns_no_parent_without_agent_dir() {
+        let dir = TempDir::new().unwrap();
+        let gait_dir = dir.path();
+        init_parent(gait_dir, "parent-noid");
+
+        let c = agent_completion("child-noid", "done", "no identity");
+        let repos = crate::git::Repos::production();
+        let outcome = notify_parent(gait_dir, &repos, "parent-noid", &c, None, &wall_clock);
+        assert!(
+            matches!(outcome, NotifyOutcome::NoParent),
+            "without an agent identity the completion must fail hard, got {outcome:?}"
+        );
+
+        let tx_path = crate::session::live::log_path(gait_dir, "parent-noid");
+        let appended = if tx_path.exists() {
+            crate::proto::wire::read_events(&tx_path).unwrap()
+        } else {
+            Vec::new()
+        };
+        assert!(
+            appended.is_empty(),
+            "nothing may be appended to the parent log without a signing identity"
+        );
     }
 
     fn daemon_completion(name: &str, exit_code: i32, status: &str, log_path: &str) -> Completion {
@@ -303,10 +359,11 @@ mod tests {
     #[test]
     fn idle_parent_gets_event_and_wake() {
         let gd = TempDir::new().unwrap();
+        let (_agent, ctx) = identity_fixture();
         init_parent(gd.path(), "sparent");
         let repos = crate::git::Repos::production();
         let c = daemon_completion("build", 0, "done", "/tmp/build.log");
-        let outcome = notify_parent(gd.path(), &repos, "sparent", &c);
+        let outcome = notify_parent(gd.path(), &repos, "sparent", &c, Some(&ctx), &wall_clock);
         assert!(
             matches!(outcome, NotifyOutcome::Woke(_)),
             "expected Woke, got {outcome:?}"
@@ -322,6 +379,7 @@ mod tests {
     #[test]
     fn busy_parent_is_left_alone() {
         let gd = TempDir::new().unwrap();
+        let (_agent, ctx) = identity_fixture();
         init_parent(gd.path(), "sbusy");
         // Hold the lock to simulate a live turn.
         let _held = crate::session::SessionLock::acquire(&crate::session::live::worktree_dir(
@@ -331,7 +389,7 @@ mod tests {
         .unwrap();
         let repos = crate::git::Repos::production();
         let c = daemon_completion("x", 0, "done", "/tmp/x.log");
-        let outcome = notify_parent(gd.path(), &repos, "sbusy", &c);
+        let outcome = notify_parent(gd.path(), &repos, "sbusy", &c, Some(&ctx), &wall_clock);
         assert!(
             matches!(outcome, NotifyOutcome::ParentBusy),
             "expected ParentBusy, got {outcome:?}"
@@ -341,9 +399,10 @@ mod tests {
     #[test]
     fn missing_parent_returns_no_parent() {
         let gd = TempDir::new().unwrap();
+        let (_agent, ctx) = identity_fixture();
         let repos = crate::git::Repos::production();
         let c = daemon_completion("x", 0, "done", "/tmp/x.log");
-        let outcome = notify_parent(gd.path(), &repos, "does_not_exist", &c);
+        let outcome = notify_parent(gd.path(), &repos, "does_not_exist", &c, Some(&ctx), &wall_clock);
         assert!(
             matches!(outcome, NotifyOutcome::NoParent),
             "expected NoParent, got {outcome:?}"
@@ -353,13 +412,14 @@ mod tests {
     #[test]
     fn second_notify_for_same_completion_returns_already_surfaced() {
         let gd = TempDir::new().unwrap();
+        let (_agent, ctx) = identity_fixture();
         init_parent(gd.path(), "sdup");
         let repos = crate::git::Repos::production();
         let c = daemon_completion("build", 0, "done", "/tmp/build.log");
-        let first = notify_parent(gd.path(), &repos, "sdup", &c);
+        let first = notify_parent(gd.path(), &repos, "sdup", &c, Some(&ctx), &wall_clock);
         assert!(matches!(first, NotifyOutcome::Woke(_)), "got {first:?}");
         // Second call for the same completion must dedup, not double-write/wake.
-        let second = notify_parent(gd.path(), &repos, "sdup", &c);
+        let second = notify_parent(gd.path(), &repos, "sdup", &c, Some(&ctx), &wall_clock);
         assert!(
             matches!(second, NotifyOutcome::AlreadySurfaced),
             "expected AlreadySurfaced, got {second:?}"
@@ -374,7 +434,7 @@ mod tests {
     #[test]
     fn agent_completion_commit_has_subagent_session_and_status_trailers() {
         let gd = TempDir::new().unwrap();
-        gait_identity::Keyring::generate().save(gd.path()).unwrap();
+        let (_agent, ctx) = identity_fixture();
         crate::git::Repos::production()
             .traces
             .init_workspace(gd.path())
@@ -385,7 +445,7 @@ mod tests {
             .unwrap();
         let repos = crate::git::Repos::production();
         let c = agent_completion("schild99", "done", "finished the task");
-        let outcome = notify_parent(gd.path(), &repos, "sparent2", &c);
+        let outcome = notify_parent(gd.path(), &repos, "sparent2", &c, Some(&ctx), &wall_clock);
         assert!(matches!(outcome, NotifyOutcome::Woke(_)), "got {outcome:?}");
 
         let parent_dir = crate::session::live::worktree_dir(gd.path(), "sparent2");
@@ -406,7 +466,7 @@ mod tests {
     #[test]
     fn daemon_completion_commit_has_no_subagent_session_trailer() {
         let gd = TempDir::new().unwrap();
-        gait_identity::Keyring::generate().save(gd.path()).unwrap();
+        let (_agent, ctx) = identity_fixture();
         crate::git::Repos::production()
             .traces
             .init_workspace(gd.path())
@@ -417,7 +477,7 @@ mod tests {
             .unwrap();
         let repos = crate::git::Repos::production();
         let c = daemon_completion("build", 0, "done", "/tmp/build.log");
-        let outcome = notify_parent(gd.path(), &repos, "sparent3", &c);
+        let outcome = notify_parent(gd.path(), &repos, "sparent3", &c, Some(&ctx), &wall_clock);
         assert!(matches!(outcome, NotifyOutcome::Woke(_)), "got {outcome:?}");
 
         let parent_dir = crate::session::live::worktree_dir(gd.path(), "sparent3");
