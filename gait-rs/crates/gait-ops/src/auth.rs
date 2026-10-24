@@ -5,8 +5,12 @@
 //! hits `models.dev` (with disk-cache fallback); the pure `filter_models`
 //! helper stays in gait-core and we just delegate here.
 use crate::OpError;
+use gait_auth::signin::{ChatGptSignIn, SIGNIN_PROVIDER_ID};
 use gait_auth::sources::codex::{CodexAuthSource, CODEX_SOURCE_ID};
-use gait_auth::{AuthMethod, AuthSource};
+use gait_auth::store::CredentialStore;
+use gait_auth::{
+    AuthContext, AuthMethod, AuthSource, LoginCompletion, LoginFlow, ResolvedCredential,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -30,6 +34,159 @@ pub struct AuthWriteOutcome {
 #[derive(Debug, Clone)]
 pub struct AuthRemoveOutcome {
     pub provider: String,
+}
+
+/// The non-secret result of beginning a browser login.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoginStart {
+    pub provider: String,
+    pub authorization_url: String,
+    pub expires_in_seconds: u64,
+}
+
+/// The non-secret result of signing out a subscription provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogoutOutcome {
+    pub provider: String,
+    pub revoked: bool,
+}
+
+const LOGIN_TTL_SECONDS: u64 = 600;
+
+/// Return the auth method owned by this ops layer, if any.
+pub fn auth_method_for(provider_id: &str) -> Option<Box<dyn AuthMethod>> {
+    (provider_id == SIGNIN_PROVIDER_ID)
+        .then(|| Box::new(ChatGptSignIn::new()) as Box<dyn AuthMethod>)
+}
+
+fn map_auth_error(error: gait_auth::AuthError) -> OpError {
+    match error {
+        gait_auth::AuthError::Retryable(message) => OpError::Other(anyhow::anyhow!(message)),
+        gait_auth::AuthError::LoginRequired(message) => {
+            let message = if message.contains("gait auth login") {
+                message
+            } else {
+                "run: gait auth login openai-signin".to_string()
+            };
+            OpError::Conflict(message)
+        }
+        other => OpError::Other(anyhow::anyhow!(other)),
+    }
+}
+
+fn write_outcome(
+    provider: &str,
+    credential: ResolvedCredential,
+) -> Result<AuthWriteOutcome, OpError> {
+    let ResolvedCredential::Subscription(subscription) = credential else {
+        return Err(OpError::Other(anyhow::anyhow!(
+            "sign-in returned an API key credential"
+        )));
+    };
+    let display = subscription
+        .account_label
+        .as_ref()
+        .map(|label| format!("subscription ({label})"))
+        .unwrap_or_else(|| "subscription".to_string());
+    Ok(AuthWriteOutcome {
+        provider: provider.to_string(),
+        display,
+    })
+}
+
+pub async fn login_begin_with(
+    method: &dyn AuthMethod,
+    store: &dyn CredentialStore,
+    provider: &str,
+) -> Result<LoginStart, OpError> {
+    let flow = method
+        .begin_login_with(provider, &AuthContext { store })
+        .await
+        .map_err(map_auth_error)?;
+    let LoginFlow::Browser { authorization_url } = flow else {
+        return Err(OpError::Other(anyhow::anyhow!(
+            "authentication method did not start a browser login"
+        )));
+    };
+    Ok(LoginStart {
+        provider: provider.to_string(),
+        authorization_url,
+        expires_in_seconds: LOGIN_TTL_SECONDS,
+    })
+}
+
+pub async fn login_complete_with(
+    method: &dyn AuthMethod,
+    store: &dyn CredentialStore,
+    provider: &str,
+    callback_url: String,
+) -> Result<AuthWriteOutcome, OpError> {
+    let credential = method
+        .complete_login_with(
+            provider,
+            LoginCompletion::CallbackUrl(callback_url),
+            &AuthContext { store },
+        )
+        .await
+        .map_err(map_auth_error)?;
+    write_outcome(provider, credential)
+}
+
+pub async fn ensure_fresh_with(
+    method: &dyn AuthMethod,
+    store: &dyn CredentialStore,
+    provider: &str,
+) -> Result<ResolvedCredential, OpError> {
+    method
+        .ensure_fresh(provider, &AuthContext { store })
+        .await
+        .map_err(map_auth_error)
+}
+
+pub async fn logout_signin_with(
+    method: &dyn AuthMethod,
+    store: &dyn CredentialStore,
+    forget: bool,
+) -> Result<LogoutOutcome, OpError> {
+    let report = method
+        .logout_with(SIGNIN_PROVIDER_ID, forget, &AuthContext { store })
+        .await
+        .map_err(map_auth_error)?;
+    Ok(LogoutOutcome {
+        provider: SIGNIN_PROVIDER_ID.to_string(),
+        revoked: report.revoked,
+    })
+}
+
+pub async fn login_begin(provider: &str) -> Result<LoginStart, OpError> {
+    let method = ChatGptSignIn::new();
+    let store = gait_state::auth_store::FileCredentialStore::resolve()
+        .map_err(|error| OpError::Other(anyhow::anyhow!(error)))?;
+    login_begin_with(&method, &store, provider).await
+}
+
+pub async fn login_complete(
+    provider: &str,
+    callback_url: String,
+) -> Result<AuthWriteOutcome, OpError> {
+    let method = ChatGptSignIn::new();
+    let store = gait_state::auth_store::FileCredentialStore::resolve()
+        .map_err(|error| OpError::Other(anyhow::anyhow!(error)))?;
+    login_complete_with(&method, &store, provider, callback_url).await
+}
+
+pub async fn ensure_fresh(provider: &str) -> Result<ResolvedCredential, OpError> {
+    let method = ChatGptSignIn::new();
+    let store = gait_state::auth_store::FileCredentialStore::resolve()
+        .map_err(|error| OpError::Other(anyhow::anyhow!(error)))?;
+    ensure_fresh_with(&method, &store, provider).await
+}
+
+pub async fn logout_signin(forget: bool) -> Result<LogoutOutcome, OpError> {
+    let method = ChatGptSignIn::new();
+    let store = gait_state::auth_store::FileCredentialStore::resolve()
+        .map_err(|error| OpError::Other(anyhow::anyhow!(error)))?;
+    logout_signin_with(&method, &store, forget).await
 }
 
 /// Bind a provider to an external credential owner without copying secrets.
@@ -123,7 +280,21 @@ pub fn remove(provider: &str) -> Result<AuthRemoveOutcome, OpError> {
     if provider.is_empty() {
         return Err(OpError::Conflict("provider name is required".to_string()));
     }
-    gait_state::auth::remove_api_key(provider).map_err(|e| OpError::Other(e.into()))?;
+    if provider == SIGNIN_PROVIDER_ID {
+        return Err(OpError::Conflict(
+            "openai-signin is managed by ChatGPT sign-in; run `gait auth logout openai-signin --forget`"
+                .to_string(),
+        ));
+    }
+    gait_state::auth::remove_api_key(provider).map_err(|error| match error {
+        gait_state::auth::AuthError::ManagedElsewhere(_) if provider == SIGNIN_PROVIDER_ID => {
+            OpError::Conflict(
+                "openai-signin is managed by ChatGPT sign-in; run `gait auth logout openai-signin --forget`"
+                    .to_string(),
+            )
+        }
+        error => OpError::Other(error.into()),
+    })?;
     Ok(AuthRemoveOutcome {
         provider: provider.to_string(),
     })
@@ -251,9 +422,200 @@ pub async fn models(filter: Option<&str>) -> Result<ModelsOutcome, OpError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gait_auth::signin::Endpoints;
+    use gait_auth::store::CredentialStore;
+    use gait_auth::testing::{fake_jwt, StubServer};
+    use gait_state::auth_store::FileCredentialStore;
+    use std::sync::Arc;
 
     fn op_err_conflict(err: OpError) -> bool {
         matches!(err, OpError::Conflict(_))
+    }
+
+    fn test_method(server: &StubServer) -> ChatGptSignIn {
+        let base = server.base_url();
+        ChatGptSignIn::for_tests(
+            Endpoints {
+                authorize: format!("{base}/authorize"),
+                token: format!("{base}/token"),
+                revoke: format!("{base}/revoke"),
+            },
+            Arc::new(|| 100),
+        )
+    }
+
+    fn store(dir: &tempfile::TempDir) -> FileCredentialStore {
+        FileCredentialStore::new(dir.path().join("auth.json"))
+    }
+
+    async fn pending(store: &FileCredentialStore) -> gait_auth::store::PendingLogin {
+        store
+            .lock()
+            .await
+            .unwrap()
+            .peek_pending(SIGNIN_PROVIDER_ID)
+            .unwrap()
+            .unwrap()
+    }
+
+    fn fresh(dir: &tempfile::TempDir) -> FileCredentialStore {
+        FileCredentialStore::new(dir.path().join("auth.json"))
+    }
+
+    fn callback(p: &gait_auth::store::PendingLogin, client: &str) -> String {
+        format!(
+            "{}?state={}&code=code&client_id={}",
+            p.redirect_uri, p.state, client
+        )
+    }
+
+    #[test]
+    fn auth_method_for_only_knows_signin() {
+        assert!(auth_method_for(SIGNIN_PROVIDER_ID).is_some());
+        assert!(auth_method_for("openai-codex").is_none());
+        assert!(auth_method_for("unknown").is_none());
+    }
+
+    #[tokio::test]
+    async fn login_begin_returns_url_and_stores_pending() {
+        let server = StubServer::new().await;
+        let method = test_method(&server);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        let store = FileCredentialStore::new(path.clone());
+        let result = login_begin_with(&method, &store, SIGNIN_PROVIDER_ID)
+            .await
+            .unwrap();
+        assert_eq!(result.provider, SIGNIN_PROVIDER_ID);
+        assert!(result
+            .authorization_url
+            .starts_with(&format!("{}/authorize?", server.base_url())));
+        assert_eq!(result.expires_in_seconds, 600);
+        let p = fresh(&dir)
+            .lock()
+            .await
+            .unwrap()
+            .peek_pending(SIGNIN_PROVIDER_ID)
+            .unwrap()
+            .unwrap();
+        assert!(result.authorization_url.contains(&p.state));
+        assert!(path.exists());
+    }
+
+    #[tokio::test]
+    async fn login_roundtrip_begin_then_complete() {
+        let server = StubServer::new().await;
+        let method = test_method(&server);
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let _ = login_begin_with(&method, &store, SIGNIN_PROVIDER_ID)
+            .await
+            .unwrap();
+        let p = pending(&store).await;
+        let id = fake_jwt(
+            serde_json::json!({"iss":"https://auth.openai.com","aud":"oaiapp_test","exp":5000,"nonce":p.nonce,"sub":"subject","email":"user@example.com"}),
+        );
+        server.respond("/token", 200, serde_json::json!({"access_token":"access","id_token":id,"refresh_token":"refresh","expires_in":3600,"scope":"openid chatgpt.tokens.use.direct"}).to_string());
+        let out = login_complete_with(
+            &method,
+            &store,
+            SIGNIN_PROVIDER_ID,
+            callback(&p, "oaiapp_test"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.provider, SIGNIN_PROVIDER_ID);
+        assert!(server
+            .requests()
+            .iter()
+            .any(|r| r.path == "/token" && r.body.contains("grant_type=authorization_code")));
+        let saved = fresh(&dir)
+            .lock()
+            .await
+            .unwrap()
+            .read(SIGNIN_PROVIDER_ID)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.account_label.as_deref(), Some("user@example.com"));
+        assert!(saved.secret["tokens"]["access_token"] == "access");
+    }
+
+    #[tokio::test]
+    async fn ensure_fresh_with_refreshes_expired_token() {
+        let server = StubServer::new().await;
+        let method = test_method(&server);
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let mut g = store.lock().await.unwrap();
+        let cred = gait_auth::SubscriptionCredential {
+            provider_id: SIGNIN_PROVIDER_ID.into(),
+            method_id: "chatgpt-signin".into(),
+            version: 1,
+            expires_at_unix_s: Some(101),
+            account_label: Some("user".into()),
+            secret: serde_json::json!({"client_id":"oaiapp_x","host_id":"urn:uuid:h","subject":"subject","tokens":{"access_token":"old","refresh_token":"refresh","id_token":"old-id","scopes":["chatgpt.tokens.use.direct"],"expires_at_unix_s":101,"earliest_refresh_at_unix_s":null}}),
+        };
+        g.write(SIGNIN_PROVIDER_ID, &cred).unwrap();
+        drop(g);
+        server.respond("/token", 200, serde_json::json!({"access_token":"new","id_token":fake_jwt(serde_json::json!({"iss":"https://auth.openai.com","aud":"oaiapp_x","exp":5000,"sub":"subject"})),"refresh_token":"rotated","expires_in":3600,"scope":"chatgpt.tokens.use.direct"}).to_string());
+        ensure_fresh_with(&method, &store, SIGNIN_PROVIDER_ID)
+            .await
+            .unwrap();
+        assert!(server
+            .requests()
+            .iter()
+            .any(|r| r.path == "/token" && r.body.contains("refresh_token=refresh")));
+        let saved = fresh(&dir)
+            .lock()
+            .await
+            .unwrap()
+            .read(SIGNIN_PROVIDER_ID)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.secret["tokens"]["access_token"], "new");
+        assert_eq!(saved.secret["tokens"]["refresh_token"], "rotated");
+    }
+
+    #[tokio::test]
+    async fn logout_with_reports_revoked_flag() {
+        let server = StubServer::new().await;
+        let method = test_method(&server);
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        let mut g = store.lock().await.unwrap();
+        let cred = gait_auth::SubscriptionCredential {
+            provider_id: SIGNIN_PROVIDER_ID.into(),
+            method_id: "chatgpt-signin".into(),
+            version: 1,
+            expires_at_unix_s: None,
+            account_label: None,
+            secret: serde_json::json!({"client_id":"oaiapp_x","host_id":"h","subject":"s","tokens":{"access_token":"a","refresh_token":"r","id_token":"i","scopes":[],"expires_at_unix_s":1,"earliest_refresh_at_unix_s":null}}),
+        };
+        g.write(SIGNIN_PROVIDER_ID, &cred).unwrap();
+        drop(g);
+        server.respond("/revoke", 200, "ok");
+        let out = logout_signin_with(&method, &store, false).await.unwrap();
+        assert!(out.revoked);
+        assert!(server
+            .requests()
+            .iter()
+            .any(|r| r.path == "/revoke" && r.body.contains("token=r")));
+        let saved = fresh(&dir)
+            .lock()
+            .await
+            .unwrap()
+            .read(SIGNIN_PROVIDER_ID)
+            .unwrap()
+            .unwrap();
+        assert!(saved.secret["tokens"].is_null());
+    }
+
+    #[test]
+    fn remove_signin_is_conflict_naming_forget() {
+        let error = remove(SIGNIN_PROVIDER_ID).unwrap_err();
+        assert!(
+            matches!(error, OpError::Conflict(message) if message.contains("gait auth logout openai-signin --forget"))
+        );
     }
 
     // -- add --
