@@ -1,17 +1,35 @@
 use clap::Parser;
 use gait_bin::{Cli, Commands};
+use gait_identity::IdentityContext;
 use std::path::PathBuf;
 
 fn cwd_or_dot() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    // Process entry, still single-threaded: the tokio runtime is built only
+    // below, so the environment write for `--agent-dir` cannot race a thread.
+    // Children (brain, daemon-exit, run) inherit GAIT_AGENT_DIR from here.
+    let raw: Vec<String> = std::env::args().collect();
+    if let Ok(cli) = Cli::try_parse_from(&raw) {
+        gait_bin::apply_agent_dir_flag(&cli);
+    }
+    if let Err(error) = gait_bin::install_agent_identity(IdentityContext::from_env()) {
+        eprintln!("[gait] {error:#}");
+        std::process::exit(1);
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to start the tokio runtime")
+        .block_on(run(raw));
+}
+
+async fn run(raw: Vec<String>) {
     // Pre-check for IPC subcommands (__brain / __run-tool) before clap parsing.
     // These are spawned by the spine and must bypass the Commands enum to avoid
     // a crate DAG inversion (gait-core can't import from gait-bin).
-    let raw: Vec<String> = std::env::args().collect();
     if raw.get(1).map(String::as_str) == Some("__local-runner") {
         #[cfg(feature = "local")]
         {
@@ -160,7 +178,6 @@ async fn main() {
             }
         }
         Commands::Init(args) => gait_cli::cli::init::cmd_init(args),
-        Commands::Identity(args) => gait_cli::cli::identity::cmd_identity(args),
         Commands::Link(args) => gait_cli::cli::link::cmd_link(args),
         Commands::Sessions(args) => gait_cli::cli::session::cmd_sessions(args),
         Commands::Ps(args) => gait_cli::cli::session::cmd_ps(args),

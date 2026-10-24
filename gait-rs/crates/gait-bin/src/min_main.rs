@@ -12,6 +12,13 @@ async fn main() {
     // parsing, same DAG reason as full `gait`'s main.rs (gait-core can't
     // import from gait-bin). `__local-runner` is intentionally absent here:
     // `gait-min` has no `local` feature wiring.
+    // Installed before any dispatch so role children (brain, daemon-exit) verify
+    // direct provenance the same way `gait` does.
+    let identity = gait_identity::IdentityContext::from_env();
+    if let Err(error) = gait_bin::install_agent_identity(identity) {
+        eprintln!("[gait] {error:#}");
+        std::process::exit(1);
+    }
     let raw: Vec<String> = std::env::args().collect();
     if raw.len() >= 2 && gait_core::is_role_argv(&raw[1..]) {
         gait_core::__dispatch_role(&raw[1..]).await;

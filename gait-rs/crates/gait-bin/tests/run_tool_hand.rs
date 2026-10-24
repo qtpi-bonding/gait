@@ -347,7 +347,8 @@ fn detached_shell_keeps_its_inherited_session_tmpdir_after_hand_exit() {
     );
 
     for _ in 0..100 {
-        if marker.exists() {
+        // `exists()` can fire after the shell created the file but before it wrote it.
+        if std::fs::read_to_string(&marker).is_ok_and(|content| content == "detached-ok") {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));

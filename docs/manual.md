@@ -1,7 +1,7 @@
 ---
 name: gait-manual
 description: Explain how to use and configure Gait.
-manual-source-hash: 8b048e10cf1781caa79bd09706dece3d9ac558b3e6af3c2a4304aa0e418a65ef
+manual-source-hash: f21c9cbe2475dd7794c486b5e6bb9a49ca37dbebf92953ca14949b4d4bf0746d
 ---
 
 # Gait Manual
@@ -75,7 +75,6 @@ Usage: gait [OPTIONS] [TASK]
 Commands:
   manual
   init
-  identity
   link        Point the current directory at an existing gait workspace
   sessions
   ps
@@ -136,6 +135,8 @@ Options:
           Inline JSON structured output schema
       --allow-intree
           Override the in-tree safety guard (design §7): run even though the gait-dir is inside the codebase. The agent could then write to its own config/permissions/audit log — prefer `gait init ~/gait-home && gait link ~/gait-home` instead
+      --agent-dir <PATH>
+          Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns
   -h, --help
           Print help
   -V, --version
@@ -520,6 +521,11 @@ into the same turn so the model can fix it. The command is fixed at session star
 up from the current directory (`gait link` writes these), then the current directory.
 If no gait-dir is found, commands that need one exit 1 with `no gait dir: pass
 --gait-dir <path> or set $GAIT_DIR`.
+
+`--agent-dir <path>` names the agent identity directory whose keys sign direct events.
+It sets `GAIT_AGENT_DIR` for the process and every child it spawns, so brain and
+daemon-exit processes read the same identity. If the directory cannot be loaded, gait
+exits 1 at startup and names the directory.
 
 Most commands exit 0 on success and 1 on a user or runtime error. A clap usage error
 (for example a missing argument) exits 2.

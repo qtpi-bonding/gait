@@ -199,6 +199,11 @@ guides:
       If no gait-dir is found, commands that need one exit 1 with `no gait dir: pass
       --gait-dir <path> or set $GAIT_DIR`.
 
+      `--agent-dir <path>` names the agent identity directory whose keys sign direct events.
+      It sets `GAIT_AGENT_DIR` for the process and every child it spawns, so brain and
+      daemon-exit processes read the same identity. If the directory cannot be loaded, gait
+      exits 1 at startup and names the directory.
+
       Most commands exit 0 on success and 1 on a user or runtime error. A clap usage error
       (for example a missing argument) exits 2.
 

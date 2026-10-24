@@ -2,7 +2,6 @@ pub mod admin;
 pub mod args;
 pub mod daemons;
 pub mod exec;
-pub mod identity;
 pub mod init;
 pub mod link;
 pub mod run;

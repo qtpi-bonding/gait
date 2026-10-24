@@ -1,5 +1,9 @@
+use anyhow::Context;
 use clap::{ArgAction, CommandFactory, Parser, Subcommand};
+use gait_identity::{DirectVerifier, IdentityContext};
+use gait_state::session::retrace::install_process_verifier;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[cfg(feature = "local")]
 use gait_cli::cli::admin::LocalArgs;
@@ -83,6 +87,9 @@ pub struct Cli {
     /// link ~/gait-home` instead.
     #[arg(long)]
     pub allow_intree: bool,
+    /// Agent identity directory. Sets GAIT_AGENT_DIR for this process and every child it spawns.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub agent_dir: Option<PathBuf>,
 
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -92,7 +99,6 @@ pub struct Cli {
 pub enum Commands {
     Manual(manual::ManualArgs),
     Init(InitArgs),
-    Identity(gait_cli::cli::identity::IdentityArgs),
     Link(LinkArgs),
     Sessions(SessionsArgs),
     Ps(PsArgs),
@@ -127,4 +133,69 @@ pub enum Commands {
 
 pub fn cli() -> clap::Command {
     Cli::command()
+}
+
+/// Makes `--agent-dir` visible to this process and to every child it spawns by
+/// setting `GAIT_AGENT_DIR`. Call before any thread exists: the environment is
+/// only safe to mutate while the process is single-threaded.
+pub fn apply_agent_dir_flag(cli: &Cli) {
+    if let Some(dir) = &cli.agent_dir {
+        std::env::set_var("GAIT_AGENT_DIR", dir);
+    }
+}
+
+/// Installs the process-wide provenance verifier for the agent identity. No
+/// identity means nothing is installed. An identity directory that cannot be
+/// loaded is a startup error that names the directory, rather than a fold that
+/// silently verifies nothing.
+pub fn install_agent_identity(
+    identity: anyhow::Result<Option<IdentityContext>>,
+) -> anyhow::Result<()> {
+    let Some(ctx) = identity.context("GAIT_AGENT_DIR is set but cannot be loaded")? else {
+        return Ok(());
+    };
+    install_process_verifier(Arc::new(DirectVerifier::from_context(&ctx)?));
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_dir_flag_sets_gait_agent_dir_env() {
+        let value = format!("/nonexistent/gait-agent-dir-flag-{}", std::process::id());
+        let previous = std::env::var_os("GAIT_AGENT_DIR");
+        let cli = Cli::try_parse_from(["gait", "--agent-dir", value.as_str()]).unwrap();
+        apply_agent_dir_flag(&cli);
+        let observed = std::env::var_os("GAIT_AGENT_DIR");
+        match previous {
+            Some(v) => std::env::set_var("GAIT_AGENT_DIR", v),
+            None => std::env::remove_var("GAIT_AGENT_DIR"),
+        }
+        assert_eq!(observed.as_deref(), Some(std::ffi::OsStr::new(&value)));
+    }
+
+    #[test]
+    fn unloadable_agent_dir_is_a_clear_startup_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("no-such-agent");
+        let err = install_agent_identity(IdentityContext::new(&missing).map(Some)).unwrap_err();
+        let text = format!("{err:#}");
+        assert!(
+            text.contains(&missing.display().to_string()),
+            "the startup error names the directory: {text}"
+        );
+    }
+
+    #[test]
+    fn no_agent_identity_installs_nothing_and_succeeds() {
+        install_agent_identity(Ok(None)).unwrap();
+    }
+
+    #[test]
+    fn identity_subcommand_is_gone() {
+        assert!(Cli::try_parse_from(["gait", "identity", "self-proof"]).is_err());
+        assert!(!cli().get_subcommands().any(|c| c.get_name() == "identity"));
+    }
 }
