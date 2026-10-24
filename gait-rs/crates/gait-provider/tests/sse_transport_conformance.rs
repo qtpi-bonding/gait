@@ -3,6 +3,7 @@ use gait_auth::codex::CODEX_PROVIDER_ID;
 use gait_auth::SubscriptionCredential;
 use gait_provider::anthropic::AnthropicProvider;
 use gait_provider::codex::CodexResponsesProvider;
+use gait_provider::plan::PlanResponsesProvider;
 use gait_provider::openai::OpenAIProvider;
 use gait_provider::provider::{Provider, ProviderError, StreamChunk};
 use gait_provider::providers::Wire;
@@ -343,6 +344,17 @@ fn credential() -> SubscriptionCredential {
     }
 }
 
+fn plan_credential() -> SubscriptionCredential {
+    SubscriptionCredential {
+        provider_id: "openai-signin".into(),
+        method_id: "chatgpt-signin".into(),
+        version: 1,
+        expires_at_unix_s: None,
+        account_label: None,
+        secret: json!({"tokens": {"access_token": SECRET, "expires_at_unix_s": 0}}),
+    }
+}
+
 fn provider_for(wire: Wire, base_url: &str) -> Box<dyn Provider> {
     let transport = ProviderTransport::new(test_config()).expect("test transport");
     match wire {
@@ -367,6 +379,15 @@ fn provider_for(wire: Wire, base_url: &str) -> Box<dyn Provider> {
                 transport,
             )
             .expect("Codex provider"),
+        ),
+        Wire::ResponsesPlan => Box::new(
+            PlanResponsesProvider::new(
+                plan_credential(),
+                "gpt-test".into(),
+                Some(base_url.into()),
+                transport,
+            )
+            .expect("plan provider"),
         ),
     }
 }
@@ -514,6 +535,7 @@ fn complete_sse(wire: Wire) -> String {
         }
         Wire::OpenAI => "data: [DONE]\n\n".into(),
         Wire::CodexResponses => "event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n".into(),
+        Wire::ResponsesPlan => "event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n".into(),
     }
 }
 
@@ -522,6 +544,7 @@ fn partial_sse(wire: Wire) -> String {
         Wire::Anthropic => "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n".into(),
         Wire::OpenAI => "data: {\"choices\":[{\"delta\":{\"content\":\"hi\",\"tool_calls\":null,\"reasoning_content\":null},\"finish_reason\":null}],\"usage\":null}\n\n".into(),
         Wire::CodexResponses => "event: response.output_text.delta\ndata: {\"delta\":\"hi\"}\n\n".into(),
+        Wire::ResponsesPlan => "event: response.output_text.delta\ndata: {\"delta\":\"hi\"}\n\n".into(),
     }
 }
 

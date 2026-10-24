@@ -1,12 +1,17 @@
 use crate::anthropic::AnthropicProvider;
 use crate::codex::CodexResponsesProvider;
 use crate::openai::OpenAIProvider;
+use crate::plan::PlanResponsesProvider;
 use crate::provider::Provider;
 use crate::providers::{AuthMethod, ProviderSpec, Wire};
 use gait_auth::ResolvedCredential;
 
 pub(crate) fn transport_config_for(_wire: Wire) -> crate::transport::TransportConfig {
-    crate::transport::TransportConfig::default()
+    let mut config = crate::transport::TransportConfig::default();
+    if matches!(_wire, Wire::ResponsesPlan) {
+        config.retry_429 = false;
+    }
+    config
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -85,7 +90,11 @@ pub fn load_provider_with_credential_params_and_gait_dir(
     }
     let spec = crate::providers::lookup(&provider_id)
         .ok_or_else(|| FactoryError::UnknownProvider(provider_id.clone()))?;
-    let base = base_url_override(&provider_id).or_else(|| spec.base_url.map(String::from));
+    let base = if spec.wire == Wire::ResponsesPlan {
+        spec.base_url.map(String::from)
+    } else {
+        base_url_override(&provider_id).or_else(|| spec.base_url.map(String::from))
+    };
     let transport = crate::transport::ProviderTransport::new(transport_config_for(spec.wire))
         .map_err(FactoryError::Transport)?;
 
@@ -104,6 +113,10 @@ pub fn load_provider_with_credential_params_and_gait_dir(
                     "CodexResponses wire must use AuthMethod::Subscription (provider '{}')",
                     spec.id
                 ),
+                Wire::ResponsesPlan => unreachable!(
+                    "ResponsesPlan wire must use AuthMethod::Subscription (provider '{}')",
+                    spec.id
+                ),
             })
         }
         AuthMethod::Subscription => {
@@ -114,6 +127,11 @@ pub fn load_provider_with_credential_params_and_gait_dir(
             match spec.wire {
                 Wire::CodexResponses => {
                     CodexResponsesProvider::new(subscription, model_id, base, transport)
+                        .map(|provider| Box::new(provider) as Box<dyn Provider>)
+                        .map_err(FactoryError::InvalidCredential)
+                }
+                Wire::ResponsesPlan => {
+                    PlanResponsesProvider::new(subscription, model_id, base, transport)
                         .map(|provider| Box::new(provider) as Box<dyn Provider>)
                         .map_err(FactoryError::InvalidCredential)
                 }
@@ -210,6 +228,7 @@ fn parse_model_string(s: &str) -> Result<(String, String), FactoryError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::lookup;
 
     #[test]
     fn parse_valid_model_string() {
@@ -315,5 +334,71 @@ mod tests {
     fn base_url_env_override_absent_returns_none() {
         std::env::remove_var("NOTAPROVIDER_BASE_URL");
         assert_eq!(base_url_override("notaprovider"), None);
+    }
+
+    #[test]
+    fn transport_config_for_only_disables_429_retry_for_responses_plan() {
+        let default = crate::transport::TransportConfig::default();
+        for wire in Wire::ALL {
+            let config = transport_config_for(*wire);
+            assert_eq!(config.connect_timeout, default.connect_timeout);
+            assert_eq!(config.ttfb_timeout, default.ttfb_timeout);
+            assert_eq!(config.idle_timeout, default.idle_timeout);
+            assert_eq!(config.absolute_cap, default.absolute_cap);
+            assert_eq!(config.json_timeout, default.json_timeout);
+            assert_eq!(config.max_attempts, default.max_attempts);
+            assert_eq!(config.initial_backoff, default.initial_backoff);
+            assert_eq!(config.max_backoff, default.max_backoff);
+            assert_eq!(*wire == Wire::ResponsesPlan, !config.retry_429);
+        }
+    }
+
+    struct EnvGuard(&'static str);
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe { std::env::remove_var(self.0) };
+        }
+    }
+
+    #[test]
+    fn env_base_url_override_is_ignored() {
+        let variable = "GAIT_TEST_ENV_BASE_URL_OVERRIDE_IGNORED_8";
+        unsafe { std::env::set_var(variable, "http://127.0.0.1:9/not-used") };
+        let _guard = EnvGuard(variable);
+        let credential = gait_auth::SubscriptionCredential {
+            provider_id: gait_auth::signin::SIGNIN_PROVIDER_ID.into(),
+            method_id: gait_auth::signin::SIGNIN_METHOD_ID.into(),
+            version: 1,
+            expires_at_unix_s: None,
+            account_label: None,
+            secret: serde_json::json!({"tokens":{"access_token":"access","expires_at_unix_s":1}}),
+        };
+        let provider = load_provider_with_credential(
+            "openai-signin/model",
+            Some(gait_auth::ResolvedCredential::Subscription(credential)),
+        )
+        .expect("sign-in provider");
+        assert_eq!(provider.model_id(), "model");
+        assert_eq!(
+            lookup("openai-signin").and_then(|spec| spec.base_url),
+            Some("https://api.openai.com/v1")
+        );
+        assert_eq!(base_url_override("openai-signin"), None);
+    }
+
+    #[test]
+    fn api_key_credential_for_signin_is_rejected_by_factory() {
+        let result = load_provider_with_credential(
+            "openai-signin/model",
+            Some(gait_auth::ResolvedCredential::ApiKey("api-key".into())),
+        );
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("API keys cannot satisfy sign-in"),
+        };
+        assert!(
+            matches!(error, FactoryError::MissingSubscription(provider) if provider == "openai-signin")
+        );
     }
 }
