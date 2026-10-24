@@ -184,12 +184,14 @@ impl ProviderTransport {
     }
 }
 
+const MAX_REQUEST_ID_BYTES: usize = 128;
+
 fn request_id(response: &reqwest::Response) -> Option<String> {
     response
         .headers()
         .get("x-request-id")
         .and_then(|value| value.to_str().ok())
-        .map(str::to_owned)
+        .map(|value| truncate_utf8(value.to_owned(), MAX_REQUEST_ID_BYTES))
 }
 
 fn sensitive_values(headers: &HeaderMap) -> Vec<String> {
@@ -531,8 +533,44 @@ mod tests {
     use crate::provider::{ProviderError, TimeoutPhase};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use tokio::io::AsyncWriteExt;
-    use tokio::net::TcpListener;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    /// Reads one request head plus any Content-Length body before the stub
+    /// answers. Closing a socket with unread request bytes can send an RST that
+    /// discards the client's response, so the stub drains the request first.
+    async fn read_request(socket: &mut TcpStream) {
+        const MAX_REQUEST_BYTES: usize = 64 * 1024;
+        let mut bytes = Vec::new();
+        let mut chunk = [0u8; 1024];
+        let mut expected_len: Option<usize> = None;
+        loop {
+            let read = socket.read(&mut chunk).await.expect("read request");
+            if read == 0 || bytes.len() >= MAX_REQUEST_BYTES {
+                break;
+            }
+            bytes.extend_from_slice(&chunk[..read]);
+            if expected_len.is_none() {
+                if let Some(head_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n")
+                {
+                    let head = String::from_utf8_lossy(&bytes[..head_end]);
+                    let content_len = head
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    expected_len = Some(head_end + 4 + content_len);
+                }
+            }
+            if expected_len.is_some_and(|expected| bytes.len() >= expected) {
+                break;
+            }
+        }
+    }
 
     async fn http_error_server(
         status: u16,
@@ -549,6 +587,7 @@ mod tests {
         let task = tokio::spawn(async move {
             for _ in 0..expected_requests {
                 let (mut socket, _) = listener.accept().await.expect("accept request");
+                read_request(&mut socket).await;
                 observed.fetch_add(1, Ordering::SeqCst);
                 let request_header = request_id
                     .as_deref()
@@ -665,6 +704,25 @@ mod tests {
         match error {
             ProviderError::Http { request_id, .. } => assert_eq!(request_id, None),
             other => panic!("expected HTTP error, got {other:?}"),
+        }
+        server.await.expect("stub server");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn request_id_is_truncated_to_128_bytes() {
+        let long_id = "r".repeat(300);
+        let (url, count, server) = http_error_server(400, Some(&long_id), 1).await;
+        let error = match stream_error(tiny_retry_config(true), url).await {
+            Err(error) => error,
+            Ok(_) => panic!("400 must be returned"),
+        };
+        match error {
+            ProviderError::Http {
+                request_id: Some(request_id),
+                ..
+            } => assert!(request_id.len() <= 128, "len was {}", request_id.len()),
+            other => panic!("expected HTTP error with request id, got {other:?}"),
         }
         server.await.expect("stub server");
         assert_eq!(count.load(Ordering::SeqCst), 1);
