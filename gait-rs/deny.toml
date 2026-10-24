@@ -22,3 +22,35 @@ allow = [
     "Unlicense",
 ]
 confidence-threshold = 0.8
+
+# qtpi-bonding git crates declare no licence (gp decision 2026-10-24).
+# Narrow on purpose: these exact crates only, each clarified to a LicenseRef
+# that is allowed for that crate alone. Nothing new is added to `allow` above.
+# To drop an entry, delete both its clarify and its exception when the crate
+# gains a licence field upstream.
+[[licenses.clarify]]
+crate = "identity-crypto"
+expression = "LicenseRef-qtpi-unlicensed"
+license-files = []
+
+[[licenses.clarify]]
+crate = "identity-keyfile"
+expression = "LicenseRef-qtpi-unlicensed"
+license-files = []
+
+[[licenses.clarify]]
+crate = "message-attestation"
+expression = "LicenseRef-qtpi-unlicensed"
+license-files = []
+
+[[licenses.exceptions]]
+crate = "identity-crypto"
+allow = ["LicenseRef-qtpi-unlicensed"]
+
+[[licenses.exceptions]]
+crate = "identity-keyfile"
+allow = ["LicenseRef-qtpi-unlicensed"]
+
+[[licenses.exceptions]]
+crate = "message-attestation"
+allow = ["LicenseRef-qtpi-unlicensed"]

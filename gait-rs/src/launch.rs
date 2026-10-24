@@ -320,6 +320,10 @@ pub struct DaemonExitLaunch {
     pub gait_dir: PathBuf,
     pub session: String,
     pub name: String,
+    /// The agent identity directory, handed to the hook as `GAIT_AGENT_DIR`.
+    /// It is set only as a per-command assignment on the hook invocation, never
+    /// exported into the shell, so the user's command does not see it.
+    pub agent_dir: Option<PathBuf>,
 }
 
 impl DaemonExitLaunch {
@@ -354,9 +358,17 @@ impl DaemonExitLaunch {
             }
             argv_str.push(' ');
         }
+        let env_prefix = match &self.agent_dir {
+            Some(dir) => format!(
+                "GAIT_AGENT_DIR={} ",
+                shell_quote(&dir.to_string_lossy())
+            ),
+            None => String::new(),
+        };
         format!(
-            "{user}\n__ec=$?\n{exe} __daemon-exit {argv}--exit $__ec\n",
+            "{user}\n__ec=$?\n{env_prefix}{exe} __daemon-exit {argv}--exit $__ec\n",
             user = user_cmd,
+            env_prefix = env_prefix,
             exe = shell_quote(exe),
             argv = argv_str,
         )
@@ -457,6 +469,7 @@ mod tests {
             gait_dir: PathBuf::from("/gd"),
             session: "parent1".to_string(),
             name: "daemon-abcd1234".to_string(),
+            agent_dir: None,
         };
         let mut argv = launch.to_argv_prefix();
         argv.extend(["--exit".to_string(), "0".to_string()]);
@@ -474,6 +487,7 @@ mod tests {
             gait_dir: PathBuf::from("/tmp/my gait dir"),
             session: "session with spaces".to_string(),
             name: "it's-a-daemon".to_string(),
+            agent_dir: None,
         };
         let fragment = launch.to_shell_fragment("/usr/local/bin/gait", "echo hi");
 
@@ -520,5 +534,39 @@ mod tests {
                 "it's-a-daemon",
             ]
         );
+    }
+
+    #[test]
+    fn daemon_exit_fragment_passes_agent_dir_only_to_the_hook() {
+        let launch = DaemonExitLaunch {
+            gait_dir: PathBuf::from("/gd"),
+            session: "parent1".to_string(),
+            name: "t".to_string(),
+            agent_dir: Some(PathBuf::from("/home/u/agent dir")),
+        };
+        let fragment = launch.to_shell_fragment("/usr/local/bin/gait", "echo hi");
+        let lines: Vec<&str> = fragment.lines().collect();
+        assert_eq!(lines[0], "echo hi");
+        assert_eq!(lines[1], "__ec=$?");
+        // The assignment prefixes the hook invocation only.
+        assert!(lines[2].starts_with("GAIT_AGENT_DIR='/home/u/agent dir' '/usr/local/bin/gait' __daemon-exit "));
+        assert!(lines[2].ends_with("--exit $__ec"));
+        // Not exported, and not on the user's command line.
+        assert!(!fragment.contains("export "));
+        assert!(!lines[0].contains("GAIT_AGENT_DIR"));
+        assert_eq!(fragment.matches("GAIT_AGENT_DIR").count(), 1);
+    }
+
+    #[test]
+    fn daemon_exit_fragment_without_agent_dir_is_unchanged() {
+        let launch = DaemonExitLaunch {
+            gait_dir: PathBuf::from("/gd"),
+            session: "parent1".to_string(),
+            name: "t".to_string(),
+            agent_dir: None,
+        };
+        let fragment = launch.to_shell_fragment("/usr/local/bin/gait", "echo hi");
+        let expected = "echo hi\n__ec=$?\n'/usr/local/bin/gait' __daemon-exit --gait-dir '/gd' --session 'parent1' --name 't' --exit $__ec\n";
+        assert_eq!(fragment, expected);
     }
 }

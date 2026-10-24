@@ -847,8 +847,7 @@ mod tests {
 
     #[test]
     fn user_text_carries_content() {
-        // `from` was removed — sender attribution now lives on Event.provenance
-        // (see append_with_provenance / Provenance), not on UserText itself.
+        // Sender attribution lives on Event.provenance, not on UserText itself.
         let body = user_text("hi".into());
         match kind_of(&body) {
             pb::payload::Kind::UserText(u) => {

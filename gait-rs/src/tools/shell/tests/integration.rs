@@ -1219,11 +1219,16 @@ async fn detached_daemon_wakes_idle_parent_on_exit() {
     // 1. Real gait_dir (TempDir) + a real parent session dir inside it.
     let gd = TempDir::new().unwrap();
     let parent_id = "swake001";
-    // `notify_parent` signs the completion before appending it. The
-    // `__daemon-exit` child reads the agent identity from GAIT_AGENT_DIR, so this
-    // test publishes one, and the wake path is exercised rather than the
-    // no-identity fallback.
-    crate::test_utils::publish_agent_identity();
+    // `notify_parent` signs the completion before appending it, so the tool
+    // carries a real agent identity. The `__daemon-exit` hook receives it as a
+    // per-command GAIT_AGENT_DIR from the wrapper, so the wake path is exercised
+    // rather than the no-identity fallback.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let agent = identity_keyfile::testkit::TempAgentDir::new(now, 86_400);
+    let identity = std::sync::Arc::new(gait_identity::IdentityContext::new(agent.path()).unwrap());
     let parent_dir = crate::session::live::worktree_dir(gd.path(), parent_id);
     std::fs::create_dir_all(&parent_dir).unwrap();
     let parent_log_path = crate::session::live::log_path(gd.path(), parent_id);
@@ -1232,11 +1237,14 @@ async fn detached_daemon_wakes_idle_parent_on_exit() {
     std::fs::write(&parent_log_path, "").unwrap();
 
     // 2. Tool whose ctx.gait_dir == gd and ctx.session_id == parent_id.
-    let tool = ShellTool::new(crate::tools::ctx::ToolCtx::new(
-        gd.path().to_path_buf(),
-        gd.path().to_path_buf(),
-        parent_id.to_string(),
-    ));
+    let tool = ShellTool::new(
+        crate::tools::ctx::ToolCtx::new(
+            gd.path().to_path_buf(),
+            gd.path().to_path_buf(),
+            parent_id.to_string(),
+        )
+        .with_identity(Some(identity)),
+    );
 
     // 3. Run a fast detached command; the wrapper fires __daemon-exit on exit.
     let _ = tool
