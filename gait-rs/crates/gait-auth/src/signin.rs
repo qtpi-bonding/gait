@@ -724,13 +724,10 @@ impl AuthMethod for ChatGptSignIn {
             .clone()
             .ok_or_else(|| AuthError::LoginRequired("run: gait auth login openai-signin".into()))?;
         let now = (self.now)();
+        // Remaining lifetime alone decides. earliest_refresh_at is advisory and the
+        // server does not enforce it (measured), so it is deliberately ignored here.
         if tokens.expires_at_unix_s.saturating_sub(now) >= REFRESH_THRESHOLD_S {
             return Ok(ResolvedCredential::Subscription(stored));
-        }
-        if let Some(earliest) = tokens.earliest_refresh_at_unix_s {
-            if earliest <= tokens.expires_at_unix_s && now < earliest {
-                return Ok(ResolvedCredential::Subscription(stored));
-            }
         }
         let response = self
             .http
@@ -1532,8 +1529,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn earliest_refresh_in_future_returns_current_unexpired_token() {
+    async fn earliest_refresh_in_future_does_not_block_a_due_refresh() {
         let server = StubServer::new().await;
+        server.respond(
+            "/token",
+            200,
+            r#"{"access_token":"due-refresh","expires_in":3600}"#,
+        );
         let auth = ChatGptSignIn::for_tests(test_endpoints(&server), clock(100));
         let store = MemoryStore::new();
         let mut c = live_credential("oaiapp_x", "subject");
@@ -1542,12 +1544,81 @@ mod tests {
         s.tokens.as_mut().unwrap().earliest_refresh_at_unix_s = Some(500);
         c.secret = serde_json::to_value(s).unwrap();
         save(&store, c).await;
+        auth.ensure_fresh(SIGNIN_PROVIDER_ID, &AuthContext { store: &store })
+            .await
+            .unwrap();
+        assert_eq!(
+            requests(&server)
+                .await
+                .iter()
+                .filter(|r| r.path == "/token")
+                .count(),
+            1
+        );
+        assert_eq!(
+            persisted_secret(&store).await.tokens.unwrap().access_token,
+            "due-refresh"
+        );
+    }
+
+    #[tokio::test]
+    async fn earliest_refresh_does_not_defer_refresh_inside_threshold() {
+        let server = StubServer::new().await;
+        server.respond(
+            "/token",
+            200,
+            r#"{"access_token":"inside-threshold","expires_in":3600}"#,
+        );
+        let auth = ChatGptSignIn::for_tests(test_endpoints(&server), clock(100));
+        let store = MemoryStore::new();
+        let mut c = live_credential("oaiapp_x", "subject");
+        let mut s: SignInSecret = serde_json::from_value(c.secret).unwrap();
+        // 30 min of lifetime left: inside the 45 min threshold.
+        s.tokens.as_mut().unwrap().expires_at_unix_s = 1900;
+        // The real shape: earliest_refresh_at sits 360 s before expiry.
+        s.tokens.as_mut().unwrap().earliest_refresh_at_unix_s = Some(1540);
+        c.secret = serde_json::to_value(s).unwrap();
+        save(&store, c).await;
+        auth.ensure_fresh(SIGNIN_PROVIDER_ID, &AuthContext { store: &store })
+            .await
+            .unwrap();
+        assert_eq!(
+            requests(&server)
+                .await
+                .iter()
+                .filter(|r| r.path == "/token")
+                .count(),
+            1
+        );
+        assert_eq!(
+            persisted_secret(&store).await.tokens.unwrap().access_token,
+            "inside-threshold"
+        );
+    }
+
+    #[tokio::test]
+    async fn earliest_refresh_does_not_trigger_refresh_outside_threshold() {
+        let server = StubServer::new().await;
+        let auth = ChatGptSignIn::for_tests(test_endpoints(&server), clock(100));
+        let store = MemoryStore::new();
+        let mut c = live_credential("oaiapp_x", "subject");
+        let mut s: SignInSecret = serde_json::from_value(c.secret).unwrap();
+        // 50 min of lifetime left: outside the 45 min threshold.
+        s.tokens.as_mut().unwrap().expires_at_unix_s = 3100;
+        // earliest_refresh_at is already in the past; it must not trigger a refresh.
+        s.tokens.as_mut().unwrap().earliest_refresh_at_unix_s = Some(50);
+        c.secret = serde_json::to_value(s).unwrap();
+        save(&store, c).await;
         let out = auth
             .ensure_fresh(SIGNIN_PROVIDER_ID, &AuthContext { store: &store })
             .await
             .unwrap();
-        assert!(matches!(out, ResolvedCredential::Subscription(_)));
         assert!(requests(&server).await.iter().all(|r| r.path != "/token"));
+        let returned: SignInSecret = match out {
+            ResolvedCredential::Subscription(c) => serde_json::from_value(c.secret).unwrap(),
+            _ => unreachable!(),
+        };
+        assert_eq!(returned.tokens.unwrap().access_token, "old-access");
     }
 
     #[tokio::test]
