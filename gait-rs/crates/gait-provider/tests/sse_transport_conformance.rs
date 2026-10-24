@@ -32,6 +32,11 @@ enum Script {
         body: String,
         delay: Duration,
     },
+    RequestIdStatus {
+        status: u16,
+        body: String,
+        request_id: String,
+    },
 }
 
 struct ScriptedServer {
@@ -143,6 +148,24 @@ async fn serve_response(mut socket: TcpStream, script: Script, requests: Arc<Mut
             let _ = socket.write_all(headers.as_bytes()).await;
             let _ = socket.write_all(body.as_bytes()).await;
         }
+        Script::RequestIdStatus {
+            status,
+            body,
+            request_id,
+        } => {
+            let headers = format!(
+                "HTTP/1.1 {status} Error\r\nx-request-id: {request_id}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            socket
+                .write_all(headers.as_bytes())
+                .await
+                .expect("write request id headers");
+            socket
+                .write_all(body.as_bytes())
+                .await
+                .expect("write request id body");
+        }
     }
     let _ = socket.shutdown().await;
 }
@@ -191,8 +214,116 @@ fn test_config() -> TransportConfig {
         absolute_cap: Duration::from_secs(2),
         json_timeout: Duration::from_secs(2),
         max_attempts: 2,
+        retry_429: true,
         initial_backoff: Duration::ZERO,
         max_backoff: Duration::ZERO,
+    }
+}
+
+#[tokio::test]
+async fn retry_429_false_makes_single_request() {
+    let server = ScriptedServer::start(vec![Script::Status {
+        status: 429,
+        body: r#"{"error":{"code":"subscription_sharing_usage_limit_exceeded"}}"#.into(),
+        retry_after: Some(0),
+    }])
+    .await;
+    let mut config = test_config();
+    config.retry_429 = false;
+    let transport = ProviderTransport::new(config).expect("transport");
+    let result = transport
+        .stream(gait_provider::transport::SseRequest::new(
+            format!("{}/responses", server.base_url),
+            Default::default(),
+            json!({}),
+        ))
+        .await;
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("429 should be returned when retry_429 is disabled"),
+    };
+    assert!(matches!(error, ProviderError::Http { status: 429, .. }));
+    assert_eq!(server.count(), 1);
+}
+
+#[tokio::test]
+async fn retry_429_default_still_retries() {
+    let server = ScriptedServer::start(vec![
+        Script::Status {
+            status: 429,
+            body: "retry".into(),
+            retry_after: Some(0),
+        },
+        Script::Sse {
+            body: "data: [DONE]\n\n".into(),
+            hold_open: Duration::ZERO,
+        },
+    ])
+    .await;
+    let transport = ProviderTransport::new(test_config()).expect("transport");
+    let stream = transport
+        .stream(gait_provider::transport::SseRequest::new(
+            format!("{}/responses", server.base_url),
+            Default::default(),
+            json!({}),
+        ))
+        .await
+        .expect("default config retries 429");
+    assert_eq!(stream.collect::<Vec<_>>().await.len(), 1);
+    assert_eq!(server.count(), 2);
+}
+
+#[tokio::test]
+async fn retry_503_still_retries_when_429_disabled() {
+    let server = ScriptedServer::start(vec![
+        Script::Status {
+            status: 503,
+            body: "retry".into(),
+            retry_after: Some(0),
+        },
+        Script::Sse {
+            body: "data: [DONE]\n\n".into(),
+            hold_open: Duration::ZERO,
+        },
+    ])
+    .await;
+    let mut config = test_config();
+    config.retry_429 = false;
+    let transport = ProviderTransport::new(config).expect("transport");
+    let stream = transport
+        .stream(gait_provider::transport::SseRequest::new(
+            format!("{}/responses", server.base_url),
+            Default::default(),
+            json!({}),
+        ))
+        .await
+        .expect("503 remains retryable");
+    let _ = stream.collect::<Vec<_>>().await;
+    assert_eq!(server.count(), 2);
+}
+
+#[tokio::test]
+async fn http_error_carries_request_id() {
+    let server = ScriptedServer::start(vec![Script::RequestIdStatus {
+        status: 400,
+        body: "bad request".into(),
+        request_id: "req_123".into(),
+    }])
+    .await;
+    let transport = ProviderTransport::new(test_config()).expect("transport");
+    let error = transport
+        .post_json::<serde_json::Value>(gait_provider::transport::JsonRequest::new(
+            server.base_url,
+            Default::default(),
+            json!({}),
+        ))
+        .await
+        .expect_err("status should be an HTTP error");
+    match error {
+        ProviderError::Http { request_id, .. } => {
+            assert_eq!(request_id.as_deref(), Some("req_123"))
+        }
+        other => panic!("expected HTTP error, got {other:?}"),
     }
 }
 
@@ -292,6 +423,7 @@ async fn json_transport_preserves_http_error_and_redacts_credentials_without_ret
             status,
             body,
             retry_after,
+            ..
         } => {
             assert_eq!(status, 503);
             assert_eq!(retry_after, Some(Duration::from_secs(7)));

@@ -5,6 +5,10 @@ use crate::provider::Provider;
 use crate::providers::{AuthMethod, ProviderSpec, Wire};
 use gait_auth::ResolvedCredential;
 
+pub(crate) fn transport_config_for(_wire: Wire) -> crate::transport::TransportConfig {
+    crate::transport::TransportConfig::default()
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum FactoryError {
     #[error("invalid model string '{0}': expected 'provider/model-id'")]
@@ -82,9 +86,8 @@ pub fn load_provider_with_credential_params_and_gait_dir(
     let spec = crate::providers::lookup(&provider_id)
         .ok_or_else(|| FactoryError::UnknownProvider(provider_id.clone()))?;
     let base = base_url_override(&provider_id).or_else(|| spec.base_url.map(String::from));
-    let transport =
-        crate::transport::ProviderTransport::new(crate::transport::TransportConfig::default())
-            .map_err(FactoryError::Transport)?;
+    let transport = crate::transport::ProviderTransport::new(transport_config_for(spec.wire))
+        .map_err(FactoryError::Transport)?;
 
     match spec.auth_method {
         AuthMethod::ApiKey => {
