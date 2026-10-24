@@ -1,7 +1,7 @@
 ---
 name: gait-manual
 description: Explain how to use and configure Gait.
-manual-source-hash: a2699d424cbfce636cd0ea07f40604a924e4692545b54dce47c5d4fa0c64b4bf
+manual-source-hash: 8b048e10cf1781caa79bd09706dece3d9ac558b3e6af3c2a4304aa0e418a65ef
 ---
 
 # Gait Manual
@@ -374,8 +374,8 @@ Arguments:
 Options:
       --home <HOME>          Override the external CLI's home directory
       --pretty
-      --complete <COMPLETE>
-      --forget
+      --complete <COMPLETE>  Complete a pending openai-signin login with a callback URL (or `-` for stdin)
+      --forget               Forget the openai-signin registration when logging out
   -h, --help                 Print help
 ```
 
