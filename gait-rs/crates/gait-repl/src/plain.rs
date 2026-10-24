@@ -823,7 +823,10 @@ impl TurnSource for PlainSource {
                 .map(|b| (b, None).into())
                 .collect();
             self.ran_turn = true;
-            return Some(TurnStart::Input { bodies });
+            return Some(TurnStart::Input {
+                bodies,
+                on_durable: None,
+            });
         }
     }
 }

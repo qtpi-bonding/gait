@@ -37,6 +37,8 @@ pub enum TurnMode {
         /// Normalized core inputs pair each body with provenance and any
         /// malformed-claim marker.
         trigger: Vec<crate::port::input::InputEnvelope>,
+        /// Taken once by the turn when the trigger batch is durable.
+        on_durable: Option<crate::port::input::OnDurable>,
     },
     Ephemeral {
         input: Vec<crate::proto::gait::log::v1::Event>,

@@ -95,7 +95,7 @@ min = []
 [dev-dependencies]
 tempfile = "3"
 serial_test = "3"
-ed25519-dalek = { version = "2", features = ["rand_core"] }
+identity-keyfile = { git = "https://github.com/qtpi-bonding/identity-crypto.git", rev = "7a074a677142e8fd6027e6c2ed8c8d41b1a1f39a", features = ["testkit"] }
 gait-workflow = { path = "crates/gait-workflow" }
 gait-ops = { path = "crates/gait-ops" }
 gait-auth = { path = "crates/gait-auth", features = ["testing"] }

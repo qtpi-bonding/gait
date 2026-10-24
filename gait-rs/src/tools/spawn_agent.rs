@@ -5,7 +5,6 @@ use crate::session::log::{init_session, InitSessionOpts};
 use crate::tools::ToolError;
 use crate::tools::{make_schema, ToolCtx};
 use crate::types::Tool;
-use gait_identity::Signer;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -21,12 +20,25 @@ pub struct WriteChildSessionOpts<'a> {
     /// Per-spawn named inference, if requested by the parent.
     pub inference: Option<String>,
     pub repos: &'a crate::git::Repos,
+    /// The spawning agent's identity; signs the child's task. `None` is a hard error.
+    pub identity: Option<&'a gait_identity::IdentityContext>,
+}
+
+pub(crate) fn wall_clock_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 /// Shared logic: create session worktree, init session, seed task message, commit.
 /// Used by both `SpawnAgentTool::execute` (in-process / test path) and
 /// `handle_spawn_agent` (spine relay path) to avoid duplicating disk-write logic.
 pub fn write_child_session(opts: WriteChildSessionOpts<'_>) -> anyhow::Result<()> {
+    let identity = opts.identity.ok_or_else(|| {
+        anyhow::anyhow!(
+            "spawn_agent: no agent identity configured (GAIT_AGENT_DIR unset); cannot sign the child's task"
+        )
+    })?;
     opts.repos
         .traces
         .create_session_worktree(opts.gait_dir, opts.new_id)?;
@@ -64,23 +76,13 @@ pub fn write_child_session(opts: WriteChildSessionOpts<'_>) -> anyhow::Result<()
     })?;
     wire::append(&tx_path, events::inference(inference))?;
 
-    let device_signer = gait_identity::Keyring::load(opts.gait_dir)
-        .map_err(|e| anyhow::anyhow!("loading keyring at {}: {e}", opts.gait_dir.display()))?
-        .signer()?;
-    let session = gait_identity::SessionKey::mint(
-        &device_signer,
-        std::time::Duration::from_secs(3600),
-    )?;
-    wire::append_with_delegated_provenance(
+    wire::append_with_signed(
         &tx_path,
         events::user_text(opts.task),
-        session.signer().public_key().to_vec(),
-        session.signer().scheme() as i32,
-        |msg| session.signer().sign(msg),
-        vec![],
-        String::new(),
         crate::proto::envelope::EventScope::Session,
-        session.delegation_cert().clone(),
+        |ev| {
+            gait_identity::sign_direct_event(identity, ev, opts.new_id, 3600, &wall_clock_secs)
+        },
     )?;
 
     opts.repos.traces.commit_session(
@@ -189,6 +191,7 @@ impl Tool for SpawnAgentTool {
             notify_done: is_detached,
             inference: inference.clone(),
             repos: &self.repos,
+            identity: self.ctx.identity.as_deref(),
         })
         .map_err(crate::tools::ToolError::Internal)?;
 
@@ -233,12 +236,25 @@ mod tests {
     use crate::session::log::read_events;
     use crate::session::read_session_meta;
     use crate::test_utils::init_git_repo;
+    use gait_identity::{DirectVerifier, IdentityContext, ProvenanceVerifier};
+    use identity_keyfile::testkit::TempAgentDir;
+    use std::sync::Arc;
     use tempfile::TempDir;
+
+    /// A real agent identity minted now, with a one-hour device window, so a
+    /// child event stamped at wall-clock time verifies. Keep the fixture alive
+    /// while the identity is in use.
+    fn agent_identity() -> (TempAgentDir, Arc<IdentityContext>) {
+        let now = wall_clock_secs();
+        let agent = TempAgentDir::new(now, 3_600);
+        let identity = Arc::new(IdentityContext::new(agent.path()).unwrap());
+        (agent, identity)
+    }
 
     #[tokio::test]
     async fn spawn_agent_creates_session_transcript() {
         let ws = TempDir::new().unwrap();
-        gait_identity::Keyring::generate().save(ws.path()).unwrap();
+        let (_agent, identity) = agent_identity();
         init_git_repo(ws.path());
         std::fs::create_dir_all(ws.path().join("inferences/parent")).unwrap();
         std::fs::write(
@@ -263,7 +279,7 @@ mod tests {
                 ws.path().to_path_buf(),
                 ws.path().to_path_buf(),
                 "scaller001".into(),
-            ),
+            ).with_identity(Some(identity.clone())),
             crate::git::Repos::production(),
         );
         assert!(tool.parameters()["properties"]["inference"].is_object());
@@ -311,23 +327,19 @@ mod tests {
             _ => unreachable!(),
         };
         assert_eq!(user_turn.content, "implement feature X");
-        let signer = gait_identity::Keyring::load(ws.path())
-            .unwrap()
-            .signer()
-            .unwrap();
         let prov = user_turn_event
             .provenance
             .first()
             .expect("user_turn must carry provenance");
-        let cert = prov
-            .delegation_cert
-            .as_ref()
-            .expect("delegated spawn provenance must carry its certificate");
-        assert_eq!(prov.from, cert.session_public_key);
-        assert_eq!(cert.device_public_key, signer.public_key().to_vec());
         assert!(
-            gait_identity::verify_provenance(prov, &user_turn_event.content_hash),
-            "spawn_agent must sign with a real, verifiable signature"
+            prov.signed_message.is_some(),
+            "spawn_agent must sign the task with a direct signature"
+        );
+        let verifier = DirectVerifier::from_context(&identity).unwrap();
+        assert_eq!(
+            verifier.verify_direct(user_turn_event, new_id),
+            Some(identity.agent_id().clone()),
+            "spawn_agent must sign with a real, verifiable signature for the child session"
         );
 
         let meta = read_session_meta(ws.path(), new_id).unwrap();
@@ -335,9 +347,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spawn_agent_without_identity_is_a_hard_error() {
+        let ws = TempDir::new().unwrap();
+        init_git_repo(ws.path());
+        std::fs::create_dir_all(ws.path().join("inferences/parent")).unwrap();
+        std::fs::write(
+            ws.path().join("inferences/parent/inference.textproto"),
+            "model: \"minimax/MiniMax-M3\"\ncompaction_threshold_tokens: 128000\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ws.path().join("gait.jsonc"),
+            r#"{"inference":"parent","allow":[],"tools":[]}"#,
+        )
+        .unwrap();
+
+        let tool = SpawnAgentTool::new(
+            ToolCtx::new(
+                ws.path().to_path_buf(),
+                ws.path().to_path_buf(),
+                "sparent03".into(),
+            ),
+            crate::git::Repos::production(),
+        );
+        let err = tool
+            .execute(
+                serde_json::json!({ "task": "foo" }),
+                &crate::Recorder::detached(),
+            )
+            .await
+            .expect_err("spawn_agent must not write an unsigned task");
+
+        assert!(
+            format!("{err:?}").contains("no agent identity configured"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn spawn_agent_returns_session_id() {
         let ws = TempDir::new().unwrap();
-        gait_identity::Keyring::generate().save(ws.path()).unwrap();
+        let (_agent, identity) = agent_identity();
         init_git_repo(ws.path());
         std::fs::create_dir_all(ws.path().join("inferences/parent")).unwrap();
         std::fs::write(
@@ -356,7 +406,7 @@ mod tests {
                 ws.path().to_path_buf(),
                 ws.path().to_path_buf(),
                 "scaller".into(),
-            ),
+            ).with_identity(Some(identity.clone())),
             crate::git::Repos::production(),
         );
         let result = tool
@@ -373,7 +423,7 @@ mod tests {
     #[tokio::test]
     async fn spawn_agent_commit_has_parent_session_trailer() {
         let ws = TempDir::new().unwrap();
-        gait_identity::Keyring::generate().save(ws.path()).unwrap();
+        let (_agent, identity) = agent_identity();
         init_git_repo(ws.path());
         std::fs::create_dir_all(ws.path().join("inferences/parent")).unwrap();
         std::fs::write(
@@ -392,7 +442,7 @@ mod tests {
                 ws.path().to_path_buf(),
                 ws.path().to_path_buf(),
                 "sparent01".into(),
-            ),
+            ).with_identity(Some(identity.clone())),
             crate::git::Repos::production(),
         );
 
@@ -428,7 +478,7 @@ mod tests {
     #[tokio::test]
     async fn spawn_agent_task_injection_carries_provenance() {
         let ws = TempDir::new().unwrap();
-        gait_identity::Keyring::generate().save(ws.path()).unwrap();
+        let (_agent, identity) = agent_identity();
         init_git_repo(ws.path());
         std::fs::create_dir_all(ws.path().join("inferences/parent")).unwrap();
         std::fs::write(
@@ -453,7 +503,7 @@ mod tests {
                 ws.path().to_path_buf(),
                 ws.path().to_path_buf(),
                 "scaller001".into(),
-            ),
+            ).with_identity(Some(identity.clone())),
             crate::git::Repos::production(),
         );
 
@@ -478,31 +528,18 @@ mod tests {
             .iter()
             .find(|e| matches!(ek(e), Some(payload::Kind::UserText(_))))
             .expect("task injection event must exist");
-        let prov = user_text_event
-            .provenance
-            .first()
-            .expect("task injection must carry provenance");
-        let signer = gait_identity::Keyring::load(ws.path())
-            .unwrap()
-            .signer()
-            .unwrap();
-        assert_eq!(
-            prov.from,
-            prov.delegation_cert
-                .as_ref()
-                .expect("delegated spawn provenance must carry its certificate")
-                .session_public_key
-        );
-        assert_eq!(
-            prov.delegation_cert
-                .as_ref()
-                .expect("delegated spawn provenance must carry its certificate")
-                .device_public_key,
-            signer.public_key().to_vec()
-        );
         assert!(
-            gait_identity::verify_provenance(prov, &user_text_event.content_hash),
-            "spawn_agent must sign with a real, verifiable signature"
+            user_text_event
+                .provenance
+                .first()
+                .is_some_and(|p| p.signed_message.is_some()),
+            "task injection must carry a direct signature"
+        );
+        let verifier = DirectVerifier::from_context(&identity).unwrap();
+        assert_eq!(
+            verifier.verify_direct(user_text_event, new_id),
+            Some(identity.agent_id().clone()),
+            "spawn_agent must sign with a real, verifiable signature for the child session"
         );
     }
 }

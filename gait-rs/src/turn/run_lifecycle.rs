@@ -26,6 +26,7 @@ pub(crate) fn begin_turn(
     git: &crate::turn::SessionGit,
     codebase: &std::path::Path,
     trigger: Vec<crate::port::input::InputEnvelope>,
+    on_durable: Option<crate::port::input::OnDurable>,
 ) -> anyhow::Result<StartedTurn> {
     use crate::proto::envelope::EventScope;
 
@@ -95,41 +96,14 @@ pub(crate) fn begin_turn(
             turn: turn_index,
         },
     )?;
-    let mut trigger_id = None;
-    for mut incoming in trigger {
-        if incoming.rejected_provenance_claim {
-            if let crate::proto::gait::log::v1::event::Body::Payload(payload) = &mut incoming.body {
-                if let Some(crate::proto::gait::log::v1::payload::Kind::IncomingMessage(message)) =
-                    payload.kind.as_mut()
-                {
-                    message.rejected_provenance_claim = true;
-                }
-            }
-        }
-        let event = match incoming.provenance {
-            Some(p) => log.append_body_with_provenance(
-                incoming.body,
-                EventScope::Turn {
-                    run: run.index,
-                    turn: turn_index,
-                },
-                p,
-            )?,
-            None => log.append_body(
-                incoming.body,
-                EventScope::Turn {
-                    run: run.index,
-                    turn: turn_index,
-                },
-            )?,
-        };
-        trigger_id.get_or_insert(event.id);
-    }
-    if trigger_id.is_some() {
-        // TurnStart is immutable, so trigger linkage is defined by adjacency and
-        // scoped coordinates. The optional field is reserved for externally
-        // pre-minted triggers.
-    }
+    log.append_input_batch(
+        EventScope::Turn {
+            run: run.index,
+            turn: turn_index,
+        },
+        trigger,
+        on_durable,
+    )?;
     Ok(StartedTurn {
         run,
         turn_id,
@@ -739,6 +713,7 @@ mod tests {
             &crate::turn::SessionGit::null(),
             codebase.path(),
             Vec::new(),
+            None,
         )
         .unwrap();
 
@@ -799,6 +774,7 @@ mod tests {
             &crate::turn::SessionGit::null(),
             codebase.path(),
             Vec::new(),
+            None,
         )
         .unwrap();
 
@@ -852,6 +828,7 @@ mod tests {
             &crate::turn::SessionGit::null(),
             codebase.path(),
             Vec::new(),
+            None,
         )
         .unwrap();
 

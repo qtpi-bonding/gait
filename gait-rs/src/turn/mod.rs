@@ -399,7 +399,7 @@ pub async fn run_turn(
         let all_events = ingestor.events()?;
         let mut step_muts = active_mutations(&all_events);
         apply_cascade(&mut step_muts, &all_events);
-        let raw = run_projection(&ActiveRawMessages, &all_events, &step_muts);
+        let raw = run_projection(&ActiveRawMessages::default(), &all_events, &step_muts);
         let mut outgoing_raw: Vec<Message> = raw.base.clone();
 
         let last_role = outgoing_raw
@@ -458,7 +458,7 @@ pub async fn run_turn(
                 let all_events = ingestor.events()?;
                 let mut step_muts = active_mutations(&all_events);
                 apply_cascade(&mut step_muts, &all_events);
-                let raw = run_projection(&ActiveRawMessages, &all_events, &step_muts);
+                let raw = run_projection(&ActiveRawMessages::default(), &all_events, &step_muts);
                 outgoing_raw = raw.base;
             }
         }
@@ -533,7 +533,7 @@ pub async fn run_turn(
             let all_events = ingestor.events()?;
             let mut step_muts = active_mutations(&all_events);
             apply_cascade(&mut step_muts, &all_events);
-            outgoing = coalesce(run_projection(&ActiveRawMessages, &all_events, &step_muts).base);
+            outgoing = coalesce(run_projection(&ActiveRawMessages::default(), &all_events, &step_muts).base);
             let rebuilt = compaction::estimate(
                 &outgoing,
                 &system_prompt,

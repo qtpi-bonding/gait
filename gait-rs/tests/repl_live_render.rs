@@ -103,6 +103,7 @@ impl TurnSource for ProbeSource {
             let body = gait_core::proto::events::user_text("run the turn".into());
             return Some(TurnStart::Input {
                 bodies: vec![(body, None).into()],
+                on_durable: None,
             });
         }
         // Bounded park: on the buggy (await-then-drain) path nothing is draining

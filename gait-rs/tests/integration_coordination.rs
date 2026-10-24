@@ -5,7 +5,8 @@ use gait_core::{
     tools::builtin_tools,
     turn::{run_turn, TurnResult},
 };
-use gait_identity::Signer;
+use gait_identity::{DirectVerifier, IdentityContext, ProvenanceVerifier};
+use identity_keyfile::testkit::TempAgentDir;
 
 /// The substantive payload kind for a proto event, if it carries one.
 fn event_kind(e: &Event) -> Option<&payload::Kind> {
@@ -80,7 +81,12 @@ impl Provider for ScriptedProvider {
 #[tokio::test]
 async fn spawn_agent_via_run_turn_creates_child_session() {
     let ws = TempDir::new().unwrap();
-    gait_identity::Keyring::generate().save(ws.path()).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let agent = TempAgentDir::new(now, 3_600);
+    let identity = Arc::new(IdentityContext::new(agent.path()).unwrap());
     init_git_repo(ws.path());
     std::fs::create_dir_all(ws.path().join("inferences/mock")).unwrap();
     std::fs::write(
@@ -117,7 +123,8 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
             ws.path().to_path_buf(),
             ws.path().to_path_buf(),
             "sparent001".into(),
-        ),
+        )
+        .with_identity(Some(identity.clone())),
         vec![],
         vec![],
         vec![],
@@ -183,7 +190,7 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
         "child SessionStart must have assigned_by"
     );
 
-    // Verify child transcript has user_turn signed by the parent's keyring.
+    // Verify child transcript has user_turn signed by the parent's agent identity.
     let tx = gait_core::session::live::log_path(ws.path(), &child_id);
     let events = read_events(&tx).unwrap();
     let user_turn_event = events
@@ -195,27 +202,19 @@ async fn spawn_agent_via_run_turn_creates_child_session() {
         _ => unreachable!(),
     };
     assert_eq!(user_turn.content, "fix the failing tests");
-    let signer = gait_identity::Keyring::load(ws.path())
-        .unwrap()
-        .signer()
-        .unwrap();
     let prov = user_turn_event
         .provenance
         .first()
         .expect("user_turn must carry provenance");
-    let cert = prov
-        .delegation_cert
-        .as_ref()
-        .expect("delegated spawn provenance must carry its certificate");
-    assert_eq!(prov.from, cert.session_public_key);
-    assert_eq!(
-        cert.device_public_key,
-        signer.public_key().to_vec(),
-        "child user_turn's session key must be delegated by the parent's device keyring"
-    );
     assert!(
-        gait_identity::verify_provenance(prov, &user_turn_event.content_hash),
-        "spawn_agent must sign with a real, verifiable signature"
+        prov.signed_message.is_some(),
+        "child user_turn must carry a direct signature"
+    );
+    let verifier = DirectVerifier::from_context(&identity).unwrap();
+    assert_eq!(
+        verifier.verify_direct(user_turn_event, &child_id),
+        Some(identity.agent_id().clone()),
+        "spawn_agent must sign with a real, verifiable signature for the child session"
     );
 }
 

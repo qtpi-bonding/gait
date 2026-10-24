@@ -10,6 +10,7 @@ use tokio::sync::Mutex;
 use crate::config::SandboxConfig;
 use crate::port::output::TurnSink;
 use crate::proto::gait::sandbox::v1::{signal, Notify};
+use crate::tools::spawn_agent::wall_clock_secs;
 use crate::turn::nerve;
 use crate::turn::DiagnosticSink;
 
@@ -172,7 +173,7 @@ pub async fn relay_brain_turn(
     // kill_all(). The caller must clear the slot after the turn completes.
     signal_slot: Option<&SignalSlot>,
     repos: &crate::git::Repos,
-    mode: &TurnMode,
+    mode: &mut TurnMode,
     fs_delegate: Option<std::sync::Arc<dyn crate::embed::FsDelegate>>,
 ) -> anyhow::Result<crate::proto::gait::log::v1::RunResult> {
     // ── Establish (or inherit) the cascade group for this turn ─────────────
@@ -183,6 +184,9 @@ pub async fn relay_brain_turn(
     if let Some(slot) = signal_slot {
         *slot.lock().unwrap() = Some(Arc::clone(&group));
     }
+    // The spine is the process entry for agent identity: read the agent dir once
+    // here and hand the context down. A broken agent dir fails the turn.
+    let identity = gait_identity::IdentityContext::from_env()?.map(Arc::new);
     // ── Build the turn context once ────────────────────────────────────────
     // The ctx carries every spine-side handle the turn needs (gait-dir,
     // codebase, session id, repos, exe, cascade group, sandbox flag). Building
@@ -197,6 +201,7 @@ pub async fn relay_brain_turn(
         group: Arc::clone(&group),
         sandbox_on,
         diag: DiagnosticSink::new(gait_dir, session_id),
+        identity: identity.clone(),
     };
 
     // Sole owner of diagnostic.jsonl writes for this turn. Built once after
@@ -258,15 +263,22 @@ pub async fn relay_brain_turn(
         }
         TurnMode::Ephemeral { .. } => crate::turn::SessionLog::ephemeral(Vec::new()),
     };
-    let trigger = match mode {
-        TurnMode::Persistent { trigger } => trigger.clone(),
-        TurnMode::Ephemeral { input } => input
-            .iter()
-            .filter_map(|event| event.body.clone())
-            .map(|body| (body, None).into())
-            .collect(),
+    let (trigger, on_durable) = match mode {
+        TurnMode::Persistent {
+            trigger,
+            on_durable,
+        } => (trigger.clone(), on_durable.take()),
+        TurnMode::Ephemeral { input } => (
+            input
+                .iter()
+                .filter_map(|event| event.body.clone())
+                .map(|body| (body, None).into())
+                .collect(),
+            None,
+        ),
     };
-    let started = crate::turn::run_lifecycle::begin_turn(&log, &git, codebase, trigger)?;
+    let started =
+        crate::turn::run_lifecycle::begin_turn(&log, &git, codebase, trigger, on_durable)?;
     // Fold the durable selected inference before provider/credential binding.
     let events = log.events();
     // Same computation teardown (lifecycle.rs) does post-turn with its own
@@ -675,6 +687,8 @@ pub async fn relay_brain_turn(
                     repos,
                     &target_session,
                     &c,
+                    identity.as_deref(),
+                    &wall_clock_secs,
                 ) {
                     crate::session::completion::NotifyOutcome::Woke(req) => {
                         crate::launch::spawn_wake(&req);

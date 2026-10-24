@@ -15,7 +15,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use crate::proto::gait::log::v1::{event, Event};
+use crate::port::input::{InputEnvelope, OnDurable};
+use crate::proto::envelope::EventScope;
+use crate::proto::gait::log::v1::{event, payload, Event};
 use crate::proto::wire;
 use crate::session::SessionLock;
 
@@ -87,6 +89,37 @@ impl SessionLog {
                 Ok(evt)
             }
         }
+    }
+
+    /// Append one input batch in order, one event per message, carrying each
+    /// message's provenance. Then run `on_durable`. A failed append returns its
+    /// error and drops `on_durable` unrun. A failing `on_durable` is logged and
+    /// never unlogs the batch.
+    pub(crate) fn append_input_batch(
+        &self,
+        scope: EventScope,
+        batch: Vec<InputEnvelope>,
+        on_durable: Option<OnDurable>,
+    ) -> anyhow::Result<()> {
+        for mut incoming in batch {
+            if incoming.rejected_provenance_claim {
+                if let event::Body::Payload(payload) = &mut incoming.body {
+                    if let Some(payload::Kind::IncomingMessage(message)) = payload.kind.as_mut() {
+                        message.rejected_provenance_claim = true;
+                    }
+                }
+            }
+            match incoming.provenance {
+                Some(p) => self.append_body_with_provenance(incoming.body, scope, p)?,
+                None => self.append_body(incoming.body, scope)?,
+            };
+        }
+        if let Some(confirm) = on_durable {
+            if let Err(e) = confirm() {
+                eprintln!("[gait] input batch is logged; its durable confirmation failed: {e}");
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn append_body_with_provenance(
@@ -205,6 +238,65 @@ mod tests {
         let evs = log.events();
         assert_eq!(evs.len(), 2, "ephemeral log accumulates appends");
         assert!(matches!(log, SessionLog::Ephemeral { .. }));
+    }
+
+    #[test]
+    fn on_durable_runs_after_events_are_appended() {
+        let gait_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(crate::session::live::worktree_dir(gait_dir.path(), "d1")).unwrap();
+        let log = SessionLog::open(gait_dir.path(), "d1").unwrap();
+        let log_path = crate::session::live::log_path(gait_dir.path(), "d1");
+        let seen_in_log = std::sync::Arc::new(Mutex::new(None));
+        let confirm = {
+            let seen = std::sync::Arc::clone(&seen_in_log);
+            let path = log_path.clone();
+            let on_durable: OnDurable = Box::new(move || {
+                let raw = std::fs::read_to_string(&path)?;
+                *seen.lock().unwrap() = Some(raw.contains("hello-durable"));
+                Ok(())
+            });
+            on_durable
+        };
+        let batch = vec![InputEnvelope::new(
+            crate::proto::events::user_text("hello-durable".into()),
+            None,
+        )];
+
+        log.append_input_batch(EventScope::Session, batch, Some(confirm))
+            .unwrap();
+
+        assert_eq!(
+            *seen_in_log.lock().unwrap(),
+            Some(true),
+            "on_durable must run once the batch's event is already in log.jsonl"
+        );
+    }
+
+    #[test]
+    fn on_durable_not_run_when_append_fails() {
+        let gait_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(crate::session::live::worktree_dir(gait_dir.path(), "d2")).unwrap();
+        let log = SessionLog::open(gait_dir.path(), "d2").unwrap();
+        // A directory where log.jsonl must be makes every append fail.
+        std::fs::create_dir_all(crate::session::live::log_path(gait_dir.path(), "d2")).unwrap();
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&ran);
+        let on_durable: OnDurable = Box::new(move || {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        });
+        let batch = vec![InputEnvelope::new(
+            crate::proto::events::user_text("never-durable".into()),
+            None,
+        )];
+
+        let result = log.append_input_batch(EventScope::Session, batch, Some(on_durable));
+
+        assert!(result.is_err(), "appending onto a directory must fail");
+        assert!(
+            !ran.load(std::sync::atomic::Ordering::SeqCst),
+            "on_durable must not run when the batch was not appended"
+        );
     }
 
     #[test]

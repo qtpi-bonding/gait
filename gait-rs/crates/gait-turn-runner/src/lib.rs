@@ -204,6 +204,7 @@ impl TurnSource for OneTurnSource {
         }
         self.bodies.take().map(|bodies| TurnStart::Input {
             bodies: bodies.into_iter().map(|body| (body, None).into()).collect(),
+            on_durable: None,
         })
     }
 }

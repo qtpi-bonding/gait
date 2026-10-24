@@ -16,3 +16,21 @@ pub(crate) fn init_git_repo(dir: &std::path::Path) {
         })
         .ok();
 }
+
+/// Publishes one agent identity for this test process through `GAIT_AGENT_DIR`,
+/// where `gait` finds it at process entry. The directory lives as long as the
+/// process, so every test and any child it spawns (`__daemon-exit`) sees a valid
+/// identity.
+#[cfg(test)]
+pub(crate) fn publish_agent_identity() {
+    static AGENT: std::sync::OnceLock<identity_keyfile::testkit::TempAgentDir> =
+        std::sync::OnceLock::new();
+    let agent = AGENT.get_or_init(|| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        identity_keyfile::testkit::TempAgentDir::new(now, 86_400)
+    });
+    std::env::set_var("GAIT_AGENT_DIR", agent.path());
+}

@@ -158,6 +158,7 @@ pub(crate) async fn handle_spawn_agent(args: SpawnAgentArgs, ctx: TurnCtx) -> Fe
         notify_done: args.detached,
         inference: args.inference.clone(),
         repos: &ctx.repos,
+        identity: ctx.identity.as_deref(),
     })
     .is_err()
     {
@@ -283,6 +284,20 @@ pub(crate) fn build_subagent_feedback(
 mod tests {
     use super::*;
     use crate::turn::spine::handlers::test_ctx;
+    use identity_keyfile::testkit::TempAgentDir;
+    use std::sync::Arc;
+
+    /// A real agent identity minted now, with a one-hour device window.
+    /// Keep the returned fixture alive while the identity is in use.
+    fn agent_identity() -> (TempAgentDir, Arc<gait_identity::IdentityContext>) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let agent = TempAgentDir::new(now, 3_600);
+        let identity = Arc::new(gait_identity::IdentityContext::new(agent.path()).unwrap());
+        (agent, identity)
+    }
 
     fn done_body(
         message: &str,
@@ -307,7 +322,7 @@ mod tests {
     #[tokio::test]
     async fn handle_spawn_agent_creates_session_and_returns_id() {
         let ws = tempfile::TempDir::new().unwrap();
-        gait_identity::Keyring::generate().save(ws.path()).unwrap();
+        let (_agent, identity) = agent_identity();
         crate::test_utils::init_git_repo(ws.path());
         std::fs::create_dir_all(ws.path().join("inferences/mock")).unwrap();
         std::fs::write(
@@ -328,7 +343,7 @@ mod tests {
                 context_files: None,
                 detached: true,
             },
-            test_ctx(ws.path(), "parent01"),
+            test_ctx(ws.path(), "parent01", Some(identity.clone())),
         )
         .await;
         // result is a proto Struct; extract session_id directly as a StringValue field.
@@ -365,7 +380,7 @@ mod tests {
     #[tokio::test]
     async fn handle_spawn_agent_with_schema_writes_result_schema_json() {
         let ws = tempfile::TempDir::new().unwrap();
-        gait_identity::Keyring::generate().save(ws.path()).unwrap();
+        let (_agent, identity) = agent_identity();
         crate::test_utils::init_git_repo(ws.path());
         std::fs::create_dir_all(ws.path().join("inferences/mock")).unwrap();
         std::fs::write(
@@ -387,7 +402,7 @@ mod tests {
                 context_files: None,
                 detached: true, // fire-and-forget so we don't need a real binary
             },
-            test_ctx(ws.path(), "parent-schema-01"),
+            test_ctx(ws.path(), "parent-schema-01", Some(identity.clone())),
         )
         .await;
         // Extract the child session id from the returned Feedback.
@@ -571,6 +586,7 @@ mod tests {
             group: group.clone(),
             sandbox_on: false,
             diag: crate::turn::DiagnosticSink::new(ws.path(), "parent"),
+            identity: None,
         };
 
         // Spawn the "enrolled" subagent: launch_child with detached=false.

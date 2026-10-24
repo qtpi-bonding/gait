@@ -378,6 +378,7 @@ impl Profile {
         gait_dir: std::path::PathBuf,
         repos: crate::git::Repos,
         credential: Option<gait_auth::ResolvedCredential>,
+        identity: Option<std::sync::Arc<gait_identity::IdentityContext>>,
     ) -> anyhow::Result<ResolvedProfile> {
         self.context_policy.validate()?;
         // Provider (no network until .stream()).
@@ -429,7 +430,8 @@ impl Profile {
 
         // Tools: builtins (moved from bin/gait.rs:242-249) + config tools (moved from bin/gait.rs:250-287).
         let tool_ctx =
-            crate::tools::ToolCtx::new(codebase_path.clone(), gait_dir.clone(), session_id.clone());
+            crate::tools::ToolCtx::new(codebase_path.clone(), gait_dir.clone(), session_id.clone())
+                .with_identity(identity);
         let tools: Vec<Arc<dyn crate::types::Tool>> = if self.hands_free {
             // Hands-free: the only registered tool is the schema-aware structured_done.
             // Nothing else exists, so tool routing can never reach a hand.
@@ -659,6 +661,7 @@ mod tests {
                 std::path::PathBuf::from("."),
                 crate::git::Repos::production(),
                 Some(gait_auth::ResolvedCredential::ApiKey("test-key".into())),
+                None,
             )
             .await
             .unwrap();
@@ -789,6 +792,7 @@ mod tests {
                 dir.path().to_path_buf(),
                 crate::git::Repos::production(),
                 Some(gait_auth::ResolvedCredential::ApiKey("test-key".into())),
+                None,
             )
             .await
             .unwrap();
@@ -893,6 +897,7 @@ mod tests {
                 std::path::PathBuf::from("/tmp/gd"),
                 crate::git::Repos::production(),
                 Some(gait_auth::ResolvedCredential::ApiKey("test-key".into())),
+                None,
             )
             .await
             .unwrap();

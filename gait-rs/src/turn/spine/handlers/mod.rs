@@ -32,6 +32,9 @@ pub(crate) struct TurnCtx {
     pub group: std::sync::Arc<dyn crate::process::Containment>,
     pub sandbox_on: bool,
     pub diag: crate::turn::DiagnosticSink,
+    /// The agent's identity for signing direct events (`spawn_agent`). Read once
+    /// at the spine entry; `None` means spawn fails hard.
+    pub identity: Option<std::sync::Arc<gait_identity::IdentityContext>>,
 }
 
 /// Build a `Feedback` carrying a JSON value result.
@@ -94,7 +97,11 @@ pub(super) async fn reply_feedback(
 }
 
 #[cfg(test)]
-pub(super) fn test_ctx(ws: &std::path::Path, session_id: &str) -> TurnCtx {
+pub(super) fn test_ctx(
+    ws: &std::path::Path,
+    session_id: &str,
+    identity: Option<std::sync::Arc<gait_identity::IdentityContext>>,
+) -> TurnCtx {
     TurnCtx {
         gait_dir: ws.to_path_buf(),
         codebase: ws.to_path_buf(),
@@ -104,6 +111,7 @@ pub(super) fn test_ctx(ws: &std::path::Path, session_id: &str) -> TurnCtx {
         group: crate::process::establish(None),
         sandbox_on: false,
         diag: crate::turn::DiagnosticSink::new(ws, session_id),
+        identity,
     }
 }
 

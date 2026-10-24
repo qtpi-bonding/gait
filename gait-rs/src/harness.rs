@@ -36,6 +36,9 @@ pub struct NativeHarnessBackend {
     /// When `Some`, route NotifyAndResume writes via the Nerve's Notify signal
     /// instead of writing directly to disk (required when brain is sealed).
     notify_tx: Option<tokio::sync::mpsc::UnboundedSender<NotifyPayload>>,
+    /// Agent identity that signs the parent notification. `None` makes
+    /// `notify_parent` return `NoParent`.
+    identity: Option<std::sync::Arc<gait_identity::IdentityContext>>,
 }
 
 impl NativeHarnessBackend {
@@ -44,6 +47,7 @@ impl NativeHarnessBackend {
             gait_dir,
             spawn_tx: None,
             notify_tx: None,
+            identity: None,
         }
     }
 
@@ -55,11 +59,20 @@ impl NativeHarnessBackend {
             gait_dir,
             spawn_tx: Some(spawn_tx),
             notify_tx: None,
+            identity: None,
         }
     }
 
     pub fn with_notify_tx(mut self, tx: tokio::sync::mpsc::UnboundedSender<NotifyPayload>) -> Self {
         self.notify_tx = Some(tx);
+        self
+    }
+
+    pub fn with_identity(
+        mut self,
+        identity: Option<std::sync::Arc<gait_identity::IdentityContext>>,
+    ) -> Self {
+        self.identity = identity;
         self
     }
 }
@@ -107,6 +120,8 @@ impl HarnessBackend for NativeHarnessBackend {
                         &repos,
                         target_session,
                         &c,
+                        self.identity.as_deref(),
+                        &crate::tools::spawn_agent::wall_clock_secs,
                     ) {
                         crate::session::completion::NotifyOutcome::Woke(req) => {
                             crate::launch::spawn_wake(&req);

@@ -49,6 +49,10 @@ pub struct ToolCtx {
     /// Filesystem backend: [`LocalFs`] (disk, default) or [`BufferedFs`]
     /// (spine-supplied buffer, set by the hand for delegated ops).
     pub fs: Arc<dyn FsBackend>,
+    /// The agent's identity, used to sign direct events this tool writes
+    /// (`spawn_agent`). `None` when no agent directory was supplied; tools that
+    /// need it fail hard rather than writing unsigned events.
+    pub identity: Option<Arc<gait_identity::IdentityContext>>,
 }
 
 // Manual Debug so the trait-object `fs` field (which doesn't impl Debug) is
@@ -77,7 +81,13 @@ impl ToolCtx {
             scope: None,
             output_capture: OutputCaptureTarget::Returned,
             fs: Arc::new(LocalFs),
+            identity: None,
         }
+    }
+
+    pub fn with_identity(mut self, identity: Option<Arc<gait_identity::IdentityContext>>) -> Self {
+        self.identity = identity;
+        self
     }
 
     pub fn with_network_allowlist(mut self, hosts: Vec<String>) -> Self {

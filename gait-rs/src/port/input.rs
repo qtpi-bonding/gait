@@ -48,6 +48,11 @@ impl From<(event::Body, Option<Provenance>)> for InputEnvelope {
     }
 }
 
+/// Confirmation run once an `Input` batch is durable: after every message of the
+/// batch is appended to the log. A failure is logged and never removes the
+/// appended events. If the append itself fails, the closure is dropped unrun.
+pub type OnDurable = Box<dyn FnOnce() -> anyhow::Result<()> + Send>;
+
 /// What the session source wants core to do next.
 ///
 /// `Input` appends bodies and then runs a model turn. `SessionUpdate` appends
@@ -59,6 +64,7 @@ pub enum TurnStart {
         /// One core input per message; a batch preserves message/provenance
         /// pairing and records malformed claims for later log folding.
         bodies: Vec<InputEnvelope>,
+        on_durable: Option<OnDurable>,
     },
     SessionUpdate(Vec<event::Body>),
     Resume,
@@ -90,6 +96,7 @@ impl ArgSource {
             start: Some(
                 body.map(|b| TurnStart::Input {
                     bodies: vec![(b, None).into()],
+                    on_durable: None,
                 })
                 .unwrap_or(TurnStart::Resume),
             ),
@@ -113,7 +120,7 @@ mod tests {
         let body = crate::proto::events::user_text("hi".into());
         let mut s = ArgSource::new(Some(body));
         match s.next().await.expect("first yield") {
-            TurnStart::Input { ref bodies } => match &bodies[0].body {
+            TurnStart::Input { ref bodies, .. } => match &bodies[0].body {
                 event::Body::Payload(p) => {
                     assert!(matches!(p.kind, Some(payload::Kind::UserText(_))))
                 }

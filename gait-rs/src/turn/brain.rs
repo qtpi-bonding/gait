@@ -560,6 +560,8 @@ impl BrainDriver {
         let profile = self.profile.take().ok_or_else(|| {
             anyhow::anyhow!("BrainDriver::resolve_profile called more than once (single-shot)")
         })?;
+        // The sealed brain is a process entry: it owns the agent dir.
+        let identity = gait_identity::IdentityContext::from_env()?.map(std::sync::Arc::new);
         profile
             .resolve(
                 self.codebase.clone(),
@@ -567,6 +569,7 @@ impl BrainDriver {
                 self.gait_dir.clone(),
                 self.repos.clone(),
                 self.credential.clone(),
+                identity,
             )
             .await
     }

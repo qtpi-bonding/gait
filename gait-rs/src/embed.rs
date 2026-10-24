@@ -273,13 +273,16 @@ pub async fn run_loop(
     cascade: Option<&CascadeKillHandle>,
 ) -> anyhow::Result<()> {
     while let Some(start) = source.next().await {
-        let trigger = match start {
+        let (trigger, on_durable) = match start {
             TurnStart::SessionUpdate(bodies) => {
                 record_session_update(&session.repos, gait_dir, session_id, bodies)?;
                 continue;
             }
-            TurnStart::Input { bodies } => bodies,
-            TurnStart::Resume => Vec::new(),
+            TurnStart::Input {
+                bodies,
+                on_durable,
+            } => (bodies, on_durable),
+            TurnStart::Resume => (Vec::new(), None),
         };
         let launch = driver.brain_launch(session_id);
         // Safety invariant (design §7): the gait-dir holds the agent's own config,
@@ -313,7 +316,10 @@ pub async fn run_loop(
             launch.cascade_group_arg,
             cascade.map(|h| &h.0),
             &session.repos,
-            &crate::turn::spine::TurnMode::Persistent { trigger },
+            &mut crate::turn::spine::TurnMode::Persistent {
+                trigger,
+                on_durable,
+            },
             launch.fs_delegate.clone(),
         )
         .await;
@@ -372,6 +378,7 @@ pub async fn resolve_profile(
         agent_path,
         inference_override,
     );
+    let identity = gait_identity::IdentityContext::from_env()?.map(std::sync::Arc::new);
     profile
         .resolve(
             codebase.to_path_buf(),
@@ -379,6 +386,7 @@ pub async fn resolve_profile(
             gait_dir.to_path_buf(),
             repos.clone(),
             credential,
+            identity,
         )
         .await
 }
@@ -598,7 +606,7 @@ pub async fn run_one_off_turn(
         /* cascade_group_arg */ None,
         /* signal_slot */ None,
         &crate::git::Repos::production(),
-        &TurnMode::Ephemeral { input },
+        &mut TurnMode::Ephemeral { input },
         None,
     )
     .await?;

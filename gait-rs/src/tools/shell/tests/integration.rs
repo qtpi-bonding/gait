@@ -1219,11 +1219,11 @@ async fn detached_daemon_wakes_idle_parent_on_exit() {
     // 1. Real gait_dir (TempDir) + a real parent session dir inside it.
     let gd = TempDir::new().unwrap();
     let parent_id = "swake001";
-    // `notify_parent` signs the completion before appending it. Initialize the
-    // same identity material a real gait workspace gets from `gait init`, so
-    // this test exercises the wake path rather than silently taking the
-    // registry-only fallback when the keyring is absent.
-    gait_identity::Keyring::generate().save(gd.path()).unwrap();
+    // `notify_parent` signs the completion before appending it. The
+    // `__daemon-exit` child reads the agent identity from GAIT_AGENT_DIR, so this
+    // test publishes one, and the wake path is exercised rather than the
+    // no-identity fallback.
+    crate::test_utils::publish_agent_identity();
     let parent_dir = crate::session::live::worktree_dir(gd.path(), parent_id);
     std::fs::create_dir_all(&parent_dir).unwrap();
     let parent_log_path = crate::session::live::log_path(gd.path(), parent_id);
