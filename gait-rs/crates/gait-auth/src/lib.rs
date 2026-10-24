@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 pub mod codex;
 pub mod source;
 pub mod sources;
+pub mod store;
+#[cfg(any(feature = "testing", test))]
+pub mod testing;
 
 pub use source::{AuthLocation, AuthSource, CredentialLease};
 
@@ -112,6 +115,7 @@ pub enum LoginCompletion {
     AuthorizationCode(String),
     DeviceCodeApproved,
     ProviderPayload(serde_json::Value),
+    CallbackUrl(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -128,6 +132,16 @@ pub enum AuthError {
     LoginRequired(String),
     #[error("authentication failed: {0}")]
     Other(String),
+    #[error("authentication temporarily unavailable: {0}")]
+    Retryable(String),
+}
+
+pub struct AuthContext<'a> {
+    pub store: &'a dyn store::CredentialStore,
+}
+
+pub struct LogoutReport {
+    pub revoked: bool,
 }
 
 /// A credential method's lifecycle, independent from the provider's inference
@@ -152,6 +166,50 @@ pub trait AuthMethod: Send + Sync {
     ) -> Result<ResolvedCredential, AuthError>;
 
     async fn logout(&self, credential: &ResolvedCredential) -> Result<(), AuthError>;
+
+    async fn begin_login_with(
+        &self,
+        provider_id: &str,
+        _ctx: &AuthContext<'_>,
+    ) -> Result<LoginFlow, AuthError> {
+        self.begin_login(provider_id).await
+    }
+
+    async fn complete_login_with(
+        &self,
+        provider_id: &str,
+        completion: LoginCompletion,
+        _ctx: &AuthContext<'_>,
+    ) -> Result<ResolvedCredential, AuthError> {
+        self.complete_login(provider_id, completion).await
+    }
+
+    async fn ensure_fresh(
+        &self,
+        _provider_id: &str,
+        _ctx: &AuthContext<'_>,
+    ) -> Result<ResolvedCredential, AuthError> {
+        Err(AuthError::UnsupportedCompletion(self.method_id()))
+    }
+
+    async fn logout_with(
+        &self,
+        _provider_id: &str,
+        _forget: bool,
+        _ctx: &AuthContext<'_>,
+    ) -> Result<LogoutReport, AuthError> {
+        Err(AuthError::UnsupportedCompletion(self.method_id()))
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    let mut difference = a.len() ^ b.len();
+    for index in 0..a.len().max(b.len()) {
+        difference |= a.get(index).copied().unwrap_or(0) as usize
+            ^ b.get(index).copied().unwrap_or(0) as usize;
+    }
+    difference == 0
 }
 
 /// The existing non-interactive API-key credential mechanism, expressed through
@@ -218,6 +276,34 @@ impl AuthMethod for ApiKeyAuth {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn defaults_report_unsupported_for_api_key_method() {
+        let store = crate::testing::MemoryStore::new();
+        let context = AuthContext { store: &store };
+        let flow = ApiKeyAuth
+            .begin_login_with("openai", &context)
+            .await
+            .unwrap();
+        assert_eq!(
+            flow,
+            LoginFlow::ApiKeyPrompt {
+                label: "openai API key".into()
+            }
+        );
+        let error = ApiKeyAuth
+            .ensure_fresh("openai", &context)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, AuthError::UnsupportedCompletion("api-key")));
+    }
+
+    #[test]
+    fn ct_eq_cases() {
+        assert!(ct_eq(b"same", b"same"));
+        assert!(!ct_eq(b"same", b"sane"));
+        assert!(!ct_eq(b"same", b"same!"));
+    }
 
     #[tokio::test]
     async fn api_key_auth_round_trips_without_refreshing() {
