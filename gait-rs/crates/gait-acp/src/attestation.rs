@@ -91,10 +91,11 @@ impl Attestor {
     /// Opens the attestation state for the agent in `agent_dir`, checking at
     /// startup that it has a device to accept attestations for.
     pub fn open(agent_dir: &Path, trusted: Vec<(String, PublicKey)>) -> Result<Self> {
-        let keys = identity_keyfile::AgentKeys::load(agent_dir)
-            .with_context(|| format!("load agent identity from {}", agent_dir.display()))?;
-        let own_devices = identity_keyfile::device_keys_at(&keys, now_unix());
-        Self::with_own_devices(agent_dir, trusted, own_devices, keys.agent_id.to_string())
+        let public = identity_keyfile::DeviceKeys::load(agent_dir)
+            .with_context(|| format!("load agent identity from {}", agent_dir.display()))?
+            .public();
+        let own_devices = public.device_keys_at(now_unix());
+        Self::with_own_devices(agent_dir, trusted, own_devices, public.agent_id.to_string())
     }
 
     /// The startup constructor behind [`Attestor::open`], taking the initial
@@ -136,9 +137,10 @@ impl Attestor {
         meta: &serde_json::Map<String, serde_json::Value>,
         between_read_and_claim: impl FnOnce(),
     ) -> Result<Option<VerifiedBatch>> {
-        let keys = identity_keyfile::AgentKeys::load(&self.agent_dir)
-            .with_context(|| format!("load agent identity from {}", self.agent_dir.display()))?;
-        let own_devices = identity_keyfile::device_keys_at(&keys, now_unix());
+        let own_devices = identity_keyfile::DeviceKeys::load(&self.agent_dir)
+            .with_context(|| format!("load agent identity from {}", self.agent_dir.display()))?
+            .public()
+            .device_keys_at(now_unix());
         ensure_own_devices(&self.agent_dir, &own_devices)?;
         let policy = AttestationPolicy {
             meta_key: DEFAULT_META_KEY,

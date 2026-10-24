@@ -25,7 +25,7 @@ impl IdentityContext {
 
     pub fn new(agent_dir: impl Into<PathBuf>) -> Result<Self> {
         let agent_dir = agent_dir.into();
-        let keys = identity_keyfile::AgentKeys::load(&agent_dir)
+        let keys = identity_keyfile::DeviceKeys::load(&agent_dir)
             .with_context(|| format!("load agent identity from {}", agent_dir.display()))?;
         Ok(Self { agent_dir, agent_id: keys.agent_id })
     }
@@ -38,8 +38,8 @@ impl IdentityContext {
         &self.agent_dir
     }
 
-    fn keys(&self) -> Result<identity_keyfile::AgentKeys> {
-        identity_keyfile::AgentKeys::load(&self.agent_dir)
+    fn keys(&self) -> Result<identity_keyfile::DeviceKeys> {
+        identity_keyfile::DeviceKeys::load(&self.agent_dir)
             .with_context(|| format!("load agent identity from {}", self.agent_dir.display()))
     }
 }
@@ -80,49 +80,20 @@ pub trait ProvenanceVerifier: Send + Sync {
 ///
 /// It holds no private key material and touches no file afterwards, so a process
 /// can build it before sealing its sandbox and keep verifying inside the seal.
+/// The retirement times in it are unsigned local claims; the event time passed
+/// as `at` comes from the receiver's record of the event.
 pub struct DirectVerifier {
-    agent_id: PrincipalId,
-    current_device: PublicKey,
-    /// Retired signing public keys with their `retired_at_unix_seconds`.
-    retired: Vec<(PublicKey, i64)>,
+    public: identity_keyfile::DevicePublic,
 }
 
 impl DirectVerifier {
     pub fn from_context(ctx: &IdentityContext) -> Result<Self> {
-        let keys = ctx.keys()?;
-        let current_device = identity_crypto::signing_public(&keys.device);
-        let mut retired = Vec::new();
-        for entry in &keys.retired {
-            // An unparsable or missing retired key is dropped (fail closed), the
-            // same as identity_keyfile::device_keys_at.
-            let Some(wire) = &entry.signing else {
-                continue;
-            };
-            let Ok(public) = PublicKey::try_from(wire) else {
-                continue;
-            };
-            retired.push((public, entry.retired_at_unix_seconds));
-        }
-        Ok(Self { agent_id: keys.agent_id, current_device, retired })
-    }
-
-    /// The accepted device set at `at` seconds; same rule as
-    /// `identity_keyfile::device_keys_at` (retired devices count up to and
-    /// including their retirement second).
-    fn devices_at(&self, at: i64) -> Vec<PublicKey> {
-        let mut devices = vec![self.current_device.clone()];
-        for (public, retired_at) in &self.retired {
-            if *retired_at < at || devices.contains(public) {
-                continue;
-            }
-            devices.push(public.clone());
-        }
-        devices
+        Ok(Self { public: ctx.keys()?.public() })
     }
 
     fn verify(&self, ev: &Event, session_id: &str) -> Option<PrincipalId> {
-        let devices = self.devices_at((ev.ts / 1000) as i64);
-        verify_direct_provenance(ev, self.agent_id.genesis(), &devices, session_id)
+        let devices = self.public.device_keys_at((ev.ts / 1000) as i64);
+        verify_direct_provenance(ev, self.public.agent_id.genesis(), &devices, session_id)
     }
 }
 
@@ -374,10 +345,22 @@ mod tests {
             provenance: vec![Provenance { signed_message: Some(message), ..Default::default() }],
             ..ev
         };
-        let devices = identity_keyfile::device_keys_at(&keys, 1_000);
+        let devices = keys.public().device_keys_at(1_000);
         assert!(verify_direct_provenance(&forged, ctx.agent_id().genesis(), &devices, "s").is_none());
         let verifier = DirectVerifier::from_context(&ctx).unwrap();
         assert!(verifier.verify_direct(&forged, "s").is_none());
+    }
+
+    #[test]
+    fn signing_and_verifying_work_without_root_key_file() {
+        let fixture = TempAgentDir::new(1_000, 3_600);
+        std::fs::remove_file(fixture.path().join("root.jwk.json")).unwrap();
+        std::fs::remove_file(fixture.path().join("rotations.json")).ok();
+        assert!(identity_keyfile::AgentKeys::load(fixture.path()).is_err());
+        let ctx = IdentityContext::new(fixture.path()).unwrap();
+        let ev = signed(&ctx, "event-no-root", 1_000_000, "hash", "s", 1_000, 60);
+        let verifier = DirectVerifier::from_context(&ctx).unwrap();
+        assert_eq!(verifier.verify_direct(&ev, "s"), Some(ctx.agent_id().clone()));
     }
 
     #[test]

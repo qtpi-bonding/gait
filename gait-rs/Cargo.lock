@@ -2574,8 +2574,8 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 
 [[package]]
 name = "identity-crypto"
-version = "0.5.1"
-source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=7a074a677142e8fd6027e6c2ed8c8d41b1a1f39a#7a074a677142e8fd6027e6c2ed8c8d41b1a1f39a"
+version = "0.5.2"
+source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=c6a5e8da1ccc6500abd9b22171a06f36da5a1da8#c6a5e8da1ccc6500abd9b22171a06f36da5a1da8"
 dependencies = [
  "chrono",
  "hex",
@@ -2592,8 +2592,8 @@ dependencies = [
 
 [[package]]
 name = "identity-keyfile"
-version = "0.5.1"
-source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=7a074a677142e8fd6027e6c2ed8c8d41b1a1f39a#7a074a677142e8fd6027e6c2ed8c8d41b1a1f39a"
+version = "0.5.2"
+source = "git+https://github.com/qtpi-bonding/identity-crypto.git?rev=c6a5e8da1ccc6500abd9b22171a06f36da5a1da8#c6a5e8da1ccc6500abd9b22171a06f36da5a1da8"
 dependencies = [
  "identity-crypto",
  "serde",
@@ -3090,7 +3090,7 @@ dependencies = [
 [[package]]
 name = "message-attestation"
 version = "0.1.0"
-source = "git+https://github.com/qtpi-bonding/message-attestation.git?rev=0ff395fe15dae24c0c01ed71ca0ee42cc13705e7#0ff395fe15dae24c0c01ed71ca0ee42cc13705e7"
+source = "git+https://github.com/qtpi-bonding/message-attestation.git?rev=b3c8ee669fea06eef22efd2a74e06a92c6fc685c#b3c8ee669fea06eef22efd2a74e06a92c6fc685c"
 dependencies = [
  "identity-crypto",
  "serde_json",
