@@ -10,7 +10,7 @@ fn cwd_or_dot() -> PathBuf {
 fn main() {
     // Process entry, still single-threaded: the tokio runtime is built only
     // below, so the environment write for `--agent-dir` cannot race a thread.
-    // Children (brain, daemon-exit, run) inherit GAIT_AGENT_DIR from here.
+    // Children (brain, run) inherit GAIT_AGENT_DIR from here.
     let raw: Vec<String> = std::env::args().collect();
     if let Ok(cli) = Cli::try_parse_from(&raw) {
         gait_bin::apply_agent_dir_flag(&cli);
