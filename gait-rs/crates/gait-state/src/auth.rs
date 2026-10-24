@@ -12,6 +12,12 @@ use crate::gait_home::{GaitHome, GaitHomeError};
 pub enum AuthError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("corrupt authentication file {path}: {detail}")]
+    Corrupt { path: PathBuf, detail: String },
+    #[error("timed out waiting for authentication file lock")]
+    LockTimeout,
+    #[error("authentication is managed elsewhere: {0}")]
+    ManagedElsewhere(String),
     #[error("path has no parent: {0}")]
     NoParent(PathBuf),
     #[error("unsupported authentication source '{0}'")]
@@ -135,10 +141,11 @@ pub fn resolve_credential_lease_with(
             revision: None,
         }));
     }
-    let text = std::fs::read_to_string(&auth_path)?;
-    let map = serde_json::from_str::<HashMap<String, AuthEntry>>(&text)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    match map.get(provider) {
+    let map = crate::auth_file::load_auth_map(&auth_path)?;
+    let entry = map
+        .get(provider)
+        .and_then(|value| serde_json::from_value::<AuthEntry>(value.clone()).ok());
+    match entry.as_ref() {
         Some(AuthEntry::External { source, home }) => {
             resolve_external(platform, provider, source, home.as_deref())
         }
@@ -246,36 +253,18 @@ fn read_raw_auth(path: &std::path::Path) -> HashMap<String, serde_json::Value> {
     serde_json::from_str(&text).unwrap_or_default()
 }
 
-fn restrict_auth_file_permissions(path: &std::path::Path) -> Result<(), AuthError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
-}
-
 pub fn write_api_key_to(
     path: &std::path::Path,
     provider: &str,
     key: &str,
 ) -> Result<(), AuthError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| AuthError::NoParent(path.to_owned()))?;
-    std::fs::create_dir_all(parent)?;
-    let mut data = read_raw_auth(path);
-    data.insert(
-        provider.to_string(),
-        serde_json::json!({ "type": "api", "key": key }),
-    );
-    std::fs::write(
-        path,
-        serde_json::to_string_pretty(&data)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
-    )?;
-    restrict_auth_file_permissions(path)?;
-    Ok(())
+    crate::auth_file::update_auth_file(path, |data| {
+        data.insert(
+            provider.to_string(),
+            serde_json::json!({ "type": "api", "key": key }),
+        );
+        Ok(())
+    })
 }
 
 pub fn write_api_key(provider: &str, key: &str) -> Result<(), AuthError> {
@@ -297,14 +286,8 @@ pub fn write_subscription_credential_to(
     provider: &str,
     credential: &gait_auth::SubscriptionCredential,
 ) -> Result<(), AuthError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| AuthError::NoParent(path.to_owned()))?;
-    std::fs::create_dir_all(parent)?;
-    let mut data = read_raw_auth(path);
-    data.insert(
-        provider.to_string(),
-        serde_json::to_value(AuthEntry::Subscription {
+    crate::auth_file::update_auth_file(path, |data| {
+        let value = serde_json::to_value(AuthEntry::Subscription {
             provider_id: credential.provider_id.clone(),
             method_id: credential.method_id.clone(),
             version: credential.version,
@@ -312,15 +295,13 @@ pub fn write_subscription_credential_to(
             account_label: credential.account_label.clone(),
             secret: credential.secret.clone(),
         })
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
-    );
-    std::fs::write(
-        path,
-        serde_json::to_string_pretty(&data)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
-    )?;
-    restrict_auth_file_permissions(path)?;
-    Ok(())
+        .map_err(|error| AuthError::Corrupt {
+            path: path.to_owned(),
+            detail: error.to_string(),
+        })?;
+        data.insert(provider.to_string(), value);
+        Ok(())
+    })
 }
 
 pub fn write_subscription_credential(
@@ -345,26 +326,18 @@ pub fn write_external_binding_to(
     source: &str,
     home: Option<&Path>,
 ) -> Result<(), AuthError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| AuthError::NoParent(path.to_owned()))?;
-    std::fs::create_dir_all(parent)?;
-    let mut data = read_raw_auth(path);
-    data.insert(
-        provider.to_string(),
-        serde_json::to_value(AuthEntry::External {
+    crate::auth_file::update_auth_file(path, |data| {
+        let value = serde_json::to_value(AuthEntry::External {
             source: source.to_string(),
             home: home.map(Path::to_path_buf),
         })
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,
-    );
-    std::fs::write(
-        path,
-        serde_json::to_string_pretty(&data)
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,
-    )?;
-    restrict_auth_file_permissions(path)?;
-    Ok(())
+        .map_err(|error| AuthError::Corrupt {
+            path: path.to_owned(),
+            detail: error.to_string(),
+        })?;
+        data.insert(provider.to_string(), value);
+        Ok(())
+    })
 }
 
 pub fn write_external_binding(
@@ -404,20 +377,15 @@ pub fn external_binding_with(
 }
 
 pub fn unlink_external_binding_from(path: &Path, provider: &str) -> Result<(), AuthError> {
-    let mut data = read_raw_auth(path);
-    match data.get(provider).and_then(|value| value.get("type")) {
-        None => return Ok(()),
-        Some(kind) if kind.as_str() == Some("external") => {}
-        Some(_) => return Err(AuthError::NotExternalBinding(provider.to_string())),
-    }
-    data.remove(provider);
-    std::fs::write(
-        path,
-        serde_json::to_string_pretty(&data)
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,
-    )?;
-    restrict_auth_file_permissions(path)?;
-    Ok(())
+    crate::auth_file::update_auth_file(path, |data| {
+        match data.get(provider).and_then(|value| value.get("type")) {
+            None => return Ok(()),
+            Some(kind) if kind.as_str() == Some("external") => {}
+            Some(_) => return Err(AuthError::NotExternalBinding(provider.to_string())),
+        }
+        data.remove(provider);
+        Ok(())
+    })
 }
 
 pub fn unlink_external_binding(provider: &str) -> Result<(), AuthError> {
@@ -432,15 +400,10 @@ pub fn unlink_external_binding_with(
 }
 
 pub fn remove_api_key_from(path: &std::path::Path, provider: &str) -> Result<(), AuthError> {
-    let mut data = read_raw_auth(path);
-    data.remove(provider);
-    std::fs::write(
-        path,
-        serde_json::to_string_pretty(&data)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
-    )?;
-    restrict_auth_file_permissions(path)?;
-    Ok(())
+    crate::auth_file::update_auth_file(path, |data| {
+        data.remove(provider);
+        Ok(())
+    })
 }
 
 pub fn remove_api_key(provider: &str) -> Result<(), AuthError> {
@@ -796,5 +759,59 @@ mod tests {
             lease.location,
             AuthLocation::Environment("OPENAI_API_KEY".into())
         );
+    }
+
+    #[test]
+    fn writers_refuse_corrupt_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("auth.json");
+        let original = b"{not json";
+        std::fs::write(&path, original).unwrap();
+        let credential = gait_auth::SubscriptionCredential {
+            provider_id: "openai".into(),
+            method_id: "test".into(),
+            version: 1,
+            expires_at_unix_s: None,
+            account_label: None,
+            secret: serde_json::json!({}),
+        };
+
+        let results = [
+            write_api_key_to(&path, "openai", "key"),
+            write_subscription_credential_to(&path, "openai", &credential),
+            write_external_binding_to(&path, "openai", "codex", None),
+            unlink_external_binding_from(&path, "openai"),
+            remove_api_key_from(&path, "openai"),
+        ];
+
+        for result in results {
+            assert!(matches!(result, Err(AuthError::Corrupt { .. })));
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn unknown_type_entry_does_not_break_resolution() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join(".gait-home/auth.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "future": { "type": "future", "value": 1 },
+                "openai": { "type": "api", "key": "sk-valid" }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let platform = FakePlatform {
+            home: dir.path().to_path_buf(),
+            env: HashMap::new(),
+        };
+
+        let credential = resolve_credential_with(&platform, "openai")
+            .unwrap()
+            .unwrap();
+        assert_eq!(credential.api_key(), Some("sk-valid"));
     }
 }
