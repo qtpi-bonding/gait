@@ -53,6 +53,7 @@ pub struct VerifiedRoomMessage {
 pub struct Attestor {
     agent_dir: PathBuf,
     trusted: Vec<(String, PublicKey)>,
+    extra_recipients: Vec<PublicKey>,
     scope: String,
     replay: Arc<FileReplayStore>,
     in_flight: Arc<Mutex<HashSet<(String, u64)>>>,
@@ -114,10 +115,19 @@ impl Attestor {
         Ok(Self {
             agent_dir: agent_dir.to_owned(),
             trusted,
+            extra_recipients: Vec::new(),
             scope,
             replay: Arc::new(replay),
             in_flight: Arc::new(Mutex::new(HashSet::new())),
         })
+    }
+
+    /// Also accepts attestations addressed to these device keys (the
+    /// `--trusted-recipient-key` files), beside the agent's own devices. The
+    /// delivery-key trust table and the replay scope are untouched.
+    pub fn with_extra_recipients(mut self, keys: Vec<PublicKey>) -> Self {
+        self.extra_recipients = keys;
+        self
     }
 
     /// Verifies the attestation in a prompt's `_meta` object. `Ok(None)` when
@@ -143,6 +153,8 @@ impl Attestor {
             .public()
             .device_keys_at(now_unix());
         ensure_own_devices(&self.agent_dir, &own_devices)?;
+        let mut own_devices = own_devices;
+        own_devices.extend(self.extra_recipients.iter().cloned());
         let policy = AttestationPolicy {
             meta_key: DEFAULT_META_KEY,
             trusted: &self.trusted,
@@ -279,19 +291,19 @@ pub fn verify_prompt(
     })
 }
 
-/// Reads a `--trusted-multimatrix-key` file: the PUBLIC key-duo JWK of a
-/// delivery key, as `export_public_key_duo_jwk` writes it. Returns the key id
+/// Reads a `--trusted-multimatrix-key` or `--trusted-recipient-key` file: the
+/// PUBLIC key-duo JWK of a delivery or recipient device key, as `export_public_key_duo_jwk` writes it. Returns the key id
 /// attestations carry (the RFC 7638 thumbprint of the signing half) and the
 /// signing key. A private JWK is refused rather than having its private
 /// members silently dropped.
 pub fn load_trusted_key(path: &Path) -> Result<(String, PublicKey)> {
     let json = std::fs::read_to_string(path)
-        .with_context(|| format!("read trusted multimatrix key {}", path.display()))?;
+        .with_context(|| format!("read trusted key {}", path.display()))?;
     let value: serde_json::Value = serde_json::from_str(&json)
         .with_context(|| format!("{} is not JSON", path.display()))?;
     ValidationService::validate_no_private_key_material(&value).map_err(|error| {
         anyhow!(
-            "{} holds private key material; --trusted-multimatrix-key takes the public key-duo JWK: {error}",
+            "{} holds private key material; trusted key flags take the public key-duo JWK: {error}",
             path.display()
         )
     })?;
@@ -468,6 +480,25 @@ mod tests {
         let central = GenerationService::generate_key_duo();
         let key = PublicKey::from(central.signing_key_pair());
         (central, (key.thumbprint(), key))
+    }
+
+    #[test]
+    fn extra_recipient_key_is_accepted_and_an_unlisted_key_is_not() {
+        let agent = TempAgentDir::new(now_unix(), 86_400);
+        let (central, trusted) = trusted_central();
+        let extra = PublicKey::from(GenerationService::generate_key_duo().signing_key_pair());
+        let unlisted = PublicKey::from(GenerationService::generate_key_duo().signing_key_pair());
+        let attestor = Attestor::open(agent.path(), vec![trusted])
+            .unwrap()
+            .with_extra_recipients(vec![extra.clone()]);
+        assert!(
+            attestor.verify(&batch_meta(&central, &extra, 1)).unwrap().is_some(),
+            "a batch addressed to a trusted recipient key verifies"
+        );
+        assert!(
+            attestor.verify(&batch_meta(&central, &unlisted, 2)).is_err(),
+            "a batch addressed to a key that is neither the agent's nor trusted is rejected"
+        );
     }
 
     #[test]

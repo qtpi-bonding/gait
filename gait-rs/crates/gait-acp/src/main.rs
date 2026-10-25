@@ -7,8 +7,9 @@
 //! dispatch at all, which just reran `gait_acp::run()` and misread the
 //! brain's binary Nerve init frame as malformed ACP JSON-RPC.
 //!
-//! `--require-attestation` and (repeatable) `--trusted-multimatrix-key
-//! <path>` are the process-level attestation policy -- deliberately parsed
+//! `--require-attestation`, (repeatable) `--trusted-multimatrix-key <path>`
+//! and (repeatable) `--trusted-recipient-key <path>` (an extra device key an
+//! attestation may be addressed to, beside the agent's own) are the process-level attestation policy -- deliberately parsed
 //! here, not read from any runtime `_meta` claim, since the trust boundary has
 //! to be rooted in how the process itself was launched (e.g. by
 //! `multimatrix-bridge`). The key path names a PUBLIC key-duo JWK file. The
@@ -26,18 +27,22 @@ enum ConfigError {
     #[error("--trusted-multimatrix-key needs the path of a public key-duo JWK")]
     #[coded(code = "trusted_key_path_missing", class = Logical)]
     TrustedKeyPathMissing,
+    #[error("--trusted-recipient-key needs the path of a public key-duo JWK")]
+    #[coded(code = "trusted_recipient_key_path_missing", class = Logical)]
+    TrustedRecipientKeyPathMissing,
     #[error("--require-attestation needs an agent identity: set GAIT_AGENT_DIR to the agent directory")]
     #[coded(code = "attestation_needs_identity", class = Logical)]
     AttestationNeedsIdentity,
 }
 
-/// Returns `(require_attestation, trusted delivery keys)`. Each key is read from
+/// Returns `(require_attestation, trusted delivery keys, extra recipient keys)`. Each key is read from
 /// its JWK file, so a missing or private-key file is an error here, at startup.
 fn parse_attestation_flags(
     argv: &[String],
-) -> anyhow::Result<(bool, Vec<(String, PublicKey)>)> {
+) -> anyhow::Result<(bool, Vec<(String, PublicKey)>, Vec<PublicKey>)> {
     let mut require_attestation = false;
     let mut trusted_keys = Vec::new();
+    let mut recipient_keys = Vec::new();
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
@@ -49,11 +54,18 @@ fn parse_attestation_flags(
                 trusted_keys.push(load_trusted_key(Path::new(path))?);
                 i += 1;
             }
+            "--trusted-recipient-key" => {
+                let Some(path) = argv.get(i + 1) else {
+                    return Err(coded_error::into_anyhow(ConfigError::TrustedRecipientKeyPathMissing));
+                };
+                recipient_keys.push(load_trusted_key(Path::new(path))?.1);
+                i += 1;
+            }
             _ => {}
         }
         i += 1;
     }
-    Ok((require_attestation, trusted_keys))
+    Ok((require_attestation, trusted_keys, recipient_keys))
 }
 
 fn main() -> std::process::ExitCode {
@@ -83,7 +95,7 @@ fn main() -> std::process::ExitCode {
         runtime.block_on(async { gait_core::__dispatch_role(&raw[1..]).await });
         return std::process::ExitCode::SUCCESS;
     }
-    let (require_attestation, trusted_keys) = match parse_attestation_flags(&raw[1..]) {
+    let (require_attestation, trusted_keys, recipient_keys) = match parse_attestation_flags(&raw[1..]) {
         Ok(flags) => flags,
         Err(error) => {
             eprintln!("{error:#}");
@@ -97,7 +109,7 @@ fn main() -> std::process::ExitCode {
     }
     let attestor = match identity.as_ref() {
         Some(ctx) => match Attestor::open(ctx.agent_dir(), trusted_keys) {
-            Ok(attestor) => Some(Arc::new(attestor)),
+            Ok(attestor) => Some(Arc::new(attestor.with_extra_recipients(recipient_keys))),
             Err(error) => {
                 eprintln!("{error:#}");
                 return std::process::ExitCode::from(coded_error::cli::exit_code_anyhow(&error));
@@ -159,7 +171,7 @@ mod tests {
     #[test]
     fn parses_require_attestation_flag() {
         let argv = vec!["--require-attestation".to_string()];
-        let (require, keys) = parse_attestation_flags(&argv).unwrap();
+        let (require, keys, _) = parse_attestation_flags(&argv).unwrap();
         assert!(require);
         assert!(keys.is_empty());
     }
@@ -175,12 +187,49 @@ mod tests {
             "--trusted-multimatrix-key".to_string(),
             second,
         ];
-        let (require, keys) = parse_attestation_flags(&argv).unwrap();
+        let (require, keys, _) = parse_attestation_flags(&argv).unwrap();
         assert!(!require);
         assert_eq!(keys.len(), 2);
         assert_ne!(keys[0].0, keys[1].0, "each key is keyed by its own thumbprint");
         assert_eq!(keys[0].0, keys[0].1.thumbprint());
         assert_eq!(keys[1].0, keys[1].1.thumbprint());
+    }
+
+    #[test]
+    fn parses_repeated_trusted_recipient_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = public_jwk_file(dir.path(), "r1.jwk.json");
+        let second = public_jwk_file(dir.path(), "r2.jwk.json");
+        let argv = vec![
+            "--trusted-recipient-key".to_string(),
+            first,
+            "--trusted-recipient-key".to_string(),
+            second,
+        ];
+        let (_, delivery, recipients) = parse_attestation_flags(&argv).unwrap();
+        assert!(delivery.is_empty(), "a recipient key is not a delivery key");
+        assert_eq!(recipients.len(), 2);
+        assert_ne!(recipients[0].thumbprint(), recipients[1].thumbprint());
+    }
+
+    #[test]
+    fn trusted_recipient_key_needs_a_path_and_a_public_key() {
+        let missing = parse_attestation_flags(&["--trusted-recipient-key".into()])
+            .expect_err("a missing path must fail");
+        assert_eq!(
+            coded_error::facts_anyhow(&missing).code,
+            "gait.acp.config.trusted_recipient_key_path_missing"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let private = dir.path().join("private.jwk.json");
+        let duo = GenerationService::generate_key_duo();
+        std::fs::write(&private, KeyDuoSerializer::export_key_duo_jwk(&duo).unwrap()).unwrap();
+        let error = parse_attestation_flags(&[
+            "--trusted-recipient-key".into(),
+            private.display().to_string(),
+        ])
+        .expect_err("a private JWK must be refused");
+        assert!(format!("{error:#}").contains("private key material"));
     }
 
     #[test]
@@ -200,7 +249,7 @@ mod tests {
     #[test]
     fn no_attestation_flags_yields_permissive_defaults() {
         let argv: Vec<String> = vec![];
-        let (require, keys) = parse_attestation_flags(&argv).unwrap();
+        let (require, keys, _) = parse_attestation_flags(&argv).unwrap();
         assert!(!require);
         assert!(keys.is_empty());
     }
