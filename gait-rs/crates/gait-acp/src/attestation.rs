@@ -263,7 +263,6 @@ pub fn verify_prompt(
         coded_error::into_anyhow(PromptError::AttestationMissingOwnDevices)
     })?;
     attestor.verify(meta).map_err(|error| {
-        let text = error.to_string();
         let typed = match coded_error::downcast_ref::<AttestationError>(&error) {
             Some(AttestationError::UnknownKeyId(key)) =>
                 PromptError::AttestationUnknownKey(key.clone()),
@@ -274,7 +273,7 @@ pub fn verify_prompt(
             Some(AttestationError::EmptyMessages) => PromptError::AttestationEmpty,
             Some(AttestationError::OwnDevicesMissing) =>
                 PromptError::AttestationMissingOwnDevices,
-            _ => PromptError::Internal(text),
+            _ => return error,
         };
         coded_error::into_anyhow(typed)
     })

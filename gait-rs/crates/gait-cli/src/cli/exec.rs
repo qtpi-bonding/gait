@@ -228,7 +228,7 @@ pub async fn cmd_exec(
             let code = render_and_maybe_run(one, is_tty).unwrap_or(1);
             Ok(ExitCode::from(code as u8))
         }
-        Err(e) => Err(CliError::failed(format!("gait -e: {e}"))),
+        Err(e) => Err(CliError::failed_with("gait -e", e)),
     }
 }
 

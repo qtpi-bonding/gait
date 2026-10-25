@@ -51,7 +51,7 @@ async fn run(raw: Vec<String>) -> ExitCode {
     }
     if raw.len() >= 2 && gait_core::is_role_argv(&raw[1..]) {
         gait_core::__dispatch_role(&raw[1..]).await;
-        return ExitCode::from(1);
+        return ExitCode::SUCCESS;
     }
     if raw.len() >= 2 && gait_core::is_run_argv(&raw[1..]) {
         #[cfg(feature = "telemetry")]

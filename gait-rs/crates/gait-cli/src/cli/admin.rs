@@ -112,14 +112,14 @@ pub async fn cmd_local(args: LocalArgs) -> CliResult {
                         args.pretty
                     )
                 ),
-                Err(error) => return Err(CliError::failed(format!("[gait] {error}"))),
+                Err(error) => return Err(CliError::failed_after("[gait]", error)),
             }
         }
         "status" | "stop" => {
             let inference = match gait_core::inferences::load_inference(&args.gait_dir, &args.name)
             {
                 Ok(value) => value,
-                Err(error) => return Err(CliError::failed(format!("[gait] {error}"))),
+                Err(error) => return Err(CliError::failed_after("[gait]", error)),
             };
             let params = match inference
                 .llm_params
@@ -236,7 +236,7 @@ pub fn cmd_inference(args: InferenceArgs) -> CliResult {
                         pretty
                     )
                 ),
-                Err(e) => return Err(CliError::failed(format!("[gait] {e}"))),
+                Err(e) => return Err(CliError::failed_after("[gait]", e)),
             }
         }
         "select" => {
@@ -255,14 +255,14 @@ pub fn cmd_inference(args: InferenceArgs) -> CliResult {
                     )));
                 }
                 let selection = gait_ops::inference::resolve_selection(&args.gait_dir, name)
-                    .map_err(|e| CliError::failed(format!("[gait] {e}")))?;
+                    .map_err(|e| CliError::failed_after("[gait]", e))?;
                 gait_core::embed::record_session_update(
                     &gait_core::git::Repos::production(),
                     &args.gait_dir,
                     session,
                     vec![selection.event_body],
                 )
-                .map_err(|e| CliError::failed(format!("[gait] {e}")))
+                .map_err(|e| CliError::failed_after("[gait]", e))
             })()?;
         }
         "clear" => {
@@ -278,14 +278,14 @@ pub fn cmd_inference(args: InferenceArgs) -> CliResult {
                     )));
                 }
                 let selection = gait_ops::inference::resolve_selection(&args.gait_dir, "default")
-                    .map_err(|e| CliError::failed(format!("[gait] {e}")))?;
+                    .map_err(|e| CliError::failed_after("[gait]", e))?;
                 gait_core::embed::record_session_update(
                     &gait_core::git::Repos::production(),
                     &args.gait_dir,
                     session,
                     vec![selection.event_body],
                 )
-                .map_err(|e| CliError::failed(format!("[gait] {e}")))
+                .map_err(|e| CliError::failed_after("[gait]", e))
             })()?;
         }
         "add" => {
@@ -307,7 +307,7 @@ pub fn cmd_inference(args: InferenceArgs) -> CliResult {
                         pretty
                     )
                 ),
-                Err(e) => return Err(CliError::failed(format!("[gait] {e}"))),
+                Err(e) => return Err(CliError::failed_after("[gait]", e)),
             }
         }
         _ => {
@@ -373,7 +373,7 @@ pub fn cmd_mode(args: ModeArgs) -> CliResult {
                         pretty
                     )
                 ),
-                Err(e) => return Err(CliError::failed(format!("[gait] {e}"))),
+                Err(e) => return Err(CliError::failed_after("[gait]", e)),
             }
         }
         "select" => {
@@ -392,14 +392,14 @@ pub fn cmd_mode(args: ModeArgs) -> CliResult {
                     )));
                 }
                 let selection = gait_ops::mode::resolve_selection(&args.gait_dir, name)
-                    .map_err(|e| CliError::failed(format!("[gait] {e}")))?;
+                    .map_err(|e| CliError::failed_after("[gait]", e))?;
                 gait_core::embed::record_session_update(
                     &gait_core::git::Repos::production(),
                     &args.gait_dir,
                     session,
                     vec![selection.event_body],
                 )
-                .map_err(|e| CliError::failed(format!("[gait] {e}")))
+                .map_err(|e| CliError::failed_after("[gait]", e))
             })()?;
         }
         "clear" => {
@@ -415,14 +415,14 @@ pub fn cmd_mode(args: ModeArgs) -> CliResult {
                     )));
                 }
                 let selection = gait_ops::mode::resolve_selection(&args.gait_dir, "default")
-                    .map_err(|e| CliError::failed(format!("[gait] {e}")))?;
+                    .map_err(|e| CliError::failed_after("[gait]", e))?;
                 gait_core::embed::record_session_update(
                     &gait_core::git::Repos::production(),
                     &args.gait_dir,
                     session,
                     vec![selection.event_body],
                 )
-                .map_err(|e| CliError::failed(format!("[gait] {e}")))
+                .map_err(|e| CliError::failed_after("[gait]", e))
             })()?;
         }
         "add" => {
@@ -449,7 +449,7 @@ pub fn cmd_mode(args: ModeArgs) -> CliResult {
                         pretty
                     )
                 ),
-                Err(e) => return Err(CliError::failed(format!("[gait] {e}"))),
+                Err(e) => return Err(CliError::failed_after("[gait]", e)),
             }
         }
         _ => {
@@ -656,7 +656,7 @@ pub async fn cmd_auth(args: AuthArgs) -> CliResult {
         "list" => {
             let creds = match gait_ops::auth::list() {
                 Ok(credentials) => credentials,
-                Err(error) => return Err(CliError::failed(format!("[gait] error: {error}"))),
+                Err(error) => return Err(CliError::failed_with("[gait] error", error)),
             };
             println!(
                 "{}",
@@ -695,7 +695,7 @@ pub async fn cmd_auth(args: AuthArgs) -> CliResult {
                         pretty
                     )
                 ),
-                Err(e) => return Err(CliError::failed(format!("[gait] error: {}", e))),
+                Err(e) => return Err(CliError::failed_with("[gait] error", e)),
             }
         }
         "login" => {
@@ -705,20 +705,20 @@ pub async fn cmd_auth(args: AuthArgs) -> CliResult {
                     let callback = match read_callback_arg(arg, std::io::stdin()) {
                         Ok(value) => value,
                         Err(error) => {
-                            return Err(CliError::failed(format!("[gait] error: {error}")))
+                            return Err(CliError::failed_with("[gait] error", error))
                         }
                     };
                     match gait_ops::auth::login_complete(provider, callback).await {
                         Ok(out) => print_login_success(out, pretty),
                         Err(error) => {
-                            return Err(CliError::failed(format!("[gait] error: {error}")))
+                            return Err(CliError::failed_with("[gait] error", error))
                         }
                     }
                 } else {
                     let start = match gait_ops::auth::login_begin(provider).await {
                         Ok(value) => value,
                         Err(error) => {
-                            return Err(CliError::failed(format!("[gait] error: {error}")))
+                            return Err(CliError::failed_with("[gait] error", error))
                         }
                     };
                     if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
@@ -727,13 +727,13 @@ pub async fn cmd_auth(args: AuthArgs) -> CliResult {
                         let callback = match read_callback_arg("-", std::io::stdin()) {
                             Ok(value) => value,
                             Err(error) => {
-                                return Err(CliError::failed(format!("[gait] error: {error}")))
+                                return Err(CliError::failed_with("[gait] error", error))
                             }
                         };
                         match gait_ops::auth::login_complete(provider, callback).await {
                             Ok(out) => print_login_success(out, pretty),
                             Err(error) => {
-                                return Err(CliError::failed(format!("[gait] error: {error}")))
+                                return Err(CliError::failed_with("[gait] error", error))
                             }
                         }
                     } else {
@@ -769,7 +769,7 @@ pub async fn cmd_auth(args: AuthArgs) -> CliResult {
             .await
             {
                 Ok(out) => print_login_success(out, pretty),
-                Err(error) => return Err(CliError::failed(format!("[gait] error: {error}"))),
+                Err(error) => return Err(CliError::failed_with("[gait] error", error)),
             }
         }
         "status" => {
@@ -785,7 +785,7 @@ pub async fn cmd_auth(args: AuthArgs) -> CliResult {
                         pretty
                     )
                 ),
-                Err(error) => return Err(CliError::failed(format!("[gait] error: {error}"))),
+                Err(error) => return Err(CliError::failed_with("[gait] error", error)),
             }
         }
         "link" => {
@@ -813,7 +813,7 @@ pub async fn cmd_auth(args: AuthArgs) -> CliResult {
                         pretty
                     )
                 ),
-                Err(error) => return Err(CliError::failed(format!("[gait] error: {error}"))),
+                Err(error) => return Err(CliError::failed_with("[gait] error", error)),
             }
         }
         "unlink" => {
@@ -829,7 +829,7 @@ pub async fn cmd_auth(args: AuthArgs) -> CliResult {
                         pretty
                     )
                 ),
-                Err(error) => return Err(CliError::failed(format!("[gait] error: {error}"))),
+                Err(error) => return Err(CliError::failed_with("[gait] error", error)),
             }
         }
         "logout" => {
@@ -848,7 +848,7 @@ pub async fn cmd_auth(args: AuthArgs) -> CliResult {
                             eprintln!("Disconnect the app in ChatGPT Settings.");
                         }
                     }
-                    Err(error) => return Err(CliError::failed(format!("[gait] error: {error}"))),
+                    Err(error) => return Err(CliError::failed_with("[gait] error", error)),
                 }
                 return Ok(());
             }
@@ -865,7 +865,7 @@ pub async fn cmd_auth(args: AuthArgs) -> CliResult {
                         pretty
                     )
                 ),
-                Err(error) => return Err(CliError::failed(format!("[gait] error: {error}"))),
+                Err(error) => return Err(CliError::failed_with("[gait] error", error)),
             }
         }
         "remove" | "rm" => {
@@ -881,7 +881,7 @@ pub async fn cmd_auth(args: AuthArgs) -> CliResult {
                         pretty
                     )
                 ),
-                Err(e) => return Err(CliError::failed(format!("[gait] error: {}", e))),
+                Err(e) => return Err(CliError::failed_with("[gait] error", e)),
             }
         }
         other => {
@@ -956,7 +956,7 @@ pub fn cmd_register(args: RegisterArgs) -> anyhow::Result<()> {
 
 pub fn cmd_enable(args: EnableArgs) -> CliResult {
     let gait_dir = crate::cli::args::resolve_gait_dir_from(args.gait_dir.clone())
-        .map_err(|error| CliError::failed(format!("[gait] {error}")))?;
+        .map_err(|error| CliError::failed_after("[gait]", error))?;
     let params = gait_ops::extension::EnableParams {
         gait_dir,
         kind: args.kind.clone(),
@@ -970,14 +970,14 @@ pub fn cmd_enable(args: EnableArgs) -> CliResult {
                 args.pretty
             )
         ),
-        Err(e) => return Err(CliError::failed(format!("[gait] error: {}", e))),
+        Err(e) => return Err(CliError::failed_with("[gait] error", e)),
     }
     Ok(())
 }
 
 pub fn cmd_disable(args: DisableArgs) -> CliResult {
     let gait_dir = crate::cli::args::resolve_gait_dir_from(args.gait_dir.clone())
-        .map_err(|error| CliError::failed(format!("[gait] {error}")))?;
+        .map_err(|error| CliError::failed_after("[gait]", error))?;
     let params = gait_ops::extension::EnableParams {
         gait_dir,
         kind: args.kind.clone(),
@@ -991,7 +991,7 @@ pub fn cmd_disable(args: DisableArgs) -> CliResult {
                 args.pretty
             )
         ),
-        Err(e) => return Err(CliError::failed(format!("[gait] error: {}", e))),
+        Err(e) => return Err(CliError::failed_with("[gait] error", e)),
     }
     Ok(())
 }
@@ -1072,7 +1072,7 @@ pub fn cmd_config(args: ConfigArgs) -> CliResult {
                         args.pretty
                     )
                 ),
-                Err(e) => return Err(CliError::failed(format!("[gait] error: {}", e))),
+                Err(e) => return Err(CliError::failed_with("[gait] error", e)),
             }
         }
         "get" => {
@@ -1089,12 +1089,12 @@ pub fn cmd_config(args: ConfigArgs) -> CliResult {
                         args.pretty
                     )
                 ),
-                Err(e) => return Err(CliError::failed(format!("[gait] error: {}", e))),
+                Err(e) => return Err(CliError::failed_with("[gait] error", e)),
             }
         }
         "show" => match gait_ops::config::resolve(&args.gait_dir, &args.gait_dir) {
             Ok(value) => println!("{}", gait_ops::render_json(&value, args.pretty)),
-            Err(e) => return Err(CliError::failed(format!("[gait] {e}"))),
+            Err(e) => return Err(CliError::failed_after("[gait]", e)),
         },
         _ => return Err(CliError::usage("[gait] usage: gait config <set|get|show> ...")),
     }

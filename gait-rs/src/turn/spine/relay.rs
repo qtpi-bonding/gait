@@ -68,7 +68,9 @@ pub(crate) fn emit_agent_reported(
         parent_session_id: parent_session_id.to_string(),
         child_session_id: child_session_id.to_string(),
         status: status.to_string(),
-        signed: true,
+        // Only a `Woke` outcome wrote (and signed) an event; the other three
+        // wrote nothing.
+        signed: matches!(outcome, crate::session::completion::NotifyOutcome::Woke(_)),
         outcome: notify_outcome(outcome.clone()) as i32,
     });
 }
@@ -852,124 +854,10 @@ fn record_terminal_failure(
     concord_telemetry::error_anyhow!(&err, source = "gait.turn", session_id = %session_id);
 }
 
-#[cfg(all(test, feature = "telemetry"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::proto::gait::log::v1::ToolResult;
-    use crate::proto::gait::sandbox::v1::FinalizedTurn;
-
-    #[test]
-    fn turn_completed_maps_every_outcome() {
-        use crate::proto::gait::sandbox::v1::FinalizedTurnOutcome as F;
-        use gait_events::gait::events::v1::TurnOutcome as T;
-        let cases = [
-            (F::Unspecified, T::Unspecified),
-            (F::TextDone, T::Done),
-            (F::StructuredDone, T::Done),
-            (F::Clarify, T::Clarify),
-            (F::Inform, T::Inform),
-            (F::Permissions, T::Permissions),
-            (F::SandboxUnlock, T::SandboxUnlock),
-            (F::Cancelled, T::Cancelled),
-            (F::Failed, T::Failed),
-        ];
-        for (input, expected) in cases {
-            assert_eq!(turn_outcome(input), expected);
-        }
-    }
-
-    #[test]
-    fn turn_completed_emits_once_with_outcome() {
-        let capture = concord_telemetry::testing::capture_exclusive();
-        let id = format!("turn-test-{}", std::process::id());
-        #[cfg(feature = "telemetry")]
-        emit_turn_completed(
-            &id,
-            &FinalizedTurn {
-                outcome: crate::proto::gait::sandbox::v1::FinalizedTurnOutcome::StructuredDone as i32,
-                started_ms: 42,
-                active_duration: Some(pbjson_types::Duration { seconds: 1, nanos: 2_000_000 }),
-                ..Default::default()
-            },
-        );
-        let event = capture.single_event_where::<gait_events::gait::events::v1::TurnCompleted>(
-            |value| value.session_id == id,
-        );
-        assert_eq!(event.source_record_id, format!("{id}:42"));
-        assert_eq!(event.outcome, gait_events::gait::events::v1::TurnOutcome::Done as i32);
-        assert_eq!(event.elapsed_ms, 1002);
-    }
-
-    #[test]
-    fn agent_reported_maps_every_notify_outcome() {
-        use gait_events::gait::events::v1::NotifyOutcome as N;
-        use crate::session::completion::{NotifyOutcome, WakeRequest};
-        let cases = [
-            (NotifyOutcome::Woke(WakeRequest { gait_dir: "/tmp".into(), parent_session: "p".into() }), N::Woke),
-            (NotifyOutcome::ParentBusy, N::Busy),
-            (NotifyOutcome::AlreadySurfaced, N::AlreadySurfaced),
-            (NotifyOutcome::NoParent, N::NoParent),
-        ];
-        for (input, expected) in cases {
-            assert_eq!(notify_outcome(input), expected);
-        }
-    }
-
-    #[test]
-    fn agent_reported_emits_once_with_signed_true() {
-        let capture = concord_telemetry::testing::capture_exclusive();
-        let id = format!("report-test-{}", std::process::id());
-        #[cfg(feature = "telemetry")]
-        emit_agent_reported(
-            &id,
-            "parent",
-            "child",
-            "done",
-            &crate::session::completion::NotifyOutcome::NoParent,
-        );
-        let got = capture.single_event_where::<gait_events::gait::events::v1::AgentReported>(
-            |value| value.source_record_id == id,
-        );
-        assert!(got.signed);
-        assert_eq!(got.status, "done");
-        assert_eq!(got.parent_session_id, "parent");
-        assert_eq!(got.child_session_id, "child");
-        assert_eq!(got.outcome, gait_events::gait::events::v1::NotifyOutcome::NoParent as i32);
-    }
-
-    #[test]
-    fn spine_records_a_coded_brain_failure_as_one_error_record() {
-        let capture = concord_telemetry::testing::capture_exclusive();
-        let session_id = "task10-spine-coded-failure";
-        record_terminal_failure(
-            &FinalizedTurn {
-                outcome: crate::proto::gait::sandbox::v1::FinalizedTurnOutcome::Failed as i32,
-                message: "secret provider details".into(),
-                error_code: Some("gait.provider.timeout".into()),
-                error_class: Some("transient".into()),
-                ..Default::default()
-            },
-            session_id,
-        );
-        let records = capture.errors_where(|record| {
-            record
-                .fields
-                .get("session_id")
-                .map(|value| {
-                    matches!(value, concord_telemetry::AttrValue::Str(value) if value == session_id)
-                })
-                .unwrap_or(false)
-        });
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].code, "gait.provider.timeout");
-        assert_eq!(records[0].class, "transient");
-        assert!(!records[0]
-            .fields
-            .values()
-            .any(|value| {
-                matches!(value, concord_telemetry::AttrValue::Str(value) if value.contains("secret provider details"))
-            }));
-    }
 
     /// Mirrors the bookkeeping done in the `Append` arm's `ToolResult` match: pops
     /// the originating tool name from `pending_calls` and, if it is one of the
@@ -1281,5 +1169,124 @@ mod tests {
         let text = error.to_string();
         assert!(!text.contains("private-access-token"));
         assert!(!text.contains("private-refresh-token"));
+    }
+}
+
+#[cfg(all(test, feature = "telemetry"))]
+mod telemetry_tests {
+    use super::*;
+    use crate::proto::gait::sandbox::v1::FinalizedTurn;
+
+    #[test]
+    fn turn_completed_maps_every_outcome() {
+        use crate::proto::gait::sandbox::v1::FinalizedTurnOutcome as F;
+        use gait_events::gait::events::v1::TurnOutcome as T;
+        let cases = [
+            (F::Unspecified, T::Unspecified),
+            (F::TextDone, T::Done),
+            (F::StructuredDone, T::Done),
+            (F::Clarify, T::Clarify),
+            (F::Inform, T::Inform),
+            (F::Permissions, T::Permissions),
+            (F::SandboxUnlock, T::SandboxUnlock),
+            (F::Cancelled, T::Cancelled),
+            (F::Failed, T::Failed),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(turn_outcome(input), expected);
+        }
+    }
+
+    #[test]
+    fn turn_completed_emits_once_with_outcome() {
+        let capture = concord_telemetry::testing::capture_exclusive();
+        let id = format!("turn-test-{}", std::process::id());
+        emit_turn_completed(
+            &id,
+            &FinalizedTurn {
+                outcome: crate::proto::gait::sandbox::v1::FinalizedTurnOutcome::StructuredDone as i32,
+                started_ms: 42,
+                active_duration: Some(pbjson_types::Duration { seconds: 1, nanos: 2_000_000 }),
+                ..Default::default()
+            },
+        );
+        let event = capture.single_event_where::<gait_events::gait::events::v1::TurnCompleted>(
+            |value| value.session_id == id,
+        );
+        assert_eq!(event.source_record_id, format!("{id}:42"));
+        assert_eq!(event.outcome, gait_events::gait::events::v1::TurnOutcome::Done as i32);
+        assert_eq!(event.elapsed_ms, 1002);
+    }
+
+    #[test]
+    fn agent_reported_maps_every_notify_outcome() {
+        use gait_events::gait::events::v1::NotifyOutcome as N;
+        use crate::session::completion::{NotifyOutcome, WakeRequest};
+        let cases = [
+            (NotifyOutcome::Woke(WakeRequest { gait_dir: "/tmp".into(), parent_session: "p".into() }), N::Woke),
+            (NotifyOutcome::ParentBusy, N::Busy),
+            (NotifyOutcome::AlreadySurfaced, N::AlreadySurfaced),
+            (NotifyOutcome::NoParent, N::NoParent),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(notify_outcome(input), expected);
+        }
+    }
+
+    #[test]
+    fn agent_reported_emits_once_and_signed_only_when_an_event_was_written() {
+        use crate::session::completion::{NotifyOutcome, WakeRequest};
+        use gait_events::gait::events::v1::{AgentReported, NotifyOutcome as N};
+        let capture = concord_telemetry::testing::capture_exclusive();
+        let cases = [
+            (NotifyOutcome::Woke(WakeRequest { gait_dir: "/tmp".into(), parent_session: "p".into() }), N::Woke, true),
+            (NotifyOutcome::ParentBusy, N::Busy, false),
+            (NotifyOutcome::AlreadySurfaced, N::AlreadySurfaced, false),
+            (NotifyOutcome::NoParent, N::NoParent, false),
+        ];
+        for (index, (outcome, expected, signed)) in cases.into_iter().enumerate() {
+            let id = format!("report-test-{}-{index}", std::process::id());
+            emit_agent_reported(&id, "parent", "child", "done", &outcome);
+            let got = capture.single_event_where::<AgentReported>(|value| value.source_record_id == id);
+            assert_eq!(got.signed, signed, "{expected:?}");
+            assert_eq!(got.status, "done");
+            assert_eq!(got.parent_session_id, "parent");
+            assert_eq!(got.child_session_id, "child");
+            assert_eq!(got.outcome, expected as i32);
+        }
+    }
+
+    #[test]
+    fn spine_records_a_coded_brain_failure_as_one_error_record() {
+        let capture = concord_telemetry::testing::capture_exclusive();
+        let session_id = "task10-spine-coded-failure";
+        record_terminal_failure(
+            &FinalizedTurn {
+                outcome: crate::proto::gait::sandbox::v1::FinalizedTurnOutcome::Failed as i32,
+                message: "secret provider details".into(),
+                error_code: Some("gait.provider.timeout".into()),
+                error_class: Some("transient".into()),
+                ..Default::default()
+            },
+            session_id,
+        );
+        let records = capture.errors_where(|record| {
+            record
+                .fields
+                .get("session_id")
+                .map(|value| {
+                    matches!(value, concord_telemetry::AttrValue::Str(value) if value == session_id)
+                })
+                .unwrap_or(false)
+        });
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].code, "gait.provider.timeout");
+        assert_eq!(records[0].class, "transient");
+        assert!(!records[0]
+            .fields
+            .values()
+            .any(|value| {
+                matches!(value, concord_telemetry::AttrValue::Str(value) if value.contains("secret provider details"))
+            }));
     }
 }

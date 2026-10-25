@@ -116,7 +116,7 @@ pub fn cmd_persist(args: PersistArgs) -> CliResult {
         gait_ops::session::BulkVerb::Persist,
     ) {
         Ok(p) => p,
-        Err(e) => return Err(CliError::failed(format!("[gait] error: {}", e))),
+        Err(e) => return Err(CliError::failed_with("[gait] error", e)),
     };
     if !plan.eligible.iter().any(|s| s == id) {
         return Err(CliError::invalid_input(format!(
@@ -144,7 +144,7 @@ pub fn cmd_persist(args: PersistArgs) -> CliResult {
             }
             Ok(())
         }
-        Err(e) => Err(CliError::failed(format!("[gait] error: {}", e))),
+        Err(e) => Err(CliError::failed_with("[gait] error", e)),
     }
 }
 
@@ -187,7 +187,7 @@ pub fn cmd_discard(args: DiscardArgs) -> CliResult {
     // it for eligible.len() > 1) — the interactive/--yes confirm above is
     // this path's whole gate, same as before.
     if let Err(e) = gait_ops::session::bulk_act(&args.gait_dir, &plan, true, true) {
-        return Err(CliError::failed(format!("[gait] error: {}", e)));
+        return Err(CliError::failed_with("[gait] error", e));
     }
     println!(
         "{}",
@@ -218,7 +218,7 @@ fn run_bulk(
 ) -> CliResult {
     let plan = match gait_ops::session::classify_bulk(gait_dir, verb) {
         Ok(p) => p,
-        Err(e) => return Err(CliError::failed(format!("[gait] error: {}", e))),
+        Err(e) => return Err(CliError::failed_with("[gait] error", e)),
     };
 
     // The preview is itself a real result (what will happen) — always JSON.
@@ -269,7 +269,7 @@ fn run_bulk(
 
     let outcome = match gait_ops::session::bulk_act(gait_dir, &plan, true, force) {
         Ok(o) => o,
-        Err(e) => return Err(CliError::failed(format!("[gait] error: {}", e))),
+        Err(e) => return Err(CliError::failed_with("[gait] error", e)),
     };
 
     println!("{}", outcome.to_json(pretty));
@@ -317,7 +317,7 @@ pub fn cmd_undo(args: UndoArgs) -> CliResult {
     };
     let outcome = match op_undo(params) {
         Ok(o) => o,
-        Err(e) => return Err(CliError::failed(format!("[gait] error: {}", e))),
+        Err(e) => return Err(CliError::failed_with("[gait] error", e)),
     };
     println!("{}", outcome.to_json(pretty));
     Ok(())
@@ -341,7 +341,7 @@ pub fn cmd_sessions(args: SessionsArgs) -> CliResult {
             println!("{}", out.to_json(args.pretty));
             Ok(())
         }
-        Err(e) => Err(CliError::failed(format!("[gait] error: {}", e))),
+        Err(e) => Err(CliError::failed_with("[gait] error", e)),
     }
 }
 
@@ -360,7 +360,7 @@ pub fn cmd_ps(args: PsArgs) -> CliResult {
             println!("{}", out.to_json(args.pretty));
             Ok(())
         }
-        Err(e) => Err(CliError::failed(format!("[gait] error: {}", e))),
+        Err(e) => Err(CliError::failed_with("[gait] error", e)),
     }
 }
 
@@ -380,7 +380,7 @@ pub fn cmd_stats(args: StatsArgs) -> CliResult {
             println!("{}", u.to_json(args.pretty));
             Ok(())
         }
-        Err(e) => Err(CliError::failed(format!("[gait] error: {}", e))),
+        Err(e) => Err(CliError::failed_with("[gait] error", e)),
     }
 }
 
@@ -402,7 +402,7 @@ pub fn cmd_log(args: LogArgs) -> CliResult {
             println!("{}", out.to_json(args.pretty));
             Ok(())
         }
-        Err(e) => Err(CliError::failed(format!("[gait] error: {}", e))),
+        Err(e) => Err(CliError::failed_with("[gait] error", e)),
     }
 }
 
@@ -466,7 +466,7 @@ pub fn cmd_allow(args: AllowArgs) -> CliResult {
             );
             Ok(())
         }
-        Err(e) => Err(CliError::failed(format!("[gait] error: {}", e))),
+        Err(e) => Err(CliError::failed_with("[gait] error", e)),
     }
 }
 
@@ -503,7 +503,7 @@ pub fn cmd_deny(args: DenyArgs) -> CliResult {
                 args.session_id
             )))
         }
-        Err(e) => Err(CliError::failed(format!("[gait] error: {}", e))),
+        Err(e) => Err(CliError::failed_with("[gait] error", e)),
     }
 }
 
@@ -563,7 +563,7 @@ pub fn cmd_unlock(args: UnlockArgs) -> CliResult {
                 args.session_id
             )))
         }
-        Err(e) => Err(CliError::failed(format!("[gait] error: {}", e))),
+        Err(e) => Err(CliError::failed_with("[gait] error", e)),
     }
 }
 
@@ -652,7 +652,7 @@ pub fn cmd_load(args: LoadArgs) -> CliResult {
             );
             Ok(())
         }
-        Err(e) => Err(CliError::failed(format!("[gait] error: {}", e))),
+        Err(e) => Err(CliError::failed_with("[gait] error", e)),
     }
 }
 
@@ -684,7 +684,7 @@ pub fn cmd_unload(args: UnloadArgs) -> CliResult {
             );
             Ok(())
         }
-        Err(e) => Err(CliError::failed(format!("[gait] error: {}", e))),
+        Err(e) => Err(CliError::failed_with("[gait] error", e)),
     }
 }
 
@@ -708,7 +708,7 @@ pub fn cmd_reply(args: ReplyArgs) -> CliResult {
             );
             Ok(())
         }
-        Err(e) => Err(CliError::failed(format!("[gait] error: {}", e))),
+        Err(e) => Err(CliError::failed_with("[gait] error", e)),
     }
 }
 

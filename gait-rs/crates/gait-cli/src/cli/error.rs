@@ -37,6 +37,28 @@ impl CliError {
     pub fn failed(message: impl Into<String>) -> anyhow::Error {
         coded_error::into_anyhow(Self::Failed(message.into()))
     }
+
+    /// Fail with `"{label}: {cause}"`. When `cause` already carries a code (an
+    /// `OpError`, `ProviderError`, ...), that code and class are kept so the
+    /// exit code follows the class; otherwise this is `CliError::Failed`.
+    pub fn failed_with(label: &str, cause: impl Into<anyhow::Error>) -> anyhow::Error {
+        let cause = cause.into();
+        if coded_error::from_anyhow(&cause).is_some() {
+            cause.context(label.to_owned())
+        } else {
+            Self::failed(format!("{label}: {cause}"))
+        }
+    }
+
+    /// Like `failed_with`, for messages worded `"{prefix} {cause}"`.
+    pub fn failed_after(prefix: &str, cause: impl Into<anyhow::Error>) -> anyhow::Error {
+        let cause = cause.into();
+        if coded_error::from_anyhow(&cause).is_some() {
+            cause.context(prefix.to_owned())
+        } else {
+            Self::failed(format!("{prefix} {cause}"))
+        }
+    }
 }
 
 /// What a command returns: `Ok(())` is exit 0. Commands with their own
@@ -68,6 +90,22 @@ mod tests {
         assert_eq!(exit_code_anyhow(&CliError::not_found("x")), 65);
         assert_eq!(exit_code_anyhow(&CliError::failed("x")), 69);
         assert_eq!(exit_code_anyhow(&anyhow::anyhow!("uncoded")), 70);
+    }
+
+    #[test]
+    fn failed_with_keeps_the_class_of_a_coded_cause() {
+        use coded_error::cli::exit_code_anyhow;
+        let not_found = coded_error::into_anyhow(gait_ops::OpError::NotFound("mode x".into()));
+        let err = CliError::failed_with("[gait] error", not_found);
+        assert_eq!(exit_code_anyhow(&err), 65);
+        assert_eq!(format!("{err:#}"), "[gait] error: not found: mode x");
+        let busy = coded_error::into_anyhow(gait_ops::OpError::SessionBusy("s".into()));
+        assert_eq!(exit_code_anyhow(&CliError::failed_after("[gait]", busy)), 75);
+        let plain = CliError::failed_with("[gait] error", anyhow::anyhow!("disk"));
+        assert_eq!(exit_code_anyhow(&plain), 69);
+        assert_eq!(format!("{plain:#}"), "[gait] error: disk");
+        let plain = CliError::failed_after("[gait]", anyhow::anyhow!("disk"));
+        assert_eq!(format!("{plain:#}"), "[gait] disk");
     }
 
     #[test]

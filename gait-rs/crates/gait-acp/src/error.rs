@@ -49,6 +49,9 @@ pub enum PromptError {
     #[coded(code = "replay_failed", class = Infrastructure)]
     ReplayFailed(String),
     #[error("{0}")]
+    #[coded(code = "invalid_request", class = Logical)]
+    InvalidRequest(String),
+    #[error("{0}")]
     #[coded(code = "internal", class = Infrastructure)]
     Internal(String),
 }
@@ -74,7 +77,7 @@ mod tests {
     #[test]
     fn prompt_error_codes_are_unique() {
         coded_error::check_codes("gait.acp.prompt.", &[PromptError::ALL_CODES]).unwrap();
-        assert_eq!(PromptError::ALL_CODES.len(), 13);
+        assert_eq!(PromptError::ALL_CODES.len(), 14);
     }
 
     #[test]
@@ -116,12 +119,12 @@ mod tests {
 
     #[test]
     fn acp_error_emits_one_error_record_with_matching_fingerprint() {
-        let capture = concord_telemetry::testing::capture();
+        let capture = concord_telemetry::testing::capture_exclusive();
         let err = coded_error::into_anyhow(PromptError::ReplayFailed("not-for-record".into()));
         let wire = acp_error(&err, PROMPT);
-        let records = capture.errors_where(|_| true);
+        let fingerprint = wire.data.as_ref().unwrap()["fingerprint"].clone();
+        let records = capture.errors_where(|record| record.fingerprint == fingerprint);
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].fingerprint, wire.data.as_ref().unwrap()["fingerprint"]);
         assert!(!records[0]
             .fields
             .values()

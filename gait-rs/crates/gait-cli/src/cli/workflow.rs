@@ -170,7 +170,7 @@ pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) -> anyhow::Res
             eprintln!("[gait workflow] paused at open node");
             Ok(ExitCode::SUCCESS)
         }
-        Err(e) => Err(CliError::failed(format!("[gait workflow] error: {}", e))),
+        Err(e) => Err(CliError::failed_with("[gait workflow] error", e)),
     }
 }
 
@@ -412,7 +412,7 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) -> anyhow
             eprintln!("[gait workflow] paused at open node");
             Ok(ExitCode::SUCCESS)
         }
-        Err(e) => Err(CliError::failed(format!("[gait workflow] error: {}", e))),
+        Err(e) => Err(CliError::failed_with("[gait workflow] error", e)),
     }
 }
 

@@ -209,9 +209,11 @@ pub async fn run_chat(
     // and threaded through run_loop so relay_brain_turn can register the active
     // group. On signal, kill() tears down the sealed tree before exiting.
     let kill_handle = gait_core::embed::CascadeKillHandle::new();
+    let signalled = std::sync::Arc::new(tokio::sync::Notify::new());
     {
         use tokio::signal::unix::{signal, SignalKind};
         let handle = kill_handle.clone();
+        let signalled = signalled.clone();
         tokio::spawn(async move {
             let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT handler");
             let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
@@ -220,6 +222,7 @@ pub async fn run_chat(
                 _ = sigterm.recv() => {}
             }
             handle.kill();
+            signalled.notify_one();
         });
     }
 
@@ -269,7 +272,7 @@ pub async fn run_chat(
         let mut sink = crate::repl::ReplSink {
             shared: shared.clone(),
         };
-        let outcome = gait_turn_runner::run_turn_source(
+        let turn = gait_turn_runner::run_turn_source(
             gait_turn_runner::TurnRunOpts {
                 run_id,
                 session_id: session_id.clone(),
@@ -301,8 +304,13 @@ pub async fn run_chat(
             },
             Box::new(source),
             &mut sink,
-        )
-        .await?;
+        );
+        // A signal ends the session cleanly: the sealed tree is already killed,
+        // and returning (rather than exiting) lets the caller flush telemetry.
+        let outcome = tokio::select! {
+            outcome = turn => outcome?,
+            _ = signalled.notified() => return Ok(()),
+        };
         debug_assert!(outcome.opened || outcome.completed);
         // `outcome.opened` means the ReplSource yielded None (the user typed
         // /q, /n, or EOF). Check the control signal to decide whether to loop.

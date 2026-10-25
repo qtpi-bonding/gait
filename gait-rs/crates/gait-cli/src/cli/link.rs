@@ -50,7 +50,7 @@ pub fn cmd_link(args: LinkArgs) -> CliResult {
         Err(e) if matches!(gait_ops::OpError::find(&e), Some(gait_ops::OpError::NotFound(_))) => {
             Err(CliError::not_found(format!("[gait] {e}")))
         }
-        Err(e) => Err(CliError::failed(format!("[gait] {e}"))),
+        Err(e) => Err(CliError::failed_after("[gait]", e)),
     }
 }
 

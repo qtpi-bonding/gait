@@ -27,24 +27,46 @@ use crate::error::{self, PromptError};
 use crate::lifecycle;
 use crate::session_map::{SessionMap, discover_gait_dir_for_cwd};
 use crate::turn_io::{
-    AcpTurnSink, AcpTurnSource, content_blocks_to_text, turn_result_to_stop_reason,
+    AcpTurnSink, AcpTurnSource, content_blocks_to_text, emit_prompt_accepted,
+    turn_result_to_stop_reason,
 };
 
-fn emit_prompt_accepted(
+/// The `on_durable` hook of an attested batch: once the batch is in the log
+/// its idempotency key must stay recorded, `PromptAccepted` is emitted once,
+/// and the replay sequence is confirmed.
+fn attested_on_durable(
     source_record_id: String,
     session_id: String,
     message_ids: Vec<String>,
-    source: gait_events::gait::events::v1::PromptSource,
-    author: Option<gait_events::Principal>,
-) {
-    concord_telemetry::event!(gait_events::gait::events::v1::PromptAccepted {
-        source_record_id,
-        session_id,
-        message_count: message_ids.len() as u32,
-        message_ids,
-        source: source as i32,
-        author,
-    });
+    author_id: Option<String>,
+    durable_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    confirm: impl FnOnce() -> anyhow::Result<()> + Send + 'static,
+) -> gait_core::port::input::OnDurable {
+    Box::new(move || {
+        durable_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        let author = author_id.map(|id| {
+            gait_events::Principal::new(gait_events::PrincipalKind::Agent, id).with_verified_by([
+                gait_events::Verification::DeliveryAttestation,
+                gait_events::Verification::DelegationCert,
+            ])
+        });
+        emit_prompt_accepted(
+            source_record_id,
+            session_id,
+            message_ids,
+            gait_events::gait::events::v1::PromptSource::Attested,
+            author,
+        );
+        confirm()
+    })
+}
+
+/// A supplied-but-invalid (or required-but-missing) attestation does not fail
+/// the prompt: it runs as rejected user text. It is still an error, so it goes
+/// through `acp_error` once, which emits the error record and builds the wire
+/// error. Returns that wire error so callers and tests can see its code.
+fn reject_attestation(err: &anyhow::Error) -> agent_client_protocol::Error {
+    error::acp_error(err, error::PROMPT)
 }
 
 fn meta_getter(
@@ -269,13 +291,19 @@ pub fn build_agent_with_attestation(
                             // A supplied but invalid attestation is retained
                             // as rejected user text in the durable log. The
                             // core fold excludes it from model context.
-                            Err(_e) => TurnInput::Prompt {
-                                text: content_blocks_to_text(&req.prompt),
-                                provenance: gait_core::port::input::ProvenanceClaim::Rejected,
-                            },
+                            Err(e) => {
+                                let _ = reject_attestation(&e);
+                                TurnInput::Prompt {
+                                    text: content_blocks_to_text(&req.prompt),
+                                    provenance: gait_core::port::input::ProvenanceClaim::Rejected,
+                                }
+                            }
                             // No attestation present at all.
                             Ok(None) => {
                                 if require_attestation {
+                                    let _ = reject_attestation(&coded_error::into_anyhow(
+                                        PromptError::AttestationRequired,
+                                    ));
                                     TurnInput::Prompt {
                                         text: content_blocks_to_text(&req.prompt),
                                         provenance: gait_core::port::input::ProvenanceClaim::Rejected,
@@ -307,33 +335,14 @@ pub fn build_agent_with_attestation(
                                 let author = messages.first().and_then(|message| {
                                     message.provenance.verified_author_id.clone()
                                 });
-                                let accepted_session = sid.clone();
-                                let durable_flag = batch_durable.clone();
-                                let on_durable: gait_core::port::input::OnDurable =
-                                    Box::new(move || {
-                                        // The batch is in the log from here on, so its
-                                        // idempotency key must stay recorded.
-                                        durable_flag
-                                            .store(true, std::sync::atomic::Ordering::SeqCst);
-                                        let author = author.map(|id| {
-                                            gait_events::Principal::new(
-                                                gait_events::PrincipalKind::Agent,
-                                                id,
-                                            )
-                                            .with_verified_by([
-                                                gait_events::Verification::DeliveryAttestation,
-                                                gait_events::Verification::DelegationCert,
-                                            ])
-                                        });
-                                        emit_prompt_accepted(
-                                            source_record_id.clone(),
-                                            accepted_session.clone(),
-                                            message_ids.clone(),
-                                            gait_events::gait::events::v1::PromptSource::Attested,
-                                            author,
-                                        );
-                                        confirm()
-                                    });
+                                let on_durable = attested_on_durable(
+                                    source_record_id,
+                                    sid.clone(),
+                                    message_ids,
+                                    author,
+                                    batch_durable.clone(),
+                                    confirm,
+                                );
                                 TurnInput::AttestedMessages {
                                     bodies: messages
                                         .into_iter()
@@ -456,10 +465,14 @@ pub fn build_agent_with_attestation(
                                     Err(_e) if map_thread.was_cancelled(&sid_thread) => {
                                         Ok(StopReason::Cancelled)
                                     }
-                                    Err(e) => Err(e.to_string()),
+                                    Err(e) => Err(e),
                                     Ok(_) => match sink.take_result() {
-                                        Some(tr) => turn_result_to_stop_reason(&tr),
-                                        None => Err("turn produced no result".into()),
+                                        Some(tr) => turn_result_to_stop_reason(&tr).map_err(|msg| {
+                                            coded_error::into_anyhow(PromptError::Internal(msg))
+                                        }),
+                                        None => Err(coded_error::into_anyhow(PromptError::Internal(
+                                            "turn produced no result".into(),
+                                        ))),
                                     },
                                 }
                             };
@@ -467,7 +480,7 @@ pub fn build_agent_with_attestation(
                             // connection already closed (drain will reap this thread).
                             let _ = match stop {
                                 Ok(reason) => responder.respond(PromptResponse::new(reason)),
-                                Err(msg) => responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::Internal(msg)), error::PROMPT)),
+                                Err(e) => responder.respond_with_error(error::acp_error(&e, error::PROMPT)),
                             };
                         });
                         // Track the thread so a connection-teardown drain can reap it
@@ -513,7 +526,7 @@ pub fn build_agent_with_attestation(
                                 ));
                                 responder.respond(SetSessionModeResponse::new())
                             }
-                            Err(e) => responder.respond_with_error(error::acp_error(&coded_error::into_anyhow(PromptError::Internal(e.to_string())), error::SET_SESSION_MODE)),
+                            Err(e) => responder.respond_with_error(error::acp_error(&e, error::SET_SESSION_MODE)),
                         }
                     }
                 }
@@ -630,23 +643,85 @@ mod tests {
     }
 
     #[test]
-    fn rejected_prompt_emits_no_prompt_accepted() {
+    fn attested_on_durable_marks_durable_emits_once_and_confirms() {
         let cap = concord_telemetry::testing::capture_exclusive();
-        let id = format!("rejected-{}", std::process::id());
-        let events = cap.events_where::<gait_events::gait::events::v1::PromptAccepted>(
-            |value| value.source_record_id == id,
+        let id = format!("wired-{}", std::process::id());
+        let durable = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let confirmed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let confirmed_hook = confirmed.clone();
+        let hook = attested_on_durable(
+            id.clone(),
+            "session-wired".into(),
+            vec![id.clone(), "second".into()],
+            Some("agent-1".into()),
+            durable.clone(),
+            move || {
+                confirmed_hook.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            },
         );
-        assert!(events.is_empty());
+        assert!(!durable.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(cap
+            .events_where::<gait_events::gait::events::v1::PromptAccepted>(|v| v.source_record_id == id)
+            .is_empty());
+        hook().unwrap();
+        assert!(durable.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(confirmed.load(std::sync::atomic::Ordering::SeqCst));
+        let event = cap.single_event_where::<gait_events::gait::events::v1::PromptAccepted>(
+            |v| v.source_record_id == id,
+        );
+        assert_eq!(event.message_count, 2);
+        assert!(event.author.is_some());
     }
 
     #[test]
-    fn already_seen_prompt_emits_no_prompt_accepted() {
+    fn dropped_attested_on_durable_emits_nothing() {
         let cap = concord_telemetry::testing::capture_exclusive();
-        let id = format!("replayed-{}", std::process::id());
-        let events = cap.events_where::<gait_events::gait::events::v1::PromptAccepted>(
-            |value| value.source_record_id == id,
+        let id = format!("dropped-{}", std::process::id());
+        let hook = attested_on_durable(
+            id.clone(),
+            "session-dropped".into(),
+            vec![id.clone()],
+            None,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            || Ok(()),
         );
-        assert!(events.is_empty());
+        drop(hook);
+        assert!(cap
+            .events_where::<gait_events::gait::events::v1::PromptAccepted>(|v| v.source_record_id == id)
+            .is_empty());
+    }
+
+    #[test]
+    fn rejected_attestation_emits_one_error_record_and_wire_carries_its_code() {
+        let cap = concord_telemetry::testing::capture_exclusive();
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            message_attestation::DEFAULT_META_KEY.to_string(),
+            serde_json::json!({}),
+        );
+        // No attestor: the real verify_prompt refuses the attestation.
+        let err = crate::attestation::verify_prompt(None, &Some(meta))
+            .err()
+            .expect("an attestation without an attestor is rejected");
+        let wire = reject_attestation(&err);
+        let data = wire.data.as_ref().unwrap();
+        assert_eq!(data["code"], "gait.acp.prompt.attestation_missing_own_devices");
+        assert_eq!(data["class"], "logical");
+        let fingerprint = data["fingerprint"].clone();
+        let records = cap.errors_where(|record| record.fingerprint == fingerprint);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].code, "gait.acp.prompt.attestation_missing_own_devices");
+        assert_eq!(cap.errors_where(|_| true).len(), 1);
+    }
+
+    #[test]
+    fn missing_required_attestation_is_an_attestation_required_error() {
+        let cap = concord_telemetry::testing::capture_exclusive();
+        let err = coded_error::into_anyhow(PromptError::AttestationRequired);
+        let wire = reject_attestation(&err);
+        assert_eq!(wire.data.as_ref().unwrap()["code"], "gait.acp.prompt.attestation_required");
+        assert_eq!(cap.errors_where(|_| true).len(), 1);
     }
 
     #[test]

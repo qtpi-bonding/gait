@@ -207,6 +207,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[serial_test::serial]
     fn agent_dir_flag_sets_gait_agent_dir_env() {
         let value = format!("/nonexistent/gait-agent-dir-flag-{}", std::process::id());
         let previous = std::env::var_os("GAIT_AGENT_DIR");
@@ -238,15 +239,23 @@ mod tests {
     }
 
     #[test]
-    fn init_telemetry_without_endpoint_is_silent_and_returns_a_guard() {
+    #[serial_test::serial]
+    fn init_telemetry_without_endpoint_is_silent_and_a_second_init_yields_an_inert_guard() {
         let previous = std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT");
         std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
         let _first = init_telemetry("gait-test", "0", None);
-        let _second = init_telemetry("gait-test", "0", Some("agent".to_string()));
+        let second = init_telemetry("gait-test", "0", Some("agent".to_string()));
         match previous {
             Some(value) => std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", value),
             None => std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT"),
         }
+        // A global subscriber is installed by now (by the first call, or by
+        // whoever got there first), so the second init is refused and the
+        // guard it returns holds nothing.
+        #[cfg(feature = "telemetry")]
+        assert!(second.guard.is_none());
+        #[cfg(not(feature = "telemetry"))]
+        let _ = second;
     }
 
     #[test]

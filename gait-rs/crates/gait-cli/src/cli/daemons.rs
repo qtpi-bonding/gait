@@ -48,7 +48,7 @@ fn cmd_daemons_list(gait_dir: &std::path::Path, all: bool, pretty: bool) -> CliR
             println!("{}", outcome.to_json(pretty));
             Ok(())
         }
-        Err(e) => Err(CliError::failed(format!("[gait daemons] error: {}", e))),
+        Err(e) => Err(CliError::failed_with("[gait daemons] error", e)),
     }
 }
 
@@ -61,7 +61,7 @@ fn cmd_daemons_stop(gait_dir: &std::path::Path, name: &str, pretty: bool) -> Cli
         Err(e) if matches!(gait_ops::OpError::find(&e), Some(gait_ops::OpError::NotFound(_))) => {
             Err(CliError::not_found(format!("[gait daemons] error: {}", e)))
         }
-        Err(e) => Err(CliError::failed(format!("[gait daemons] error: {}", e))),
+        Err(e) => Err(CliError::failed_with("[gait daemons] error", e)),
     }
 }
 

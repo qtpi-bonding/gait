@@ -77,7 +77,7 @@ pub fn cmd_init(args: InitArgs) -> CliResult {
             Some(gait_ops::OpError::Conflict(msg)) => {
                 CliError::invalid_input(format!("[gait] {msg}"))
             }
-            _ => CliError::failed(format!("[gait] {e}")),
+            _ => CliError::failed_after("[gait]", e),
         }),
     }
 }

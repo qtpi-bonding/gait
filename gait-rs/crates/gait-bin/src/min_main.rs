@@ -37,7 +37,7 @@ async fn run(raw: Vec<String>) -> ExitCode {
     // direct provenance the same way `gait` does.
     if raw.len() >= 2 && gait_core::is_role_argv(&raw[1..]) {
         gait_core::__dispatch_role(&raw[1..]).await;
-        return ExitCode::from(1);
+        return ExitCode::SUCCESS;
     }
 
     // Pre-check for the `run` role token before clap parsing — see full

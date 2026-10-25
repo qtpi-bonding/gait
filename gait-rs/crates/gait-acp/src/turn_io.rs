@@ -113,6 +113,41 @@ pub fn content_blocks_to_text(blocks: &[ContentBlock]) -> String {
 /// Map a finished turn to an ACP `StopReason`. `Err(msg)` means the prompt must
 /// be resolved as a JSON-RPC error (an internal failure is not a `Refusal`, and
 /// an interaction-required result is unsupported until Phase 3).
+/// Emit one `PromptAccepted` event for a prompt that is now in the log.
+pub(crate) fn emit_prompt_accepted(
+    source_record_id: String,
+    session_id: String,
+    message_ids: Vec<String>,
+    source: gait_events::gait::events::v1::PromptSource,
+    author: Option<gait_events::Principal>,
+) {
+    concord_telemetry::event!(gait_events::gait::events::v1::PromptAccepted {
+        source_record_id,
+        session_id,
+        message_count: message_ids.len() as u32,
+        message_ids,
+        source: source as i32,
+        author,
+    });
+}
+
+/// The `on_durable` hook of a direct (unattested) prompt. Each prompt gets its
+/// own record id: a session id would repeat on every prompt of the session and
+/// defeat per-record dedup.
+pub(crate) fn direct_on_durable(session_id: String) -> gait_core::port::input::OnDurable {
+    let record_id = uuid::Uuid::new_v4().to_string();
+    Box::new(move || {
+        emit_prompt_accepted(
+            record_id.clone(),
+            session_id,
+            vec![record_id],
+            gait_events::gait::events::v1::PromptSource::Direct,
+            None,
+        );
+        Ok(())
+    })
+}
+
 pub fn turn_result_to_stop_reason(r: &RunResult) -> Result<StopReason, String> {
     use gait_core::proto::gait::log::v1::turn_result::Outcome;
     match r.turns.last().and_then(|turn| turn.outcome.as_ref()) {
@@ -332,18 +367,7 @@ impl AcpTurnSource {
             *first = gait_core::port::input::InputEnvelope::with_claim(message_body, claim);
         }
         let on_durable = if direct_prompt {
-            let event_session = sid.clone();
-            Some(Box::new(move || {
-                concord_telemetry::event!(gait_events::gait::events::v1::PromptAccepted {
-                    source_record_id: event_session.clone(),
-                    session_id: event_session.clone(),
-                    message_count: 1,
-                    message_ids: vec![event_session.clone()],
-                    source: gait_events::gait::events::v1::PromptSource::Direct as i32,
-                    author: None,
-                });
-                Ok(())
-            }) as gait_core::port::input::OnDurable)
+            Some(direct_on_durable(sid.clone()))
         } else {
             None
         };
@@ -738,6 +762,24 @@ impl TurnSink for AcpTurnSink {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn direct_prompts_in_one_session_get_distinct_record_ids() {
+        let cap = concord_telemetry::testing::capture_exclusive();
+        let session = format!("direct-session-{}", std::process::id());
+        direct_on_durable(session.clone())().unwrap();
+        direct_on_durable(session.clone())().unwrap();
+        let events = cap.events_where::<gait_events::gait::events::v1::PromptAccepted>(
+            |v| v.session_id == session,
+        );
+        assert_eq!(events.len(), 2);
+        assert_ne!(events[0].source_record_id, events[1].source_record_id);
+        for event in &events {
+            assert_ne!(event.source_record_id, session);
+            assert_eq!(event.message_ids, vec![event.source_record_id.clone()]);
+            assert_eq!(event.source, gait_events::gait::events::v1::PromptSource::Direct as i32);
+        }
+    }
+
     use super::*;
     use agent_client_protocol::schema::v1::{
         ContentBlock, PermissionOptionKind, SessionUpdate, StopReason, TextContent, ToolCallId,
