@@ -1206,7 +1206,7 @@ async fn run_sh_one_off(
             {
                 eprintln!("[gait] {e}");
             }
-            std::process::exit(1);
+            return Err(e);
         }
     };
     let inference_name = inference_override

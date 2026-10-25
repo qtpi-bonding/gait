@@ -1,13 +1,14 @@
 use clap::{CommandFactory, Parser};
 use gait_bin::min_cli::{MinCli, MinCommands};
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 fn cwd_or_dot() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     // Pre-check for IPC subcommands (__brain / __run-tool) before clap
     // parsing, same DAG reason as full `gait`'s main.rs (gait-core can't
     // import from gait-bin). `__local-runner` is intentionally absent here:
@@ -16,37 +17,32 @@ async fn main() {
     // direct provenance the same way `gait` does.
     let identity = gait_identity::IdentityContext::from_env();
     if let Err(error) = gait_bin::install_agent_identity(identity) {
-        eprintln!("[gait] {error:#}");
-        std::process::exit(1);
+        return gait_cli::cli::error::report(&error);
     }
     let raw: Vec<String> = std::env::args().collect();
     if raw.len() >= 2 && gait_core::is_role_argv(&raw[1..]) {
         gait_core::__dispatch_role(&raw[1..]).await;
-        return;
+        return ExitCode::from(1);
     }
 
     // Pre-check for the `run` role token before clap parsing — see full
     // `gait`'s main.rs for the full rationale (`launch::RunLaunch`).
     if raw.len() >= 2 && gait_core::is_run_argv(&raw[1..]) {
-        gait_cli::cli::args::cmd_run(&raw[2..]).await;
-        return;
+        return gait_bin::finish(gait_cli::cli::args::cmd_run(&raw[2..]).await);
     }
 
     let cli = MinCli::parse();
 
     let cwd = cwd_or_dot();
     let gait_dir_arg = cli.gait_dir.clone();
-    let resolve_gait_dir = || -> PathBuf {
-        gait_core::gait_dir::resolve(gait_dir_arg.clone(), &cwd).unwrap_or_else(|e| {
-            eprintln!("[gait] {e}");
-            std::process::exit(1);
-        })
+    let resolve_gait_dir = || -> anyhow::Result<PathBuf> {
+        gait_core::gait_dir::resolve(gait_dir_arg.clone(), &cwd).map_err(|e| anyhow::anyhow!(e))
     };
 
     // Mode dispatch: -e (exec), -i (interactive, plain REPL only), bare
     // positional (task)
     if let Some(exec_prompt) = cli.exec {
-        let gait_dir = resolve_gait_dir();
+        let gait_dir = match resolve_gait_dir() { Ok(v) => v, Err(e) => return gait_cli::cli::error::report(&e) };
         let codebase = cli.codebase.clone().unwrap_or_else(cwd_or_dot);
         let args = gait_cli::cli::exec::ExecArgs {
             inference: cli.inference,
@@ -54,12 +50,11 @@ async fn main() {
             result_schema_json: cli.result_schema_json,
             prompt: vec![exec_prompt],
         };
-        gait_cli::cli::exec::cmd_exec(args, &gait_dir, &codebase).await;
-        return;
+        return gait_bin::finish(gait_cli::cli::exec::cmd_exec(args, &gait_dir, &codebase).await);
     }
 
     if cli.interactive {
-        let gait_dir = resolve_gait_dir();
+        let gait_dir = match resolve_gait_dir() { Ok(v) => v, Err(e) => return gait_cli::cli::error::report(&e) };
         let codebase = cli.codebase.unwrap_or_else(cwd_or_dot);
         let args = gait_repl::plain::PlainReplArgs {
             gait_dir,
@@ -69,15 +64,11 @@ async fn main() {
             model_override: cli.inference,
             verified_goal: cli.verified_goal,
         };
-        if let Err(e) = gait_repl::plain::run_plain_repl(args).await {
-            eprintln!("[gait] error: {}", e);
-            std::process::exit(1);
-        }
-        return;
+        return gait_bin::finish_unit(gait_repl::plain::run_plain_repl(args).await);
     }
 
     if cli.task.is_some() {
-        let gait_dir = resolve_gait_dir();
+        let gait_dir = match resolve_gait_dir() { Ok(v) => v, Err(e) => return gait_cli::cli::error::report(&e) };
         let codebase = cli.codebase.clone().unwrap_or_else(cwd_or_dot);
 
         let run_argv = gait_core::launch::RunLaunch {
@@ -102,8 +93,7 @@ async fn main() {
         }
         .to_argv();
 
-        gait_cli::cli::run::cmd_run(&run_argv, gait_dir, codebase).await;
-        return;
+        return gait_bin::finish(gait_cli::cli::run::cmd_run(&run_argv, gait_dir, codebase).await);
     }
 
     // Subcommand dispatch
@@ -112,7 +102,7 @@ async fn main() {
         None => {
             MinCli::command().print_help().unwrap();
             println!();
-            std::process::exit(0);
+            return ExitCode::SUCCESS;
         }
     };
 
@@ -126,46 +116,46 @@ async fn main() {
                 MinCli::command(),
                 gait_repl::plain::MIN_REPL_COMMANDS,
             ) {
-                eprintln!("[gait] error: {e}");
-                std::process::exit(1);
+                return gait_cli::cli::error::report(&anyhow::anyhow!(e));
             }
+            return ExitCode::SUCCESS;
         }
-        MinCommands::Init(args) => gait_cli::cli::init::cmd_init(args),
-        MinCommands::Link(args) => gait_cli::cli::link::cmd_link(args),
-        MinCommands::Sessions(args) => gait_cli::cli::session::cmd_sessions(args),
-        MinCommands::Ps(args) => gait_cli::cli::session::cmd_ps(args),
-        MinCommands::Stop(args) => gait_cli::cli::session::cmd_stop(args),
-        MinCommands::Persist(args) => gait_cli::cli::session::cmd_persist(args),
-        MinCommands::Discard(args) => gait_cli::cli::session::cmd_discard(args),
-        MinCommands::Undo(args) => gait_cli::cli::session::cmd_undo(args),
-        MinCommands::Stats(args) => gait_cli::cli::session::cmd_stats(args),
-        MinCommands::Log(args) => gait_cli::cli::session::cmd_log(args),
-        MinCommands::Allow(args) => gait_cli::cli::session::cmd_allow(args),
-        MinCommands::Deny(args) => gait_cli::cli::session::cmd_deny(args),
-        MinCommands::Unlock(args) => gait_cli::cli::session::cmd_unlock(args),
-        MinCommands::Reply(args) => gait_cli::cli::session::cmd_reply(args),
-        MinCommands::Config(args) => gait_cli::cli::admin::cmd_config(args),
+        MinCommands::Init(args) => gait_bin::finish_unit(gait_cli::cli::init::cmd_init(args)),
+        MinCommands::Link(args) => gait_bin::finish_unit(gait_cli::cli::link::cmd_link(args)),
+        MinCommands::Sessions(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_sessions(args)),
+        MinCommands::Ps(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_ps(args)),
+        MinCommands::Stop(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_stop(args)),
+        MinCommands::Persist(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_persist(args)),
+        MinCommands::Discard(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_discard(args)),
+        MinCommands::Undo(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_undo(args)),
+        MinCommands::Stats(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_stats(args)),
+        MinCommands::Log(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_log(args)),
+        MinCommands::Allow(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_allow(args)),
+        MinCommands::Deny(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_deny(args)),
+        MinCommands::Unlock(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_unlock(args)),
+        MinCommands::Reply(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_reply(args)),
+        MinCommands::Config(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_config(args)),
 
         MinCommands::Register(args) => {
             if let Err(e) = gait_cli::cli::admin::cmd_register(*args) {
-                eprintln!("[gait] error: {}", e);
-                std::process::exit(1);
+                return gait_cli::cli::error::report(&anyhow::anyhow!(e));
             }
+            ExitCode::SUCCESS
         }
         MinCommands::Unregister(args) => {
             if let Err(e) = gait_cli::cli::admin::cmd_unregister(*args) {
-                eprintln!("[gait] error: {}", e);
-                std::process::exit(1);
+                return gait_cli::cli::error::report(&anyhow::anyhow!(e));
             }
+            ExitCode::SUCCESS
         }
-        MinCommands::Load(args) => gait_cli::cli::session::cmd_load(args),
-        MinCommands::Unload(args) => gait_cli::cli::session::cmd_unload(args),
-        MinCommands::Enable(args) => gait_cli::cli::admin::cmd_enable(args),
-        MinCommands::Disable(args) => gait_cli::cli::admin::cmd_disable(args),
-        MinCommands::Auth(args) => gait_cli::cli::admin::cmd_auth(args).await,
-        MinCommands::Models(args) => gait_cli::cli::admin::cmd_models(args).await,
-        MinCommands::Inference(args) => gait_cli::cli::admin::cmd_inference(args),
-        MinCommands::Mode(args) => gait_cli::cli::admin::cmd_mode(args),
-        MinCommands::Daemons(args) => gait_cli::cli::daemons::cmd_daemons(args),
+        MinCommands::Load(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_load(args)),
+        MinCommands::Unload(args) => gait_bin::finish_unit(gait_cli::cli::session::cmd_unload(args)),
+        MinCommands::Enable(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_enable(args)),
+        MinCommands::Disable(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_disable(args)),
+        MinCommands::Auth(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_auth(args).await),
+        MinCommands::Models(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_models(args).await),
+        MinCommands::Inference(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_inference(args)),
+        MinCommands::Mode(args) => gait_bin::finish_unit(gait_cli::cli::admin::cmd_mode(args)),
+        MinCommands::Daemons(args) => gait_bin::finish_unit(gait_cli::cli::daemons::cmd_daemons(args)),
     }
 }

@@ -8,6 +8,8 @@ repository.workspace = true
 
 [dependencies]
 gait-core    = { path = "../.." }
+coded-error  = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "be55165013f5d557ecf8e1b1cf784fb3d07e9753", features = ["cli"] }
+thiserror    = "1"
 gait-ops     = { path = "../gait-ops" }
 gait-auth    = { path = "../gait-auth" }
 gait-turn-runner = { path = "../gait-turn-runner" }

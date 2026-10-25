@@ -3,8 +3,10 @@
 //! The `gait run` turn consumer.
 use clap::Parser;
 use std::path::PathBuf;
+use std::process::ExitCode;
 
-use gait_core::embed::{CliSink, Diag, TurnSink, TurnSource, TurnStart};
+use crate::cli::error::CliError;
+use gait_core::embed::{CliSink, TurnSink, TurnSource, TurnStart};
 
 fn apply_cli_overrides(
     loaded: gait_core::config::GaitConfig,
@@ -136,7 +138,26 @@ impl TurnSource for CliSource {
 
 // ── cmd_run ───────────────────────────────────────────────────────────────────
 
-pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf) {
+/// Drive `turn` to completion unless `grace` fires first. `None` means the
+/// signal grace window expired (or a second signal arrived) before the turn
+/// finished. A grace sender that is dropped without firing never wins: the turn
+/// then runs to completion as if no signal had been handled.
+async fn turn_or_grace<T>(
+    turn: impl std::future::Future<Output = T>,
+    grace: tokio::sync::oneshot::Receiver<()>,
+) -> Option<T> {
+    tokio::pin!(turn);
+    tokio::select! {
+        out = &mut turn => Some(out),
+        Ok(()) = grace => None,
+    }
+}
+
+pub async fn cmd_run(
+    argv: &[String],
+    gait_dir: PathBuf,
+    codebase_path: PathBuf,
+) -> anyhow::Result<ExitCode> {
     use clap::Parser;
 
     // ── Linux: self-assign to parent's cascade group (race-free enrollment) ──
@@ -186,33 +207,29 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
 
     // Entry point: surface gait.jsonc parse errors instead of silently
     // defaulting. CLI args layered on top still take precedence below.
-    let loaded = match gait_core::config::load_config_with(
+    let loaded = gait_core::config::load_config_with(
         &gait_dir,
         gait_core::config::ConfigLoadPolicy::Strict,
-    ) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("[gait] {e}");
-            std::process::exit(1);
-        }
-    };
+    )
+    .map_err(|e| CliError::invalid_input(format!("[gait] {e}")))?;
     let config = apply_cli_overrides(loaded, &args);
 
     // `--mode <name>` activates a mode overlay for this run by appending a
     // `Mode` event to the session log before the turn starts.
     if let Some(name) = &args.mode {
         let log_path = gait_core::session::live::log_path(&gait_dir, &session_id);
-        if let Err(e) = gait_core::modes::activate_mode(&log_path, &gait_dir, name) {
-            eprintln!("[gait] --mode {name}: {e}");
-            std::process::exit(1);
-        }
+        gait_core::modes::activate_mode(&log_path, &gait_dir, name).map_err(|e| {
+            CliError::invalid_input(format!("[gait] --mode {name}: {e}"))
+        })?;
     }
-    let inference_selection = args.inference.as_deref().map(|name| {
-        gait_ops::inference::resolve_selection(&gait_dir, name).unwrap_or_else(|e| {
-            eprintln!("[gait] --inference {name}: {e}");
-            std::process::exit(1);
-        })
-    });
+    let inference_selection = match args.inference.as_deref() {
+        Some(name) => Some(
+            gait_ops::inference::resolve_selection(&gait_dir, name).map_err(|e| {
+                CliError::invalid_input(format!("[gait] --inference {name}: {e}"))
+            })?,
+        ),
+        None => None,
+    };
 
     // Build profile to extract provider name for API key resolution.
     let agent_path: Option<PathBuf> = if let Some(ref name) = args.agent_name {
@@ -245,11 +262,10 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
     // provider (and resolves the API key) from `self.model` itself now that
     // `cmd_run` no longer builds its own driver.
     if model.split_once('/').is_none() {
-        sink.diagnostic(
-            Diag::Error,
-            &format!("error: model must be 'provider/model', got: '{}'", model),
-        );
-        std::process::exit(1);
+        return Err(CliError::invalid_input(format!(
+            "[gait] error: model must be 'provider/model', got: '{}'",
+            model
+        )));
     }
 
     // Expand the task text (`gait_turn_runner::run_single_prompt`'s literal
@@ -275,29 +291,26 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
 
     // Explicit CLI schemas take precedence. The session file remains the
     // fallback used by spawned agents.
-    let explicit_result_schema: Option<serde_json::Value> = (|| {
+    let explicit_result_schema: Option<serde_json::Value> =
         if let Some(raw) = args.result_schema_json.as_deref() {
-            return serde_json::from_str::<serde_json::Value>(raw)
-                .map(Some)
-                .map_err(|e| format!("--result-schema-json: {e}"));
-        }
-        if let Some(path) = args.result_schema_path.as_deref() {
-            let raw = std::fs::read_to_string(path)
-                .map_err(|e| format!("--result-schema {path}: {e}"))?;
-            return serde_json::from_str(&raw)
-                .map(Some)
-                .map_err(|e| format!("--result-schema {path}: {e}"));
-        }
-        Ok(None)
-    })()
-    .unwrap_or_else(|e| {
-        eprintln!("[gait] {e}");
-        std::process::exit(1);
-    });
+            Some(serde_json::from_str::<serde_json::Value>(raw).map_err(|e| {
+                CliError::invalid_input(format!("[gait] --result-schema-json: {e}"))
+            })?)
+        } else if let Some(path) = args.result_schema_path.as_deref() {
+            let raw = std::fs::read_to_string(path).map_err(|e| {
+                CliError::failed(format!("[gait] --result-schema {path}: {e}"))
+            })?;
+            Some(serde_json::from_str(&raw).map_err(|e| {
+                CliError::invalid_input(format!("[gait] --result-schema {path}: {e}"))
+            })?)
+        } else {
+            None
+        };
     if let Some(schema) = &explicit_result_schema {
         if !schema.is_object() {
-            eprintln!("[gait] result schema must be a top-level JSON object");
-            std::process::exit(1);
+            return Err(CliError::invalid_input(
+                "[gait] result schema must be a top-level JSON object",
+            ));
         }
     }
     let result_schema: Option<serde_json::Value> = explicit_result_schema.or_else(|| {
@@ -322,6 +335,9 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
     // below — instead of being signal-killed outright. Give it a bounded
     // grace window to do that; a second signal (impatient user) or the
     // window expiring falls through to the previous hard-kill-and-exit path.
+    // The grace window's end is reported on `grace_rx`; the main path below
+    // races the turn against it and returns success instead of exiting.
+    let (grace_tx, grace_rx) = tokio::sync::oneshot::channel::<()>();
     {
         use tokio::signal::unix::{signal, SignalKind};
         let handle = kill_handle.clone();
@@ -340,7 +356,7 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
                 _ = sigterm.recv() => {}
                 _ = &mut grace => {}
             }
-            std::process::exit(0);
+            let _ = grace_tx.send(());
         });
     }
 
@@ -389,68 +405,72 @@ pub async fn cmd_run(argv: &[String], gait_dir: PathBuf, codebase_path: PathBuf)
         result_schema,
         auto: args.auto.then_some(true),
     };
-    let outcome = if let Some(source) = input {
-        gait_turn_runner::run_turn_source(
-            gait_turn_runner::TurnRunOpts {
-                run_id: gait_turn_runner::mint_run_id("chat"),
-                session_id: session_id.clone(),
-                continue_session: session_id.clone(),
-                gait_dir: gait_dir.clone(),
-                codebase: codebase_path.clone(),
-                args: vec![],
-                sandbox_on: Some(config.sandbox.on),
-                cascade_group_arg: args.cascade_group.clone(),
-                cascade: Some(kill_handle.clone()),
-                profile: Some(profile_override),
-                fs_delegate: None,
-                allow_intree: args.allow_intree,
-            },
-            source,
-            &mut sink,
-        )
-        .await
-    } else {
-        gait_turn_runner::run_single_prompt(
-            gait_turn_runner::TurnRunOpts {
-                run_id: gait_turn_runner::mint_run_id("chat"),
-                session_id: session_id.clone(),
-                continue_session: session_id.clone(),
-                gait_dir: gait_dir.clone(),
-                codebase: codebase_path.clone(),
-                args: vec![],
-                sandbox_on: Some(config.sandbox.on),
-                cascade_group_arg: args.cascade_group.clone(),
-                cascade: Some(kill_handle.clone()),
-                profile: Some(profile_override),
-                fs_delegate: None,
-                allow_intree: args.allow_intree,
-            },
-            prompt,
-            &mut sink,
-        )
-        .await
-    };
-
-    let outcome = match outcome {
-        Ok(o) => o,
-        Err(e) => {
-            sink.diagnostic(Diag::Error, &format!("run error: {e}"));
-            std::process::exit(1);
+    let turn = async {
+        if let Some(source) = input {
+            gait_turn_runner::run_turn_source(
+                gait_turn_runner::TurnRunOpts {
+                    run_id: gait_turn_runner::mint_run_id("chat"),
+                    session_id: session_id.clone(),
+                    continue_session: session_id.clone(),
+                    gait_dir: gait_dir.clone(),
+                    codebase: codebase_path.clone(),
+                    args: vec![],
+                    sandbox_on: Some(config.sandbox.on),
+                    cascade_group_arg: args.cascade_group.clone(),
+                    cascade: Some(kill_handle.clone()),
+                    profile: Some(profile_override),
+                    fs_delegate: None,
+                    allow_intree: args.allow_intree,
+                },
+                source,
+                &mut sink,
+            )
+            .await
+        } else {
+            gait_turn_runner::run_single_prompt(
+                gait_turn_runner::TurnRunOpts {
+                    run_id: gait_turn_runner::mint_run_id("chat"),
+                    session_id: session_id.clone(),
+                    continue_session: session_id.clone(),
+                    gait_dir: gait_dir.clone(),
+                    codebase: codebase_path.clone(),
+                    args: vec![],
+                    sandbox_on: Some(config.sandbox.on),
+                    cascade_group_arg: args.cascade_group.clone(),
+                    cascade: Some(kill_handle.clone()),
+                    profile: Some(profile_override),
+                    fs_delegate: None,
+                    allow_intree: args.allow_intree,
+                },
+                prompt,
+                &mut sink,
+            )
+            .await
         }
     };
 
+    // Grace window expired (or a second signal): the turn is abandoned and the
+    // run counts as a clean signal exit, as it always has.
+    let Some(outcome) = turn_or_grace(turn, grace_rx).await else {
+        return Ok(ExitCode::SUCCESS);
+    };
+    let outcome = outcome.map_err(|e| CliError::failed(format!("[gait] run error: {e}")))?;
+
     if sink.failed {
-        std::process::exit(1);
+        return Err(CliError::failed(
+            "[gait] run failed; see the diagnostic above",
+        ));
     }
 
     // `GatePaused`/gate concepts don't exist for a bare sealed turn (no gate
     // node in play). `!outcome.completed && !outcome.opened` would mean the
     // turn produced neither a terminal result nor stayed open — treat that as
-    // a failure exit, mirroring the old `WorkflowOutcome` mapping's implicit
+    // a failure, mirroring the old `WorkflowOutcome` mapping's implicit
     // "anything else is fine" behavior for `Completed`/`NodeOpen`.
     if !outcome.completed && !outcome.opened {
-        std::process::exit(1);
+        return Err(CliError::failed("[gait] run did not complete"));
     }
+    Ok(ExitCode::SUCCESS)
 }
 
 // ── Brain ─────────────────────────────────────────────────────────────────────
@@ -550,6 +570,71 @@ mod tests {
         assert!(matches!(source.next().await, Some(TurnStart::Resume)));
         assert!(source.next().await.is_none());
     }
+    // Signal grace races are tested through `turn_or_grace` with a hand-fired
+    // oneshot, so no real signal is ever sent to the test process.
+    #[tokio::test]
+    async fn turn_or_grace_returns_the_turn_when_it_finishes_first() {
+        let (_tx, rx) = tokio::sync::oneshot::channel::<()>();
+        assert_eq!(turn_or_grace(async { 7 }, rx).await, Some(7));
+    }
+
+    #[tokio::test]
+    async fn turn_or_grace_gives_up_when_grace_fires() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tx.send(()).unwrap();
+        let never_finishes = std::future::pending::<u8>();
+        assert_eq!(turn_or_grace(never_finishes, rx).await, None);
+    }
+
+    #[tokio::test]
+    async fn turn_or_grace_ignores_a_dropped_grace_sender() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        drop(tx);
+        let turn = async {
+            tokio::task::yield_now().await;
+            3
+        };
+        assert_eq!(turn_or_grace(turn, rx).await, Some(3));
+    }
+
+    #[tokio::test]
+    async fn unparseable_gait_jsonc_is_an_invalid_input_error() {
+        let gait_dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(gait_dir.path().join("gait.jsonc"), "{ not json").unwrap();
+        let err = cmd_run(
+            &["--task".to_string(), "hi".to_string()],
+            gait_dir.path().to_path_buf(),
+            gait_dir.path().to_path_buf(),
+        )
+        .await
+        .expect_err("a broken gait.jsonc is an error");
+        assert!(matches!(
+            coded_error::downcast_ref::<CliError>(&err),
+            Some(CliError::InvalidInput(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn unknown_inference_name_is_an_invalid_input_error() {
+        let gait_dir = tempfile::TempDir::new().unwrap();
+        let err = cmd_run(
+            &[
+                "--task".to_string(),
+                "hi".to_string(),
+                "--inference".to_string(),
+                "no-such-inference-xyz".to_string(),
+            ],
+            gait_dir.path().to_path_buf(),
+            gait_dir.path().to_path_buf(),
+        )
+        .await
+        .expect_err("an unknown inference is an error");
+        assert!(matches!(
+            coded_error::downcast_ref::<CliError>(&err),
+            Some(CliError::InvalidInput(_))
+        ));
+    }
+
     #[test]
     fn sandbox_locked_parsed() {
         let a = RunArgs::parse_from(&["--sandbox-locked".to_string()]);

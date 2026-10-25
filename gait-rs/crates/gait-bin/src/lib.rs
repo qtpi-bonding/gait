@@ -4,6 +4,7 @@ use gait_identity::{DirectVerifier, IdentityContext};
 use gait_state::session::retrace::install_process_verifier;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::process::ExitCode;
 
 #[cfg(feature = "local")]
 use gait_cli::cli::admin::LocalArgs;
@@ -135,6 +136,17 @@ pub fn cli() -> clap::Command {
     Cli::command()
 }
 
+pub fn finish(result: anyhow::Result<ExitCode>) -> ExitCode {
+    match result {
+        Ok(code) => code,
+        Err(error) => gait_cli::cli::error::report(&error),
+    }
+}
+
+pub fn finish_unit(result: gait_cli::cli::error::CliResult) -> ExitCode {
+    finish(result.map(|()| ExitCode::SUCCESS))
+}
+
 /// Makes `--agent-dir` visible to this process and to every child it spawns by
 /// setting `GAIT_AGENT_DIR`. Call before any thread exists: the environment is
 /// only safe to mutate while the process is single-threaded.
@@ -197,5 +209,58 @@ mod tests {
     fn identity_subcommand_is_gone() {
         assert!(Cli::try_parse_from(["gait", "identity", "self-proof"]).is_err());
         assert!(!cli().get_subcommands().any(|c| c.get_name() == "identity"));
+    }
+
+    #[test]
+    fn finish_maps_ok_code_through() {
+        assert_eq!(finish(Ok(ExitCode::from(12))), ExitCode::from(12));
+    }
+
+    #[test]
+    fn finish_maps_logical_error_to_65() {
+        assert_eq!(finish(Err(gait_cli::cli::error::CliError::not_found("missing"))), ExitCode::from(65));
+    }
+
+    #[test]
+    fn finish_maps_infrastructure_error_to_69() {
+        assert_eq!(finish(Err(gait_cli::cli::error::CliError::failed("broken"))), ExitCode::from(69));
+    }
+
+    #[test]
+    fn finish_maps_uncoded_error_to_70() {
+        assert_eq!(finish(Err(anyhow::anyhow!("unknown"))), ExitCode::from(70));
+    }
+
+    #[test]
+    fn no_process_exit_left_in_cli_crates() {
+        fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    rust_files(&path, out);
+                } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                    out.push(path);
+                }
+            }
+        }
+
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let mut files = Vec::new();
+        for relative in ["gait-cli/src", "gait-repl/src"] {
+            rust_files(&crates.join(relative), &mut files);
+        }
+        files.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"));
+        files.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/min_main.rs"));
+        let offenders: Vec<_> = files
+            .iter()
+            .filter_map(|path| {
+                let source = std::fs::read_to_string(path).unwrap();
+                source.lines().any(|line| {
+                    let code = line.split("//").next().unwrap_or("");
+                    code.contains("process::exit")
+                }).then_some(path.display().to_string())
+            })
+            .collect();
+        assert!(offenders.is_empty(), "process::exit remains in: {offenders:?}");
     }
 }

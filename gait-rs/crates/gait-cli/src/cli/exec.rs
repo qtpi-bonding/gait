@@ -1,6 +1,9 @@
 use clap::Parser;
 use serde_json::{json, Value};
 use std::path::Path;
+use std::process::ExitCode;
+
+use crate::cli::error::CliError;
 
 /// `gait -e <prompt>` ephemeral one-off.
 #[derive(Parser, Debug)]
@@ -199,14 +202,13 @@ pub async fn run_one_off(
     }
 }
 
-pub async fn cmd_exec(args: ExecArgs, gait_dir: &Path, codebase: &Path) {
-    let custom_schema = match resolve_custom_schema(&args) {
-        Ok(schema) => schema,
-        Err(e) => {
-            eprintln!("gait -e: {e}");
-            std::process::exit(1);
-        }
-    };
+pub async fn cmd_exec(
+    args: ExecArgs,
+    gait_dir: &Path,
+    codebase: &Path,
+) -> anyhow::Result<ExitCode> {
+    let custom_schema = resolve_custom_schema(&args)
+        .map_err(|e| CliError::invalid_input(format!("gait -e: {e}")))?;
     let inference = args.inference;
     let mut prompt = args.prompt.join(" ");
     if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
@@ -220,17 +222,14 @@ pub async fn cmd_exec(args: ExecArgs, gait_dir: &Path, codebase: &Path) {
             prompt.push_str(piped.trim_end());
         }
     }
-    let code = match run_one_off(&prompt, inference, gait_dir, codebase, custom_schema).await {
+    match run_one_off(&prompt, inference, gait_dir, codebase, custom_schema).await {
         Ok(one) => {
             let is_tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
-            render_and_maybe_run(one, is_tty).unwrap_or(1)
+            let code = render_and_maybe_run(one, is_tty).unwrap_or(1);
+            Ok(ExitCode::from(code as u8))
         }
-        Err(e) => {
-            eprintln!("gait -e: {e}");
-            1
-        }
-    };
-    std::process::exit(code);
+        Err(e) => Err(CliError::failed(format!("gait -e: {e}"))),
+    }
 }
 
 #[cfg(test)]
@@ -254,6 +253,64 @@ mod tests {
     fn rejects_both_or_neither() {
         assert!(parse_one_off(&json!({ "cmd": "x", "output": "y" })).is_err());
         assert!(parse_one_off(&json!({})).is_err());
+    }
+
+    // These cover the schema-resolution rejections, which return before cmd_exec
+    // reads stdin, so the tests never touch the process's real stdin.
+    #[tokio::test]
+    async fn exec_with_unparseable_inline_schema_is_an_invalid_input_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = ExecArgs {
+            inference: None,
+            result_schema: None,
+            result_schema_json: Some("not json".to_string()),
+            prompt: vec!["hi".to_string()],
+        };
+        let err = cmd_exec(args, dir.path(), dir.path())
+            .await
+            .expect_err("a non-JSON inline schema is an error");
+        assert!(matches!(
+            coded_error::downcast_ref::<CliError>(&err),
+            Some(CliError::InvalidInput(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn exec_with_a_missing_schema_file_is_an_invalid_input_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = ExecArgs {
+            inference: None,
+            result_schema: Some(dir.path().join("no-such-schema.json")),
+            result_schema_json: None,
+            prompt: vec!["hi".to_string()],
+        };
+        let err = cmd_exec(args, dir.path(), dir.path())
+            .await
+            .expect_err("a missing schema file is an error");
+        assert!(matches!(
+            coded_error::downcast_ref::<CliError>(&err),
+            Some(CliError::InvalidInput(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn exec_with_a_schema_file_that_is_not_json_is_an_invalid_input_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let schema = dir.path().join("schema.json");
+        std::fs::write(&schema, "{ not json").unwrap();
+        let args = ExecArgs {
+            inference: None,
+            result_schema: Some(schema),
+            result_schema_json: None,
+            prompt: vec!["hi".to_string()],
+        };
+        let err = cmd_exec(args, dir.path(), dir.path())
+            .await
+            .expect_err("a schema file that is not JSON is an error");
+        assert!(matches!(
+            coded_error::downcast_ref::<CliError>(&err),
+            Some(CliError::InvalidInput(_))
+        ));
     }
 
     #[test]

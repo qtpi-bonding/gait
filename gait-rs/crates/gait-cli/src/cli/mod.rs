@@ -1,3 +1,4 @@
+pub mod error;
 pub mod admin;
 pub mod args;
 pub mod daemons;

@@ -246,7 +246,7 @@ async fn run_plain_loop(
         Ok(c) => c,
         Err(e) => {
             let _ = writeln!(mk_err(), "[gait] {e}");
-            std::process::exit(1);
+            return Err(e);
         }
     };
 

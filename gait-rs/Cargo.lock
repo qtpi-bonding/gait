@@ -704,7 +704,7 @@ dependencies = [
 [[package]]
 name = "coded-error"
 version = "0.2.0"
-source = "git+https://github.com/qtpi-bonding/coded-error.git?rev=82f3158e8ea53af5449d3614ebfa6290688cf83e#82f3158e8ea53af5449d3614ebfa6290688cf83e"
+source = "git+https://github.com/qtpi-bonding/coded-error.git?rev=be55165013f5d557ecf8e1b1cf784fb3d07e9753#be55165013f5d557ecf8e1b1cf784fb3d07e9753"
 dependencies = [
  "anyhow",
  "coded-error-derive",
@@ -714,7 +714,7 @@ dependencies = [
 [[package]]
 name = "coded-error-derive"
 version = "0.2.0"
-source = "git+https://github.com/qtpi-bonding/coded-error.git?rev=82f3158e8ea53af5449d3614ebfa6290688cf83e#82f3158e8ea53af5449d3614ebfa6290688cf83e"
+source = "git+https://github.com/qtpi-bonding/coded-error.git?rev=be55165013f5d557ecf8e1b1cf784fb3d07e9753#be55165013f5d557ecf8e1b1cf784fb3d07e9753"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1748,6 +1748,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "coded-error",
  "gait-auth",
  "gait-core",
  "gait-local",
@@ -1766,6 +1767,7 @@ dependencies = [
  "serde_yaml",
  "serial_test",
  "tempfile",
+ "thiserror 1.0.69",
  "tokio",
  "uuid",
 ]

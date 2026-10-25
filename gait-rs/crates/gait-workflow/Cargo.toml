@@ -26,7 +26,7 @@ sha2 = "0.10"
 hex = "0.4"
 walkdir = "2"
 thiserror = "1"
-coded-error = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "82f3158e8ea53af5449d3614ebfa6290688cf83e" }
+coded-error = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "be55165013f5d557ecf8e1b1cf784fb3d07e9753" }
 
 
 [dev-dependencies]

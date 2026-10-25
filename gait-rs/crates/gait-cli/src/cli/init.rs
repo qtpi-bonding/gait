@@ -1,7 +1,8 @@
 //! `gait init` — adapter: build `gait_ops::workspace::InitParams`, call the op,
 //! render `InitOutcome` and error. The logic lives in `gait_ops::workspace`.
-#![allow(clippy::print_stdout, clippy::print_stderr, clippy::exit)]
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
+use crate::cli::error::{CliError, CliResult};
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -33,7 +34,7 @@ fn scaffold_files() -> serde_json::Value {
     ])
 }
 
-pub fn cmd_init(args: InitArgs) {
+pub fn cmd_init(args: InitArgs) -> CliResult {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let raw = args.path.clone().unwrap_or_else(|| cwd.clone());
     let gait_dir = if raw.is_absolute() {
@@ -69,13 +70,62 @@ pub fn cmd_init(args: InitArgs) {
                     args.pretty
                 )
             );
+            Ok(())
         }
-        Err(e) => {
-            match gait_ops::OpError::find(&e) {
-                Some(gait_ops::OpError::Conflict(msg)) => eprintln!("[gait] {msg}"),
-                _ => eprintln!("[gait] {e}"),
+        Err(e) => Err(match gait_ops::OpError::find(&e) {
+            // The refusal names the path the user passed; that input is what is wrong.
+            Some(gait_ops::OpError::Conflict(msg)) => {
+                CliError::invalid_input(format!("[gait] {msg}"))
             }
-            std::process::exit(1);
+            _ => CliError::failed(format!("[gait] {e}")),
+        }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The typed variant a command failed with. Panics on an uncoded error.
+    fn cli_error(err: &anyhow::Error) -> &CliError {
+        coded_error::downcast_ref::<CliError>(err).expect("error is a CliError")
+    }
+
+    fn init_args(path: PathBuf) -> InitArgs {
+        InitArgs {
+            force: false,
+            path: Some(path),
+            pretty: false,
         }
+    }
+
+    #[test]
+    fn init_inside_a_git_repo_without_force_is_invalid_input() {
+        let repo = tempfile::TempDir::new().unwrap();
+        git2::Repository::init(repo.path()).unwrap();
+        let err = cmd_init(init_args(repo.path().join("gait-home"))).unwrap_err();
+        assert!(matches!(cli_error(&err), CliError::InvalidInput(_)));
+        let text = format!("{err:#}");
+        assert!(text.starts_with("[gait] "), "{text}");
+        assert!(text.contains("would live inside git repo"), "{text}");
+    }
+
+    #[test]
+    fn init_at_a_path_that_is_a_file_is_failed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("not-a-dir");
+        std::fs::write(&file, b"occupied").unwrap();
+        let err = cmd_init(init_args(file)).unwrap_err();
+        assert!(matches!(cli_error(&err), CliError::Failed(_)));
+        assert!(format!("{err:#}").starts_with("[gait] "));
+    }
+
+    #[test]
+    fn init_below_a_regular_file_is_failed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("occupied");
+        std::fs::write(&file, b"occupied").unwrap();
+        let err = cmd_init(init_args(file.join("child"))).unwrap_err();
+        assert!(matches!(cli_error(&err), CliError::Failed(_)));
     }
 }

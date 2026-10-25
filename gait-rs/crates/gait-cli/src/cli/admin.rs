@@ -1,6 +1,7 @@
 //! Registry/config administration + auth + models.
 //! Pulled out of gait-bin so the bin can become a thin dispatcher.
 
+use crate::cli::error::{CliError, CliResult};
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -85,13 +86,12 @@ pub struct LocalArgs {
 }
 
 #[cfg(feature = "local")]
-pub async fn cmd_local(args: LocalArgs) {
+pub async fn cmd_local(args: LocalArgs) -> CliResult {
     match args.action.as_deref().unwrap_or("setup") {
         "setup" => {
-            let model_path = args.model_path.as_deref().unwrap_or_else(|| {
-                eprintln!("[gait] usage: gait local setup --model-path /path/to/model.gguf");
-                std::process::exit(2)
-            });
+            let model_path = args.model_path.as_deref().ok_or_else(|| {
+                CliError::usage("[gait] usage: gait local setup --model-path /path/to/model.gguf")
+            })?;
             match gait_ops::inference::add_local_qwen(
                 &args.gait_dir,
                 &args.name,
@@ -112,20 +112,14 @@ pub async fn cmd_local(args: LocalArgs) {
                         args.pretty
                     )
                 ),
-                Err(error) => {
-                    eprintln!("[gait] {error}");
-                    std::process::exit(1)
-                }
+                Err(error) => return Err(CliError::failed(format!("[gait] {error}"))),
             }
         }
         "status" | "stop" => {
             let inference = match gait_core::inferences::load_inference(&args.gait_dir, &args.name)
             {
                 Ok(value) => value,
-                Err(error) => {
-                    eprintln!("[gait] {error}");
-                    std::process::exit(1)
-                }
+                Err(error) => return Err(CliError::failed(format!("[gait] {error}"))),
             };
             let params = match inference
                 .llm_params
@@ -135,19 +129,17 @@ pub async fn cmd_local(args: LocalArgs) {
             {
                 Ok(Some(value)) => value,
                 _ => {
-                    eprintln!(
+                    return Err(CliError::invalid_input(format!(
                         "[gait] inference '{}' is not a configured local profile",
                         args.name
-                    );
-                    std::process::exit(1)
+                    )))
                 }
             };
             let Some(local) = params.local else {
-                eprintln!(
+                return Err(CliError::invalid_input(format!(
                     "[gait] inference '{}' is not a configured local profile",
                     args.name
-                );
-                std::process::exit(1)
+                )));
             };
             let protocol = if inference.model == "local/qwen2.5-coder-7b-instruct-q4-k-m" {
                 "qwen25-coder"
@@ -181,16 +173,17 @@ pub async fn cmd_local(args: LocalArgs) {
                 Ok(_) => render("not running", None),
                 Err(_) if args.action.as_deref() == Some("status") => render("not running", None),
                 Err(error) => {
-                    eprintln!("[gait] local runner: {error}");
-                    std::process::exit(1)
+                    return Err(CliError::failed(format!("[gait] local runner: {error}")))
                 }
             }
         }
         _ => {
-            eprintln!("[gait] local action must be setup, status, or stop");
-            std::process::exit(2)
+            return Err(CliError::usage(
+                "[gait] local action must be setup, status, or stop",
+            ))
         }
     }
+    Ok(())
 }
 
 #[cfg(feature = "local")]
@@ -220,7 +213,7 @@ async fn local_runner_command(
     Ok(serde_json::from_str(&line).ok())
 }
 
-pub fn cmd_inference(args: InferenceArgs) {
+pub fn cmd_inference(args: InferenceArgs) -> CliResult {
     let pretty = args.pretty;
     match args.action.as_deref().unwrap_or("list") {
         "list" => {
@@ -231,10 +224,10 @@ pub fn cmd_inference(args: InferenceArgs) {
             );
         }
         "show" => {
-            let name = args.name.as_deref().unwrap_or_else(|| {
-                eprintln!("[gait] usage: gait inference show <name>");
-                std::process::exit(2)
-            });
+            let name = args
+                .name
+                .as_deref()
+                .ok_or_else(|| CliError::usage("[gait] usage: gait inference show <name>"))?;
             match gait_ops::inference::show(&args.gait_dir, name) {
                 Ok(i) => println!(
                     "{}",
@@ -243,76 +236,68 @@ pub fn cmd_inference(args: InferenceArgs) {
                         pretty
                     )
                 ),
-                Err(e) => {
-                    eprintln!("[gait] {e}");
-                    std::process::exit(1)
-                }
+                Err(e) => return Err(CliError::failed(format!("[gait] {e}"))),
             }
         }
         "select" => {
-            let name = args.name.as_deref().unwrap_or_else(|| {
-                eprintln!("[gait] usage: gait inference select <name> --session <id>");
-                std::process::exit(2)
-            });
-            let session = args.session.as_deref().unwrap_or_else(|| {
-                eprintln!("[gait] --session is required");
-                std::process::exit(2)
-            });
-            let result = (|| -> anyhow::Result<()> {
+            let name = args.name.as_deref().ok_or_else(|| {
+                CliError::usage("[gait] usage: gait inference select <name> --session <id>")
+            })?;
+            let session = args
+                .session
+                .as_deref()
+                .ok_or_else(|| CliError::usage("[gait] --session is required"))?;
+            (|| -> CliResult {
                 let worktree = gait_core::session::live::worktree_dir(&args.gait_dir, session);
                 if !worktree.exists() {
-                    anyhow::bail!("session '{session}' is not active");
+                    return Err(CliError::not_found(format!(
+                        "[gait] session '{session}' is not active"
+                    )));
                 }
-                let selection = gait_ops::inference::resolve_selection(&args.gait_dir, name)?;
+                let selection = gait_ops::inference::resolve_selection(&args.gait_dir, name)
+                    .map_err(|e| CliError::failed(format!("[gait] {e}")))?;
                 gait_core::embed::record_session_update(
                     &gait_core::git::Repos::production(),
                     &args.gait_dir,
                     session,
                     vec![selection.event_body],
                 )
-            })();
-            if let Err(e) = result {
-                eprintln!("[gait] {e}");
-                std::process::exit(1);
-            }
+                .map_err(|e| CliError::failed(format!("[gait] {e}")))
+            })()?;
         }
         "clear" => {
-            let session = args.session.as_deref().unwrap_or_else(|| {
-                eprintln!("[gait] --session is required");
-                std::process::exit(2)
-            });
-            let result = (|| -> anyhow::Result<()> {
+            let session = args
+                .session
+                .as_deref()
+                .ok_or_else(|| CliError::usage("[gait] --session is required"))?;
+            (|| -> CliResult {
                 let worktree = gait_core::session::live::worktree_dir(&args.gait_dir, session);
                 if !worktree.exists() {
-                    anyhow::bail!("session '{session}' is not active");
+                    return Err(CliError::not_found(format!(
+                        "[gait] session '{session}' is not active"
+                    )));
                 }
-                let selection = gait_ops::inference::resolve_selection(&args.gait_dir, "default")?;
+                let selection = gait_ops::inference::resolve_selection(&args.gait_dir, "default")
+                    .map_err(|e| CliError::failed(format!("[gait] {e}")))?;
                 gait_core::embed::record_session_update(
                     &gait_core::git::Repos::production(),
                     &args.gait_dir,
                     session,
                     vec![selection.event_body],
                 )
-            })();
-            if let Err(e) = result {
-                eprintln!("[gait] {e}");
-                std::process::exit(1);
-            }
+                .map_err(|e| CliError::failed(format!("[gait] {e}")))
+            })()?;
         }
         "add" => {
-            let name = args.name.as_deref().unwrap_or_else(|| {
-                eprintln!("[gait] usage: gait inference add <name> --model <provider/id>");
-                std::process::exit(2)
-            });
-            let model = args.model.as_deref().unwrap_or_else(|| {
-                eprintln!("[gait] usage: gait inference add <name> --model <provider/id>");
-                std::process::exit(2)
-            });
-            let compaction_threshold_tokens =
-                args.compaction_threshold_tokens.unwrap_or_else(|| {
-                    eprintln!("[gait] --compaction-threshold-tokens is required for inference add");
-                    std::process::exit(2)
-                });
+            let name = args.name.as_deref().ok_or_else(|| {
+                CliError::usage("[gait] usage: gait inference add <name> --model <provider/id>")
+            })?;
+            let model = args.model.as_deref().ok_or_else(|| {
+                CliError::usage("[gait] usage: gait inference add <name> --model <provider/id>")
+            })?;
+            let compaction_threshold_tokens = args.compaction_threshold_tokens.ok_or_else(|| {
+                CliError::usage("[gait] --compaction-threshold-tokens is required for inference add")
+            })?;
             match gait_ops::inference::add(&args.gait_dir, name, model, compaction_threshold_tokens)
             {
                 Ok(i) => println!(
@@ -322,17 +307,16 @@ pub fn cmd_inference(args: InferenceArgs) {
                         pretty
                     )
                 ),
-                Err(e) => {
-                    eprintln!("[gait] {e}");
-                    std::process::exit(1);
-                }
+                Err(e) => return Err(CliError::failed(format!("[gait] {e}"))),
             }
         }
         _ => {
-            eprintln!("[gait] inference action must be list, show, select, clear, or add");
-            std::process::exit(2)
+            return Err(CliError::usage(
+                "[gait] inference action must be list, show, select, clear, or add",
+            ))
         }
     }
+    Ok(())
 }
 
 /// `gait mode list|show|add|select|clear [name] --session <id>`.
@@ -360,7 +344,7 @@ pub struct ModeArgs {
     pub pretty: bool,
 }
 
-pub fn cmd_mode(args: ModeArgs) {
+pub fn cmd_mode(args: ModeArgs) -> CliResult {
     let pretty = args.pretty;
     match args.action.as_deref().unwrap_or("list") {
         "list" => {
@@ -371,10 +355,10 @@ pub fn cmd_mode(args: ModeArgs) {
             );
         }
         "show" => {
-            let name = args.name.as_deref().unwrap_or_else(|| {
-                eprintln!("[gait] usage: gait mode show <name>");
-                std::process::exit(2)
-            });
+            let name = args
+                .name
+                .as_deref()
+                .ok_or_else(|| CliError::usage("[gait] usage: gait mode show <name>"))?;
             match gait_ops::mode::show(&args.gait_dir, name) {
                 Ok(m) => println!(
                     "{}",
@@ -389,67 +373,62 @@ pub fn cmd_mode(args: ModeArgs) {
                         pretty
                     )
                 ),
-                Err(e) => {
-                    eprintln!("[gait] {e}");
-                    std::process::exit(1)
-                }
+                Err(e) => return Err(CliError::failed(format!("[gait] {e}"))),
             }
         }
         "select" => {
-            let name = args.name.as_deref().unwrap_or_else(|| {
-                eprintln!("[gait] usage: gait mode select <name> --session <id>");
-                std::process::exit(2)
-            });
-            let session = args.session.as_deref().unwrap_or_else(|| {
-                eprintln!("[gait] --session is required");
-                std::process::exit(2)
-            });
-            let result = (|| -> anyhow::Result<()> {
+            let name = args.name.as_deref().ok_or_else(|| {
+                CliError::usage("[gait] usage: gait mode select <name> --session <id>")
+            })?;
+            let session = args
+                .session
+                .as_deref()
+                .ok_or_else(|| CliError::usage("[gait] --session is required"))?;
+            (|| -> CliResult {
                 let worktree = gait_core::session::live::worktree_dir(&args.gait_dir, session);
                 if !worktree.exists() {
-                    anyhow::bail!("session '{session}' is not active");
+                    return Err(CliError::not_found(format!(
+                        "[gait] session '{session}' is not active"
+                    )));
                 }
-                let selection = gait_ops::mode::resolve_selection(&args.gait_dir, name)?;
+                let selection = gait_ops::mode::resolve_selection(&args.gait_dir, name)
+                    .map_err(|e| CliError::failed(format!("[gait] {e}")))?;
                 gait_core::embed::record_session_update(
                     &gait_core::git::Repos::production(),
                     &args.gait_dir,
                     session,
                     vec![selection.event_body],
                 )
-            })();
-            if let Err(e) = result {
-                eprintln!("[gait] {e}");
-                std::process::exit(1);
-            }
+                .map_err(|e| CliError::failed(format!("[gait] {e}")))
+            })()?;
         }
         "clear" => {
-            let session = args.session.as_deref().unwrap_or_else(|| {
-                eprintln!("[gait] --session is required");
-                std::process::exit(2)
-            });
-            let result = (|| -> anyhow::Result<()> {
+            let session = args
+                .session
+                .as_deref()
+                .ok_or_else(|| CliError::usage("[gait] --session is required"))?;
+            (|| -> CliResult {
                 let worktree = gait_core::session::live::worktree_dir(&args.gait_dir, session);
                 if !worktree.exists() {
-                    anyhow::bail!("session '{session}' is not active");
+                    return Err(CliError::not_found(format!(
+                        "[gait] session '{session}' is not active"
+                    )));
                 }
-                let selection = gait_ops::mode::resolve_selection(&args.gait_dir, "default")?;
+                let selection = gait_ops::mode::resolve_selection(&args.gait_dir, "default")
+                    .map_err(|e| CliError::failed(format!("[gait] {e}")))?;
                 gait_core::embed::record_session_update(
                     &gait_core::git::Repos::production(),
                     &args.gait_dir,
                     session,
                     vec![selection.event_body],
                 )
-            })();
-            if let Err(e) = result {
-                eprintln!("[gait] {e}");
-                std::process::exit(1);
-            }
+                .map_err(|e| CliError::failed(format!("[gait] {e}")))
+            })()?;
         }
         "add" => {
-            let name = args.name.as_deref().unwrap_or_else(|| {
-                eprintln!("[gait] usage: gait mode add <name> [--allow <pattern>]... [--deny <pattern>]... [--steer <text>] [--description <text>]");
-                std::process::exit(2)
-            });
+            let name = args.name.as_deref().ok_or_else(|| {
+                CliError::usage("[gait] usage: gait mode add <name> [--allow <pattern>]... [--deny <pattern>]... [--steer <text>] [--description <text>]")
+            })?;
             match gait_ops::mode::add(
                 &args.gait_dir,
                 name,
@@ -470,17 +449,16 @@ pub fn cmd_mode(args: ModeArgs) {
                         pretty
                     )
                 ),
-                Err(e) => {
-                    eprintln!("[gait] {e}");
-                    std::process::exit(1);
-                }
+                Err(e) => return Err(CliError::failed(format!("[gait] {e}"))),
             }
         }
         _ => {
-            eprintln!("[gait] mode action must be list, show, add, select, or clear");
-            std::process::exit(2)
+            return Err(CliError::usage(
+                "[gait] mode action must be list, show, add, select, or clear",
+            ))
         }
     }
+    Ok(())
 }
 
 /// `gait register mcp|skill|plugin <name> [flags]`
@@ -660,7 +638,7 @@ fn print_login_success(out: gait_ops::auth::AuthWriteOutcome, pretty: bool) {
 /// key (per design §4: fixed-value prompts → value passed as a param, but
 /// the prompt itself stays in the adapter); it then delegates the actual
 /// store write to the op.
-pub async fn cmd_auth(args: AuthArgs) {
+pub async fn cmd_auth(args: AuthArgs) -> CliResult {
     // Normalize: action defaults to "list"; accept "ls" as alias.
     let action = args
         .action
@@ -672,17 +650,13 @@ pub async fn cmd_auth(args: AuthArgs) {
     if let Err(message) =
         validate_auth_flags(action, provider, args.complete.as_deref(), args.forget)
     {
-        eprintln!("[gait] {message}");
-        std::process::exit(1);
+        return Err(CliError::usage(format!("[gait] {message}")));
     }
     match action {
         "list" => {
             let creds = match gait_ops::auth::list() {
                 Ok(credentials) => credentials,
-                Err(error) => {
-                    eprintln!("[gait] error: {error}");
-                    std::process::exit(1);
-                }
+                Err(error) => return Err(CliError::failed(format!("[gait] error: {error}"))),
             };
             println!(
                 "{}",
@@ -692,20 +666,17 @@ pub async fn cmd_auth(args: AuthArgs) {
         "add" => {
             let provider = match provider {
                 Some(p) => p,
-                None => {
-                    eprintln!("usage: gait auth add <provider>");
-                    std::process::exit(1);
-                }
+                None => return Err(CliError::usage("usage: gait auth add <provider>")),
             };
             if provider == "openai-signin" {
-                eprintln!("uses ChatGPT sign-in; run gait auth login openai-signin");
-                std::process::exit(1);
+                return Err(CliError::invalid_input(
+                    "uses ChatGPT sign-in; run gait auth login openai-signin",
+                ));
             }
             if provider == "openai-codex" {
-                eprintln!(
-                    "openai-codex uses a ChatGPT subscription; run: gait auth login openai-codex"
-                );
-                std::process::exit(1);
+                return Err(CliError::invalid_input(
+                    "openai-codex uses a ChatGPT subscription; run: gait auth login openai-codex",
+                ));
             }
             eprint!("{} API key: ", provider);
             use std::io::BufRead;
@@ -724,10 +695,7 @@ pub async fn cmd_auth(args: AuthArgs) {
                         pretty
                     )
                 ),
-                Err(e) => {
-                    eprintln!("[gait] error: {}", e);
-                    std::process::exit(1);
-                }
+                Err(e) => return Err(CliError::failed(format!("[gait] error: {}", e))),
             }
         }
         "login" => {
@@ -737,23 +705,20 @@ pub async fn cmd_auth(args: AuthArgs) {
                     let callback = match read_callback_arg(arg, std::io::stdin()) {
                         Ok(value) => value,
                         Err(error) => {
-                            eprintln!("[gait] error: {error}");
-                            std::process::exit(1);
+                            return Err(CliError::failed(format!("[gait] error: {error}")))
                         }
                     };
                     match gait_ops::auth::login_complete(provider, callback).await {
                         Ok(out) => print_login_success(out, pretty),
                         Err(error) => {
-                            eprintln!("[gait] error: {error}");
-                            std::process::exit(1);
+                            return Err(CliError::failed(format!("[gait] error: {error}")))
                         }
                     }
                 } else {
                     let start = match gait_ops::auth::login_begin(provider).await {
                         Ok(value) => value,
                         Err(error) => {
-                            eprintln!("[gait] error: {error}");
-                            std::process::exit(1);
+                            return Err(CliError::failed(format!("[gait] error: {error}")))
                         }
                     };
                     if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
@@ -762,15 +727,13 @@ pub async fn cmd_auth(args: AuthArgs) {
                         let callback = match read_callback_arg("-", std::io::stdin()) {
                             Ok(value) => value,
                             Err(error) => {
-                                eprintln!("[gait] error: {error}");
-                                std::process::exit(1);
+                                return Err(CliError::failed(format!("[gait] error: {error}")))
                             }
                         };
                         match gait_ops::auth::login_complete(provider, callback).await {
                             Ok(out) => print_login_success(out, pretty),
                             Err(error) => {
-                                eprintln!("[gait] error: {error}");
-                                std::process::exit(1);
+                                return Err(CliError::failed(format!("[gait] error: {error}")))
                             }
                         }
                     } else {
@@ -783,11 +746,12 @@ pub async fn cmd_auth(args: AuthArgs) {
                         );
                     }
                 }
-                return;
+                return Ok(());
             }
             if provider != "openai-codex" {
-                eprintln!("subscription login is currently available only for openai-codex");
-                std::process::exit(1);
+                return Err(CliError::invalid_input(
+                    "subscription login is currently available only for openai-codex",
+                ));
             }
             match gait_ops::auth::login_codex(|flow| match flow {
                 gait_auth::LoginFlow::DeviceCode {
@@ -805,19 +769,13 @@ pub async fn cmd_auth(args: AuthArgs) {
             .await
             {
                 Ok(out) => print_login_success(out, pretty),
-                Err(error) => {
-                    eprintln!("[gait] error: {error}");
-                    std::process::exit(1);
-                }
+                Err(error) => return Err(CliError::failed(format!("[gait] error: {error}"))),
             }
         }
         "status" => {
             let provider = match provider {
                 Some(provider) => provider,
-                None => {
-                    eprintln!("usage: gait auth status <provider>");
-                    std::process::exit(1);
-                }
+                None => return Err(CliError::usage("usage: gait auth status <provider>")),
             };
             match gait_ops::auth::status(provider) {
                 Ok(status) => println!(
@@ -827,25 +785,24 @@ pub async fn cmd_auth(args: AuthArgs) {
                         pretty
                     )
                 ),
-                Err(error) => {
-                    eprintln!("[gait] error: {error}");
-                    std::process::exit(1);
-                }
+                Err(error) => return Err(CliError::failed(format!("[gait] error: {error}"))),
             }
         }
         "link" => {
             let provider = match provider {
                 Some(provider) => provider,
                 None => {
-                    eprintln!("usage: gait auth link <provider> <source> [--home <path>]");
-                    std::process::exit(1);
+                    return Err(CliError::usage(
+                        "usage: gait auth link <provider> <source> [--home <path>]",
+                    ))
                 }
             };
             let source = match args.source.as_deref() {
                 Some(source) => source,
                 None => {
-                    eprintln!("usage: gait auth link <provider> <source> [--home <path>]");
-                    std::process::exit(1);
+                    return Err(CliError::usage(
+                        "usage: gait auth link <provider> <source> [--home <path>]",
+                    ))
                 }
             };
             match gait_ops::auth::link(provider, source, args.home) {
@@ -856,19 +813,13 @@ pub async fn cmd_auth(args: AuthArgs) {
                         pretty
                     )
                 ),
-                Err(error) => {
-                    eprintln!("[gait] error: {error}");
-                    std::process::exit(1);
-                }
+                Err(error) => return Err(CliError::failed(format!("[gait] error: {error}"))),
             }
         }
         "unlink" => {
             let provider = match provider {
                 Some(provider) => provider,
-                None => {
-                    eprintln!("usage: gait auth unlink <provider>");
-                    std::process::exit(1);
-                }
+                None => return Err(CliError::usage("usage: gait auth unlink <provider>")),
             };
             match gait_ops::auth::unlink(provider) {
                 Ok(out) => println!(
@@ -878,10 +829,7 @@ pub async fn cmd_auth(args: AuthArgs) {
                         pretty
                     )
                 ),
-                Err(error) => {
-                    eprintln!("[gait] error: {error}");
-                    std::process::exit(1);
-                }
+                Err(error) => return Err(CliError::failed(format!("[gait] error: {error}"))),
             }
         }
         "logout" => {
@@ -900,16 +848,14 @@ pub async fn cmd_auth(args: AuthArgs) {
                             eprintln!("Disconnect the app in ChatGPT Settings.");
                         }
                     }
-                    Err(error) => {
-                        eprintln!("[gait] error: {error}");
-                        std::process::exit(1);
-                    }
+                    Err(error) => return Err(CliError::failed(format!("[gait] error: {error}"))),
                 }
-                return;
+                return Ok(());
             }
             if provider != "openai-codex" {
-                eprintln!("subscription logout is currently available only for openai-codex; use `gait auth remove {provider}` for API keys");
-                std::process::exit(1);
+                return Err(CliError::invalid_input(format!(
+                    "subscription logout is currently available only for openai-codex; use `gait auth remove {provider}` for API keys"
+                )));
             }
             match gait_ops::auth::logout_codex().await {
                 Ok(out) => println!(
@@ -919,19 +865,13 @@ pub async fn cmd_auth(args: AuthArgs) {
                         pretty
                     )
                 ),
-                Err(error) => {
-                    eprintln!("[gait] error: {error}");
-                    std::process::exit(1);
-                }
+                Err(error) => return Err(CliError::failed(format!("[gait] error: {error}"))),
             }
         }
         "remove" | "rm" => {
             let provider = match provider {
                 Some(p) => p,
-                None => {
-                    eprintln!("usage: gait auth remove <provider>");
-                    std::process::exit(1);
-                }
+                None => return Err(CliError::usage("usage: gait auth remove <provider>")),
             };
             match gait_ops::auth::remove(provider) {
                 Ok(out) => println!(
@@ -941,23 +881,22 @@ pub async fn cmd_auth(args: AuthArgs) {
                         pretty
                     )
                 ),
-                Err(e) => {
-                    eprintln!("[gait] error: {}", e);
-                    std::process::exit(1);
-                }
+                Err(e) => return Err(CliError::failed(format!("[gait] error: {}", e))),
             }
         }
         other => {
-            eprintln!("unknown auth subcommand: {}", other);
-            eprintln!("usage: gait auth <list|add|remove|login|status|logout|link|unlink> [<provider>] [<source>]");
-            std::process::exit(1);
+            return Err(CliError::usage(format!(
+                "unknown auth subcommand: {}\nusage: gait auth <list|add|remove|login|status|logout|link|unlink> [<provider>] [<source>]",
+                other
+            )))
         }
     }
+    Ok(())
 }
 
 /// `gait models [filter]`. Thin adapter over `gait_ops::auth::models`.
 /// The op owns the network read + filter; the adapter only renders.
-pub async fn cmd_models(args: ModelsArgs) {
+pub async fn cmd_models(args: ModelsArgs) -> CliResult {
     let filter = args.filter.as_deref();
     match gait_ops::auth::models(filter).await {
         Ok(out) => {
@@ -970,11 +909,9 @@ pub async fn cmd_models(args: ModelsArgs) {
                 )
             );
         }
-        Err(e) => {
-            eprintln!("Error fetching models: {}", e);
-            std::process::exit(1);
-        }
+        Err(e) => return Err(CliError::failed(format!("Error fetching models: {}", e))),
     }
+    Ok(())
 }
 
 pub fn cmd_register(args: RegisterArgs) -> anyhow::Result<()> {
@@ -998,7 +935,7 @@ pub fn cmd_register(args: RegisterArgs) -> anyhow::Result<()> {
         session: args.session.clone(),
     };
 
-    let out = gait_ops::extension::register(params).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let out = gait_ops::extension::register(params)?;
     println!(
         "{}",
         gait_ops::render_json(
@@ -1017,14 +954,9 @@ pub fn cmd_register(args: RegisterArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn cmd_enable(args: EnableArgs) {
-    let gait_dir = match crate::cli::args::resolve_gait_dir_from(args.gait_dir.clone()) {
-        Ok(dir) => dir,
-        Err(error) => {
-            eprintln!("[gait] {error}");
-            std::process::exit(1);
-        }
-    };
+pub fn cmd_enable(args: EnableArgs) -> CliResult {
+    let gait_dir = crate::cli::args::resolve_gait_dir_from(args.gait_dir.clone())
+        .map_err(|error| CliError::failed(format!("[gait] {error}")))?;
     let params = gait_ops::extension::EnableParams {
         gait_dir,
         kind: args.kind.clone(),
@@ -1038,21 +970,14 @@ pub fn cmd_enable(args: EnableArgs) {
                 args.pretty
             )
         ),
-        Err(e) => {
-            eprintln!("[gait] error: {}", e);
-            std::process::exit(1);
-        }
+        Err(e) => return Err(CliError::failed(format!("[gait] error: {}", e))),
     }
+    Ok(())
 }
 
-pub fn cmd_disable(args: DisableArgs) {
-    let gait_dir = match crate::cli::args::resolve_gait_dir_from(args.gait_dir.clone()) {
-        Ok(dir) => dir,
-        Err(error) => {
-            eprintln!("[gait] {error}");
-            std::process::exit(1);
-        }
-    };
+pub fn cmd_disable(args: DisableArgs) -> CliResult {
+    let gait_dir = crate::cli::args::resolve_gait_dir_from(args.gait_dir.clone())
+        .map_err(|error| CliError::failed(format!("[gait] {error}")))?;
     let params = gait_ops::extension::EnableParams {
         gait_dir,
         kind: args.kind.clone(),
@@ -1066,11 +991,9 @@ pub fn cmd_disable(args: DisableArgs) {
                 args.pretty
             )
         ),
-        Err(e) => {
-            eprintln!("[gait] error: {}", e);
-            std::process::exit(1);
-        }
+        Err(e) => return Err(CliError::failed(format!("[gait] error: {}", e))),
     }
+    Ok(())
 }
 
 pub fn cmd_unregister(args: UnregisterArgs) -> anyhow::Result<()> {
@@ -1085,7 +1008,7 @@ pub fn cmd_unregister(args: UnregisterArgs) -> anyhow::Result<()> {
         session: args.session.clone(),
     };
 
-    let out = gait_ops::extension::unregister(params).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let out = gait_ops::extension::unregister(params)?;
     println!(
         "{}",
         gait_ops::render_json(
@@ -1130,18 +1053,16 @@ pub struct ConfigArgs {
     pub pretty: bool,
 }
 
-pub fn cmd_config(args: ConfigArgs) {
+pub fn cmd_config(args: ConfigArgs) -> CliResult {
     let sub = args.action.as_deref().unwrap_or("");
     match sub {
         "set" => {
-            let key = args.rest.first().cloned().unwrap_or_else(|| {
-                eprintln!("[gait] usage: gait config set <key> <value>");
-                std::process::exit(1);
-            });
-            let value_raw = args.rest.get(1).cloned().unwrap_or_else(|| {
-                eprintln!("[gait] usage: gait config set <key> <value>");
-                std::process::exit(1);
-            });
+            let key = args.rest.first().cloned().ok_or_else(|| {
+                CliError::usage("[gait] usage: gait config set <key> <value>")
+            })?;
+            let value_raw = args.rest.get(1).cloned().ok_or_else(|| {
+                CliError::usage("[gait] usage: gait config set <key> <value>")
+            })?;
             let value = parse_config_value(&value_raw);
             match gait_ops::config::set(&args.gait_dir, &key, value) {
                 Ok(()) => println!(
@@ -1151,17 +1072,15 @@ pub fn cmd_config(args: ConfigArgs) {
                         args.pretty
                     )
                 ),
-                Err(e) => {
-                    eprintln!("[gait] error: {}", e);
-                    std::process::exit(1);
-                }
+                Err(e) => return Err(CliError::failed(format!("[gait] error: {}", e))),
             }
         }
         "get" => {
-            let key = args.rest.first().cloned().unwrap_or_else(|| {
-                eprintln!("[gait] usage: gait config get <key>");
-                std::process::exit(1);
-            });
+            let key = args
+                .rest
+                .first()
+                .cloned()
+                .ok_or_else(|| CliError::usage("[gait] usage: gait config get <key>"))?;
             match gait_ops::config::get(&args.gait_dir, &key) {
                 Ok(v) => println!(
                     "{}",
@@ -1170,24 +1089,16 @@ pub fn cmd_config(args: ConfigArgs) {
                         args.pretty
                     )
                 ),
-                Err(e) => {
-                    eprintln!("[gait] error: {}", e);
-                    std::process::exit(1);
-                }
+                Err(e) => return Err(CliError::failed(format!("[gait] error: {}", e))),
             }
         }
         "show" => match gait_ops::config::resolve(&args.gait_dir, &args.gait_dir) {
             Ok(value) => println!("{}", gait_ops::render_json(&value, args.pretty)),
-            Err(e) => {
-                eprintln!("[gait] {e}");
-                std::process::exit(1);
-            }
+            Err(e) => return Err(CliError::failed(format!("[gait] {e}"))),
         },
-        _ => {
-            eprintln!("[gait] usage: gait config <set|get|show> ...");
-            std::process::exit(1);
-        }
+        _ => return Err(CliError::usage("[gait] usage: gait config <set|get|show> ...")),
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1302,5 +1213,243 @@ mod tests {
         assert_eq!(args.provider.as_deref(), Some("openai-codex"));
         assert_eq!(args.source.as_deref(), Some("codex"));
         assert_eq!(args.home, Some(PathBuf::from("/tmp/codex-home")));
+    }
+
+    /// The variant `cmd_*` returned, if it returned a `CliError`.
+    fn cli_error(err: &anyhow::Error) -> Option<&CliError> {
+        coded_error::downcast_ref::<CliError>(err)
+    }
+
+    fn inference_args(action: &str) -> InferenceArgs {
+        InferenceArgs {
+            gait_dir: tempfile::tempdir().unwrap().keep(),
+            action: Some(action.to_string()),
+            name: None,
+            model: None,
+            compaction_threshold_tokens: None,
+            session: None,
+            pretty: false,
+        }
+    }
+
+    #[test]
+    fn inference_show_without_a_name_is_usage() {
+        let err = cmd_inference(inference_args("show")).expect_err("show needs a name");
+        assert!(matches!(cli_error(&err), Some(CliError::Usage(_))), "{err:#}");
+        assert_eq!(format!("{err:#}"), "[gait] usage: gait inference show <name>");
+    }
+
+    #[test]
+    fn inference_unknown_action_is_usage() {
+        let err = cmd_inference(inference_args("frobnicate")).expect_err("unknown action");
+        assert!(matches!(cli_error(&err), Some(CliError::Usage(_))), "{err:#}");
+    }
+
+    #[test]
+    fn inference_add_without_compaction_threshold_is_usage() {
+        let mut args = inference_args("add");
+        args.name = Some("fast".to_string());
+        args.model = Some("opencode/kimi-k2.6".to_string());
+        let err = cmd_inference(args).expect_err("add needs a threshold");
+        assert!(matches!(cli_error(&err), Some(CliError::Usage(_))), "{err:#}");
+    }
+
+    #[test]
+    fn inference_select_for_an_inactive_session_is_not_found() {
+        let mut args = inference_args("select");
+        args.name = Some("fast".to_string());
+        args.session = Some("no-such-session".to_string());
+        let err = cmd_inference(args).expect_err("session is not active");
+        assert!(matches!(cli_error(&err), Some(CliError::NotFound(_))), "{err:#}");
+        assert_eq!(
+            format!("{err:#}"),
+            "[gait] session 'no-such-session' is not active"
+        );
+    }
+
+    #[test]
+    fn mode_show_without_a_name_is_usage() {
+        let args = ModeArgs {
+            gait_dir: tempfile::tempdir().unwrap().keep(),
+            action: Some("show".to_string()),
+            name: None,
+            allow: vec![],
+            deny: vec![],
+            steer: String::new(),
+            description: String::new(),
+            session: None,
+            pretty: false,
+        };
+        let err = cmd_mode(args).expect_err("show needs a name");
+        assert!(matches!(cli_error(&err), Some(CliError::Usage(_))), "{err:#}");
+    }
+
+    #[test]
+    fn mode_clear_without_a_session_is_usage() {
+        let args = ModeArgs {
+            gait_dir: tempfile::tempdir().unwrap().keep(),
+            action: Some("clear".to_string()),
+            name: None,
+            allow: vec![],
+            deny: vec![],
+            steer: String::new(),
+            description: String::new(),
+            session: None,
+            pretty: false,
+        };
+        let err = cmd_mode(args).expect_err("clear needs a session");
+        assert!(matches!(cli_error(&err), Some(CliError::Usage(_))), "{err:#}");
+        assert_eq!(format!("{err:#}"), "[gait] --session is required");
+    }
+
+    #[test]
+    fn auth_complete_without_openai_signin_is_usage() {
+        let args = AuthArgs {
+            action: Some("login".to_string()),
+            provider: Some("anthropic".to_string()),
+            source: None,
+            home: None,
+            pretty: false,
+            complete: Some("https://callback.example/x".to_string()),
+            forget: false,
+        };
+        let err = cmd_auth_blocking(args).expect_err("--complete is for openai-signin only");
+        assert!(matches!(cli_error(&err), Some(CliError::Usage(_))), "{err:#}");
+    }
+
+    #[test]
+    fn auth_unknown_subcommand_is_usage() {
+        let args = AuthArgs {
+            action: Some("frobnicate".to_string()),
+            provider: None,
+            source: None,
+            home: None,
+            pretty: false,
+            complete: None,
+            forget: false,
+        };
+        let err = cmd_auth_blocking(args).expect_err("unknown subcommand");
+        assert!(matches!(cli_error(&err), Some(CliError::Usage(_))), "{err:#}");
+        assert!(format!("{err:#}").starts_with("unknown auth subcommand: frobnicate\nusage: gait auth"));
+    }
+
+    #[test]
+    fn auth_login_for_an_unsupported_provider_is_invalid_input() {
+        let args = AuthArgs {
+            action: Some("login".to_string()),
+            provider: Some("anthropic".to_string()),
+            source: None,
+            home: None,
+            pretty: false,
+            complete: None,
+            forget: false,
+        };
+        let err = cmd_auth_blocking(args).expect_err("subscription login is codex only");
+        assert!(
+            matches!(cli_error(&err), Some(CliError::InvalidInput(_))),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn auth_logout_for_an_unsupported_provider_is_invalid_input() {
+        let args = AuthArgs {
+            action: Some("logout".to_string()),
+            provider: Some("anthropic".to_string()),
+            source: None,
+            home: None,
+            pretty: false,
+            complete: None,
+            forget: false,
+        };
+        let err = cmd_auth_blocking(args).expect_err("subscription logout is codex only");
+        assert!(
+            matches!(cli_error(&err), Some(CliError::InvalidInput(_))),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn auth_status_without_a_provider_is_usage() {
+        let args = AuthArgs {
+            action: Some("status".to_string()),
+            provider: None,
+            source: None,
+            home: None,
+            pretty: false,
+            complete: None,
+            forget: false,
+        };
+        let err = cmd_auth_blocking(args).expect_err("status needs a provider");
+        assert!(matches!(cli_error(&err), Some(CliError::Usage(_))), "{err:#}");
+        assert_eq!(format!("{err:#}"), "usage: gait auth status <provider>");
+    }
+
+    fn cmd_auth_blocking(args: AuthArgs) -> CliResult {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(cmd_auth(args))
+    }
+
+    #[test]
+    fn config_set_without_a_key_is_usage() {
+        let args = ConfigArgs {
+            gait_dir: tempfile::tempdir().unwrap().keep(),
+            action: Some("set".to_string()),
+            rest: vec![],
+            pretty: false,
+        };
+        let err = cmd_config(args).expect_err("set needs a key and value");
+        assert!(matches!(cli_error(&err), Some(CliError::Usage(_))), "{err:#}");
+        assert_eq!(
+            format!("{err:#}"),
+            "[gait] usage: gait config set <key> <value>"
+        );
+    }
+
+    #[test]
+    fn config_set_without_a_value_is_usage() {
+        let args = ConfigArgs {
+            gait_dir: tempfile::tempdir().unwrap().keep(),
+            action: Some("set".to_string()),
+            rest: vec!["default_model".to_string()],
+            pretty: false,
+        };
+        let err = cmd_config(args).expect_err("set needs a value");
+        assert!(matches!(cli_error(&err), Some(CliError::Usage(_))), "{err:#}");
+    }
+
+    #[test]
+    fn config_unknown_action_is_usage() {
+        let args = ConfigArgs {
+            gait_dir: tempfile::tempdir().unwrap().keep(),
+            action: Some("frobnicate".to_string()),
+            rest: vec![],
+            pretty: false,
+        };
+        let err = cmd_config(args).expect_err("unknown action");
+        assert!(matches!(cli_error(&err), Some(CliError::Usage(_))), "{err:#}");
+    }
+
+    #[cfg(feature = "local")]
+    #[test]
+    fn local_unknown_action_is_usage() {
+        let args = LocalArgs {
+            gait_dir: tempfile::tempdir().unwrap().keep(),
+            action: Some("frobnicate".to_string()),
+            name: "local-qwen".to_string(),
+            model_path: None,
+            context_tokens: 8192,
+            gpu_layers: 0,
+            compaction_threshold_tokens: 6000,
+            pretty: false,
+        };
+        let err = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(cmd_local(args))
+            .expect_err("unknown local action");
+        assert!(matches!(cli_error(&err), Some(CliError::Usage(_))), "{err:#}");
     }
 }

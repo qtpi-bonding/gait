@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-coded-error = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "82f3158e8ea53af5449d3614ebfa6290688cf83e" }
+coded-error = { git = "https://github.com/qtpi-bonding/coded-error.git", rev = "be55165013f5d557ecf8e1b1cf784fb3d07e9753" }
 gait-state = { path = "../gait-state" }
 gait-auth = { path = "../gait-auth" }
 gait-proto = { path = "../gait-proto" }

@@ -3,7 +3,9 @@
 
 use clap::Parser;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
+use crate::cli::error::{CliError, CliResult};
 use gait_workflow::observer::CliObserver;
 use gait_workflow::run_log::WorkflowRunLog;
 use gait_workflow::runner::{run_workflow, WorkflowOutcome, WorkflowRunOpts};
@@ -97,60 +99,47 @@ fn resolve_workflow_gait_dir(
     from_rest.or(cli_field)
 }
 
-pub async fn cmd_workflow(args: WorkflowArgs) {
+pub async fn cmd_workflow(args: WorkflowArgs) -> anyhow::Result<ExitCode> {
     let (gait_dir_from_rest, rest) = extract_gait_dir_from_rest(&args.rest);
     let (pretty_from_rest, rest) = extract_pretty_from_rest(&rest);
     let pretty = args.pretty || pretty_from_rest;
-    let gait_dir = match crate::cli::args::resolve_gait_dir_from(resolve_workflow_gait_dir(
+    let gait_dir = crate::cli::args::resolve_gait_dir_from(resolve_workflow_gait_dir(
         args.gait_dir.clone(),
         gait_dir_from_rest,
-    )) {
-        Ok(dir) => dir,
-        Err(error) => {
-            eprintln!("[gait] {error}");
-            std::process::exit(1);
-        }
-    };
+    ))
+    .map_err(|error| CliError::not_found(format!("[gait] {error}")))?;
     let sub = args.action.as_deref().unwrap_or("");
     match sub {
         "run" => cmd_workflow_run(&rest, gait_dir).await,
-        "list" => cmd_workflow_list(&rest, gait_dir, pretty),
+        "list" => cmd_workflow_list(&rest, gait_dir, pretty).map(|()| ExitCode::SUCCESS),
         "continue" => cmd_workflow_continue(&rest, gait_dir).await,
-        "abort" => cmd_workflow_abort(&rest, gait_dir, pretty),
-        "log" => cmd_workflow_log(&rest, gait_dir),
-        "validate" => cmd_workflow_validate(&rest, gait_dir, pretty),
-        _ => {
-            eprintln!("[gait] usage: gait workflow <run|list|continue|abort|log|validate>");
-            std::process::exit(1);
-        }
+        "abort" => cmd_workflow_abort(&rest, gait_dir, pretty).map(|()| ExitCode::SUCCESS),
+        "log" => cmd_workflow_log(&rest, gait_dir).map(|()| ExitCode::SUCCESS),
+        "validate" => cmd_workflow_validate(&rest, gait_dir, pretty).map(|()| ExitCode::SUCCESS),
+        _ => Err(CliError::usage(
+            "[gait] usage: gait workflow <run|list|continue|abort|log|validate>",
+        )),
     }
 }
 
-pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) {
+pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) -> anyhow::Result<ExitCode> {
     let name = match argv.first() {
         Some(n) => n.clone(),
         None => {
-            eprintln!("[gait] usage: gait workflow run <name> [args...]");
-            std::process::exit(1);
+            return Err(CliError::usage(
+                "[gait] usage: gait workflow run <name> [args...]",
+            ))
         }
     };
     let args: Vec<String> = argv[1..].to_vec();
 
     let yaml_path = gait_dir.join("workflows").join(format!("{}.yaml", name));
-    let yaml_content = match std::fs::read_to_string(&yaml_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("[gait] cannot read {}: {}", yaml_path.display(), e);
-            std::process::exit(1);
-        }
-    };
-    let wf: WorkflowDef = match serde_yaml::from_str(&yaml_content) {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("[gait] invalid workflow YAML: {}", e);
-            std::process::exit(1);
-        }
-    };
+    let yaml_content = std::fs::read_to_string(&yaml_path).map_err(|e| {
+        CliError::failed(format!("[gait] cannot read {}: {}", yaml_path.display(), e))
+    })?;
+    let wf: WorkflowDef = serde_yaml::from_str(&yaml_content).map_err(|e| {
+        CliError::invalid_input(format!("[gait] invalid workflow YAML: {}", e))
+    })?;
 
     let run_id = gait_workflow::convert::mint_run_id(&wf.name);
     eprintln!("[gait workflow] starting {} as session {}", name, run_id);
@@ -172,25 +161,23 @@ pub async fn cmd_workflow_run(argv: &[String], gait_dir: PathBuf) {
     )
     .await
     {
-        Ok(WorkflowOutcome::Completed) => {}
+        Ok(WorkflowOutcome::Completed) => Ok(ExitCode::SUCCESS),
         Ok(WorkflowOutcome::GatePaused) => {
             eprintln!("[gait workflow] paused at gate");
-            std::process::exit(2);
+            Ok(ExitCode::from(2))
         }
         Ok(WorkflowOutcome::NodeOpen) => {
             eprintln!("[gait workflow] paused at open node");
-            std::process::exit(0);
+            Ok(ExitCode::SUCCESS)
         }
-        Err(e) => {
-            eprintln!("[gait workflow] error: {}", e);
-            std::process::exit(1);
-        }
+        Err(e) => Err(CliError::failed(format!("[gait workflow] error: {}", e))),
     }
 }
 
 /// Parse and structurally validate a workflow's graph without running it —
-/// no worktree, no run-log, no gait-dir session state touched. Exits 0 with
-/// "is valid" on success, exits 1 and prints every problem found on failure.
+/// no worktree, no run-log, no gait-dir session state touched. Prints the
+/// JSON verdict on stdout; an invalid graph returns an invalid_input error
+/// naming every problem found.
 /// Validate raw workflow YAML against the generated `WorkflowDef` JSON
 /// Schema, returning every violation found (not just the first). `None`
 /// means the YAML is schema-valid (or wasn't parseable YAML at all — the
@@ -209,22 +196,19 @@ fn schema_shape_errors(yaml_content: &str) -> Option<Vec<String>> {
     Some(errors)
 }
 
-pub fn cmd_workflow_validate(argv: &[String], gait_dir: PathBuf, pretty: bool) {
+pub fn cmd_workflow_validate(argv: &[String], gait_dir: PathBuf, pretty: bool) -> CliResult {
     let name = match argv.first() {
         Some(n) => n.clone(),
         None => {
-            eprintln!("[gait] usage: gait workflow validate <name>");
-            std::process::exit(1);
+            return Err(CliError::usage(
+                "[gait] usage: gait workflow validate <name>",
+            ))
         }
     };
     let yaml_path = gait_dir.join("workflows").join(format!("{}.yaml", name));
-    let yaml_content = match std::fs::read_to_string(&yaml_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("[gait] cannot read {}: {}", yaml_path.display(), e);
-            std::process::exit(1);
-        }
-    };
+    let yaml_content = std::fs::read_to_string(&yaml_path).map_err(|e| {
+        CliError::failed(format!("[gait] cannot read {}: {}", yaml_path.display(), e))
+    })?;
 
     // Schema-shape check first: reports every field-level violation (wrong
     // type, missing required field, etc.) in one pass. The `serde_yaml`
@@ -237,16 +221,15 @@ pub fn cmd_workflow_validate(argv: &[String], gait_dir: PathBuf, pretty: bool) {
                 pretty
             )
         );
-        std::process::exit(1);
+        return Err(CliError::invalid_input(format!(
+            "[gait] workflow {name} is not valid: {}",
+            error_strings.join("; ")
+        )));
     }
 
-    let wf: WorkflowDef = match serde_yaml::from_str(&yaml_content) {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("[gait] invalid workflow YAML: {}", e);
-            std::process::exit(1);
-        }
-    };
+    let wf: WorkflowDef = serde_yaml::from_str(&yaml_content).map_err(|e| {
+        CliError::invalid_input(format!("[gait] invalid workflow YAML: {}", e))
+    })?;
     let proto = gait_workflow::convert::to_proto(&wf);
     let errors = gait_workflow::validate::validate_graph(&proto);
     let valid = errors.is_empty();
@@ -259,8 +242,12 @@ pub fn cmd_workflow_validate(argv: &[String], gait_dir: PathBuf, pretty: bool) {
         )
     );
     if !valid {
-        std::process::exit(1);
+        return Err(CliError::invalid_input(format!(
+            "[gait] workflow {name} is not valid: {}",
+            error_strings.join("; ")
+        )));
     }
+    Ok(())
 }
 
 fn collect_workflow_summaries(workflow_runs_dir: &Path) -> Vec<(String, String, String)> {
@@ -294,7 +281,7 @@ fn collect_workflow_summaries(workflow_runs_dir: &Path) -> Vec<(String, String, 
     out
 }
 
-pub fn cmd_workflow_list(_argv: &[String], gait_dir: PathBuf, pretty: bool) {
+pub fn cmd_workflow_list(_argv: &[String], gait_dir: PathBuf, pretty: bool) -> CliResult {
     let summaries = collect_workflow_summaries(&gait_dir.join("workflow-runs"));
     let runs: Vec<serde_json::Value> = summaries
         .into_iter()
@@ -304,6 +291,7 @@ pub fn cmd_workflow_list(_argv: &[String], gait_dir: PathBuf, pretty: bool) {
         "{}",
         gait_ops::render_json(&serde_json::json!({"runs": runs}), pretty)
     );
+    Ok(())
 }
 
 /// `gait workflow continue <run-id> [--force] [--force-rerun <node-id>]...`
@@ -324,12 +312,15 @@ struct ContinueArgs {
     force_rerun: Vec<String>,
 }
 
-pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) {
+pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) -> anyhow::Result<ExitCode> {
     let parsed = match ContinueArgs::try_parse_from(argv) {
         Ok(a) => a,
+        // clap's message already ends in a newline; main adds its own, so trim
+        // it to keep the printed bytes identical to the old `eprint!`.
         Err(e) => {
-            eprint!("{e}");
-            std::process::exit(1);
+            return Err(CliError::usage(
+                format!("{e}").trim_end_matches('\n').to_string(),
+            ))
         }
     };
     let workflow_id = parsed.run_id;
@@ -341,8 +332,10 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) {
     ) {
         Ok(l) => l,
         Err(_) => {
-            eprintln!("[gait] no run log found for workflow {}", workflow_id);
-            std::process::exit(1);
+            return Err(CliError::not_found(format!(
+                "[gait] no run log found for workflow {}",
+                workflow_id
+            )))
         }
     };
     let events = run_log.read_events().unwrap_or_default();
@@ -368,16 +361,17 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) {
     ) {
         Ok(r) => r,
         Err(gait_workflow::convert::ContinueError::Drift { .. }) => {
-            eprintln!(
+            return Err(CliError::invalid_input(format!(
                 "[gait] {} changed since this run started; start a new run, \
                      or pass --force to resume the original graph",
                 logged_yaml_path
-            );
-            std::process::exit(1);
+            )));
         }
         Err(gait_workflow::convert::ContinueError::NoStart) => {
-            eprintln!("[gait] run log for {} has no workflow_start", workflow_id);
-            std::process::exit(1);
+            return Err(CliError::failed(format!(
+                "[gait] run log for {} has no workflow_start",
+                workflow_id
+            )));
         }
     };
 
@@ -409,28 +403,26 @@ pub async fn cmd_workflow_continue(argv: &[String], gait_dir: PathBuf) {
     )
     .await
     {
-        Ok(WorkflowOutcome::Completed) => {}
+        Ok(WorkflowOutcome::Completed) => Ok(ExitCode::SUCCESS),
         Ok(WorkflowOutcome::GatePaused) => {
             eprintln!("[gait workflow] paused at gate");
-            std::process::exit(2);
+            Ok(ExitCode::from(2))
         }
         Ok(WorkflowOutcome::NodeOpen) => {
             eprintln!("[gait workflow] paused at open node");
-            std::process::exit(0);
+            Ok(ExitCode::SUCCESS)
         }
-        Err(e) => {
-            eprintln!("[gait workflow] error: {}", e);
-            std::process::exit(1);
-        }
+        Err(e) => Err(CliError::failed(format!("[gait workflow] error: {}", e))),
     }
 }
 
-pub fn cmd_workflow_abort(argv: &[String], gait_dir: PathBuf, pretty: bool) {
+pub fn cmd_workflow_abort(argv: &[String], gait_dir: PathBuf, pretty: bool) -> CliResult {
     let workflow_id = match argv.first() {
         Some(id) => id.clone(),
         None => {
-            eprintln!("[gait] usage: gait workflow abort <workflow-id>");
-            std::process::exit(1);
+            return Err(CliError::usage(
+                "[gait] usage: gait workflow abort <workflow-id>",
+            ))
         }
     };
 
@@ -442,8 +434,10 @@ pub fn cmd_workflow_abort(argv: &[String], gait_dir: PathBuf, pretty: bool) {
     let run_log = match WorkflowRunLog::open(&workflow_runs_dir, &workflow_id) {
         Ok(l) => l,
         Err(_) => {
-            eprintln!("[gait] no run log found for workflow {}", workflow_id);
-            std::process::exit(1);
+            return Err(CliError::not_found(format!(
+                "[gait] no run log found for workflow {}",
+                workflow_id
+            )))
         }
     };
     // Best-effort: record the node that was in flight (if any) for context.
@@ -454,8 +448,10 @@ pub fn cmd_workflow_abort(argv: &[String], gait_dir: PathBuf, pretty: bool) {
         .and_then(|state| state.open_node().map(|s| s.to_string()))
         .unwrap_or_default();
     if let Err(e) = run_log.workflow_error(&workflow_id, &failed_node, "aborted by user") {
-        eprintln!("[gait] failed to record abort for {}: {}", workflow_id, e);
-        std::process::exit(1);
+        return Err(CliError::failed(format!(
+            "[gait] failed to record abort for {}: {}",
+            workflow_id, e
+        )));
     }
     println!(
         "{}",
@@ -464,14 +460,16 @@ pub fn cmd_workflow_abort(argv: &[String], gait_dir: PathBuf, pretty: bool) {
             pretty
         )
     );
+    Ok(())
 }
 
-pub fn cmd_workflow_log(argv: &[String], gait_dir: PathBuf) {
+pub fn cmd_workflow_log(argv: &[String], gait_dir: PathBuf) -> CliResult {
     let workflow_id = match argv.first() {
         Some(id) => id.clone(),
         None => {
-            eprintln!("[gait] usage: gait workflow log <workflow-id>");
-            std::process::exit(1);
+            return Err(CliError::usage(
+                "[gait] usage: gait workflow log <workflow-id>",
+            ))
         }
     };
     let workflow_runs_dir = gait_dir.join("workflow-runs");
@@ -481,6 +479,7 @@ pub fn cmd_workflow_log(argv: &[String], gait_dir: PathBuf) {
     for event in &events {
         println!("{}", serde_json::to_string(event).unwrap_or_default());
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -608,7 +607,8 @@ mod abort_tests {
         );
         assert_eq!(before.workflow_status(), "running");
 
-        cmd_workflow_abort(&["deploy-abort-1".to_string()], gait_dir.clone(), false);
+        cmd_workflow_abort(&["deploy-abort-1".to_string()], gait_dir.clone(), false)
+            .expect("abort of a mid-flight run succeeds");
 
         // Post-condition: abort wrote a terminal WorkflowError → folds to "failed",
         // so list/continue no longer treat it as resumable.
@@ -676,13 +676,10 @@ mod list_tests {
 mod validate_tests {
     use super::*;
 
-    /// Happy-path only: cmd_workflow_validate calls std::process::exit(1) on
-    /// an invalid graph, which would kill the test process if exercised
-    /// in-process — matching how this file's other exit()-calling commands
-    /// (cmd_workflow_run, etc.) are also never tested on their error paths.
-    /// This proves the valid-graph path returns normally without exiting.
+    /// Happy path: a valid graph returns Ok(()). The invalid-graph path is
+    /// covered by `invalid_graph_is_an_invalid_input_error` below.
     #[test]
-    fn valid_workflow_yaml_does_not_exit() {
+    fn valid_workflow_yaml_returns_ok() {
         let td = tempfile::TempDir::new().unwrap();
         let gait_dir = td.path().to_path_buf();
         std::fs::create_dir_all(gait_dir.join("workflows")).unwrap();
@@ -692,11 +689,143 @@ mod validate_tests {
         )
         .unwrap();
 
-        // If this exits the process, the test binary dies and no later test
-        // in this run reports pass/fail — reaching this assertion at all is
-        // the proof cmd_workflow_validate did not call std::process::exit.
-        cmd_workflow_validate(&["good".to_string()], gait_dir, false);
-        // No panic, no exit — the happy path returned normally.
+        cmd_workflow_validate(&["good".to_string()], gait_dir, false)
+            .expect("a valid workflow validates to Ok");
+    }
+
+    #[test]
+    fn invalid_graph_is_an_invalid_input_error() {
+        let td = tempfile::TempDir::new().unwrap();
+        let gait_dir = td.path().to_path_buf();
+        std::fs::create_dir_all(gait_dir.join("workflows")).unwrap();
+        std::fs::write(
+            gait_dir.join("workflows").join("bad.yaml"),
+            "name: bad\nauto: \"yes\"\nnodes: \"oops\"\n",
+        )
+        .unwrap();
+        let err = cmd_workflow_validate(&["bad".to_string()], gait_dir, false)
+            .expect_err("a schema-invalid workflow is an error");
+        assert!(matches!(
+            coded_error::downcast_ref::<CliError>(&err),
+            Some(CliError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn validate_without_a_name_is_a_usage_error() {
+        let td = tempfile::TempDir::new().unwrap();
+        let err = cmd_workflow_validate(&[], td.path().to_path_buf(), false)
+            .expect_err("missing name is an error");
+        assert!(matches!(
+            coded_error::downcast_ref::<CliError>(&err),
+            Some(CliError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn validate_of_a_missing_workflow_is_a_failed_read() {
+        let td = tempfile::TempDir::new().unwrap();
+        let err = cmd_workflow_validate(&["nope".to_string()], td.path().to_path_buf(), false)
+            .expect_err("missing workflow file is an error");
+        assert!(matches!(
+            coded_error::downcast_ref::<CliError>(&err),
+            Some(CliError::Failed(_))
+        ));
+    }
+
+    #[test]
+    fn validate_with_unparseable_yaml_is_an_invalid_input_error() {
+        // Passes the schema-shape check (a bare scalar is not an object, so
+        // schema_shape_errors returns None) and then fails serde_yaml parsing.
+        let td = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(td.path().join("workflows")).unwrap();
+        std::fs::write(td.path().join("workflows").join("junk.yaml"), "- [unclosed\n").unwrap();
+        let err = cmd_workflow_validate(&["junk".to_string()], td.path().to_path_buf(), false)
+            .expect_err("unparseable workflow is an error");
+        assert!(matches!(
+            coded_error::downcast_ref::<CliError>(&err),
+            Some(CliError::InvalidInput(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn run_without_a_name_is_a_usage_error() {
+        let td = tempfile::TempDir::new().unwrap();
+        let err = cmd_workflow_run(&[], td.path().to_path_buf())
+            .await
+            .expect_err("missing name is an error");
+        assert!(matches!(
+            coded_error::downcast_ref::<CliError>(&err),
+            Some(CliError::Usage(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn run_of_a_missing_workflow_is_a_failed_read() {
+        let td = tempfile::TempDir::new().unwrap();
+        let err = cmd_workflow_run(&["nope".to_string()], td.path().to_path_buf())
+            .await
+            .expect_err("missing workflow file is an error");
+        assert!(matches!(
+            coded_error::downcast_ref::<CliError>(&err),
+            Some(CliError::Failed(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn continue_with_an_unknown_flag_is_a_usage_error() {
+        let td = tempfile::TempDir::new().unwrap();
+        let err = cmd_workflow_continue(&["run-1".to_string(), "--bogus".to_string()], td.path().to_path_buf())
+            .await
+            .expect_err("unknown flag is an error");
+        assert!(matches!(
+            coded_error::downcast_ref::<CliError>(&err),
+            Some(CliError::Usage(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn continue_of_a_missing_run_is_not_found() {
+        let td = tempfile::TempDir::new().unwrap();
+        let err = cmd_workflow_continue(&["no-such-run".to_string()], td.path().to_path_buf())
+            .await
+            .expect_err("missing run log is an error");
+        assert!(matches!(
+            coded_error::downcast_ref::<CliError>(&err),
+            Some(CliError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn abort_of_a_missing_run_is_not_found() {
+        let td = tempfile::TempDir::new().unwrap();
+        let err = cmd_workflow_abort(&["no-such-run".to_string()], td.path().to_path_buf(), false)
+            .expect_err("missing run log is an error");
+        assert!(matches!(
+            coded_error::downcast_ref::<CliError>(&err),
+            Some(CliError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn abort_without_an_id_is_a_usage_error() {
+        let td = tempfile::TempDir::new().unwrap();
+        let err = cmd_workflow_abort(&[], td.path().to_path_buf(), false)
+            .expect_err("missing id is an error");
+        assert!(matches!(
+            coded_error::downcast_ref::<CliError>(&err),
+            Some(CliError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn log_without_an_id_is_a_usage_error() {
+        let td = tempfile::TempDir::new().unwrap();
+        let err = cmd_workflow_log(&[], td.path().to_path_buf()).expect_err("missing id is an error");
+        assert!(matches!(
+            coded_error::downcast_ref::<CliError>(&err),
+            Some(CliError::Usage(_))
+        ));
     }
 
     #[test]

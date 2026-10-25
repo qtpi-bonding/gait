@@ -1,7 +1,8 @@
 //! `gait link <gait-dir>` — write a `.gaitref` pointer in cwd naming an existing
 //! gait workspace, so `gait_core::gait_dir::resolve` finds it by walk-up.
-#![allow(clippy::print_stdout, clippy::print_stderr, clippy::exit)]
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
+use crate::cli::error::{CliError, CliResult};
 use std::path::{Path, PathBuf};
 
 pub fn pointer_body(gait_dir: &Path) -> String {
@@ -25,7 +26,7 @@ pub struct LinkArgs {
     pub pretty: bool,
 }
 
-pub fn cmd_link(args: LinkArgs) {
+pub fn cmd_link(args: LinkArgs) -> CliResult {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let target = if args.gait_dir.is_absolute() {
         args.gait_dir.clone()
@@ -33,20 +34,23 @@ pub fn cmd_link(args: LinkArgs) {
         cwd.join(&args.gait_dir)
     };
     match gait_ops::workspace::link(&cwd, &target) {
-        Ok(out) => println!(
-            "{}",
-            gait_ops::render_json(
-                &serde_json::json!({
-                    "gaitref": out.gaitref.display().to_string(),
-                    "target": out.target.display().to_string(),
-                }),
-                args.pretty
-            )
-        ),
-        Err(e) => {
-            eprintln!("[gait] {e}");
-            std::process::exit(1);
+        Ok(out) => {
+            println!(
+                "{}",
+                gait_ops::render_json(
+                    &serde_json::json!({
+                        "gaitref": out.gaitref.display().to_string(),
+                        "target": out.target.display().to_string(),
+                    }),
+                    args.pretty
+                )
+            );
+            Ok(())
         }
+        Err(e) if matches!(gait_ops::OpError::find(&e), Some(gait_ops::OpError::NotFound(_))) => {
+            Err(CliError::not_found(format!("[gait] {e}")))
+        }
+        Err(e) => Err(CliError::failed(format!("[gait] {e}"))),
     }
 }
 
@@ -54,6 +58,24 @@ pub fn cmd_link(args: LinkArgs) {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// The typed variant a command failed with. Panics on an uncoded error.
+    fn cli_error(err: &anyhow::Error) -> &CliError {
+        coded_error::downcast_ref::<CliError>(err).expect("error is a CliError")
+    }
+
+    /// Run `cmd_link` with the process cwd set to `cwd`, then restore it. The
+    /// result is returned un-asserted so the cwd is restored even on failure.
+    fn link_from(cwd: &Path, target: &Path) -> CliResult {
+        let saved = std::env::current_dir().unwrap();
+        std::env::set_current_dir(cwd).unwrap();
+        let result = cmd_link(LinkArgs {
+            gait_dir: target.to_path_buf(),
+            pretty: false,
+        });
+        std::env::set_current_dir(saved).unwrap();
+        result
+    }
 
     #[test]
     fn pointer_body_prefixed_absolute() {
@@ -81,5 +103,42 @@ mod tests {
             std::env::set_var("GAIT_DIR", v);
         }
         assert_eq!(result.unwrap(), gait_dir);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn link_to_a_missing_path_is_not_found() {
+        let t = tempfile::TempDir::new().unwrap();
+        let cwd = t.path().join("cwd");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let err = link_from(&cwd, &t.path().join("nowhere")).unwrap_err();
+        assert!(matches!(cli_error(&err), CliError::NotFound(_)));
+        assert!(format!("{err:#}").contains("is not a gait workspace"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn link_to_a_directory_without_git_is_not_found() {
+        let t = tempfile::TempDir::new().unwrap();
+        let cwd = t.path().join("cwd");
+        let plain = t.path().join("plain");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&plain).unwrap();
+        let err = link_from(&cwd, &plain).unwrap_err();
+        assert!(matches!(cli_error(&err), CliError::NotFound(_)));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn link_when_the_pointer_cannot_be_written_is_failed() {
+        let t = tempfile::TempDir::new().unwrap();
+        let cwd = t.path().join("cwd");
+        let ws = t.path().join("ws");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(ws.join(".git")).unwrap();
+        // A directory where the `.gaitref` file should go makes the write fail.
+        std::fs::create_dir_all(cwd.join(".gaitref")).unwrap();
+        let err = link_from(&cwd, &ws).unwrap_err();
+        assert!(matches!(cli_error(&err), CliError::Failed(_)));
     }
 }

@@ -188,7 +188,7 @@ pub async fn run_chat(
             {
                 eprintln!("[gait] {e}");
             }
-            std::process::exit(1);
+            return Err(anyhow::anyhow!(e));
         }
     };
 
@@ -220,7 +220,6 @@ pub async fn run_chat(
                 _ = sigterm.recv() => {}
             }
             handle.kill();
-            std::process::exit(0);
         });
     }
 

@@ -50,11 +50,9 @@ pub fn resolve_codebase(args: &[String]) -> std::path::PathBuf {
 // run_turn_source} directly (Task 3) -- no `gait-workflow`/`run_workflow`
 // involved for an ordinary turn.
 
-pub async fn cmd_run(argv: &[String]) {
-    let gait_dir = resolve_gait_dir(argv).unwrap_or_else(|e| {
-        eprintln!("[gait] {e}");
-        std::process::exit(1);
-    });
+pub async fn cmd_run(argv: &[String]) -> anyhow::Result<std::process::ExitCode> {
+    let gait_dir = resolve_gait_dir(argv)
+        .map_err(|e| crate::cli::error::CliError::not_found(format!("[gait] {e}")))?;
     let codebase = resolve_codebase(argv);
     crate::cli::run::cmd_run(argv, gait_dir, codebase).await
 }
@@ -84,6 +82,66 @@ mod tests {
     #[test]
     fn extract_path_arg_returns_none_for_empty() {
         assert_eq!(extract_path_arg(&[], "--gait-dir"), None);
+    }
+
+    // The wrapper hands `gait run` bad input and must return its error, not exit.
+    #[tokio::test]
+    async fn cmd_run_with_an_unknown_inference_is_an_invalid_input_error() {
+        let gait_dir = tempfile::TempDir::new().unwrap();
+        let argv = vec![
+            "--gait-dir".to_string(),
+            gait_dir.path().to_string_lossy().to_string(),
+            "--inference".to_string(),
+            "no-such-inference-xyz".to_string(),
+        ];
+        let err = cmd_run(&argv).await.expect_err("an unknown inference is an error");
+        assert!(matches!(
+            coded_error::downcast_ref::<crate::cli::error::CliError>(&err),
+            Some(crate::cli::error::CliError::InvalidInput(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn cmd_run_with_a_broken_gait_jsonc_is_an_invalid_input_error() {
+        let gait_dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(gait_dir.path().join("gait.jsonc"), "{ not json").unwrap();
+        let argv = vec![
+            "--gait-dir".to_string(),
+            gait_dir.path().to_string_lossy().to_string(),
+        ];
+        let err = cmd_run(&argv).await.expect_err("a broken gait.jsonc is an error");
+        assert!(matches!(
+            coded_error::downcast_ref::<crate::cli::error::CliError>(&err),
+            Some(crate::cli::error::CliError::InvalidInput(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn cmd_run_with_an_unparseable_inline_schema_is_an_invalid_input_error() {
+        let gait_dir = tempfile::TempDir::new().unwrap();
+        // Profile construction needs a resolvable inference, so write a real
+        // snapshot (the same fixture exec.rs uses) for the run to select.
+        std::fs::create_dir_all(gait_dir.path().join("inferences/codex")).unwrap();
+        std::fs::write(
+            gait_dir.path().join("inferences/codex/inference.textproto"),
+            "model: \"openai-codex/gpt-test\"\ncompaction_threshold_tokens: 128000\n",
+        )
+        .unwrap();
+        let argv = vec![
+            "--gait-dir".to_string(),
+            gait_dir.path().to_string_lossy().to_string(),
+            "--inference".to_string(),
+            "codex".to_string(),
+            "--task".to_string(),
+            "hi".to_string(),
+            "--result-schema-json".to_string(),
+            "not json".to_string(),
+        ];
+        let err = cmd_run(&argv).await.expect_err("a non-JSON schema is an error");
+        assert!(matches!(
+            coded_error::downcast_ref::<crate::cli::error::CliError>(&err),
+            Some(crate::cli::error::CliError::InvalidInput(_))
+        ));
     }
 
     mod manifest_tests {

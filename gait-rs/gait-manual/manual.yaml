@@ -196,12 +196,12 @@ guides:
       `--gait-dir` and `--codebase` resolve in this order: the explicit flag, then the
       `GAIT_DIR` / `CODEBASE` environment variable, then a `.gaitref` file found by walking
       up from the current directory (`gait link` writes these), then the current directory.
-      If no gait-dir is found, commands that need one exit 1 with `no gait dir: pass
+      If no gait-dir is found, commands that need one exit 65 with `no gait dir: pass
       --gait-dir <path> or set $GAIT_DIR`.
 
       `--agent-dir <path>` names the agent identity directory whose keys sign direct events.
       It sets `GAIT_AGENT_DIR` for the process and every child it spawns, so brain
-      processes read the same identity. If the directory cannot be loaded, gait exits 1 at
+      processes read the same identity. If the directory cannot be loaded, gait exits 65 at
       startup and names the directory.
 
       Known gap: the detached-daemon exit hook runs in the sandboxed hand, which cannot read
@@ -209,8 +209,9 @@ guides:
       still wakes an idle parent, and the parent shows it as `[daemon:<name>] [unverified]`.
       The planned fix is a supervisor outside the sandbox that runs the hook and signs.
 
-      Most commands exit 0 on success and 1 on a user or runtime error. A clap usage error
-      (for example a missing argument) exits 2.
+      Most commands exit 0 on success. A rejected command exits with a code by error class:
+      65 when the input or request is wrong, 69 when gait itself failed, 75 when retrying
+      may help, 70 for an unclassified error; a clap usage error exits 2.
 
       A session's log is `<gait-dir>/sessions/<id>/log.jsonl`, its in-flight worktree is
       `<gait-dir>/.active/<id>/`, and configuration is `<gait-dir>/gait.jsonc`.
